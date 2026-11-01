@@ -35,10 +35,11 @@ nonisolated struct CADSceneFaceMaterial: Sendable, Equatable {
     var faceIndex: Int
     var material: BodyMaterialSpec
     var signature: FaceSignature
-    /// Mesh index-buffer values for this face when the feature graph's face
-    /// table is still valid for the body's current mesh revision. Nil means
-    /// the snapshot has a saved face appearance but no trustworthy triangle
-    /// range; a presentation must not guess one.
+    /// Mesh index-buffer values for this face when the session has a
+    /// trustworthy table for the body's current mesh revision (the applied
+    /// rebuild's table, or one derived from the exact restored render). Nil
+    /// means the snapshot has a saved face appearance but no trustworthy
+    /// triangle range; a presentation must not guess one.
     var triangleIndices: [UInt32]?
     /// The same face as triangle ordinals into `mesh.indices` (0-based), for
     /// renderers that build their own index slices. Both are nil together.
@@ -246,8 +247,7 @@ extension FloeCADDocument {
                 }
                 var triangleIndices: [UInt32]?
                 var triangleNumbers: [Int]?
-                if let table = session.lastFaceTables[body.id],
-                   session.lastNamingRevisions[body.id] == body.meshRevision {
+                if let table = session.faceRangeTable(for: body) {
                     var scored: [(score: Double, triangles: [Int])] = []
                     for tableEntry in table.entries {
                         guard let score = CADFaceMaterialResolver.score(

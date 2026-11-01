@@ -222,13 +222,12 @@ enum CADMaterialTargetResolver {
     }
 
     /// The single current table entry that contains every picked triangle.
-    /// Returns nil when the table is stale or the pick spans more than one
-    /// face; callers fall back rather than guessing between entries.
+    /// Returns nil when no trustworthy table exists or the pick spans more than
+    /// one face; callers fall back rather than guessing between entries.
     static func authoritativeEntry(for body: Body, triangles: [Int],
                                    session: DocumentSession) -> FaceTable.Entry? {
         guard !triangles.isEmpty,
-              let table = session.lastFaceTables[body.id],
-              session.lastNamingRevisions[body.id] == body.meshRevision else {
+              let table = session.faceRangeTable(for: body) else {
             return nil
         }
         let picked = Set(triangles)
@@ -263,12 +262,11 @@ enum CADMaterialTargetResolver {
     }
 
     /// The authoritative triangle range for a stable signature, when the
-    /// session's face table is valid for the current mesh generation and
-    /// exactly one entry matches. Nil means "do not paint a guessed range".
+    /// session has a table for the current mesh generation and exactly one
+    /// entry matches. Nil means "do not paint a guessed range".
     static func authoritativeTriangles(for signature: FaceSignature, in body: Body,
                                        session: DocumentSession) -> [Int]? {
-        guard let table = session.lastFaceTables[body.id],
-              session.lastNamingRevisions[body.id] == body.meshRevision else {
+        guard let table = session.faceRangeTable(for: body) else {
             return nil
         }
         var scored: [(triangles: [Int], score: Double)] = []
@@ -474,11 +472,10 @@ final class CADMaterialDraftModel {
         }
         for body in document.session.document.bodies
         where target.bodyIDs.contains(body.id.raw) && !body.materialFaceBindings.isEmpty {
-            if document.session.lastFaceTables[body.id] == nil
-                || document.session.lastNamingRevisions[body.id] != body.meshRevision {
+            if document.session.faceRangeTable(for: body) == nil {
                 warnings.append(FloeCADStrings.format(
                     "cad.material.faceRange.missing",
-                    "%@ has face materials with no trustworthy face range in this model generation; they are saved but not drawn individually.",
+                    "%@ has saved face materials that can't be shown on this shape. Reassign them in Material.",
                     body.name))
             }
         }

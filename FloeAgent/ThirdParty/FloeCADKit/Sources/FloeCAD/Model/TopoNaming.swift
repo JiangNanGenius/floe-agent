@@ -143,6 +143,21 @@ nonisolated struct SignatureNaming: TopoNaming {
         return FaceTable(entries: entries)
     }
 
+    /// A table describing the body's CURRENT render exactly, with no feature
+    /// graph replay and no revision counter. A reopened document has no applied
+    /// rebuild to retain a table from, so per-face material ranges are derived
+    /// from the restored mesh with the same enumeration and signature formulas
+    /// the naming table uses. Roles are area-rank `derived` roles; material
+    /// resolution matches signatures and triangles, never roles or indices.
+    static func currentFaceTable(for body: Body) -> FaceTable {
+        let faces = Self.enumerate(body.render)
+        let roles = Self.derivedRoles(faces)
+        let entries = zip(faces, roles).map { face, role in
+            FaceTable.Entry(role: role, signature: face.signature, triangles: face.triangles)
+        }
+        return FaceTable(entries: entries)
+    }
+
     func propagate(inputs: [FaceTable], output: Body, op: TopoOp) -> FaceTable {
         let faces = Self.enumerate(output.render)
         let diag = Self.bboxDiagonal(output.render)
@@ -353,7 +368,7 @@ nonisolated struct SignatureNaming: TopoNaming {
         case let .extrude(profile):
             return rolesForExtrude(profile, faces: faces)
         case .revolve, .generic:
-            return derivedRoles(faces)
+            return Self.derivedRoles(faces)
         }
     }
 
@@ -446,11 +461,11 @@ nonisolated struct SignatureNaming: TopoNaming {
         }
 
         // Anything still unlabelled → area-rank derived.
-        let fallback = derivedRoles(faces)
+        let fallback = Self.derivedRoles(faces)
         return roles.indices.map { roles[$0] ?? fallback[$0] }
     }
 
-    private func derivedRoles(_ faces: [EnumeratedFace]) -> [FaceRole] {
+    private static func derivedRoles(_ faces: [EnumeratedFace]) -> [FaceRole] {
         let order = faces.indices.sorted { faces[$0].signature.area > faces[$1].signature.area }
         var roles = [FaceRole](repeating: .derived(index: 0), count: faces.count)
         for (rank, idx) in order.enumerated() { roles[idx] = .derived(index: rank) }

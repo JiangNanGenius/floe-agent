@@ -5,11 +5,12 @@
 //  Per-face material ranges for the engineering viewport.
 //
 //  The document keeps the authoritative face→triangle table in the session
-//  (`lastFaceTables` + `lastNamingRevisions`, the same source the scene
-//  snapshot uses). A binding is rendered only when that table is valid for the
-//  body's current mesh revision and exactly one table entry matches above the
-//  stable-binding threshold/margin. Otherwise the face material stays saved but
-//  is not painted on a guessed range.
+//  (`faceRangeTable(for:)`, the same source the scene snapshot and exporters
+//  use). That table is the applied rebuild's own table when its revision is
+//  current, otherwise one derived from the body's exact restored render. A
+//  binding is rendered only when exactly one table entry matches above the
+//  stable-binding threshold/margin. Otherwise the face material stays saved
+//  but is not painted on a guessed range.
 //
 
 #if canImport(UIKit)
@@ -21,8 +22,7 @@ extension EditorViewModel {
         guard !body.materialFaceBindings.isEmpty, !body.render.indices.isEmpty else {
             return []
         }
-        guard let table = session.lastFaceTables[body.id],
-              session.lastNamingRevisions[body.id] == body.meshRevision else {
+        guard let table = session.faceRangeTable(for: body) else {
             return []
         }
         var usedEntries = Set<Int>()

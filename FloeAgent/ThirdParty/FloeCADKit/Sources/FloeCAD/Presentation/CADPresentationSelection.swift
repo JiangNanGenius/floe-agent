@@ -220,8 +220,11 @@ enum CADPresentationSelection {
 
         let liveMesh = liveBody.render
         let meshRevision = liveBody.meshRevision
-        let faceTable = document.session.lastFaceTables[liveBody.id]
-        let faceTableRevision = document.session.lastNamingRevisions[liveBody.id]
+        // Same prepared table the viewport/scene use, so a face picked in a
+        // reopened presentation keeps its real triangle range instead of
+        // degrading to a whole-body pick.
+        let faceTable = document.session.faceRangeTable(for: liveBody)
+        let faceTableRevision = faceTable.map { _ in meshRevision }
         let diagonalMM = simd_length(
             presentationBody.mesh.boundsMax - presentationBody.mesh.boundsMin)
             * CADPresentationAxes.millimetresPerMeter

@@ -208,23 +208,27 @@ enum CADQualificationFixture {
         }
     }
 
-    /// E29/X31 native OBJ options coverage fixture: two real saved bodies where
-    /// one body carries a face-material binding whose saved face range is no
-    /// longer trusted in the reopened generation. The package is saved and
-    /// reopened exactly like a user reopening a design, so the app's own shared
-    /// coverage receipt reports the real partial state ("face material ranges
-    /// are stale") and the real OBJ preflight falls back with its own warning.
+    /// E29/X31 NEGATIVE native OBJ options fixture: two real saved bodies where
+    /// one body's saved face-material binding was DELIBERATELY broken before the
+    /// save. This is an explicitly labeled fault-injected INPUT, not a claim
+    /// that an ordinary reopen loses face ranges: the positive E29 path keeps
+    /// real ranges across reopen, so only a genuinely malformed binding may
+    /// produce the partial state. The package is saved and reopened exactly
+    /// like a user's design, and the app's own shared coverage receipt still
+    /// reports the real loss and the real OBJ preflight still falls back.
     /// Nothing here fabricates an invalid mesh or a renderer verdict: the two
     /// bodies are ordinary Extrudes built through the typed command vocabulary,
-    /// and the face material is applied through `CADMaterialService` with a
-    /// fresh `query_token` from the real faces query.
+    /// the face material is applied through `CADMaterialService` with a fresh
+    /// `query_token` from the real faces query, and then
+    /// `CADDebugFixtures.injectStaleFaceBinding` writes the malformed snapshot
+    /// through the ordinary material command.
     @MainActor
-    static func openOBJCoverage() async throws -> FloeCADDocument {
-        let url = try fixtureURL("obj-coverage.floecad")
+    static func openOBJStaleFaceCoverage() async throws -> FloeCADDocument {
+        let url = try fixtureURL("obj-stale-face-coverage.floecad")
         if FileManager.default.fileExists(atPath: url.path) {
             try FileManager.default.removeItem(at: url)
         }
-        let document = try await FloeCADDocument.create(at: url, name: "OBJ coverage")
+        let document = try await FloeCADDocument.create(at: url, name: "OBJ stale face coverage")
         do {
             let plate = try makeExtrudedBody(document, name: "Plate",
                                              min: [0, 0], max: [100, 60], distance: 10)
@@ -243,6 +247,11 @@ enum CADQualificationFixture {
                     message: reply["message"] as? String
                         ?? "The OBJ coverage fixture could not apply its face material.")
             }
+            guard let plateID = UUID(uuidString: plate) else {
+                throw CADDocumentError(code: "fixture_failed",
+                                       message: "The fixture body id was not a UUID.")
+            }
+            try CADDebugFixtures.injectStaleFaceBinding(bodyID: plateID, in: document)
             let save = await document.save()
             guard save.succeeded else {
                 throw CADDocumentError(code: "fixture_save_failed",
@@ -321,11 +330,14 @@ enum CADQualificationFixture {
         return bodyID
     }
 
-    /// The largest horizontal planar face (normal along the sketch axis),
-    /// with the exact query generation token the material service requires for
-    /// an index-based face application. This is the same query/token contract
-    /// the Material inspector uses; the index alone is never trusted as
-    /// identity, and the normal's sign is kernel orientation (not identity).
+    /// The largest horizontal planar cap, with the exact query generation
+    /// token the material service requires for an index-based face
+    /// application. The default `SketchPlane.ground` is XZ with +Y up, so an
+    /// Extrude's cap normal is ±Y (not ±Z); selecting by the world Y axis is
+    /// what makes this a cap rather than a side wall. This is the same
+    /// query/token contract the Material inspector uses; the index alone is
+    /// never trusted as identity, and the normal's sign is kernel orientation
+    /// (not identity).
     @MainActor
     private static func horizontalPlanarFace(of bodyID: String,
                                              in document: FloeCADDocument) throws
@@ -349,8 +361,8 @@ enum CADQualificationFixture {
         let tops = own.filter { row in
             guard (row["kind"] as? String) == "planar",
                   let normal = row["normal"] as? [Any], normal.count == 3,
-                  let z = number(normal[2]) else { return false }
-            return abs(z) > 0.99
+                  let y = number(normal[1]) else { return false }
+            return abs(y) > 0.99
         }
         guard let top = tops.max(by: { lhs, rhs in
             (number(lhs["areaMM2"]) ?? 0) < (number(rhs["areaMM2"]) ?? 0)
@@ -358,7 +370,7 @@ enum CADQualificationFixture {
         let index = (top["index"] as? NSNumber)?.intValue,
         let token = top["query_token"] as? String else {
             throw CADDocumentError(code: "fixture_face_query_failed",
-                                   message: "The fixture found no top planar face to paint.")
+                                   message: "The fixture found no horizontal planar cap to paint.")
         }
         return (index, token)
     }
@@ -498,7 +510,7 @@ struct CADWorkbenchFixtureHarness: View {
                 } else if arguments.contains("--ui-test-cad-obj-coverage") {
                     // E29/X31 native OBJ options: real mixed valid/stale
                     // material-range receipt, saved and reopened.
-                    document = try await CADQualificationFixture.openOBJCoverage()
+                    document = try await CADQualificationFixture.openOBJStaleFaceCoverage()
                 } else if arguments.contains("--ui-test-cad-obj-refusal") {
                     // E29/X31 native OBJ options: real unsupported-material
                     // refusal from the production preflight.

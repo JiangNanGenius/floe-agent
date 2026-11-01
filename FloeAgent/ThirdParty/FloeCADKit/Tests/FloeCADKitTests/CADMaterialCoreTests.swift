@@ -61,6 +61,62 @@ final class CADMaterialCoreTests: XCTestCase {
         return (bodyID, featureID)
     }
 
+    /// One rectangular Extrude with an explicit footprint, for the E29 reopen
+    /// fixtures. The default ground plane is XZ with +Y up.
+    private func makeExtrudedBox(_ document: FloeCADDocument, name: String,
+                                 min: SIMD2<Double>, max: SIMD2<Double>,
+                                 distance: Double) throws -> String {
+        let sketch = try run(document, """
+        {"op":"sketch.create","args":{"name":"\(name)"}}
+        """)
+        let sketchID = try XCTUnwrap(sketch["sketchID"] as? String)
+        _ = try run(document, """
+        {"op":"sketch.addEntities","args":{"sketchID":"\(sketchID)",
+         "entities":[{"kind":"rect","min":[\(min.x),\(min.y)],
+                      "max":[\(max.x),\(max.y)]}]}}
+        """)
+        let extrude = try run(document, """
+        {"op":"feature.extrude","args":{"sketchID":"\(sketchID)",
+         "seedPoint":[\((min.x + max.x) / 2),\((min.y + max.y) / 2)],
+         "distance":\(distance)}}
+        """)
+        return try XCTUnwrap((extrude["producedBodyIDs"] as? [String])?.first,
+                             "extrude reply carries no body id: \(extrude)")
+    }
+
+    private func documentBody(_ id: String, in document: FloeCADDocument) throws -> Body {
+        try XCTUnwrap(document.session.document.bodies.first {
+            $0.id.raw.uuidString.caseInsensitiveCompare(id) == .orderedSame
+        }, "no body \(id)")
+    }
+
+    /// The largest horizontal planar cap (normal along world Y) and its exact
+    /// live query token. The default ground plane is XZ/Y-up.
+    private func topFace(of bodyID: String,
+                         in document: FloeCADDocument) throws -> (index: Int, token: String) {
+        let outcome = document.nativeQueryJSON(["scope": "faces"])
+        XCTAssertTrue(outcome.isOK, outcome.message ?? "")
+        let object = try XCTUnwrap(
+            (try? JSONSerialization.jsonObject(with: outcome.payload)) as? [String: Any])
+        let rows = try XCTUnwrap(object["rows"] as? [[String: Any]])
+        func number(_ value: Any?) -> Double? { (value as? NSNumber)?.doubleValue }
+        let own = rows.filter { row in
+            guard let id = row["bodyID"] as? String else { return false }
+            return id.caseInsensitiveCompare(bodyID) == .orderedSame
+        }
+        let tops = own.filter { row in
+            guard (row["kind"] as? String) == "planar",
+                  let normal = row["normal"] as? [Any], normal.count == 3,
+                  let y = number(normal[1]) else { return false }
+            return abs(y) > 0.99
+        }
+        let top = try XCTUnwrap(tops.max(by: { lhs, rhs in
+            (number(lhs["areaMM2"]) ?? 0) < (number(rhs["areaMM2"]) ?? 0)
+        }), "the fixture found no top planar face")
+        return (try XCTUnwrap((top["index"] as? NSNumber)?.intValue),
+                try XCTUnwrap(top["query_token"] as? String))
+    }
+
     private func jsonChunk(_ glb: Data) throws -> [String: Any] {
         func u32(_ offset: Int) -> UInt32 {
             glb.withUnsafeBytes { $0.loadUnaligned(fromByteOffset: offset, as: UInt32.self) }
@@ -300,6 +356,379 @@ final class CADMaterialCoreTests: XCTestCase {
         XCTAssertEqual(reassigned["ok"] as? Bool, true, "\(reassigned)")
         XCTAssertEqual(document.session.document.bodies.first?.materialFaceBindings.count, 0)
         document.close()
+    }
+
+    // MARK: E29 reopened face-material ranges
+
+    /// A normal save/close/reopen must keep the painted face's REAL triangle
+    /// range, visible to Edit, Present/Scene and both material exports, without
+    /// guessing an index, blessing the naming cache or touching the document.
+    func testReopenedDocumentRestoresExactFaceMaterialRangesWithoutMutation() async throws {
+        let url = workDir.appendingPathComponent("e29-reopen.floecad")
+        let document = try await FloeCADDocument.create(at: url, name: "E29 Reopen")
+        let service = CADMaterialService(document: document)
+        let plateID = try makeExtrudedBox(document, name: "Plate",
+                                          min: [0, 0], max: [100, 60], distance: 10)
+        let blockID = try makeExtrudedBox(document, name: "Block",
+                                          min: [130, 0], max: [150, 20], distance: 10)
+        let faceMaterial = service.handle(action: "create", args: [
+            "name": "E29 Face Red", "color": [0.82, 0.24, 0.18, 1.0],
+        ])
+        let faceMaterialID = try XCTUnwrap(faceMaterial["id"] as? String)
+        let bodyMaterial = service.handle(action: "create", args: [
+            "name": "E29 Block Grey", "color": [0.45, 0.47, 0.5, 1.0],
+        ])
+        let bodyMaterialID = try XCTUnwrap(bodyMaterial["id"] as? String)
+        let top = try topFace(of: plateID, in: document)
+        let appliedFace = service.handle(action: "applyFaces", args: [
+            "material_id": faceMaterialID, "bodyID": plateID,
+            "faces": [top.index], "query_token": top.token,
+        ])
+        XCTAssertEqual(appliedFace["ok"] as? Bool, true, "\(appliedFace)")
+        let appliedBody = service.handle(action: "apply", args: [
+            "material_id": bodyMaterialID, "bodyID": blockID,
+        ])
+        XCTAssertEqual(appliedBody["ok"] as? Bool, true, "\(appliedBody)")
+
+        let plateBefore = try documentBody(plateID, in: document)
+        let blockBefore = try documentBody(blockID, in: document)
+        let idsBefore = Set(document.session.document.bodies.map(\.id))
+        let tableBefore = try XCTUnwrap(document.session.lastFaceTables[plateBefore.id])
+        XCTAssertEqual(document.session.lastNamingRevisions[plateBefore.id],
+                       plateBefore.meshRevision)
+        XCTAssertEqual(plateBefore.materialFaceBindings.count, 1)
+        let bindingBefore = try XCTUnwrap(plateBefore.materialFaceBindings.first)
+        let assessmentBefore = CADFaceMaterialResolver.assessGroups(
+            in: plateBefore, table: tableBefore,
+            tableRevision: plateBefore.meshRevision)
+        XCTAssertTrue(assessmentBefore.isLossless)
+        XCTAssertEqual(assessmentBefore.groups.count, 1)
+        let expectedTriangles = try XCTUnwrap(assessmentBefore.groups.first?.triangles)
+        XCTAssertFalse(expectedTriangles.isEmpty)
+        let expectedIndices = expectedTriangles.flatMap { triangle -> [UInt32] in
+            let base = triangle * 3
+            return [plateBefore.render.indices[base],
+                    plateBefore.render.indices[base + 1],
+                    plateBefore.render.indices[base + 2]]
+        }
+
+        let saved = await document.save()
+        XCTAssertTrue(saved.succeeded, saved.error ?? "")
+        let savedRevision = saved.revision
+        let identityBefore = await storedIdentity(url)
+        let diskBefore = try XCTUnwrap(identityBefore)
+        document.close()
+
+        let reopened = try await FloeCADDocument.open(at: url)
+        defer { reopened.close() }
+        XCTAssertEqual(reopened.revision, savedRevision)
+        XCTAssertEqual(Set(reopened.session.document.bodies.map(\.id)), idsBefore)
+        let plate = try documentBody(plateID, in: reopened)
+        let block = try documentBody(blockID, in: reopened)
+        XCTAssertNotNil(plate.brep, "the saved analytic body must reopen")
+        XCTAssertNil(reopened.session.faceRangeTable(for: block),
+                     "a body without saved face materials must not derive a range table")
+        XCTAssertEqual(plate.render, plateBefore.render,
+                       "reopen must preserve the exact source geometry")
+        XCTAssertEqual(block.render, blockBefore.render)
+        XCTAssertEqual(block.material?.materialID, bodyMaterialID,
+                       "an unrelated body material must survive")
+        XCTAssertEqual(plate.materialFaceBindings.count, 1)
+        XCTAssertEqual(try XCTUnwrap(plate.materialFaceBindings.first).key.signature,
+                       bindingBefore.key.signature)
+        XCTAssertEqual(try XCTUnwrap(plate.materialFaceBindings.first).material,
+                       bindingBefore.material)
+
+        // A fresh session has no applied rebuild. The naming cache must stay
+        // empty; material ranges come from the separate prepared table.
+        XCTAssertNil(reopened.session.lastFaceTables[plate.id])
+        XCTAssertNil(reopened.session.lastNamingRevisions[plate.id])
+        let changeBeforePreparation = reopened.session.changeCount
+        let undoBefore = reopened.session.undoStack.canUndo
+        let redoBefore = reopened.session.undoStack.canRedo
+        let persistenceBefore = reopened.session.persistenceChangeCount
+        XCTAssertFalse(reopened.hasUnsavedChanges)
+
+        let table = try XCTUnwrap(reopened.session.faceRangeTable(for: plate),
+                                  "the reopened body must expose a trustworthy range table")
+        XCTAssertNil(reopened.session.lastFaceTables[plate.id],
+                     "derived material ranges must not bless the naming cache")
+        XCTAssertNil(reopened.session.lastNamingRevisions[plate.id])
+        XCTAssertNil(reopened.session.lastKernelNames[plate.id])
+        XCTAssertEqual(table.entries.count, tableBefore.entries.count)
+        for (before, after) in zip(tableBefore.entries, table.entries) {
+            XCTAssertEqual(before.signature, after.signature,
+                           "the restored render must reproduce the exact face signature")
+            XCTAssertEqual(before.triangles, after.triangles,
+                           "the restored render must reproduce the exact triangle range")
+        }
+        let assessment = CADFaceMaterialResolver.assessGroups(
+            in: plate, table: table, tableRevision: plate.meshRevision)
+        XCTAssertTrue(assessment.isLossless)
+        XCTAssertEqual(assessment.groups.count, 1)
+        XCTAssertEqual(assessment.groups.first?.triangles ?? [], expectedTriangles)
+        XCTAssertEqual(assessment.remainingTriangles.count,
+                       plate.render.indices.count / 3 - expectedTriangles.count)
+
+        // Edit surface: the same exact range drives the material target.
+        let authoritative = try XCTUnwrap(
+            CADMaterialTargetResolver.authoritativeTriangles(
+                for: bindingBefore.key.signature, in: plate,
+                session: reopened.session))
+        XCTAssertEqual(authoritative, expectedTriangles)
+        let authoritativeEntry = try XCTUnwrap(
+            CADMaterialTargetResolver.authoritativeEntry(
+                for: plate, triangles: Array(expectedTriangles.prefix(1)),
+                session: reopened.session))
+        XCTAssertEqual(authoritativeEntry.triangles, expectedTriangles)
+
+        // Present/Scene surface: the same triangles become real mesh indices.
+        let scene = reopened.sceneSnapshot(includeExplodedPreview: false)
+        let sceneBody = try XCTUnwrap(scene.bodies.first { $0.id == plate.id.raw })
+        XCTAssertEqual(sceneBody.faceMaterials.count, 1)
+        let sceneFace = try XCTUnwrap(sceneBody.faceMaterials.first)
+        XCTAssertEqual(try XCTUnwrap(sceneFace.triangleNumbers), expectedTriangles)
+        XCTAssertEqual(try XCTUnwrap(sceneFace.triangleIndices), expectedIndices)
+        XCTAssertEqual(sceneBody.unresolvedFaceCount, 0)
+        XCTAssertTrue(scene.unresolvedFaceBindings.isEmpty)
+        XCTAssertEqual(scene.documentRevision, savedRevision)
+        XCTAssertEqual(scene.changeCount, changeBeforePreparation)
+
+        // Export surface: the same prepared table reaches GLB and OBJ.
+        let faceRanges = reopened.session.faceRangeTables(
+            for: reopened.session.document.bodies)
+        XCTAssertEqual(try XCTUnwrap(faceRanges.revisions[plate.id]),
+                       plate.meshRevision)
+        XCTAssertEqual(try XCTUnwrap(faceRanges.tables[plate.id]).entries.count,
+                       table.entries.count)
+        let glb = GLBExporter.glb(bodies: [plate],
+                                  faceTables: faceRanges.tables,
+                                  faceTableRevisions: faceRanges.revisions)
+        let glbJSON = try jsonChunk(glb)
+        let meshes = try XCTUnwrap(glbJSON["meshes"] as? [[String: Any]])
+        let primitives = try XCTUnwrap(meshes.first?["primitives"] as? [[String: Any]])
+        XCTAssertEqual(primitives.count, 2,
+                       "one body-material primitive plus the exact face range")
+        let extras = try XCTUnwrap(meshes.first?["extras"] as? [String: Any])
+        let unresolvedGLB = try XCTUnwrap(
+            extras["floe_unresolved_face_bindings"] as? [[String: Any]])
+        XCTAssertTrue(unresolvedGLB.isEmpty)
+        let glbFaces = try XCTUnwrap(extras["floe_face_materials"] as? [[String: Any]])
+        XCTAssertEqual(glbFaces.count, 1)
+        XCTAssertEqual(try XCTUnwrap(glbFaces.first?["triangle_count"] as? Int),
+                       expectedTriangles.count)
+
+        let bundle = OBJBundleExporter.export(
+            bodies: [plate],
+            faceTables: faceRanges.tables,
+            faceTableRevisions: faceRanges.revisions)
+        XCTAssertTrue(bundle.succeeded)
+        let receipt = try XCTUnwrap(bundle.receipt)
+        XCTAssertFalse(receipt.warnings.contains(OBJBundleExporter.faceFallbackWarning))
+        let receiptBody = try XCTUnwrap(receipt.bodies.first)
+        XCTAssertTrue(receiptBody.unresolvedFaceBindings.isEmpty)
+        let faceGroups = receiptBody.groups.filter { $0.faceIndex != nil }
+        XCTAssertEqual(faceGroups.count, 1)
+        XCTAssertEqual(try XCTUnwrap(faceGroups.first).triangleCount,
+                       expectedTriangles.count)
+        XCTAssertTrue(receipt.materials.contains {
+            $0.sourceName == "E29 Face Red" || $0.name == "E29 Face Red"
+        })
+
+        // The product coverage receipt uses the same prepared ranges.
+        let selection = CADExchangeSelection(
+            scope: .part, bodyIDs: [plate.id.raw, block.id.raw])
+        let glbCoverage = try reopened.exchangeCoverage(
+            format: "glb", selection: selection).get()
+        XCTAssertTrue(glbCoverage.complete)
+        XCTAssertTrue(glbCoverage.items.allSatisfy { $0.included })
+        XCTAssertTrue(glbCoverage.items.flatMap(\.materialWarnings)
+            .allSatisfy { !$0.hasPrefix("face_material_") })
+        let objCoverage = try reopened.exchangeCoverage(
+            format: "obj_bundle", selection: selection).get()
+        XCTAssertTrue(objCoverage.complete)
+        // USDZ cannot carry per-face materials. That refusal must stay
+        // explicit rather than silently exporting the body appearance.
+        let usdzCoverage = try reopened.exchangeCoverage(
+            format: "usdz", selection: selection).get()
+        let usdzPlate = try XCTUnwrap(usdzCoverage.items.first {
+            $0.bodyID == plate.id.raw
+        })
+        XCTAssertFalse(usdzPlate.included)
+        XCTAssertEqual(try XCTUnwrap(usdzPlate.reason), "unsupported_face_materials")
+
+        // An old live query token does not become current just because the
+        // render ranges were restored; the service still demands a re-query.
+        let oldGeneration = try XCTUnwrap(CADGeometryQueryGeneration.parse(top.token))
+        XCTAssertFalse(oldGeneration.matches(
+            documentRevision: reopened.revision,
+            changeCount: reopened.session.changeCount,
+            bodyID: plate.id.raw,
+            meshRevision: plate.meshRevision))
+        let refused = CADMaterialService(document: reopened).handle(
+            action: "applyFaces",
+            args: ["material_id": faceMaterialID, "bodyID": plateID,
+                   "faces": [top.index], "query_token": top.token])
+        XCTAssertEqual(refused["ok"] as? Bool, false)
+        XCTAssertEqual(refused["error"] as? String, "requery_required")
+
+        // Preparing/consuming ranges never advances the document, undo or file.
+        XCTAssertEqual(reopened.session.changeCount, changeBeforePreparation)
+        XCTAssertEqual(reopened.session.persistenceChangeCount, persistenceBefore)
+        XCTAssertEqual(reopened.revision, savedRevision)
+        XCTAssertEqual(reopened.session.undoStack.canUndo, undoBefore)
+        XCTAssertEqual(reopened.session.undoStack.canRedo, redoBefore)
+        XCTAssertFalse(reopened.hasUnsavedChanges)
+        let identityAfter = await storedIdentity(url)
+        let diskAfter = try XCTUnwrap(identityAfter)
+        XCTAssertEqual(diskAfter.revision, diskBefore.revision)
+        XCTAssertEqual(diskAfter.contentSHA256, diskBefore.contentSHA256)
+        XCTAssertEqual(diskAfter.modelSHA256, diskBefore.modelSHA256)
+    }
+
+    /// The negative X31 state is a deliberately malformed saved INPUT, not a
+    /// normal reopen. A derived range table still exists, but the binding cannot
+    /// claim any face and the scene/export keep the loss explicit.
+    func testReopenedMalformedFaceBindingStaysUnresolvedWithPreparedRanges() async throws {
+        let url = workDir.appendingPathComponent("e29-malformed.floecad")
+        let document = try await FloeCADDocument.create(at: url, name: "E29 Malformed")
+        let service = CADMaterialService(document: document)
+        let plateID = try makeExtrudedBox(document, name: "Plate",
+                                          min: [0, 0], max: [100, 60], distance: 10)
+        let created = service.handle(action: "create", args: [
+            "name": "E29 Face Red", "color": [0.82, 0.24, 0.18, 1.0],
+        ])
+        let materialID = try XCTUnwrap(created["id"] as? String)
+        let top = try topFace(of: plateID, in: document)
+        XCTAssertEqual(service.handle(action: "applyFaces", args: [
+            "material_id": materialID, "bodyID": plateID,
+            "faces": [top.index], "query_token": top.token,
+        ])["ok"] as? Bool, true)
+
+        // Deliberately stale saved INPUT, using the same ordinary material
+        // command as the existing stale-binding test. The product must not
+        // repair this by guessing an index or by trusting the render alone.
+        var broken = try documentBody(plateID, in: document)
+        let wrong = FaceSignature(kind: .planar, normal: SIMD3(0, 1, 0),
+                                  centroid: SIMD3(10_000, 10_000, 10_000),
+                                  area: 1, planeOffset: 10_000)
+        let wrongKey = CADFaceKey(
+            signature: wrong,
+            capturedIndex: broken.materialFaceBindings.first?.key.capturedIndex)
+        broken.materialFaceBindings = [CADFaceMaterialBinding(
+            key: wrongKey, material: broken.material ?? .default)]
+        document.session.perform(SetMaterialAppearanceCommand(
+            title: "Inject stale face", bodyIDs: [broken.id],
+            after: [broken.id: .init(material: broken.material,
+                                     faceBindings: broken.materialFaceBindings)],
+            document: document.session.document))
+        let saved = await document.save()
+        XCTAssertTrue(saved.succeeded, saved.error ?? "")
+        document.close()
+
+        let reopened = try await FloeCADDocument.open(at: url)
+        defer { reopened.close() }
+        let plate = try documentBody(plateID, in: reopened)
+        let table = try XCTUnwrap(reopened.session.faceRangeTable(for: plate),
+                                  "the restored render still yields a range table")
+        let assessment = CADFaceMaterialResolver.assessGroups(
+            in: plate, table: table, tableRevision: plate.meshRevision)
+        XCTAssertFalse(assessment.isLossless)
+        XCTAssertTrue(assessment.groups.isEmpty)
+        XCTAssertEqual(assessment.issues.map(\.kind), [.unresolvedSignature])
+        XCTAssertTrue(assessment.claimedTriangles.isEmpty)
+        XCTAssertEqual(assessment.remainingTriangles.count,
+                       plate.render.indices.count / 3)
+        XCTAssertNil(CADMaterialTargetResolver.authoritativeTriangles(
+            for: wrong, in: plate, session: reopened.session))
+
+        let scene = reopened.sceneSnapshot(includeExplodedPreview: false)
+        let sceneBody = try XCTUnwrap(scene.bodies.first { $0.id == plate.id.raw })
+        XCTAssertEqual(sceneBody.unresolvedFaceCount, 1)
+        XCTAssertTrue(sceneBody.faceMaterials.isEmpty,
+                      "an unresolved binding must not claim a scene triangle range")
+        XCTAssertEqual(scene.unresolvedFaceBindings.count, 1)
+        XCTAssertEqual(scene.unresolvedFaceBindings.first?.capturedIndex,
+                       wrongKey.capturedIndex)
+
+        let faceRanges = reopened.session.faceRangeTables(for: [plate])
+        let bundle = OBJBundleExporter.export(
+            bodies: [plate], faceTables: faceRanges.tables,
+            faceTableRevisions: faceRanges.revisions)
+        XCTAssertTrue(bundle.succeeded)
+        let receipt = try XCTUnwrap(bundle.receipt)
+        XCTAssertTrue(receipt.warnings.contains(OBJBundleExporter.faceFallbackWarning))
+        XCTAssertEqual(try XCTUnwrap(receipt.bodies.first)
+            .unresolvedFaceBindings.count, 1)
+        let coverage = try reopened.exchangeCoverage(
+            format: "obj_bundle",
+            selection: CADExchangeSelection(scope: .part,
+                                            bodyIDs: [plate.id.raw])).get()
+        XCTAssertFalse(coverage.complete)
+        XCTAssertTrue(coverage.requiresConfirmation)
+        XCTAssertTrue(coverage.items.first?.materialWarnings
+            .contains("face_material_unresolved") == true)
+    }
+
+    func testColdFaceRangePreparationRejectsMalformedRenderBeforeCaching() async throws {
+        let url = workDir.appendingPathComponent("e29-invalid-render.floecad")
+        let original = try await FloeCADDocument.create(at: url, name: "E29 Invalid Input")
+        let bodyID = try makeExtrudedBox(original, name: "Plate",
+                                         min: [0, 0], max: [100, 60], distance: 10)
+        let service = CADMaterialService(document: original)
+        let created = service.handle(action: "create", args: [
+            "name": "Saved face", "color": [0.82, 0.24, 0.18, 1.0],
+        ])
+        let materialID = try XCTUnwrap(created["id"] as? String)
+        let face = try topFace(of: bodyID, in: original)
+        let applied = service.handle(action: "applyFaces", args: [
+            "material_id": materialID, "bodyID": bodyID,
+            "faces": [face.index], "query_token": face.token,
+        ])
+        XCTAssertEqual(applied["ok"] as? Bool, true)
+        let saved = await original.save()
+        XCTAssertTrue(saved.succeeded)
+        original.close()
+
+        let reopened = try await FloeCADDocument.open(at: url)
+        defer { reopened.close() }
+        let body = try documentBody(bodyID, in: reopened)
+        let changeCount = reopened.session.changeCount
+        let identityBefore = await storedIdentity(url)
+        let diskBefore = try XCTUnwrap(identityBefore)
+        XCTAssertNil(reopened.session.lastFaceTables[body.id])
+
+        // Explicit malformed INPUT snapshots, before a cold cache has been
+        // admitted. The actual document and its persisted render stay intact.
+        var badPosition = body
+        badPosition.render.positions[0].x = .nan
+        XCTAssertNil(reopened.session.faceRangeTable(for: badPosition))
+        var badNormal = body
+        badNormal.render.normals[0].y = .infinity
+        XCTAssertNil(reopened.session.faceRangeTable(for: badNormal))
+        var badIndex = body
+        badIndex.render.indices[0] = .max
+        XCTAssertNil(reopened.session.faceRangeTable(for: badIndex))
+
+        let valid = try XCTUnwrap(reopened.session.faceRangeTable(for: body))
+        XCTAssertFalse(valid.entries.isEmpty,
+                       "rejected snapshots must not poison the real body's cold cache")
+        XCTAssertEqual(try documentBody(bodyID, in: reopened).render, body.render)
+        XCTAssertEqual(reopened.session.changeCount, changeCount)
+        XCTAssertFalse(reopened.hasUnsavedChanges)
+        XCTAssertNil(reopened.session.lastFaceTables[body.id])
+        let identityAfter = await storedIdentity(url)
+        let diskAfter = try XCTUnwrap(identityAfter)
+        XCTAssertEqual(diskAfter.revision, diskBefore.revision)
+        XCTAssertEqual(diskAfter.contentSHA256, diskBefore.contentSHA256)
+        XCTAssertEqual(diskAfter.modelSHA256, diskBefore.modelSHA256)
+    }
+
+    /// `storedIdentity` is async; keeping the await in one place makes the
+    /// before/after file assertions read as a plain value comparison.
+    private func storedIdentity(_ url: URL) async
+        -> (revision: Int, contentSHA256: String, modelSHA256: String?)? {
+        await FloeCADDocument.storedIdentity(at: url)
     }
 
     // MARK: Stale index reuse

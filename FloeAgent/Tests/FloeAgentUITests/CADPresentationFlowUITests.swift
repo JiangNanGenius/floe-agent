@@ -1211,6 +1211,10 @@ final class CADMeshExportOptionsNativeSheetUITests: XCTestCase {
         app.buttons["MeshExportCancel"].tap()
     }
 
+    /// The launch fixture DELIBERATELY saves one malformed face-material
+    /// binding (an explicit fault-injected input). A normal reopen keeps its
+    /// real face range after the E29 repair, so this negative receipt must come
+    /// from that malformed input, never from ordinary document reopening.
     func testOBJOptionsShowPartialCoverageConsentBeforeSaving() throws {
         continueAfterFailure = false
         XCUIDevice.shared.orientation = .landscapeLeft
@@ -1223,10 +1227,10 @@ final class CADMeshExportOptionsNativeSheetUITests: XCTestCase {
         CADSheetProbe.openOBJOptions(app, compact: false)
         let materials = CADSheetProbe.toggle("ExportIncludeMaterialsToggle", in: app)
         XCTAssertTrue(materials.waitForExistence(timeout: 15))
-        let staleRange = app.staticTexts["Face material ranges are stale."]
-        XCTAssertTrue(CADSheetProbe.scrollReveal(staleRange, in: app, sheet: "OBJ Export",
+        let faceWarning = app.staticTexts["A face material needs reassignment."]
+        XCTAssertTrue(CADSheetProbe.scrollReveal(faceWarning, in: app, sheet: "OBJ Export",
                                                  timeout: 30),
-                      "the shared coverage receipt must name the stale face-material range")
+                      "the shared coverage receipt must name the malformed face material")
         XCTAssertTrue(app.staticTexts["Material warnings"].exists)
         let objectsValue = app.descendants(matching: .any)
             .matching(NSPredicate(format: "label == %@", "2 / 2")).firstMatch

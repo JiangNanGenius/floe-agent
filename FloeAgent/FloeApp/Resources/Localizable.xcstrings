@@ -13773,13 +13773,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "%@ has face materials with no trustworthy face range in this model generation; they are saved but not drawn individually."
+            "value": "%@ has saved face materials that can't be shown on this shape. Reassign them in Material."
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "%@ 的面材质在当前模型中没有可信的面范围；它们已保存，但不会单独绘制。"
+            "value": "%@ 中保存的面材质无法在此形状上显示。请在“材质”中重新指定。"
           }
         }
       }
@@ -119128,13 +119128,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Face material ranges are stale."
+            "value": "A face material needs reassignment."
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "面材质范围已失效。"
+            "value": "有面材质需要重新指定。"
           }
         }
       }

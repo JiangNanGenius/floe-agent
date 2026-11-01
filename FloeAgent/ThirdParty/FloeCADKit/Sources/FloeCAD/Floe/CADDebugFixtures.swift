@@ -260,6 +260,43 @@ public enum CADDebugFixtures {
         return id
     }
 
+    // MARK: - Explicit fault-injected inputs
+
+    /// Deliberately break ONE saved face-material binding so the X31 negative
+    /// UI fixture starts from an explicitly malformed document instead of
+    /// relying on a normal reopen losing its face ranges.
+    ///
+    /// This is an INPUT fault injection, not an exporter/renderer override: it
+    /// writes an ordinary (undoable) material command whose stored signature
+    /// names a face this body does not have. The product still resolves the
+    /// binding, builds its own coverage receipt and decides what to paint. The
+    /// whole file, including this helper, is absent from Release builds.
+    public static func injectStaleFaceBinding(bodyID: UUID,
+                                              in document: FloeCADDocument) throws {
+        guard let body = document.session.document.body(with: BodyID(raw: bodyID)),
+              let binding = body.materialFaceBindings.first else {
+            throw fixtureError("The stale-face fixture needs a body with a saved face material.")
+        }
+        let wrong = FaceSignature(
+            kind: .planar,
+            normal: SIMD3(0, 1, 0),
+            centroid: SIMD3(10_000, 10_000, 10_000),
+            area: 1,
+            planeOffset: 10_000)
+        var bindings = body.materialFaceBindings
+        bindings[0] = CADFaceMaterialBinding(
+            key: CADFaceKey(signature: wrong,
+                            capturedIndex: binding.key.capturedIndex),
+            material: binding.material,
+            assignedAt: binding.assignedAt)
+        document.session.perform(SetMaterialAppearanceCommand(
+            title: "Inject stale face material",
+            bodyIDs: [body.id],
+            after: [body.id: .init(material: body.material,
+                                   faceBindings: bindings)],
+            document: document.session.document))
+    }
+
     // MARK: - Helpers
 
     private static func run(_ document: FloeCADDocument,

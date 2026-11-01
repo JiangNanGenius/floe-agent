@@ -125,6 +125,82 @@ final class DocumentSession {
             }
         }
         restoredNamingCacheFromHistory = false
+        // History can replace any body's render; derived material ranges have
+        // to come from the restored geometry on the next read.
+        preparedFaceRangeTables = [:]
+    }
+
+    // MARK: - Per-face material ranges
+
+    /// Face→triangle tables derived from each body's CURRENT render for saved
+    /// face materials, with the exact mesh revision they describe.
+    ///
+    /// Deliberately separate from `lastFaceTables`/`lastNamingRevisions`: those
+    /// describe an APPLIED feature rebuild and are also the source of kernel
+    /// element names. A table prepared here carries the exact triangle ranges
+    /// and signatures of the restored render; it mints no element name, does
+    /// not authorize a query token and never makes the naming cache look fresh.
+    @ObservationIgnored
+    private var preparedFaceRangeTables: [BodyID: PreparedFaceRangeTable] = [:]
+
+    private struct PreparedFaceRangeTable {
+        var meshRevision: UInt64
+        var table: FaceTable
+    }
+
+    /// The one authoritative face-range table for per-face materials on
+    /// `body`. Trust order:
+    /// 1. a post-rebuild naming table whose revision matches the body;
+    /// 2. a table this session already prepared for the same mesh revision;
+    /// 3. a table derived from the body's actual restored render.
+    ///
+    /// Derivation requires the analytic B-rep that the stored signature names,
+    /// a sound triangle buffer and at least one saved binding. Otherwise it
+    /// returns nil: callers keep the saved appearance but never paint a guessed
+    /// range. This is a read-only cache preparation; it does not mutate the
+    /// document, its revision/change count, undo history or package bytes, and
+    /// it reuses the cached table across view refreshes until the body's mesh
+    /// revision actually changes.
+    func faceRangeTable(for body: Body) -> FaceTable? {
+        if let table = lastFaceTables[body.id],
+           lastNamingRevisions[body.id] == body.meshRevision {
+            return table
+        }
+        guard !body.materialFaceBindings.isEmpty, body.brep != nil else { return nil }
+        if let prepared = preparedFaceRangeTables[body.id],
+           prepared.meshRevision == body.meshRevision {
+            return prepared.table.entries.isEmpty ? nil : prepared.table
+        }
+        // Validate only when preparing a new revision, rather than walking
+        // the entire triangle buffer on every viewport refresh. Persisted
+        // meshes are input too: non-finite values must never reach topology
+        // enumeration or be admitted as a trusted range table.
+        guard !body.render.indices.isEmpty,
+              body.render.indices.count % 3 == 0,
+              body.render.normals.count == body.render.positions.count,
+              body.render.positions.allSatisfy({ $0.x.isFinite && $0.y.isFinite && $0.z.isFinite }),
+              body.render.normals.allSatisfy({ $0.x.isFinite && $0.y.isFinite && $0.z.isFinite }),
+              body.render.indices.allSatisfy({ Int($0) < body.render.positions.count })
+        else { return nil }
+        let table = SignatureNaming.currentFaceTable(for: body)
+        preparedFaceRangeTables[body.id] = PreparedFaceRangeTable(
+            meshRevision: body.meshRevision, table: table)
+        return table.entries.isEmpty ? nil : table
+    }
+
+    /// Batch form for exports. Every table comes from `faceRangeTable(for:)`
+    /// and is stamped with the exact body revision it describes, so a writer
+    /// cannot receive a table with a guessed or borrowed generation.
+    func faceRangeTables(for bodies: [Body])
+        -> (tables: [BodyID: FaceTable], revisions: [BodyID: UInt64]) {
+        var tables: [BodyID: FaceTable] = [:]
+        var revisions: [BodyID: UInt64] = [:]
+        for body in bodies {
+            guard let table = faceRangeTable(for: body) else { continue }
+            tables[body.id] = table
+            revisions[body.id] = body.meshRevision
+        }
+        return (tables, revisions)
     }
 
     /// Bumped on every document mutation; the editor observes this to rebuild
@@ -887,6 +963,9 @@ final class DocumentSession {
         lastKernelNames = plan.kernelNames
         lastReferenceErrors = plan.referenceErrors
         lastBodyWriters = plan.lastBodyWriters
+        // A rebuild can replace any body's render. Drop derived material
+        // ranges; the next read re-derives them from the committed geometry.
+        preparedFaceRangeTables.removeAll(keepingCapacity: true)
 
         guard !plan.commands.isEmpty else {
             captureNamingRevisions(for: plan.resultBodyIDs)
@@ -1543,6 +1622,7 @@ final class DocumentSession {
         lastFaceTables = checkpoint.lastFaceTables
         lastKernelNames = checkpoint.lastKernelNames
         lastNamingRevisions = checkpoint.lastNamingRevisions
+        preparedFaceRangeTables = [:]
         didChange(autosave: autosave, persistedChange: false)
     }
 
@@ -1882,6 +1962,9 @@ final class DocumentSession {
         loaded.animationData = project.animationData
         document = loaded
         evalCache = EvalCache()   // a fresh memo for a freshly loaded document
+        // A named-version restore reuses this session with a fresh revision
+        // sequence; never let a table from the replaced document survive it.
+        preparedFaceRangeTables = [:]
         #if DEBUG
         OpenTiming.mark("\(loaded.features.nodes.count) features decoded, load done")
         #endif

@@ -663,18 +663,13 @@ private extension FloeCADDocument {
                                     items: items,
                                     extraWarnings: warnings,
                                     informationalNotes: informationalNotes)
-        var faceTables: [BodyID: FaceTable] = [:]
-        var revisions: [BodyID: UInt64] = [:]
-        for body in includedBodies {
-            if let table = session.lastFaceTables[body.id] { faceTables[body.id] = table }
-            if let stamp = session.lastNamingRevisions[body.id] { revisions[body.id] = stamp }
-        }
+        let faceRanges = session.faceRangeTables(for: includedBodies)
         return CADExchangePlan(format: format, selection: selection, coverage: coverage,
                                placedBodies: includedBodies,
                                glbBodies: includedBodies,
                                sceneGraph: nil,
-                               faceTables: faceTables,
-                               faceTableRevisions: revisions,
+                               faceTables: faceRanges.tables,
+                               faceTableRevisions: faceRanges.revisions,
                                rootExtras: [:])
     }
 
@@ -942,12 +937,7 @@ private extension FloeCADDocument {
         }
 
         let sceneGraph = buildNodes(assembly.instances, parentPath: [])
-        var faceTables: [BodyID: FaceTable] = [:]
-        var revisions: [BodyID: UInt64] = [:]
-        for body in glbBodies {
-            if let table = session.lastFaceTables[body.id] { faceTables[body.id] = table }
-            if let stamp = session.lastNamingRevisions[body.id] { revisions[body.id] = stamp }
-        }
+        let faceRanges = session.faceRangeTables(for: glbBodies)
         let rootExtras: [String: Any] = [
             "floe_assembly_scope": "assembly",
             "floe_occurrence_count": coverage.includedCount,
@@ -959,8 +949,8 @@ private extension FloeCADDocument {
         return CADExchangePlan(format: format, selection: selection, coverage: coverage,
                                placedBodies: placedBodies, glbBodies: glbBodies,
                                sceneGraph: sceneGraph,
-                               faceTables: faceTables,
-                               faceTableRevisions: revisions,
+                               faceTables: faceRanges.tables,
+                               faceTableRevisions: faceRanges.revisions,
                                rootExtras: rootExtras)
     }
 
@@ -1123,18 +1113,19 @@ private extension FloeCADDocument {
             inspect(binding.material)
         }
         if (format == "glb" || format == "obj_bundle"), !body.materialFaceBindings.isEmpty {
-            let table = session.lastFaceTables[body.id]
-            let fresh = table != nil
-                && session.lastNamingRevisions[body.id] == body.meshRevision
-            if !fresh { warnings.insert("face_material_ranges_unavailable") }
+            // The same prepared table the viewport/scene use: the applied
+            // rebuild's table when current, otherwise one derived from the
+            // exact restored render. Nil means no trustworthy range exists.
+            let table = session.faceRangeTable(for: body)
+            if table == nil { warnings.insert("face_material_ranges_unavailable") }
             // One shared assessment with both writers: signature matching alone
-            // is not enough — a fresh table can still miss, ambiguously match
-            // or overlap the exact triangle range and fall back to the body
+            // is not enough — a table can still miss, ambiguously match or
+            // overlap the exact triangle range and fall back to the body
             // material.
             let assessment = CADFaceMaterialResolver.assessGroups(
                 in: body,
                 table: table,
-                tableRevision: session.lastNamingRevisions[body.id])
+                tableRevision: table.map { _ in body.meshRevision })
             for issue in assessment.issues {
                 switch issue.kind {
                 case .tableUnavailable:

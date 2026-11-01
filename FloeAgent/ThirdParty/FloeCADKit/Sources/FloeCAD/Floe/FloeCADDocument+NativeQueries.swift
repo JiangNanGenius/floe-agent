@@ -851,13 +851,14 @@ public extension FloeCADDocument {
         case "obj_bundle":
             // A true self-contained OBJ appearance: model.obj + model.mtl +
             // relative texture resources in one ZIP. Face-material ranges use
-            // the live session's authoritative face tables/revisions exactly
-            // like GLB, so a stale table falls back and is reported instead of
-            // painting a guessed range. The host still owns atomic promotion.
+            // the session's one prepared tables/revisions exactly like GLB, so
+            // a stale table falls back and is reported instead of painting a
+            // guessed range. The host still owns atomic promotion.
+            let faceRanges = session.faceRangeTables(for: bodies)
             let report = OBJBundleExporter.export(
                 bodies: bodies,
-                faceTables: session.lastFaceTables,
-                faceTableRevisions: session.lastNamingRevisions)
+                faceTables: faceRanges.tables,
+                faceTableRevisions: faceRanges.revisions)
             if let data = report.data, report.diagnostics.isEmpty {
                 return .success((data, report.receipt?.noteText
                     ?? "OBJ bundle (ZIP) with materials and relative textures"))
@@ -881,13 +882,15 @@ public extension FloeCADDocument {
             return .success((ThreeMFExporter.threeMF(bodies: bodies),
                              "3MF tessellation (mesh representation)"))
         case "glb":
-            // Pass the feature graph's face table ONLY when its revision still
-            // matches the body; the exporter uses it for resolved per-face
-            // materials and reports stale/missing mappings in glTF extras
-            // instead of silently painting the whole body.
+            // Pass the session's prepared face tables (an applied rebuild's
+            // table when current, otherwise one derived from the restored
+            // render); the exporter uses them for resolved per-face materials
+            // and reports stale/missing mappings in glTF extras instead of
+            // silently painting the whole body.
+            let faceRanges = session.faceRangeTables(for: bodies)
             return .success((GLBExporter.glb(bodies: bodies,
-                                             faceTables: session.lastFaceTables,
-                                             faceTableRevisions: session.lastNamingRevisions),
+                                             faceTables: faceRanges.tables,
+                                             faceTableRevisions: faceRanges.revisions),
                              "binary glTF tessellation with applied PBR/UV/textures (mesh representation)"))
         case "usdz":
             // The exporter reports WHY a body/material/resource could not be

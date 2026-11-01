@@ -320,26 +320,16 @@ final class EditorViewModel {
     ///
     /// Identity contract: `exportableBodies()` returns the document's OWN
     /// `Body` values — it filters nothing and remints no IDs — so the
-    /// `BodyID`s the exporter sees are the same keys `DocumentSession`
-    /// recorded in `lastFaceTables`/`lastNamingRevisions`. A body with no
-    /// retained table (or a table from before its current mesh) is passed
-    /// without a fresh stamp; the exporter then reports the face binding as
-    /// explicitly unresolved (`face_triangle_table_unavailable`) instead of
-    /// exporting a guessed triangle range. Keeping the stamp separate means a
-    /// stale table is never silently treated as current.
+    /// `BodyID`s the exporter sees are the same keys `DocumentSession` uses for
+    /// its face-range tables. The session supplies its one prepared table per
+    /// body (the applied rebuild's table when current, otherwise one derived
+    /// from the exact restored render) and the exact mesh revision it describes.
+    /// A body with no trustworthy table is passed without a stamp; the exporter
+    /// then reports the face binding as explicitly unresolved
+    /// (`face_triangle_table_unavailable`) instead of exporting a guessed range.
     private func exportFaceTables(for bodies: [Body])
         -> (tables: [BodyID: FaceTable], revisions: [BodyID: UInt64]) {
-        var tables: [BodyID: FaceTable] = [:]
-        var revisions: [BodyID: UInt64] = [:]
-        for body in bodies {
-            if let table = session.lastFaceTables[body.id] {
-                tables[body.id] = table
-            }
-            if let revision = session.lastNamingRevisions[body.id] {
-                revisions[body.id] = revision
-            }
-        }
-        return (tables, revisions)
+        return session.faceRangeTables(for: bodies)
     }
 
     /// Bound by the live facade; the stored DesignDocument is not an export
@@ -564,9 +554,14 @@ final class EditorViewModel {
 
     private func objBundleSnapshotIdentity() -> OBJBundleSnapshotIdentity {
         let bodies = session.document.bodies.map { body in
-            OBJBundleBodyIdentity(bodyID: body.id.raw,
-                                  meshRevision: body.meshRevision,
-                                  faceTableRevision: session.lastNamingRevisions[body.id])
+            // A prepared (open-derived) table is stamped with the exact body
+            // revision it describes; only a body with no trustworthy table
+            // reports no face-table revision.
+            OBJBundleBodyIdentity(
+                bodyID: body.id.raw,
+                meshRevision: body.meshRevision,
+                faceTableRevision: session.faceRangeTable(for: body)
+                    .map { _ in body.meshRevision })
         }.sorted { $0.bodyID.uuidString < $1.bodyID.uuidString }
         return OBJBundleSnapshotIdentity(
             revision: session.savedIdentity.revision,

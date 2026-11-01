@@ -235,7 +235,7 @@ nonisolated enum CADExportCopy {
         case "face_material_ranges_unavailable", "face_material_ambiguous",
              "face_material_unresolved":
             return FloeCADStrings.text("cad.export.reason.faceRanges",
-                                       "Face material ranges are stale.")
+                                       "A face material needs reassignment.")
         case "face_material_missing":
             return FloeCADStrings.text("cad.export.reason.faceMissing",
                                        "A face material's triangle range is missing.")
