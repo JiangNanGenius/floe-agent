@@ -2579,6 +2579,18 @@
         "scope": "Actual compound/sequential split faces follow source width60to80; disappearance rejects old ordinal and unnamed survivor. New-name format, future opaque bytes and recursive merge checked. Whole M26 remains open.",
         "canonical_simulator_shutdown": true,
         "new_paid_calls": 0
+      },
+      "native_face_partition_verification": {
+        "source": "cb173b4a9a2a88f3d9c15e5c910e8903022272a8",
+        "full_app_object_build_passed": true,
+        "native": {
+          "passed": 111,
+          "failed": 0,
+          "skipped": 0
+        },
+        "scope": "Actual generated wall root/sibling, negativeZ coplanar native face triangle partition, stale/foreign/missing/channel rejection, source identity replacement and owned undo/cache restore. Original186/187 failures retained and assertions preserved. Whole M26 still open for legacy/same-signature and material binding.",
+        "canonical_simulator_shutdown": true,
+        "new_paid_calls": 0
       }
     },
     {
@@ -8439,7 +8451,7 @@
     "license_delta": "GLTFKit2 ownMIT/cgltfMIT do notclear precompiled libktx4.2.1 etcdec exception; prefer existing O3DV+same-r176 localGLTFLoader qualification"
   },
   "current_integration_verification": {
-    "source": "5604c80165a66dcd3d4161598cf1c18c85ea0f48",
+    "source": "cb173b4a9a2a88f3d9c15e5c910e8903022272a8",
     "all_106_retained": true,
     "all_106_accepted": false,
     "release_ready": false,
@@ -8565,6 +8577,18 @@
         "skipped": 0
       },
       "scope": "Actual compound/sequential split faces follow source width60to80; disappearance rejects old ordinal and unnamed survivor. New-name format, future opaque bytes and recursive merge checked. Whole M26 remains open.",
+      "canonical_simulator_shutdown": true,
+      "new_paid_calls": 0
+    },
+    "native_face_partition_and_owned_history": {
+      "source": "cb173b4a9a2a88f3d9c15e5c910e8903022272a8",
+      "full_app_object_build_passed": true,
+      "native": {
+        "passed": 111,
+        "failed": 0,
+        "skipped": 0
+      },
+      "scope": "Actual generated wall root/sibling, negativeZ coplanar native face triangle partition, stale/foreign/missing/channel rejection, source identity replacement and owned undo/cache restore. Original186/187 failures retained and assertions preserved. Whole M26 still open for legacy/same-signature and material binding.",
       "canonical_simulator_shutdown": true,
       "new_paid_calls": 0
     }
