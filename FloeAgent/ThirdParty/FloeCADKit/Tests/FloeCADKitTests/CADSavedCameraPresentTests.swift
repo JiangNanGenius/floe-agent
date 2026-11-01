@@ -951,7 +951,7 @@ final class CADSavedCameraPresentTests: XCTestCase {
                                    status.error ?? "the video export produced no result")
         XCTAssertEqual(document.liveChangeCount, preparedChangeCount,
                        "exporting an authored clip must not edit the document")
-        let attachment = XCTAttachment(contentsOf: result.url)
+        let attachment = XCTAttachment(contentsOfFile: result.url)
         attachment.name = "Actual saved-camera video \(name)"
         attachment.lifetime = .keepAlways
         add(attachment)
