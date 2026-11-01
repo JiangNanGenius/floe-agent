@@ -178,6 +178,14 @@ final class CADDeleteFaceHistoryTests: XCTestCase {
     }
 
     func testRemovingOneOfThreeRealFaceFragmentsCannotRebindItsOrdinalToASurvivor() async throws {
+        try await assertRemovedFaceRegionDoesNotRebind(compoundCutter: false)
+    }
+
+    func testChangingTheOriginalCompoundCutterCannotReuseADeletedFaceFragmentOrdinal() async throws {
+        try await assertRemovedFaceRegionDoesNotRebind(compoundCutter: true)
+    }
+
+    private func assertRemovedFaceRegionDoesNotRebind(compoundCutter: Bool) async throws {
         let bodyID = BodyID(), firstSlotID = BodyID(), secondSlotID = BodyID(), removalID = BodyID()
         let source = FeatureNode(name: "Plate", kind: .primitive(
             spec: .box(width: 60, depth: 20, height: 10), placement: .identity), outputBodyIDs: [bodyID])
@@ -188,7 +196,10 @@ final class CADDeleteFaceHistoryTests: XCTestCase {
         let a = slot(-10, firstSlotID), b = slot(10, secondSlotID)
         let target = BodyRef(producer: source.id, bodyID: bodyID)
         let tools = [BodyRef(producer: a.id, bodyID: firstSlotID), BodyRef(producer: b.id, bodyID: secondSlotID)]
-        var cut = FeatureNode(name: "Three regions", kind: .boolean(kind: .subtract, target: target, tools: tools),
+        var compound = FeatureNode(name: "Two-slot tool", kind: .boolean(kind: .union,
+            target: tools[0], tools: [tools[1]]), outputBodyIDs: [firstSlotID])
+        let initialTools = compoundCutter ? [BodyRef(producer: compound.id, bodyID: firstSlotID)] : tools
+        var cut = FeatureNode(name: "Three regions", kind: .boolean(kind: .subtract, target: target, tools: initialTools),
                               outputBodyIDs: [bodyID])
         var revision: UInt64 = 0
         func evaluate(_ nodes: [FeatureNode]) -> EvalResult {
@@ -197,7 +208,7 @@ final class CADDeleteFaceHistoryTests: XCTestCase {
                 return revision
             }
         }
-        let initial = evaluate([source, a, b, cut])
+        let initial = evaluate([source, a, b] + (compoundCutter ? [compound] : []) + [cut])
         XCTAssertTrue(initial.errors.isEmpty, "\(initial.errors)")
         let input = try XCTUnwrap(initial.bodies.first { $0.id == bodyID })
         XCTAssertEqual(abs(OCCTKernel.volume(try XCTUnwrap(input.brep))), 10_000, accuracy: 1e-4)
@@ -216,9 +227,15 @@ final class CADDeleteFaceHistoryTests: XCTestCase {
         let remove = FeatureNode(name: "Remove original region", kind: .primitive(
             spec: .box(width: maximum - minimum + 2, depth: 40, height: 30),
             placement: Transform3D(translation: SIMD3((minimum + maximum) / 2, -10, 0))), outputBodyIDs: [removalID])
-        cut.kind = .boolean(kind: .subtract, target: target,
-                            tools: tools + [BodyRef(producer: remove.id, bodyID: removalID)])
-        let prefix = [source, a, b, remove, cut]
+        let removedTool = BodyRef(producer: remove.id, bodyID: removalID)
+        let prefix: [FeatureNode]
+        if compoundCutter {
+            compound.kind = .boolean(kind: .union, target: tools[0], tools: [tools[1], removedTool])
+            prefix = [source, a, b, remove, compound, cut]
+        } else {
+            cut.kind = .boolean(kind: .subtract, target: target, tools: tools + [removedTool])
+            prefix = [source, a, b, remove, cut]
+        }
         let actual = evaluate(prefix)
         XCTAssertTrue(actual.errors.isEmpty, "\(actual.errors)")
         let surviving = try XCTUnwrap(actual.bodies.first { $0.id == bodyID })
@@ -229,7 +246,7 @@ final class CADDeleteFaceHistoryTests: XCTestCase {
         }, "The selected physical region must actually have disappeared")
         let rebound = SignatureNaming().resolve(reference, in: surviving, table: survivingTable)
         let aliases = survivingTable.entries.filter { $0.elementName == picked.elementName }.map { $0.signature.centroid }
-        let attachment = XCTAttachment(string: "Actual three-to-two OCCT face split; removed centroid=\(picked.signature.centroid), old name=\(String(describing: picked.elementName)), current alias centroids=\(aliases), resolved=\(rebound != nil)")
+        let attachment = XCTAttachment(string: "Actual three-to-two OCCT face split; compoundCutter=\(compoundCutter), removed centroid=\(picked.signature.centroid), old name=\(String(describing: picked.elementName)), current alias centroids=\(aliases), resolved=\(rebound != nil)")
         attachment.name = "real-removed-three-face-fragment.txt"
         attachment.lifetime = .keepAlways
         add(attachment)
