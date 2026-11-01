@@ -438,7 +438,8 @@ final class CADPlacedAssemblyExportCallerTests: XCTestCase {
         let textured = try XCTUnwrap(items.first { ($0["body_id"] as? String) == brokenTexture })
         let warnings = (textured["material_warnings"] as? [String]) ?? []
         XCTAssertTrue(warnings.contains("texture_baseColor_invalid"), "\(warnings)")
-        XCTAssertTrue(warnings.contains("texture_uv_unmapped"), "\(warnings)")
+        XCTAssertFalse(warnings.contains("texture_uv_unmapped"),
+                       "the writer supplies automatic UVs; invalid texture bytes are a separate loss: \(warnings)")
         XCTAssertFalse(FileManager.default.fileExists(
             atPath: workspace.appendingPathComponent("legacy.glb").path),
             "an incomplete legacy receipt must not promote a file")
@@ -464,6 +465,8 @@ final class CADPlacedAssemblyExportCallerTests: XCTestCase {
         let parsed = try glbJSON(bytes)
         let meshes = try XCTUnwrap(parsed["meshes"] as? [[String: Any]])
         XCTAssertEqual(meshes.count, 2, "only included bodies may become meshes")
+        XCTAssertTrue((parsed["images"] as? [Any] ?? []).isEmpty,
+                      "the warned invalid image must not be embedded as a usable texture")
         XCTAssertFalse(meshes.contains { ($0["name"] as? String) == "Empty Mesh" })
         XCTAssertEqual(try packageDigest(url), sourceBefore,
                        "a partial export must not modify the source package")
@@ -790,8 +793,9 @@ final class CADPlacedAssemblyExportCallerTests: XCTestCase {
         let partial = try XCTUnwrap(model.exportOBJ(
             acceptPartial: true, expectedChangeCount: coverage.changeCount))
         let text = String(decoding: partial, as: UTF8.self)
-        XCTAssertTrue(text.contains("o Valid Slab"))
-        XCTAssertFalse(text.contains("o Empty Slab"))
+        let objectNames = text.split(separator: "\n").filter { $0.hasPrefix("o ") }
+        XCTAssertEqual(objectNames, ["o Valid_Slab"],
+                       "only the included object is written, with the writer's existing safe name")
         let perBody = try XCTUnwrap(model.exportOBJPerBody(
             acceptPartial: true, expectedChangeCount: coverage.changeCount))
         XCTAssertEqual(perBody.count, 1)
@@ -800,6 +804,19 @@ final class CADPlacedAssemblyExportCallerTests: XCTestCase {
         XCTAssertNil(model.exportOBJ(acceptPartial: true,
                                      expectedChangeCount: coverage.changeCount - 1),
                      "a changed reviewed count must refuse before writing")
+        XCTAssertNil(model.exportOBJPerBody(acceptPartial: true,
+            expectedChangeCount: coverage.changeCount - 1))
+        for format in ["stl", "obj", "3mf"] {
+            for staleCount in [coverage.changeCount - 1, coverage.changeCount + 1] {
+                let outcome = document.nativePartExport(format: format, pageID: nil,
+                    acceptPartial: true, expectedChangeCount: staleCount)
+                guard case let .failure(error) = outcome else {
+                    XCTFail("\(format) must reject a stale reviewed count before producing bytes")
+                    continue
+                }
+                XCTAssertEqual(error.code, "stale_export")
+            }
+        }
     }
 
     func testOBJBundleCoverageTreatsFreshOverlapAsLoss() async throws {

@@ -480,6 +480,11 @@ public extension FloeCADDocument {
 
         case "stl", "obj", "3mf":
             do {
+                // These writers share the part plan but do not enter the
+                // exchange writer below. A reviewed partial export must keep
+                // the same revision fence as GLB/STEP and the coverage query.
+                try validateExchangeSelection(selection)
+                try checkExchangeFence(selection)
                 let plan = try makePartExchangePlan(format: format, selection: selection)
                 guard plan.coverage.includedCount > 0 else {
                     return .failure(CADDocumentError(
