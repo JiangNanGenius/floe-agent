@@ -38,6 +38,13 @@ public nonisolated struct CADProposalPreview: Codable, Sendable, Equatable {
     public var serviceOperation: String? = nil
     public var serviceMutated: Bool? = nil
     public var serviceMessage: String? = nil
+    /// Mesh booleans: the real input representation ("precise" | "mesh" |
+    /// "mixed"), the result representation ("mesh"), and how many analytic
+    /// B-reps a forced result dropped. Optional so older persisted proposals
+    /// decode unchanged and non-mesh services stay nil.
+    public var serviceInputExactness: String? = nil
+    public var serviceExactness: String? = nil
+    public var serviceDroppedBRepBodyCount: Int? = nil
 
     public var volumeDeltaMM3: Double { volumeAfterMM3 - volumeBeforeMM3 }
 }
@@ -195,6 +202,9 @@ public final class CADProposalService {
             preview.serviceOperation = operation["op"] as? String
             preview.serviceMutated = serviceOutcome.mutated
             preview.serviceMessage = serviceOutcome.message
+            preview.serviceInputExactness = serviceOutcome.inputExactness
+            preview.serviceExactness = serviceOutcome.exactness
+            preview.serviceDroppedBRepBodyCount = serviceOutcome.droppedBRepBodyCount
         }
         let record = CADProposalRecord(
             documentPath: document.url.path,

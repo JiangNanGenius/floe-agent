@@ -26,12 +26,24 @@ public nonisolated struct CADServiceOperationOutcome: Sendable {
     public var errorCode: String?
     public var message: String?
     public var mutated: Bool
+    /// Mesh booleans state the true input representation ("precise" | "mesh" |
+    /// "mixed") and result representation ("mesh" for a rebuilt result), plus
+    /// how many analytic B-reps the forced result dropped. Nil for services
+    /// that do not report exactness.
+    public var inputExactness: String?
+    public var exactness: String?
+    public var droppedBRepBodyCount: Int?
 
-    public init(ok: Bool, errorCode: String? = nil, message: String? = nil, mutated: Bool = false) {
+    public init(ok: Bool, errorCode: String? = nil, message: String? = nil, mutated: Bool = false,
+                inputExactness: String? = nil, exactness: String? = nil,
+                droppedBRepBodyCount: Int? = nil) {
         self.ok = ok
         self.errorCode = errorCode
         self.message = message
         self.mutated = mutated
+        self.inputExactness = inputExactness
+        self.exactness = exactness
+        self.droppedBRepBodyCount = droppedBRepBodyCount
     }
 }
 
@@ -164,7 +176,11 @@ public enum CADServiceOperationExecutor {
         case "script":
             reply = await CADScriptService(document: document).handle(action: action, args: args)
         case "mesh":
-            reply = CADMeshService(document: document).handle(action: action, args: args)
+            // Async/cancellable path: the proposal preview and the authorized
+            // apply run inside the caller's Task. A cancelled run must stop a
+            // long Euclid CSG and refuse the commit, not publish whatever the
+            // (possibly partial) kernel returned.
+            reply = await CADMeshService(document: document).handleAsync(action: action, args: args)
         default:
             return CADServiceOperationOutcome(ok: false, errorCode: "unknown_service_operation",
                                               message: "Unknown service '\(kind)'.")
@@ -173,6 +189,9 @@ public enum CADServiceOperationExecutor {
         return CADServiceOperationOutcome(ok: ok,
                                           errorCode: reply["error"] as? String,
                                           message: reply["message"] as? String,
-                                          mutated: reply["mutated"] as? Bool ?? false)
+                                          mutated: reply["mutated"] as? Bool ?? false,
+                                          inputExactness: reply["inputExactness"] as? String,
+                                          exactness: reply["exactness"] as? String,
+                                          droppedBRepBodyCount: reply["droppedBRepBodyCount"] as? Int)
     }
 }

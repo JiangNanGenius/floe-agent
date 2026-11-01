@@ -10,7 +10,10 @@
 //   * combine / boolean / repair / simplify rebuild the render mesh from
 //     triangles. A body with an analytic B-rep is REFUSED unless the caller
 //     passes `forceMesh:true`; the refused op changes nothing. A forced
-//     result is marked `"exactness":"mesh"` and drops the B-rep.
+//     result is marked `"exactness":"mesh"` and drops the B-rep. boolean also
+//     reports `inputExactness` ("precise" | "mesh" | "mixed") and how many
+//     analytic inputs the forced mesh result dropped — a precise or mixed
+//     input is never silently reported as preserved.
 //   * transform / recomputeNormals / boundary / material / image keep any
 //     B-rep untouched and report `"exactness":"preserved"`.
 //   * Every successful geometry edit goes through the document's undoable
@@ -18,9 +21,13 @@
 //
 //  Bounds: at most 16 input bodies and 500k input triangles per operation, a
 //  10-second wall-clock deadline, and cancellation checks inside every loop
-//  (Euclid CSG receives the same `isCancelled` closure). No file paths are
-//  accepted anywhere; image bytes arrive base64-encoded or via an existing
-//  document image.
+//  (Euclid CSG receives the same `isCancelled` closure). Caller cancellation
+//  is a separate signal from the deadline: a lock-guarded token is flipped by
+//  the caller Task's cancellation handler and read by Euclid's CSG from its
+//  Dispatch worker threads, where `Task.isCancelled` is not meaningful. Every
+//  pre-commit boundary refuses a cancelled operation, so a partial Euclid
+//  result is never published as success. No file paths are accepted anywhere;
+//  image bytes arrive base64-encoded or via an existing document image.
 //
 //  Actions / args (all share `bodyID` or `bodyIDs`):
 //   * combine          bodyIDs, name? -> new body (world transforms baked).
@@ -50,6 +57,51 @@ import CoreFoundation
 import simd
 import Euclid
 
+/// One mesh operation's caller-cancellation state.
+///
+/// Euclid runs its CSG halves through `DispatchQueue.concurrentPerform`; on
+/// those worker threads `Task.isCancelled` is not the caller task's flag, so a
+/// plain `Task.isCancelled` check in the `isCancelled` closure cannot stop a
+/// long BSP. The service wraps the synchronous operation in the caller's
+/// `withTaskCancellationHandler`; `cancel()` runs immediately on whatever
+/// thread requests cancellation and this lock-guarded flag is the one signal
+/// every CSG worker can read. The flag is also consulted at each service
+/// boundary and immediately before the single document commit.
+///
+/// `nonisolated` because CSG worker threads call `isCancelled` outside the
+/// MainActor. The internal `checkpoint` initializer lets the focused source
+/// tests cancel at a deterministic CSG checkpoint (no wall-clock sleep); it
+/// has no effect in production, where cancellation comes from the caller's
+/// task cancellation handler.
+nonisolated final class CADMeshCancellation: @unchecked Sendable {
+    private let lock = NSLock()
+    private let checkpoint: (@Sendable () -> Void)?
+    private var cancelled = false
+
+    init() {
+        checkpoint = nil
+    }
+
+    init(checkpoint: (@Sendable () -> Void)?) {
+        self.checkpoint = checkpoint
+    }
+
+    func cancel() {
+        lock.lock()
+        cancelled = true
+        lock.unlock()
+    }
+
+    var isCancelled: Bool {
+        // Run before taking the lock so a checkpoint may call `cancel()`
+        // (the deterministic test path) without a self-deadlock.
+        checkpoint?()
+        lock.lock()
+        defer { lock.unlock() }
+        return cancelled
+    }
+}
+
 @MainActor
 public final class CADMeshService {
     public static let maxInputBodies = 16
@@ -58,18 +110,58 @@ public final class CADMeshService {
     public static let maxImageBytes = 8 * 1024 * 1024
 
     private let document: FloeCADDocument
+    /// Per-service deadline used by every operation. The public initializer
+    /// keeps the shared 10-second limit; the internal one exists only so the
+    /// deadline refusal path can be exercised deterministically.
+    private let wallClockLimit: Double
 
-    public init(document: FloeCADDocument) {
+    public convenience init(document: FloeCADDocument) {
+        self.init(document: document, wallClockLimitSeconds: Self.wallClockLimitSeconds)
+    }
+
+    init(document: FloeCADDocument, wallClockLimitSeconds: Double) {
         self.document = document
+        self.wallClockLimit = max(wallClockLimitSeconds, 0)
     }
 
     // MARK: Action router
 
+    /// Synchronous entry point kept for the visible mesh panel and existing
+    /// callers. An already-cancelled caller is refused before any geometry
+    /// work; a cancellation that arrives during this synchronous call is still
+    /// seen at every `boolean` boundary and before its commit, but the CSG
+    /// worker threads cannot observe the caller flag without the handler below.
     public func handle(action: String, args: [String: Any]) -> [String: Any] {
+        let cancellation = CADMeshCancellation()
+        if Task.isCancelled { cancellation.cancel() }
+        return handle(action: action, args: args, cancellation: cancellation)
+    }
+
+    /// Async entry point for the agent/tool/apply paths. The cancellation
+    /// handler flips the thread-safe token immediately on the cancelling
+    /// thread, so a long Euclid CSG is interrupted even though the operation
+    /// itself runs synchronously on the MainActor.
+    public func handleAsync(action: String, args: [String: Any]) async -> [String: Any] {
+        await handleAsync(action: action, args: args, cancellation: CADMeshCancellation())
+    }
+
+    func handleAsync(action: String, args: [String: Any],
+                     cancellation: CADMeshCancellation) async -> [String: Any] {
+        if Task.isCancelled { cancellation.cancel() }
+        return await withTaskCancellationHandler {
+            self.handle(action: action, args: args, cancellation: cancellation)
+        } onCancel: {
+            cancellation.cancel()
+        }
+    }
+
+    func handle(action: String, args: [String: Any],
+                cancellation: CADMeshCancellation) -> [String: Any] {
+        if cancellation.isCancelled || Task.isCancelled { return Self.cancelledReply() }
         if let refusal = CADServiceOperations.readOnlyRefusal(document: document, kind: "mesh", action: action) { return refusal }
         switch action {
         case "combine": return combine(args)
-        case "boolean": return boolean(args)
+        case "boolean": return boolean(args, cancellation: cancellation)
         case "transform": return transform(args)
         case "recomputeNormals": return recomputeNormals(args)
         case "boundary": return boundary(args)
@@ -88,7 +180,7 @@ public final class CADMeshService {
     // MARK: combine
 
     private func combine(_ args: [String: Any]) -> [String: Any] {
-        let clock = EvaluationDeadlineClock(seconds: Self.wallClockLimitSeconds)
+        let clock = EvaluationDeadlineClock(seconds: wallClockLimit)
         guard case let .ok(bodies) = resolveBodies(args) else {
             return resolutionFailure(args)
         }
@@ -122,7 +214,9 @@ public final class CADMeshService {
         case union, subtract, intersect
     }
 
-    private func boolean(_ args: [String: Any]) -> [String: Any] {
+    private func boolean(_ args: [String: Any],
+                         cancellation: CADMeshCancellation) -> [String: Any] {
+        guard !cancellation.isCancelled, !Task.isCancelled else { return Self.cancelledReply() }
         guard let opString = args["op"] as? String, let op = BooleanOp(rawValue: opString) else {
             return Self.fail("bad_request", "'op' must be union, subtract or intersect.")
         }
@@ -153,12 +247,24 @@ public final class CADMeshService {
                              "Input exceeds \(Self.maxInputTriangles) triangles.")
         }
         if let refusal = verifyMeshOnly(inputs, args: args, action: "boolean") { return refusal }
+        let exactnessKeys = Self.exactnessFields(Self.inputExactness(inputs))
 
-        let clock = EvaluationDeadlineClock(seconds: Self.wallClockLimitSeconds)
-        let cancel: @Sendable () -> Bool = { clock.isExpired() }
+        let clock = EvaluationDeadlineClock(seconds: wallClockLimit)
+        // All three signals are cheap; the token and deadline are safe from
+        // Euclid's CSG workers (Task.isCancelled is false there by design).
+        // Do not short-circuit: the caller token must be consulted on every
+        // CSG checkpoint, and the synchronous compatibility path must still
+        // observe Task.isCancelled at every post-CSG/pre-commit boundary.
+        let cancel: @Sendable () -> Bool = {
+            let callerCancelled = cancellation.isCancelled
+            let taskCancelled = Task.isCancelled
+            let deadlineExpired = clock.isExpired()
+            return callerCancelled || taskCancelled || deadlineExpired
+        }
+        guard !cancel() else { return interrupted(cancellation) }
         var result = Self.worldMesh(target[0])
         for tool in tools {
-            guard !clock.expired else { return limitTime() }
+            guard !cancel() else { return interrupted(cancellation) }
             let toolMesh = Self.worldMesh(tool)
             switch op {
             case .union:
@@ -168,26 +274,36 @@ public final class CADMeshService {
             case .intersect:
                 result = result.intersection(toolMesh, isCancelled: cancel)
             }
-            guard !clock.expired else { return limitTime() }
+            // Euclid may return its partially clipped mesh when the closure
+            // reports cancellation. Never treat that as a result: drop it
+            // before the watertight pass, preview, body construction or commit.
+            guard !cancel() else { return interrupted(cancellation) }
         }
         result = result.makeWatertight(isCancelled: cancel)
-        guard !clock.expired else { return limitTime() }
+        guard !cancel() else { return interrupted(cancellation) }
         guard !result.polygons.isEmpty else {
             return Self.fail("empty_geometry",
                              "The \(opString) result is empty; nothing changed.")
         }
         let renderResult = EuclidBridge.renderMesh(from: result)
-        let gate = previewGate(action: "boolean", args: args, meshes: [renderResult])
+        guard !cancel() else { return interrupted(cancellation) }
+        let gate = previewGate(action: "boolean", args: args, meshes: [renderResult],
+                               extra: exactnessKeys)
         if let refusal = gate.refusal { return refusal }
         if let reply = gate.reply { return reply }
 
         let name = sanitizeName(args["name"]) ?? "Boolean"
         let body = makeResultBody(name: name, mesh: result)
+        // The one document commit is the only mutation. A cancellation that
+        // arrived after the CSG but before this point must not publish it.
+        guard !cancel() else { return interrupted(cancellation) }
         commit(body, consuming: inputs, title: opString.capitalized)
+        var extra = exactnessKeys
+        extra["op"] = opString
+        extra["sourceBodyCount"] = inputs.count
         return Self.mutationResult(action: "boolean",
                                    body: body,
-                                   extra: ["op": opString,
-                                           "sourceBodyCount": inputs.count])
+                                   extra: extra)
     }
 
     // MARK: transform (non-destructive)
@@ -260,7 +376,7 @@ public final class CADMeshService {
         guard case let .ok(bodies) = resolveBodies(args) else {
             return resolutionFailure(args)
         }
-        let clock = EvaluationDeadlineClock(seconds: Self.wallClockLimitSeconds)
+        let clock = EvaluationDeadlineClock(seconds: wallClockLimit)
         var replacements: [(before: Body, after: Body)] = []
         var entries: [[String: Any]] = []
         for body in bodies {
@@ -294,7 +410,7 @@ public final class CADMeshService {
         guard case let .ok(bodies) = resolveBodies(args) else {
             return resolutionFailure(args)
         }
-        let clock = EvaluationDeadlineClock(seconds: Self.wallClockLimitSeconds)
+        let clock = EvaluationDeadlineClock(seconds: wallClockLimit)
         var entries: [[String: Any]] = []
         var totalBoundary = 0
         var totalNonManifold = 0
@@ -341,7 +457,7 @@ public final class CADMeshService {
             tolerance = 1e-3
         }
 
-        let clock = EvaluationDeadlineClock(seconds: Self.wallClockLimitSeconds)
+        let clock = EvaluationDeadlineClock(seconds: wallClockLimit)
         var replacements: [(before: Body, after: Body)] = []
         var entries: [[String: Any]] = []
         var previewMeshes: [RenderMesh] = []
@@ -400,7 +516,7 @@ public final class CADMeshService {
             return Self.fail("bad_request", "'tolerance' must be a positive distance in mm.")
         }
 
-        let clock = EvaluationDeadlineClock(seconds: Self.wallClockLimitSeconds)
+        let clock = EvaluationDeadlineClock(seconds: wallClockLimit)
         var replacements: [(before: Body, after: Body)] = []
         var entries: [[String: Any]] = []
         var previewMeshes: [RenderMesh] = []
@@ -674,18 +790,51 @@ public final class CADMeshService {
     }
 
     /// Refuses destructive mesh ops on analytic B-rep bodies unless the
-    /// caller acknowledged the downgrade with `forceMesh:true`.
+    /// caller acknowledged the downgrade with `forceMesh:true`. The refusal
+    /// names the real input exactness, so a precise or mixed call can never be
+    /// read as a silently preserved analytic result.
     private func verifyMeshOnly(_ bodies: [Body], args: [String: Any], action: String) -> [String: Any]? {
         guard !Self.boolean(args["forceMesh"]) else { return nil }
-        let analytic = bodies.filter { $0.brep != nil }
-        guard analytic.isEmpty else {
-            return Self.fail("brep_body_refused",
-                             "'\(action)' rebuilds meshes and would drop the analytic B-rep of "
-                             + "\(analytic.count) body(ies): "
-                             + analytic.map(\.name).joined(separator: ", ")
-                             + ". Pass forceMesh:true to acknowledge the downgrade.")
+        let exactness = Self.inputExactness(bodies)
+        guard exactness.brepBodyCount == 0 else {
+            var reply = Self.fail("brep_body_refused",
+                                  "'\(action)' rebuilds meshes and would drop the analytic B-rep of "
+                                  + "\(exactness.brepBodyCount) body(ies): "
+                                  + bodies.filter { $0.brep != nil }.map(\.name).joined(separator: ", ")
+                                  + ". Pass forceMesh:true to acknowledge the downgrade.")
+            reply["inputExactness"] = exactness.label
+            reply["brepBodyCount"] = exactness.brepBodyCount
+            return reply
         }
         return nil
+    }
+
+    /// Input representation the boolean consumes before it rebuilds triangles.
+    /// "precise" means every input carries an analytic B-rep; "mesh" means
+    /// none does; "mixed" is both in one operation. The forced result is
+    /// always "mesh", so `brepBodyCount` is what that result dropped.
+    private struct InputExactness {
+        let label: String
+        let brepBodyCount: Int
+    }
+
+    private static func inputExactness(_ bodies: [Body]) -> InputExactness {
+        let analytic = bodies.filter { $0.brep != nil }.count
+        let label: String
+        if analytic == 0 {
+            label = "mesh"
+        } else if analytic == bodies.count {
+            label = "precise"
+        } else {
+            label = "mixed"
+        }
+        return InputExactness(label: label, brepBodyCount: analytic)
+    }
+
+    private static func exactnessFields(_ exactness: InputExactness) -> [String: Any] {
+        ["inputExactness": exactness.label,
+         "brepDropped": exactness.brepBodyCount > 0,
+         "droppedBRepBodyCount": exactness.brepBodyCount]
     }
 
     /// Preview/apply gate for destructive mesh operations.
@@ -698,8 +847,9 @@ public final class CADMeshService {
     /// mismatch refuses with `preview_stale` instead of committing geometry
     /// the user never saw.
     private func previewGate(action: String, args: [String: Any],
-                             meshes: [RenderMesh]) -> (reply: [String: Any]?,
-                                                       refusal: [String: Any]?) {
+                             meshes: [RenderMesh],
+                             extra: [String: Any] = [:]) -> (reply: [String: Any]?,
+                                                             refusal: [String: Any]?) {
         guard let hash = CADTransientMeshPreview.hash(of: meshes) else {
             return (nil, Self.fail("invalid_mesh",
                                    "The '\(action)' result has non-finite geometry; nothing changed."))
@@ -726,17 +876,18 @@ public final class CADMeshService {
             guard let snapshot = CADTransientMeshPreview.snapshot(of: meshes) else {
                 return (nil, Self.fail("invalid_mesh", "The '\(action)' preview is empty."))
             }
-            return (["ok": true,
-                     "action": action,
-                     "mutated": false,
-                     "preview": true,
-                     "exactness": "mesh",
-                     "previewHash": hash,
-                     "previewRevision": revision,
-                     "previewChangeCount": changeCount,
-                     "triangleCount": meshes.reduce(0) { $0 + $1.triangleCount },
-                     "mesh": CADTransientMeshPreview.payload(snapshot)],
-                    nil)
+            var reply: [String: Any] = ["ok": true,
+                                        "action": action,
+                                        "mutated": false,
+                                        "preview": true,
+                                        "exactness": "mesh",
+                                        "previewHash": hash,
+                                        "previewRevision": revision,
+                                        "previewChangeCount": changeCount,
+                                        "triangleCount": meshes.reduce(0) { $0 + $1.triangleCount },
+                                        "mesh": CADTransientMeshPreview.payload(snapshot)]
+            for (key, value) in extra { reply[key] = value }
+            return (reply, nil)
         }
         return (nil, nil)
     }
@@ -1068,7 +1219,22 @@ public final class CADMeshService {
 
     private func limitTime() -> [String: Any] {
         Self.fail("limit_time",
-                  "The mesh operation exceeded the \(Self.wallClockLimitSeconds)-second wall-clock limit; nothing changed.")
+                  "The mesh operation exceeded the \(String(format: "%g", wallClockLimit))-second "
+                  + "wall-clock limit; nothing changed.")
+    }
+
+    /// Caller cancellation is reported separately from the wall-clock deadline
+    /// and never as a successful (possibly partial) mesh result.
+    private func interrupted(_ cancellation: CADMeshCancellation) -> [String: Any] {
+        if cancellation.isCancelled || Task.isCancelled { return Self.cancelledReply() }
+        return limitTime()
+    }
+
+    private static func cancelledReply() -> [String: Any] {
+        ["ok": false,
+         "error": "cancelled",
+         "mutated": false,
+         "message": "The mesh operation was cancelled; nothing changed."]
     }
 
     static func fail(_ code: String, _ message: String) -> [String: Any] {
