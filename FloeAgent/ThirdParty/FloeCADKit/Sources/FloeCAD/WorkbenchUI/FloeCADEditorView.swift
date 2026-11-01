@@ -92,14 +92,31 @@ struct ExportFileItem: Transferable {
 
 /// Export options for the mesh formats where a per-body split is supported
 /// (plan §B14): OBJ and GLB can emit one file per body.
+///
+/// GLB shows the SAME part receipt as `cad.document` and Export Model… before
+/// writing. An incomplete receipt ("Export Included") is the only way to
+/// accept excluded objects/material images; nothing is inferred from a
+/// successful write. OBJ keeps the plain geometry-only options.
 struct MeshExportOptionsSheet: View {
     /// User-facing format name ("OBJ" / "GLB") for the title.
     let formatName: String
-    /// Called with the per-body choice when Export is confirmed.
-    let onExport: (Bool) -> Void
+    /// GLB part receipt, nil for the geometry-only OBJ writer.
+    let coverage: CADExchangeCoverage?
+    /// Called with the per-body choice and whether the user explicitly accepted
+    /// an incomplete receipt ("Export Included").
+    let onExport: (_ perBody: Bool, _ acceptPartial: Bool) -> Void
 
     @State private var perBodyFiles = false
     @Environment(\.dismiss) private var dismiss
+
+    private var requiresPartialChoice: Bool {
+        coverage?.requiresConfirmation == true
+    }
+
+    private var exportUnavailable: Bool {
+        guard formatName == "GLB" else { return false }
+        return (coverage?.includedCount ?? 0) == 0
+    }
 
     var body: some View {
         NavigationStack {
@@ -107,6 +124,17 @@ struct MeshExportOptionsSheet: View {
                 Toggle(FloeCADStrings.label("cad.ui.export.separateFiles", "Separate File per Body"),
                        isOn: $perBodyFiles)
                     .accessibilityIdentifier("ExportPerBodyToggle")
+
+                if let coverage, !coverage.complete {
+                    CADExportCoverageSummary(coverage: coverage)
+                    Section {
+                        Text(FloeCADStrings.text(
+                            "cad.ui.export.coverage.incompleteDetail",
+                            "Some objects or material images cannot be kept in this export. Review the list before exporting."))
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                    }
+                }
             }
             .navigationTitle(String(
                 format: FloeCADStrings.text("cad.ui.export.meshTitle", "%@ Export"),
@@ -120,11 +148,22 @@ struct MeshExportOptionsSheet: View {
                         .accessibilityIdentifier("MeshExportCancel")
                 }
                 ToolbarItem(placement: .confirmationAction) {
-                    Button(FloeCADStrings.label("cad.ui.common.export", "Export")) {
-                        onExport(perBodyFiles)
-                        dismiss()
+                    if requiresPartialChoice {
+                        Button(FloeCADStrings.label("cad.ui.export.coverage.confirmPartial",
+                                                    "Export Included")) {
+                            onExport(perBodyFiles, true)
+                            dismiss()
+                        }
+                        .disabled(exportUnavailable)
+                        .accessibilityIdentifier("MeshExportConfirm")
+                    } else {
+                        Button(FloeCADStrings.label("cad.ui.common.export", "Export")) {
+                            onExport(perBodyFiles, false)
+                            dismiss()
+                        }
+                        .disabled(exportUnavailable)
+                        .accessibilityIdentifier("MeshExportConfirm")
                     }
-                    .accessibilityIdentifier("MeshExportConfirm")
                 }
             }
         }
@@ -873,9 +912,12 @@ struct FloeCADEditorView: View {
     }
 
     /// Mesh options sheet confirm (plan §B14): stages the chosen OBJ/GLB
-    /// payload for the exporter that presents once the sheet dismisses.
+    /// payload for the exporter that presents once the sheet dismisses. The
+    /// GLB calls carry the explicit partial choice made in that sheet; the
+    /// receipt gate is re-checked against the live document before bytes exist.
     private func stageMeshExport(
-        _ format: MeshExportFormat, perBody: Bool, viewModel: EditorViewModel
+        _ format: MeshExportFormat, perBody: Bool, acceptPartial: Bool,
+        viewModel: EditorViewModel
     ) {
         switch (format, perBody) {
         case (.obj, false):
@@ -889,14 +931,15 @@ struct FloeCADEditorView: View {
                 viewModel.exportOBJPerBody(), fileExtension: "obj", viewModel: viewModel
             )
         case (.glb, false):
-            if let data = viewModel.exportGLB() {
+            if let data = viewModel.exportGLB(acceptPartial: acceptPartial) {
                 pendingExport = ExportDocument(
                     data: data, contentType: ExportDocument.glbType, fileExtension: "glb"
                 )
             }
         case (.glb, true):
             pendingExportItems = perBodyExportItems(
-                viewModel.exportGLBPerBody(), fileExtension: "glb", viewModel: viewModel
+                viewModel.exportGLBPerBody(acceptPartial: acceptPartial),
+                fileExtension: "glb", viewModel: viewModel
             )
         }
     }
@@ -2206,8 +2249,12 @@ struct FloeCADEditorView: View {
                     }
                 }
             ) { format in
-                MeshExportOptionsSheet(formatName: format.rawValue) { perBody in
-                    stageMeshExport(format, perBody: perBody, viewModel: viewModel)
+                MeshExportOptionsSheet(
+                    formatName: format.rawValue,
+                    coverage: format == .glb ? viewModel.glbExportCoverage() : nil
+                ) { perBody, acceptPartial in
+                    stageMeshExport(format, perBody: perBody,
+                                    acceptPartial: acceptPartial, viewModel: viewModel)
                 }
             }
             .fileExporter(

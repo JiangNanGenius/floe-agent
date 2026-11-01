@@ -89,64 +89,7 @@ struct CADAssemblyExportSheet: View {
                 }
 
                 if let coverage {
-                    Section {
-                        LabeledContent(
-                            FloeCADStrings.text("cad.ui.export.coverage.objects", "Objects"),
-                            value: "\(coverage.includedCount) / \(coverage.selectedCount)")
-                        LabeledContent(
-                            FloeCADStrings.text("cad.ui.export.coverage.units", "Units"),
-                            value: coverage.unit)
-                        if coverage.excludedCount > 0 {
-                            LabeledContent(
-                                FloeCADStrings.text("cad.ui.export.coverage.excluded",
-                                                    "Excluded"),
-                                value: "\(coverage.excludedCount)")
-                        }
-                    }
-
-                    if !coverage.excludedItems.isEmpty {
-                        Section {
-                            ForEach(Array(coverage.excludedItems.prefix(12).enumerated()),
-                                    id: \.offset) { _, item in
-                                VStack(alignment: .leading, spacing: 2) {
-                                    Text(item.name)
-                                    Text(reasonText(item.reason))
-                                        .font(.caption)
-                                        .foregroundStyle(.secondary)
-                                }
-                            }
-                        } header: {
-                            Text(FloeCADStrings.text("cad.ui.export.coverage.reasons",
-                                                     "Not included"))
-                        }
-                    }
-
-                    let warned = coverage.items.filter { !$0.materialWarnings.isEmpty }
-                    if !warned.isEmpty {
-                        Section {
-                            ForEach(Array(warned.enumerated()), id: \.offset) { _, item in
-                                VStack(alignment: .leading, spacing: 2) {
-                                    Text(item.name)
-                                    Text(item.materialWarnings
-                                        .map(materialWarningText)
-                                        .joined(separator: " · "))
-                                        .font(.caption)
-                                        .foregroundStyle(.secondary)
-                                }
-                            }
-                        } header: {
-                            Text(FloeCADStrings.text("cad.ui.export.coverage.materialWarnings",
-                                                     "Material warnings"))
-                        }
-                    }
-
-                    if !coverage.formatLoss.isEmpty {
-                        Section {
-                            Text(formatLossText(coverage.formatLoss))
-                                .font(.footnote)
-                                .foregroundStyle(.secondary)
-                        }
-                    }
+                    CADExportCoverageSummary(coverage: coverage)
                 }
 
                 if let message {
@@ -232,8 +175,12 @@ struct CADAssemblyExportSheet: View {
             }
         }
     }
+}
 
-    private func reasonText(_ reason: String?) -> String {
+/// Shared reason/copy mapping for a coverage receipt. The exchange sheet and
+/// the GLB mesh options sheet show the exact same strings.
+nonisolated enum CADExportCopy {
+    static func reason(_ reason: String?) -> String {
         switch reason {
         case "mesh_only_no_analytic_brep":
             return FloeCADStrings.text("cad.export.reason.meshOnlyStep",
@@ -258,13 +205,29 @@ struct CADAssemblyExportSheet: View {
         }
     }
 
-    private func materialWarningText(_ warning: String) -> String {
+    static func materialWarning(_ warning: String) -> String {
         switch warning {
         case "texture_baseColor_missing", "texture_roughness_missing",
              "texture_metallic_missing", "texture_normal_missing",
              "texture_emissive_missing", "texture_opacity_missing":
             return FloeCADStrings.text("cad.export.reason.missingTexture",
                                        "A material image is missing.")
+        case "texture_baseColor_invalid", "texture_roughness_invalid",
+             "texture_metallic_invalid", "texture_normal_invalid",
+             "texture_emissive_invalid", "texture_opacity_invalid":
+            return FloeCADStrings.text("cad.export.reason.invalidTexture",
+                                       "A material image is invalid or too large.")
+        case "texture_baseColor_identity_mismatch", "texture_roughness_identity_mismatch",
+             "texture_metallic_identity_mismatch", "texture_normal_identity_mismatch",
+             "texture_emissive_identity_mismatch", "texture_opacity_identity_mismatch":
+            return FloeCADStrings.text("cad.export.reason.textureIdentity",
+                                       "A material image no longer matches its record.")
+        case "texture_uv_unmapped":
+            return FloeCADStrings.text("cad.export.reason.textureMapping",
+                                       "A material image has no usable texture mapping.")
+        case "ambiguous_texture_metadata":
+            return FloeCADStrings.text("cad.export.reason.ambiguousTexture",
+                                       "A material image is recorded more than once.")
         case "face_material_ranges_unavailable", "face_material_ambiguous",
              "face_material_unresolved":
             return FloeCADStrings.text("cad.export.reason.faceRanges",
@@ -277,7 +240,7 @@ struct CADAssemblyExportSheet: View {
         }
     }
 
-    private func formatLossText(_ losses: [String]) -> String {
+    static func formatLoss(_ losses: [String]) -> String {
         if losses.contains("brep"), losses.contains("assembly_hierarchy") {
             return FloeCADStrings.text(
                 "cad.export.formatLoss.meshFlat",
@@ -291,5 +254,73 @@ struct CADAssemblyExportSheet: View {
         return FloeCADStrings.text(
             "cad.export.formatLoss.step",
             "Exact geometry only: this file does not keep history, PMI, part names or assembly hierarchy.")
+    }
+}
+
+/// One coverage receipt, rendered the same way wherever export options are
+/// shown (the exchange sheet and the GLB mesh options sheet).
+struct CADExportCoverageSummary: View {
+    let coverage: CADExchangeCoverage
+
+    private var warnedItems: [CADExchangeCoverageItem] {
+        coverage.items.filter { !$0.materialWarnings.isEmpty }
+    }
+
+    var body: some View {
+        Section {
+            LabeledContent(
+                FloeCADStrings.text("cad.ui.export.coverage.objects", "Objects"),
+                value: "\(coverage.includedCount) / \(coverage.selectedCount)")
+            LabeledContent(
+                FloeCADStrings.text("cad.ui.export.coverage.units", "Units"),
+                value: coverage.unit)
+            if coverage.excludedCount > 0 {
+                LabeledContent(
+                    FloeCADStrings.text("cad.ui.export.coverage.excluded", "Excluded"),
+                    value: "\(coverage.excludedCount)")
+            }
+        }
+
+        if !coverage.excludedItems.isEmpty {
+            Section {
+                ForEach(Array(coverage.excludedItems.prefix(12).enumerated()),
+                        id: \.offset) { _, item in
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(item.name)
+                        Text(CADExportCopy.reason(item.reason))
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            } header: {
+                Text(FloeCADStrings.text("cad.ui.export.coverage.reasons", "Not included"))
+            }
+        }
+
+        if !warnedItems.isEmpty {
+            Section {
+                ForEach(Array(warnedItems.prefix(12).enumerated()), id: \.offset) { _, item in
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(item.name)
+                        Text(item.materialWarnings
+                            .map { CADExportCopy.materialWarning($0) }
+                            .joined(separator: " · "))
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            } header: {
+                Text(FloeCADStrings.text("cad.ui.export.coverage.materialWarnings",
+                                         "Material warnings"))
+            }
+        }
+
+        if !coverage.formatLoss.isEmpty {
+            Section {
+                Text(CADExportCopy.formatLoss(coverage.formatLoss))
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+            }
+        }
     }
 }

@@ -798,10 +798,23 @@ public extension FloeCADDocument {
     /// exchanges use the analytic B-rep (mesh-only bodies are skipped and
     /// reported); mesh formats use the tessellation; drawing formats render
     /// real projected geometry for the requested page.
+    ///
+    /// This is the RAW writer. Callers that claim export completeness go
+    /// through `nativePartExport`, which gates these bytes on a truthful
+    /// coverage receipt.
     func nativeExportData(format rawFormat: String,
                           pageID: UUID?) -> Result<(data: Data, note: String), CADDocumentError> {
+        nativeExportData(format: rawFormat, pageID: pageID,
+                         bodies: session.document.bodies)
+    }
+
+    /// The same writers over an explicit body set. `nativePartExport` passes
+    /// exactly the bodies its receipt included; drawing-format calls ignore
+    /// the supplied bodies and keep their own page-scoped path.
+    internal func nativeExportData(format rawFormat: String,
+                                   pageID: UUID?,
+                                   bodies: [Body]) -> Result<(data: Data, note: String), CADDocumentError> {
         let format = rawFormat.lowercased()
-        let bodies = session.document.bodies
         func failure(_ code: String, _ message: String) -> Result<(data: Data, note: String), CADDocumentError> {
             .failure(CADDocumentError(code: code, message: message))
         }

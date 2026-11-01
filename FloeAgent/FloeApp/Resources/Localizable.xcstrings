@@ -12390,6 +12390,23 @@
         }
       }
     },
+    "cad.error.exportIncomplete": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Some objects or material images can't be written. Nothing was exported."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "部分对象或材质图像无法写入，未导出任何文件。"
+          }
+        }
+      }
+    },
     "cad.error.exportSTEP": {
       "extractionState": "manual",
       "localizations": {
@@ -118850,6 +118867,23 @@
         }
       }
     },
+    "cad.ui.export.coverage.incompleteDetail": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Some objects or material images cannot be kept in this export. Review the list before exporting."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "部分对象或材质图像无法保留在此次导出中，请先查看清单。"
+          }
+        }
+      }
+    },
     "cad.ui.export.format.step": {
       "extractionState": "manual",
       "localizations": {
@@ -118999,6 +119033,74 @@
           "stringUnit": {
             "state": "translated",
             "value": "材质图片缺失。"
+          }
+        }
+      }
+    },
+    "cad.export.reason.invalidTexture": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "A material image is invalid or too large."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "材质图片无效或过大。"
+          }
+        }
+      }
+    },
+    "cad.export.reason.textureIdentity": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "A material image no longer matches its record."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "材质图片与其记录不一致。"
+          }
+        }
+      }
+    },
+    "cad.export.reason.textureMapping": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "A material image has no usable texture mapping."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "材质图片缺少可用的纹理映射。"
+          }
+        }
+      }
+    },
+    "cad.export.reason.ambiguousTexture": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "A material image is recorded more than once."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "同一材质图片被多次记录。"
           }
         }
       }
@@ -122159,6 +122261,23 @@
           "stringUnit": {
             "state": "translated",
             "value": "剩余 %d 自由度"
+          }
+        }
+      }
+    },
+    "cad.error.exportOwnerUnavailable": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Reopen this document before exporting."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "请重新打开此文档后导出。"
           }
         }
       }

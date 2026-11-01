@@ -614,6 +614,19 @@ actor CadDocumentCenter: CadDocumentHost {
         return String(data: data, encoding: .utf8) ?? "{}"
     }
 
+    /// Actionable copy for a refused incomplete export. Only the exchange
+    /// formats have an explicit partial route; mesh-only formats require the
+    /// excluded bodies to be repaired or removed.
+    private static func incompleteExportMessage(format: String) -> String {
+        if ["step", "glb", "usdz"].contains(format) {
+            return "The export receipt is incomplete. Review the excluded objects and "
+                + "material images; retry with scope=part and accept_partial=true only "
+                + "if that partial result is intended. Nothing was written."
+        }
+        return "The export receipt is incomplete. Repair or remove the excluded objects; "
+            + "this format has no partial-export route. Nothing was written."
+    }
+
     // MARK: - Native export / import (workspace-guarded)
 
     /// Native export writes a separate verified copy inside the workspace.
@@ -836,7 +849,7 @@ actor CadDocumentCenter: CadDocumentHost {
                     "ok": false,
                     "error": "coverage_incomplete",
                     "message": exported.requiresConfirmation
-                        ? "The export receipt is incomplete. Review the excluded objects and retry with accept_partial=true if that partial result is intended."
+                        ? Self.incompleteExportMessage(format: format)
                         : "The export produced no bytes; nothing was written.",
                     "task_id": taskID.uuidString,
                     "format": format,
@@ -849,24 +862,24 @@ actor CadDocumentCenter: CadDocumentHost {
             // Re-check the exact live identity immediately before promotion. The
             // bytes were produced from one live snapshot; an edit/close that
             // happens while the host is staging them must not be overwritten.
-            if explicitScope != nil {
-                let fresh = await FloeCAD3DBridge.shared.exportFenceMatches(
-                    at: documentURL,
-                    revision: exported.revision,
-                    changeCount: exported.changeCount,
-                    contentSHA256: exported.contentSHA256)
-                guard fresh else {
-                    await NativeCADTaskRegistry.shared.finish(
-                        id: taskID, state: .failed,
-                        detail: "document changed before export promotion")
-                    return Self.encodeNativeJSON([
-                        "ok": false,
-                        "error": "stale_export",
-                        "message": "The document changed while the export was running; nothing was written.",
-                        "task_id": taskID.uuidString,
-                        "coverage": coverage ?? [:],
-                    ])
-                }
+            // This now covers the legacy unscoped part export too, which
+            // reports the same revision/changeCount/SHA identity.
+            let fresh = await FloeCAD3DBridge.shared.exportFenceMatches(
+                at: documentURL,
+                revision: exported.revision,
+                changeCount: exported.changeCount,
+                contentSHA256: exported.contentSHA256)
+            guard fresh else {
+                await NativeCADTaskRegistry.shared.finish(
+                    id: taskID, state: .failed,
+                    detail: "document changed before export promotion")
+                return Self.encodeNativeJSON([
+                    "ok": false,
+                    "error": "stale_export",
+                    "message": "The document changed while the export was running; nothing was written.",
+                    "task_id": taskID.uuidString,
+                    "coverage": coverage ?? [:],
+                ])
             }
 
             guard let bytes = exported.data else {
@@ -911,6 +924,13 @@ actor CadDocumentCenter: CadDocumentHost {
             ]
             if let explicitScope {
                 reply["scope"] = explicitScope.rawValue
+            }
+            // The legacy part export now returns a real per-body receipt too.
+            // A complete legacy success keeps the reply small (the engine
+            // summary is bounded); an incomplete receipt is always attached so
+            // the excluded objects/material images are named. Explicit-scope
+            // replies keep their existing always-present receipt.
+            if explicitScope != nil || !exported.complete {
                 reply["coverage"] = coverage ?? [:]
             }
             return Self.encodeNativeJSON(reply)

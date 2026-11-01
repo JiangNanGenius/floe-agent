@@ -324,9 +324,41 @@ final class EditorViewModel {
         return (tables, revisions)
     }
 
-    /// STL of the whole document, or nil when empty.
+    /// Bound by the live facade; the stored DesignDocument is not an export
+    /// owner. Weak facade callbacks also fence an editor retained after close.
+    @ObservationIgnored var partExportHandler: (@MainActor (String) -> CADExchangeOutcome)?
+    @ObservationIgnored var exchangeCoverageHandler:
+        (@MainActor (String, CADExchangeSelection) -> Result<CADExchangeCoverage, CADDocumentError>)?
+
+    private var exportOwnerUnavailableMessage: String {
+        FloeCADStrings.text("cad.error.exportOwnerUnavailable",
+                            "Reopen this document before exporting.")
+    }
+
+    /// Geometry-only exports share the authoritative part receipt. Invalid
+    /// meshes refuse the write; these formats promise no material channels.
+    private func partMeshExport(format: String) -> Data? {
+        guard exportableBodies() != nil else { return nil }
+        guard let partExportHandler else {
+            errorMessage = exportOwnerUnavailableMessage
+            return nil
+        }
+        switch partExportHandler(format) {
+        case let .success(data, _, _):
+            return data
+        case .coverageRequired, .coverage:
+            errorMessage = partIncompleteMessage
+            return nil
+        case let .failure(error):
+            errorMessage = error.message
+            return nil
+        }
+    }
+
+    /// STL of the whole document, or nil when empty or when a selected body's
+    /// mesh cannot be written.
     func exportSTL() -> Data? {
-        exportableBodies().map { STLExporter.binarySTL(bodies: $0) }
+        partMeshExport(format: "stl")
     }
 
     /// OBJ of the whole document, or nil when empty.
@@ -334,22 +366,73 @@ final class EditorViewModel {
         exportableBodies().map { Data(OBJExporter.obj(bodies: $0).utf8) }
     }
 
-    /// 3MF of the whole document, or nil when empty.
+    /// 3MF of the whole document, or nil when empty or when a selected body's
+    /// mesh cannot be written.
     func exportThreeMF() -> Data? {
-        exportableBodies().map { ThreeMFExporter.threeMF(bodies: $0) }
+        partMeshExport(format: "3mf")
+    }
+
+    /// The same part receipt `cad.document` and the exchange sheet use. The
+    /// GLB options sheet reads it before Export, so the warning the user sees
+    /// cannot disagree with the bytes that are actually written.
+    func glbExportCoverage() -> CADExchangeCoverage? {
+        guard let exchangeCoverageHandler else { return nil }
+        switch exchangeCoverageHandler("glb", CADExchangeSelection(scope: .part)) {
+        case .success(let coverage):
+            return coverage
+        case .failure:
+            return nil
+        }
+    }
+
+    private var partIncompleteMessage: String {
+        FloeCADStrings.text(
+            "cad.error.exportIncomplete",
+            "Some objects or material images can't be written. Nothing was exported.")
+    }
+
+    /// The exact bodies the shared part receipt allows for a GLB write. Nil
+    /// means no bytes may be produced: either the plan failed, the receipt
+    /// needs an explicit partial choice, or nothing is includable.
+    private func glbCoveredBodies(acceptPartial: Bool) -> [Body]? {
+        guard let bodies = exportableBodies() else { return nil }
+        guard let exchangeCoverageHandler else {
+            errorMessage = exportOwnerUnavailableMessage
+            return nil
+        }
+        switch exchangeCoverageHandler(
+            "glb", CADExchangeSelection(scope: .part, acceptPartial: acceptPartial)) {
+        case .failure(let error):
+            errorMessage = error.message
+            return nil
+        case .success(let coverage):
+            guard !coverage.requiresConfirmation else {
+                errorMessage = partIncompleteMessage
+                return nil
+            }
+            let included = Set(coverage.items.filter(\.included).map(\.bodyID))
+            let chosen = bodies.filter { included.contains($0.id.raw) }
+            guard !chosen.isEmpty else {
+                errorMessage = partIncompleteMessage
+                return nil
+            }
+            return chosen
+        }
     }
 
     /// GLB of the whole document, or nil when empty. The live session's face
     /// triangle tables (and their mesh-revision stamps) ride along so face
-    /// materials become real glTF primitives; resolving them here is the only
-    /// difference from a body-only export.
-    func exportGLB() -> Data? {
-        exportableBodies().map { bodies in
-            let faceTables = exportFaceTables(for: bodies)
-            return GLBExporter.glb(bodies: bodies,
-                                   faceTables: faceTables.tables,
-                                   faceTableRevisions: faceTables.revisions)
-        }
+    /// materials become real glTF primitives; the SAME part receipt as
+    /// `cad.document` and Export Model… decides which bodies may be written.
+    /// Bytes are produced only when that receipt is complete, or after the
+    /// caller explicitly accepted the actual loss. A partial export is never
+    /// inferred from a successful write.
+    func exportGLB(acceptPartial: Bool = false) -> Data? {
+        guard let bodies = glbCoveredBodies(acceptPartial: acceptPartial) else { return nil }
+        let faceTables = exportFaceTables(for: bodies)
+        return GLBExporter.glb(bodies: bodies,
+                               faceTables: faceTables.tables,
+                               faceTableRevisions: faceTables.revisions)
     }
 
     /// USDZ of the whole document (plan §B14); nil when the design is empty
@@ -403,14 +486,18 @@ final class EditorViewModel {
     /// Per-body GLB payloads, mirroring `exportOBJPerBody`. Each file carries
     /// only its own body's face table, using the same source `BodyID` and
     /// revision stamp as the whole-document export.
-    func exportGLBPerBody() -> [(name: String, data: Data)]? {
-        exportableBodies().map { bodies in
-            bodies.map { body in
-                let faceTables = exportFaceTables(for: [body])
-                return (body.name, GLBExporter.glb(bodies: [body],
-                                                   faceTables: faceTables.tables,
-                                                   faceTableRevisions: faceTables.revisions))
-            }
+    ///
+    /// The shared part receipt decides which bodies are written: an invalid
+    /// mesh or a material-image loss refuses the whole split unless
+    /// `acceptPartial` is explicit, and then only the included bodies produce
+    /// files. Every file is still checked against its own body identity.
+    func exportGLBPerBody(acceptPartial: Bool = false) -> [(name: String, data: Data)]? {
+        guard let bodies = glbCoveredBodies(acceptPartial: acceptPartial) else { return nil }
+        return bodies.map { body in
+            let faceTables = exportFaceTables(for: [body])
+            return (body.name, GLBExporter.glb(bodies: [body],
+                                               faceTables: faceTables.tables,
+                                               faceTableRevisions: faceTables.revisions))
         }
     }
 

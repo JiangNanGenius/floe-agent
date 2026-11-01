@@ -557,6 +557,27 @@ public final class FloeCADDocument {
     func viewModel() -> EditorViewModel {
         if let cachedViewModel { return cachedViewModel }
         let model = EditorViewModel(session: session)
+        // Export preflight belongs to this live facade, just like parameter
+        // and datum actions below. DesignDocument is only the stored model;
+        // it is not a second export owner or a substitute facade.
+        model.partExportHandler = { [weak self] format in
+            guard let self, !self.isClosed else {
+                return .failure(CADDocumentError(
+                    code: "document_closed",
+                    message: FloeCADStrings.text("cad.error.exportOwnerUnavailable",
+                                                 "Reopen this document before exporting.")))
+            }
+            return self.nativePartExport(format: format, pageID: nil)
+        }
+        model.exchangeCoverageHandler = { [weak self] format, selection in
+            guard let self, !self.isClosed else {
+                return .failure(CADDocumentError(
+                    code: "document_closed",
+                    message: FloeCADStrings.text("cad.error.exportOwnerUnavailable",
+                                                 "Reopen this document before exporting.")))
+            }
+            return self.exchangeCoverage(format: format, selection: selection)
+        }
         model.variableActionHandler = { [weak self] action, args in
             guard let self, !self.isClosed else {
                 return ["ok": false, "error": "closed"]

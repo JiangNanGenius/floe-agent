@@ -25,6 +25,11 @@
 //  invalid meshes/material images are never silently treated as a complete
 //  success: they are reported in the same coverage receipt.
 //
+//  `nativePartExport` is the legacy whole-document entry (no explicit scope):
+//  it returns the SAME truthfully computed part receipt and refuses an
+//  incomplete receipt unless the caller explicitly accepted the actual loss,
+//  so the historical "always complete" shortcut cannot come back.
+//
 //  No new export manager, permission flow or selection store is introduced.
 //  Callers hand in the exact body/instance IDs they selected; the plan is
 //  built from the live document and the existing assembly resolver.
@@ -412,6 +417,60 @@ public extension FloeCADDocument {
         } catch {
             return .failure(CADDocumentError(code: "export_failed",
                                              message: error.localizedDescription))
+        }
+    }
+
+    /// Truthful part-scope export for the legacy whole-document callers
+    /// (`CadDocumentCenter`/`FloeCAD3DBridge` and the editor's GLB actions).
+    ///
+    /// `step`/`glb`/`usdz` are the SAME exchange plan/writer used by
+    /// `nativeExchangeExport`; `stl`/`obj`/`3mf` reuse that plan's per-body
+    /// mesh validation and then the existing mesh writers restricted to the
+    /// bodies the receipt includes. Bytes are returned only when every selected
+    /// body can actually be written, or when the caller explicitly accepted
+    /// the receipt's actual loss. An incomplete unscoped export therefore
+    /// writes nothing instead of claiming completeness.
+    func nativePartExport(format rawFormat: String,
+                          pageID: UUID?,
+                          acceptPartial: Bool = false) -> CADExchangeOutcome {
+        let format = rawFormat.lowercased()
+        let selection = CADExchangeSelection(scope: .part, acceptPartial: acceptPartial)
+        switch format {
+        case "step", "glb", "usdz":
+            return nativeExchangeExport(format: format, pageID: pageID,
+                                        selection: selection, dryRun: false)
+
+        case "stl", "obj", "3mf":
+            do {
+                let plan = try makePartExchangePlan(format: format, selection: selection)
+                guard plan.coverage.includedCount > 0 else {
+                    return .failure(CADDocumentError(
+                        code: "nothing_exportable",
+                        message: "No document body can be written as \(format.uppercased()); "
+                            + "see the coverage receipt for the exact reasons."))
+                }
+                guard !plan.coverage.requiresConfirmation else {
+                    return .coverageRequired(plan.coverage)
+                }
+                switch nativeExportData(format: format, pageID: pageID,
+                                        bodies: plan.placedBodies) {
+                case let .success(data, note):
+                    return .success(data: data, note: note, coverage: plan.coverage)
+                case let .failure(error):
+                    return .failure(error)
+                }
+            } catch let error as CADDocumentError {
+                return .failure(error)
+            } catch {
+                return .failure(CADDocumentError(code: "export_failed",
+                                                 message: error.localizedDescription))
+            }
+
+        default:
+            return .failure(CADDocumentError(
+                code: "unsupported_format",
+                message: "Part export supports step, stl, obj, 3mf, glb and usdz; "
+                    + "got '\(rawFormat)'."))
         }
     }
 }

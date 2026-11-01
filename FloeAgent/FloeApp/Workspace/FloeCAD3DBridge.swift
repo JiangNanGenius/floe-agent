@@ -1077,8 +1077,10 @@ final class FloeCAD3DBridge {
         let revision: Int
         let changeCount: Int
         let contentSHA256: String
-        /// JSON-encoded `CADExchangeCoverage` (empty for the legacy
-        /// part-export call, which has no assembly receipt).
+        /// JSON-encoded `CADExchangeCoverage`. The legacy part export now
+        /// carries the SAME receipt as the explicit-scope route; only drawing
+        /// formats (whose service refuses an incomplete set itself) leave it
+        /// empty.
         let coverageJSON: String
         let complete: Bool
         let requiresConfirmation: Bool
@@ -1087,8 +1089,54 @@ final class FloeCAD3DBridge {
     /// Exact/format export bytes for the open document. Runs on the main
     /// actor with the shared live session; the host owns path resolution,
     /// writing and verification.
+    ///
+    /// The legacy (unscoped) part export is NOT a raw pass-through any more:
+    /// it returns the same truthful per-body receipt as the exchange route and
+    /// yields no bytes while that receipt is incomplete. An explicit partial
+    /// export stays on the existing `scope=part|assembly` + `accept_partial`
+    /// route, so no partial choice is inferred here.
     func exportNativeData(at url: URL, format: String, pageID: UUID?) async throws -> NativeExportResult {
         let document = try await document(at: url)
+        let normalized = format.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let receiptFormats: Set<String> = ["step", "stl", "obj", "3mf", "glb", "usdz"]
+        if receiptFormats.contains(normalized) {
+            switch document.nativePartExport(format: normalized, pageID: pageID) {
+            case let .success(data, note, coverage):
+                return NativeExportResult(data: data, note: note,
+                                          revision: coverage.documentRevision,
+                                          changeCount: coverage.changeCount,
+                                          contentSHA256: coverage.contentSHA256,
+                                          coverageJSON: coverage.jsonString(),
+                                          complete: coverage.complete,
+                                          requiresConfirmation: coverage.requiresConfirmation)
+            case let .coverageRequired(coverage):
+                return NativeExportResult(data: nil,
+                                          note: "coverage incomplete; explicit choice required",
+                                          revision: coverage.documentRevision,
+                                          changeCount: coverage.changeCount,
+                                          contentSHA256: coverage.contentSHA256,
+                                          coverageJSON: coverage.jsonString(),
+                                          complete: false,
+                                          requiresConfirmation: true)
+            case let .coverage(coverage):
+                return NativeExportResult(data: nil, note: "coverage preview",
+                                          revision: coverage.documentRevision,
+                                          changeCount: coverage.changeCount,
+                                          contentSHA256: coverage.contentSHA256,
+                                          coverageJSON: coverage.jsonString(),
+                                          complete: coverage.complete,
+                                          requiresConfirmation: coverage.requiresConfirmation)
+            case let .failure(error):
+                // Keep the legacy USDZ platform contract for callers of the
+                // unscoped route; the exchange route uses `unsupportedPlatform`.
+                if normalized == "usdz", error.code == "unsupportedPlatform" {
+                    throw CADDocumentError(
+                        code: "usdz_unavailable",
+                        message: "USDZ export is not available on this platform/build.")
+                }
+                throw error
+            }
+        }
         switch document.nativeExportData(format: format, pageID: pageID) {
         case .success(let (data, note)):
             return NativeExportResult(data: data, note: note,
