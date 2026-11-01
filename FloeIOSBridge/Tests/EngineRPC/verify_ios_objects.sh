@@ -16,6 +16,7 @@ FRAMEWORKS="$DEVELOPER_DIR/Platforms/iPhoneOS.platform/Developer/Library/Framewo
 OVERLAY="$DEVELOPER_DIR/Platforms/iPhoneOS.platform/Developer/usr/lib"
 BUILD="${ENGINE_RPC_IOS_BUILD_DIR:-$ROOT/Local/Scratch/ios-bridge-1.0-20261101/engine/build/ios}"
 CORE_SNAPSHOT="$BUILD/core-snapshot"
+IDEVICE_HEADERS="$ROOT/FloeIOSBridge/Frameworks/IDevice.xcframework/ios-arm64/Headers"
 
 rm -rf "$BUILD"
 mkdir -p "$BUILD"
@@ -42,7 +43,7 @@ done
 echo "BridgeCore snapshot files: $(wc -l < "$BUILD/core-snapshot.sha256")"
 
 COMMON=(-swift-version 6 -strict-concurrency=complete -warnings-as-errors
-        -target "$TARGET" -sdk "$SDK" -I "$OVERLAY")
+        -target "$TARGET" -sdk "$SDK" -I "$OVERLAY" -O)
 
 echo "== BridgeCore module + Swift object =="
 "$SWIFTC" "${COMMON[@]}" \
@@ -58,7 +59,7 @@ echo "== BridgeCore module + Swift object =="
 echo "== BridgeTests module + Swift object importing BridgeCore =="
 "$SWIFTC" "${COMMON[@]}" \
   -module-name BridgeTests -parse-as-library \
-  -I "$BUILD" -F "$FRAMEWORKS" -I "$ROOT/FloeIOSBridge/Sources/BridgeTests" \
+  -I "$BUILD" -I "$IDEVICE_HEADERS" -F "$FRAMEWORKS" -I "$ROOT/FloeIOSBridge/Sources/BridgeTests" \
   -import-objc-header "$ROOT/FloeIOSBridge/Sources/BridgeTests/BridgeTests-Bridging-Header.h" \
   -emit-module -emit-module-path "$BUILD/BridgeTests.swiftmodule" \
   -emit-object -whole-module-optimization -j 6 \
@@ -81,7 +82,7 @@ grep -q 'sil_stage' "$BUILD/BridgeCore.sil" || {
 echo "== BridgeTests SIL (Swift 6, imports BridgeCore) =="
 "$SWIFTC" "${COMMON[@]}" \
   -module-name BridgeTests -parse-as-library \
-  -I "$BUILD" -F "$FRAMEWORKS" -I "$ROOT/FloeIOSBridge/Sources/BridgeTests" \
+  -I "$BUILD" -I "$IDEVICE_HEADERS" -F "$FRAMEWORKS" -I "$ROOT/FloeIOSBridge/Sources/BridgeTests" \
   -import-objc-header "$ROOT/FloeIOSBridge/Sources/BridgeTests/BridgeTests-Bridging-Header.h" \
   -emit-sil -whole-module-optimization -o "$BUILD/BridgeTests.sil" \
   "$ROOT"/FloeIOSBridge/Sources/BridgeTests/*.swift

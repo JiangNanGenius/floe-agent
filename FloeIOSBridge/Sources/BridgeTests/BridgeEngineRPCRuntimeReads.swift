@@ -26,7 +26,7 @@ extension BridgeEngineRPCRuntime {
             streamAvailable: false,
             lanAvailable: false
         )
-        return .success(.object([
+        var result: [String: BridgeRPCJSONValue] = [
             "point_width": .double(metrics.pointWidth),
             "point_height": .double(metrics.pointHeight),
             "pixel_width": .int(metrics.pixelWidth),
@@ -37,7 +37,11 @@ extension BridgeEngineRPCRuntime {
             "capabilities": .array(capabilities.map { .string($0) }),
             "coordinate_space": .string("points"),
             "hint": .string("Tap/swipe x,y are POINTS. Screenshot data is pixels; point = pixel / scale."),
-        ]))
+        ]
+        if let diagnostic = lastAuthorizationGuardDiagnostic() {
+            result["last_authorization_guard"] = diagnostic
+        }
+        return .success(.object(result))
     }
 
     // MARK: - page_source

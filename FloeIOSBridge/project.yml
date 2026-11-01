@@ -21,7 +21,7 @@ settings:
     SWIFT_OPTIMIZATION_LEVEL: "-O"
     DEBUG_INFORMATION_FORMAT: dwarf-with-dsym
     MARKETING_VERSION: "1.0.0"
-    CURRENT_PROJECT_VERSION: "15"
+    CURRENT_PROJECT_VERSION: "16"
     DEAD_CODE_STRIPPING: YES
 targets:
   BridgeCore:
@@ -33,7 +33,7 @@ targets:
       base:
         PRODUCT_NAME: BridgeCore
         PRODUCT_BUNDLE_IDENTIFIER: org.floeagent.iosbridge.core
-        CURRENT_PROJECT_VERSION: "15"
+        CURRENT_PROJECT_VERSION: "16"
         MARKETING_VERSION: "1.0.0"
         DEFINES_MODULE: YES
         SKIP_INSTALL: YES

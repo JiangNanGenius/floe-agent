@@ -159,3 +159,53 @@ public enum BridgeEngineTouchPolicy {
         return body()
     }
 }
+
+/// System processes can remain `runningForeground` while an ordinary app owns
+/// the screen. Shell liveness alone is not evidence of an authorization UI.
+/// All facts here are transient SDK observations, never caller-supplied grants.
+public enum BridgeEngineAuthorizationSurfacePolicy {
+    public enum AppState: String, Sendable {
+        case unknown, notRunning, runningBackgroundSuspended, runningBackground, runningForeground
+        public init(observed: String) { self = Self(rawValue: observed) ?? .unknown }
+    }
+
+    public enum Foreground: String, Sendable {
+        case target, other, system, unavailable
+    }
+
+    public enum Decision: String, Sendable {
+        case ordinaryApp = "ordinary_app"
+        case systemForeground = "system_foreground"
+        case authorizationOverlay = "authorization_overlay"
+        case stateUnknown = "state_unknown"
+        case alertsUnknown = "alerts_unknown"
+        case visibleSystemAlert = "visible_system_alert"
+        case targetUnconfirmed = "target_unconfirmed"
+        case shellForegroundUnconfirmed = "shell_foreground_unconfirmed"
+        public var permitsInput: Bool { self == .ordinaryApp }
+    }
+
+    public static func decide(springboardState: AppState,
+                              overlayForeground: Bool,
+                              overlayStatesKnown: Bool,
+                              foreground: Foreground,
+                              targetState: AppState,
+                              alertsKnown: Bool,
+                              alertCount: Int,
+                              hittableAlertCount: Int) -> Decision {
+        if foreground == .system { return .systemForeground }
+        if overlayForeground { return .authorizationOverlay }
+        guard springboardState != .unknown, overlayStatesKnown else { return .stateUnknown }
+        guard alertsKnown, alertCount >= 0, hittableAlertCount >= 0,
+              hittableAlertCount <= alertCount else { return .alertsUnknown }
+        if hittableAlertCount > 0 { return .visibleSystemAlert }
+        guard targetState == .runningForeground,
+              foreground == .target || foreground == .unavailable else { return .targetUnconfirmed }
+        // With a live shell, require the independent active-app helper to
+        // confirm the exact target. An app-state fallback alone is ambiguous.
+        if springboardState == .runningForeground && foreground != .target {
+            return .shellForegroundUnconfirmed
+        }
+        return .ordinaryApp
+    }
+}

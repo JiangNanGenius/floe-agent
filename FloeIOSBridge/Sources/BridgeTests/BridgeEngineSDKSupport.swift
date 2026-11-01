@@ -85,11 +85,43 @@ final class BridgeEngineSDKSupport {
     }
 
     func state(of app: XCUIApplication) -> String {
+        stateObservation(of: app).state
+    }
+
+    func stateObservation(of app: XCUIApplication) -> (state: String, queryKnown: Bool) {
         var value = "unknown"
-        _ = call(stage: "app-state") {
+        let result = call(stage: "app-state") {
             value = self.stateName(app.state)
         }
-        return value
+        let known = result.error == nil && result.outcome.recordedIssueCount == 0
+        return (known ? value : "unknown", known)
+    }
+
+    /// Read bounded alert visibility without copying labels or element values.
+    /// A stale, non-hittable alert is not an interactive authorization surface;
+    /// failed/oversized queries remain unknown and cannot authorize input.
+    func systemAlertObservation(app: XCUIApplication) -> (known: Bool, count: Int, hittableCount: Int) {
+        var count = 0
+        var hittableCount = 0
+        var bounded = true
+        let result = call(stage: "system-alert-check") {
+            let alerts = app.alerts.allElementsBoundByIndex
+            count = alerts.count
+            guard count <= 32 else { bounded = false; return }
+            var remainingElements = 512
+            for alert in alerts {
+                if alert.isHittable { hittableCount += 1; continue }
+                // Alert containers need not themselves accept a hit even when
+                // their buttons/fields do. Check children before calling a
+                // non-hittable container stale.
+                let descendants = alert.descendants(matching: .any).allElementsBoundByIndex
+                guard descendants.count <= remainingElements else { bounded = false; return }
+                remainingElements -= descendants.count
+                if descendants.contains(where: { $0.isHittable }) { hittableCount += 1 }
+            }
+        }
+        return (result.error == nil && result.outcome.recordedIssueCount == 0 && bounded,
+                count, hittableCount)
     }
 
     /// Actual frontmost app via the guarded private helper. Falls back to the

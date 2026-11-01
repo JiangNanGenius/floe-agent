@@ -20,6 +20,7 @@ func allEngineTests() -> [EngineTestCase] {
         EngineTestCase(name: "refStoreBounded", body: refStoreBounded),
         EngineTestCase(name: "inputPolicyMatrix", body: inputPolicyMatrix),
         EngineTestCase(name: "touchPolicyMatrix", body: touchPolicyMatrix),
+        EngineTestCase(name: "authorizationSurfaceObservationMatrix", body: authorizationSurfaceObservationMatrix),
         EngineTestCase(name: "touchGateNeverCallsDeniedBody", body: touchGateNeverCallsDeniedBody),
         EngineTestCase(name: "ownerConfigurationNeverReceivesSyntheticInput", body: ownerConfigurationNeverReceivesSyntheticInput),
         EngineTestCase(name: "authorizationContextLifecycle", body: authorizationContextLifecycle),
@@ -686,6 +687,53 @@ func registryFirstWins() throws {
     switch registry.register(owner: "three", executor: second) {
     case .rejected: break
     default: throw TestFailure(message: "post-unregister replacement accepted")
+    }
+}
+
+// Shell liveness, stale alert records and actual authorization UI are distinct.
+func authorizationSurfaceObservationMatrix() throws {
+    typealias Policy = BridgeEngineAuthorizationSurfacePolicy
+    func decide(shell: Policy.AppState = .runningForeground,
+                overlay: Bool = false, overlaysKnown: Bool = true,
+                foreground: Policy.Foreground = .target,
+                target: Policy.AppState = .runningForeground,
+                known: Bool = true, alerts: Int = 0, hittable: Int = 0) -> Policy.Decision {
+        Policy.decide(springboardState: shell, overlayForeground: overlay,
+                      overlayStatesKnown: overlaysKnown, foreground: foreground,
+                      targetState: target, alertsKnown: known,
+                      alertCount: alerts, hittableAlertCount: hittable)
+    }
+    try expect(decide().permitsInput, "live SpringBoard shell with independently confirmed ordinary target allowed")
+    try expect(decide(alerts: 2).permitsInput, "known non-hittable stale alert records do not block ordinary target")
+    try expectEqual(decide(foreground: .system), .systemForeground, "SpringBoard or authorization app actually frontmost denied")
+    try expectEqual(decide(overlay: true), .authorizationOverlay, "foreground authentication process denied even with target helper")
+    try expectEqual(decide(alerts: 1, hittable: 1), .visibleSystemAlert, "interactive system alert denied")
+    try expectEqual(decide(known: false), .alertsUnknown, "failed alert query denied")
+    try expectEqual(decide(alerts: 1, hittable: 2), .alertsUnknown, "inconsistent alert query denied")
+    try expectEqual(decide(shell: .unknown), .stateUnknown, "unknown shell state denied")
+    try expectEqual(decide(overlaysKnown: false), .stateUnknown, "unknown overlay state denied")
+    try expectEqual(decide(foreground: .other), .targetUnconfirmed, "different foreground denied")
+    try expectEqual(decide(target: .unknown), .targetUnconfirmed, "unknown target state denied despite helper")
+    try expectEqual(decide(target: .runningBackground), .targetUnconfirmed, "background target denied despite helper")
+    try expectEqual(decide(foreground: .unavailable), .shellForegroundUnconfirmed, "live shell and unavailable helper denied")
+    try expect(decide(shell: .runningBackground, foreground: .unavailable).permitsInput,
+               "existing positive target-state fallback works when shell is not foreground")
+    // Compose the observer with the real touch policy; these fixtures cannot
+    // accidentally grant self-approval, lock input or secure Apple input.
+    for granted in [false, true] {
+        for blocked in [decide(overlay: true), decide(known: false), decide(alerts: 1, hittable: 1)] {
+            try expect(!touchDecision(authSurface: !blocked.permitsInput, grant: granted).allowed,
+                       "observer refusal survives sensitive-input grant")
+        }
+        try expect(!touchDecision(locked: true, grant: granted).allowed, "lock remains denied")
+        let own = BridgeEngineTouchPolicy.decide(screenLocked: false,
+            authorizationSurfacePresent: !decide().permitsInput,
+            bundleIdentifier: "Custom.Bridge.Host", ownerBundleIdentifier: "custom.bridge.host",
+            foregroundBundleIdentifier: "Custom.Bridge.Host", focusStateKnown: true,
+            focusedSecure: false, sensitiveInputGranted: granted)
+        try expect(!own.allowed, "ordinary observer never bypasses owner UI boundary")
+        try expect(!touchDecision(bundle: "com.apple.Preferences", foreground: "com.apple.Preferences",
+                                  secure: true, grant: granted).allowed, "Apple secure input remains denied")
     }
 }
 

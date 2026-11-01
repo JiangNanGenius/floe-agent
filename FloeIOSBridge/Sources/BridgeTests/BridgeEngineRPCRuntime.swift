@@ -25,6 +25,8 @@ final class BridgeEngineRPCRuntime: BridgeRPCExecutor, BridgeScreenFrameProvider
     /// the executor's `defer`. Mutation helpers read only this immutable
     /// per-invocation grant; they never read a request parameter for it.
     private(set) var activeAuthorization: BridgeEngineInvocationAuthorization?
+    private var lastAuthorizationGuard: [String: BridgeRPCJSONValue]?
+    private var lastAuthorizationGuardUptime: TimeInterval?
 
     init(issueCapture: BridgeEngineIssueCapture, files: BridgeTestFiles) {
         self.owner = "floe-ios-bridge-test-engine-\(ProcessInfo.processInfo.processIdentifier)"
@@ -75,27 +77,80 @@ final class BridgeEngineRPCRuntime: BridgeRPCExecutor, BridgeScreenFrameProvider
         return status.freshness == .current
     }
 
-    /// Conservative system-authorization check before any generic input. An
-    /// unreadable SpringBoard alert state is treated as present, never as
-    /// permission to type or tap.
+    /// Distinguish the always-live system shell from an interactive system
+    /// authorization surface. Unknown observations continue to fail closed.
     @MainActor
-    func systemAuthorizationSurfacePresent() -> Bool {
-        let springboard = XCUIApplication(bundleIdentifier: "com.apple.springboard")
-        if stateName(springboard) == "runningForeground" { return true }
-        // LocalAuthentication/AuthKit/AuthenticationServices present account or
-        // passcode UI in their own process. If one is actually foreground, it
-        // owns the screen even when the underlying app is still visible.
-        for bundle in Self.authorizationOverlayBundleIdentifiers where bundle != "com.apple.springboard" {
-            if stateName(XCUIApplication(bundleIdentifier: bundle)) == "runningForeground" {
-                return true
+    func systemAuthorizationSurfacePresent(targetBundle: String? = nil) -> Bool {
+        typealias Policy = BridgeEngineAuthorizationSurfacePolicy
+        let observed = BRCurrentForegroundBundleID().flatMap { $0.isEmpty ? nil : $0 }
+        let target = targetBundle ?? observed
+        let foreground: Policy.Foreground
+        if let observed {
+            if BridgeEngineInputPolicy.isSystemAuthorizationSurface(bundleIdentifier: observed) {
+                foreground = .system
+            } else {
+                foreground = observed == target ? .target : .other
             }
+        } else {
+            foreground = .unavailable
         }
-        var count = 0
-        let result = sdk.call(stage: "system-alert-check") {
-            count = springboard.alerts.count
+        let springboard = XCUIApplication(bundleIdentifier: "com.apple.springboard")
+        let shell = sdk.stateObservation(of: springboard)
+        let shellState = Policy.AppState(observed: shell.state)
+        let targetObservation = target.map {
+            sdk.stateObservation(of: XCUIApplication(bundleIdentifier: $0))
         }
-        if result.error != nil || result.outcome.recordedIssueCount > 0 { return true }
-        return count > 0
+        let targetState = Policy.AppState(observed: targetObservation?.state ?? "unknown")
+        var overlayForeground = false
+        var overlayStatesKnown = true
+        var overlayStates: [String: BridgeRPCJSONValue] = [:]
+        let overlayKeys = ["authkit", "local_authentication", "authentication_services", "passcode_settings"]
+        for (key, bundle) in zip(overlayKeys, Self.authorizationOverlayBundleIdentifiers.dropFirst()) {
+            let observation = sdk.stateObservation(of: XCUIApplication(bundleIdentifier: bundle))
+            let state = Policy.AppState(observed: observation.state)
+            overlayForeground = overlayForeground || state == .runningForeground
+            overlayStatesKnown = overlayStatesKnown && observation.queryKnown && state != .unknown
+            overlayStates[key] = .object([
+                "state": .string(state.rawValue),
+                "query_known": .bool(observation.queryKnown),
+            ])
+        }
+        let alerts = sdk.systemAlertObservation(app: springboard)
+        let decision = Policy.decide(springboardState: shellState,
+                                     overlayForeground: overlayForeground,
+                                     overlayStatesKnown: overlayStatesKnown,
+                                     foreground: foreground,
+                                     targetState: targetState,
+                                     alertsKnown: alerts.known,
+                                     alertCount: alerts.count,
+                                     hittableAlertCount: alerts.hittableCount)
+        lastAuthorizationGuardUptime = ProcessInfo.processInfo.systemUptime
+        lastAuthorizationGuard = [
+            "reason_code": .string(decision.rawValue),
+            "surface_clear": .bool(decision.permitsInput),
+            "springboard_state": .string(shellState.rawValue),
+            "springboard_query_known": .bool(shell.queryKnown),
+            "target_state": .string(targetState.rawValue),
+            "target_query_known": .bool(targetObservation?.queryKnown ?? false),
+            "overlay_states": .object(overlayStates),
+            "foreground_relation": .string(foreground.rawValue),
+            "overlay_foreground": .bool(overlayForeground),
+            "overlay_states_known": .bool(overlayStatesKnown),
+            "alerts_known": .bool(alerts.known),
+            "alert_count": .int(alerts.count),
+            "hittable_alert_count": .int(alerts.hittableCount),
+            "captured_at": .double(Date().timeIntervalSince1970),
+            "generation": .string(String(BridgeSharedState.shared.snapshot().generation)),
+        ]
+        return !decision.permitsInput
+    }
+
+    /// Historical observation only: never reused to authorize a later input.
+    func lastAuthorizationGuardDiagnostic() -> BridgeRPCJSONValue? {
+        guard var fields = lastAuthorizationGuard, let uptime = lastAuthorizationGuardUptime else { return nil }
+        fields["freshness"] = .string("last_observed")
+        fields["age_seconds"] = .double(max(0, ProcessInfo.processInfo.systemUptime - uptime))
+        return .object(fields)
     }
 
     static let authorizationOverlayBundleIdentifiers = [
@@ -138,7 +193,7 @@ final class BridgeEngineRPCRuntime: BridgeRPCExecutor, BridgeScreenFrameProvider
         guard let authorization = activeAuthorization, authorization.isActive else {
             return .denied(permissionDenied("The per-invocation authorization context is unavailable; no input was performed."))
         }
-        let authorizationSurfacePresent = systemAuthorizationSurfacePresent()
+        let authorizationSurfacePresent = systemAuthorizationSurfacePresent(targetBundle: targetBundle)
         let targetIsForeground = targetIsLiveForeground(targetBundle)
         let app = XCUIApplication(bundleIdentifier: targetBundle)
         let fields = sdk.focusedFields(app: app)
@@ -420,10 +475,12 @@ final class BridgeEngineRPCRuntime: BridgeRPCExecutor, BridgeScreenFrameProvider
     }
 
     func permissionDenied(_ reason: String) -> BridgeRPCExecutionOutcome {
-        .failure(BridgeRPCError(
+        var data: [String: BridgeRPCJSONValue] = ["reason": .string(reason)]
+        if let diagnostic = lastAuthorizationGuardDiagnostic() { data["authorization_guard"] = diagnostic }
+        return .failure(BridgeRPCError(
             code: BridgeRPCError.permissionDenied.code,
             message: BridgeRPCError.permissionDenied.message,
-            data: ["reason": .string(reason)]
+            data: data
         ))
     }
 

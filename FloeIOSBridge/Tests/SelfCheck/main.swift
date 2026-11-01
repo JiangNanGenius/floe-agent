@@ -1029,7 +1029,7 @@ expect(BridgeDDIInstallMethod.cryptex.components.contains(.cryptexInfo) &&
        BridgeDDIInstallMethod.cryptex.components.contains(.rootHash),
        "cryptex DDI component set")
 expectEqual(BridgeBuild.marketingVersion, "1.0.0", "build marketing version")
-expectEqual(BridgeBuild.buildNumber, "15", "build number")
+expectEqual(BridgeBuild.buildNumber, "16", "build number")
 expect(BridgeTransport.interfaceAddressValue == 0x0A07_0002 &&
        BridgeTransport.peerAddressValue == 0x0A07_0001,
        "transport address constants")
