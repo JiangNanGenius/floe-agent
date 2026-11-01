@@ -25,13 +25,18 @@ enum CADQualificationFixture {
     /// Builds (or rebuilds, deterministically) the qualification package and
     /// opens it. Expected volume: 60000 − 250π mm³.
     @MainActor
-    static func openPlateHole() async throws -> FloeCADDocument {
+    static func openPlateHole(reopen: Bool = false) async throws -> FloeCADDocument {
         let directory = try FileManager.default.url(for: .applicationSupportDirectory,
                                                     in: .userDomainMask,
                                                     appropriateFor: nil, create: true)
             .appendingPathComponent("FloeAgent/CADFixtures", isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         let url = directory.appendingPathComponent("plate-100x60x10.floecad")
+        if reopen {
+            // Lifecycle qualification must reopen the exact owned package,
+            // never recreate a seed and mistake it for recovered data.
+            return try await FloeCADDocument.open(at: url)
+        }
         if FileManager.default.fileExists(atPath: url.path) {
             try FileManager.default.removeItem(at: url)
         }
@@ -115,7 +120,9 @@ enum CADQualificationFixture {
                 }
             }
             if ProcessInfo.processInfo.arguments.contains("--ui-test-cad-animation") {
-                let clip = try document.createAnimationClip(name: "Camera orbit", duration: 0.5)
+                let duration = ProcessInfo.processInfo.arguments
+                    .contains("--ui-test-cad-animation-long") ? 10.0 : 0.5
+                let clip = try document.createAnimationClip(name: "Camera orbit", duration: duration)
                 let track = try document.addAnimationTrack(clipID: clip.id, target: .camera)
                 _ = try document.setAnimationKeyframe(
                     clipID: clip.id, trackID: track.id, time: 0,
@@ -125,7 +132,7 @@ enum CADQualificationFixture {
                                                     azimuthRadians: 0.5, elevationRadians: 0.4,
                                                     fovYDegrees: 60))
                 _ = try document.setAnimationKeyframe(
-                    clipID: clip.id, trackID: track.id, time: 0.5,
+                    clipID: clip.id, trackID: track.id, time: duration,
                     camera: CADAnimationCameraValue(target: SIMD3(0.1, 0, 0.03), distance: 0.4,
                                                     azimuthRadians: 0.7, elevationRadians: 0.4,
                                                     fovYDegrees: 60))
@@ -330,7 +337,8 @@ struct CADWorkbenchFixtureHarness: View {
                     document = try await CADQualificationFixture.openFaceRotation(
                         reset: arguments.contains("--ui-test-cad-face-rotation-reset"))
                 } else {
-                    document = try await CADQualificationFixture.openPlateHole()
+                    document = try await CADQualificationFixture.openPlateHole(
+                        reopen: arguments.contains("--ui-test-cad-reopen"))
                 }
             } catch {
                 self.error = error.localizedDescription

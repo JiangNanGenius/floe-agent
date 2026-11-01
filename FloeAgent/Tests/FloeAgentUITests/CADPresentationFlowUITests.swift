@@ -1,6 +1,109 @@
 #if canImport(XCTest)
 import XCTest
 
+/// E37 uses real UIKit background transitions and the existing saved native
+/// package. It does not post a synthetic lifecycle notification or reseed the
+/// document when checking recovery in a fresh process.
+@MainActor
+final class CADBackgroundOwnershipFlowUITests: XCTestCase {
+    func testBackgroundExportRefusesAndBackgroundSavedEditReopens() throws {
+        continueAfterFailure = false
+        XCUIDevice.shared.orientation = .landscapeLeft
+        let app = XCUIApplication()
+        let base = ["-AppleLanguages", "(en)", "-AppleLocale", "en_US",
+                    "-ui-testing", "-ui-testing-ipad", "--ui-test-cad-fixture",
+                    "--ui-test-cad-animation", "--ui-test-cad-animation-long"]
+        app.launchArguments = base
+        app.launch()
+        defer { app.terminate() }
+        XCTAssertTrue(app.buttons["HistoryButton"].waitForExistence(timeout: 60))
+        let mode = app.segmentedControls["CADWorkbenchMode"]
+        mode.buttons["Present"].tap()
+        let export = app.buttons["CADPresentExport"]
+        XCTAssertTrue(export.waitForExistence(timeout: 30))
+        export.tap()
+        app.buttons["MP4 video"].tap()
+        let confirm = app.buttons["CADAnimationExportOptionsConfirm"]
+        XCTAssertTrue(confirm.waitForExistence(timeout: 10))
+        app.buttons["CADAnimationExportResolution"].tap()
+        app.buttons["720p"].tap()
+        app.buttons["CADAnimationExportFrameRate"].tap()
+        app.buttons["24 fps"].tap()
+        confirm.tap()
+        let progress = app.descendants(matching: .any)
+            .matching(identifier: "CADAnimationExportProgress").firstMatch
+        XCTAssertTrue(progress.waitForExistence(timeout: 20),
+                      "a real owned export must still be running before backgrounding")
+        snapshot("E37 actual export running before Home")
+        XCUIDevice.shared.press(.home)
+        assertBackground(app)
+        // Let the actual renderer observe the background state. This is a
+        // bounded real inactive interval, not a simulated callback or a fake
+        // completed export. The 10s clip cannot finish in this interval.
+        RunLoop.current.run(until: Date().addingTimeInterval(2))
+        app.activate()
+        let failed = app.alerts["Couldn't export"]
+        XCTAssertTrue(failed.waitForExistence(timeout: 20),
+                      "background rendering must refuse and return its actual failure")
+        snapshot("E37 background export returns its actual refusal")
+        failed.buttons["Done"].tap()
+        XCTAssertTrue(waitForAbsence(progress, timeout: 10))
+        XCTAssertTrue(export.isEnabled,
+                      "the old export must release ownership so the document remains usable")
+        mode.buttons["Edit"].tap()
+
+        let history = app.buttons["HistoryButton"]
+        XCTAssertTrue(history.waitForExistence(timeout: 20))
+        history.tap()
+        let name = app.textFields["HistoryName-Extrude"].firstMatch
+        XCTAssertTrue(name.waitForExistence(timeout: 15))
+        name.tap()
+        let oldName = name.value as? String ?? "Extrude"
+        name.typeText(String(repeating: XCUIKeyboardKey.delete.rawValue, count: oldName.count))
+        name.typeText("BackgroundPlate\n")
+        XCTAssertTrue(app.descendants(matching: .any)
+            .matching(identifier: "HistoryRow-BackgroundPlate").firstMatch.waitForExistence(timeout: 10))
+        snapshot("E37 real edit before background save")
+        // No foreground Save: recovery below must depend on the production
+        // scenePhase flush/autosave, not an explicit test-side commit.
+        XCUIDevice.shared.press(.home)
+        assertBackground(app)
+        RunLoop.current.run(until: Date().addingTimeInterval(2))
+        app.terminate()
+
+        app.launchArguments = base + ["--ui-test-cad-reopen"]
+        app.launch()
+        XCTAssertTrue(app.buttons["HistoryButton"].waitForExistence(timeout: 60))
+        app.buttons["HistoryButton"].tap()
+        let savedRow = app.descendants(matching: .any)
+            .matching(identifier: "HistoryRow-BackgroundPlate").firstMatch
+        XCTAssertTrue(savedRow.waitForExistence(timeout: 20),
+                      "a fresh process must reopen the actual background-saved edit")
+        XCTAssertEqual(app.textFields["HistoryName-BackgroundPlate"].firstMatch.value as? String,
+                       "BackgroundPlate")
+        snapshot("E37 fresh process reopens the same background-saved package")
+    }
+
+    private func assertBackground(_ app: XCUIApplication) {
+        let running = app.wait(for: .runningBackground, timeout: 5)
+        XCTAssertTrue(running || app.state == .runningBackgroundSuspended,
+                      "Home must produce a real UIKit background transition")
+    }
+
+    private func waitForAbsence(_ element: XCUIElement, timeout: TimeInterval) -> Bool {
+        let predicate = NSPredicate(format: "exists == false")
+        return XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: predicate, object: element)],
+                             timeout: timeout) == .completed
+    }
+
+    private func snapshot(_ name: String) {
+        let attachment = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
+        attachment.name = name
+        attachment.lifetime = .keepAlways
+        add(attachment)
+    }
+}
+
 @MainActor
 final class CADPresentationFlowUITests: XCTestCase {
     func testNarrowLargeTextPresentationAndMaterialRemainReachable() throws {
