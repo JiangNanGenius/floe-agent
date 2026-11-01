@@ -259,7 +259,11 @@ final class CADUSDZMaterialExportTests: XCTestCase {
         XCTAssertEqual(try texturePixels(appearance, .roughness).first, 192)
         XCTAssertEqual(try texturePixels(appearance, .tangentSpaceNormal), [128, 128, 255, 255])
         XCTAssertEqual(try texturePixels(appearance, .emission), [0, 255, 0, 255])
-        XCTAssertEqual(try texturePixels(appearance, .opacity).first, 128)
+        let opacityPixels = try texturePixels(appearance, .opacity)
+        XCTAssertEqual(opacityPixels.first, 128)
+        XCTAssertEqual(opacityPixels[3], 128,
+                       "a reader sampling opacity alpha must receive the same mask as luminance")
+        XCTAssertEqual(opacityPixels[7], 64)
         let images = try zipEntries(archive).values.filter { MaterialImageSniffer.mimeType(of: $0) != nil }
         XCTAssertGreaterThanOrEqual(images.count, 6, "all resource channels must be inside the returned USDZ")
         XCTAssertTrue(images.contains { (try? imagePixels($0)) == basePixels })
@@ -287,6 +291,8 @@ final class CADUSDZMaterialExportTests: XCTestCase {
         XCTAssertEqual(Float(try texturePixels(m, .metallic)[0]), 64, accuracy: 1)
         XCTAssertEqual(Float(try texturePixels(m, .roughness)[0]), 32, accuracy: 1)
         XCTAssertEqual(Float(try texturePixels(m, .opacity)[0]), 32, accuracy: 1)
+        XCTAssertEqual(Float(try texturePixels(m, .opacity)[3]), 32, accuracy: 1,
+                       "base alpha, opacity scalar and mask must reach the real shader's alpha input once")
     }
 
     func testTextureMetadataControlsLinearColorAndBottomLeftRows() throws {

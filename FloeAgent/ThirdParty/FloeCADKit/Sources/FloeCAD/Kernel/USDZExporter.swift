@@ -373,7 +373,11 @@ nonisolated enum USDZExporter {
                     luminance($0.bytes, offset: offset, srgb: metadata(.opacity, in: spec)?.colorSpace == .srgb)
                 } ?? 1
                 let value = byte(alpha * opacityValue * spec.effectiveOpacity)
-                combined.bytes.replaceSubrange(offset..<(offset + 4), with: [value, value, value, 255])
+                // Native USD conversion and external PreviewSurface readers
+                // may sample either luminance or alpha for an opacity map.
+                // Store the complete authored product in both, once. An
+                // opaque alpha channel otherwise discards the entire mask.
+                combined.bytes.replaceSubrange(offset..<(offset + 4), with: [value, value, value, value])
             }
             try setTexture(combined, slot: .opacity, semantic: .opacity, material: material,
                            prefix: body.id.raw.uuidString, directory: directory)
