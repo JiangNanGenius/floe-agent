@@ -695,7 +695,7 @@ public actor RuntimeFacadePrivacy {
             // History clear owns this separate deletion path: discard only
             // this successfully deleted task, preserving snapshot scope.
             if let purge = await C02ToolResultIntegration
-                .purgeRetainedResults(conversationID: conversationID),
+                .purgeRetainedResults(conversationID: conversationID, epoch: epoch),
                !purge.succeeded {
                 postCommitFailure = "toolResultPurgeDeferred"
             }

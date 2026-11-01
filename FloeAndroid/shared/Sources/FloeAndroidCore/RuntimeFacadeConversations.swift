@@ -4135,7 +4135,7 @@ public actor FacadeConversationDomain {
             // reconciles it), so the deletion is never presented as a full
             // wipe without evidence. No other task's records are touched.
             if let toolResultPurge = await C02ToolResultIntegration
-                .purgeRetainedResults(conversationID: conversationID),
+                .purgeRetainedResults(conversationID: conversationID, epoch: hostEpoch),
                !toolResultPurge.succeeded {
                 FloeLogger(category: .runtime).error(
                     "toolResultPurgeDeferred conversation=\(conversationID.uuidString) retryScheduled=\(toolResultPurge.retryScheduled)"

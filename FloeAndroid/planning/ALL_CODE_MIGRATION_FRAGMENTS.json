@@ -19,10 +19,16 @@
       "feature": "C02 durable task targets, run pins and remote dispatch receipts",
       "path": "planning/all-code-migrations/execution_targets.sql",
       "sha256": "cb831ac4a2a8d9c1be60bb46d19338fbb9de5889044710422ee6c7d9d7ead0c0"
+    },
+    {
+      "feature": "C02 canonical task storage pause and explicit resume",
+      "path": "planning/all-code-migrations/task_continuity.sql",
+      "sha256": "f8dc1cedc3574fd513d0079f6cdfeb68bbbbcc9ab03e1d404887e5ea3df5b20a"
     }
   ],
   "pendingInputs": [
-    "C02 continuity additional fields if required",
-    "C07 full-data restore additions if required"
+    "C07 full-data restore additions if required",
+    "C02 MCP install/config additions if required",
+    "C07 application entry additions if required"
   ]
 }

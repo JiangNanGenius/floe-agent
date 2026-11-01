@@ -136,9 +136,14 @@ public enum C02ToolResultIntegration {
     /// caller can report that honestly instead of pretending a delete.
     @discardableResult
     public static func purgeRetainedResults(
-        conversationID: UUID
+        conversationID: UUID,
+        epoch: UInt64
     ) async -> ToolResultCapturePurgeResult? {
         guard let runtime = box.get() else { return nil }
+        guard runtime.epoch == epoch else {
+            return .init(removedDurableDirectory: false,
+                         failure: .removalFailed, retryScheduled: false)
+        }
         return await runtime.purge(conversationID: conversationID)
     }
 

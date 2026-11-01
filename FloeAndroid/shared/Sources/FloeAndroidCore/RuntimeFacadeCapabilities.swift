@@ -332,14 +332,21 @@ public actor CapabilitiesDomain {
         // the SAME live readiness authority that gates dispatch and
         // registration (`RuntimeFacadeLinuxBindings.isCapabilityQualified`
         // over `LinuxReadinessIngress`), so qualification and ordinary
-        // route discovery can never disagree. remoteHost stays unresolved.
+        // route discovery can never disagree. Registered native SFTP tools
+        // have their own generation-bound production availability.
         let decision = CapabilityExecutionRouter.decision(for: descriptor.name)
         switch decision.backend {
         case .remoteHost:
-            return FacadeToolAvailabilityItem(
-                descriptor: descriptor, availability: .notImplemented,
-                prerequisites: [.init(kind: "g03Environment", reason: "backendUnresolved")],
-                source: source, temporaryCeilingIncluded: false)
+            // This input is already filtered by the live runner registry.
+            // C05 implements these exact SSH names with a native subsystem;
+            // its availability closure proves the accepted root generation.
+            // Other remote families still need their own resolved backend.
+            guard C05SFTPToolNames.all.contains(descriptor.name) else {
+                return FacadeToolAvailabilityItem(
+                    descriptor: descriptor, availability: .notImplemented,
+                    prerequisites: [.init(kind: "g03Environment", reason: "backendUnresolved")],
+                    source: source, temporaryCeilingIncluded: false)
+            }
         case .linuxGuest:
             guard RuntimeFacadeLinuxBindings.shared.isCapabilityQualified else {
                 return FacadeToolAvailabilityItem(
