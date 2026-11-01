@@ -421,8 +421,8 @@ final class CADThreadEngineProbeTests: XCTestCase {
         expectFailure(command(turns: 10, axis: [1e308, 1e308, 0]), code: "bad_helix")
         // The dot product itself overflows here, so the projected reference is
         // not normalizable; this is the precise bad_helix refusal.
-        expectFailure(command(turns: 10, axis: [1, 1, 0],
-                              reference: [1.5e308, 1.5e308, 0]),
+        expectFailure(command(turns: 10, reference: [1.5e308, 1.5e308, 0],
+                              axis: [1, 1, 0]),
                      code: "bad_helix")
 
         // A supplied render spine still wins over sampling (old semantics),
