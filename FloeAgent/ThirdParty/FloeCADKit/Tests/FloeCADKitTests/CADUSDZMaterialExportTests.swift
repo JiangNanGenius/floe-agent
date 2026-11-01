@@ -242,6 +242,11 @@ final class CADUSDZMaterialExportTests: XCTestCase {
         spec.opacityTexture = try png([128, 128, 128, 255, 64, 64, 64, 255], width: 1, height: 2)
         body.material = spec
         let (archive, _, meshes) = try exported([body])
+        let retainedArchive = XCTAttachment(data: archive,
+            uniformTypeIdentifier: UTType.usdz.identifier)
+        retainedArchive.name = "USDZ-six-maps.usdz"
+        retainedArchive.lifetime = .keepAlways
+        add(retainedArchive)
         let mesh = try XCTUnwrap(meshes.first)
         let uvs = try attribute(mesh, MDLVertexAttributeTextureCoordinate, count: 2)
         for expected: [Float] in [[0.1, 0.8], [0.9, 0.8], [0.1, 0.2]] {
@@ -270,7 +275,12 @@ final class CADUSDZMaterialExportTests: XCTestCase {
         spec.metallicTexture = try png([128, 128, 128, 255])
         spec.roughnessTexture = try png([128, 128, 128, 255])
         body.material = spec
-        let (_, _, meshes) = try exported([body])
+        let (archive, _, meshes) = try exported([body])
+        let retainedArchive = XCTAttachment(data: archive,
+            uniformTypeIdentifier: UTType.usdz.identifier)
+        retainedArchive.name = "USDZ-map-factors-and-opacity.usdz"
+        retainedArchive.lifetime = .keepAlways
+        add(retainedArchive)
         let m = try material(try XCTUnwrap(meshes.first))
         // sRGB(1) * linear factor 0.5 -> sRGB 188; scalar maps stay linear.
         XCTAssertEqual(Float(try texturePixels(m, .baseColor)[0]), 188, accuracy: 1)

@@ -288,7 +288,7 @@ final class CADSavedCameraTests: XCTestCase {
         document.session.undo()
         XCTAssertEqual(document.savedCameras.first?.name, "View one")
         document.session.undo()
-        XCTAssertEqual(document.savedCameras.first?.distanceMM, 160,
+        XCTAssertEqual(try XCTUnwrap(document.savedCameras.first).distanceMM, 160,
                        accuracy: 1e-9)
         document.session.undo()
         XCTAssertTrue(document.savedCameras.isEmpty)

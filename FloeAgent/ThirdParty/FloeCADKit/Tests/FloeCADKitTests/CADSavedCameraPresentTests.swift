@@ -339,8 +339,8 @@ final class CADSavedCameraPresentTests: XCTestCase {
         XCTAssertEqual(fixture.document.activeSavedCamera?.projection,
                        .orthographic)
 
-        let perspectiveCapture = try XCTUnwrap(
-            try await fixture.document.capturePresentedPNG())
+        let capturedPerspective = try await fixture.document.capturePresentedPNG()
+        let perspectiveCapture = try XCTUnwrap(capturedPerspective)
         XCTAssertEqual(perspectiveCapture.projection, "perspective")
         XCTAssertEqual(perspectiveCapture.matchesSavedCamera, false)
         XCTAssertNotEqual(perspectiveCapture.pngData, presented.pngData,
@@ -422,8 +422,8 @@ final class CADSavedCameraPresentTests: XCTestCase {
         XCTAssertTrue(restored.matches(stored),
                       "reopening must restore the selected saved view's exact pose and framing")
 
-        let capture = try XCTUnwrap(
-            try await reopened.capturePresentedPNG())
+        let reopenedCapture = try await reopened.capturePresentedPNG()
+        let capture = try XCTUnwrap(reopenedCapture)
         XCTAssertEqual(capture.projection, "orthographic")
         XCTAssertEqual(capture.cameraName, "Reopen check")
         XCTAssertEqual(capture.matchesSavedCamera, true)
