@@ -1,4 +1,5 @@
 import Foundation
+import CryptoKit
 import XCTest
 import simd
 @testable import FloeCAD
@@ -211,6 +212,59 @@ final class CADDeleteFaceHistoryTests: XCTestCase {
                 XCTAssertNil(result.proposedUpgrades[node.id], "Kernel failure must not persist the proposed identity")
                 XCTAssertEqual(abs(OCCTKernel.volume(try XCTUnwrap(result.bodies.first { $0.id == f.body }?.brep))), originalVolume, accuracy: 1e-4)
             }
+        }
+    }
+
+    /// Qualify the existing archive as a possible full-geometry witness before
+    /// adding a new reference field. This is actual BRep state, not a hash of
+    /// the lossy centroid/area signature or an assumption about serial order.
+    func testExactGeometryArchivesStayStableAcrossSnapshotUndoAndReopen() async throws {
+        var stages: [[String: Any]] = []
+        defer {
+            if let data = try? JSONSerialization.data(withJSONObject: stages, options: [.sortedKeys]),
+               let text = String(data: data, encoding: .utf8) {
+                let attachment = XCTAttachment(string: text)
+                attachment.name = "reference-archive-witness-stages.json"
+                attachment.lifetime = .keepAlways
+                add(attachment)
+            }
+        }
+        for partial in [false, true] {
+            let f = try await fixture(partialPositiveZ: partial)
+            func digest(_ handle: BRepHandle, stage: String) throws -> String {
+                let data = try XCTUnwrap(OCCTKernel.serialize(handle))
+                let hash = SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+                stages.append(["fixture": partial ? "half-cylinder" : "bored-plate",
+                               "stage": stage, "bytes": data.count, "sha256": hash])
+                return hash
+            }
+            let original = try XCTUnwrap(f.document.session.document.body(with: f.body)?.brep)
+            let baseline = try digest(original, stage: "original")
+            XCTAssertEqual(try digest(original, stage: "repeat"), baseline)
+            let copy = try XCTUnwrap(OCCTKernel.independentSnapshot(original))
+            XCTAssertEqual(try digest(copy, stage: "independent-copy"), baseline)
+            let restored = try XCTUnwrap(OCCTKernel.deserialize(try XCTUnwrap(OCCTKernel.serialize(copy))))
+            XCTAssertEqual(try digest(restored, stage: "deserialize"), baseline)
+            let saved = await f.document.save()
+            XCTAssertTrue(saved.succeeded, saved.error ?? "")
+            let identity = f.document.modelSHA256
+            f.document.close()
+            let reopened = try await FloeCADDocument.open(at: f.document.url)
+            documents.append(reopened)
+            XCTAssertEqual(reopened.modelSHA256, identity)
+            XCTAssertEqual(try digest(try XCTUnwrap(reopened.session.document.body(with: f.body)?.brep), stage: "reopen"), baseline)
+            reopened.session.rebuildFrom(f.source.id)
+            XCTAssertTrue(reopened.session.lastEvalErrors.isEmpty)
+            XCTAssertEqual(try digest(try XCTUnwrap(reopened.session.document.body(with: f.body)?.brep), stage: "cold-rebuild"), baseline)
+            let first = try XCTUnwrap(reopened.session.document.features.nodes.first)
+            guard case let .primitive(_, placement) = first.kind else { return XCTFail("Missing original primitive") }
+            reopened.session.editFeature(first.id, to: .primitive(spec: partial
+                ? .cylinder(radius: 11, height: 30) : .box(width: 41, depth: 30, height: 10), placement: placement))
+            XCTAssertTrue(reopened.session.lastEvalErrors.isEmpty)
+            XCTAssertNotEqual(try digest(try XCTUnwrap(reopened.session.document.body(with: f.body)?.brep), stage: "changed-source"), baseline)
+            reopened.session.undo()
+            XCTAssertTrue(reopened.session.lastEvalErrors.isEmpty)
+            XCTAssertEqual(try digest(try XCTUnwrap(reopened.session.document.body(with: f.body)?.brep), stage: "undo"), baseline)
         }
     }
 
