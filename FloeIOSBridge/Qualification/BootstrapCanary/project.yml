@@ -1,0 +1,78 @@
+name: BootstrapCanary
+options:
+  deploymentTarget:
+    iOS: "26.0"
+  createIntermediateGroups: true
+  groupSortPosition: top
+settings:
+  base:
+    SWIFT_VERSION: "5.0"
+    IPHONEOS_DEPLOYMENT_TARGET: "26.0"
+    TARGETED_DEVICE_FAMILY: "1,2"
+    ARCHS: arm64
+    ONLY_ACTIVE_ARCH: NO
+    CODE_SIGNING_ALLOWED: NO
+    CODE_SIGNING_REQUIRED: NO
+    CODE_SIGN_IDENTITY: ""
+    DEVELOPMENT_TEAM: ""
+    ENABLE_USER_SCRIPT_SANDBOXING: NO
+    CLANG_ENABLE_MODULES: YES
+    SWIFT_OPTIMIZATION_LEVEL: "-O"
+    DEBUG_INFORMATION_FORMAT: dwarf-with-dsym
+targets:
+  BootstrapCanary:
+    type: application
+    platform: iOS
+    sources:
+      - path: BootstrapCanary
+        excludes:
+          - Info.plist
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: org.floeagent.iosbridge
+        PRODUCT_NAME: BootstrapCanary
+        INFOPLIST_FILE: BootstrapCanary/Info.plist
+        GENERATE_INFOPLIST_FILE: NO
+        MARKETING_VERSION: "0.1.0"
+        CURRENT_PROJECT_VERSION: "1"
+        SWIFT_OBJC_BRIDGING_HEADER: BootstrapCanary/BootstrapCanary-Bridging-Header.h
+        LD_RUNPATH_SEARCH_PATHS: "$(inherited) @executable_path/Frameworks /System/Developer/Library/Frameworks /System/Developer/Library/PrivateFrameworks /System/Developer/usr/lib /Developer/Library/Frameworks /Developer/Library/PrivateFrameworks /Developer/usr/lib /private/preboot/Cryptexes/OS/System/Developer/Library/Frameworks /private/preboot/Cryptexes/OS/System/Developer/Library/PrivateFrameworks /private/preboot/Cryptexes/OS/System/Developer/usr/lib"
+        SKIP_INSTALL: YES
+  BootstrapCanaryUITests:
+    type: bundle.ui-testing
+    platform: iOS
+    sources:
+      - path: BootstrapCanaryUITests
+        excludes:
+          - Info.plist
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: org.floeagent.iosbridge
+        PRODUCT_NAME: BootstrapCanaryUITests
+        INFOPLIST_FILE: BootstrapCanaryUITests/Info.plist
+        GENERATE_INFOPLIST_FILE: NO
+        SWIFT_OBJC_BRIDGING_HEADER: BootstrapCanaryUITests/BootstrapCanaryUITests-Bridging-Header.h
+        TEST_HOST: ""
+        BUNDLE_LOADER: ""
+        TEST_TARGET_NAME: ""
+        FRAMEWORK_SEARCH_PATHS: "$(inherited) $(PLATFORM_DIR)/Developer/Library/Frameworks $(PLATFORM_DIR)/Developer/Library/PrivateFrameworks"
+        OTHER_LDFLAGS: "$(inherited) -framework XCTest -framework XCUIAutomation"
+        LD_RUNPATH_SEARCH_PATHS: "$(inherited) @loader_path/../../Frameworks /System/Developer/Library/Frameworks /System/Developer/Library/PrivateFrameworks /System/Developer/usr/lib /Developer/Library/Frameworks /Developer/Library/PrivateFrameworks /Developer/usr/lib /private/preboot/Cryptexes/OS/System/Developer/Library/Frameworks /private/preboot/Cryptexes/OS/System/Developer/Library/PrivateFrameworks /private/preboot/Cryptexes/OS/System/Developer/usr/lib"
+        WRAPPER_EXTENSION: xctest
+        SKIP_INSTALL: YES
+schemes:
+  BootstrapCanary:
+    build:
+      targets:
+        BootstrapCanary: all
+    run:
+      config: Release
+    archive:
+      config: Release
+
+  BootstrapCanaryUITests:
+    build:
+      targets:
+        BootstrapCanaryUITests: all
+    run:
+      config: Release

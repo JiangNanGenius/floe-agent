@@ -1,0 +1,153 @@
+name: FloeIOSBridge
+options:
+  deploymentTarget:
+    iOS: "26.0"
+  createIntermediateGroups: true
+  groupSortPosition: top
+settings:
+  base:
+    SWIFT_VERSION: "6.0"
+    SWIFT_STRICT_CONCURRENCY: complete
+    IPHONEOS_DEPLOYMENT_TARGET: "26.0"
+    TARGETED_DEVICE_FAMILY: "1,2"
+    ARCHS: arm64
+    ONLY_ACTIVE_ARCH: NO
+    CODE_SIGNING_ALLOWED: NO
+    CODE_SIGNING_REQUIRED: NO
+    CODE_SIGN_IDENTITY: ""
+    DEVELOPMENT_TEAM: ""
+    ENABLE_USER_SCRIPT_SANDBOXING: NO
+    CLANG_ENABLE_MODULES: YES
+    SWIFT_OPTIMIZATION_LEVEL: "-O"
+    DEBUG_INFORMATION_FORMAT: dwarf-with-dsym
+    MARKETING_VERSION: "1.0.0"
+    CURRENT_PROJECT_VERSION: "14"
+    DEAD_CODE_STRIPPING: YES
+targets:
+  BridgeCore:
+    type: framework
+    platform: iOS
+    sources:
+      - path: Sources/BridgeCore
+    settings:
+      base:
+        PRODUCT_NAME: BridgeCore
+        PRODUCT_BUNDLE_IDENTIFIER: org.floeagent.iosbridge.core
+        CURRENT_PROJECT_VERSION: "14"
+        MARKETING_VERSION: "1.0.0"
+        DEFINES_MODULE: YES
+        SKIP_INSTALL: YES
+        GENERATE_INFOPLIST_FILE: NO
+        INFOPLIST_FILE: Sources/BridgeCore/Info.plist
+        APPLICATION_EXTENSION_API_ONLY: YES
+        LD_DYLIB_INSTALL_NAME: "@rpath/BridgeCore.framework/BridgeCore"
+        LD_RUNPATH_SEARCH_PATHS: "$(inherited) @executable_path/Frameworks @loader_path/Frameworks"
+        MACH_O_TYPE: mh_dylib
+
+  BridgeTunnel:
+    type: app-extension
+    platform: iOS
+    sources:
+      - path: Sources/BridgeTunnel
+        excludes:
+          - Info.plist
+    dependencies:
+      - target: BridgeCore
+        embed: true
+    settings:
+      base:
+        PRODUCT_NAME: BridgeTunnel
+        PRODUCT_BUNDLE_IDENTIFIER: org.floeagent.iosbridge.tunnel
+        INFOPLIST_FILE: Sources/BridgeTunnel/Info.plist
+        GENERATE_INFOPLIST_FILE: NO
+        SKIP_INSTALL: YES
+        APPLICATION_EXTENSION_API_ONLY: YES
+        LD_RUNPATH_SEARCH_PATHS: "$(inherited) @executable_path/Frameworks @executable_path/../../Frameworks"
+
+  BridgeTests:
+    type: bundle.ui-testing
+    platform: iOS
+    sources:
+      - path: Sources/BridgeTests
+        excludes:
+          - Info.plist
+    dependencies:
+      - target: BridgeCore
+        embed: false
+    settings:
+      base:
+        PRODUCT_NAME: BridgeTests
+        PRODUCT_BUNDLE_IDENTIFIER: org.floeagent.iosbridge
+        INFOPLIST_FILE: Sources/BridgeTests/Info.plist
+        GENERATE_INFOPLIST_FILE: NO
+        TEST_HOST: ""
+        BUNDLE_LOADER: ""
+        TEST_TARGET_NAME: ""
+        WRAPPER_EXTENSION: xctest
+        SKIP_INSTALL: YES
+        SWIFT_OBJC_BRIDGING_HEADER: Sources/BridgeTests/BridgeTests-Bridging-Header.h
+        FRAMEWORK_SEARCH_PATHS: "$(inherited) $(PLATFORM_DIR)/Developer/Library/Frameworks $(PLATFORM_DIR)/Developer/Library/PrivateFrameworks"
+        OTHER_LDFLAGS: "$(inherited) -framework XCTest -framework XCUIAutomation"
+        LD_RUNPATH_SEARCH_PATHS: "$(inherited) @loader_path/../../Frameworks @executable_path/Frameworks /System/Developer/Library/Frameworks /System/Developer/Library/PrivateFrameworks /System/Developer/usr/lib /Developer/Library/Frameworks /Developer/Library/PrivateFrameworks /Developer/usr/lib /private/preboot/Cryptexes/OS/System/Developer/Library/Frameworks /private/preboot/Cryptexes/OS/System/Developer/Library/PrivateFrameworks /private/preboot/Cryptexes/OS/System/Developer/usr/lib"
+
+  BridgeHost:
+    type: application
+    platform: iOS
+    sources:
+      - path: Sources/BridgeHost
+        excludes:
+          - Info.plist
+      - path: Assets.xcassets
+        buildPhase: resources
+      - path: ThirdParty
+        type: folder
+        buildPhase: resources
+      - path: Resources/BridgeRPC
+        type: folder
+        buildPhase: resources
+      - path: Resources/BridgeRemote
+        type: folder
+        buildPhase: resources
+      - path: Resources/en.lproj
+        type: folder
+        buildPhase: resources
+      - path: Resources/zh-Hans.lproj
+        type: folder
+        buildPhase: resources
+    dependencies:
+      - target: BridgeCore
+        embed: true
+      - target: BridgeTunnel
+        embed: true
+      - framework: Frameworks/IDevice.xcframework
+        embed: false
+    settings:
+      base:
+        PRODUCT_NAME: BridgeHost
+        PRODUCT_BUNDLE_IDENTIFIER: org.floeagent.iosbridge
+        INFOPLIST_FILE: Sources/BridgeHost/Info.plist
+        GENERATE_INFOPLIST_FILE: NO
+        SKIP_INSTALL: NO
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        SWIFT_OBJC_BRIDGING_HEADER: Sources/BridgeHost/BridgeHost-Bridging-Header.h
+        LD_RUNPATH_SEARCH_PATHS: "$(inherited) @executable_path/Frameworks /System/Developer/Library/Frameworks /System/Developer/Library/PrivateFrameworks /System/Developer/usr/lib /Developer/Library/Frameworks /Developer/Library/PrivateFrameworks /Developer/usr/lib /private/preboot/Cryptexes/OS/System/Developer/Library/Frameworks /private/preboot/Cryptexes/OS/System/Developer/Library/PrivateFrameworks /private/preboot/Cryptexes/OS/System/Developer/usr/lib"
+
+schemes:
+  BridgeHost:
+    build:
+      targets:
+        BridgeHost: all
+    run:
+      config: Release
+    archive:
+      config: Release
+  BridgeTests:
+    build:
+      targets:
+        BridgeTests: all
+    run:
+      config: Release
+  BridgeCore:
+    build:
+      targets:
+        BridgeCore: all
