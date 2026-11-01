@@ -100,6 +100,9 @@ nonisolated struct CADSceneSnapshot: Sendable, Equatable {
     var images: [CADSceneImageResource]
     var appearance: CADViewAppearance
     var unresolvedFaceBindings: [CADSceneUnresolvedFaceBinding]
+    /// X21 saved/selected camera state. Defaulted so historical snapshot
+    /// fixtures that predate cameras keep constructing without a camera list.
+    var cameras: CADSceneCameraSummary = .empty
 
     /// Bounded JSON description (no mesh/image bytes) for `query kind=scene`
     /// and capability replies.
@@ -123,6 +126,7 @@ nonisolated struct CADSceneSnapshot: Sendable, Equatable {
                 "floor_size_mm": appearance.floorSizeMM,
                 "shadows": appearance.shadowsEnabled,
             ],
+            "cameras": cameras.summaryJSON,
         ]
     }
 }
@@ -347,6 +351,7 @@ extension FloeCADDocument {
             }
         }
 
+        let cameraState = savedCameraState()
         return CADSceneSnapshot(
             schemaVersion: CADSceneSnapshot.currentSchemaVersion,
             documentRevision: revision,
@@ -359,6 +364,8 @@ extension FloeCADDocument {
             materials: library.entries,
             images: images.values.sorted { $0.id < $1.id },
             appearance: viewAppearance,
-            unresolvedFaceBindings: unresolved)
+            unresolvedFaceBindings: unresolved,
+            cameras: CADSceneCameraSummary(active: cameraState.active,
+                                           saved: cameraState.saved))
     }
 }

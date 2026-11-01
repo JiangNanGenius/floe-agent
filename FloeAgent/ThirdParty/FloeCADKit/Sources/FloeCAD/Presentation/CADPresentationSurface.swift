@@ -104,9 +104,21 @@ final class CADPresentationHandle {
     /// Current live camera; used by the timeline to capture a keyframe from
     /// exactly what the user is looking at.
     var currentCamera: CADPresentationCamera? { controller?.currentCamera }
+    /// Current viewport width ÷ height, captured into a saved view.
+    var currentFrameAspect: Double? { controller?.currentFrameAspect }
 
     func fit() {
         controller?.fit()
+    }
+
+    /// Show an already-persisted saved view without writing the document.
+    func showCamera(_ camera: CADPresentationCamera) {
+        controller?.showCamera(camera)
+    }
+
+    /// Temporary live projection change; never overwrites a saved camera.
+    func setProjection(_ projection: CADCameraProjection) {
+        controller?.setProjection(projection)
     }
 
     /// The host control routes through here so a pending tap that began under
@@ -149,7 +161,9 @@ final class CADPresentationRenderController: NSObject, UIGestureRecognizerDelega
     /// renders, so the stage's fitted inverse-view transform does not own the
     /// visible framing. The observed Present view framed the whole 2 m ground
     /// plane instead of the fitted model, which is why Fit appeared inert.
-    private let cameraEntity = PerspectiveCamera()
+    /// A plain entity holds EITHER a perspective or an orthographic component
+    /// (never both); `applyCamera` swaps them when the projection changes.
+    private let cameraEntity = Entity()
     private var stage: Entity?
     private var camera = CADPresentationCamera()
     private var cameraRestored = false
@@ -263,6 +277,7 @@ final class CADPresentationRenderController: NSObject, UIGestureRecognizerDelega
         hasher.combine(camera.azimuthRadians)
         hasher.combine(camera.elevationRadians)
         hasher.combine(camera.fovYDegrees)
+        hasher.combine(camera.projection)
         hasher.combine(currentScene?.environment.stableKey)
         hasher.combine(buildKey)
         hasher.combine(animationToken)
@@ -305,10 +320,9 @@ final class CADPresentationRenderController: NSObject, UIGestureRecognizerDelega
         super.init()
         arView.backgroundColor = .clear
         cameraEntity.name = "CADPresentationCamera"
-        cameraEntity.camera.fieldOfViewInDegrees = camera.fovYDegrees
-        cameraEntity.camera.fieldOfViewOrientation = .vertical
         anchor.addChild(cameraEntity)
         arView.scene.addAnchor(anchor)
+        applyCamera()
         installGestures()
     }
 
@@ -316,8 +330,17 @@ final class CADPresentationRenderController: NSObject, UIGestureRecognizerDelega
     /// transform in sync. The camera stays at the anchor origin looking down
     /// −Z; every orbit/pan/zoom/fit moves the stage by the inverse camera
     /// matrix, exactly as `CADPresentationCamera.stageTransform` defines.
+    /// Exactly one projection component is installed so RealityKit cannot pick
+    /// a stale one after a perspective/orthographic switch.
     private func applyCamera() {
-        cameraEntity.camera.fieldOfViewInDegrees = camera.fovYDegrees
+        switch camera.projection {
+        case .perspective:
+            cameraEntity.components.set(camera.perspectiveCameraComponent)
+            cameraEntity.components.remove(OrthographicCameraComponent.self)
+        case .orthographic:
+            cameraEntity.components.set(camera.orthographicCameraComponent)
+            cameraEntity.components.remove(PerspectiveCameraComponent.self)
+        }
         stage?.transform = Transform(matrix: camera.stageTransform)
     }
 
@@ -325,6 +348,13 @@ final class CADPresentationRenderController: NSObject, UIGestureRecognizerDelega
         let size = arView.bounds.size
         guard size.width > 1, size.height > 1 else { return nil }
         return Float(size.width / size.height)
+    }
+
+    /// Width ÷ height of the actual viewport. Captured into a saved view so
+    /// its export framing is the frame the user saw.
+    var currentFrameAspect: Double? {
+        guard let viewportAspect else { return nil }
+        return Double(viewportAspect)
     }
 
     // MARK: Attachment
@@ -412,7 +442,8 @@ final class CADPresentationRenderController: NSObject, UIGestureRecognizerDelega
             handle?.setIssues(issues)
             if buildKey == nil && !cameraRestored {
                 camera = CADPresentationCamera.fitted(
-                    to: scene.bounds, aspect: viewportAspect)
+                    to: scene.bounds, aspect: viewportAspect,
+                    projection: camera.projection)
             }
             camera.fitIfInvalid(scene.bounds, aspect: viewportAspect)
             applyCamera()
@@ -852,6 +883,30 @@ final class CADPresentationRenderController: NSObject, UIGestureRecognizerDelega
         guard saved.isValid else { return }
         camera = saved
         cameraRestored = true
+        applyCamera()
+    }
+
+    /// Show a saved view. This changes only the live camera; the bookmark is
+    /// written by the document command the caller already performed.
+    func showCamera(_ saved: CADPresentationCamera) {
+        guard saved.isValid else { return }
+        interactionGeneration &+= 1
+        // A document selection/undo can arrive while a transient frame owns
+        // the stage. Stopping that frame must restore the newly selected view,
+        // rather than resurrecting the camera from before the document edit.
+        if animationRestoreCamera != nil { animationRestoreCamera = saved }
+        camera = saved
+        cameraRestored = true
+        applyCamera()
+    }
+
+    /// Live projection toggle. This is a temporary observation, exactly like
+    /// an orbit: it never writes a saved camera. Saving the current view is
+    /// the explicit document edit.
+    func setProjection(_ projection: CADCameraProjection) {
+        guard camera.projection != projection else { return }
+        interactionGeneration &+= 1
+        camera.projection = projection
         applyCamera()
     }
 
@@ -1329,6 +1384,48 @@ final class CADPresentationRenderController: NSObject, UIGestureRecognizerDelega
             image.draw(in: CGRect(origin: .zero, size: size))
         }
     }
+
+    /// Actual ARView pixels of one saved camera, applied transiently under an
+    /// exclusive render lease and restored with the document baseline before
+    /// returning. Playback must already be stopped and no export lease may be
+    /// held; the caller fences the document identity around the await. This
+    /// never writes the document or the saved camera.
+    func framedSnapshotImage(camera exportCamera: CADPresentationCamera,
+                             targetWidth: Int?) async throws -> UIImage {
+        guard arView.window != nil else { throw CADPresentationError.notAttached }
+        guard stage != nil else { throw CADPresentationError.renderingUnavailable }
+        guard animationLease == nil else {
+            throw CADPresentationError.renderingUnavailable
+        }
+        guard exportCamera.isValid,
+              let lease = beginAnimationLease() else {
+            throw CADPresentationError.renderingUnavailable
+        }
+        let generation = renderGeneration
+        let token = String(
+            format: "camera-frame|%@|%.6f|%.6f|%.4f",
+            exportCamera.projection.rawValue,
+            exportCamera.distance,
+            exportCamera.fovYDegrees,
+            exportCamera.azimuthRadians)
+        let applied = applyAnimation(
+            camera: exportCamera, instanceTransforms: [:],
+            token: token, expectedGeneration: generation, lease: lease)
+        guard applied else {
+            endAnimationLease(lease)
+            throw CADPresentationError.snapshotStale
+        }
+        defer {
+            endAnimationLease(lease)
+            clearAnimation()
+        }
+        let image = try await snapshotImage(targetWidth: targetWidth)
+        guard animationToken == token,
+              renderGeneration == generation else {
+            throw CADPresentationError.snapshotStale
+        }
+        return image
+    }
 }
 
 // MARK: - Camera fit helper
@@ -1337,7 +1434,8 @@ private extension CADPresentationCamera {
     mutating func fitIfInvalid(_ bounds: CADPresentationBounds?, aspect: Float?) {
         if !isValid {
             self = CADPresentationCamera.fitted(
-                to: bounds, fovYDegrees: fovYDegrees, aspect: aspect)
+                to: bounds, fovYDegrees: fovYDegrees, aspect: aspect,
+                projection: projection)
         }
     }
 }
@@ -1353,17 +1451,25 @@ struct CADPresentationSurface: UIViewRepresentable {
         let controller = CADPresentationRenderController()
         controller.attach(handle: handle)
         controller.bindSelection(to: document)
+        // A Present/Edit switch keeps the transient live camera; a REOPENED
+        // document has no transient value, so it starts on its selected saved
+        // view. Reopening thus restores the projection and framing the user
+        // saved instead of an arbitrary fitted pose.
         if let saved = handle.savedCamera {
             controller.restoreCamera(saved)
+        } else if let selected = document.activeSavedCamera {
+            controller.restoreCamera(selected.presentationCamera)
         }
         handle.controller = controller
         context.coordinator.controller = controller
+        context.coordinator.recordCameraSelection(document)
         controller.apply(scene)
         return controller.arView
     }
 
     func updateUIView(_ uiView: ARView, context: Context) {
         context.coordinator.controller?.bindSelection(to: document)
+        context.coordinator.synchronizeCameraSelection(document)
         context.coordinator.controller?.apply(scene)
     }
 
@@ -1374,8 +1480,29 @@ struct CADPresentationSurface: UIViewRepresentable {
 
     func makeCoordinator() -> Coordinator { Coordinator() }
 
+    @MainActor
     final class Coordinator {
         var controller: CADPresentationRenderController?
+        private var selectedID: UUID?
+        private var selectedPose: CADPresentationCamera?
+
+        func recordCameraSelection(_ document: FloeCADDocument) {
+            let selected = document.activeSavedCamera
+            selectedID = selected?.id
+            selectedPose = selected?.presentationCamera
+        }
+
+        func synchronizeCameraSelection(_ document: FloeCADDocument) {
+            let selected = document.activeSavedCamera
+            let pose = selected?.presentationCamera
+            guard selectedID != selected?.id || selectedPose != pose else { return }
+            recordCameraSelection(document)
+            // Rename, unrelated geometry edits and view updates do not reset
+            // a user's temporary orbit. A changed selection/pose, including
+            // undo/redo or an assistant edit, does update the actual camera.
+            // Free view keeps the current pose and only removes the binding.
+            if let pose { controller?.showCamera(pose) }
+        }
     }
 }
 
@@ -1400,9 +1527,18 @@ final class CADPresentationSnapshotService {
 
     func capture(handle: CADPresentationHandle,
                  document: FloeCADDocument,
-                 targetWidth: Int) async throws -> CADPresentationSnapshot {
+                 targetWidth: Int,
+                 savedCamera: CADSavedCamera? = nil) async throws
+    -> CADPresentationSnapshot {
         guard let controller = handle.controller else {
             throw CADPresentationError.notAttached
+        }
+        var savedView: CADSavedCamera?
+        if let savedCamera {
+            guard let clean = savedCamera.sanitized else {
+                throw CADPresentationError.snapshotFailed
+            }
+            savedView = clean
         }
         // A pending debounced autosave of the SAME live content commits a new
         // receipt while the asynchronous ARView snapshot flies; the fence
@@ -1453,11 +1589,32 @@ final class CADPresentationSnapshotService {
         let contentSHA256 = document.contentSHA256
         let stateBefore = controller.renderStateToken
         let keyBefore = "\(documentKey)|\(revision)|\(changeCount)|\(contentSHA256)|\(stateBefore)|\(targetWidth)"
-        if let cached = cache[keyBefore] {
+        // A framed saved-view capture is not the live render, so it neither
+        // reads nor writes this cache.
+        if savedView == nil, let cached = cache[keyBefore] {
             return cached.snapshot
         }
         if Task.isCancelled { throw CADPresentationError.snapshotCancelled }
-        let result = try await controller.snapshotPNG(targetWidth: targetWidth)
+        let result: (png: Data, width: Int, height: Int)
+        let note: String
+        if let savedView {
+            let image = try await controller.framedSnapshotImage(
+                camera: savedView.presentationCamera, targetWidth: targetWidth)
+            guard let composed = CADExportFrame.composited(
+                image, aspect: savedView.frameAspect,
+                background: Self.exportBackground(for: document.viewAppearance)),
+                  let png = composed.image.pngData() else {
+                throw CADPresentationError.snapshotFailed
+            }
+            result = (png, composed.width, composed.height)
+            note = "Actual live RealityKit render of saved view "
+                + "“\(savedView.name)” "
+                + "(\(savedView.projection.rawValue), \(savedView.frameLabel)), "
+                + "bound to the open document revision."
+        } else {
+            result = try await controller.snapshotPNG(targetWidth: targetWidth)
+            note = "Actual current RealityKit presentation render bound to the open document revision."
+        }
         if Task.isCancelled { throw CADPresentationError.snapshotCancelled }
         let documentKeyAfter = document.url.standardizedFileURL.path
         let revisionAfter = document.revision
@@ -1500,10 +1657,21 @@ final class CADPresentationSnapshotService {
             contentSHA256: contentSHA256,
             imageSHA256: CADMaterialTexture.digest(result.png),
             capturedAt: Date(),
-            note: "Actual current RealityKit presentation render bound to the open document revision.")
-        let keyAfter = "\(documentKey)|\(revision)|\(changeCount)|\(contentSHA256)|\(stateAfter)|\(targetWidth)"
-        store(snapshot, key: keyAfter)
+            note: note)
+        if savedView == nil {
+            let keyAfter = "\(documentKey)|\(revision)|\(changeCount)|\(contentSHA256)|\(stateAfter)|\(targetWidth)"
+            store(snapshot, key: keyAfter)
+        }
         return snapshot
+    }
+
+    /// Presentation background colour for the framed-export bars, from the
+    /// same environment the stage renders with.
+    private static func exportBackground(for appearance: CADViewAppearance) -> UIColor {
+        let environment = CADPresentationSceneBuilder.environment(from: appearance)
+        let color = environment.backgroundColor
+        return UIColor(red: CGFloat(color.x), green: CGFloat(color.y),
+                       blue: CGFloat(color.z), alpha: 1)
     }
 
     private func store(_ snapshot: CADPresentationSnapshot, key: String) {

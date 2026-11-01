@@ -3,16 +3,18 @@
 //  FloeCADKit
 //
 //  Orbit camera for the presentation surface, expressed in RealityKit metres
-//  and +Y up. The presentation installs one explicit non-AR PerspectiveCamera
-//  at the origin (RealityKit's implicit default camera is not the app's fitted
-//  camera) and moves a single stage entity by this camera's inverse view
-//  transform. Lighting, floor and products therefore share one coordinate
-//  frame and one camera state — no second scene, no per-body camera
-//  adjustments.
+//  and +Y up. The presentation installs one explicit non-AR camera entity at
+//  the origin — a perspective or orthographic component, never RealityKit's
+//  implicit default camera — and moves a single stage entity by this camera's
+//  inverse view transform. Lighting, floor and products therefore share one
+//  coordinate frame and one camera state — no second scene, no per-body camera
+//  adjustments. Saving a view never changes this struct's live value; only an
+//  explicit document command stores a copy.
 //
 
 #if canImport(SwiftUI) && canImport(RealityKit) && canImport(UIKit)
 import Foundation
+import RealityKit
 import simd
 
 nonisolated struct CADPresentationCamera: Equatable, Sendable {
@@ -23,6 +25,12 @@ nonisolated struct CADPresentationCamera: Equatable, Sendable {
     var azimuthRadians: Float = .pi * 0.22
     var elevationRadians: Float = .pi * 0.12
     var fovYDegrees: Float = 60
+    /// Perspective or orthographic. The pose and the vertical framing angle are
+    /// shared: an orthographic camera uses
+    /// `distance * tan(fovY / 2)` as its half-height, so switching projection
+    /// keeps the model the same on-screen size (the same relation the
+    /// engineering `TurntableCamera` uses).
+    var projection: CADCameraProjection = .perspective
 
     static let minimumDistance: Float = 0.002
     static let maximumDistance: Float = 500
@@ -31,25 +39,30 @@ nonisolated struct CADPresentationCamera: Equatable, Sendable {
          distance: Float = 1,
          azimuthRadians: Float = .pi * 0.22,
          elevationRadians: Float = .pi * 0.12,
-         fovYDegrees: Float = 60) {
+         fovYDegrees: Float = 60,
+         projection: CADCameraProjection = .perspective) {
         self.target = target
         self.distance = distance
         self.azimuthRadians = azimuthRadians
         self.elevationRadians = elevationRadians
         self.fovYDegrees = fovYDegrees
+        self.projection = projection
     }
 
     /// A framing that keeps the whole model visible with a margin. Uses the
     /// bounding sphere so the fit is rotation-independent. When the viewport
     /// aspect (width / height) is supplied, the tighter of the vertical and
     /// horizontal fields of view is used, so a portrait viewport does not clip
-    /// a wide model that fit vertically but not horizontally.
+    /// a wide model that fit vertically but not horizontally. `projection` is
+    /// preserved: fitting an orthographic view stays orthographic.
     static func fitted(to bounds: CADPresentationBounds?,
                        fovYDegrees: Float = 60,
-                       aspect: Float? = nil) -> CADPresentationCamera {
+                       aspect: Float? = nil,
+                       projection: CADCameraProjection = .perspective) -> CADPresentationCamera {
         guard let bounds else {
             return CADPresentationCamera(target: .zero, distance: 1,
-                                         fovYDegrees: fovYDegrees)
+                                         fovYDegrees: fovYDegrees,
+                                         projection: projection)
         }
         let radius = max(bounds.radius, 0.002)
         let halfFov = fittedHalfAngle(fovYDegrees: fovYDegrees, aspect: aspect)
@@ -61,7 +74,8 @@ nonisolated struct CADPresentationCamera: Equatable, Sendable {
             distance: distance,
             azimuthRadians: .pi * 0.22,
             elevationRadians: .pi * 0.12,
-            fovYDegrees: fovYDegrees)
+            fovYDegrees: fovYDegrees,
+            projection: projection)
     }
 
     /// Half-angle the fit must respect. The vertical half-FOV governs a
@@ -73,6 +87,37 @@ nonisolated struct CADPresentationCamera: Equatable, Sendable {
             return vertical
         }
         return atan(tan(vertical) * aspect)
+    }
+
+    /// Visible half-height at the target depth. Both projections share it, so
+    /// toggling perspective/orthographic never changes the model's on-screen
+    /// size (matching `TurntableCamera`'s orthographic scale derivation).
+    var halfHeightAtTarget: Float {
+        let fov = min(max(fovYDegrees, 10), 150)
+        return max(distance * tan(fov * .pi / 360), 0.0005)
+    }
+
+    /// RealityKit projection component for this camera. Exactly one camera
+    /// component is installed on the camera entity; `applyCamera` removes the
+    /// other one.
+    var perspectiveCameraComponent: PerspectiveCameraComponent {
+        PerspectiveCameraComponent(
+            near: 0.01, far: .infinity,
+            fieldOfViewInDegrees: fovYDegrees,
+            fieldOfViewOrientation: .vertical)
+    }
+
+    /// `OrthographicCameraComponent.scale` is the half-height of the framed
+    /// area when `scaleDirection` is `.vertical`. `near`/`far` bracket the
+    /// model at the orbit distance, using the same proportional convention as
+    /// the engineering camera.
+    var orthographicCameraComponent: OrthographicCameraComponent {
+        var component = OrthographicCameraComponent()
+        component.near = max(0.0005, distance * 0.01)
+        component.far = max(100, distance * 40)
+        component.scale = halfHeightAtTarget
+        component.scaleDirection = .vertical
+        return component
     }
 
     var position: SIMD3<Float> {
@@ -137,12 +182,15 @@ nonisolated struct CADPresentationCamera: Equatable, Sendable {
     }
 
     mutating func fit(_ bounds: CADPresentationBounds?, aspect: Float? = nil) {
-        self = Self.fitted(to: bounds, fovYDegrees: fovYDegrees, aspect: aspect)
+        self = Self.fitted(to: bounds, fovYDegrees: fovYDegrees,
+                           aspect: aspect, projection: projection)
     }
 
     var isValid: Bool {
         distance.isFinite && distance > 0
             && target.x.isFinite && target.y.isFinite && target.z.isFinite
+            && azimuthRadians.isFinite && elevationRadians.isFinite
+            && fovYDegrees.isFinite && fovYDegrees >= 10 && fovYDegrees <= 150
     }
 }
 #endif

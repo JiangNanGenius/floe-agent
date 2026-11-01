@@ -423,8 +423,13 @@ public extension FloeCADDocument {
     /// orientation cube are therefore untouched — closing the tools panel
     /// after "Apply to canvas" can no longer re-frame or blank the live
     /// viewport.
+    ///
+    /// `camera` is an explicit SAVED view. When supplied, the snapshot renders
+    /// exactly that pose, projection and framing at this width/height aspect;
+    /// the live editor camera is still never read or written.
     @MainActor
-    func viewportThumbnailPNG(width: Int = 640, height: Int = 480) -> Data? {
+    func viewportThumbnailPNG(width: Int = 640, height: Int = 480,
+                              camera: CADSavedCamera? = nil) -> Data? {
         guard width > 0, height > 0 else { return nil }
         guard let context = RenderContext() else { return nil }
         // Read the current scene ONCE (a value type with CoW mesh references);
@@ -432,7 +437,8 @@ public extension FloeCADDocument {
         let snapshot = viewModel().scene
         let snapshotRenderer = Renderer(context: context)
         return snapshotRenderer.makeSceneSnapshotPNG(
-            snapshot, width: width, height: height)
+            snapshot, width: width, height: height,
+            camera: camera?.turntableCamera)
     }
 }
 #endif

@@ -171,7 +171,10 @@ public nonisolated enum CADLegacyVisualApproximation: String, Sendable, Codable,
 /// `sceneSettings` column. Absent on ordinary CAD documents; older builds
 /// ignore the unknown key (they decode the document record without it).
 public nonisolated struct CADSceneSettings: Codable, Equatable, Sendable {
-    public static let currentSchemaVersion = 1
+    /// 2 adds the optional named-camera list and its selection. The fields are
+    /// additive optionals, so a version-1 package decodes unchanged and a
+    /// version-1 reader ignores them.
+    public static let currentSchemaVersion = 2
 
     public nonisolated struct Camera: Codable, Equatable, Sendable {
         public var azimuthRadians: Double
@@ -267,6 +270,12 @@ public nonisolated struct CADSceneSettings: Codable, Equatable, Sendable {
     public var background: Background?
     public var showsGrid: Bool?
     public var legacy: LegacyProvenance?
+    /// X21 named presentation cameras. Additive optional: a package written
+    /// before X21 (or by a build without this feature) decodes with nil.
+    public var savedCameras: [CADSavedCamera]?
+    /// The saved camera the document presents when reopened. Nil means no
+    /// saved view is selected (the free view).
+    public var activeCameraID: UUID?
     /// Environment/light/floor appearance for the shared scene snapshot.
     /// Additive optional: older documents decode with nil and use the default
     /// studio/daylight/dark presets.
@@ -275,10 +284,13 @@ public nonisolated struct CADSceneSettings: Codable, Equatable, Sendable {
     public init(schemaVersion: Int = CADSceneSettings.currentSchemaVersion,
                 camera: Camera? = nil, lighting: Lighting? = nil,
                 background: Background? = nil, showsGrid: Bool? = nil,
-                legacy: LegacyProvenance? = nil) {
+                legacy: LegacyProvenance? = nil,
+                savedCameras: [CADSavedCamera]? = nil,
+                activeCameraID: UUID? = nil) {
         self.schemaVersion = schemaVersion
         self.camera = camera; self.lighting = lighting
         self.background = background; self.showsGrid = showsGrid; self.legacy = legacy
+        self.savedCameras = savedCameras; self.activeCameraID = activeCameraID
     }
 }
 

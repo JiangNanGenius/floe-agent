@@ -445,15 +445,21 @@ final class Renderer: NSObject, MTKViewDelegate {
     func makeSceneSnapshotPNG(
         _ snapshot: ViewportScene,
         width: Int = 640,
-        height: Int = 480
+        height: Int = 480,
+        camera explicitCamera: TurntableCamera? = nil
     ) -> Data? {
         guard width > 0, height > 0 else { return nil }
         // A migrated legacy scene keeps its authored camera, so the canvas
         // node preview frames the same view the legacy director showed. A
         // private fitted camera frames anything else isometrically without
         // mutating `self.camera` or invoking `viewportSizeChanged`.
+        //
+        // X21: an explicit saved camera (pose, projection and framing) wins
+        // over both. It is a value, so the live renderer camera is untouched.
         var snapshotCamera = TurntableCamera()
-        if let saved = snapshot.appearance?.camera {
+        if let explicitCamera {
+            snapshotCamera = explicitCamera
+        } else if let saved = snapshot.appearance?.camera {
             snapshotCamera = Self.turntableCamera(from: saved)
         } else if let bounds = snapshot.worldBounds {
             snapshotCamera.fit(boundsMin: bounds.min, boundsMax: bounds.max,

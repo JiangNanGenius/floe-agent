@@ -264,6 +264,372 @@ final class CADPresentationMaterialPreviewSink: CADMaterialPreviewSink {
     }
 }
 
+// MARK: - Camera views sheet
+
+/// X21 compact camera UI. Standard Form/Picker/List controls only: no custom
+/// camera panel. The projection picker changes the LIVE view (temporary, like
+/// an orbit); "Save Current View" is the only action that writes a bookmark,
+/// and switching/renaming/deleting go through the document's undoable camera
+/// commands. This sheet never edits geometry, materials or the selection.
+struct CADCameraBookmarksSheet: View {
+    let document: FloeCADDocument
+    let handle: CADPresentationHandle
+
+    @Environment(\.dismiss) private var dismiss
+    @State private var cameras: [CADSavedCamera] = []
+    @State private var activeID: UUID?
+    @State private var message: String?
+    @State private var renaming: CADSavedCamera?
+    @State private var renameText = ""
+
+    private var liveCamera: CADPresentationCamera? { handle.currentCamera }
+    private var liveProjection: CADCameraProjection {
+        liveCamera?.projection ?? .perspective
+    }
+    private var liveAspect: Double { handle.currentFrameAspect ?? 1 }
+    private var activeCamera: CADSavedCamera? {
+        cameras.first { $0.id == activeID }
+    }
+    private var currentViewDiffers: Bool {
+        guard let activeCamera, let liveCamera else { return false }
+        return !liveCamera.matches(activeCamera)
+    }
+    /// A video export owns the live stage; its transient frame is not a user
+    /// view and must never be saved or updated as one.
+    private var isExportBusy: Bool {
+        handle.controller?.isAnimationLeased == true
+    }
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                if isExportBusy {
+                    Section {
+                        Text(FloeCADStrings.text(
+                            "cad.present.camera.error.busy",
+                            "Wait for the current export to finish."))
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                Section {
+                    Picker(FloeCADStrings.text("cad.present.camera.projection",
+                                               "Projection"),
+                           selection: Binding(
+                            get: { liveProjection },
+                            set: { handle.setProjection($0) })) {
+                        Text(title(for: .perspective))
+                            .tag(CADCameraProjection.perspective)
+                        Text(title(for: .orthographic))
+                            .tag(CADCameraProjection.orthographic)
+                    }
+                    .pickerStyle(.segmented)
+                    .accessibilityIdentifier("CADPresentCameraProjection")
+                    Text(FloeCADStrings.text(
+                        "cad.present.camera.liveOnly",
+                        "Changes here apply to this view. Save it to keep it."))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                } header: {
+                    Text(currentDescription)
+                }
+
+                Section {
+                    Button {
+                        select(nil)
+                    } label: {
+                        row(title: FloeCADStrings.text(
+                                "cad.present.camera.free", "Free view"),
+                            detail: nil, isActive: activeID == nil,
+                            symbol: "viewfinder")
+                    }
+                    .accessibilityIdentifier("CADPresentCameraFree")
+
+                    ForEach(cameras) { camera in
+                        Button {
+                            select(camera)
+                        } label: {
+                            row(title: camera.name,
+                                detail: detail(for: camera),
+                                isActive: camera.id == activeID,
+                                symbol: "camera")
+                        }
+                        .accessibilityIdentifier(
+                            "CADPresentCameraRow-\(camera.id.uuidString)")
+                        .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+                            Button(role: .destructive) {
+                                delete(camera)
+                            } label: {
+                                Label(FloeCADStrings.text(
+                                    "cad.present.camera.delete", "Delete"),
+                                      systemImage: "trash")
+                            }
+                            Button {
+                                beginRename(camera)
+                            } label: {
+                                Label(FloeCADStrings.text(
+                                    "cad.present.camera.rename", "Rename"),
+                                      systemImage: "pencil")
+                            }
+                            Button {
+                                update(camera)
+                            } label: {
+                                Label(FloeCADStrings.text(
+                                    "cad.present.camera.update",
+                                    "Update from Current View"),
+                                      systemImage: "arrow.triangle.2.circlepath")
+                            }
+                        }
+                        .contextMenu {
+                            Button {
+                                update(camera)
+                            } label: {
+                                Label(FloeCADStrings.text(
+                                    "cad.present.camera.update",
+                                    "Update from Current View"),
+                                      systemImage: "arrow.triangle.2.circlepath")
+                            }
+                            Button {
+                                beginRename(camera)
+                            } label: {
+                                Label(FloeCADStrings.text(
+                                    "cad.present.camera.rename", "Rename"),
+                                      systemImage: "pencil")
+                            }
+                            Button(role: .destructive) {
+                                delete(camera)
+                            } label: {
+                                Label(FloeCADStrings.text(
+                                    "cad.present.camera.delete", "Delete"),
+                                      systemImage: "trash")
+                            }
+                        }
+                    }
+
+                    if cameras.isEmpty {
+                        Text(FloeCADStrings.text("cad.present.camera.none",
+                                                 "No saved views yet."))
+                            .foregroundStyle(.secondary)
+                    }
+                } header: {
+                    Text(FloeCADStrings.text("cad.present.camera.saved",
+                                             "Saved views"))
+                } footer: {
+                    if currentViewDiffers {
+                        Text(FloeCADStrings.text(
+                            "cad.present.camera.differs",
+                            "The live view differs from the selected view."))
+                    }
+                }
+
+                Section {
+                    Button {
+                        saveCurrent()
+                    } label: {
+                        Label(FloeCADStrings.text(
+                            "cad.present.camera.save", "Save Current View"),
+                              systemImage: "plus")
+                    }
+                    if currentViewDiffers, let activeCamera {
+                        Button {
+                            update(activeCamera)
+                        } label: {
+                            Label(FloeCADStrings.text(
+                                "cad.present.camera.updateActive",
+                                "Update “%@”", activeCamera.name),
+                                  systemImage: "arrow.triangle.2.circlepath")
+                        }
+                    }
+                    if let message {
+                        Text(message)
+                            .font(.footnote)
+                            .foregroundStyle(.red)
+                    }
+                } footer: {
+                    Text(FloeCADStrings.text(
+                        "cad.present.camera.footer",
+                        "Orbit, pan and zoom freely; a saved view keeps its own projection and framing."))
+                }
+            }
+            .disabled(isExportBusy)
+            .navigationTitle(FloeCADStrings.text("cad.present.camera", "Camera"))
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button(FloeCADStrings.text("cad.ui.common.done", "Done")) {
+                        dismiss()
+                    }
+                    .accessibilityIdentifier("CADPresentCameraDone")
+                }
+            }
+            .onAppear(perform: reload)
+            .alert(FloeCADStrings.text("cad.present.camera.renameTitle",
+                                       "Rename View"),
+                   isPresented: Binding(
+                    get: { renaming != nil },
+                    set: { if !$0 { renaming = nil } })) {
+                TextField(FloeCADStrings.text("cad.present.camera.namePlaceholder",
+                                              "Name"), text: $renameText)
+                    .accessibilityIdentifier("CADPresentCameraRenameField")
+                Button(FloeCADStrings.text("cad.present.camera.nameSave", "Save")) {
+                    commitRename()
+                }
+                Button(FloeCADStrings.text("cad.ui.common.cancel", "Cancel"),
+                       role: .cancel) { renaming = nil }
+            } message: {
+                Text(FloeCADStrings.text(
+                    "cad.present.camera.renameMessage",
+                    "Choose a name for this saved view."))
+            }
+        }
+        .presentationDetents([.medium, .large])
+        .presentationCompactAdaptation(.sheet)
+        .accessibilityIdentifier("CADPresentCameraSheet")
+    }
+
+    // MARK: Rows
+
+    private func row(title: String, detail: String?, isActive: Bool,
+                     symbol: String) -> some View {
+        HStack(spacing: 10) {
+            Image(systemName: isActive ? "checkmark.circle.fill" : symbol)
+                .foregroundStyle(isActive ? Color.accentColor : Color.secondary)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title).foregroundStyle(.primary)
+                if let detail {
+                    Text(detail)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            Spacer(minLength: 0)
+        }
+        .contentShape(Rectangle())
+    }
+
+    private var currentDescription: String {
+        let current = "\(title(for: liveProjection)) · "
+            + CADSavedCamera.frameLabel(forAspect: liveAspect)
+        return FloeCADStrings.format("cad.present.camera.current",
+                                     "Current: %@", current)
+    }
+
+    private func detail(for camera: CADSavedCamera) -> String {
+        "\(title(for: camera.projection)) · \(camera.frameLabel)"
+    }
+
+    private func title(for projection: CADCameraProjection) -> String {
+        switch projection {
+        case .perspective:
+            return FloeCADStrings.text("cad.present.camera.perspective",
+                                       "Perspective")
+        case .orthographic:
+            return FloeCADStrings.text("cad.present.camera.orthographic",
+                                       "Orthographic")
+        }
+    }
+
+    // MARK: Actions
+
+    private func reload() {
+        cameras = document.savedCameras
+        activeID = document.activeSavedCameraID
+    }
+
+    private func saveCurrent() {
+        guard !isExportBusy else {
+            message = FloeCADStrings.text(
+                "cad.present.camera.error.busy",
+                "Wait for the current export to finish.")
+            return
+        }
+        guard let liveCamera else {
+            message = FloeCADStrings.text("cad.present.camera.error.generic",
+                                          "The view could not be saved.")
+            return
+        }
+        let camera = CADSavedCamera(presentationCamera: liveCamera,
+                                    name: nextName(), frameAspect: liveAspect)
+        do {
+            _ = try document.saveCamera(camera)
+            message = nil
+            reload()
+        } catch {
+            message = error.localizedDescription
+        }
+    }
+
+    private func select(_ camera: CADSavedCamera?) {
+        do {
+            try document.selectCamera(id: camera?.id)
+            if let camera {
+                handle.showCamera(camera.presentationCamera)
+            }
+            message = nil
+            reload()
+        } catch {
+            message = error.localizedDescription
+        }
+    }
+
+    private func update(_ camera: CADSavedCamera) {
+        guard !isExportBusy else {
+            message = FloeCADStrings.text(
+                "cad.present.camera.error.busy",
+                "Wait for the current export to finish.")
+            return
+        }
+        guard let liveCamera else { return }
+        let draft = CADSavedCamera(presentationCamera: liveCamera,
+                                   name: camera.name, frameAspect: liveAspect)
+        do {
+            _ = try document.updateCamera(id: camera.id, with: draft)
+            message = nil
+            reload()
+        } catch {
+            message = error.localizedDescription
+        }
+    }
+
+    private func delete(_ camera: CADSavedCamera) {
+        do {
+            try document.deleteCamera(id: camera.id)
+            message = nil
+            reload()
+        } catch {
+            message = error.localizedDescription
+        }
+    }
+
+    private func beginRename(_ camera: CADSavedCamera) {
+        renameText = camera.name
+        renaming = camera
+    }
+
+    private func commitRename() {
+        guard let camera = renaming else { return }
+        renaming = nil
+        do {
+            _ = try document.renameCamera(id: camera.id, to: renameText)
+            message = nil
+            reload()
+        } catch {
+            message = error.localizedDescription
+        }
+    }
+
+    private func nextName() -> String {
+        let used = Set(cameras.map { $0.name.lowercased() })
+        for index in 1...(CADSavedCamera.maximumCount + 1) {
+            let candidate = FloeCADStrings.format(
+                "cad.present.camera.defaultName", "View %d", index)
+            if !used.contains(candidate.lowercased()) { return candidate }
+        }
+        return FloeCADStrings.format("cad.present.camera.defaultName",
+                                     "View %d", cameras.count + 1)
+    }
+}
+
 // MARK: - Workbench content
 
 struct CADPresentationWorkbenchContent: View {
@@ -272,6 +638,7 @@ struct CADPresentationWorkbenchContent: View {
 
     @State private var mode: CADWorkbenchMode = .edit
     @State private var showEnvironmentInspector = false
+    @State private var showCameraSheet = false
     @State private var materialInspector: MaterialInspectorRequest?
     @State private var handle = CADPresentationHandle()
     @State private var store: CADPresentationSceneStore
@@ -362,6 +729,9 @@ struct CADPresentationWorkbenchContent: View {
                             from: document.viewAppearance))
                 })
             .presentationCompactAdaptation(horizontal: .popover, vertical: .sheet)
+        }
+        .sheet(isPresented: $showCameraSheet) {
+            CADCameraBookmarksSheet(document: document, handle: handle)
         }
         .sheet(isPresented: $showVideoExportOptions) {
             CADAnimationExportOptionsSheet(
@@ -577,6 +947,14 @@ struct CADPresentationWorkbenchContent: View {
                           symbol: "sun.max", identifier: "CADPresentEnvironment") {
                 showEnvironmentInspector = true
             }
+            presentButton(FloeCADStrings.text("cad.present.camera", "Camera"),
+                          symbol: "camera", identifier: "CADPresentCamera") {
+                // Opening the camera list from a paused animated frame would
+                // describe that frame as the live camera. Return to the
+                // document baseline first; the saved views are unaffected.
+                playback.stop()
+                showCameraSheet = true
+            }
             presentButton(FloeCADStrings.text("cad.present.fit", "Fit"),
                           symbol: "arrow.up.left.and.arrow.down.right",
                           identifier: "CADPresentFit") {
@@ -638,10 +1016,26 @@ struct CADPresentationWorkbenchContent: View {
     }
 
     private func exportPNG() {
+        // A video export owns the live stage; a framed still must not race it
+        // or save/export its transient frame.
+        if handle.controller?.isAnimationLeased == true {
+            exportError = FloeCADStrings.text(
+                "cad.present.camera.error.busy",
+                "Wait for the current export to finish.")
+            return
+        }
+        // A paused animation frame is not the document's camera. Return to the
+        // baseline so the still shows the selected saved view (or the live
+        // free view), never a transient animated pose.
+        playback.stop()
         Task {
             do {
+                // A selected saved view exports its exact pose, projection and
+                // saved frame aspect; with no selection the live Present
+                // pixels keep the existing behavior.
                 let snapshot = try await snapshotService.capture(
-                    handle: handle, document: document, targetWidth: 2048)
+                    handle: handle, document: document, targetWidth: 2048,
+                    savedCamera: document.activeSavedCamera)
                 pngExport = PNGFileDocument(data: snapshot.pngData)
                 showPNGExporter = true
             } catch {
@@ -740,6 +1134,16 @@ public nonisolated struct CADPresentationCapture: Sendable, Equatable {
     /// SHA-256 of the PNG bytes (image identity).
     public var imageSHA256: String
     public var capturedAt: Date
+    /// Live projection the captured pixels actually used (`perspective` /
+    /// `orthographic`).
+    public var projection: String
+    /// Selected saved view at capture time, when one exists.
+    public var cameraName: String?
+    /// Whether the live camera still shows that saved view. Nil when no view
+    /// is selected. A temporary orbit reports false without changing the view.
+    public var matchesSavedCamera: Bool?
+    /// Concise description of the actual camera state for the host/AI.
+    public var note: String
 
     /// Compatibility alias for the host bridge that already reads the PNG
     /// digest. `imageSHA256` is the canonical name; `contentSHA256` remains the
@@ -748,7 +1152,9 @@ public nonisolated struct CADPresentationCapture: Sendable, Equatable {
 
     public init(pngData: Data, width: Int, height: Int, revision: Int,
                 changeCount: Int, documentKey: String, contentSHA256: String,
-                imageSHA256: String, capturedAt: Date) {
+                imageSHA256: String, capturedAt: Date,
+                projection: String = "", cameraName: String? = nil,
+                matchesSavedCamera: Bool? = nil, note: String = "") {
         self.pngData = pngData
         self.width = width
         self.height = height
@@ -758,6 +1164,10 @@ public nonisolated struct CADPresentationCapture: Sendable, Equatable {
         self.contentSHA256 = contentSHA256
         self.imageSHA256 = imageSHA256
         self.capturedAt = capturedAt
+        self.projection = projection
+        self.cameraName = cameraName
+        self.matchesSavedCamera = matchesSavedCamera
+        self.note = note
     }
 }
 
@@ -831,13 +1241,33 @@ public final class CADPresentationCaptureRegistry {
         do {
             let snapshot = try await service.capture(handle: handle, document: document,
                                                      targetWidth: max(64, min(width, 4096)))
+            let liveCamera = handle.currentCamera
+            let selected = document.activeSavedCamera
+            let projection = liveCamera?.projection.rawValue ?? ""
+            let matches = selected.map { liveCamera?.matches($0) ?? false }
+            let note: String
+            if let selected {
+                note = matches == true
+                    ? "Actual live RealityKit Present render (\(projection)) "
+                        + "showing saved view “\(selected.name)”. The saved view is unchanged."
+                    : "Actual live RealityKit Present render (\(projection)); "
+                        + "saved view “\(selected.name)” is selected but the live view "
+                        + "was moved. The saved view is unchanged."
+            } else {
+                note = "Actual live RealityKit Present render (\(projection)); "
+                    + "no saved view is selected."
+            }
             return CADPresentationCapture(
                 pngData: snapshot.pngData, width: snapshot.width,
                 height: snapshot.height, revision: snapshot.revision,
                 changeCount: snapshot.changeCount, documentKey: snapshot.documentKey,
                 contentSHA256: snapshot.contentSHA256,
                 imageSHA256: snapshot.imageSHA256,
-                capturedAt: snapshot.capturedAt)
+                capturedAt: snapshot.capturedAt,
+                projection: projection,
+                cameraName: selected?.name,
+                matchesSavedCamera: matches,
+                note: note)
         } catch let error as CADPresentationError {
             switch error {
             case .snapshotStale:

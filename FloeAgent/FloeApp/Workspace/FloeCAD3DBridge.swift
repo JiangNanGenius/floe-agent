@@ -1298,11 +1298,23 @@ final class FloeCAD3DBridge {
                 contentSHA256: document.contentSHA256,
                 sha256: presented.sha256,
                 renderer: "presentation",
-                note: "Actual live RealityKit Present render of the open document.")
+                // The registry describes the ACTUAL live camera: projection,
+                // the selected saved view (when any) and whether the live
+                // view still matches it. A temporary orbit never rewrites the
+                // saved view.
+                note: presented.note,
+                projection: presented.projection,
+                cameraName: presented.cameraName,
+                matchesSavedCamera: presented.matchesSavedCamera)
         }
         #endif
-        return try document.captureViewportPNG(width: width, height: height,
-                                               expectedRevision: expectedRevision)
+        // Present is not showing this document. A selected saved view still
+        // owns the projection and framing the AI capture must keep; with no
+        // selection this is the historical fitted perspective capture.
+        return try document.captureViewportPNG(
+            width: width, height: height,
+            expectedRevision: expectedRevision,
+            camera: document.activeSavedCamera)
     }
 
     /// Actual animation frame from the live Present or the service render

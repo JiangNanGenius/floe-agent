@@ -681,9 +681,23 @@ public extension FloeCADDocument {
         let settings = session.document.sceneSettingsData.flatMap {
             try? JSONDecoder().decode(CADSceneSettings.self, from: $0)
         }
-        let savedFovYDegrees = settings?.camera?.fovYDegrees
-        let selectedProjection: CADObservationProjection = projection
-            ?? ((settings?.camera?.isOrthographic == true) ? .orthographic : .perspective)
+        // X21: the selected saved view is the document's real camera state.
+        // `projection` on the request is a TEMPORARY observation override and
+        // is deliberately never written back to the saved camera.
+        let activeSavedCamera = settings?.activeSavedCameraEntry
+        let savedFovYDegrees = activeSavedCamera?.fovYDegrees
+            ?? settings?.camera?.fovYDegrees
+        let selectedProjection: CADObservationProjection
+        if let projection {
+            selectedProjection = projection
+        } else if let activeSavedCamera {
+            selectedProjection = activeSavedCamera.projection.isOrthographic
+                ? .orthographic : .perspective
+        } else if settings?.camera?.isOrthographic == true {
+            selectedProjection = .orthographic
+        } else {
+            selectedProjection = .perspective
+        }
         let fovY: Float = {
             guard let savedFovYDegrees, savedFovYDegrees.isFinite,
                   savedFovYDegrees > 1, savedFovYDegrees < 179 else {

@@ -289,7 +289,11 @@ final class CADAnimationPlaybackModel {
         }
         let evaluation = CADAnimationEvaluator.evaluate(
             clip: clip, at: time, context: context)
-        let camera = evaluation.camera.flatMap(CADAnimationPresentationAdapter.camera)
+        var camera = evaluation.camera.flatMap(CADAnimationPresentationAdapter.camera)
+        // A camera track authors the POSE, not the projection. Keep the live
+        // view's projection so an orthographic shot does not silently become
+        // perspective during playback (the same rule the MP4 exporter uses).
+        camera?.projection = handle.currentCamera?.projection ?? .perspective
         let matrices = CADAnimationPresentationAdapter.instanceMatrices(
             evaluation, assembly: assembly, bodiesByID: bodiesByID)
         let token = String(format: "anim|%@|%.6f|%d",

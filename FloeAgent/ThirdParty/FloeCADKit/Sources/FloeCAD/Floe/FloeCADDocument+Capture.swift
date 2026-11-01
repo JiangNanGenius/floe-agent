@@ -28,10 +28,21 @@ public nonisolated struct CADViewportCaptureResult: Sendable, Equatable {
     /// guessed; the host reports this exact value.
     public var renderer: String
     public var note: String
+    /// Projection actually used for these pixels (`perspective` /
+    /// `orthographic`). Empty only for a caller that predates this field.
+    public var projection: String
+    /// Saved view name when the capture rendered a saved camera; nil for the
+    /// live/fitted camera.
+    public var cameraName: String?
+    /// True when the capture is exactly the requested saved view. Nil when no
+    /// saved view was requested.
+    public var matchesSavedCamera: Bool?
 
     public init(pngData: Data, width: Int, height: Int, revision: Int,
                 changeCount: Int, contentSHA256: String, sha256: String,
-                renderer: String = "engineering", note: String) {
+                renderer: String = "engineering", note: String,
+                projection: String = "", cameraName: String? = nil,
+                matchesSavedCamera: Bool? = nil) {
         self.pngData = pngData
         self.width = width
         self.height = height
@@ -41,6 +52,9 @@ public nonisolated struct CADViewportCaptureResult: Sendable, Equatable {
         self.sha256 = sha256
         self.renderer = renderer
         self.note = note
+        self.projection = projection
+        self.cameraName = cameraName
+        self.matchesSavedCamera = matchesSavedCamera
     }
 }
 
@@ -51,11 +65,26 @@ public extension FloeCADDocument {
     /// must equal the last committed revision; the live change count is also
     /// checked across the render so a concurrent edit fails the capture rather
     /// than returning an image of a half-applied state.
+    ///
+    /// `camera` renders that saved view exactly (pose, projection and framing)
+    /// instead of the default fitted perspective camera. The pixels are still
+    /// an actual engineering render of the live document scene; the editor's
+    /// camera, selection and undo history are untouched.
     func captureViewportPNG(width: Int = 1024, height: Int = 768,
-                            expectedRevision: Int? = nil) throws -> CADViewportCaptureResult {
+                            expectedRevision: Int? = nil,
+                            camera: CADSavedCamera? = nil) throws
+    -> CADViewportCaptureResult {
         guard width >= 64, width <= 4096, height >= 64, height <= 4096 else {
             throw CADDocumentError(code: "bad_capture_size",
                                    message: "Viewport capture dimensions must be 64…4096 points.")
+        }
+        var savedCamera: CADSavedCamera?
+        if let camera {
+            guard let clean = camera.sanitized else {
+                throw CADDocumentError(code: "bad_camera",
+                                       message: "The saved view has values that can’t be rendered.")
+            }
+            savedCamera = clean
         }
         if let expectedRevision, expectedRevision != revision {
             throw CADDocumentError(
@@ -69,7 +98,8 @@ public extension FloeCADDocument {
                                     + "it cannot be rendered as the live editable scene.")
         }
         let beforeChange = session.changeCount
-        guard let png = Self._floeViewportPNG(self, width: width, height: height),
+        guard let png = Self._floeViewportPNG(self, width: width, height: height,
+                                              camera: savedCamera),
               !png.isEmpty else {
             throw CADDocumentError(
                 code: "viewport_unavailable",
@@ -85,14 +115,26 @@ public extension FloeCADDocument {
                                    message: "The document changed during capture; re-read and capture again.")
         }
         let actual = Self.pngPixelSize(png) ?? (width, height)
+        let note: String
+        if let savedCamera {
+            note = "Actual offscreen viewport render of the live document scene using "
+                + "saved view “\(savedCamera.name)” "
+                + "(\(savedCamera.projection.rawValue), \(savedCamera.frameLabel)). "
+                + "Not a drawing page and not an imported preview image."
+        } else {
+            note = "Actual offscreen viewport render of the live document scene "
+                + "(not a drawing page and not an imported preview image)."
+        }
         return CADViewportCaptureResult(
             pngData: png, width: actual.0, height: actual.1,
             revision: revision, changeCount: session.changeCount,
             contentSHA256: contentSHA256,
             sha256: CADMaterialTexture.digest(png),
             renderer: "engineering",
-            note: "Actual offscreen viewport render of the live document scene "
-                + "(not a drawing page and not an imported preview image).")
+            note: note,
+            projection: savedCamera?.projection.rawValue ?? "perspective",
+            cameraName: savedCamera?.name,
+            matchesSavedCamera: savedCamera == nil ? nil : true)
     }
 }
 
@@ -100,9 +142,11 @@ public extension FloeCADDocument {
 @MainActor
 private extension FloeCADDocument {
     static func _floeViewportPNG(_ document: FloeCADDocument,
-                                 width: Int, height: Int) -> Data? {
+                                 width: Int, height: Int,
+                                 camera: CADSavedCamera?) -> Data? {
         #if canImport(MetalKit)
-        return document.viewportThumbnailPNG(width: width, height: height)
+        return document.viewportThumbnailPNG(width: width, height: height,
+                                             camera: camera)
         #else
         return nil
         #endif

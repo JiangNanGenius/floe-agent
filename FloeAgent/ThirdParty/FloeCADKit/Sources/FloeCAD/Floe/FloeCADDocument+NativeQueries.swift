@@ -67,6 +67,12 @@ public extension FloeCADDocument {
         case "scene":
             return ok(["ok": true, "scope": scope, "summary": sceneSummaryJSON()])
 
+        case "camera":
+            // Read-only: the selected projection/framing a scene was authored
+            // with, plus every saved view. Selecting or saving a view is an
+            // ordinary document edit, never a query side effect.
+            return ok(["ok": true, "scope": scope, "camera": cameraSummaryJSON()])
+
         case "bodies":
             let rows: [[String: Any]] = document.bodies.map { body in
                 var row: [String: Any] = [

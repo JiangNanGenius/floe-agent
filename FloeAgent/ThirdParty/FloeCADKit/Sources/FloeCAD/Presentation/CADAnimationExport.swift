@@ -198,6 +198,11 @@ public nonisolated struct CADAnimationFrameCapture: Sendable, Equatable {
     public var documentKey: String
     public var renderer: String
     public var note: String
+    /// Projection actually used for this frame (`perspective` /
+    /// `orthographic`). Additive: older readers see the empty default.
+    public var cameraProjection: String = ""
+    /// Saved view applied to this frame, when one was selected.
+    public var cameraName: String? = nil
 }
 
 public nonisolated enum CADAnimationImageFormat: String, Sendable, CaseIterable {
@@ -602,8 +607,13 @@ public extension FloeCADDocument {
         guard let frame = model.exportFrame(at: clamped) else {
             throw CADAnimationExportError.noClip
         }
+        // X21: a camera track authors the pose; the selected saved view (or
+        // the live view) owns the projection, and a clip with no camera track
+        // exports the selected shot instead of the renderer's fitted default.
+        let cameraPlan = exportCameraPlan(controller: controller,
+                                          base: frame.camera)
         let applied = controller.applyAnimation(
-            camera: frame.camera,
+            camera: cameraPlan.camera,
             instanceTransforms: frame.matrices,
             token: String(format: "capture|%@|%.6f", clip.id.uuidString, clamped),
             expectedGeneration: generation,
@@ -662,6 +672,9 @@ public extension FloeCADDocument {
         let fps = min(max(frameRate, 1), 60)
         let frameIndex = min(max(Int((clamped * Double(fps)).rounded()),
                                  0), max(clip.frameCount(at: fps) - 1, 0))
+        let cameraNote = cameraPlan.cameraName.map {
+            " Saved view “\($0)” (\(cameraPlan.projection.rawValue))."
+        } ?? " Projection: \(cameraPlan.projection.rawValue)."
         return CADAnimationFrameCapture(
             imageData: data, mimeType: mimeType,
             width: pixelWidth, height: pixelHeight,
@@ -671,7 +684,39 @@ public extension FloeCADDocument {
             clipID: clip.id, timeSeconds: clamped, frameIndex: frameIndex,
             frameRate: fps, documentKey: documentKey,
             renderer: "presentation",
-            note: "Actual animated RealityKit frame (live Present or service render host); the document and assembly baseline were not changed.")
+            note: "Actual animated RealityKit frame (live Present or service render host); the document and assembly baseline were not changed."
+                + cameraNote,
+            cameraProjection: cameraPlan.projection.rawValue,
+            cameraName: cameraPlan.cameraName)
+    }
+
+    // MARK: Export camera selection
+
+    /// Which camera one exported frame must use. A camera track supplies the
+    /// pose; the selected saved view (or the current live view when no view is
+    /// selected) supplies the projection. With no camera track, a selected
+    /// saved view supplies the whole shot so the export keeps its framing.
+    private struct AnimationExportCameraPlan {
+        var camera: CADPresentationCamera?
+        var projection: CADCameraProjection
+        var cameraName: String?
+    }
+
+    private func exportCameraPlan(controller: CADPresentationRenderController,
+                                  base: CADPresentationCamera?)
+    -> AnimationExportCameraPlan {
+        let active = activeSavedCamera
+        let projection = active?.projection
+            ?? controller.currentCamera.projection
+        let camera: CADPresentationCamera?
+        if var pose = base {
+            pose.projection = projection
+            camera = pose
+        } else {
+            camera = active.map { $0.presentationCamera }
+        }
+        return AnimationExportCameraPlan(camera: camera, projection: projection,
+                                         cameraName: active?.name)
     }
 
     // MARK: Stale diagnostics
@@ -923,6 +968,14 @@ public extension FloeCADDocument {
             guard model.exportFrame(at: 0) != nil else {
                 throw CADAnimationExportError.noClip
             }
+            // X21 camera rule, pinned BEFORE any frame moves the live camera:
+            // the selected saved view (or the live view when none is selected)
+            // owns the projection. A clip without a camera track exports the
+            // saved shot itself instead of the renderer's fitted default.
+            let selectedExportCamera = activeSavedCamera
+            let exportProjection = selectedExportCamera?.projection
+                ?? controller.currentCamera.projection
+            let savedViewCamera = selectedExportCamera.map { $0.presentationCamera }
 
             let fileManager = FileManager.default
             let parent = destination.deletingLastPathComponent()
@@ -994,8 +1047,17 @@ public extension FloeCADDocument {
                 guard let frame = model.exportFrame(at: time) else {
                     throw CADAnimationExportError.noClip
                 }
+                // The track (if any) owns the pose; the selected projection
+                // wins over the frame's default perspective. No track -> the
+                // selected saved shot, or nil to keep the live camera.
+                var exportCamera = frame.camera
+                if exportCamera != nil {
+                    exportCamera?.projection = exportProjection
+                } else {
+                    exportCamera = savedViewCamera
+                }
                 guard controller.applyAnimation(
-                    camera: frame.camera,
+                    camera: exportCamera,
                     instanceTransforms: frame.matrices,
                     token: String(format: "export|%@|%.6f", clip.id.uuidString, time),
                     expectedGeneration: generation,
