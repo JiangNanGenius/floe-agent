@@ -12,6 +12,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -39,6 +40,8 @@ import com.floe.android.feature.canvas.ui.design.DesignWorkflowSheet
 import com.floe.android.feature.conversation.AttachmentDesignRequest
 import com.floe.android.feature.conversation.FloeConversationHistoryDestination
 import com.floe.android.feature.conversation.FloeConversationPaneHost
+import com.floe.android.feature.executiontarget.ExecutionTargetButton
+import com.floe.android.feature.executiontarget.ExecutionTargetSheet
 import com.floe.android.host.RuntimeHost
 
 /**
@@ -296,11 +299,50 @@ private fun ConversationDestination(
             )
         }
     }
-    FloeConversationPaneHost(
-        holder = holder,
-        modifier = Modifier.fillMaxSize(),
-        onBack = if (compact) (onBackToOrigin ?: onOpenDrawer) else null,
-        onAttachmentDesign = onAttachmentDesign,
+    var targetSheetVisible by rememberSaveable(conversationId) { mutableStateOf(false) }
+    val targetState by runtimeHost.executionTargets.state.collectAsState()
+    LaunchedEffect(conversationId, temporary) {
+        if (temporary == null) runtimeHost.executionTargets.load(conversationId)
+    }
+    Box(Modifier.fillMaxSize()) {
+        FloeConversationPaneHost(
+            holder = holder,
+            modifier = Modifier.fillMaxSize(),
+            onBack = if (compact) (onBackToOrigin ?: onOpenDrawer) else null,
+            onAttachmentDesign = onAttachmentDesign,
+        )
+        if (temporary == null) {
+            ExecutionTargetButton(
+                state = targetState,
+                onClick = { targetSheetVisible = true },
+                modifier = Modifier
+                    .align(Alignment.TopEnd)
+                    .padding(top = 10.dp, end = 12.dp),
+            )
+        }
+    }
+    ExecutionTargetSheet(
+        visible = targetSheetVisible && temporary == null,
+        state = targetState,
+        compact = compact,
+        onDismiss = { targetSheetVisible = false },
+        onInitialize = { kind, environmentID, hostID ->
+            runtimeHost.executionTargets.initialize(kind, environmentID, hostID)
+        },
+        onCheckMigration = { kind, environmentID, hostID ->
+            runtimeHost.executionTargets.checkMigration(kind, environmentID, hostID)
+        },
+        onBeginMigration = { kind, environmentID, hostID ->
+            runtimeHost.executionTargets.beginMigration(kind, environmentID, hostID)
+        },
+        onCancelMigration = { runtimeHost.executionTargets.cancelMigration() },
+        onApproveHostKey = { challengeID, accept, replaceChanged, expected ->
+            runtimeHost.executionTargets.approveHostKey(
+                challengeID, accept, replaceChanged, expected)
+        },
+        onDismissError = { runtimeHost.executionTargets.dismissError() },
+        onDismissNotice = { runtimeHost.executionTargets.dismissNotice() },
+        onRefresh = { runtimeHost.executionTargets.refresh() },
     )
     designSession?.let { session ->
         DesignWorkflowSheet(

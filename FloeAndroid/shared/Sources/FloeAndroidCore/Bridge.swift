@@ -35,6 +35,7 @@ public enum AndroidBridge {
                 || requestVersion == BridgeV7.version
                 || requestVersion == BridgeV8.version
                 || requestVersion == BridgeV9.version
+                || requestVersion == BridgeV19.version
                 || requestVersion == BridgeV10.version
                 || requestVersion == BridgeV11.version
                 || requestVersion == BridgeV12.version
@@ -142,6 +143,23 @@ public enum AndroidBridge {
                                 stampVersion: BridgeV9.version)
             }
             return response(object, stampVersion: BridgeV9.version)
+        }
+        if requestVersion == BridgeV19.version {
+            // Additive C02 host-only execution-target channel. It exposes the
+            // durable per-task target, explicit migration and host-key
+            // approval. It is not a model tool and does not grant SSH/local
+            // execution; model commands still use the ordinary exec.shell
+            // authority and its remote approval.
+            let object = C02TargetBridge.handle(requestData: data,
+                                                fallbackRequestID: requestID)
+            let encoded = (try? JSONSerialization.data(withJSONObject: object,
+                                                       options: [.sortedKeys]))
+                ?? Data(#"{"ok":false,"error":"encoding"}"#.utf8)
+            guard encoded.count <= C02ExecutionTargetWire.maximumResponseBytes else {
+                return response(["ok": false, "error": "responseTooLarge"],
+                                stampVersion: BridgeV19.version)
+            }
+            return response(object, stampVersion: BridgeV19.version)
         }
         if requestVersion == BridgeV10.version {
             // Additive C06 host-only live-capture contract: owner/limit

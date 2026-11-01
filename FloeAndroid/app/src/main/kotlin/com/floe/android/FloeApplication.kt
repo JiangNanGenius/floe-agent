@@ -530,6 +530,7 @@ class FloeApplication : Application() {
                 // C05: every live SSH session, PTY, exec channel and
                 // loopback tunnel listener closes and joins before the
                 // native root retires.
+                (runtimeHost?.prepareC02ExecutionTargetsForRootStop() != false) &&
                 (runtimeHost?.prepareC05RemoteForRootStop() != false) &&
                 // C06: close every platform mail TLS socket and acknowledge
                 // the lane closure before the native Root epoch retires.

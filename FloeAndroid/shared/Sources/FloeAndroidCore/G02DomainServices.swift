@@ -35,6 +35,7 @@ import FloeAgentRuntime
 import FloeModels
 import FloeProviders
 import FloeAndroidWebTools
+import FloeAndroidShellTools
 
 /// One generation's installed G02 ordinary service graph. Immutable after
 /// build (except the truthful transport-admission propagation); retired as a
@@ -104,6 +105,13 @@ public final class G02InstalledComposition: @unchecked Sendable {
     /// against this same instance; no second database or project registry.
     public let projectLibrary: C01ProjectLibrary
 
+    /// C02: the ONE durable task execution-target domain and its real SSH
+    /// adapter over this generation's SAME database/RemoteHostStore. Main
+    /// registers `bridge` on `floe.target/19` and `shellBridge` in the
+    /// ShellTools routing seam. nil means the coordinated schema/store was
+    /// not installed; target requests then fail closed with schemaUnavailable.
+    public let executionTargets: C02ExecutionTargetProduction.Components?
+
     /// Optional-domain extensions that attached successfully for this
     /// epoch (temporary, privacy successors). Empty in the ordinary product.
     internal var attachedExtensions: [G02DomainExtensionID: any G02DomainExtension] = [:]
@@ -147,7 +155,8 @@ public final class G02InstalledComposition: @unchecked Sendable {
          usageAdapter: FacadeUsageAdapter,
          feedBinder: RunPersonalizationFeedBinder,
          taskSchedules: G073TaskScheduleService,
-         projectLibrary: C01ProjectLibrary) {
+         projectLibrary: C01ProjectLibrary,
+         executionTargets: C02ExecutionTargetProduction.Components?) {
         self.epoch = epoch
         self.cluster = cluster
         self.registry = registry
@@ -179,6 +188,7 @@ public final class G02InstalledComposition: @unchecked Sendable {
         self.feedBinder = feedBinder
         self.taskSchedules = taskSchedules
         self.projectLibrary = projectLibrary
+        self.executionTargets = executionTargets
     }
 
     // MARK: - Build
@@ -708,6 +718,33 @@ public final class G02InstalledComposition: @unchecked Sendable {
         // construction order cannot invent a second run domain.
         let projectLibrary = C01ProjectLibrary(epoch: epoch, cluster: cluster)
 
+        // C02: durable task execution targets + explicit migration + the real
+        // SSH adapter. It reuses the SAME database, the host-registered G07.3
+        // environment snapshot (not a second registry), RemoteHostStore and
+        // the ordinary run-domain deletion/drain lifecycle as a migration
+        // fence. The coordinated schema registration is Main-owned.
+        let executionTargets = C02ExecutionTargetProduction.make(
+            epoch: epoch,
+            database: database,
+            storageRoot: URL(fileURLWithPath: cluster.identity.root.path, isDirectory: true),
+            metadata: C02ScheduleMetadataSource(ownership: environmentOwnership),
+            hosts: RemoteHostStore(database: database),
+            credentialResolver: { reference in
+                try await C05ProductionWiring.readCredential(reference)
+            }
+        )
+        C02RemoteShellRouting.shared.configure(epoch: epoch) { request in
+            await executionTargets.shellBridge.execute(C02RemoteShellRequest(
+                command: request.command,
+                cwd: request.cwd,
+                environment: request.environment,
+                stdin: request.stdin,
+                timeout: request.timeout,
+                maxOutputBytes: request.maxOutputBytes,
+                context: request.context
+            ))
+        }
+
         var installed = G02InstalledComposition(
             epoch: epoch, cluster: cluster,
             registry: gen.registry,
@@ -738,7 +775,8 @@ public final class G02InstalledComposition: @unchecked Sendable {
             usageAdapter: usageAdapter,
             feedBinder: feedBinder,
             taskSchedules: scheduleService,
-            projectLibrary: projectLibrary)
+            projectLibrary: projectLibrary,
+            executionTargets: executionTargets)
         // Capture the SAME-database identity evidence at build time: each
         // entry is the identifier of the ACTUAL argument bound at the
         // domain's construction call site — a second DatabaseManager opened
@@ -751,6 +789,7 @@ public final class G02InstalledComposition: @unchecked Sendable {
             "memory": ObjectIdentifier(database),
             "skillsMcpCapabilities": ObjectIdentifier(database),
             "runDomain": ObjectIdentifier(database),
+            "executionTargets": ObjectIdentifier(database),
             "attachmentStaging": ObjectIdentifier(database),
             "defaults": ObjectIdentifier(database),
             "usage": ObjectIdentifier(database),

@@ -39,6 +39,7 @@
 // keeps the root open through RB1's real drain predicate.
 import Foundation
 import FloePersistence
+import FloeAndroidShellTools
 
 public final class G02RuntimeComposition: @unchecked Sendable {
 
@@ -551,6 +552,17 @@ public final class G02RuntimeComposition: @unchecked Sendable {
             withState { _, _, _, registry in Array(registry.values) }
         for ext in extensions {
             await ext.beginRetirement(epoch: epoch)
+        }
+
+        // C02: close every model-owned SSH transport and clear the ShellTools
+        // routing handler for the exact retiring epoch. A stale retirement
+        // never touches a newer generation's graph. Durable migration rows
+        // and receipts remain for the next generation's explicit recovery.
+        if let components = target?.executionTargets, target?.epoch == epoch {
+            await components.adapter.closeAll()
+            if ownsEpoch {
+                C02RemoteShellRouting.shared.clear(epoch: epoch)
+            }
         }
 
         // 3. Cancel owned services. The run facade's retirement cascade is

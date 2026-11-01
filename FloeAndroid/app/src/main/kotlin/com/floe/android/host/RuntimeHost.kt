@@ -14,6 +14,7 @@ import com.floe.android.host.mail.C06MailHostController
 import com.floe.android.host.calendar.C06CalendarHostController
 import com.floe.android.host.systemservices.C06SystemServicesHostController
 import com.floe.android.host.dataexchange.C07DataExchangeHostController
+import com.floe.android.host.executiontarget.ExecutionTargetHostController
 import com.floe.android.host.remote.C05BrokerLocalNetworkGate
 import com.floe.android.host.devicecommunication.C05BrokerDeviceLanGate
 import com.floe.android.host.devicecommunication.C05DevicesHostController
@@ -83,6 +84,12 @@ class RuntimeHost internal constructor(
     /** Real managed user-project library. Source-only until Main wires the
      * native C01 library/bridge; commands stay fail-closed until then. */
     val projects = ProjectHostController(this)
+    /**
+     * C02 App-owned per-task execution target. Swift owns pinning, migration,
+     * CAS and the drain gate; this controller only correlates trusted-host
+     * replies. It never starts an SSH session or a target on construction.
+     */
+    val executionTargets = ExecutionTargetHostController(this)
     /** Ordinary-task editor projections outlive Activity/inspector views. */
     internal val workspaceEditors = G04WorkspaceEditorController(this)
     internal val browser = BrowserHostController(this)
@@ -523,6 +530,17 @@ class RuntimeHost internal constructor(
         }
 
     /**
+     * Root-stop gate for C02: cancel a pending target/migration reply and
+     * drop the controller's projection before the native root retires. The
+     * Swift domain owns any durable migration row; a cancelled bridge reply
+     * cannot commit it.
+     */
+    internal suspend fun prepareC02ExecutionTargetsForRootStop(): Boolean {
+        executionTargets.release()
+        return true
+    }
+
+    /**
      * Root-stop gate for C05 devices: stop the trusted tool mailbox, close
      * every App/tool TCP/Telnet/BLE/USB session and await the engine's real
      * close/join before the native root retires. An unproven drain keeps the
@@ -949,6 +967,7 @@ class RuntimeHost internal constructor(
                 }
                 g02ReadinessAdapter.reset()
                 if (cadViewerDelegate.isInitialized()) cadViewer.onRootStopped()
+                executionTargets.release()
                 if (c05RemoteDelegate.isInitialized()) c05Remote.onRootStopped()
                 if (c05DevicesDelegate.isInitialized()) c05Devices.onRootStopped()
                 if (c06MailDelegate.isInitialized()) c06Mail.onRootStopped()
