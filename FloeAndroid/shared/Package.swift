@@ -661,6 +661,13 @@ let package = Package(
             .product(name: "NIOSSH", package: "swift-nio-ssh"),
             .product(name: "Crypto", package: "swift-crypto"),
         ], swiftSettings: strictSettings),
+        // C06 generic mail: bounded IMAP/POP3/SMTP protocol, MIME, body
+        // paging, no-replay journals and the Swift-owned transport mailbox.
+        // The real TCP/SSL IO is the App-owned Kotlin lane; no Apple CFStream
+        // branch and no new third-party dependency or pin.
+        .target(name: "FloeAndroidMail", dependencies: [
+            "FloeCore",
+        ], swiftSettings: strictSettings),
         // Product bridge: v1 frozen operations + append-only v2 envelope
         // seam + fail-closed credential backend + real dependency anchors.
         .target(name: "FloeAndroidCore", dependencies: [
@@ -668,6 +675,8 @@ let package = Package(
             "FloeTools", "FloeSkills", "FloePersistence", "FloeAgentRuntime",
             // C05 SSH transport/domain dependency (same native .so).
             "FloeSSH",
+            // C06 mail protocol/domain transport.
+            "FloeAndroidMail",
             // D1 web closure: included in the actual native .so so the
             // qualified original tools/service link before the facade
             // registers them (dependency only; NO service registration here).
@@ -706,6 +715,9 @@ let package = Package(
         ], swiftSettings: strictSettings),
         .testTarget(name: "FloeSSHTests", dependencies: [
             "FloeSSH", "FloeCore", "FloePersistence",
+        ], swiftSettings: strictSettings),
+        .testTarget(name: "FloeAndroidMailTests", dependencies: [
+            "FloeAndroidMail", "FloeCore",
         ], swiftSettings: strictSettings),
         .testTarget(name: "FloeAndroidLinuxAuthorityTests", dependencies: [
             "FloeAndroidLinuxAuthority", "FloeCore", "FloeEnvironments",
@@ -753,7 +765,8 @@ let package = Package(
             "FloeAndroidWorkbench", "FloeCore",
         ], swiftSettings: strictSettings),
         .testTarget(name: "FloeAndroidCoreTests", dependencies: [
-            "FloeBrowser", "FloeAndroidCore", "FloeSSH", "FloeCore", "FloeModels", "FloePersistence", "GRDB",
+            "FloeBrowser", "FloeAndroidCore", "FloeSSH", "FloeAndroidMail",
+            "FloeCore", "FloeModels", "FloePersistence", "GRDB",
             "FloeAndroidNetwork",
             "FloeWorkspace",
             // G02-P3 transport suites: the REAL incremental seam + provider

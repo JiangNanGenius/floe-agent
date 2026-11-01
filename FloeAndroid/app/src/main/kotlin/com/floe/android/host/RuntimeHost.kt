@@ -9,6 +9,8 @@ import com.floe.android.host.officeai.NativeOfficeAiTransport
 import com.floe.android.host.officeai.OfficeAiHostPump
 import com.floe.android.host.officeai.OfficeAiOoxmlVerifier
 import com.floe.android.host.cad.C04CadViewerController
+import com.floe.android.host.mail.C06BrokerMailLanGate
+import com.floe.android.host.mail.C06MailHostController
 import com.floe.android.host.remote.C05RemoteHostController
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
@@ -137,6 +139,24 @@ class RuntimeHost internal constructor(
     }
     internal val c05Remote: C05RemoteHostController
         get() = c05RemoteDelegate.value
+
+    /**
+     * C06 Application-owned mail controller. The controller owns the trusted
+     * host bridge, the platform TLS lane, the compose draft and bounded SAF
+     * attachment transfer. It is app-scoped so a send/download never belongs
+     * to a view; the root-stop gate below closes the lane before retirement.
+     */
+    private val c06MailDelegate = lazy {
+        C06MailHostController(
+            scope = scope,
+            contentResolver = appContext.contentResolver,
+            ioDispatcher = ioDispatcher,
+            currentNativeEpoch = ::nativeRootEpoch,
+            lanGate = C06BrokerMailLanGate { integrations.localNetwork },
+        )
+    }
+    internal val c06Mail: C06MailHostController
+        get() = c06MailDelegate.value
     internal var workspaceGitTrust: G04GitTrustController? = null
     internal var workspaceTerminal: G04TerminalHostController? = null
 
@@ -417,6 +437,19 @@ class RuntimeHost internal constructor(
     internal suspend fun prepareC05RemoteForRootStop(): Boolean =
         if (c05RemoteDelegate.isInitialized()) {
             c05Remote.prepareForRootStop(C05_REMOTE_STOP_WAIT_MS)
+        } else {
+            true
+        }
+
+    /**
+     * Root-stop gate for C06 mail: close every platform TLS socket, join the
+     * lane and acknowledge `laneClosed` before the old native mailbox is
+     * retired. An unproven drain keeps the old generation pending; an
+     * in-flight send is never reported as a success by this gate.
+     */
+    internal suspend fun prepareC06MailForRootStop(): Boolean =
+        if (c06MailDelegate.isInitialized()) {
+            c06Mail.prepareForRootStop(C06_MAIL_STOP_WAIT_MS)
         } else {
             true
         }
@@ -732,6 +765,11 @@ class RuntimeHost internal constructor(
                 if (c05RemoteDelegate.isInitialized()) {
                     c05Remote.onOwnedStoreReady()
                 }
+                // C06: the mail lane is App-owned, so it starts on the real
+                // accepted store generation even when the Mail screen has not
+                // been opened (configured model mail tools need it). It does
+                // not open a socket until an operation is requested.
+                c06Mail.onOwnedStoreReady()
                 // Office AI host lane follows the ACTUAL accepted root epoch
                 // with bounded attempts (same doctrine as the browser lane).
                 startOfficeAiLane()
@@ -758,6 +796,7 @@ class RuntimeHost internal constructor(
                 g02ReadinessAdapter.reset()
                 if (cadViewerDelegate.isInitialized()) cadViewer.onRootStopped()
                 if (c05RemoteDelegate.isInitialized()) c05Remote.onRootStopped()
+                if (c06MailDelegate.isInitialized()) c06Mail.onRootStopped()
                 stopOfficeAiLane()
                 // Fence the flavour extension on the real retirement. The
                 // main pre-stop drain already ran prepareForRootStop(); this
@@ -1079,6 +1118,9 @@ class RuntimeHost internal constructor(
 
         /** Bounded join for the C05 SSH session/PTY/tunnel drain. */
         internal const val C05_REMOTE_STOP_WAIT_MS = 8_000L
+
+        /** Bounded join for the C06 platform TLS lane / mail transport drain. */
+        internal const val C06_MAIL_STOP_WAIT_MS = 8_000L
 
         /** Bounded join for the exact active monitoring session on root stop. */
         internal const val NETWORK_MONITOR_STOP_WAIT_MS = 5_000L

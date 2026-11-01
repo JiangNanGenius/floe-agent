@@ -636,6 +636,13 @@ public final class G02InstalledComposition: @unchecked Sendable {
                     environmentID: environmentID, policy: policy)
             })
 
+        // C06: register the seven ordinary mail tools over the SAME accepted
+        // generation/registry. Discovery stays hidden until a real account
+        // exists and the App platform-TLS lane reports ready; the mirror is
+        // refreshed here and again by the RuntimeHost mail controller.
+        registerC06MailTools(registry: runComponents.registry)
+        await C06MailDomain.shared.refreshAvailability(epoch: epoch)
+
         // Close the REAL feed/lease cycle with the exact accepted domain
         // instance; until this line both sides answered fail-closed.
         if let (runDomain, _) = RunDomainFacade.current(epoch: epoch) {

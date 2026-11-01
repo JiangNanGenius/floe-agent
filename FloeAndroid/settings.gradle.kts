@@ -71,6 +71,9 @@ include(":core:network", ":feature:network")
 
 // C05 SSH remote-host screens (presentation only; App host owns transport).
 include(":feature:remote")
+// C06 generic mail screens (presentation only; App host owns the platform
+// TLS lane, credential gateway, journals and SAF streaming).
+include(":feature:mail")
 include(":core:networkmonitor")
 include(":core:pcap")
 // C06 live capture: bounded PCAP/sink/state core plus the pinned NetBare

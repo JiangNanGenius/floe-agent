@@ -531,6 +531,9 @@ class FloeApplication : Application() {
                 // loopback tunnel listener closes and joins before the
                 // native root retires.
                 (runtimeHost?.prepareC05RemoteForRootStop() != false) &&
+                // C06: close every platform mail TLS socket and acknowledge
+                // the lane closure before the native Root epoch retires.
+                (runtimeHost?.prepareC06MailForRootStop() != false) &&
                 // G08: the Full platform-tool pump/phone/ADB/Root extension
                 // fences and joins its own work before the root retires.
                 (runtimeHost?.preparePlatformForRootStop() != false) &&

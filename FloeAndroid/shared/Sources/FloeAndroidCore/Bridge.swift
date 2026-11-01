@@ -35,7 +35,8 @@ public enum AndroidBridge {
                 || requestVersion == BridgeV7.version
                 || requestVersion == BridgeV8.version
                 || requestVersion == BridgeV9.version
-                || requestVersion == BridgeV10.version else {
+                || requestVersion == BridgeV10.version
+                || requestVersion == BridgeV12.version else {
             return response(["ok": false, "error": "unsupportedVersion"])
         }
         if requestVersion == BridgeV2.version {
@@ -151,6 +152,23 @@ public enum AndroidBridge {
                                 stampVersion: BridgeV10.version)
             }
             return response(object, stampVersion: BridgeV10.version)
+        }
+        if requestVersion == BridgeV12.version {
+            // Additive C06 host-only generic mail channel: IMAP/POP3 + SMTP
+            // account settings, read/search/body, attachment staging and the
+            // declared mutation/send operations over the App-owned platform
+            // TLS lane. Model tools use the ordinary registry separately; the
+            // V1-V10 branches above are byte-identical.
+            let object = C06MailBridge.handle(requestData: data,
+                                              fallbackRequestID: requestID)
+            let encoded = (try? JSONSerialization.data(withJSONObject: object,
+                                                       options: [.sortedKeys]))
+                ?? Data(#"{"ok":false,"error":"encoding"}"#.utf8)
+            guard encoded.count <= C06MailWire.maximumResponseBytes else {
+                return response(["ok": false, "error": "responseTooLarge"],
+                                stampVersion: BridgeV12.version)
+            }
+            return response(object, stampVersion: BridgeV12.version)
         }
         switch request["operation"] as? String {
         case "handshake":

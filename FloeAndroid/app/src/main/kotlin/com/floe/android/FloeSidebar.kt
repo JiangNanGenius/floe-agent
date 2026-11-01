@@ -156,6 +156,14 @@ fun FloeSidebar(
                 selectionStyle = FloeSelectionStyle.GRAY,
                 modifier = Modifier.padding(horizontal = 12.dp),
             )
+            FloeSidebarRow(
+                icon = FloeIcons.Bubble,
+                label = stringResource(com.floe.android.feature.mail.R.string.mail_title),
+                selected = selection == SidebarSelection.More(MoreDestination.MAIL),
+                onClick = { onSelect(SidebarSelection.More(MoreDestination.MAIL)) },
+                selectionStyle = FloeSelectionStyle.GRAY,
+                modifier = Modifier.padding(horizontal = 12.dp),
+            )
 
             FloeSectionHeader(stringResource(R.string.projects))
             val defaultProjectName = stringResource(R.string.project_default_name)
@@ -278,17 +286,26 @@ fun FloeSidebar(
                             "remote",
                             stringResource(com.floe.android.feature.remote.R.string.remote_hosts_title),
                         ),
+                        FloeChoiceOption(
+                            "mail",
+                            stringResource(com.floe.android.feature.mail.R.string.mail_title),
+                        ),
                     ),
                     selectedKey = when (selection) {
                         SidebarSelection.More(MoreDestination.NETWORK) -> "network"
                         SidebarSelection.More(MoreDestination.REMOTE) -> "remote"
+                        SidebarSelection.More(MoreDestination.MAIL) -> "mail"
                         else -> null
                     },
                     onSelect = { key ->
                         moreOpen = false
                         onSelect(
                             SidebarSelection.More(
-                                if (key == "remote") MoreDestination.REMOTE else MoreDestination.NETWORK
+                                when (key) {
+                                    "remote" -> MoreDestination.REMOTE
+                                    "mail" -> MoreDestination.MAIL
+                                    else -> MoreDestination.NETWORK
+                                }
                             )
                         )
                     },
