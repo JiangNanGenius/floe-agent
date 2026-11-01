@@ -246,9 +246,20 @@ final class CADAssociativeRevolveAxisServiceTests: XCTestCase {
         XCTAssertEqual(try volume(f, f.body), attachedVolume, accuracy: 1e-6,
                        "detaching must keep the geometry")
 
-        // A later source edit no longer moves the detached revolve.
-        let later = updateAxisLine(f, toU: 30)
+        // Move only the reference line, keeping it outside the profile's
+        // u=24...34 rectangle. Moving the ordinary sketch line to u=30 would
+        // split that profile at the seed and change its region independently
+        // of the frozen revolve axis (FeatureGraph.resolveProfile).
+        let later = updateAxisLine(f, toU: 12)
         XCTAssertEqual(later["ok"] as? Bool, true, "\(later)")
+        let relocatedSource = try XCTUnwrap(f.document.session.currentResolvedAxis(axis))
+        XCTAssertEqual(relocatedSource.origin.x, 12, accuracy: 1e-6,
+                       "the detached axis source itself must really move")
+        guard case let .revolve(_, _, stillDetached, _, _) = try revolveNode(f).kind else {
+            return XCTFail("the detached revolve disappeared")
+        }
+        XCTAssertEqual(stillDetached.source, .explicit(line),
+                       "the source edit must not restore an association")
         XCTAssertEqual(try volume(f, f.body), attachedVolume, accuracy: 1e-6)
 
         // Undo the source edit, then undo the detach: the relationship returns.

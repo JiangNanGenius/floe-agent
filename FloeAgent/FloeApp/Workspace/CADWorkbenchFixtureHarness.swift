@@ -767,6 +767,10 @@ struct CADWorkbenchFixtureHarness: View {
                 value = .accessibility1
             }
         }
+        // Group is transparent. Give the harness its own accessibility
+        // container so this marker does not overwrite the real readback,
+        // slider and menu identifiers below it.
+        .accessibilityElement(children: .contain)
         .accessibilityIdentifier("CADFixtureHarness")
         .task {
             guard document == nil, igesPreview == nil, importLimits == nil,

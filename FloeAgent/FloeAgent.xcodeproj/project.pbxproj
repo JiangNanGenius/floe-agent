@@ -1158,6 +1158,7 @@
 		E9075DDE4B9BCC5B1C61D735 /* Whisper in Resources */ = {isa = PBXBuildFile; fileRef = 7858BFEF9F60D96BAA0E621E /* Whisper */; };
 		E909392034753E376B586C19 /* SubscriptionRouteTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 702F99410257915BF11B5475 /* SubscriptionRouteTests.swift */; };
 		E947100032EDA1AA075473D5 /* NotesDocumentTabs.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5369FD272644A35E60E42386 /* NotesDocumentTabs.swift */; };
+		E965D6263B44B64B84421548 /* NativeMeshImportBudgetTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2E64197253461082586BADF /* NativeMeshImportBudgetTests.swift */; };
 		E9672D64A729A03CBEAEA1BB /* WhisperSettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 02D251245A1790D84521F016 /* WhisperSettingsView.swift */; };
 		E9E31F6E33B8B0EA398D33A9 /* DiagnosticsExporter.swift in Sources */ = {isa = PBXBuildFile; fileRef = CB4807D41A6BD7259F8D0356 /* DiagnosticsExporter.swift */; };
 		EA21B9954D927733E4F9DFC8 /* MCPServiceCreationAppBackend.swift in Sources */ = {isa = PBXBuildFile; fileRef = C8616F25F0277B6C8FD52058 /* MCPServiceCreationAppBackend.swift */; };
@@ -2371,6 +2372,7 @@
 		D2363FCFB12F9F4E14CC8942 /* CADDatumPlaneFormAcceptanceUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CADDatumPlaneFormAcceptanceUITests.swift; sourceTree = "<group>"; };
 		D2CFF3CA57C53A47856C3D7B /* EngineeringPreviewEntryFixtureAsset.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EngineeringPreviewEntryFixtureAsset.swift; sourceTree = "<group>"; };
 		D2D21D729BA43C8204E7EF79 /* RunOutputDeletionLifecycleTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RunOutputDeletionLifecycleTests.swift; sourceTree = "<group>"; };
+		D2E64197253461082586BADF /* NativeMeshImportBudgetTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeMeshImportBudgetTests.swift; sourceTree = "<group>"; };
 		D3239F632B3D2E2DF7F9BBA8 /* LocalModelsSettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocalModelsSettingsView.swift; sourceTree = "<group>"; };
 		D3D7C7A1B60C7CEC1276D80A /* DocumentIntakeStaging.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DocumentIntakeStaging.swift; sourceTree = "<group>"; };
 		D40292BBF7F05D18D0071749 /* FloeShellEngine */ = {isa = PBXFileReference; lastKnownFileType = folder; name = FloeShellEngine; path = ThirdParty/FloeShellEngine; sourceTree = SOURCE_ROOT; };
@@ -2754,6 +2756,7 @@
 				E8343774605F4486C11278DE /* NativeExactImportCancellationTests.swift */,
 				07EA39D2DC6722F112E0B7AA /* NativeExactImportSchedulingTests.swift */,
 				A36E19855125A660F84C0892 /* NativeImportSourceReadTests.swift */,
+				D2E64197253461082586BADF /* NativeMeshImportBudgetTests.swift */,
 				1A0EF0C500B944C1D89C6ED2 /* StoreRecoveryTests.swift */,
 			);
 			path = FloeCADKitTests;
@@ -6030,6 +6033,7 @@
 				C3B059D876BEF1B0D6918CE6 /* NativeImportSourceReadTests.swift in Sources */,
 				CC059FAA8C5FC2AEB77E2401 /* NativeJobPolicyTests.swift in Sources */,
 				09E8FD60A0B1F4D0E72F141C /* NativeMediaRoutingTests.swift in Sources */,
+				E965D6263B44B64B84421548 /* NativeMeshImportBudgetTests.swift in Sources */,
 				2C371A5C3BDB48A939B1CDCA /* NoteCoverStoreTests.swift in Sources */,
 				A4FD3522D822898E4BD16A22 /* NoteSuspensionTests.swift in Sources */,
 				117AC7D40AFCF5CC5CB4A4D3 /* NotesCoverPickerLifecycleTests.swift in Sources */,
