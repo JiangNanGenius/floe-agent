@@ -434,7 +434,7 @@ struct CADCameraBookmarksSheet: View {
                         Button {
                             update(activeCamera)
                         } label: {
-                            Label(FloeCADStrings.text(
+                            Label(FloeCADStrings.format(
                                 "cad.present.camera.updateActive",
                                 "Update “%@”", activeCamera.name),
                                   systemImage: "arrow.triangle.2.circlepath")
