@@ -1120,7 +1120,7 @@ public struct C06TodoListTool: AgentTool {
         }
     }
     public static let name = "todo.list"
-    public static let toolDescription = "List this App's local todos with stable IDs and revisions. Completed items are hidden unless includeCompleted is true. limit defaults to 50 (maximum 100); use offset for the next page. Todos are independent user data and are not chat conversation state."
+    public static let toolDescription = "List this App's local todos with stable IDs and revisions. Completed items are hidden unless includeCompleted is true. limit defaults to 50 (maximum 100); the output may contain fewer whole records to fit the response. Use the returned nextOffset for the next page until it is none. Todos are independent user data and are not chat conversation state."
     public static let parametersJSON = #"{"type":"object","properties":{"includeCompleted":{"type":"boolean"},"limit":{"type":"integer","minimum":1,"maximum":100},"offset":{"type":"integer","minimum":0,"maximum":10000}},"additionalProperties":false}"#
     public static let riskLabels: Set<RiskLabel> = [.persistsPersonalData]
     public static let isSideEffecting = false
@@ -1150,21 +1150,35 @@ public struct C06TodoListTool: AgentTool {
                 limit: args.limit ?? 50,
                 offset: args.offset ?? 0
             )
-            var lines = [
-                "status=ok kind=todo count=\(page.rows.count) total=\(page.total) offset=\(args.offset ?? 0)",
-            ]
-            for record in page.rows {
-                lines.append(Self.line(record))
-            }
-            return ToolExecutionOutput(digesting: lines.joined(separator: "\n"))
+            return ToolExecutionOutput(digesting: Self.pageSummary(
+                rows: page.rows, total: page.total, offset: args.offset ?? 0
+            ))
         } catch let error as C06TodoError {
             return Self.failure(error)
         }
     }
 
+    /// Fit whole records before the runtime's 4096-character summary clamp.
+    /// Advance by records actually emitted, never by the requested page size.
+    static func pageSummary(rows: [C06TodoRecord], total: Int, offset: Int) -> String {
+        var lines: [String] = []
+        var characters = 0
+        for record in rows {
+            let value = line(record)
+            guard characters + value.count + 1 <= 3_840 else { break }
+            lines.append(value)
+            characters += value.count + 1
+        }
+        let next = offset + lines.count
+        let hasMore = !lines.isEmpty && next < total
+        let continuation = hasMore ? String(next) : "none"
+        let header = "status=ok kind=todo count=\(lines.count) total=\(total) offset=\(offset) nextOffset=\(continuation)"
+        return ([header] + lines).joined(separator: "\n")
+    }
+
     static func line(_ record: C06TodoRecord) -> String {
         var value = "id=\(record.id.uuidString.lowercased()) revision=\(record.revision)"
-            + " title=\(record.title) completed=\(record.completed)"
+            + " title=\(String(reflecting: record.title)) completed=\(record.completed)"
         if let due = record.dueAt {
             value += " due=\(C06CalendarDate.iso8601(due)) allDay=\(record.allDay)"
                 + " timezone=\(record.dueTimeZone)"

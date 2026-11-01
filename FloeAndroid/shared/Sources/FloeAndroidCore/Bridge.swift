@@ -38,7 +38,8 @@ public enum AndroidBridge {
                 || requestVersion == BridgeV10.version
                 || requestVersion == BridgeV11.version
                 || requestVersion == BridgeV12.version
-                || requestVersion == BridgeV13.version else {
+                || requestVersion == BridgeV13.version
+                || requestVersion == BridgeV14.version else {
             return response(["ok": false, "error": "unsupportedVersion"])
         }
         if requestVersion == BridgeV2.version {
@@ -205,6 +206,23 @@ public enum AndroidBridge {
                                 stampVersion: BridgeV13.version)
             }
             return response(object, stampVersion: BridgeV13.version)
+        }
+        if requestVersion == BridgeV14.version {
+            // Additive C05 host-only device-profile channel: saved
+            // TCP/Telnet/BLE endpoint metadata and capabilities over the
+            // EXISTING hosts rows. Live device bytes stay in the App-owned
+            // Kotlin engine lane; no session body crosses this JSON channel.
+            // No model route, no V3 command, no permission grant.
+            let object = C05DeviceBridge.handle(requestData: data,
+                                                fallbackRequestID: requestID)
+            let encoded = (try? JSONSerialization.data(withJSONObject: object,
+                                                       options: [.sortedKeys]))
+                ?? Data(#"{"ok":false,"error":"encoding"}"#.utf8)
+            guard encoded.count <= C05DeviceWire.maximumResponseBytes else {
+                return response(["ok": false, "error": "responseTooLarge"],
+                                stampVersion: BridgeV14.version)
+            }
+            return response(object, stampVersion: BridgeV14.version)
         }
         switch request["operation"] as? String {
         case "handshake":

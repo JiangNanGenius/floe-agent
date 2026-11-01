@@ -7,7 +7,15 @@ dependencyResolutionManagement {
         google()
         mavenCentral()
         // Source-pinned libsu only; never a fallback repository for other groups.
-        maven { url = uri("https://jitpack.io"); content { includeGroup("com.github.topjohnwu.libsu") } }
+        // Same content-filtered JitPack repository as libsu; no group beyond
+        // these two exact C05/C08 pins may resolve here.
+        maven {
+            url = uri("https://jitpack.io")
+            content {
+                includeGroup("com.github.topjohnwu.libsu")
+                includeGroup("com.github.mik3y")
+            }
+        }
     }
 }
 rootProject.name = "FloeAndroid"
@@ -71,6 +79,10 @@ include(":core:network", ":feature:network")
 
 // C05 SSH remote-host screens (presentation only; App host owns transport).
 include(":feature:remote")
+// C05 real device communications: TCP/Telnet, BLE GATT and USB serial engine
+// plus presentation. Main owns the App route and lockfile regeneration; the
+// App host controller and trusted model-tool pump are App-owned sources.
+include(":core:devicecommunication", ":feature:devicecommunication")
 // C06 generic mail screens (presentation only; App host owns the platform
 // TLS lane, credential gateway, journals and SAF streaming).
 include(":feature:mail")

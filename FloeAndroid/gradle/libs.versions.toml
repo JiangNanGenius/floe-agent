@@ -23,6 +23,10 @@ sora = "0.24.4"
 # core artifact declares no Android/other runtime dependencies.
 commonmark = "0.30.1"
 junit = "4.13.2"
+# C05 exact Android USB serial pin. Tag 3.11.0 commit
+# 8e694372dee4531d140766df7af3189d3d9531c5, MIT; exact AAR/POM SHA-256 and
+# licence text are recorded in FloeAndroid/licenses/devicecommunication/.
+usb-serial = "3.11.0"
 androidx-test = "1.3.0"
 runner = "1.7.0"
 # Explicit test-infra pin: Compose ui-test-junit4 resolves Espresso 3.5.0
@@ -43,6 +47,7 @@ compose-material = { module = "androidx.compose.material3:material3" }
 # (SF Symbols copyright risk) are deliberately NOT consumable coordinates here.
 cupertino = { module = "io.github.robinpcrd:cupertino", version.ref = "cupertino" }
 junit = { module = "junit:junit", version.ref = "junit" }
+usb-serial = { module = "com.github.mik3y:usb-serial-for-android", version.ref = "usb-serial" }
 kotlinx-coroutines-core = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-core", version.ref = "coroutines" }
 media3-common = { module = "androidx.media3:media3-common", version.ref = "media3" }
 media3-exoplayer = { module = "androidx.media3:media3-exoplayer", version.ref = "media3" }

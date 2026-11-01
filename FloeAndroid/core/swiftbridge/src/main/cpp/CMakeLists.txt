@@ -92,7 +92,16 @@ set_target_properties(FloeAndroidCore PROPERTIES
 # immediately before freeze/propose/adopt. Not a V3 command, never
 # model-reachable; all decisions live in FloeAndroidCore/G09R2/Design.
 # Additive TU only; all prior wrappers byte-identical.
-add_library(floe_jni SHARED floe_jni.cpp floe_secret_jni.cpp floe_runtime_jni.cpp floe_attachment_staging_jni.cpp floe_security_corpus_jni.cpp floe_provider_catalog_jni.cpp floe_provider_draft_probe_jni.cpp floe_skills_folder_staging_jni.cpp floe_provider_modelset_jni.cpp floe_privacy_jni.cpp floe_linux_shell_jni.cpp floe_run_foreground_jni.cpp floe_jobs_jni.cpp floe_linux_workspace_jni.cpp floe_linux_runtime_cleanup_jni.cpp floe_linux_readiness_jni.cpp floe_workspace_source_jni.cpp floe_git_trust_jni.cpp floe_terminal_jni.cpp floe_browser_jni.cpp floe_git_actions_jni.cpp floe_network_workspace_jni.cpp floe_run_output_jni.cpp floe_office_ai_jni.cpp floe_network_diagnostics_jni.cpp floe_network_artifact_jni.cpp floe_platform_tools_jni.cpp floe_media_render_jni.cpp floe_media_foundation_jni.cpp floe_generation_foreground_jni.cpp floe_design_authority_jni.cpp floe_mail_transport_jni.cpp floe_vnc_jni.cpp floe_calendar_host_jni.cpp)
+# C05 DEVICE COMMUNICATIONS (2026-11-02, job-2f4f7ceefe474948):
+# floe_device_communication_jni.cpp appended the same way — the trusted-host
+# device model-tool mailbox ABI (bind/next/describe/payload/isLive/shouldStop/
+# complete/close/stats/readiness) over the epoch-fenced Swift mailbox. The
+# Kotlin App pump performs real TCP/Telnet/BLE/USB operations through the
+# App-owned engine. Not a V3 command, never model-reachable; every ownership/
+# approval/cancellation decision lives in FloeAndroidCore. Additive TU only;
+# all prior wrappers byte-identical.
+add_library(floe_jni SHARED floe_jni.cpp floe_secret_jni.cpp floe_runtime_jni.cpp floe_attachment_staging_jni.cpp floe_security_corpus_jni.cpp floe_provider_catalog_jni.cpp floe_provider_draft_probe_jni.cpp floe_skills_folder_staging_jni.cpp floe_provider_modelset_jni.cpp floe_privacy_jni.cpp floe_linux_shell_jni.cpp floe_run_foreground_jni.cpp floe_jobs_jni.cpp floe_linux_workspace_jni.cpp floe_linux_runtime_cleanup_jni.cpp floe_linux_readiness_jni.cpp floe_workspace_source_jni.cpp floe_git_trust_jni.cpp floe_terminal_jni.cpp floe_browser_jni.cpp floe_git_actions_jni.cpp floe_network_workspace_jni.cpp floe_run_output_jni.cpp floe_office_ai_jni.cpp floe_network_diagnostics_jni.cpp floe_network_artifact_jni.cpp floe_platform_tools_jni.cpp floe_media_render_jni.cpp floe_media_foundation_jni.cpp floe_generation_foreground_jni.cpp floe_design_authority_jni.cpp floe_mail_transport_jni.cpp floe_vnc_jni.cpp floe_calendar_host_jni.cpp
+    ../../../../devicecommunication/src/main/cpp/floe_device_communication_jni.cpp)
 target_link_libraries(floe_jni PRIVATE FloeAndroidCore)
 target_link_options(floe_jni PRIVATE "-Wl,-z,max-page-size=16384")
 

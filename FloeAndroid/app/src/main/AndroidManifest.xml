@@ -57,6 +57,16 @@
          Runtime-requested only on API>=37 at an explicit user action;
          G07 Wi-Fi scan/location permissions are independently scoped below. -->
     <uses-permission android:name="android.permission.ACCESS_LOCAL_NETWORK" />
+    <!-- C05 real BLE GATT serial and Android USB host serial. Bluetooth
+         runtime grants are requested only after the user's explicit action;
+         legacy API 28-30 scan uses the already-declared fine location. No
+         all-files/USB storage permission is added (USB storage stays SAF). -->
+    <uses-permission android:name="android.permission.BLUETOOTH" android:maxSdkVersion="30" />
+    <uses-permission android:name="android.permission.BLUETOOTH_ADMIN" android:maxSdkVersion="30" />
+    <uses-permission android:name="android.permission.BLUETOOTH_SCAN" />
+    <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
+    <uses-feature android:name="android.hardware.bluetooth_le" android:required="false" />
+    <uses-feature android:name="android.hardware.usb.host" android:required="false" />
     <application android:name=".FloeApplication" android:label="@string/app_name" android:icon="@mipmap/ic_launcher" android:roundIcon="@mipmap/ic_launcher"
         android:theme="@style/Theme.Floe" android:allowBackup="false" android:supportsRtl="true"
         android:usesCleartextTraffic="false" android:enableOnBackInvokedCallback="true">

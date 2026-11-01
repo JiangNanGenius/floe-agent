@@ -13,6 +13,8 @@ import com.floe.android.host.mail.C06BrokerMailLanGate
 import com.floe.android.host.mail.C06MailHostController
 import com.floe.android.host.calendar.C06CalendarHostController
 import com.floe.android.host.remote.C05BrokerLocalNetworkGate
+import com.floe.android.host.devicecommunication.C05BrokerDeviceLanGate
+import com.floe.android.host.devicecommunication.C05DevicesHostController
 import com.floe.android.host.remote.C05RemoteHostController
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
@@ -142,6 +144,25 @@ class RuntimeHost internal constructor(
     }
     internal val c05Remote: C05RemoteHostController
         get() = c05RemoteDelegate.value
+
+    /**
+     * C05 Application-owned real-device controller: TCP/Telnet sockets, BLE
+     * GATT sessions, USB serial sessions, USB permission receiver and the
+     * trusted device model-tool pump. It follows the live native epoch and
+     * is drained before Root retirement. Created on the accepted store
+     * generation so configured model tools work without opening the screen.
+     */
+    private val c05DevicesDelegate = lazy {
+        C05DevicesHostController(
+            context = appContext,
+            scope = scope,
+            ioDispatcher = ioDispatcher,
+            currentNativeEpoch = ::nativeRootEpoch,
+            lanGate = C05BrokerDeviceLanGate(integrations.localNetwork),
+        )
+    }
+    internal val c05Devices: C05DevicesHostController
+        get() = c05DevicesDelegate.value
 
     /**
      * C06 Application-owned mail controller. The controller owns the trusted
@@ -458,6 +479,19 @@ class RuntimeHost internal constructor(
     internal suspend fun prepareC05RemoteForRootStop(): Boolean =
         if (c05RemoteDelegate.isInitialized()) {
             c05Remote.prepareForRootStop(C05_REMOTE_STOP_WAIT_MS)
+        } else {
+            true
+        }
+
+    /**
+     * Root-stop gate for C05 devices: stop the trusted tool mailbox, close
+     * every App/tool TCP/Telnet/BLE/USB session and await the engine's real
+     * close/join before the native root retires. An unproven drain keeps the
+     * generation pending; no device handle survives into a new epoch.
+     */
+    internal suspend fun prepareC05DevicesForRootStop(): Boolean =
+        if (c05DevicesDelegate.isInitialized()) {
+            c05Devices.prepareForRootStop(C05_DEVICES_STOP_WAIT_MS)
         } else {
             true
         }
@@ -799,6 +833,10 @@ class RuntimeHost internal constructor(
                 if (c05RemoteDelegate.isInitialized()) {
                     c05Remote.onOwnedStoreReady()
                 }
+                // C05 devices: the engine/tool-pump lane follows the ACTUAL
+                // accepted epoch and must be available to configured model
+                // tools even if the Devices screen was never opened.
+                c05Devices.onOwnedStoreReady()
                 // C06: the mail lane is App-owned, so it starts on the real
                 // accepted store generation even when the Mail screen has not
                 // been opened (configured model mail tools need it). It does
@@ -836,6 +874,7 @@ class RuntimeHost internal constructor(
                 g02ReadinessAdapter.reset()
                 if (cadViewerDelegate.isInitialized()) cadViewer.onRootStopped()
                 if (c05RemoteDelegate.isInitialized()) c05Remote.onRootStopped()
+                if (c05DevicesDelegate.isInitialized()) c05Devices.onRootStopped()
                 if (c06MailDelegate.isInitialized()) c06Mail.onRootStopped()
                 if (c06CalendarDelegate.isInitialized()) c06Calendar.onRootStopped()
                 stopOfficeAiLane()
@@ -1159,6 +1198,9 @@ class RuntimeHost internal constructor(
 
         /** Bounded join for the C05 SSH session/PTY/tunnel drain. */
         internal const val C05_REMOTE_STOP_WAIT_MS = 8_000L
+
+        /** Bounded join for the C05 device sessions/tool mailbox drain. */
+        internal const val C05_DEVICES_STOP_WAIT_MS = 6_000L
 
         /** Bounded join for the C06 platform TLS lane / mail transport drain. */
         internal const val C06_MAIL_STOP_WAIT_MS = 8_000L

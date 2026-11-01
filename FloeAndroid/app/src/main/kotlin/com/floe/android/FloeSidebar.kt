@@ -172,6 +172,14 @@ fun FloeSidebar(
                 selectionStyle = FloeSelectionStyle.GRAY,
                 modifier = Modifier.padding(horizontal = 12.dp),
             )
+            FloeSidebarRow(
+                icon = FloeIcons.Antenna,
+                label = stringResource(com.floe.android.feature.devicecommunication.R.string.devices_title),
+                selected = selection == SidebarSelection.More(MoreDestination.DEVICES),
+                onClick = { onSelect(SidebarSelection.More(MoreDestination.DEVICES)) },
+                selectionStyle = FloeSelectionStyle.GRAY,
+                modifier = Modifier.padding(horizontal = 12.dp),
+            )
 
             FloeSectionHeader(stringResource(R.string.projects))
             val defaultProjectName = stringResource(R.string.project_default_name)
@@ -302,12 +310,17 @@ fun FloeSidebar(
                             "calendar",
                             stringResource(com.floe.android.feature.calendar.R.string.calendar_title),
                         ),
+                        FloeChoiceOption(
+                            "devices",
+                            stringResource(com.floe.android.feature.devicecommunication.R.string.devices_title),
+                        ),
                     ),
                     selectedKey = when (selection) {
                         SidebarSelection.More(MoreDestination.NETWORK) -> "network"
                         SidebarSelection.More(MoreDestination.REMOTE) -> "remote"
                         SidebarSelection.More(MoreDestination.MAIL) -> "mail"
                         SidebarSelection.More(MoreDestination.CALENDAR) -> "calendar"
+                        SidebarSelection.More(MoreDestination.DEVICES) -> "devices"
                         else -> null
                     },
                     onSelect = { key ->
@@ -318,6 +331,7 @@ fun FloeSidebar(
                                     "remote" -> MoreDestination.REMOTE
                                     "mail" -> MoreDestination.MAIL
                                     "calendar" -> MoreDestination.CALENDAR
+                                    "devices" -> MoreDestination.DEVICES
                                     else -> MoreDestination.NETWORK
                                 }
                             )

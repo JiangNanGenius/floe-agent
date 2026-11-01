@@ -488,6 +488,8 @@ dependencies {
     implementation(project(":core:networkmonitor"))
     implementation(project(":core:pcap"))
     implementation(project(":core:networkcapture"))
+    // C05 real device engine (TCP/Telnet/BLE GATT/USB serial) and screens.
+    implementation(project(":core:devicecommunication"))
     implementation(libs.androidx.work.runtime)
     // Preserve the already-locked concurrent-futures KTX 1.2.0 line:
     // androidx.test:core 1.7.0 (androidTest) references SuspendToFutureAdapter,
@@ -497,6 +499,7 @@ dependencies {
     implementation(project(":feature:network"))
     implementation(project(":feature:remote"))
     implementation(project(":feature:mail"))
+    implementation(project(":feature:devicecommunication"))
     // C06 system-calendar provider access and Calendar/Todo presentation.
     implementation(project(":core:calendar"))
     implementation(project(":feature:calendar"))

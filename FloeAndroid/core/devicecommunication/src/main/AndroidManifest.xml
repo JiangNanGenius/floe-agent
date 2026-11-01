@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- C05 device communications declares no permission, component or receiver.
+     Bluetooth/USB permissions, the USB host feature and the dynamic USB
+     permission/detach receiver are App-owned (Main manifest patch). This
+     library only opens transports after the platform grants are already
+     present. -->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android" />

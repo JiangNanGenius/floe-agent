@@ -131,3 +131,7 @@ Main's later build/install qualification. Play contains no root adapter.
 ## C05 VNC
 
 RoyalVNCKit is pinned to 92d4427c73817d8f849bb289ff190aa4b40c44ea, with the documented Android socket and lifetime port. CryptoSwift is pinned to a59b4d91ebb22011656c830f874fe7152e183a57. MIT, d3des public-domain and platform zlib notices are retained under licenses/vnc and packaged under assets/legal/vnc. The vendored source and local port notes are under shared/Vendor/Remote/RoyalVNCKit.
+
+## C05 device communication
+
+USB serial uses usb-serial-for-android3.11.0, fixed upstream8e694372dee4531d140766df7af3189d3d9531c5 and the pinned JitPack artifact. The MIT license and artifact/source hashes are retained under licenses/devicecommunication and packaged under assets/legal/devicecommunication. BLE GATT uses Android platform APIs; TCP/Telnet uses the JDK socket implementation.
