@@ -113,9 +113,9 @@ nonisolated struct FaceSignature: Codable, Hashable, Sendable {
 /// OPTIONAL kernel-history identity layered under the signature. Synthesized
 /// Codable decodes optionals with `decodeIfPresent` and omits nil on encode,
 /// so documents written before the field exist load unchanged and legacy
-/// refs stay byte-identical on disk. Resolution: a name hit wins outright;
-/// a name MISS falls back to signature scoring gated by an ambiguity margin;
-/// a ref with no name resolves exactly as it always did.
+/// refs stay byte-identical on disk. Resolution: a compatible name hit wins;
+/// a missing named identity reports a broken reference rather than binding a
+/// replacement by resemblance. Unnamed legacy refs keep signature matching.
 nonisolated struct FaceRef: Codable, Hashable, Sendable {
     var body: BodyRef
     var creator: FeatureID

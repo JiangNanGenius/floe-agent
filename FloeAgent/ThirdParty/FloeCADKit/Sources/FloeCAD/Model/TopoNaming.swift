@@ -35,7 +35,8 @@ nonisolated struct FaceTable: Codable, Sendable {
         var triangles: [Int]
         /// Kernel-history identity, when one could be derived without
         /// guessing (docs/TOPO_NAMING_HISTORY_DESIGN.md step 2). Nil is
-        /// normal — signature matching stays the universal fallback.
+        /// normal for legacy geometry; an already-named reference cannot use
+        /// this unnamed entry to bypass a missing identity.
         var elementName: ElementName? = nil
     }
 
@@ -80,7 +81,8 @@ nonisolated protocol TopoNaming: Sendable {
     /// `inputs`' entries; unmatched faces fall back to `derived(index:)`.
     func propagate(inputs: [FaceTable], output: Body, op: TopoOp) -> FaceTable
     /// Re-resolve a persisted `ref` against `body`'s current faces (optionally
-    /// boosted by a `table`'s roles). Returns the best face above threshold, else nil.
+    /// boosted by a `table`'s roles). Named refs require their recorded identity;
+    /// unnamed legacy refs return a matching face above threshold, else nil.
     func resolve(_ ref: FaceRef, in body: Body, table: FaceTable?) -> ResolvedFace?
 }
 
@@ -104,11 +106,9 @@ nonisolated struct SignatureNaming: TopoNaming {
     /// A face must score at least this to `resolve`.
     static let resolveThreshold: Double = 0.6
 
-    /// Ambiguity gate for a ref whose kernel-history NAME missed (step 4):
-    /// the signature fallback must beat its runner-up by at least this much,
-    /// or the resolve reports broken instead of guessing between near-ties.
-    /// Applies only to name-bearing refs — legacy refs resolve as they
-    /// always did.
+    /// Ambiguity margin for upgrading an unnamed legacy signature reference
+    /// to a kernel-history identity. A named reference never falls back to
+    /// geometric resemblance when its actual identity is missing.
     static let nameMissMargin: Double = 0.05
 
     /// Bar for the 5b opportunistic upgrade: a legacy ref only gains a name
@@ -199,9 +199,10 @@ nonisolated struct SignatureNaming: TopoNaming {
         // entries and enumerated faces align row-for-row (both come from the
         // same `enumerate` partition) — verified by triangle set before
         // trusting, and the hit is sanity-checked against the signature's
-        // KIND: a name pointing at an incompatible face is a miss to fall
-        // through from, never an instruction to obey.
-        if let name = ref.elementName, let table {
+        // KIND. Losing a recorded identity is a broken reference, even if a
+        // newly created face happens to have identical geometry.
+        if let name = ref.elementName {
+            guard let table else { return nil }
             for (index, entry) in table.entries.enumerated()
             where entry.elementName == name {
                 guard index < faces.count else { break }
@@ -214,6 +215,7 @@ nonisolated struct SignatureNaming: TopoNaming {
                                     confidence: 1,
                                     elementName: name)
             }
+            return nil
         }
 
         var best: (score: Double, index: Int, face: EnumeratedFace)?
@@ -264,14 +266,8 @@ nonisolated struct SignatureNaming: TopoNaming {
         }
         guard let best, best.score >= Self.resolveThreshold else { return nil }
         let margin = runnerUpScore.map { best.score - $0 }
-        // A ref that CARRIED a name and missed it is on notice: something
-        // structural changed. It may still resolve by signature, but only
-        // when the answer is unambiguous — two near-tied candidates after a
-        // name miss is exactly the silent mis-bind this whole design exists
-        // to prevent. Legacy refs (no name) keep today's behavior untouched.
-        if ref.elementName != nil, let margin, margin < Self.nameMissMargin {
-            return nil
-        }
+        // Only an unnamed legacy reference reaches geometric matching.
+        // Keep its confidence/margin for the separately gated name upgrade.
         // Surface the matched entry's name (rows align with enumerate,
         // verified by triangles) — the raw material of the 5b upgrade.
         var matchedName: ElementName?

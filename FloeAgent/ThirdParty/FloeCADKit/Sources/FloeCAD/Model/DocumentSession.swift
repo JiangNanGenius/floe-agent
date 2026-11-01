@@ -72,6 +72,61 @@ final class DocumentSession {
     /// against this before trusting either map.
     private(set) var lastNamingRevisions: [BodyID: UInt64] = [:]
 
+    /// These tables describe the actual immutable geometry held by a history
+    /// entry, not a scratch replay's triangle order. Keep them in the same
+    /// composite as that entry's geometry and feature/sketch mutations.
+    private struct NamingCacheState {
+        var faceTables: [BodyID: FaceTable]
+        var kernelNames: [BodyID: [Int: ElementName]]
+    }
+
+    private struct NamingCacheCommand: DocumentCommand {
+        let title = "Restore References"
+        weak var owner: DocumentSession?
+        let before: NamingCacheState
+        let after: NamingCacheState
+
+        func apply(to document: inout DesignDocument) {
+            owner?.restoreNamingCache(after)
+        }
+
+        func revert(in document: inout DesignDocument) {
+            owner?.restoreNamingCache(before)
+        }
+    }
+
+    private var restoredNamingCacheFromHistory = false
+
+    private func restoreNamingCache(_ state: NamingCacheState) {
+        lastFaceTables = state.faceTables
+        lastKernelNames = state.kernelNames
+        // The document is currently borrowed by UndoStack. Never read it
+        // here; ReplaceBodyCommand re-mints revisions while applying/reverting.
+        // Bind the restored cache to real revisions only after history returns.
+        lastNamingRevisions = [:]
+        restoredNamingCacheFromHistory = true
+    }
+
+    private func finishHistoryNamingRestore() {
+        if restoredNamingCacheFromHistory {
+            captureNamingRevisions(for: Set(lastFaceTables.keys).union(lastKernelNames.keys))
+        } else {
+            // A plain body command has no graph-cache snapshot. Do not bless
+            // the previous geometry's cache with the restored body's revision.
+            let revisions = Dictionary(uniqueKeysWithValues:
+                document.bodies.map { ($0.id, $0.meshRevision) })
+            let stale = Set(lastFaceTables.keys).union(lastKernelNames.keys).filter {
+                lastNamingRevisions[$0] == nil || lastNamingRevisions[$0] != revisions[$0]
+            }
+            for id in stale {
+                lastFaceTables[id] = nil
+                lastKernelNames[id] = nil
+                lastNamingRevisions[id] = nil
+            }
+        }
+        restoredNamingCacheFromHistory = false
+    }
+
     /// Bumped on every document mutation; the editor observes this to rebuild
     /// the viewport scene.
     private(set) var changeCount = 0 {
@@ -488,18 +543,22 @@ final class DocumentSession {
 
     func undo() {
         guard requireWritable() else { return }
+        restoredNamingCacheFromHistory = false
         undoStack.undo(on: &document)
         // A rebuild's errors were computed for the state being undone;
         // recompute for the restored state so badges track the document
         // rather than the last live edit (review S6 residual).
         refreshEvalErrors()
+        finishHistoryNamingRestore()
         didChange()
     }
 
     func redo() {
         guard requireWritable() else { return }
+        restoredNamingCacheFromHistory = false
         undoStack.redo(on: &document)
         refreshEvalErrors()
+        finishHistoryNamingRestore()
         didChange()
     }
 
@@ -810,6 +869,17 @@ final class DocumentSession {
                 return false
             }
         }
+        let currentNamingRevisions = Dictionary(uniqueKeysWithValues:
+            document.bodies.map { ($0.id, $0.meshRevision) })
+        let namingBefore = NamingCacheState(
+            faceTables: lastFaceTables.filter {
+                lastNamingRevisions[$0.key] != nil
+                    && lastNamingRevisions[$0.key] == currentNamingRevisions[$0.key]
+            },
+            kernelNames: lastKernelNames.filter {
+                lastNamingRevisions[$0.key] != nil
+                    && lastNamingRevisions[$0.key] == currentNamingRevisions[$0.key]
+            })
         document = revisionDocument
         evalCache = plannedCache
         lastEvalErrors = plan.errors
@@ -823,7 +893,12 @@ final class DocumentSession {
             adoptCachedBodies()
             return true
         }
-        perform(CompositeCommand(title: title, commands: plan.commands))
+        let namingAfter = NamingCacheState(faceTables: lastFaceTables,
+                                           kernelNames: lastKernelNames)
+        let namingCommand = NamingCacheCommand(owner: self, before: namingBefore,
+                                               after: namingAfter)
+        perform(CompositeCommand(title: title,
+                                 commands: [namingCommand] + plan.commands))
         // AFTER the commands: ReplaceBodyCommand.apply re-mints meshRevision,
         // so revisions captured from the replay's bodies would mark every
         // replace-path rebuild stale and silently disable name minting (found
@@ -831,6 +906,7 @@ final class DocumentSession {
         // retained tables/names describe these bodies exactly — the replay
         // built them — only the revision stamps had moved.
         captureNamingRevisions(for: plan.resultBodyIDs)
+        restoredNamingCacheFromHistory = false
         adoptCachedBodies()
         return true
     }
