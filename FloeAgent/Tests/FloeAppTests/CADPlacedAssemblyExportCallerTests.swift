@@ -1154,3 +1154,522 @@ final class CADPlacedAssemblyExportCallerTests: XCTestCase {
     }
 
 }
+
+// X30 — direct Present export recovery through the production App adapter and
+// the real NativeCADTaskRegistry store. These are behavioral tests of the
+// production adapter/session, not source-string checks and not a fake store.
+// The exporter's own real background/edit/lease/staging fences are covered by
+// the existing CADAnimationExportOptionsTests; these cases verify that the
+// host adapter maps those terminal statuses to one honest durable record and
+// that cleanup precedes the single finish call.
+
+@MainActor
+final class NativeCADEditorAnimationExportRecoveryTests: XCTestCase {
+    private nonisolated final class CleanupFlag: @unchecked Sendable {
+        private let lock = NSLock()
+        private var flag = false
+
+        func set() {
+            lock.lock()
+            flag = true
+            lock.unlock()
+        }
+
+        var value: Bool {
+            lock.lock()
+            defer { lock.unlock() }
+            return flag
+        }
+    }
+
+    /// Delegates to the real adapter and records whether the session's cleanup
+    /// closure ran before the singleton finish call.
+    private nonisolated final class CleanupProbeSink: CADAnimationExportRecoverySink,
+        @unchecked Sendable {
+        private let inner: NativeCADEditorAnimationExportRecovery
+        private let cleanupFlag: CleanupFlag
+        private let lock = NSLock()
+        private var finishCount = 0
+        private var cleanupWasSet = false
+
+        init(inner: NativeCADEditorAnimationExportRecovery,
+             cleanupFlag: CleanupFlag) {
+            self.inner = inner
+            self.cleanupFlag = cleanupFlag
+        }
+
+        func beginAnimationExport(
+            _ request: CADAnimationExportRecoveryRequest
+        ) async throws -> UUID {
+            try await inner.beginAnimationExport(request)
+        }
+
+        func finishAnimationExport(
+            id: UUID,
+            outcome: CADAnimationExportRecoveryOutcome,
+            detail: String?
+        ) async {
+            lock.withLock {
+                finishCount += 1
+                cleanupWasSet = cleanupFlag.value
+            }
+            await inner.finishAnimationExport(
+                id: id, outcome: outcome, detail: detail)
+        }
+
+        func lastInterruptedAnimationExport(
+            documentURL: URL
+        ) async -> CADAnimationExportRecoverySummary? {
+            await inner.lastInterruptedAnimationExport(documentURL: documentURL)
+        }
+
+        func snapshot() -> (count: Int, cleanupWasSet: Bool) {
+            lock.lock()
+            defer { lock.unlock() }
+            return (finishCount, cleanupWasSet)
+        }
+
+        func dismissInterruptedAnimationExport(id: UUID, documentURL: URL) async throws {
+            try await inner.dismissInterruptedAnimationExport(id: id, documentURL: documentURL)
+        }
+    }
+
+    /// Proves the document/tool export API never consults the App editor sink.
+    private nonisolated final class CountingSink: CADAnimationExportRecoverySink,
+        @unchecked Sendable {
+        private let lock = NSLock()
+        private var begins = 0
+
+        func beginAnimationExport(
+            _ request: CADAnimationExportRecoveryRequest
+        ) async throws -> UUID {
+            lock.withLock {
+                begins += 1
+            }
+            return UUID()
+        }
+
+        func finishAnimationExport(
+            id: UUID,
+            outcome: CADAnimationExportRecoveryOutcome,
+            detail: String?
+        ) async {}
+
+        func lastInterruptedAnimationExport(
+            documentURL: URL
+        ) async -> CADAnimationExportRecoverySummary? { nil }
+
+        var beginCount: Int {
+            lock.lock()
+            defer { lock.unlock() }
+            return begins
+        }
+
+        func dismissInterruptedAnimationExport(id: UUID, documentURL: URL) async throws {
+            throw CADAnimationExportRecoveryError.recordUnavailable
+        }
+    }
+
+    private var root: URL!
+    private var registryFile: URL!
+    private var registry: NativeCADTaskRegistry!
+    private var documentURL: URL!
+    private var adapter: NativeCADEditorAnimationExportRecovery!
+
+    override func setUp() async throws {
+        root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("CADEditorRecovery-\(UUID().uuidString)",
+                                    isDirectory: true)
+        try FileManager.default.createDirectory(at: root,
+                                                withIntermediateDirectories: true)
+        registryFile = root.appendingPathComponent("native-tasks.json")
+        registry = NativeCADTaskRegistry(fileURL: registryFile)
+        documentURL = root.appendingPathComponent("Assembly.floecad")
+        adapter = NativeCADEditorAnimationExportRecovery(
+            documentURL: documentURL, registry: registry)
+    }
+
+    override func tearDown() async throws {
+        if let root { try? FileManager.default.removeItem(at: root) }
+        root = nil
+        registryFile = nil
+        registry = nil
+        documentURL = nil
+        adapter = nil
+    }
+
+    private var sampleOptions: CADAnimationExportRecoveryOptions {
+        CADAnimationExportRecoveryOptions(
+            orientation: "portrait",
+            resolution: 720,
+            frameRate: 24,
+            codec: "hevc",
+            quality: "higher",
+            width: 720,
+            height: 1280,
+            bitrate: 8_000_000,
+            overwrite: false,
+            posterEnabled: true)
+    }
+
+    private func makeRequest(
+        clipID: UUID = UUID()
+    ) -> CADAnimationExportRecoveryRequest {
+        CADAnimationExportRecoveryRequest(
+            documentURL: documentURL,
+            options: sampleOptions,
+            sourceRevision: 9,
+            sourceContentSHA256: "sha-9",
+            sourceChangeCount: 27,
+            clipID: clipID,
+            clipDuration: 1.5,
+            suggestedFilename: "Assembly animation.mp4")
+    }
+
+    private var nativeOwnership: NativeCADTaskRegistry.Ownership {
+        NativeCADTaskRegistry.Ownership(
+            environmentID: nil,
+            ownerKind: "native-editor",
+            ownerID: nil,
+            documentPath: documentURL.standardizedFileURL
+                .resolvingSymlinksInPath().path)
+    }
+
+    func testSavedOptionsRoundTripTheExactSheetChoices() throws {
+        let options = CADAnimationExportOptions(
+            orientation: .portrait, resolution: .p720, frameRate: .fps24,
+            codec: .hevc, quality: .higher)
+        let saved = options.recoveryOptions
+        let settings = options.exportSettings()
+        XCTAssertEqual(saved.orientation, "portrait")
+        XCTAssertEqual(saved.resolution, 720)
+        XCTAssertEqual(saved.frameRate, 24)
+        XCTAssertEqual(saved.codec, "hevc")
+        XCTAssertEqual(saved.quality, "higher")
+        XCTAssertEqual(saved.width, settings.width)
+        XCTAssertEqual(saved.height, settings.height)
+        XCTAssertEqual(saved.bitrate, settings.bitrate)
+        XCTAssertEqual(saved.overwrite, settings.overwrite)
+        XCTAssertEqual(saved.posterEnabled, settings.posterEnabled)
+        XCTAssertEqual(try XCTUnwrap(CADAnimationExportOptions(recoveryOptions: saved)), options)
+
+        // An unknown future value is refused instead of silently changing
+        // the user's saved selection.
+        var unknown = saved
+        unknown.quality = "future-quality"
+        XCTAssertNil(CADAnimationExportOptions(recoveryOptions: unknown))
+    }
+
+    func testBeginPersistsExactNativeIntentAndFinishIsExactlyOnce() async throws {
+        let request = makeRequest()
+        let session = CADAnimationExportRecoverySession(
+            sink: adapter, request: request)
+        try await session.begin()
+        let id = try XCTUnwrap(session.id)
+        XCTAssertTrue(session.isStarted)
+
+        let rows = await registry.status(id: id, ownership: nativeOwnership)
+        let record = try XCTUnwrap(rows.first)
+        XCTAssertEqual(record.kind, "animation-export")
+        XCTAssertEqual(record.state, .running)
+        XCTAssertEqual(record.ownership.ownerKind, "native-editor")
+        XCTAssertNil(record.ownership.environmentID)
+        XCTAssertNil(record.ownership.ownerID)
+
+        let saved = try XCTUnwrap(record.animationExport)
+        XCTAssertEqual(saved.destination, .exportPicker)
+        XCTAssertEqual(saved.relativeOutput, "Assembly animation.mp4")
+        XCTAssertEqual(saved.suggestedFilename, "Assembly animation.mp4")
+        XCTAssertEqual(saved.nativeOptions, request.options)
+        XCTAssertEqual(saved.options.width, 720)
+        XCTAssertEqual(saved.options.height, 1280)
+        XCTAssertEqual(saved.options.frameRate, 24)
+        XCTAssertEqual(saved.options.codec, "hevc")
+        XCTAssertEqual(saved.options.bitrate, 8_000_000)
+        XCTAssertFalse(saved.options.overwrite)
+        XCTAssertTrue(saved.options.posterEnabled)
+        XCTAssertEqual(saved.source?.revision, 9)
+        XCTAssertEqual(saved.source?.contentSHA256, "sha-9")
+        XCTAssertEqual(saved.source?.changeCount, 27)
+        XCTAssertEqual(saved.source?.clipID, request.clipID)
+        XCTAssertEqual(saved.source?.clipDuration, 1.5)
+
+        // The status projection is the same inert metadata the host can show;
+        // it must never present the temporary render file as a real output
+        // path.
+        let reply = CadDocumentCenter.nativeTaskRecordJSON(record)
+        let export = try XCTUnwrap(reply["export_request"] as? [String: Any])
+        XCTAssertEqual(export["destination"] as? String, "export_picker")
+        XCTAssertEqual(export["output_is_path"] as? Bool, false)
+        XCTAssertNil(export["output"],
+                     "the native picker record must not claim a permanent path")
+        XCTAssertEqual(export["suggested_filename"] as? String,
+                       "Assembly animation.mp4")
+        XCTAssertEqual(export["orientation"] as? String, "portrait")
+        XCTAssertEqual(export["resolution"] as? Int, 720)
+        XCTAssertEqual(export["quality"] as? String, "higher")
+        XCTAssertEqual(export["source_revision"] as? Int, 9)
+        XCTAssertEqual(export["source_content_sha256"] as? String, "sha-9")
+        XCTAssertEqual(export["source_change_count"] as? Int, 27)
+        XCTAssertEqual(export["clip_id"] as? String, request.clipID.uuidString)
+
+        await session.finish(outcome: .completed, detail: "verified mp4")
+        await session.finish(outcome: .failed, detail: "late duplicate")
+        // The adapter itself is also idempotent, so a future caller cannot
+        // rewrite the completed record after the session guard has gone away.
+        await adapter.finishAnimationExport(
+            id: id, outcome: .failed, detail: "adapter late duplicate")
+        let after = await registry.status(id: id, ownership: nativeOwnership)
+        XCTAssertEqual(after.count, 1)
+        XCTAssertEqual(after.first?.state, .completed)
+        XCTAssertEqual(after.first?.detail, "verified mp4")
+        XCTAssertEqual(after.first?.animationExport, saved)
+    }
+
+    func testDurableBeginFailureLeavesNoRecordAndStartsNothing() async throws {
+        // A file cannot act as the registry's parent directory, so the atomic
+        // envelope write fails before the adapter returns an id.
+        let blocker = root.appendingPathComponent("blocked")
+        try Data("existing file".utf8).write(to: blocker)
+        let brokenFile = blocker.appendingPathComponent("native-tasks.json")
+        let brokenRegistry = NativeCADTaskRegistry(fileURL: brokenFile)
+        let brokenAdapter = NativeCADEditorAnimationExportRecovery(
+            documentURL: documentURL, registry: brokenRegistry)
+        let session = CADAnimationExportRecoverySession(
+            sink: brokenAdapter, request: makeRequest())
+
+        do {
+            try await session.begin()
+            XCTFail("The frame loop must not receive an id without durable intent")
+        } catch {
+            XCTAssertTrue(error is CocoaError)
+        }
+        XCTAssertNil(session.id)
+        XCTAssertFalse(session.isStarted)
+        let rows = await brokenRegistry.status(id: nil, ownership: nativeOwnership)
+        XCTAssertTrue(rows.isEmpty, "a failed begin must not leave a phantom task")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: brokenFile.path))
+    }
+
+    func testAdapterRejectsARequestForAnotherDocument() async throws {
+        let otherURL = root.appendingPathComponent("Other.floecad")
+        let request = CADAnimationExportRecoveryRequest(
+            documentURL: otherURL,
+            options: sampleOptions,
+            sourceRevision: 1,
+            sourceContentSHA256: "other-sha",
+            sourceChangeCount: 3,
+            clipID: UUID(),
+            clipDuration: 0.5,
+            suggestedFilename: "Other animation.mp4")
+        do {
+            _ = try await adapter.beginAnimationExport(request)
+            XCTFail("A sink bound to Assembly.floecad must refuse another document")
+        } catch let error as CADAnimationExportRecoveryError {
+            XCTAssertEqual(error, .documentMismatch)
+        }
+        let rows = await registry.status(id: nil, ownership: nativeOwnership)
+        XCTAssertTrue(rows.isEmpty)
+    }
+
+    func testCleanupRunsBeforeOneFinishForACloseOrCancel() async throws {
+        let flag = CleanupFlag()
+        let probe = CleanupProbeSink(inner: adapter, cleanupFlag: flag)
+        let session = CADAnimationExportRecoverySession(
+            sink: probe, request: makeRequest())
+        try await session.begin()
+        let id = try XCTUnwrap(session.id)
+
+        // `close()` and the explicit cancel both settle the exporter as
+        // `.cancelled`; the Present lifecycle must finalise that same job once.
+        await session.finish(outcome: .cancelled, detail: "closed") {
+            flag.set()
+            return nil
+        }
+        await session.finish(outcome: .completed, detail: "late status") {
+            flag.set()
+            return nil
+        }
+
+        let snapshot = probe.snapshot()
+        XCTAssertEqual(snapshot.count, 1)
+        XCTAssertTrue(snapshot.cleanupWasSet,
+                      "finish must observe completed temporary-file cleanup")
+        let rows = await registry.status(id: id, ownership: nativeOwnership)
+        XCTAssertEqual(rows.count, 1)
+        XCTAssertEqual(rows.first?.state, .cancelled)
+        XCTAssertEqual(rows.first?.detail, "closed")
+    }
+
+    func testBackgroundEditAndCancelStatusesEachReportOneHonestJob() async throws {
+        let cancelled = CADAnimationExportStatus(
+            id: UUID(),
+            progress: CADAnimationExportProgress(phase: .cancelled),
+            error: "Video export was cancelled.",
+            isCancelled: true)
+        let background = CADAnimationExportStatus(
+            id: UUID(),
+            progress: CADAnimationExportProgress(phase: .failed),
+            error: "The app must be in the foreground so the native 3D renderer can draw the animation.")
+        let edited = CADAnimationExportStatus(
+            id: UUID(),
+            progress: CADAnimationExportProgress(phase: .failed),
+            error: "The document changed during export; the video was discarded.")
+
+        let cases: [(CADAnimationExportStatus,
+                     CADAnimationExportRecoveryOutcome,
+                     NativeCADTaskRegistry.State)] = [
+            (cancelled, .cancelled, .cancelled),
+            (background, .failed, .failed),
+            (edited, .failed, .failed),
+        ]
+        for (status, expectedOutcome, expectedState) in cases {
+            let session = CADAnimationExportRecoverySession(
+                sink: adapter, request: makeRequest())
+            try await session.begin()
+            let id = try XCTUnwrap(session.id)
+            let outcome = CADAnimationExportRecoveryOutcome(status: status)
+            XCTAssertEqual(outcome, expectedOutcome)
+            await session.finish(outcome: outcome, detail: status.error)
+            let rows = await registry.status(id: id, ownership: nativeOwnership)
+            XCTAssertEqual(rows.count, 1)
+            XCTAssertEqual(rows.first?.state, expectedState)
+            XCTAssertEqual(rows.first?.detail, status.error)
+        }
+    }
+
+    func testReopenRestoresMetadataOnlyUnderTheNativeDocumentOwner() async throws {
+        let request = makeRequest()
+        let session = CADAnimationExportRecoverySession(
+            sink: adapter, request: request)
+        try await session.begin()
+        let id = try XCTUnwrap(session.id)
+
+        // A real relaunch creates a new registry instance from the same file;
+        // the still-running record is downgraded to interrupted and remains
+        // inert.
+        let reopened = NativeCADTaskRegistry(fileURL: registryFile)
+        let reopenedAdapter = NativeCADEditorAnimationExportRecovery(
+            documentURL: documentURL, registry: reopened)
+        let summary = await reopenedAdapter.lastInterruptedAnimationExport(
+            documentURL: documentURL)
+        let restored = try XCTUnwrap(summary)
+        XCTAssertEqual(restored.id, id)
+        XCTAssertEqual(restored.options, request.options)
+        XCTAssertEqual(restored.sourceRevision, request.sourceRevision)
+        XCTAssertEqual(restored.sourceContentSHA256, request.sourceContentSHA256)
+        XCTAssertEqual(restored.sourceChangeCount, request.sourceChangeCount)
+        XCTAssertEqual(restored.clipID, request.clipID)
+        XCTAssertEqual(restored.clipDuration, request.clipDuration)
+        XCTAssertEqual(restored.suggestedFilename, request.suggestedFilename)
+        XCTAssertEqual(restored.detail,
+                       "the app ended while this job was running; it was not completed")
+        XCTAssertFalse(FileManager.default.fileExists(
+            atPath: root.appendingPathComponent(request.suggestedFilename).path),
+            "recovery metadata must never write a video or reuse a destination")
+
+        // Another document, even with the same registry, cannot see it.
+        let foreignAdapter = NativeCADEditorAnimationExportRecovery(
+            documentURL: root.appendingPathComponent("Other.floecad"),
+            registry: reopened)
+        let foreign = await foreignAdapter.lastInterruptedAnimationExport(
+            documentURL: root.appendingPathComponent("Other.floecad"))
+        XCTAssertNil(foreign)
+
+        // The tool/session ownership is disjoint: a native-editor record grants
+        // no tool status/cancel access.
+        let toolOwnership = NativeCADTaskRegistry.Ownership(
+            environmentID: nil,
+            ownerKind: "task",
+            ownerID: UUID(),
+            documentPath: documentURL.standardizedFileURL.path)
+        let toolRows = await reopened.status(id: id, ownership: toolOwnership)
+        XCTAssertTrue(toolRows.isEmpty)
+
+        // A newer completed native export supersedes the old interrupted
+        // notice instead of nagging forever.
+        let retry = CADAnimationExportRecoverySession(
+            sink: reopenedAdapter, request: makeRequest())
+        try await retry.begin()
+        await retry.finish(outcome: .completed, detail: "retry completed")
+        let afterRetry = await reopenedAdapter.lastInterruptedAnimationExport(
+            documentURL: documentURL)
+        XCTAssertNil(afterRetry)
+    }
+
+    func testDismissIsDurableAndForeignAdapterCannotFinishOrDismissIt() async throws {
+        let id = try await adapter.beginAnimationExport(makeRequest())
+        let reopened = NativeCADTaskRegistry(fileURL: registryFile)
+        let own = NativeCADEditorAnimationExportRecovery(
+            documentURL: documentURL, registry: reopened)
+        let foreignURL = root.appendingPathComponent("Foreign.floecad")
+        let foreign = NativeCADEditorAnimationExportRecovery(
+            documentURL: foreignURL, registry: reopened)
+
+        await foreign.finishAnimationExport(id: id, outcome: .completed,
+                                            detail: "foreign late callback")
+        do {
+            try await foreign.dismissInterruptedAnimationExport(id: id,
+                                                                 documentURL: foreignURL)
+            XCTFail("A different document cannot dismiss this record")
+        } catch let error as CADAnimationExportRecoveryError {
+            XCTAssertEqual(error, .recordUnavailable)
+        }
+        let unchanged = await reopened.status(id: id, ownership: nativeOwnership)
+        XCTAssertEqual(unchanged.first?.state, .interrupted)
+
+        try await own.dismissInterruptedAnimationExport(id: id, documentURL: documentURL)
+        let diskReopened = NativeCADTaskRegistry(fileURL: registryFile)
+        let diskAdapter = NativeCADEditorAnimationExportRecovery(
+            documentURL: documentURL, registry: diskReopened)
+        let rows = await diskReopened.status(id: id, ownership: nativeOwnership)
+        XCTAssertEqual(rows.first?.state, .cancelled)
+        let summary = await diskAdapter.lastInterruptedAnimationExport(documentURL: documentURL)
+        XCTAssertNil(summary, "Ignoring recovery must survive closing and reopening the editor")
+    }
+
+    func testDismissSaveFailurePreservesTheInterruptedRecordForRetry() async throws {
+        let id = try await adapter.beginAnimationExport(makeRequest())
+        let reopened = NativeCADTaskRegistry(fileURL: registryFile)
+        let own = NativeCADEditorAnimationExportRecovery(
+            documentURL: documentURL, registry: reopened)
+        let diskData = try Data(contentsOf: registryFile)
+        try FileManager.default.removeItem(at: registryFile)
+        try FileManager.default.createDirectory(at: registryFile,
+                                                withIntermediateDirectories: false)
+        do {
+            try await own.dismissInterruptedAnimationExport(id: id, documentURL: documentURL)
+            XCTFail("A failed atomic write cannot dismiss recovery in memory")
+        } catch {
+            XCTAssertTrue(error is CocoaError)
+        }
+        let retained = await own.lastInterruptedAnimationExport(documentURL: documentURL)
+        XCTAssertEqual(retained?.id, id)
+        try FileManager.default.removeItem(at: registryFile)
+        try diskData.write(to: registryFile, options: .atomic)
+        try await own.dismissInterruptedAnimationExport(id: id, documentURL: documentURL)
+        let rows = await reopened.status(id: id, ownership: nativeOwnership)
+        XCTAssertEqual(rows.first?.state, .cancelled)
+    }
+
+    func testHeadlessDocumentExportNeverUsesTheEditorRecoverySink() async throws {
+        let document = try await FloeCADDocument.create(
+            at: root.appendingPathComponent("Headless.floecad"),
+            name: "Headless")
+        defer { document.close() }
+        let counting = CountingSink()
+        document.installAnimationExportRecoverySink(counting)
+
+        // The direct document API is the tool/headless path. With no clip it
+        // refuses before rendering; the editor sink must remain untouched so
+        // CadDocumentCenter.exportAnimation stays the only record for a tool
+        // export.
+        do {
+            _ = try await document.exportAnimationMP4(
+                to: root.appendingPathComponent("headless.mp4"))
+            XCTFail("A document without a clip must not start an export")
+        } catch {
+            XCTAssertEqual(counting.beginCount, 0)
+        }
+    }
+}

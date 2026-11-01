@@ -179,6 +179,21 @@ public nonisolated struct CADAnimationExportStatus: Sendable, Equatable {
     }
 }
 
+public extension CADAnimationExportRecoveryOutcome {
+    /// One place maps the exporter's terminal status onto the durable record.
+    /// A cancelled wait never becomes a failed/completed receipt; a failed
+    /// render never becomes completed; only a real result is completed.
+    init(status: CADAnimationExportStatus) {
+        if status.isCancelled {
+            self = .cancelled
+        } else if status.result != nil {
+            self = .completed
+        } else {
+            self = .failed
+        }
+    }
+}
+
 public nonisolated struct CADAnimationExportHandle: Sendable, Equatable {
     public var id: UUID
     public init(id: UUID = UUID()) { self.id = id }

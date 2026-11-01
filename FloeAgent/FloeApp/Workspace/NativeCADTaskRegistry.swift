@@ -10,8 +10,13 @@
 // owning Task is cancelled, but the final state records whether the operation
 // actually observed it or finished first.
 //
+// The direct Present editor uses the same store through the App-owned
+// `NativeCADEditorAnimationExportRecovery` sink; that record keeps the exact
+// UI choices and source identity, never the temporary export URL.
+//
 
 import Foundation
+import FloeCAD
 import FloeWorkbench
 
 actor NativeCADTaskRegistry {
@@ -52,6 +57,27 @@ actor NativeCADTaskRegistry {
         case notRunning(Record)
     }
 
+    /// Where an export was going when it was interrupted. The tool path writes
+    /// a workspace-relative path; the direct Present export renders into a
+    /// temporary file and then asks the user through the system export picker,
+    /// so its saved name must never be treated as a permanent path.
+    enum AnimationExportDestination: String, Codable, Sendable, Equatable {
+        case workspaceRelative = "workspace_relative"
+        case exportPicker = "export_picker"
+    }
+
+    /// Exact source identity captured before a direct Present frame loop. A
+    /// pending autosave may advance revision/hash during the exporter's own
+    /// prepare step, so `changeCount` is the live-edit fence used before the
+    /// loop; revision/hash remain honest request-time metadata for recovery.
+    struct AnimationExportSource: Codable, Sendable, Equatable {
+        var revision: Int
+        var contentSHA256: String
+        var changeCount: Int
+        var clipID: UUID?
+        var clipDuration: Double
+    }
+
     /// Saved intent for an explicitly requested export. This is enough to
     /// offer the same choices after interruption, but never authorizes a new
     /// write or represents a resumable encoder checkpoint. A new invocation
@@ -59,6 +85,15 @@ actor NativeCADTaskRegistry {
     struct AnimationExportRequest: Codable, Sendable, Equatable {
         var relativeOutput: String
         var options: CadAnimationExportOptions
+        /// Nil keeps the historical tool/workspace-path record shape. The
+        /// direct Present path always writes `.exportPicker`.
+        var destination: AnimationExportDestination? = nil
+        var source: AnimationExportSource? = nil
+        /// Exact UI choices for re-offering the options sheet. The production
+        /// `options` above remain the single settings authority.
+        var nativeOptions: CADAnimationExportRecoveryOptions? = nil
+        /// Display name only; never a permanent output URL.
+        var suggestedFilename: String? = nil
     }
 
     struct Record: Codable, Sendable, Equatable, Identifiable {
@@ -199,6 +234,27 @@ actor NativeCADTaskRegistry {
         cancelRequests.contains(id) || records[id]?.state == .cancelled
     }
 
+    /// Dismissing recovery metadata is not a request to cancel live work. Only
+    /// the exact owner's interrupted record may be changed, and the previous
+    /// state survives an atomic-save failure.
+    func dismissInterruptedAnimationExport(id: UUID, ownership: Ownership) throws {
+        guard let original = records[id], original.ownership == ownership,
+              original.kind == "animation-export", original.state == .interrupted else {
+            throw CADAnimationExportRecoveryError.recordUnavailable
+        }
+        var dismissed = original
+        dismissed.state = .cancelled
+        dismissed.detail = "interrupted export dismissed by the user"
+        dismissed.updatedAt = Date()
+        records[id] = dismissed
+        do {
+            try persistRequired()
+        } catch {
+            records[id] = original
+            throw error
+        }
+    }
+
     /// Status is scoped to one exact ownership: without an id it lists only
     /// that ownership's records; with an id a mismatch returns nothing rather
     /// than leaking another owner's/document's job.
@@ -239,5 +295,146 @@ actor NativeCADTaskRegistry {
         try FileManager.default.createDirectory(at: fileURL.deletingLastPathComponent(),
                                                 withIntermediateDirectories: true)
         try data.write(to: fileURL, options: [.atomic])
+    }
+}
+
+/// App-owned adapter for the direct Present MP4 export (X30). The Floe App
+/// installs exactly one of these on each `FloeCADDocument` it owns; the
+/// standalone package has no adapter and keeps its historical behavior. Every
+/// call is bound to the canonical document path captured at install time, so a
+/// stale/session-swapped presentation cannot write a record for another file.
+/// The tool export path never calls this adapter; it keeps its own
+/// `CadDocumentCenter.exportAnimation` record and never double-records.
+final class NativeCADEditorAnimationExportRecovery: CADAnimationExportRecoverySink,
+    @unchecked Sendable {
+    private let registry: NativeCADTaskRegistry
+    private let canonicalDocumentPath: String
+    private let finishLock = NSLock()
+    private var finishedIDs: Set<UUID> = []
+
+    init(documentURL: URL,
+         registry: NativeCADTaskRegistry = .shared) {
+        self.registry = registry
+        self.canonicalDocumentPath = Self.canonicalPath(documentURL)
+    }
+
+    private static func canonicalPath(_ url: URL) -> String {
+        url.standardizedFileURL.resolvingSymlinksInPath().path
+    }
+
+    private func isCurrentDocument(_ url: URL) -> Bool {
+        Self.canonicalPath(url) == canonicalDocumentPath
+    }
+
+    private var ownership: NativeCADTaskRegistry.Ownership {
+        NativeCADTaskRegistry.Ownership(
+            environmentID: nil,
+            ownerKind: "native-editor",
+            ownerID: nil,
+            documentPath: canonicalDocumentPath)
+    }
+
+    private static func displayName(_ raw: String) -> String {
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        var name = (trimmed.isEmpty ? "CAD animation.mp4" : trimmed)
+            .replacingOccurrences(of: "/", with: "-")
+            .replacingOccurrences(of: "\\", with: "-")
+        name = String(name.prefix(200))
+        if !name.lowercased().hasSuffix(".mp4") { name += ".mp4" }
+        return name
+    }
+
+    func beginAnimationExport(
+        _ request: CADAnimationExportRecoveryRequest
+    ) async throws -> UUID {
+        guard isCurrentDocument(request.documentURL) else {
+            throw CADAnimationExportRecoveryError.documentMismatch
+        }
+        let name = Self.displayName(request.suggestedFilename)
+        let options = request.options
+        // The exact production settings travel with the UI choices; this
+        // mirrors `CADAnimationExportOptions.exportSettings()` without
+        // importing the SwiftUI sheet into the registry.
+        let toolOptions = CadAnimationExportOptions(
+            width: options.width,
+            height: options.height,
+            frameRate: options.frameRate,
+            codec: options.codec,
+            bitrate: options.bitrate,
+            overwrite: options.overwrite,
+            posterEnabled: options.posterEnabled)
+        let record = NativeCADTaskRegistry.AnimationExportRequest(
+            relativeOutput: name,
+            options: toolOptions,
+            destination: .exportPicker,
+            source: NativeCADTaskRegistry.AnimationExportSource(
+                revision: request.sourceRevision,
+                contentSHA256: request.sourceContentSHA256,
+                changeCount: request.sourceChangeCount,
+                clipID: request.clipID,
+                clipDuration: request.clipDuration),
+            nativeOptions: options,
+            suggestedFilename: name)
+        return try await registry.beginAnimationExport(
+            ownership: ownership, request: record)
+    }
+
+    func finishAnimationExport(
+        id: UUID,
+        outcome: CADAnimationExportRecoveryOutcome,
+        detail: String?
+    ) async {
+        guard !(await registry.status(id: id, ownership: ownership)).isEmpty else { return }
+        // The Present session already guards this, but the adapter keeps its
+        // own terminal set so a future/repeated caller cannot rewrite a
+        // completed or cancelled record with a late status.
+        let firstFinish = finishLock.withLock {
+            finishedIDs.insert(id).inserted
+        }
+        guard firstFinish else { return }
+        let state: NativeCADTaskRegistry.State
+        switch outcome {
+        case .completed: state = .completed
+        case .failed: state = .failed
+        case .cancelled: state = .cancelled
+        }
+        await registry.finish(id: id, state: state, detail: detail)
+    }
+
+    func lastInterruptedAnimationExport(
+        documentURL: URL
+    ) async -> CADAnimationExportRecoverySummary? {
+        guard isCurrentDocument(documentURL) else { return nil }
+        let rows = await registry.status(id: nil, ownership: ownership)
+        // Only the NEWEST native-editor export may surface. A successful or
+        // cancelled retry therefore replaces an older interrupted notice
+        // instead of nagging the user forever.
+        guard let record = rows.first(where: {
+                  $0.kind == "animation-export"
+                      && $0.animationExport?.nativeOptions != nil
+              }),
+              record.state == .interrupted,
+              let request = record.animationExport,
+              let nativeOptions = request.nativeOptions,
+              let source = request.source,
+              let clipID = source.clipID else { return nil }
+        return CADAnimationExportRecoverySummary(
+            id: record.id,
+            options: nativeOptions,
+            sourceRevision: source.revision,
+            sourceContentSHA256: source.contentSHA256,
+            sourceChangeCount: source.changeCount,
+            clipID: clipID,
+            clipDuration: source.clipDuration,
+            suggestedFilename: request.suggestedFilename ?? request.relativeOutput,
+            updatedAt: record.updatedAt,
+            detail: record.detail)
+    }
+
+    func dismissInterruptedAnimationExport(id: UUID, documentURL: URL) async throws {
+        guard isCurrentDocument(documentURL) else {
+            throw CADAnimationExportRecoveryError.documentMismatch
+        }
+        try await registry.dismissInterruptedAnimationExport(id: id, ownership: ownership)
     }
 }

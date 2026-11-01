@@ -296,6 +296,26 @@ public final class FloeCADDocument {
     /// removed the package, and a late write would resurrect it (T7T).
     public var isClosed: Bool { closed }
 
+    // MARK: Direct Present export recovery
+
+    /// Optional App-owned durable-intent sink for the DIRECT Present export.
+    /// The host installs ONE sink on the document instance it owns; the
+    /// standalone package (and the headless/tool `exportAnimationMP4` API)
+    /// never consults it. Keeping this on the document (rather than a global
+    /// callback) binds the record to that exact document and preserves the
+    /// first owner instead of letting another presentation overwrite it.
+    public private(set) var animationExportRecoverySink: (any CADAnimationExportRecoverySink)?
+
+    /// Install the sink once. A second presentation of the same live document
+    /// keeps the original owner; a reopened document is a new instance and
+    /// gets the sink for its own current session.
+    public func installAnimationExportRecoverySink(
+        _ sink: any CADAnimationExportRecoverySink
+    ) {
+        guard animationExportRecoverySink == nil else { return }
+        animationExportRecoverySink = sink
+    }
+
     // MARK: Summary / queries
 
     public func summary() -> CADDocumentSummary {

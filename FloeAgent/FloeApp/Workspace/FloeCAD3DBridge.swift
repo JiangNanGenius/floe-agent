@@ -89,9 +89,21 @@ final class FloeCAD3DBridge {
         return bundle
     }
 
+    /// Install the App-owned recovery sink for the DIRECT Present export on a
+    /// document this bridge owns. The sink is bound to the document's exact
+    /// canonical URL and is installed once; a second view/presentation of the
+    /// same live session cannot replace its owner. The tool/headless export
+    /// path never calls this sink, so it cannot create a duplicate record.
+    private func installEditorExportRecovery(_ document: FloeCADDocument) {
+        guard document.animationExportRecoverySink == nil else { return }
+        document.installAnimationExportRecoverySink(
+            NativeCADEditorAnimationExportRecovery(documentURL: document.url))
+    }
+
     private func document(at url: URL) async throws -> FloeCADDocument {
         let key = key(url)
         if let existing = documents[key], !existing.isReadOnly, !existing.isClosed {
+            installEditorExportRecovery(existing)
             return existing
         }
         // A closed session is ownerless. Never hand it to a new presentation:
@@ -104,7 +116,9 @@ final class FloeCAD3DBridge {
         // Reentrancy guard: one in-flight open per canonical path, shared by
         // every concurrent caller.
         if let inFlight = opening[key] {
-            return try await inFlight.value
+            let document = try await inFlight.value
+            installEditorExportRecovery(document)
+            return document
         }
         let task = Task { () throws -> FloeCADDocument in
             try await FloeCADDocument.open(at: url)
@@ -114,6 +128,7 @@ final class FloeCAD3DBridge {
             let document = try await task.value
             opening[key] = nil
             documents[key] = document
+            installEditorExportRecovery(document)
             return document
         } catch {
             opening[key] = nil

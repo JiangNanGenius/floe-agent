@@ -656,6 +656,9 @@ struct CADPresentationWorkbenchContent: View {
     @State private var showMovieExporter = false
     @State private var exportProgress: CADAnimationExportProgress?
     @State private var exportHandle: CADAnimationExportHandle?
+    @State private var exportStarting = false
+    @State private var interruptedExport: CADAnimationExportRecoverySummary?
+    @State private var dismissingInterruptedExport = false
     @State private var videoExportOptions = CADAnimationExportOptions.load()
     @State private var showVideoExportOptions = false
 
@@ -688,6 +691,9 @@ struct CADPresentationWorkbenchContent: View {
         .overlay(alignment: .bottom) {
             if mode == .present {
                 VStack(spacing: 8) {
+                    if let interruptedExport {
+                        interruptedExportBanner(interruptedExport)
+                    }
                     if showTimeline {
                         CADAnimationTimelineView(
                             document: document,
@@ -741,7 +747,7 @@ struct CADPresentationWorkbenchContent: View {
                 // service verbatim; nothing is re-defaulted on the way.
                 videoExportOptions = options
                 options.save()
-                exportVideo(settings: options.exportSettings())
+                exportVideo(options: options)
             }
             .presentationCompactAdaptation(horizontal: .popover, vertical: .sheet)
         }
@@ -768,6 +774,9 @@ struct CADPresentationWorkbenchContent: View {
         }
         .onAppear {
             refreshAnimation(attach: true)
+        }
+        .task(id: ObjectIdentifier(document)) {
+            await loadInterruptedExport()
         }
         .onDisappear {
             playback.stop()
@@ -848,50 +857,281 @@ struct CADPresentationWorkbenchContent: View {
         }
     }
 
-    private func exportVideo(settings: CADAnimationExportSettings) {
-        guard animationState.activeClip != nil else {
+    private func exportVideo(options: CADAnimationExportOptions) {
+        guard let clip = animationState.activeClip else {
             exportError = FloeCADStrings.text("cad.animation.empty",
                                               "Add a clip to animate the camera or parts.")
+            return
+        }
+        guard exportHandle == nil, !exportStarting else { return }
+        // An agent/tool export (or another presentation's export) owns the
+        // document's renderer. Refuse before touching the durable registry so
+        // a blocked attempt cannot leave a second native-editor record for an
+        // operation that never started.
+        guard !CADAnimationExportCenter.shared.hasActiveJob(
+            documentKey: document.url.standardizedFileURL.path) else {
+            exportError = CADAnimationExportError.exportInProgress.localizedDescription
             return
         }
         playback.pause()
         let temporary = FileManager.default.temporaryDirectory
             .appendingPathComponent(
                 "\(document.name)-animation-\(UUID().uuidString).mp4")
-        let handle: CADAnimationExportHandle
-        do {
-            handle = try document.startAnimationExportMP4(
-                to: temporary, settings: settings) { progress in
-                    exportProgress = progress
-                }
-            exportHandle = handle
-        } catch {
-            exportError = error.localizedDescription
-            exportProgress = nil
-            return
-        }
-        Task {
-            let status = await document.waitForAnimationExport(handle.id)
-            exportHandle = nil
-            exportProgress = status.progress
-            defer { try? FileManager.default.removeItem(at: temporary) }
-            guard let result = status.result else {
-                if !status.isCancelled {
-                    exportError = status.error
-                        ?? FloeCADStrings.text("cad.present.export.failed",
-                                               "Couldn't export")
-                }
+        let request = CADAnimationExportRecoveryRequest(
+            documentURL: document.url,
+            options: options.recoveryOptions,
+            sourceRevision: document.revision,
+            sourceContentSHA256: document.contentSHA256,
+            sourceChangeCount: document.liveChangeCount,
+            clipID: clip.id,
+            clipDuration: clip.duration,
+            suggestedFilename: Self.suggestedExportFilename(document.name))
+        exportStarting = true
+        interruptedExport = nil
+        Task { @MainActor in
+            // The document may have closed between the button action and this
+            // task. Do not create a record for a closed document.
+            guard !document.isClosed else {
+                exportStarting = false
                 return
             }
-            guard let data = try? Data(contentsOf: result.url) else {
+            // The durable request is written BEFORE the renderer exists. If
+            // that atomic write fails, this task returns without starting a
+            // frame loop, creating a video or leaving a phantom record.
+            var recovery: CADAnimationExportRecoverySession?
+            if let sink = document.animationExportRecoverySink {
+                let session = CADAnimationExportRecoverySession(
+                    sink: sink, request: request)
+                do {
+                    try await session.begin()
+                } catch {
+                    exportStarting = false
+                    exportError = FloeCADStrings.text(
+                        "cad.animation.export.recoverySaveFailed",
+                        "Couldn't save the export details, so the video wasn't started.")
+                    return
+                }
+                recovery = session
+            }
+            // The begin above awaited real disk I/O. A close or edit in that
+            // window must not attach the saved intent to a newer source. A
+            // pending autosave may advance revision/hash without changing the
+            // live edit count, so the exact clip value and live change count
+            // are the frame-loop fence (the exporter keeps its own stricter
+            // revision/background/staging fences after this point).
+            let currentClip = document.animationLoadState().activeClip
+            guard !document.isClosed,
+                  currentClip?.id == request.clipID,
+                  abs((currentClip?.duration ?? -1) - request.clipDuration) < 0.000_001,
+                  document.liveChangeCount == request.sourceChangeCount else {
+                exportStarting = false
+                await recovery?.finish(
+                    outcome: .cancelled,
+                    detail: "the document changed before the frame loop started")
                 exportError = FloeCADStrings.text(
-                    "cad.animation.export.readFailed",
-                    "The exported video could not be read.")
+                    "cad.animation.export.sourceChanged",
+                    "The document changed before the video started. Try again.")
+                return
+            }
+            let handle: CADAnimationExportHandle
+            do {
+                handle = try document.startAnimationExportMP4(
+                    to: temporary, settings: options.exportSettings()) { progress in
+                        exportProgress = progress
+                    }
+                exportHandle = handle
+                exportStarting = false
+            } catch {
+                exportStarting = false
+                await recovery?.finish(
+                    outcome: Self.recoveryOutcome(for: error),
+                    detail: error.localizedDescription)
+                exportError = error.localizedDescription
+                exportProgress = nil
+                return
+            }
+            let status = await document.waitForAnimationExport(handle.id)
+            exportProgress = status.progress
+            let result = status.result
+            let data = result.flatMap { try? Data(contentsOf: $0.url) }
+            var outcome = CADAnimationExportRecoveryOutcome(status: status)
+            if outcome == .completed, data == nil {
+                // The renderer produced a result but its bytes could not be
+                // handed to the export picker; reporting completed would be a
+                // fake success for the user.
+                outcome = .failed
+            }
+            let detail: String?
+            switch outcome {
+            case .completed:
+                if let result {
+                    detail = "mp4 \(result.width)x\(result.height) "
+                        + "\(Int(result.frameRate.rounded()))fps "
+                        + "\(result.frameCount) frames, \(result.byteCount) bytes; "
+                        + "rendered for the export picker"
+                } else {
+                    detail = "the export produced no readable result"
+                }
+            case .failed:
+                detail = status.error ?? (result != nil
+                    ? FloeCADStrings.text(
+                        "cad.animation.export.readFailed",
+                        "The exported video could not be read.")
+                    : nil)
+            case .cancelled:
+                detail = status.error
+            }
+            let cleanup: @MainActor () -> String? = {
+                guard FileManager.default.fileExists(atPath: temporary.path) else {
+                    return nil
+                }
+                do {
+                    try FileManager.default.removeItem(at: temporary)
+                    return nil
+                } catch {
+                    return FloeCADStrings.text(
+                        "cad.animation.export.cleanupFailed",
+                        "Temporary export files could not be removed.")
+                }
+            }
+            if let recovery {
+                // Cleanup runs before finish, so the durable record reports
+                // the post-cleanup outcome. The session guard makes a second
+                // status/close callback harmless.
+                await recovery.finish(outcome: outcome, detail: detail,
+                                      cleanup: cleanup)
+            } else {
+                _ = cleanup()
+            }
+            // Keep this presentation busy until its durable finish has
+            // returned. A second export must not race an old picker callback.
+            exportHandle = nil
+            guard !document.isClosed else { return }
+            guard outcome == .completed, let result, let data else {
+                if !status.isCancelled {
+                    exportError = status.error
+                        ?? (result != nil
+                            ? FloeCADStrings.text(
+                                "cad.animation.export.readFailed",
+                                "The exported video could not be read.")
+                            : FloeCADStrings.text(
+                                "cad.present.export.failed", "Couldn't export"))
+                }
                 return
             }
             movieExport = MovieFileDocument(data: data)
             showMovieExporter = true
         }
+    }
+
+    /// One terminal mapping for errors thrown by the synchronous start call.
+    /// A close/lease revocation surfaces `.cancelled`; everything else is an
+    /// honest failure.
+    private static func recoveryOutcome(for error: Error) -> CADAnimationExportRecoveryOutcome {
+        if let error = error as? CADAnimationExportError,
+           case .cancelled = error {
+            return .cancelled
+        }
+        return .failed
+    }
+
+    /// A display label, never a path. The Present pane renders into the system
+    /// temporary directory and then asks the user where to save; recovery must
+    /// not pretend that temporary URL is a permanent destination.
+    private static func suggestedExportFilename(_ name: String) -> String {
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        let base = (trimmed.isEmpty ? "CAD" : trimmed)
+            .replacingOccurrences(of: "/", with: "-")
+            .replacingOccurrences(of: "\\", with: "-")
+        return String(base.prefix(180)) + " animation.mp4"
+    }
+
+    private func loadInterruptedExport() async {
+        guard let sink = document.animationExportRecoverySink else { return }
+        let summary = await sink.lastInterruptedAnimationExport(
+            documentURL: document.url)
+        guard !Task.isCancelled else { return }
+        interruptedExport = summary
+    }
+
+    private func interruptedExportBanner(
+        _ summary: CADAnimationExportRecoverySummary
+    ) -> some View {
+        let restored = CADAnimationExportOptions(recoveryOptions: summary.options)
+        return VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 10) {
+                Image(systemName: "arrow.counterclockwise.circle")
+                    .foregroundStyle(.secondary)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(FloeCADStrings.text(
+                        "cad.animation.export.recovery.title",
+                        "Video export interrupted"))
+                        .font(.callout.weight(.semibold))
+                        .accessibilityIdentifier("CADAnimationExportRecovery")
+                    Text(recoveryDescription(summary))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(2)
+                }
+                Spacer(minLength: 0)
+            }
+            HStack(spacing: 8) {
+                Spacer(minLength: 0)
+                if restored != nil {
+                    Button(FloeCADStrings.text(
+                        "cad.animation.export.recovery.restore", "Use settings")) {
+                        if let restored {
+                            videoExportOptions = restored
+                            showVideoExportOptions = true
+                        }
+                        interruptedExport = nil
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                    .disabled(animationState.activeClip == nil || exportHandle != nil
+                              || exportStarting || dismissingInterruptedExport)
+                    .accessibilityIdentifier("CADAnimationExportRecoveryRestore")
+                }
+                Button(FloeCADStrings.text(
+                    "cad.animation.export.recovery.dismiss", "Dismiss")) {
+                    dismissInterruptedExport(summary)
+                }
+                .buttonStyle(.borderless)
+                .controlSize(.small)
+                .disabled(dismissingInterruptedExport)
+                .accessibilityIdentifier("CADAnimationExportRecoveryDismiss")
+            }
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 14))
+        .padding(.horizontal, 12)
+    }
+
+    private func dismissInterruptedExport(_ summary: CADAnimationExportRecoverySummary) {
+        guard !dismissingInterruptedExport,
+              let sink = document.animationExportRecoverySink else { return }
+        dismissingInterruptedExport = true
+        Task { @MainActor in
+            defer { dismissingInterruptedExport = false }
+            do {
+                try await sink.dismissInterruptedAnimationExport(
+                    id: summary.id, documentURL: document.url)
+                if interruptedExport?.id == summary.id { interruptedExport = nil }
+            } catch {
+                exportError = FloeCADStrings.text(
+                    "cad.animation.export.dismissFailed",
+                    "Couldn't dismiss the interrupted export. Try again.")
+            }
+        }
+    }
+
+    private func recoveryDescription(_ summary: CADAnimationExportRecoverySummary) -> String {
+        let codec = summary.options.codec.lowercased()
+        let codecLabel = codec == "hevc" ? "HEVC"
+            : (codec == "h264" ? "H.264" : summary.options.codec.uppercased())
+        return "\(summary.suggestedFilename) · \(summary.options.width)×"
+            + "\(summary.options.height) · \(summary.options.frameRate) fps · \(codecLabel)"
     }
 
     // MARK: Chrome
@@ -973,7 +1213,8 @@ struct CADPresentationWorkbenchContent: View {
                     Label(FloeCADStrings.text("cad.animation.export.video", "MP4 video"),
                           systemImage: "film")
                 }
-                .disabled(animationState.activeClip == nil || exportHandle != nil)
+                .disabled(animationState.activeClip == nil
+                          || exportHandle != nil || exportStarting)
 
                 Button {
                     exportGLB()

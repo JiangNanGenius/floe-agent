@@ -352,9 +352,15 @@ actor CadDocumentCenter: CadDocumentHost {
                                          overwrite: options.overwrite)
         let ownership = NativeCADTaskRegistry.Ownership(access: access,
                                                        documentPath: resolved.id)
+        // The tool export owns this record and renders through
+        // `FloeCAD3DBridge.exportAnimation` -> `exportAnimationMP4`, which never
+        // consults the document's direct-Present recovery sink. One tool
+        // operation therefore has exactly one durable record even when the App
+        // adapter is installed on the shared document instance.
         let taskID = try await NativeCADTaskRegistry.shared.beginAnimationExport(
             ownership: ownership,
-            request: .init(relativeOutput: output.relative, options: options))
+            request: .init(relativeOutput: output.relative, options: options,
+                           destination: .workspaceRelative))
         if await NativeCADTaskRegistry.shared.isCancellationRequested(id: taskID) {
             await NativeCADTaskRegistry.shared.finish(
                 id: taskID, state: .cancelled, detail: nil)
@@ -599,13 +605,49 @@ actor CadDocumentCenter: CadDocumentHost {
         if let request = record.animationExport {
             let options = request.options
             var saved: [String: Any] = [
-                "output": request.relativeOutput,
                 "width": options.width, "height": options.height,
                 "frame_rate": options.frameRate, "codec": options.codec,
                 "overwrite": options.overwrite,
                 "poster_enabled": options.posterEnabled,
             ]
             if let bitrate = options.bitrate { saved["bitrate"] = bitrate }
+            // X30: the direct Present export records a display name and the
+            // system export-picker destination, never the temporary URL as a
+            // permanent output. Tool records explicitly mark their workspace
+            // path; older records without the field still decode.
+            if let destination = request.destination {
+                saved["destination"] = destination.rawValue
+                if destination == .exportPicker {
+                    saved["suggested_filename"] =
+                        request.suggestedFilename ?? request.relativeOutput
+                    saved["output_is_path"] = false
+                } else {
+                    saved["output"] = request.relativeOutput
+                    saved["output_is_path"] = true
+                }
+            } else {
+                // Old tool records (and the pre-X30 shape) only ever held a
+                // workspace-relative path.
+                saved["output"] = request.relativeOutput
+                saved["output_is_path"] = true
+            }
+            if let suggested = request.suggestedFilename {
+                saved["suggested_filename"] = suggested
+            }
+            if let native = request.nativeOptions {
+                saved["orientation"] = native.orientation
+                saved["resolution"] = native.resolution
+                saved["quality"] = native.quality
+            }
+            if let source = request.source {
+                saved["source_revision"] = source.revision
+                saved["source_content_sha256"] = source.contentSHA256
+                saved["source_change_count"] = source.changeCount
+                saved["clip_duration"] = source.clipDuration
+                if let clipID = source.clipID {
+                    saved["clip_id"] = clipID.uuidString
+                }
+            }
             object["export_request"] = saved
             object["foreground_required"] = true
             object["frame_resume_supported"] = false

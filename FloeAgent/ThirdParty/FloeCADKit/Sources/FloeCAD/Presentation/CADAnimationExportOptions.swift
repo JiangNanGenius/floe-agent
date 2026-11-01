@@ -120,6 +120,44 @@ public nonisolated struct CADAnimationExportOptions: Sendable, Equatable, Codabl
             posterEnabled: true)
     }
 
+    // MARK: X30 durable recovery snapshot
+
+    /// Exact value the App host stores before the frame loop starts. The
+    /// production settings travel with the UI choices so a reopened sheet
+    /// re-offers the same selection without re-deriving a different bitrate
+    /// from a future formula.
+    public var recoveryOptions: CADAnimationExportRecoveryOptions {
+        let settings = exportSettings()
+        return CADAnimationExportRecoveryOptions(
+            orientation: orientation.rawValue,
+            resolution: resolution.rawValue,
+            frameRate: settings.frameRate,
+            codec: settings.codec.rawValue,
+            quality: quality.rawValue,
+            width: settings.width,
+            height: settings.height,
+            bitrate: settings.bitrate,
+            overwrite: settings.overwrite,
+            posterEnabled: settings.posterEnabled)
+    }
+
+    /// Reconstruct the sheet selection only when every saved raw value is
+    /// still known. An unknown future value keeps the recovery notice
+    /// informational (status only) instead of silently changing the export.
+    public init?(recoveryOptions: CADAnimationExportRecoveryOptions) {
+        guard let orientation = CADAnimationExportOrientation(
+                rawValue: recoveryOptions.orientation),
+              let resolution = CADAnimationExportResolution(
+                rawValue: recoveryOptions.resolution),
+              let frameRate = CADAnimationExportFrameRate(
+                rawValue: recoveryOptions.frameRate),
+              let codec = CADAnimationVideoCodec(rawValue: recoveryOptions.codec),
+              let quality = CADAnimationExportQuality(rawValue: recoveryOptions.quality)
+        else { return nil }
+        self.init(orientation: orientation, resolution: resolution,
+                  frameRate: frameRate, codec: codec, quality: quality)
+    }
+
     // MARK: Persistence (additive preference, no document schema change)
 
     private static let defaultsKey = "floe.cad.animationExportOptions"
