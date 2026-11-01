@@ -338,6 +338,27 @@ final class NativeCADLiveCaptureEvidenceTests: XCTestCase {
             allowed: ["variable.update"], allowGeometryEdits: true, undoCount: 0))
     }
 
+    func testFormulaTurnPermitsReadOnlyCapabilitiesAndToolDiscovery() throws {
+        let events = try [
+            event(1, .toolRequest, ["tool": "tools.search", "id": "discovery",
+                                    "input": #"{"query":"cad.document"}"#]),
+            event(2, .toolResult, ["tool": "tools.search", "id": "discovery",
+                                   "status": "ok", "summary": "Native CAD tool metadata"]),
+            event(3, .toolRequest, ["tool": CadDocumentTool.name, "id": "capabilities",
+                                    "input": #"{"action":"capabilities"}"#]),
+            formulaResponse(4, "capabilities"),
+            formulaRequest(5, "variable", action: "variable.update"),
+            formulaResponse(6, "variable"),
+            formulaRequest(7, "save", action: "save"),
+            formulaResponse(8, "save"),
+        ]
+        XCTAssertNoThrow(try NativeCADLiveEvidence.assertToolSurface(
+            events: events, documentName: "Observed.floecad", turn: 2))
+        XCTAssertNoThrow(try NativeCADLiveEvidence.assertFormulaTurn(
+            events, required: ["variable.update"], allowed: ["variable.update"],
+            allowGeometryEdits: false, undoCount: 0))
+    }
+
     func testRejectedCaptureRetrySelectsTheSuccessfulReceiptRequest() throws {
         let events = try [captureRequest(1, "rejected"),
                           captureResult(3, "rejected", status: "failed"),
@@ -3464,6 +3485,10 @@ private enum NativeCADLiveEvidence {
                     XCTFail("Turn \(turn) produced an unreadable tool request.")
                     continue
                 }
+                // Discovery publishes metadata and grants no execution
+                // authority. It must not count as a native CAD operation,
+                // nor fail an otherwise native-only geometry acceptance.
+                if tool == "tools.search" { continue }
                 XCTAssertEqual(tool, CadDocumentTool.name, "Turn \(turn) called a tool outside the CAD-only ceiling.")
                 requests += 1
                 guard let input = payload["input"] as? String,
@@ -3493,6 +3518,7 @@ private enum NativeCADLiveEvidence {
                     XCTFail("Turn \(turn) produced an unreadable tool result.")
                     continue
                 }
+                if tool == "tools.search" { continue }
                 XCTAssertEqual(tool, CadDocumentTool.name)
                 let status = payload["status"] as? String
                 XCTAssertFalse(status == "needsUser", "Turn \(turn) stopped for user input.")
@@ -3532,7 +3558,8 @@ private enum NativeCADLiveEvidence {
         }
         if !allowGeometryEdits {
             let readActions: Set<String> = [
-                "query", "read", "three_d_snapshot", "three_d_measure", "measure", "help", "capture",
+                "query", "read", "three_d_snapshot", "three_d_measure", "measure",
+                "capabilities", "help", "capture",
             ]
             guard all.filter(succeeded).allSatisfy({ request in
                 let action = request.arguments["action"] as? String ?? ""

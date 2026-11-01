@@ -55,6 +55,15 @@ Keep `ark-code-latest` as a separate selectable routing entry even when the
 direct-model table does not list it; do not invent a fixed context/output
 limit for the selector.
 
+As checked on 2026-11-02, current OpenCode [catalog loading](https://github.com/anomalyco/opencode/blob/dev/packages/core/src/models-dev.ts)
+uses `models.opencode.ai` with a bundled snapshot and periodic refresh. Its
+[public v2 directory](https://models.opencode.ai/experimental/v2.0/api.json?type=chat,decision,image)
+lists Volcengine PAYG and Coding Plan, but does not contain a separate Agent
+Plan provider or `ark-code-latest`. Floe therefore retains the pinned upstream
+baseline and its official plan override; the Coding Plan list is not an Agent
+Plan source. This is a dated directory check, not a claim that upstream will
+never add the plan.
+
 Provenance for the currently committed catalog is recorded in `SOURCE.json`.
 The canonical pin is `documentSHA256`, the SHA-256 of the served
 `api.json` response bytes; plain import runs and `--check` refuse to proceed
