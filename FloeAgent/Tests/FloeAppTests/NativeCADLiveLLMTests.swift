@@ -485,6 +485,69 @@ final class NativeCADLiveCaptureEvidenceTests: XCTestCase {
 @MainActor
 final class NativeCADLiveBudgetTests: XCTestCase {
 
+    private func policyData(prepaid: Bool, total: Int, overrides: [String: Any] = [:]) throws -> Data {
+        var values: [String: Any] = [
+            "schemaVersion": 1,
+            "enabled": true,
+            "acceptRealAppOrdinaryRunContext": true,
+            "providerID": NativeCADLivePrepaidRoute.providerID.uuidString,
+            "modelID": NativeCADLivePrepaidRoute.modelID.uuidString,
+            "remoteModelID": "deepseek-v4.1-flash-economy",
+            "allowAnyCheapCloudChatModel": false,
+            "prepaidBudgetBasis": prepaid,
+            "inputPerMillionUSD": prepaid ? 0 : 1,
+            "outputPerMillionUSD": prepaid ? 0 : 2,
+            "maxEstimatedCostUSD": 0.25,
+            "maxInputTokens": 1_000_000,
+            "maxOutputTokens": 1_000_000,
+            "maxTotalTokens": total,
+            "perRunTimeoutSeconds": 900,
+            "maxTotalSeconds": 2_700,
+        ]
+        values.merge(overrides) { _, replacement in replacement }
+        return try JSONSerialization.data(withJSONObject: values, options: .sortedKeys)
+    }
+
+    func testReviewedPrepaidPolicyAcceptsMeasuredThreeTurnAggregate() throws {
+        for limit in [1_000_000, 1_000_001, 3_000_000] {
+            let policy = try NativeCADLiveOptIn.decodePolicy(policyData(prepaid: true, total: limit))
+            XCTAssertEqual(policy.maxTotalTokens, limit)
+            XCTAssertEqual(policy.maxInputTokens, 1_000_000)
+            XCTAssertEqual(policy.maxOutputTokens, 1_000_000)
+            XCTAssertEqual(policy.perRunTimeoutSeconds, 900)
+            XCTAssertEqual(policy.maxTotalSeconds, 2_700)
+        }
+        for limit in [0, 3_000_001] {
+            XCTAssertThrowsError(try NativeCADLiveOptIn.decodePolicy(policyData(prepaid: true, total: limit)))
+        }
+    }
+
+    func testMeasuredAggregateCannotBroadenReviewedRoute() throws {
+        let invalidOverrides: [[String: Any]] = [
+            ["providerID": UUID().uuidString],
+            ["modelID": UUID().uuidString],
+            ["remoteModelID": "unreviewed-model"],
+            ["allowAnyCheapCloudChatModel": true],
+            ["inputPerMillionUSD": 1],
+            ["maxInputTokens": 1_000_001],
+            ["maxOutputTokens": 1_000_001],
+            ["perRunTimeoutSeconds": 901],
+            ["maxTotalSeconds": 2_701],
+        ]
+        for overrides in invalidOverrides {
+            XCTAssertThrowsError(try NativeCADLiveOptIn.decodePolicy(
+                policyData(prepaid: true, total: 3_000_000, overrides: overrides)
+            ))
+        }
+    }
+
+    func testMeteredPolicyKeepsOriginalAggregateLimit() throws {
+        let policy = try NativeCADLiveOptIn.decodePolicy(policyData(prepaid: false, total: 1_000_000))
+        XCTAssertEqual(policy.maxTotalTokens, 1_000_000)
+        XCTAssertEqual(policy.maxCost, Decimal(string: "0.25"))
+        XCTAssertThrowsError(try NativeCADLiveOptIn.decodePolicy(policyData(prepaid: false, total: 1_000_001)))
+    }
+
     /// Synthetic, test-only pricing. The metered basis uses positive exact
     /// integers; the prepaid basis stays on the reviewed exact-route shape.
     private func makeLedger(
@@ -715,7 +778,10 @@ private enum NativeCADLivePrepaidRoute {
     static let recordedContextTokens = 1_048_576
     static let maxInputTokens = 1_000_000
     static let maxOutputTokens = 1_000_000
-    static let maxTotalTokens = 1_000_000
+    // Live171 consumed 986,838 reported tokens in two turns, mostly cache
+    // reads. The three-turn replay keeps every dimension counted and uses a
+    // measured aggregate bound; individual input/output and time caps stay.
+    static let maxTotalTokens = 3_000_000
     static let maxPerRunSeconds: Double = 900
     static let maxTotalSeconds: Double = 2_700
 
@@ -959,6 +1025,12 @@ private struct NativeCADLiveOptIn: Sendable {
         } catch {
             throw XCTSkip("Live native CAD acceptance skipped: the opt-in policy file could not be read (\(error.localizedDescription)). A skip is not live evidence.")
         }
+        return try decodePolicy(data)
+    }
+
+    /// The same non-secret policy validation is exercised before paid runs
+    /// and by non-paid boundary tests, without touching the App or network.
+    static func decodePolicy(_ data: Data) throws -> NativeCADLiveOptIn {
         guard let raw = try? JSONDecoder().decode(Raw.self, from: data) else {
             throw XCTSkip("Live native CAD acceptance skipped: the opt-in policy is not valid JSON with the documented schema. A skip is not live evidence.")
         }
@@ -1031,8 +1103,9 @@ private struct NativeCADLiveOptIn: Sendable {
         }
         let maxTotal: Int?
         if let declaredTotal = raw.maxTotalTokens {
-            guard (1...1_000_000).contains(declaredTotal) else {
-                throw XCTSkip("Live native CAD acceptance skipped: maxTotalTokens must be 1...1,000,000. A skip is not live evidence.")
+            let ceiling = prepaid ? NativeCADLivePrepaidRoute.maxTotalTokens : 1_000_000
+            guard (1...ceiling).contains(declaredTotal) else {
+                throw XCTSkip("Live native CAD acceptance skipped: maxTotalTokens must be 1...\(ceiling) for this budget basis. A skip is not live evidence.")
             }
             maxTotal = declaredTotal
         } else if prepaid {
@@ -1061,7 +1134,7 @@ private struct NativeCADLiveOptIn: Sendable {
                   total <= NativeCADLivePrepaidRoute.maxTotalSeconds else {
                 throw XCTSkip(
                     "Live native CAD acceptance skipped: prepaidBudgetBasis may not exceed the "
-                        + "approved 1,000,000-token aggregate (uncached input + cache read + "
+                        + "reviewed 3,000,000-token aggregate (uncached input + cache read + "
                         + "output), 1,000,000 input, 1,000,000 output, 900 s per turn or "
                         + "2,700 s total. A skip is not live evidence."
                 )
