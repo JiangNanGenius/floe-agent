@@ -197,6 +197,12 @@ struct CADAnimationExportOptionsSheet: View {
     var body: some View {
         NavigationStack {
             Form {
+                Text(FloeCADStrings.text(
+                    "cad.animation.export.foregroundNotice",
+                    "Keep Floe open until the video is ready. If interrupted, start the export again."))
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                    .accessibilityIdentifier("CADAnimationExportForegroundNotice")
                 Picker(FloeCADStrings.text("cad.animation.export.options.orientation",
                                            "Orientation"),
                        selection: $draft.orientation) {

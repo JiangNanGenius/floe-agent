@@ -52,6 +52,15 @@ actor NativeCADTaskRegistry {
         case notRunning(Record)
     }
 
+    /// Saved intent for an explicitly requested export. This is enough to
+    /// offer the same choices after interruption, but never authorizes a new
+    /// write or represents a resumable encoder checkpoint. A new invocation
+    /// must resolve the current document, permissions and output again.
+    struct AnimationExportRequest: Codable, Sendable, Equatable {
+        var relativeOutput: String
+        var options: CadAnimationExportOptions
+    }
+
     struct Record: Codable, Sendable, Equatable, Identifiable {
         var id: UUID
         var kind: String
@@ -60,6 +69,9 @@ actor NativeCADTaskRegistry {
         var detail: String?
         var createdAt: Date
         var updatedAt: Date
+        /// Optional so old records continue to decode without migration or
+        /// inventing settings they never recorded.
+        var animationExport: AnimationExportRequest? = nil
     }
 
     private var records: [UUID: Record] = [:]
@@ -120,6 +132,30 @@ actor NativeCADTaskRegistry {
         order.append(record.id)
         trim()
         persist()
+        return record.id
+    }
+
+    /// Do not start a long export if its recovery intent could not be saved.
+    /// Save a complete atomic envelope before handing out its live task id;
+    /// a failed write restores the prior in-memory index as well.
+    func beginAnimationExport(ownership: Ownership,
+                               request: AnimationExportRequest) throws -> UUID {
+        let previousRecords = records
+        let previousOrder = order
+        let record = Record(id: UUID(), kind: "animation-export", ownership: ownership,
+                            state: .running, detail: nil,
+                            createdAt: Date(), updatedAt: Date(),
+                            animationExport: request)
+        records[record.id] = record
+        order.append(record.id)
+        trim()
+        do {
+            try persistRequired()
+        } catch {
+            records = previousRecords
+            order = previousOrder
+            throw error
+        }
         return record.id
     }
 
@@ -191,11 +227,17 @@ actor NativeCADTaskRegistry {
     }
 
     private func persist() {
-        guard let fileURL else { return }
+        try? persistRequired()
+    }
+
+    private func persistRequired() throws {
+        guard let fileURL else {
+            throw CocoaError(.fileWriteUnknown)
+        }
         let envelope = Envelope(records: order.compactMap { records[$0] })
-        guard let data = try? JSONEncoder().encode(envelope) else { return }
-        try? FileManager.default.createDirectory(at: fileURL.deletingLastPathComponent(),
-                                                 withIntermediateDirectories: true)
-        try? data.write(to: fileURL, options: [.atomic])
+        let data = try JSONEncoder().encode(envelope)
+        try FileManager.default.createDirectory(at: fileURL.deletingLastPathComponent(),
+                                                withIntermediateDirectories: true)
+        try data.write(to: fileURL, options: [.atomic])
     }
 }

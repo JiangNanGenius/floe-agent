@@ -176,7 +176,7 @@ public struct CadAnimationCapture: Sendable, Equatable {
 
 /// MP4 export options accepted by the tool. Values are validated again by the
 /// engine; the tool only keeps the public contract small and explicit.
-public struct CadAnimationExportOptions: Sendable, Equatable {
+public struct CadAnimationExportOptions: Codable, Sendable, Equatable {
     public var width: Int
     public var height: Int
     public var frameRate: Int

@@ -123471,6 +123471,23 @@
           }
         }
       }
+    },
+    "cad.animation.export.foregroundNotice": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Keep Floe open until the video is ready. If interrupted, start the export again."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "请保持 Floe 在前台，等待视频完成。如有中断，返回后可重新导出。"
+          }
+        }
+      }
     }
   },
   "version": "1.0"

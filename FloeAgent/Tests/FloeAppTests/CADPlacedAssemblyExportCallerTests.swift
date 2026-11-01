@@ -25,6 +25,145 @@ import FloeTools
 import FloeWorkbench
 @testable import FloeApp
 
+/// Exercise the real durable task store, not a source-string assertion. The
+/// saved request is inert: it survives interruption, but never writes an
+/// output or bypasses the caller's next permission/document resolution.
+@MainActor
+final class NativeCADAnimationExportRecoveryTests: XCTestCase {
+    func testInterruptedExportKeepsExactChoicesAndNeverRunsOnRecovery() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("CADExportRecovery-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let file = root.appendingPathComponent("native-tasks.json")
+        let owner = NativeCADTaskRegistry.Ownership(
+            environmentID: "test-environment", ownerKind: "task", ownerID: UUID(),
+            documentPath: "Projects/Assembly.floecad")
+        let request = NativeCADTaskRegistry.AnimationExportRequest(
+            relativeOutput: "VideoExports/assembly.mp4",
+            options: CadAnimationExportOptions(
+                width: 640, height: 480, frameRate: 12, codec: "hevc",
+                bitrate: 2_000_000, overwrite: true, posterEnabled: false))
+        let original = NativeCADTaskRegistry(fileURL: file)
+        let id = try await original.beginAnimationExport(ownership: owner,
+                                                         request: request)
+
+        let reopened = NativeCADTaskRegistry(fileURL: file)
+        let records = await reopened.status(id: id, ownership: owner)
+        let record = try XCTUnwrap(records.first)
+        XCTAssertEqual(record.id, id)
+        XCTAssertEqual(record.state, .interrupted)
+        XCTAssertEqual(record.animationExport, request)
+        XCTAssertFalse(FileManager.default.fileExists(
+            atPath: root.appendingPathComponent(request.relativeOutput).path),
+            "Recovering metadata must not restart a renderer or write a video")
+
+        let reply = CadDocumentCenter.nativeTaskRecordJSON(record)
+        let saved = try XCTUnwrap(reply["export_request"] as? [String: Any])
+        XCTAssertEqual(saved["output"] as? String, request.relativeOutput)
+        XCTAssertEqual(saved["width"] as? Int, 640)
+        XCTAssertEqual(saved["height"] as? Int, 480)
+        XCTAssertEqual(saved["frame_rate"] as? Int, 12)
+        XCTAssertEqual(saved["codec"] as? String, "hevc")
+        XCTAssertEqual(saved["bitrate"] as? Int, 2_000_000)
+        XCTAssertEqual(saved["overwrite"] as? Bool, true)
+        XCTAssertEqual(saved["poster_enabled"] as? Bool, false)
+        XCTAssertEqual(reply["foreground_required"] as? Bool, true)
+        XCTAssertEqual(reply["frame_resume_supported"] as? Bool, false)
+        XCTAssertEqual(reply["automatic_resume"] as? Bool, false)
+        XCTAssertEqual(reply["restart_requires_revalidation"] as? Bool, true)
+        XCTAssertNoThrow(try JSONSerialization.data(withJSONObject: reply))
+
+        let other = NativeCADTaskRegistry.Ownership(
+            environmentID: owner.environmentID, ownerKind: owner.ownerKind,
+            ownerID: UUID(), documentPath: owner.documentPath)
+        let foreign = await reopened.status(id: id, ownership: other)
+        XCTAssertTrue(foreign.isEmpty, "Export settings keep exact task ownership")
+        let twice = NativeCADTaskRegistry(fileURL: file)
+        let secondRead = await twice.status(id: id, ownership: owner)
+        XCTAssertEqual(secondRead.first?.animationExport, request)
+        XCTAssertEqual(secondRead.first?.state, .interrupted)
+    }
+
+    func testOldRecordsDecodeWithoutInventingExportSettings() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("CADLegacyTasks-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let file = root.appendingPathComponent("native-tasks.json")
+        let owner = NativeCADTaskRegistry.Ownership(
+            environmentID: nil, ownerKind: "project", ownerID: UUID(),
+            documentPath: "Legacy.floecad")
+        let initial = NativeCADTaskRegistry(fileURL: file)
+        let id = await initial.begin(kind: "animation-export", ownership: owner)
+        await initial.finish(id: id, state: .completed, detail: "old completed job")
+        let data = try Data(contentsOf: file)
+        let envelope = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        let raw = try XCTUnwrap((envelope["records"] as? [[String: Any]])?.first)
+        XCTAssertNil(raw["animationExport"], "The fixture uses the old record shape")
+        let reopened = NativeCADTaskRegistry(fileURL: file)
+        let rows = await reopened.status(id: id, ownership: owner)
+        let record = try XCTUnwrap(rows.first)
+        XCTAssertEqual(record.state, .completed)
+        XCTAssertNil(record.animationExport)
+        XCTAssertNil(CadDocumentCenter.nativeTaskRecordJSON(record)["export_request"])
+    }
+
+    func testExplicitCancellationKeepsIntentWithoutBecomingInterrupted() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("CADCancelledExport-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let file = root.appendingPathComponent("native-tasks.json")
+        let owner = NativeCADTaskRegistry.Ownership(
+            environmentID: "test", ownerKind: "task", ownerID: UUID(),
+            documentPath: "Cancelled.floecad")
+        let request = NativeCADTaskRegistry.AnimationExportRequest(
+            relativeOutput: "cancelled.mp4", options: .init())
+        let initial = NativeCADTaskRegistry(fileURL: file)
+        let id = try await initial.beginAnimationExport(ownership: owner,
+                                                        request: request)
+        _ = await initial.requestCancel(id: id, ownership: owner)
+        await initial.finish(id: id, state: .cancelled, detail: "owned writer stopped")
+        let reopened = NativeCADTaskRegistry(fileURL: file)
+        let rows = await reopened.status(id: id, ownership: owner)
+        XCTAssertEqual(rows.first?.state, .cancelled)
+        XCTAssertEqual(rows.first?.animationExport, request)
+        XCTAssertFalse(FileManager.default.fileExists(
+            atPath: root.appendingPathComponent(request.relativeOutput).path))
+    }
+
+    func testFailedRequestWriteRollsBackTheInMemoryTaskIndex() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("CADRecoveryWriteFailure-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let blocker = root.appendingPathComponent("not-a-directory")
+        try Data("existing file".utf8).write(to: blocker)
+        let registry = NativeCADTaskRegistry(
+            fileURL: blocker.appendingPathComponent("native-tasks.json"))
+        let owner = NativeCADTaskRegistry.Ownership(
+            environmentID: nil, ownerKind: "task", ownerID: UUID(),
+            documentPath: "Blocked.floecad")
+        let old = await registry.begin(kind: "legacy-job", ownership: owner)
+        let before = await registry.status(id: nil, ownership: owner)
+        do {
+            _ = try await registry.beginAnimationExport(
+                ownership: owner,
+                request: .init(relativeOutput: "not-created.mp4", options: .init()))
+            XCTFail("The renderer must not receive a task id without durable recovery info")
+        } catch {
+            XCTAssertTrue(error is CocoaError)
+        }
+        let after = await registry.status(id: nil, ownership: owner)
+        XCTAssertEqual(after, before)
+        XCTAssertEqual(after.map(\.id), [old])
+        XCTAssertEqual(try Data(contentsOf: blocker), Data("existing file".utf8))
+        XCTAssertFalse(FileManager.default.fileExists(
+            atPath: root.appendingPathComponent("not-created.mp4").path))
+    }
+}
+
 @MainActor
 final class CADPlacedAssemblyExportCallerTests: XCTestCase {
     private var workspace: URL!

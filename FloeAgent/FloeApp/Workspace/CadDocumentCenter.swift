@@ -352,8 +352,9 @@ actor CadDocumentCenter: CadDocumentHost {
                                          overwrite: options.overwrite)
         let ownership = NativeCADTaskRegistry.Ownership(access: access,
                                                        documentPath: resolved.id)
-        let taskID = await NativeCADTaskRegistry.shared.begin(
-            kind: "animation-export", ownership: ownership)
+        let taskID = try await NativeCADTaskRegistry.shared.beginAnimationExport(
+            ownership: ownership,
+            request: .init(relativeOutput: output.relative, options: options))
         if await NativeCADTaskRegistry.shared.isCancellationRequested(id: taskID) {
             await NativeCADTaskRegistry.shared.finish(
                 id: taskID, state: .cancelled, detail: nil)
@@ -585,7 +586,7 @@ actor CadDocumentCenter: CadDocumentHost {
         }
     }
 
-    private static func nativeTaskRecordJSON(_ record: NativeCADTaskRegistry.Record) -> [String: Any] {
+    nonisolated static func nativeTaskRecordJSON(_ record: NativeCADTaskRegistry.Record) -> [String: Any] {
         var object: [String: Any] = [
             "id": record.id.uuidString,
             "kind": record.kind,
@@ -595,6 +596,22 @@ actor CadDocumentCenter: CadDocumentHost {
             "updated_at": ISO8601DateFormatter().string(from: record.updatedAt),
         ]
         if let detail = record.detail { object["detail"] = detail }
+        if let request = record.animationExport {
+            let options = request.options
+            var saved: [String: Any] = [
+                "output": request.relativeOutput,
+                "width": options.width, "height": options.height,
+                "frame_rate": options.frameRate, "codec": options.codec,
+                "overwrite": options.overwrite,
+                "poster_enabled": options.posterEnabled,
+            ]
+            if let bitrate = options.bitrate { saved["bitrate"] = bitrate }
+            object["export_request"] = saved
+            object["foreground_required"] = true
+            object["frame_resume_supported"] = false
+            object["automatic_resume"] = false
+            object["restart_requires_revalidation"] = true
+        }
         return object
     }
 
