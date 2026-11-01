@@ -2038,10 +2038,25 @@
       "package": "mechanical",
       "implementation": {
         "stage": "C",
-        "status": "planned",
-        "source_changes": [],
-        "verification": [],
-        "limitations": []
+        "status": "partial_atomic_selection_and_receipts_actual_App_verified",
+        "source_changes": [
+          "47d8110bda8e669c8973100cddce9baae1168d1d",
+          "531fb22707f7162bfb897d692f982163e8b7e4ab"
+        ],
+        "verification": [
+          {
+            "source": "531fb22707f7162bfb897d692f982163e8b7e4ab",
+            "scope": "Actual full App/Swift6 objects plus native exact edge selection, rollback, undo/reopen and adjacent hole/variable/name regression",
+            "passed": 18,
+            "failed": 0,
+            "skipped": 0,
+            "physical_device": false
+          }
+        ],
+        "limitations": [
+          "M21 advanced varying radius/two-distance/concave coverage remains original scope; do not mark whole M21 complete.",
+          "M26 remaining structural/topology split matrix still open; this only closes blend-reference fallback defect."
+        ]
       },
       "alignment_review": {
         "disposition": "planned",
@@ -2071,7 +2086,7 @@
         ],
         "notes": [],
         "evidence_level": "baseline_plus_verified_delta",
-        "verified_delta": "本轮没有该原始缺口的新运行通过声明；现有功能仍按基线保留。",
+        "verified_delta": "Actual App168/native16818/18 closes skipped invalid-edge and named-lookalike fallback; complete index receipts, duplicate picks and atomic undo/save-reopen pass. Advanced radius/chamfer/concave clauses remain.",
         "acceptance_pending": "多边圆角明确列全部处理/拒绝的边；支持所需两距离倒角/变半径作为扩展，凹边行为与精确等级清楚。"
       }
     },
@@ -8325,7 +8340,7 @@
     "license_delta": "GLTFKit2 ownMIT/cgltfMIT do notclear precompiled libktx4.2.1 etcdec exception; prefer existing O3DV+same-r176 localGLTFLoader qualification"
   },
   "current_integration_verification": {
-    "source": "589d93372a40743e5dac88acb1935ca111ff3781",
+    "source": "531fb22707f7162bfb897d692f982163e8b7e4ab",
     "all_106_retained": true,
     "all_106_accepted": false,
     "release_ready": false,
@@ -8395,6 +8410,13 @@
         "same_stored_identity": true
       },
       "scope": "Actual App/native and real prepaid vision model; no physical-device performance or release claim."
+    },
+    "latest_edge_blend_batch": {
+      "source": "531fb22707f7162bfb897d692f982163e8b7e4ab",
+      "passed": 18,
+      "failed": 0,
+      "skipped": 0,
+      "scope": "Exact named/mixed/legacy edge selection; whole-operation failure, complete receipts, undo/redo/reopen and existing hole/variable/name regression. Whole M21/M26 remain pending."
     }
   }
 }
