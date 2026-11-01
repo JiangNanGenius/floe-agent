@@ -129,7 +129,7 @@ final class CADAssociativeSessionTests: XCTestCase {
         guard case let .extrude(profile, plane, distance, symmetric, boolean, extras) = f.source.kind else {
             return XCTFail("Expected the production extrusion fixture")
         }
-        let oldSketch = try XCTUnwrap(session.document.sketch(with: profile.sketchID))
+        let oldSketch = try XCTUnwrap(session.document.sketches.first { $0.id == profile.sketchID })
         var newSketch = oldSketch
         let replacementID = UUID()
         newSketch.entities = [.rect(id: replacementID, min: SIMD2(0, 0), max: SIMD2(100, 60))]
@@ -156,7 +156,7 @@ final class CADAssociativeSessionTests: XCTestCase {
         let restored = try XCTUnwrap(session.document.body(with: f.sourceBody))
         XCTAssertEqual(session.naming.resolve(reference, in: restored,
                           table: session.lastFaceTables[f.sourceBody])?.elementName, name)
-        XCTAssertEqual(session.document.sketch(with: oldSketch.id)?.entities.map(\.id),
+        XCTAssertEqual(session.document.sketches.first { $0.id == oldSketch.id }?.entities.map(\.id),
                        oldSketch.entities.map(\.id))
         session.redo()
         let redone = try XCTUnwrap(session.document.body(with: f.sourceBody))
