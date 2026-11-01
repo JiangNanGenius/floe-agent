@@ -42,6 +42,7 @@ public actor MacBridgeClient {
         session = URLSession(configuration: config, delegate: MacBridgeSessionDelegate(), delegateQueue: nil)
     }
     public func bootstrap() async throws {
+        try requireSupportedPlatform()
         key = try BridgeKeychain.signingKey(service: keychainService)
         serverKey = try BridgeKeychain.read(service: keychainService, account: "server-public-key-v1")
         if let url = try? baselineURL(), let data = try? Data(contentsOf: url) {
@@ -50,9 +51,10 @@ public actor MacBridgeClient {
         guard serverKey != nil else { connected = false; return }
         _ = try await call("ping")
     }
-    public func isConnected() -> Bool { connected && serverKey != nil }
-    public func hasPairing() -> Bool { serverKey != nil }
+    public func isConnected() -> Bool { LocalBridgePlatform.current.supportsMacBridge && connected && serverKey != nil }
+    public func hasPairing() -> Bool { LocalBridgePlatform.current.supportsMacBridge && serverKey != nil }
     public func beginPairing(name: String = "Floe") async throws -> Bool {
+        try requireSupportedPlatform()
         if key == nil { key = try BridgeKeychain.signingKey(service: keychainService) }
         if serverKey != nil {
             // Existing trust is never replaced by an unpinned response.
@@ -73,6 +75,7 @@ public actor MacBridgeClient {
         return BridgeWire.pairingVerification(clientKey: key.publicKey.rawRepresentation, serverKey: candidateKey, nonce: nonce)
     }
     public func confirmPairing(verification: String) throws {
+        try requireSupportedPlatform()
         guard candidateApproved, let candidateKey, verification == (try pairingVerification()) else { throw BridgeFailure.authentication }
         try BridgeKeychain.save(candidateKey, service: keychainService, account: "server-public-key-v1")
         serverKey = candidateKey; connected = true
@@ -80,15 +83,18 @@ public actor MacBridgeClient {
     }
     public func cancelPairing() { candidateKey = nil; pairingNonce = nil; candidateApproved = false }
     public func disconnect(revoke: Bool = true) async throws {
+        try requireSupportedPlatform()
         if revoke, serverKey != nil { _ = try await call("revoke") }
         try BridgeKeychain.remove(service: keychainService, account: "server-public-key-v1")
         serverKey = nil; cancelPairing(); connected = false
     }
     public func call(_ method: String, _ payload: [String: BridgeValue] = [:]) async throws -> [String: BridgeValue] {
+        try requireSupportedPlatform()
         guard serverKey != nil else { throw BridgeFailure.disconnected }
         return try await send(method, payload, paired: true).0
     }
     private func send(_ method: String, _ payload: [String: BridgeValue], paired: Bool) async throws -> ([String: BridgeValue], Data) {
+        try requireSupportedPlatform()
         guard let key else { throw BridgeFailure.disconnected }
         let body = BridgeRequestBody(clientKey: key.publicKey.rawRepresentation, method: method, payload: payload)
         let bytes = try BridgeWire.encode(BridgeRequest(body: body, key: key))
@@ -258,6 +264,7 @@ public actor MacBridgeClient {
         try BridgeWire.encode(rows).write(to: baselineURL().deletingLastPathComponent().appendingPathComponent("submitted-jobs.json"), options: .atomic)
     }
     public func savedJobs() throws -> [SavedJob] {
+        guard LocalBridgePlatform.current.supportsMacBridge else { return [] }
         let url = try baselineURL().deletingLastPathComponent().appendingPathComponent("submitted-jobs.json")
         guard FileManager.default.fileExists(atPath: url.path) else { return [] }
         return try BridgeWire.decode([SavedJob].self, from: Data(contentsOf: url))
@@ -296,7 +303,13 @@ public actor MacBridgeClient {
         else { try FileManager.default.moveItem(at: stage, to: destination) }
         return destination
     }
+    private func requireSupportedPlatform() throws {
+        guard LocalBridgePlatform.current.supportsMacBridge else {
+            throw FloeError.invalidConfiguration(String(localized: "execution.location.unavailable_on_device"))
+        }
+    }
     private func baselineURL() throws -> URL {
+        try requireSupportedPlatform()
         let root = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appendingPathComponent("FloeMacBridgeClient")
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         return root.appendingPathComponent("workspace-baselines.json")

@@ -14,13 +14,15 @@ public struct ShellOpenTool: AgentTool {
         public var env: [String: String]?
         public var columns: Int?
         public var rows: Int?
+        public var skillID: String?
 
-        public init(command: String? = nil, cwd: String? = nil, env: [String: String]? = nil, columns: Int? = nil, rows: Int? = nil) {
+        public init(command: String? = nil, cwd: String? = nil, env: [String: String]? = nil, columns: Int? = nil, rows: Int? = nil, skillID: String? = nil) {
             self.command = command
             self.cwd = cwd
             self.env = env
             self.columns = columns
             self.rows = rows
+            self.skillID = skillID
         }
     }
 
@@ -32,6 +34,7 @@ public struct ShellOpenTool: AgentTool {
       "command":{"type":"string","description":"Program to run interactively (default: interactive sh)"},
       "cwd":{"type":"string","description":"Workspace-relative working directory"},
       "env":{"type":"object","additionalProperties":{"type":"string"}},
+      "skillID":{"type":"string","description":"Optional installed Skill identity. Verifies this task's Skill dependencies and supplies its configured process environment; never pass secret values through env or command."},
       "columns":{"type":"integer","minimum":20,"maximum":500},
       "rows":{"type":"integer","minimum":5,"maximum":200}},
      "additionalProperties":false}
@@ -43,9 +46,15 @@ public struct ShellOpenTool: AgentTool {
     public static let toolEffect: ToolEffect = .mutating
 
     private let center: ShellSessionCenter
+    private let configurationProvider: (any SkillProcessConfigurationProviding)?
+    private let dependencyGate: (any SkillDependencyInvocationGating)?
 
-    public init(center: ShellSessionCenter) {
+    public init(center: ShellSessionCenter,
+                configurationProvider: (any SkillProcessConfigurationProviding)? = nil,
+                dependencyGate: (any SkillDependencyInvocationGating)? = nil) {
         self.center = center
+        self.configurationProvider = configurationProvider
+        self.dependencyGate = dependencyGate
     }
 
     public func validate(_ args: Arguments) throws {
@@ -68,6 +77,22 @@ public struct ShellOpenTool: AgentTool {
         guard let root = context.workspaceRootURL else {
             throw FloeError.validationFailed("A workspace root is required for shell sessions")
         }
+        var processConfiguration: SkillProcessConfiguration?
+        if let skillID = args.skillID?.trimmingCharacters(in: .whitespacesAndNewlines), !skillID.isEmpty {
+            guard let configurationProvider, let dependencyGate, context.approvalGrantID != nil else {
+                throw FloeError.unauthorized
+            }
+            switch await dependencyGate.dependencyInvocationDecision(
+                skillID: skillID, environmentID: context.environmentID ?? context.environment?.id,
+                runID: context.runID, approvalGrantID: context.approvalGrantID,
+                cancellation: context.cancellation) {
+            case .proceed: break
+            case .refused(let reason), .unavailable(let reason):
+                return ToolExecutionOutput(digesting: "status=skillDependencyNotReady\n\(reason)", exitStatus: 75)
+            }
+            processConfiguration = try await configurationProvider.processConfiguration(skillID: skillID, context: context)
+            try processConfiguration?.validateOverrides(args.env ?? [:])
+        }
         let result = try await center.open(
             command: args.command ?? "",
             cwd: args.cwd ?? ".",
@@ -78,7 +103,8 @@ public struct ShellOpenTool: AgentTool {
             rootURL: root,
             cancellation: context.cancellation,
             toolEnvironment: context.environment,
-            clientSessionID: context.clientSessionID
+            clientSessionID: context.clientSessionID,
+            skillConfiguration: processConfiguration
         )
         var text = "status=ok sessionID=\(result.sessionID) alive=\(result.alive)"
         if !result.initialOutput.isEmpty { text += "\noutput:\n\(result.initialOutput)" }

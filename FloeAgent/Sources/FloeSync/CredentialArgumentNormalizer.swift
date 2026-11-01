@@ -89,7 +89,11 @@ public enum CredentialArgumentNormalizer {
                             owner: owner,
                             label: scope.map { "\(kindLabel) for \($0)" } ?? kindLabel,
                             hostID: rootHostID,
-                            origin: "model-tool-call:\(toolName).\(childPath.joined(separator: "."))"
+                            origin: CredentialCaptureReference.origin(
+                                toolName: toolName,
+                                fieldPath: childPath.joined(separator: "."),
+                                runID: authority?.runID
+                            )
                         )
                         result[key] = CapturedSecret.placeholder(for: handle.id)
                         changed = true

@@ -92,6 +92,14 @@ final class AppEnvironment: ObservableObject {
     let personalizationService: PersonalizationService
     let memoryCandidatePipeline: MemoryCandidatePipeline
     let skillStore: SQLiteSkillStore
+    /// One generic Skill configuration store/service for the whole app. The
+    /// native local iOS Bridge adapter and UI reuse these exact instances;
+    /// there is no second vault or per-view service.
+    lazy var skillConfigurationStore: SkillConfigurationStore = makeSkillConfigurationStore()
+    lazy var skillConfigurationService: SkillConfigurationService = makeSkillConfigurationService()
+    /// Optional same-device automation. The integration owns one native client
+    /// per profile and the bounded task/background lifecycle hooks.
+    lazy var iosBridgeIntegration: IOSBridgeIntegration = IOSBridgeIntegration(environment: self)
     let configurationStore: ModelConfigurationStore
     let configurationSync: ConfigSyncEngine
     let credentialStore: CredentialStore
@@ -116,6 +124,14 @@ final class AppEnvironment: ObservableObject {
 
     /// Host store backing SSH + remote Python (shares the database).
     let remoteHostStore: RemoteHostStore
+    /// Model-callable SSH/VNC configuration adapters over the SAME host
+    /// store, credential vault and credential records used by Settings.
+    lazy var hostConfigurationCenter = RemoteHostConfigurationCenter(
+        hostStore: remoteHostStore,
+        credentialVault: credentialVault,
+        credentialStore: credentialStore,
+        skillConfigurationStore: skillConfigurationStore
+    )
     /// Shared verified-SSH command service used by model tools and explicit
     /// host-management actions such as remote-agent updates.
     let sshCommandService: SSHCommandService
@@ -1820,8 +1836,36 @@ final class AppEnvironment: ObservableObject {
                 }
             }
         )
-        // Independent credential-card management over the shared vault.
-        registerCredentialManageTool(vault: credentialVault, store: credentialStore)
+        // Independent credential-card management over the shared vault. The
+        // shared configuration store protects credentials bound to a Skill
+        // configuration from appearing as ordinary removable cards.
+        registerCredentialManageTool(
+            vault: credentialVault,
+            store: credentialStore,
+            skillConfigurationStore: skillConfigurationStore
+        )
+        // Generic Skill configuration (`skill.config`) over the SAME shared
+        // store/service/validator graph as the typed UI. Do not use the
+        // convenience helper here: it would construct a separate service.
+        ToolCatalog.register(SkillConfigurationTool.self)
+        ToolRunnerRegistry.shared.register(SkillConfigurationTool(
+            skillStore: skillStore,
+            service: skillConfigurationService,
+            targetResolver: skillConfigurationTargetResolver,
+            onConfigurationMutated: { [weak self] skillID, fieldKeys in
+                await self?.iosBridgeIntegration.skillConfigurationDidMutate(
+                    skillID: skillID,
+                    fieldKeys: fieldKeys
+                )
+            }
+        ))
+        // Optional same-device automation is compiled only on a platform that
+        // can actually host the local Bridge companion. Discovery is further
+        // gated by the installed/enabled/configured Skill and a real status
+        // check; every execution path revalidates live state.
+        if LocalBridgePlatform.current.supportsIOSAutomation {
+            registerIOSBridgeTools(integration: iosBridgeIntegration)
+        }
         // Execution tools (JS, local Python, SSH, HTTP, LAN scan, OCR, barcode).
         // Interactive shell sessions get their guardian backend now that the
         // cloud-workspace channel exists.
@@ -1854,41 +1898,23 @@ final class AppEnvironment: ObservableObject {
             ))
             }
         }
+        // One transactional SSH/VNC credential adapter for model tools and the
+        // Settings form. Every write uses a fresh revision account; the old
+        // reference is deleted only after the host row commits.
+        let hostConfigurationCenter = self.hostConfigurationCenter
+        let vncPasswordWriter = hostConfigurationCenter.makeVNCCredentialWriter()
+        let secretDeleter = hostConfigurationCenter.makeCredentialReferenceDeleter()
+        let aliasDeleter = hostConfigurationCenter.makeSSHAuthAliasDeleter()
+        let credentialInputResolver = hostConfigurationCenter.makeCredentialInputResolver()
         registerExecutionTools(
             sshCommandService: sshCommandService,
             interactiveShellService: interactiveShell,
             cloudWorkspaceService: cloudWorkspaceService,
             remoteHostStore: remoteHostStore,
-            vncPasswordWriter: { hostID, connectionID, credentialInput in
-                guard !credentialInput.isEmpty else {
-                    throw FloeError.validationFailed("VNC password must not be empty")
-                }
-                let resolvedPassword: Data
-                if let value = String(data: credentialInput, encoding: .utf8),
-                   let credentialID = SecretIngressScanner.credentialID(from: value) {
-                    resolvedPassword = try await credentialVault.resolveForApprovedUse(
-                        CredentialHandle(id: credentialID)
-                    )
-                } else {
-                    // Plaintext is permitted only at this executor boundary;
-                    // the saved host profile receives a Keychain reference.
-                    resolvedPassword = credentialInput
-                }
-                let secrets = KeychainSecretStore()
-                try await secrets.storeSecret(
-                    resolvedPassword,
-                    scope: .hostVNCConnection(hostID: hostID, connectionID: connectionID)
-                )
-                return SecretReference(
-                    keychainAccount: "host.vnc.\(hostID.uuidString).\(connectionID.uuidString)",
-                    synchronizable: SyncControlPreferences.load().savedCredentialsEnabled
-                )
-            },
-            vncPasswordDeleter: { hostID, connectionID in
-                try await KeychainSecretStore().deleteSecret(
-                    scope: .hostVNCConnection(hostID: hostID, connectionID: connectionID)
-                )
-            },
+            vncPasswordWriter: vncPasswordWriter,
+            secretDeleter: secretDeleter,
+            aliasDeleter: aliasDeleter,
+            credentialInputResolver: credentialInputResolver,
             remoteHostUpdateObserver: { [weak remoteSessionCenter] hostID, endpointIDs in
                 await remoteSessionCenter?.agentDidUpdateHost(
                     hostID: hostID,
@@ -1901,6 +1927,14 @@ final class AppEnvironment: ObservableObject {
             linuxPreparation: linuxPreparation,
             linuxLifecycle: linuxLifecycle
         )
+        // First-time/manage SSH host tools share the exact store, vault,
+        // reference deleter and VNC writer above. ssh.verifyHost uses the
+        // canonical per-call nested approval for a first-use host key.
+        hostConfigurationCenter.registerSSHHostTools(
+            sessionCenter: remoteSessionCenter,
+            vncPasswordWriter: vncPasswordWriter,
+            secretDeleter: secretDeleter
+        )
         // One Linux command surface, shared with interactive terminals.
         registerShellTools(
             shell: localShellService,
@@ -1908,7 +1942,11 @@ final class AppEnvironment: ObservableObject {
             pythonInstaller: managedPythonInstaller,
             capabilityInstaller: capabilityInstaller,
             wasmStore: wasmCapabilities,
-            dependencyGate: skillsCenter
+            dependencyGate: skillsCenter,
+            // The same App-owned Skill configuration service resolves ordinary
+            // and sensitive per-process environment values. Without this the
+            // exec.shell / shell.open Skill environment work never runs.
+            configurationProvider: AppSkillProcessConfigurationProvider(environment: self)
         )
         FloeShellCommandRegistry.shared.configure(
             python: localPythonService,
@@ -2173,6 +2211,23 @@ final class AppEnvironment: ObservableObject {
             disconnect: { [weak remoteSessionCenter] in
                 await remoteSessionCenter?.disconnectToolVNCSessions()
                     ?? VNCToolConnectionStatus(state: .unconfigured, configuredEndpointCount: 0)
+            },
+            // Explicit saved host/endpoint target. The App resolves both IDs
+            // against the real host store and carries the exact ToolContext so
+            // a first-use SSH fingerprint uses the canonical nested approval.
+            connectTarget: { [weak remoteSessionCenter] hostID, connectionID, context in
+                try await remoteSessionCenter?.connectVNCSession(
+                    hostID: hostID,
+                    connectionID: connectionID,
+                    approvalContext: context
+                )
+            },
+            reconnectTarget: { [weak remoteSessionCenter] hostID, connectionID, context in
+                try await remoteSessionCenter?.reconnectVNCSession(
+                    hostID: hostID,
+                    connectionID: connectionID,
+                    approvalContext: context
+                )
             }
         ) { [weak remoteSessionCenter] in
             // Observation and input tools are honest consumers of an

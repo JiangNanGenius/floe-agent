@@ -12,6 +12,7 @@
 import Foundation
 import SwiftUI
 import FloeModels
+import FloeCore
 import FloeEnvironments
 
 /// One task's execution location and recoverable migration flow.
@@ -903,7 +904,7 @@ struct TaskExecutionEnvironmentView: View {
     private func icon(for target: TaskExecutionTarget) -> String {
         switch target.backend {
         case .linuxVM: "shippingbox"
-        case .macBridge: "desktopcomputer"
+        case .macBridge: LocalBridgePlatform.current.supportsMacBridge ? "desktopcomputer" : "exclamationmark.triangle"
         case .remoteSSH: "network"
         }
     }
@@ -913,6 +914,9 @@ struct TaskExecutionEnvironmentView: View {
         case .linuxVM:
             return copy("Linux 虚拟机", "Linux virtual machine")
         case .macBridge:
+            guard LocalBridgePlatform.current.supportsMacBridge else {
+                return copy("原运行位置不可用", "Saved location unavailable")
+            }
             return copy("这台 Mac", "This Mac")
         case .remoteSSH:
             if let hostID = target.remoteHostID,
@@ -924,6 +928,9 @@ struct TaskExecutionEnvironmentView: View {
     }
 
     private func locationDetail(for target: TaskExecutionTarget) -> String {
+        if target.backend == .macBridge, !LocalBridgePlatform.current.supportsMacBridge {
+            return String(localized: "execution.location.unavailable_on_device")
+        }
         let os = target.operatingSystem.isEmpty
             ? copy("未知系统", "Unknown system")
             : operatingSystemLabel(target.operatingSystem)
@@ -1000,6 +1007,7 @@ struct TaskExecutionEnvironmentView: View {
                           name: copy("Linux 虚拟机", "Linux virtual machine"),
                           kind: .linux)
         case .macBridge:
+            guard LocalBridgePlatform.current.supportsMacBridge else { return nil }
             return choices.first { $0.kind == .mac }
                 ?? Choice(id: "mac",
                           name: copy("这台 Mac", "This Mac"),

@@ -1,0 +1,36 @@
+{
+  "schemaVersion": 1,
+  "id": "floe-ios-automation",
+  "version": "1.0.0",
+  "capabilities": [
+    "credentials",
+    "device.observe",
+    "device.interact"
+  ],
+  "tools": [],
+  "platforms": [
+    "ios"
+  ],
+  "scriptRuntime": "none",
+  "pythonPackages": [],
+  "configuration": {
+    "fields": [
+      {
+        "key": "bridge",
+        "title": {
+          "en": "Local Bridge connection",
+          "zh-Hans": "本机 Bridge 连接"
+        },
+        "description": {
+          "en": "Pair Floe with the Floe iOS Bridge companion on this iPhone or iPad. The pairing is approved inside Bridge and stored only as a device-bound connection.",
+          "zh-Hans": "在此 iPhone 或 iPad 上将 Floe 与 Floe iOS Bridge 配套应用配对。配对需在 Bridge 中批准，并仅保存为设备绑定的连接。"
+        },
+        "kind": "connection",
+        "valueType": "string",
+        "required": true,
+        "sensitive": false,
+        "connectionKind": "ios.bridge.local"
+      }
+    ]
+  }
+}

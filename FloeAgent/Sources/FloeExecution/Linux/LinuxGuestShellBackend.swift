@@ -43,6 +43,8 @@ public struct LinuxGuestShellBackend: LocalShellBackend {
     /// `.unlimited` — the EXEC wire payload carries no duration field, so the
     /// pinned guest runner needs no change and no cap ever stands in for the
     /// policy default.
+    public func supportsSensitiveProcessEnvironment(for environment: ToolEnvironment?) -> Bool { true }
+
     public func normalizedRunDeadline(_ requested: ShellExecutionDeadline) -> ShellExecutionDeadline {
         limits.executionDeadline(requested)
     }
@@ -61,7 +63,21 @@ public struct LinuxGuestShellBackend: LocalShellBackend {
         let started = Date()
         let deadline = limits.executionDeadline(request.deadline)
         let maxOutput = limits.clampedOutputBytes(request.maxOutputBytes)
+        let sensitiveRedactor = (request.sensitiveEnvironment?.isEmpty == false)
+            ? request.sensitiveEnvironment?.redactor : nil
         do {
+            // Ordinary variables only. A credential must never be rendered
+            // into this preamble (argv text, and for large scripts a staged
+            // workspace file); the explicit sensitive channel below carries
+            // it as guest envp data instead.
+            let sensitive = (request.sensitiveEnvironment?.isEmpty == false)
+                ? request.sensitiveEnvironment : nil
+            if let sensitive {
+                try sensitive.validateDisjoint(from: request.environment)
+                guard runner is any LinuxGuestSensitiveEnvironmentDelivering else {
+                    throw LinuxGuestError.perProcessEnvironmentUnsupported(found: nil)
+                }
+            }
             // The environment's shared Python venv and Node prefix come first
             // on PATH when they exist, so `python3`/`pip`/`node` in a shell
             // command resolve to the same interpreter, environment-level
@@ -69,12 +85,11 @@ public struct LinuxGuestShellBackend: LocalShellBackend {
             // and the package UI. The preamble is a guarded no-op before the
             // first use and never renames the commands.
             //
-            // The per-run environment (`exec.shell` env argument) is exported
-            // inside the command itself: the console protocol carries no env
-            // field, and silently dropping a documented parameter would make
-            // two clients with different env values see the same environment.
-            // Validation already constrained the names/values; quoting here
-            // keeps values verbatim.
+            // The ordinary per-run environment (`exec.shell` env argument) is
+            // exported inside the command itself. Validation already
+            // constrained the names/values; quoting here keeps values
+            // verbatim. `SensitiveProcessEnvironment` never enters this
+            // string.
             let environmentPreamble = try Self.environmentPreamble(request.environment)
             let command = LinuxGuestPythonEnvironment.activationPreamble()
                 + LinuxGuestNodeEnvironment.activationPreamble()
@@ -83,20 +98,27 @@ public struct LinuxGuestShellBackend: LocalShellBackend {
             let workingDirectory = try Self.guestWorkingDirectory(cwd: request.cwd, root: request.rootURL)
             let result: LinuxCommandResult
             let stdinBytes = request.stdin?.utf8.count ?? 0
+            let sensitiveWireBytes = sensitive.map {
+                4 + $0.wireByteCount
+            } ?? 0
             let directCommandBytes = Self.framedPayloadBytes(
                 workingDirectory: workingDirectory,
                 standardInput: nil,
                 argv: ["/bin/sh", "-c", command]
             )
-            let directEnvelopeBytes = directCommandBytes + 4 + stdinBytes
+            let directEnvelopeBytes = directCommandBytes + 4 + stdinBytes + sensitiveWireBytes
             if directCommandBytes <= limits.maxCommandBytes, directEnvelopeBytes <= limits.maxEnvelopeBytes {
                 // Small commands travel exactly as before: one inline/chunked
-                // EXEC whose argv carries the assembled script text.
-                result = try await runner.run(
+                // EXEC whose argv carries the assembled script text. Only the
+                // explicit sensitive channel changes the frame name and adds
+                // the bounded environment field.
+                result = try await Self.runGuest(
+                    runner: runner,
                     environmentID: environmentID,
                     argv: ["/bin/sh", "-c", command],
                     workingDirectory: workingDirectory,
                     standardInput: request.stdin,
+                    sensitiveEnvironment: sensitive,
                     deadline: deadline,
                     maxOutputBytes: maxOutput,
                     cancellation: cancellation
@@ -116,6 +138,7 @@ public struct LinuxGuestShellBackend: LocalShellBackend {
                     runner: runner,
                     environmentID: environmentID,
                     request: request,
+                    sensitiveEnvironment: sensitive,
                     workingDirectory: workingDirectory,
                     started: started,
                     deadline: deadline,
@@ -125,10 +148,12 @@ public struct LinuxGuestShellBackend: LocalShellBackend {
                 )
             }
             let durationMs = Int(Date().timeIntervalSince(started) * 1000)
+            // A child is allowed to print a value it received; never let that
+            // echo continue into the tool result, session store or journal.
             return .exited(
                 code: result.exitCode,
-                stdout: result.stdout,
-                stderr: result.stderr,
+                stdout: sensitiveRedactor?.redactComplete(result.stdout) ?? result.stdout,
+                stderr: sensitiveRedactor?.redactComplete(result.stderr) ?? result.stderr,
                 truncated: false,
                 stderrTruncated: false,
                 durationMs: durationMs
@@ -137,9 +162,12 @@ public struct LinuxGuestShellBackend: LocalShellBackend {
             return .cancelled
         } catch let error as LinuxGuestCommandTimeout {
             let truncation = error.outputTruncated ? "\n[output truncated]" : ""
-            return .timedOut(partialStdout: error.partialStdout,
-                partialStderr: error.partialStderr + truncation,
-                durationMs: Int(error.seconds * 1000))
+            return .timedOut(
+                partialStdout: (sensitiveRedactor?.redactComplete(error.partialStdout) ?? error.partialStdout),
+                partialStderr: (sensitiveRedactor?.redactComplete(error.partialStderr) ?? error.partialStderr)
+                    + truncation,
+                durationMs: Int(error.seconds * 1000)
+            )
         } catch let error as LinuxGuestError {
             if case .timedOut(let seconds) = error {
                 return .timedOut(partialStdout: "", partialStderr: "", durationMs: Int(seconds * 1000))
@@ -161,12 +189,19 @@ public struct LinuxGuestShellBackend: LocalShellBackend {
             throw LinuxGuestError.notRunning(environmentID: environmentID)
         }
         let command = request.command.trimmingCharacters(in: .whitespacesAndNewlines)
+        let sensitive = (request.sensitiveEnvironment?.isEmpty == false)
+            ? request.sensitiveEnvironment : nil
+        if let sensitive {
+            try sensitive.validateDisjoint(from: request.environment)
+            guard sessions is any LinuxGuestSensitiveEnvironmentDelivering else {
+                throw LinuxGuestError.perProcessEnvironmentUnsupported(found: nil)
+            }
+        }
         // Interactive shells enter the environment's shared Python venv and
         // Node prefix as well (guarded no-ops when they do not exist yet), so
-        // a terminal `python3`/`pip`/`node` matches the package entries. The
-        // per-run environment is exported in the same command string for the
-        // same reason as the one-shot path: the protocol has no env field and
-        // a dropped env would silently ignore the caller's contract.
+        // a terminal `python3`/`pip`/`node` matches the package entries. Only
+        // the ORDINARY environment is exported in the command string; the
+        // sensitive environment travels as the OPENENV envBlock.
         let preamble = LinuxGuestPythonEnvironment.activationPreamble()
             + LinuxGuestNodeEnvironment.activationPreamble()
             + (try Self.environmentPreamble(request.environment))
@@ -176,24 +211,122 @@ public struct LinuxGuestShellBackend: LocalShellBackend {
         // A relative cwd is relative to the pinned workspace, never the
         // runner process (usually /). Session framing does not map paths.
         let workingDirectory = try Self.guestWorkingDirectory(cwd: request.cwd, root: request.rootURL)
-        try await sessions.openSession(
+        try await Self.openGuestSession(
+            sessions: sessions,
             environmentID: environmentID,
             sessionID: request.sessionID,
             argv: argv,
             workingDirectory: workingDirectory,
+            sensitiveEnvironment: sensitive,
             columns: request.columns,
             rows: request.rows
         )
-        // Give the shell a moment to draw its first prompt.
+        // Give the shell a moment to draw its first prompt. The initial
+        // bytes can already contain an echoed value, so they pass through
+        // the same streaming redactor that later exchanges use.
         let first = await sessions.readSession(sessionID: request.sessionID, maxBytes: 16 * 1024, waitMs: 400)
-        let output = first?.output ?? Data()
+        var output = first?.output ?? Data()
         let alive = first?.info.alive ?? true
+        if let sensitive {
+            let redactor = await SensitiveSessionRedactorRegistry.shared.install(
+                sessionID: request.sessionID,
+                environment: sensitive
+            )
+            output = await redactor.redact(output, flush: !alive)
+            if !alive {
+                await SensitiveSessionRedactorRegistry.shared.remove(sessionID: request.sessionID)
+            }
+        }
         return ShellOpenResult(
             sessionID: request.sessionID,
             initialOutput: String(decoding: output, as: UTF8.self),
             alive: alive,
             terminalOutput: output
         )
+    }
+
+    /// One command through the production `LinuxCommandRunning` path. With a
+    /// sensitive environment the ticket is scoped to this call only; the
+    /// channel consumes it and the post-call check fails closed if a backend
+    /// ignored it, so a command can never be reported as successful after
+    /// silently dropping credentials.
+    private static func runGuest(
+        runner: any LinuxCommandRunning,
+        environmentID: String,
+        argv: [String],
+        workingDirectory: String?,
+        standardInput: String?,
+        sensitiveEnvironment: SensitiveProcessEnvironment?,
+        deadline: ShellExecutionDeadline,
+        maxOutputBytes: Int,
+        cancellation: CancellationToken?
+    ) async throws -> LinuxCommandResult {
+        guard let sensitiveEnvironment else {
+            return try await runner.run(
+                environmentID: environmentID,
+                argv: argv,
+                workingDirectory: workingDirectory,
+                standardInput: standardInput,
+                deadline: deadline,
+                maxOutputBytes: maxOutputBytes,
+                cancellation: cancellation
+            )
+        }
+        let ticket = SensitiveProcessEnvironmentTicket(sensitiveEnvironment)
+        let result = try await SensitiveProcessEnvironmentCarrier.$pending.withValue(ticket) {
+            try await runner.run(
+                environmentID: environmentID,
+                argv: argv,
+                workingDirectory: workingDirectory,
+                standardInput: standardInput,
+                deadline: deadline,
+                maxOutputBytes: maxOutputBytes,
+                cancellation: cancellation
+            )
+        }
+        guard ticket.wasConsumed else {
+            throw LinuxGuestError.perProcessEnvironmentUnsupported(found: nil)
+        }
+        return result
+    }
+
+    /// Opens a PTY session through the production service path with the same
+    /// scoped-ticket contract as `runGuest`.
+    private static func openGuestSession(
+        sessions: any LinuxGuestControlling,
+        environmentID: String,
+        sessionID: String,
+        argv: [String],
+        workingDirectory: String?,
+        sensitiveEnvironment: SensitiveProcessEnvironment?,
+        columns: Int,
+        rows: Int
+    ) async throws {
+        guard let sensitiveEnvironment else {
+            try await sessions.openSession(
+                environmentID: environmentID,
+                sessionID: sessionID,
+                argv: argv,
+                workingDirectory: workingDirectory,
+                columns: columns,
+                rows: rows
+            )
+            return
+        }
+        let ticket = SensitiveProcessEnvironmentTicket(sensitiveEnvironment)
+        try await SensitiveProcessEnvironmentCarrier.$pending.withValue(ticket) {
+            try await sessions.openSession(
+                environmentID: environmentID,
+                sessionID: sessionID,
+                argv: argv,
+                workingDirectory: workingDirectory,
+                columns: columns,
+                rows: rows
+            )
+        }
+        guard ticket.wasConsumed else {
+            throw LinuxGuestError.perProcessEnvironmentUnsupported(found: nil)
+        }
     }
 
     static func guestWorkingDirectory(cwd: String, root: URL) throws -> String {
@@ -238,21 +371,33 @@ public struct LinuxGuestShellBackend: LocalShellBackend {
             maxBytes: max(1, request.maxBytes),
             waitMs: max(0, request.waitMs)
         ) else {
+            await SensitiveSessionRedactorRegistry.shared.remove(sessionID: request.sessionID)
             throw LinuxGuestError.notRunning(environmentID: "session \(request.sessionID)")
         }
+        let redactor = await SensitiveSessionRedactorRegistry.shared.redactor(for: request.sessionID)
+        let output: Data
+        if let redactor {
+            output = await redactor.redact(read.output, flush: !read.info.alive)
+        } else {
+            output = read.output
+        }
+        if !read.info.alive {
+            await SensitiveSessionRedactorRegistry.shared.remove(sessionID: request.sessionID)
+        }
         return ShellExchangeResult(
-            output: String(decoding: read.output, as: UTF8.self),
+            output: String(decoding: output, as: UTF8.self),
             alive: read.info.alive,
             exitCode: read.info.alive ? nil : read.info.exitCode,
-            terminalOutput: read.output,
+            terminalOutput: output,
             failure: read.info.failure,
-            bytesRead: read.output.count,
+            bytesRead: output.count,
             bytesWritten: request.input?.utf8.count ?? 0
         )
     }
 
     public func closeSession(sessionID: String) async {
         await sessions?.closeSession(sessionID: sessionID)
+        await SensitiveSessionRedactorRegistry.shared.remove(sessionID: sessionID)
     }
 
     public func signalSession(sessionID: String, signal: ShellSignal) async {
@@ -350,6 +495,7 @@ extension LinuxGuestShellBackend {
         runner: any LinuxCommandRunning,
         environmentID: String,
         request: ShellRunRequest,
+        sensitiveEnvironment: SensitiveProcessEnvironment?,
         workingDirectory: String,
         started: Date,
         deadline: ShellExecutionDeadline,
@@ -365,11 +511,14 @@ extension LinuxGuestShellBackend {
         )
         defer { closeStaged(staged) }
         let wrapper = ". '" + staged.guestPath.replacingOccurrences(of: "'", with: "'\\''") + "'"
+        let sensitiveWireBytes = sensitiveEnvironment.map {
+            4 + $0.wireByteCount
+        } ?? 0
         let envelopeBytes = framedPayloadBytes(
             workingDirectory: workingDirectory,
             standardInput: request.stdin,
             argv: ["/bin/sh", "-c", wrapper]
-        )
+        ) + sensitiveWireBytes
         guard envelopeBytes <= limits.maxEnvelopeBytes else {
             // The wrapper is tiny: this can only be the stdin field. Name
             // the actual bound precisely — it is the guest reassembly
@@ -400,11 +549,13 @@ extension LinuxGuestShellBackend {
             }
             guestDeadline = .seconds(remaining)
         }
-        return try await runner.run(
+        return try await Self.runGuest(
+            runner: runner,
             environmentID: environmentID,
             argv: ["/bin/sh", "-c", wrapper],
             workingDirectory: workingDirectory,
             standardInput: request.stdin,
+            sensitiveEnvironment: sensitiveEnvironment,
             deadline: guestDeadline,
             maxOutputBytes: maxOutputBytes,
             cancellation: cancellation
@@ -639,5 +790,141 @@ extension LinuxGuestShellBackend {
         _ = fsync(created.fd)
         close(created.fd)
         return created.inode
+    }
+}
+
+// MARK: - Session output redaction
+//
+// A guest child may print a value it received. The backend redacts one-shot
+// stdout/stderr above and keeps a streaming redactor per sensitive PTY
+// session so a value split across two reads is still removed before the
+// caller stores or displays it. The redactor holds only the longest possible
+// secret prefix (bounded by the largest value) between reads and never writes
+// its state anywhere.
+
+actor SensitiveSessionRedactor {
+    private let patterns: [[UInt8]]
+    private let placeholder: [UInt8]
+    private var carry: [UInt8] = []
+
+    init(environment: SensitiveProcessEnvironment) {
+        let unique = Set(environment.entries.map(\.value).filter { !$0.isEmpty })
+        self.patterns = unique
+            .sorted { lhs, rhs in
+                if lhs.utf8.count != rhs.utf8.count { return lhs.utf8.count > rhs.utf8.count }
+                return lhs < rhs
+            }
+            .map { Array($0.utf8) }
+        self.placeholder = Array(SensitiveValueRedactor.placeholder.utf8)
+    }
+
+    func redact(_ data: Data, flush: Bool) -> Data {
+        let priorCarry = carry.count
+        var combined = carry
+        combined.append(contentsOf: data)
+        carry.removeAll(keepingCapacity: false)
+        guard !patterns.isEmpty else { return Data(combined) }
+
+        if flush {
+            var output = Data()
+            var index = 0
+            if priorCarry > 0 {
+                var matchedAtStart: Int?
+                for pattern in patterns where pattern.count <= combined.count {
+                    if combined[0..<pattern.count].elementsEqual(pattern) {
+                        matchedAtStart = pattern.count
+                        break
+                    }
+                }
+                output.append(contentsOf: placeholder)
+                index = max(priorCarry, matchedAtStart ?? 0)
+            }
+            while index < combined.count {
+                var matched: [UInt8]?
+                for pattern in patterns where index + pattern.count <= combined.count {
+                    if combined[index..<index + pattern.count].elementsEqual(pattern) {
+                        matched = pattern
+                        break
+                    }
+                }
+                if let matched {
+                    output.append(contentsOf: placeholder)
+                    index += matched.count
+                } else {
+                    output.append(combined[index])
+                    index += 1
+                }
+            }
+            return output
+        }
+
+        let held = longestHeldSuffix(combined)
+        let emitLimit = combined.count - held
+        var output = Data()
+        output.reserveCapacity(emitLimit + placeholder.count)
+        var index = 0
+        while index < emitLimit {
+            var matched: [UInt8]?
+            for pattern in patterns where index + pattern.count <= combined.count {
+                if combined[index..<index + pattern.count].elementsEqual(pattern) {
+                    matched = pattern
+                    break
+                }
+            }
+            if let matched {
+                output.append(contentsOf: placeholder)
+                index += matched.count
+            } else {
+                output.append(combined[index])
+                index += 1
+            }
+        }
+        let carryStart = max(emitLimit, index)
+        if carryStart < combined.count {
+            carry = Array(combined[carryStart...])
+        }
+        return output
+    }
+
+    private func longestHeldSuffix(_ bytes: [UInt8]) -> Int {
+        var best = 0
+        for pattern in patterns {
+            let limit = min(pattern.count - 1, bytes.count)
+            guard limit > best else { continue }
+            var length = limit
+            while length > best {
+                let base = bytes.count - length
+                var matches = true
+                for offset in 0..<length where bytes[base + offset] != pattern[offset] {
+                    matches = false
+                    break
+                }
+                if matches {
+                    best = length
+                    break
+                }
+                length -= 1
+            }
+        }
+        return best
+    }
+}
+
+actor SensitiveSessionRedactorRegistry {
+    static let shared = SensitiveSessionRedactorRegistry()
+    private var redactors: [String: SensitiveSessionRedactor] = [:]
+
+    func install(sessionID: String, environment: SensitiveProcessEnvironment) -> SensitiveSessionRedactor {
+        let redactor = SensitiveSessionRedactor(environment: environment)
+        redactors[sessionID] = redactor
+        return redactor
+    }
+
+    func redactor(for sessionID: String) -> SensitiveSessionRedactor? {
+        redactors[sessionID]
+    }
+
+    func remove(sessionID: String) {
+        redactors.removeValue(forKey: sessionID)
     }
 }

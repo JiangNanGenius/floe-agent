@@ -498,6 +498,14 @@ NOTES = (
 
 # (name, version, license, source, section, noteKey)
 STATIC_COMPONENTS = (
+    (
+        "iCTRL (native iOS automation protocol adaptations)",
+        "c1e4268859ba858d1579f7b846a56cb40641b7f6 (v1.98.16)",
+        "Apache-2.0",
+        "https://github.com/OpenMinis/iCTRL/tree/c1e4268859ba858d1579f7b846a56cb40641b7f6",
+        "engines",
+        None,
+    ),
     # Engineering engines and runtimes.
     (
         "TinyEMU / FloeTinyEMU engine",
@@ -1003,6 +1011,18 @@ STATIC_COMPONENTS = (
 
 # (id, repositoryPath, bundlePath, titleKey, title, titleArgument, license, kind, required, section)
 DOCUMENTS = (
+    (
+        "ictrl", "FloeApp/Resources/Licenses/iCTRL-Apache-2.0.txt",
+        "Licenses/iCTRL-Apache-2.0.txt",
+        "settings.licenses.document.ictrl.title", "iCTRL — Apache License 2.0",
+        None, "Apache-2.0", "full_text", True, "engines",
+    ),
+    (
+        "ictrl-notice", "FloeApp/Resources/Licenses/iCTRL-NOTICE.md",
+        "Licenses/iCTRL-NOTICE.md",
+        "settings.licenses.document.ictrl_notice.title", "iCTRL — attribution and notices",
+        None, "Apache-2.0", "notices", True, "engines",
+    ),
     (
         "pip-ambient-meditation",
         "FloeApp/Resources/Licenses/PiPAmbientMeditation-CC0.txt",
@@ -2188,6 +2208,7 @@ DOCUMENT_NOTES = {
 # evidence is preferred; upstream fetches are named by the pinned tag so a
 # reviewer can repeat the read.
 STATIC_EVIDENCE = {
+    "iCTRL (native iOS automation protocol adaptations)": "FloeApp/Resources/Licenses/iCTRL-NOTICE.md (upstream c1e4268859ba858d1579f7b846a56cb40641b7f6); full Apache-2.0 text in iCTRL-Apache-2.0.txt",
     "TinyEMU / FloeTinyEMU engine": "ThirdParty/TinyEMU/LICENSE-INVENTORY.md (per-file inventory of the pinned tarball)",
     "TinyEMU slirp (compiled subset)": "ThirdParty/TinyEMU/LICENSE-INVENTORY.md and the restored slirp COPYRIGHT text",
     "Linux guest boot kernel (bundled 6.18.56 Image)": "ThirdParty/TinyEMU/guest-image/BOOT-PAIR-LICENSES.md and config_linux_riscv64_6.18.56; full GPL-2.0 text in FloeApp/Resources/Licenses/LinuxBootPair-LICENSES.txt",

@@ -19,6 +19,9 @@ final class AppUserQuestionIntegration: ObservableObject, UserQuestionNotificati
     let notificationBridge = UserQuestionNotificationBridge()
     lazy var coordinator = UserQuestionCoordinator(store: store, eventHandler: { [weak self] event in
         await self?.receive(event)
+    }, answerNormalizer: { [weak self] answer, question, ephemeral in
+        guard let self else { throw CancellationError() }
+        return try await self.normalizeAnswer(answer, question: question, ephemeral: ephemeral)
     })
     private var backgroundObserver: AnyCancellable?
     private var observedConversations: Set<UUID> = []
@@ -37,6 +40,12 @@ final class AppUserQuestionIntegration: ObservableObject, UserQuestionNotificati
             .sink { [weak self] _ in
                 Task { @MainActor [weak self] in await self?.presentBackgroundQuestions() }
             }
+    }
+
+    private func normalizeAnswer(_ answer: UserQuestionAnswer, question: UserQuestion,
+                                 ephemeral: Bool) async throws -> UserQuestionAnswer {
+        guard let environment else { throw CancellationError() }
+        return try await environment.conversationCenter.normalizeQuestionAnswer(answer, question: question, ephemeral: ephemeral)
     }
 
     private func receive(_ event: UserQuestionEvent) async {

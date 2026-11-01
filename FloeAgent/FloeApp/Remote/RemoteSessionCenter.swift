@@ -25,6 +25,7 @@ import FloePersistence
 import FloeSecurity
 import FloeSSH
 import FloeSync
+import FloeTools
 import FloeVNC
 
 /// Coordinates SSH terminal and VNC sessions for the UI layer. Owns the
@@ -44,11 +45,14 @@ final class RemoteSessionCenter: ObservableObject {
 
     private let hostStore: RemoteHostStore
     private let sshService: SSHConnectionService
-    private let secretStore = KeychainSecretStore()
     private var sshOwners: [UUID: SSHSessionOwner] = [:]
     private var vncOwners: [UUID: VNCSessionOwner] = [:]
     private var vncEndpointBySessionID: [UUID: UUID] = [:]
     private var toolManagedVNCSessionIDs: Set<UUID> = []
+    /// Most recent tool-managed connection. Observation/input tools prefer it
+    /// so an explicit `vnc.connect(hostID, connectionID)` is not silently
+    /// shadowed by an unrelated connected viewer session.
+    private var preferredVNCSessionID: UUID?
     private var vncIdleDisconnectTasks: [UUID: Task<Void, Never>] = [:]
     private var latestVNCFailureByEndpointID: [UUID: VNCConnectionFailure] = [:]
     private let toolManagedVNCIdleTimeout: TimeInterval = 5 * 60
@@ -104,6 +108,13 @@ final class RemoteSessionCenter: ObservableObject {
 
     func saveHost(_ profile: RemoteHostProfile) async throws {
         try profile.validate()
+        let previousStored: RemoteHostStore.StoredHost?
+        do {
+            previousStored = try await hostStore.host(id: profile.id)
+        } catch {
+            previousStored = nil
+        }
+        let previousProfile = previousStored.flatMap { try? RemoteHostProfile(stored: $0) }
         let encoder = JSONEncoder()
         let policyString: String
         switch profile.hostKeyPolicy {
@@ -131,6 +142,7 @@ final class RemoteSessionCenter: ObservableObject {
         if let stored = try await hostStore.host(id: profile.id) {
             try await environment.configurationSync.saveRemoteHost(stored)
         }
+        await reconcileCredentialReferences(previous: previousProfile, current: profile)
         // Saving the host is the explicit signal that endpoint settings or
         // credentials may have changed. Only then may an agent retry a prior
         // non-retryable authentication failure.
@@ -163,21 +175,95 @@ final class RemoteSessionCenter: ObservableObject {
         )
     }
 
-    func deleteHost(id: UUID) async throws {
-        let profile = hosts.first { $0.id == id }
-        let credentials = try await environment.credentialStore.records(owner: nil)
-            .filter { $0.hostID == id }
-        try await environment.configurationSync.deleteRemoteHost(id: id)
-        for credential in credentials { try? await environment.credentialStore.delete(id: credential.id) }
-        await environment.credentialVault.drainDeletionQueue()
-        try? await secretStore.deleteSecret(scope: .hostSSH(id))
-        try? await secretStore.deleteSecret(scope: .hostVNC(id))
-        for endpoint in profile?.vncEndpoints ?? [] {
-            try? await secretStore.deleteSecret(
-                scope: .hostVNCConnection(hostID: id, connectionID: endpoint.id)
+    /// Deletes ONE saved local profile. Ordering is deliberate: close this
+    /// host's sessions, remove the local host row/config metadata, and only
+    /// then delete credential revisions owned solely by this host. A metadata
+    /// failure aborts before any secret cleanup; shared references and other
+    /// hosts are retained. Nothing is deleted on the remote system.
+    @discardableResult
+    func deleteHost(id: UUID) async throws -> SSHHostDeletionReceipt {
+        guard let stored = try await hostStore.host(id: id) else {
+            throw FloeError.notFound("saved host \(id.uuidString)")
+        }
+        // Deletion must not be blocked by a corrupted profile: recover the
+        // auth/endpoint references best-effort so the local row, fixed
+        // accounts and unique revisions can still be cleaned.
+        let fallbackAuth = (try? JSONDecoder().decode(
+            SSHAuthMethod.self,
+            from: Data(stored.authJSON.utf8)
+        )) ?? .none
+        let fallbackEndpoints = (try? JSONDecoder().decode(
+            [VNCEndpoint].self,
+            from: Data((stored.vncEndpointsJSON ?? "[]").utf8)
+        )) ?? []
+        let profile = (try? RemoteHostProfile(stored: stored)) ?? RemoteHostProfile(
+            id: stored.id,
+            displayName: stored.displayName,
+            address: stored.address,
+            port: stored.port,
+            user: stored.user,
+            auth: fallbackAuth,
+            isRemoteExecutionEnvironment: false,
+            vncEndpoints: fallbackEndpoints
+        )
+        guard let storedHosts = try? await hostStore.hosts(),
+              let records = try? await environment.credentialStore.records(owner: nil)
+        else {
+            throw FloeError.storageCorrupted(
+                "Could not read hosts/credentials before deleting the saved profile"
             )
         }
+        let allHosts = storedHosts.compactMap { try? RemoteHostProfile(stored: $0) }
+        let otherHosts = allHosts.filter { $0.id != id }
+        let ownedAccounts = Set(
+            SSHHostCredentialReferences.owned(by: profile).map(\.keychainAccount)
+        )
+        let decodedAllHosts = allHosts.count == storedHosts.count
+        let sharedAccounts = decodedAllHosts
+            ? Set(
+                records.filter {
+                    ownedAccounts.contains($0.keychainAccount)
+                        && ($0.hostID == nil || $0.hostID != id)
+                }.map(\.keychainAccount)
+            )
+            // A corrupt other profile could still own this reference. Keep
+            // every host-owned revision rather than risking a shared delete.
+            : ownedAccounts
+
+        let hooks = SSHHostDeletionHooks(
+            shutdownSessions: { [weak self] hostID in
+                guard let self else { return 0 }
+                return await self.shutdownHostSessions(hostID)
+            },
+            removeMetadata: { [weak self] hostID in
+                guard let self else {
+                    throw FloeError.invalidConfiguration("Host deletion is unavailable")
+                }
+                return try await self.removeHostMetadata(hostID)
+            },
+            cleanupCredentials: { [weak self] hostID, profile, deletable, retained in
+                guard let self else {
+                    return SSHHostCredentialCleanupResult(deleted: 0, pending: true)
+                }
+                return await self.cleanupHostCredentials(
+                    hostID: hostID,
+                    profile: profile,
+                    deletable: deletable,
+                    retained: retained
+                )
+            }
+        )
+        let receipt = try await SSHHostDeletionCoordinator.delete(
+            host: profile,
+            otherHosts: otherHosts,
+            sharedAccounts: sharedAccounts,
+            hooks: hooks
+        )
         await loadHosts()
+        FloeLogger(category: .ssh).info(
+            "hostDeleted host=\(id.uuidString) sessions=\(receipt.sessionsClosed) credentials=\(receipt.credentialsDeleted) retained=\(receipt.credentialsRetained)"
+        )
+        return receipt
     }
 
     /// Updates exactly to the helper version paired with this app build. The
@@ -297,8 +383,18 @@ final class RemoteSessionCenter: ObservableObject {
 
     /// The first genuinely connected VNC session the agent can drive.
     /// A session still negotiating credentials is never exposed to tools.
+    /// A tool-managed session selected by an explicit connect wins over an
+    /// unrelated connected viewer so observe/input address the requested
+    /// endpoint.
     func activeVNCSession() -> VNCSessionHandle? {
-        vncOwners.first(where: { _, owner in
+        if let preferred = preferredVNCSessionID,
+           let owner = vncOwners[preferred],
+           case .connected = owner.connectionState,
+           let session = owner.session,
+           session.isConnected {
+            return VNCSessionHandle(id: preferred, session: session)
+        }
+        return vncOwners.first(where: { _, owner in
             guard case .connected = owner.connectionState else { return false }
             return owner.session?.isConnected == true
         }).flatMap { id, owner in
@@ -312,6 +408,7 @@ final class RemoteSessionCenter: ObservableObject {
     /// and are reclaimed only after an idle grace period.
     func activeOrConnectVNCSession() async throws -> VNCSessionHandle? {
         if let active = activeVNCSession() {
+            preferredVNCSessionID = active.id
             armToolManagedVNCIdleDisconnect(sessionID: active.id)
             return active
         }
@@ -328,7 +425,7 @@ final class RemoteSessionCenter: ObservableObject {
             let names = candidates.prefix(6).map { "\($0.host.displayName)/\($0.endpoint.displayName)" }
                 .joined(separator: ", ")
             throw FloeError.invalidConfiguration(
-                "Multiple VNC endpoints are configured (\(names)). Open the intended connection once so the agent has an unambiguous active session."
+                "Multiple VNC endpoints are configured (\(names)). Call ssh.listHosts and pass hostID plus connectionID to vnc.connect instead of relying on a viewer preselection."
             )
         }
 
@@ -341,9 +438,11 @@ final class RemoteSessionCenter: ObservableObject {
            let owner = vncOwners[existing] {
             switch owner.connectionState {
             case .connected:
+                preferredVNCSessionID = existing
                 armToolManagedVNCIdleDisconnect(sessionID: existing)
                 return owner.session.map { VNCSessionHandle(id: existing, session: $0) }
             case .connecting:
+                preferredVNCSessionID = existing
                 return try await waitForVNCConnection(sessionID: existing, endpoint: candidate.endpoint)
             case .failed, .disconnected:
                 await disconnectVNC(sessionID: existing)
@@ -369,69 +468,67 @@ final class RemoteSessionCenter: ObservableObject {
             return VNCToolConnectionStatus(state: .unconfigured, configuredEndpointCount: 0)
         }
 
-        func target(for sessionID: UUID) -> String? {
-            guard let endpointID = vncEndpointBySessionID[sessionID],
-                  let endpoint = candidates.first(where: { $0.endpoint.id == endpointID })?.endpoint
-            else { return nil }
-            return "\(endpoint.host):\(endpoint.port)"
+        func endpoint(for sessionID: UUID?) -> (host: RemoteHostProfile, endpoint: VNCEndpoint)? {
+            guard let sessionID, let endpointID = vncEndpointBySessionID[sessionID] else { return nil }
+            return candidates.first(where: { $0.endpoint.id == endpointID })
         }
 
-        if let (sessionID, owner) = vncOwners.first(where: {
-            if case .connected = $0.value.connectionState { return true }
-            return false
-        }) {
+        func status(
+            _ state: VNCToolConnectionStatus.State,
+            sessionID: UUID? = nil,
+            endpoint: VNCEndpoint? = nil,
+            failure: VNCConnectionFailure? = nil
+        ) -> VNCToolConnectionStatus {
+            let match = endpoint.flatMap { value in
+                candidates.first(where: { $0.endpoint.id == value.id })
+            }
+            let managed = sessionID.map { toolManagedVNCSessionIDs.contains($0) } ?? false
             return VNCToolConnectionStatus(
-                state: .connected,
+                state: state,
                 configuredEndpointCount: candidates.count,
                 sessionID: sessionID,
-                target: target(for: sessionID),
-                toolManaged: toolManagedVNCSessionIDs.contains(sessionID),
-                idleTimeoutSeconds: toolManagedVNCSessionIDs.contains(sessionID)
-                    ? Int(toolManagedVNCIdleTimeout) : nil
+                target: endpoint.map { "\($0.host):\($0.port)" },
+                hostID: match?.host.id,
+                connectionID: endpoint?.id,
+                connectionName: endpoint?.displayName,
+                transport: endpoint?.transport.rawValue,
+                toolManaged: managed,
+                idleTimeoutSeconds: managed ? Int(toolManagedVNCIdleTimeout) : nil,
+                failure: failure
             )
+        }
+
+        let connectedIDs = vncOwners.compactMap { sessionID, owner -> UUID? in
+            if case .connected = owner.connectionState { return sessionID }
+            return nil
+        }
+        if let sessionID = preferredVNCSessionID.flatMap({
+            connectedIDs.contains($0) ? $0 : nil
+        }) ?? connectedIDs.first,
+           let match = endpoint(for: sessionID) {
+            return status(.connected, sessionID: sessionID, endpoint: match.endpoint)
         }
         if let (sessionID, _) = vncOwners.first(where: {
             if case .connecting = $0.value.connectionState { return true }
             return false
-        }) {
-            return VNCToolConnectionStatus(
-                state: .connecting,
-                configuredEndpointCount: candidates.count,
-                sessionID: sessionID,
-                target: target(for: sessionID),
-                toolManaged: toolManagedVNCSessionIDs.contains(sessionID),
-                idleTimeoutSeconds: toolManagedVNCSessionIDs.contains(sessionID)
-                    ? Int(toolManagedVNCIdleTimeout) : nil
-            )
+        }), let match = endpoint(for: sessionID) {
+            return status(.connecting, sessionID: sessionID, endpoint: match.endpoint)
         }
         if let (sessionID, owner) = vncOwners.first(where: {
             if case .failed = $0.value.connectionState { return true }
             return false
-        }), case .failed(let failure) = owner.connectionState {
-            return VNCToolConnectionStatus(
-                state: .failed,
-                configuredEndpointCount: candidates.count,
-                sessionID: sessionID,
-                target: target(for: sessionID),
-                toolManaged: toolManagedVNCSessionIDs.contains(sessionID),
-                failure: failure
-            )
+        }), case .failed(let failure) = owner.connectionState,
+           let match = endpoint(for: sessionID) {
+            return status(.failed, sessionID: sessionID, endpoint: match.endpoint, failure: failure)
         }
         if let candidate = candidates.first(where: {
             latestVNCFailureByEndpointID[$0.endpoint.id] != nil
         }), let failure = latestVNCFailureByEndpointID[candidate.endpoint.id] {
-            return VNCToolConnectionStatus(
-                state: .failed,
-                configuredEndpointCount: candidates.count,
-                target: "\(candidate.endpoint.host):\(candidate.endpoint.port)",
-                failure: failure
-            )
+            return status(.failed, endpoint: candidate.endpoint, failure: failure)
         }
-        return VNCToolConnectionStatus(
-            state: .disconnected,
-            configuredEndpointCount: candidates.count,
-            target: candidates.count == 1
-                ? "\(candidates[0].endpoint.host):\(candidates[0].endpoint.port)" : nil
+        return status(
+            .disconnected,
+            endpoint: candidates.count == 1 ? candidates[0].endpoint : nil
         )
     }
 
@@ -442,6 +539,129 @@ final class RemoteSessionCenter: ObservableObject {
         let toolSessions = Array(toolManagedVNCSessionIDs)
         for sessionID in toolSessions { await disconnectVNC(sessionID: sessionID) }
         return try await activeOrConnectVNCSession()
+    }
+
+    // MARK: - Explicit VNC endpoint selection
+
+    private struct ResolvedVNCTarget {
+        let host: RemoteHostProfile
+        let endpoint: VNCEndpoint
+    }
+
+    /// Resolves saved UUIDs instead of relying on a viewer preselection.
+    /// Supplying only one identifier is refused: a VNC connection id is stable
+    /// but its owning host must be explicit when more than one host exists.
+    private func resolveVNCTarget(
+        hostID: UUID?,
+        connectionID: UUID?
+    ) async throws -> ResolvedVNCTarget {
+        if hosts.isEmpty { await loadHosts() }
+        switch (hostID, connectionID) {
+        case let (rawHost?, rawConnection?):
+            guard let host = hosts.first(where: { $0.id == rawHost }) else {
+                throw FloeError.validationFailed("Saved host \(rawHost.uuidString) was not found.")
+            }
+            guard let endpoint = host.vncEndpoints.first(where: { $0.id == rawConnection }) else {
+                throw FloeError.validationFailed(
+                    "VNC connection \(rawConnection.uuidString) is not configured on \(host.displayName)."
+                )
+            }
+            return ResolvedVNCTarget(host: host, endpoint: endpoint)
+        case (nil, nil):
+            let candidates = hosts.flatMap { host in
+                host.vncEndpoints.map { ResolvedVNCTarget(host: host, endpoint: $0) }
+            }
+            guard !candidates.isEmpty else {
+                throw FloeError.invalidConfiguration("No VNC endpoint is saved.")
+            }
+            guard candidates.count == 1, let target = candidates.first else {
+                throw FloeError.invalidConfiguration(
+                    "Multiple VNC endpoints are saved. Pass hostID and connectionID."
+                )
+            }
+            return target
+        default:
+            throw FloeError.validationFailed(
+                "hostID and connectionID must be provided together."
+            )
+        }
+    }
+
+    /// Connects one exact saved endpoint, reusing a live session for it.
+    /// This is the app adapter behind `vnc.connect(hostID, connectionID)`.
+    /// `approvalContext` carries the task's canonical nested-approval seam so
+    /// a first-use SSH host key is decided by the user in the same call; a
+    /// background call without that seam fails closed instead of parking on
+    /// an invisible UI sheet.
+    @discardableResult
+    func connectVNCSession(
+        hostID: UUID?,
+        connectionID: UUID?,
+        approvalContext: ToolContext? = nil
+    ) async throws -> VNCSessionHandle? {
+        let target = try await resolveVNCTarget(hostID: hostID, connectionID: connectionID)
+        if let failure = latestVNCFailureByEndpointID[target.endpoint.id],
+           failure.category == .authenticationFailed || failure.category == .credentialMissing {
+            throw failure
+        }
+        if let existing = vncEndpointBySessionID.first(where: { $0.value == target.endpoint.id })?.key,
+           let owner = vncOwners[existing] {
+            switch owner.connectionState {
+            case .connected:
+                // An explicit agent connect may reuse a user-opened viewer,
+                // but only a session this center already owns becomes
+                // tool-managed (and therefore closable by vnc.disconnect).
+                preferredVNCSessionID = existing
+                armToolManagedVNCIdleDisconnect(sessionID: existing)
+                return owner.session.map { VNCSessionHandle(id: existing, session: $0) }
+            case .connecting:
+                preferredVNCSessionID = existing
+                armToolManagedVNCIdleDisconnect(sessionID: existing)
+                return try await waitForVNCConnection(sessionID: existing, endpoint: target.endpoint)
+            case .failed, .disconnected:
+                await disconnectVNC(sessionID: existing)
+            }
+        }
+        let sessionID: UUID
+        do {
+            sessionID = try await connectVNC(
+                to: target.host,
+                endpoint: target.endpoint,
+                toolManaged: true,
+                approvalContext: approvalContext
+            )
+        } catch let error as SSHConnectionError {
+            let failure = Self.vncFailure(from: error, endpoint: target.endpoint)
+            latestVNCFailureByEndpointID[target.endpoint.id] = failure
+            throw failure
+        }
+        return try await waitForVNCConnection(sessionID: sessionID, endpoint: target.endpoint)
+    }
+
+    /// Discards only the tool-managed session for the requested endpoint and
+    /// performs a fresh handshake. A user-opened viewer is never interrupted.
+    @discardableResult
+    func reconnectVNCSession(
+        hostID: UUID?,
+        connectionID: UUID?,
+        approvalContext: ToolContext? = nil
+    ) async throws -> VNCSessionHandle? {
+        if hostID == nil, connectionID == nil {
+            return try await reconnectToolVNCSession()
+        }
+        let target = try await resolveVNCTarget(hostID: hostID, connectionID: connectionID)
+        let stale = vncEndpointBySessionID.compactMap { pair -> UUID? in
+            let (sessionID, endpointID) = pair
+            guard endpointID == target.endpoint.id,
+                  toolManagedVNCSessionIDs.contains(sessionID) else { return nil }
+            return sessionID
+        }
+        for sessionID in stale { await disconnectVNC(sessionID: sessionID) }
+        return try await connectVNCSession(
+            hostID: hostID,
+            connectionID: connectionID,
+            approvalContext: approvalContext
+        )
     }
 
     /// Closes only model-created sessions. A viewer opened by the user is not
@@ -468,7 +688,8 @@ final class RemoteSessionCenter: ObservableObject {
     func connectVNC(
         to host: RemoteHostProfile,
         endpoint selected: VNCEndpoint? = nil,
-        toolManaged: Bool = false
+        toolManaged: Bool = false,
+        approvalContext: ToolContext? = nil
     ) async throws -> UUID {
         guard let endpoint = selected ?? host.vncEndpoint else {
             throw FloeError.invalidConfiguration("Host has no VNC endpoint")
@@ -516,6 +737,13 @@ final class RemoteSessionCenter: ObservableObject {
                     return try await self.resolveSecret(ref)
                 },
                 hostKeyDecision: { [weak self] challenge in
+                    if let approvalContext {
+                        return await Self.requestTaskHostKeyApproval(
+                            challenge,
+                            host: host,
+                            context: approvalContext
+                        )
+                    }
                     guard let self else { return false }
                     return await self.hostKeyDecision(challenge)
                 }
@@ -542,7 +770,10 @@ final class RemoteSessionCenter: ObservableObject {
         }
         vncOwners[sessionID] = owner
         vncEndpointBySessionID[sessionID] = endpoint.id
-        if toolManaged { toolManagedVNCSessionIDs.insert(sessionID) }
+        if toolManaged {
+            toolManagedVNCSessionIDs.insert(sessionID)
+            preferredVNCSessionID = sessionID
+        }
         vncSession.connect()
         armToolManagedVNCIdleDisconnect(sessionID: sessionID)
         await refreshSnapshots()
@@ -570,6 +801,7 @@ final class RemoteSessionCenter: ObservableObject {
         vncOwners[sessionID] = nil
         vncEndpointBySessionID[sessionID] = nil
         toolManagedVNCSessionIDs.remove(sessionID)
+        if preferredVNCSessionID == sessionID { preferredVNCSessionID = nil }
         await refreshSnapshots()
     }
 
@@ -580,6 +812,7 @@ final class RemoteSessionCenter: ObservableObject {
         vncOwners[sessionID] = nil
         vncEndpointBySessionID[sessionID] = nil
         toolManagedVNCSessionIDs.remove(sessionID)
+        if preferredVNCSessionID == sessionID { preferredVNCSessionID = nil }
         await refreshSnapshots()
     }
 
@@ -627,6 +860,109 @@ final class RemoteSessionCenter: ObservableObject {
         }
     }
 
+    /// First-use SSH host-key decision for a model-initiated VNC connection.
+    /// Uses the ONE task-scoped nested-approval card. Without that seam
+    /// (background/detached job) the decision fails closed instead of
+    /// presenting an invisible viewer sheet.
+    private static func requestTaskHostKeyApproval(
+        _ challenge: HostKeyChallenge,
+        host: RemoteHostProfile,
+        context: ToolContext
+    ) async -> Bool {
+        guard let approval = context.nestedApproval else { return false }
+        let reason: String
+        if FloeL10n.isChinese {
+            reason = """
+            信任这台 SSH 主机吗？
+            主机：\(host.displayName)（\(challenge.address):\(challenge.port)）
+            密钥：\(challenge.keyType) \(challenge.fingerprintSHA256)
+            这是首次连接。只有在你确认该指纹属于目标设备时才允许。以后指纹变化会直接拒绝连接。
+            """
+        } else {
+            reason = """
+            Trust this SSH host?
+            Host: \(host.displayName) (\(challenge.address):\(challenge.port))
+            Key: \(challenge.keyType) \(challenge.fingerprintSHA256)
+            This is the first connection. Approve only if you recognize this fingerprint. A later change is always rejected.
+            """
+        }
+        return await approval.request(reason: reason) == .allowed
+    }
+
+    /// Converts an SSH transport/identity failure into the bounded VNC
+    /// failure shape the model tools already understand. No credential bytes
+    /// or connection objects cross this boundary.
+    private static func vncFailure(
+        from error: SSHConnectionError,
+        endpoint: VNCEndpoint
+    ) -> VNCConnectionFailure {
+        switch error {
+        case .hostKeyRejected, .hostKeyChanged:
+            return VNCConnectionFailure(
+                category: .handshakeFailed,
+                stage: .handshake,
+                retryable: false,
+                host: endpoint.host,
+                port: endpoint.port,
+                message: error.localizedDescription
+            )
+        case .invalidCredential:
+            return VNCConnectionFailure(
+                category: .credentialMissing,
+                stage: .credentialResolution,
+                retryable: false,
+                host: endpoint.host,
+                port: endpoint.port,
+                message: error.localizedDescription
+            )
+        case .authenticationFailed:
+            return VNCConnectionFailure(
+                category: .authenticationFailed,
+                stage: .authentication,
+                retryable: false,
+                host: endpoint.host,
+                port: endpoint.port,
+                message: error.localizedDescription
+            )
+        case .connectionRefused:
+            return VNCConnectionFailure(
+                category: .connectionRefused,
+                stage: .transport,
+                retryable: true,
+                host: endpoint.host,
+                port: endpoint.port,
+                message: error.localizedDescription
+            )
+        case .timedOut:
+            return VNCConnectionFailure(
+                category: .timedOut,
+                stage: .transport,
+                retryable: true,
+                host: endpoint.host,
+                port: endpoint.port,
+                message: error.localizedDescription
+            )
+        case .hostNotFound, .networkUnreachable:
+            return VNCConnectionFailure(
+                category: .networkUnreachable,
+                stage: .transport,
+                retryable: true,
+                host: endpoint.host,
+                port: endpoint.port,
+                message: error.localizedDescription
+            )
+        case .sshNotConfigured, .invalidHostKey, .unsupportedKeyType, .transport:
+            return VNCConnectionFailure(
+                category: .handshakeFailed,
+                stage: .handshake,
+                retryable: false,
+                host: endpoint.host,
+                port: endpoint.port,
+                message: error.localizedDescription
+            )
+        }
+    }
+
     // MARK: - Reconciliation / honest state
 
     /// On launch: reconcile durable session rows with reality. No live
@@ -669,6 +1005,227 @@ final class RemoteSessionCenter: ObservableObject {
             map[record.id] = RemoteSessionSnapshot.derive(record: record, framesPerSecond: fps)
         }
         sessions = map
+    }
+
+    // MARK: - Credential reference reconciliation
+
+    /// After an editor save, delete only the previous auth/endpoint
+    /// references that are no longer referenced, and align the metadata kind
+    /// with the actual authentication method. A shared reference is never
+    /// deleted here because it remains referenced by another host record.
+    private func reconcileCredentialReferences(
+        previous: RemoteHostProfile?,
+        current: RemoteHostProfile
+    ) async {
+        guard let previous else {
+            await syncAuthMetadata(current: current)
+            return
+        }
+        let currentAuth = Self.reference(of: current.auth)
+        let currentEndpointAccounts = Set(
+            current.vncEndpoints.compactMap { $0.passwordRef?.keychainAccount }
+        )
+        guard let storedHosts = try? await hostStore.hosts(),
+              let records = try? await environment.credentialStore.records(owner: nil)
+        else {
+            await syncAuthMetadata(current: current)
+            return
+        }
+        let allHosts = storedHosts.compactMap { try? RemoteHostProfile(stored: $0) }
+        guard allHosts.count == storedHosts.count else {
+            await syncAuthMetadata(current: current)
+            return
+        }
+        let otherHostAccounts = Set(
+            allHosts
+                .filter { $0.id != current.id }
+                .flatMap { SSHHostCredentialReferences.owned(by: $0) }
+                .map(\.keychainAccount)
+        )
+        let sharedAccounts = Set(
+            records.filter { $0.hostID == nil || $0.hostID != current.id }
+                .map(\.keychainAccount)
+        )
+        var oldReferences: [SecretReference] = []
+        if let previousAuth = Self.reference(of: previous.auth),
+           previousAuth.keychainAccount != currentAuth?.keychainAccount {
+            oldReferences.append(previousAuth)
+        }
+        for endpoint in previous.vncEndpoints {
+            if let reference = endpoint.passwordRef,
+               !currentEndpointAccounts.contains(reference.keychainAccount) {
+                oldReferences.append(reference)
+            }
+        }
+        var seen: Set<String> = []
+        for reference in oldReferences
+        where seen.insert(reference.keychainAccount).inserted
+            && !otherHostAccounts.contains(reference.keychainAccount)
+            && !sharedAccounts.contains(reference.keychainAccount) {
+            do {
+                try deleteKeychainAccount(reference.keychainAccount)
+                await deleteCredentialMetadata(account: reference.keychainAccount)
+            } catch {
+                FloeLogger(category: .security).warning(
+                    "hostCredentialReferenceCleanupFailed host=\(current.id.uuidString)"
+                )
+            }
+        }
+        await syncAuthMetadata(current: current)
+    }
+
+    private func syncAuthMetadata(current: RemoteHostProfile) async {
+        guard let reference = Self.reference(of: current.auth) else { return }
+        let kind: CredentialKind
+        let deviceBound: Bool
+        switch current.auth {
+        case .none:
+            return
+        case .password:
+            kind = .sshPassword
+            deviceBound = false
+        case .importedKey:
+            kind = .sshPrivateKey
+            deviceBound = false
+        case .deviceGeneratedKey:
+            kind = .sshPrivateKey
+            deviceBound = true
+        }
+        let records = (try? await environment.credentialStore.records(owner: nil)) ?? []
+        if var record = records.first(where: {
+            $0.keychainAccount == reference.keychainAccount
+        }) {
+            record.kind = kind
+            record.owner = .vault
+            record.hostID = current.id
+            record.label = current.displayName
+            record.synchronizable = reference.synchronizable
+            record.deviceBound = deviceBound
+            record.updatedAt = Date()
+            try? await environment.credentialStore.save(record)
+            return
+        }
+        try? await environment.credentialVault.registerExisting(
+            account: reference.keychainAccount,
+            kind: kind,
+            label: current.displayName,
+            hostID: current.id,
+            synchronizable: reference.synchronizable,
+            deviceBound: deviceBound
+        )
+    }
+
+    private static func reference(of auth: SSHAuthMethod) -> SecretReference? {
+        switch auth {
+        case .none: nil
+        case .password(let reference): reference
+        case .importedKey(let reference, _): reference
+        case .deviceGeneratedKey(let reference, _): reference
+        }
+    }
+
+    // MARK: - Deletion helpers
+
+    private func shutdownHostSessions(_ hostID: UUID) async -> Int {
+        let terminalIDs = sshOwners
+            .filter { $0.value.hostID == hostID }
+            .map(\.key)
+        let vncIDs = vncOwners
+            .filter { $0.value.hostID == hostID }
+            .map(\.key)
+        for sessionID in terminalIDs {
+            await disconnectTerminal(sessionID: sessionID)
+        }
+        for sessionID in vncIDs {
+            await disconnectVNC(sessionID: sessionID)
+        }
+        return terminalIDs.count + vncIDs.count
+    }
+
+    /// Removes the local host row/config metadata. Returns true when only the
+    /// outbound sync enqueue failed after the local row was already gone.
+    private func removeHostMetadata(_ hostID: UUID) async throws -> Bool {
+        do {
+            try await environment.configurationSync.deleteRemoteHost(id: hostID)
+            return false
+        } catch let removalError {
+            do {
+                let remaining = try await hostStore.host(id: hostID)
+                if remaining == nil { return true }
+            } catch {
+                // The read failed; treat the metadata removal as failed too.
+            }
+            throw removalError
+        }
+    }
+
+    private func cleanupHostCredentials(
+        hostID: UUID,
+        profile: RemoteHostProfile,
+        deletable: [SecretReference],
+        retained: Set<String>
+    ) async -> SSHHostCredentialCleanupResult {
+        var deleted = 0
+        var pending = false
+        for reference in deletable {
+            do {
+                try deleteKeychainAccount(reference.keychainAccount)
+                await deleteCredentialMetadata(account: reference.keychainAccount)
+                deleted += 1
+            } catch {
+                pending = true
+                FloeLogger(category: .security).warning(
+                    "hostCredentialCleanupFailed host=\(hostID.uuidString)"
+                )
+            }
+        }
+        var fixedAccounts: Set<String> = [
+            "host.ssh.\(hostID.uuidString)",
+            "host.vnc.\(hostID.uuidString)"
+        ]
+        for endpoint in profile.vncEndpoints {
+            fixedAccounts.insert(
+                "host.vnc.\(hostID.uuidString).\(endpoint.id.uuidString)"
+            )
+        }
+        for account in fixedAccounts where !retained.contains(account) {
+            do {
+                try deleteKeychainAccount(account)
+                await deleteCredentialMetadata(account: account)
+            } catch {
+                pending = true
+            }
+        }
+        await environment.credentialVault.drainDeletionQueue()
+        return SSHHostCredentialCleanupResult(deleted: deleted, pending: pending)
+    }
+
+
+    /// Deletes one exact account from both Keychain namespaces. Missing items
+    /// are treated as already deleted; the first real failure is returned.
+    private func deleteKeychainAccount(_ account: String) throws {
+        var firstError: Error?
+        for synchronizable in [true, false] {
+            do {
+                try KeychainStore(
+                    service: KeychainSecretStore.defaultService,
+                    synchronizable: synchronizable
+                ).delete(account: account)
+            } catch KeychainStoreError.itemNotFound {
+                continue
+            } catch {
+                if firstError == nil { firstError = error }
+            }
+        }
+        if let firstError { throw firstError }
+    }
+
+    private func deleteCredentialMetadata(account: String) async {
+        guard let records = try? await environment.credentialStore.records(owner: nil)
+        else { return }
+        for record in records where record.keychainAccount == account {
+            try? await environment.credentialStore.delete(id: record.id)
+        }
     }
 
     // MARK: - Secret helpers

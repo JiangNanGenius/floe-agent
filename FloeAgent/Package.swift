@@ -26,6 +26,7 @@ let package = Package(
         .library(name: "FloeMarkdown", targets: ["FloeMarkdown"]),
         .library(name: "FloeWorkspace", targets: ["FloeWorkspace"]),
         .library(name: "FloeExecution", targets: ["FloeExecution"]),
+        .library(name: "FloeIOSAutomation", targets: ["FloeIOSAutomation"]),
         .library(name: "FloeEnvironments", targets: ["FloeEnvironments"]),
         .library(name: "FloePackages", targets: ["FloePackages"]),
         .library(name: "FloeMedia", targets: ["FloeMedia"]),
@@ -275,6 +276,18 @@ let package = Package(
                 .product(name: "Crypto", package: "swift-crypto")
             ],
             path: "Sources/FloeTools",
+            swiftSettings: [
+                .swiftLanguageMode(.v6),
+                .enableExperimentalFeature("StrictConcurrency"),
+                .enableUpcomingFeature("InferSendableFromCaptures"),
+                .enableUpcomingFeature("NonisolatedNonsendingByDefault")
+            ]
+        ),
+
+        .target(
+            name: "FloeIOSAutomation",
+            dependencies: ["FloeCore"],
+            path: "Sources/FloeIOSAutomation",
             swiftSettings: [
                 .swiftLanguageMode(.v6),
                 .enableExperimentalFeature("StrictConcurrency"),
@@ -660,6 +673,24 @@ let package = Package(
             name: "FloePersistenceTests",
             dependencies: ["FloePersistence", "FloeTestSupport"],
             path: "Tests/FloePersistenceTests",
+            swiftSettings: [
+                .swiftLanguageMode(.v6),
+                .enableExperimentalFeature("StrictConcurrency")
+            ]
+        ),
+        .testTarget(
+            name: "FloeIOSAutomationTests",
+            dependencies: ["FloeIOSAutomation", "FloeCore"],
+            path: "Tests/FloeIOSAutomationTests",
+            swiftSettings: [
+                .swiftLanguageMode(.v6),
+                .enableExperimentalFeature("StrictConcurrency")
+            ]
+        ),
+        .testTarget(
+            name: "FloeSkillEnvironmentTests",
+            dependencies: ["FloeExecution", "FloeTools", "FloeCore"],
+            path: "Tests/FloeSkillEnvironmentTests",
             swiftSettings: [
                 .swiftLanguageMode(.v6),
                 .enableExperimentalFeature("StrictConcurrency")

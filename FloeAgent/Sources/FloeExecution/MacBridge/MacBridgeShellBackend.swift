@@ -6,14 +6,23 @@ import FloeMacBridgeProtocol
 /// One authenticated host-backed shell. All output remains on disk; only
 /// the inline summary obeys the existing service's requested display bound.
 public actor MacBridgeShellBackend: LocalShellBackend {
-    private struct Session: Sendable { let jobID: String; let root: URL; var offset: Int64 }
+    private struct Session: Sendable {
+        let jobID: String
+        let root: URL
+        var offset: Int64
+        let redactor: SensitiveSessionRedactor?
+    }
     private let client: MacBridgeClient
     private var sessions: [String: Session] = [:]
     public init(client: MacBridgeClient = .shared) { self.client = client }
 
+    public nonisolated func supportsSensitiveProcessEnvironment(for environment: ToolEnvironment?) -> Bool { true }
+
     public func run(_ request: ShellRunRequest, cancellation: CancellationToken?) async -> ShellRunOutcome {
         let started = ContinuousClock.now
         let jobID = UUID().uuidString
+        let redactor = (request.sensitiveEnvironment?.isEmpty == false)
+            ? request.sensitiveEnvironment?.redactor : nil
         var created = false
         var submitted = false
         defer {
@@ -23,12 +32,22 @@ public actor MacBridgeShellBackend: LocalShellBackend {
         }
         do {
             try check(cancellation)
+            let sensitive = (request.sensitiveEnvironment?.isEmpty == false)
+                ? request.sensitiveEnvironment : nil
+            if let sensitive {
+                try sensitive.validateDisjoint(from: request.environment)
+                try Self.validateSensitiveNames(sensitive)
+                try await ensureSensitiveRedactionCapability()
+            }
             let workspaceID = try await client.synchronizeBeforeExecution(root: request.rootURL)
             let remoteWorkspace = try await client.workspace(root: request.rootURL)
             let executableCommand = Self.withManagedPaths(request.command, root: remoteWorkspace.path)
             try check(cancellation)
-            var payload = startPayload(jobID: jobID, workspaceID: workspaceID,
-                command: executableCommand, cwd: request.cwd, environment: request.environment, columns: 100, rows: 30)
+            var payload = Self.startPayload(jobID: jobID, workspaceID: workspaceID,
+                command: executableCommand, cwd: request.cwd,
+                environment: request.environment, sensitiveEnvironment: sensitive,
+                sensitiveEnvironmentNames: sensitive?.names ?? [],
+                columns: 100, rows: 30)
             if MacBridgeCommandTransfer.requiresStaging(utf8Bytes: executableCommand.utf8.count) {
                 let digest = try await client.stageCommand(executableCommand, jobID: jobID, cancellation: cancellation)
                 payload["command"] = nil; payload["commandFile"] = .string(jobID); payload["commandDigest"] = .string(digest)
@@ -84,8 +103,10 @@ public actor MacBridgeShellBackend: LocalShellBackend {
             catch { return .outcomeUnknown(jobID: jobID, message: "The command finished with exit code \(exitCode), but file transfer is pending: \(error.localizedDescription). Use Sync Files in the saved job; do not run the command again.") }
             let duration = Self.milliseconds(started.duration(to: .now))
             if cancelling && !timedOut { return .cancelled }
-            if timedOut { return .timedOut(partialStdout: String(decoding: preview, as: UTF8.self), partialStderr: note, durationMs: duration) }
-            return .exited(code: exitCode, stdout: String(decoding: preview, as: UTF8.self), stderr: note,
+            let previewText = String(decoding: preview, as: UTF8.self)
+            let redactedPreview = redactor?.redactComplete(previewText) ?? previewText
+            if timedOut { return .timedOut(partialStdout: redactedPreview, partialStderr: note, durationMs: duration) }
+            return .exited(code: exitCode, stdout: redactedPreview, stderr: note,
                            truncated: offset > Int64(preview.count), stderrTruncated: false, durationMs: duration)
         } catch {
             if created, cancellation?.isCancelled == true || Task.isCancelled {
@@ -116,6 +137,13 @@ public actor MacBridgeShellBackend: LocalShellBackend {
     }
     public func openSession(_ request: ShellOpenRequest, cancellation: CancellationToken?) async throws -> ShellOpenResult {
         try check(cancellation)
+        let sensitive = (request.sensitiveEnvironment?.isEmpty == false)
+            ? request.sensitiveEnvironment : nil
+        if let sensitive {
+            try sensitive.validateDisjoint(from: request.environment)
+            try Self.validateSensitiveNames(sensitive)
+            try await ensureSensitiveRedactionCapability()
+        }
         let workspaceID = try await client.synchronizeBeforeExecution(root: request.rootURL)
             let remoteWorkspace = try await client.workspace(root: request.rootURL)
             let executableCommand = Self.withManagedPaths(request.command, root: remoteWorkspace.path)
@@ -124,15 +152,25 @@ public actor MacBridgeShellBackend: LocalShellBackend {
         defer {
             if !submitted { Task { [client] in _ = try? await client.call("command.discard", ["jobID": .string(jobID)]) } }
         }
-        var payload = startPayload(jobID: jobID, workspaceID: workspaceID,
-            command: executableCommand, cwd: request.cwd, environment: request.environment, columns: request.columns, rows: request.rows)
+        var payload = Self.startPayload(jobID: jobID, workspaceID: workspaceID,
+            command: executableCommand, cwd: request.cwd,
+            environment: request.environment, sensitiveEnvironment: sensitive,
+            sensitiveEnvironmentNames: sensitive?.names ?? [],
+            columns: request.columns, rows: request.rows)
         if MacBridgeCommandTransfer.requiresStaging(utf8Bytes: executableCommand.utf8.count) {
             let digest = try await client.stageCommand(executableCommand, jobID: jobID, cancellation: cancellation)
             payload["command"] = nil; payload["commandFile"] = .string(jobID); payload["commandDigest"] = .string(digest)
         }
         try check(cancellation)
         try await client.recordJobAttempt(id: jobID, root: request.rootURL, sessionID: request.sessionID)
-        sessions[request.sessionID] = Session(jobID: jobID, root: request.rootURL, offset: 0)
+        let sessionRedactor = (request.sensitiveEnvironment?.isEmpty == false)
+            ? request.sensitiveEnvironment.map { SensitiveSessionRedactor(environment: $0) } : nil
+        sessions[request.sessionID] = Session(
+            jobID: jobID,
+            root: request.rootURL,
+            offset: 0,
+            redactor: sessionRedactor
+        )
         submitted = true
         do { _ = try await client.call("start", payload) }
         catch { throw ToolExecutionOutcomeUnknownError(reference: jobID, message: "The Mac terminal start could not be confirmed. Reconnect and inspect this existing job; do not open a replacement.") }
@@ -152,9 +190,15 @@ public actor MacBridgeShellBackend: LocalShellBackend {
         let data = try bytes(page); session.offset += Int64(data.count)
         sessions[request.sessionID] = session
         let alive = page["alive"]?.bool ?? false
+        let output: Data
+        if let redactor = session.redactor {
+            output = await redactor.redact(data, flush: !alive)
+        } else {
+            output = data
+        }
         if !alive { try await client.synchronizeAfterExecution(root: session.root) }
-        return ShellExchangeResult(output: String(decoding: data, as: UTF8.self), alive: alive,
-            exitCode: page["exitCode"]?.integer.map { Int32(clamping: $0) }, terminalOutput: data,
+        return ShellExchangeResult(output: String(decoding: output, as: UTF8.self), alive: alive,
+            exitCode: page["exitCode"]?.integer.map { Int32(clamping: $0) }, terminalOutput: output,
             bytesRead: Int(clamping: page["totalBytes"]?.integer ?? session.offset), bytesWritten: Int(clamping: page["inputBytes"]?.integer ?? 0))
         } catch let error as ToolExecutionOutcomeUnknownError { throw error }
         catch {
@@ -193,10 +237,76 @@ public actor MacBridgeShellBackend: LocalShellBackend {
         return "export PATH=" + quote(root + "/.floe-env/bin") + ":" + quote(root + "/.floe-node/node_modules/.bin") + ":\"$PATH\"; export NODE_PATH=" + quote(root + "/.floe-node/node_modules") + "\"${NODE_PATH:+:$NODE_PATH}\";\n" + command
     }
 
-    private func startPayload(jobID: String, workspaceID: String, command: String, cwd: String,
-                              environment: [String: String], columns: Int, rows: Int) -> [String: BridgeValue] {
-        ["jobID": .string(jobID), "workspaceID": .string(workspaceID), "command": .string(command), "cwd": .string(cwd),
-         "environment": .object(environment.mapValues(BridgeValue.string)), "columns": .integer(Int64(columns)), "rows": .integer(Int64(rows))]
+    /// Names the Mac companion owns: it drops HOME/TMPDIR/PATH/PYTHONPATH/
+    /// NODE_PATH and overwrites TERM/FLOE_EXECUTION_BACKEND. Sending a
+    /// sensitive value under one of these names would be silently ignored,
+    /// so the sensitive channel refuses it instead. Ordinary environment keeps
+    /// its existing companion behavior.
+    static let macBridgeReservedEnvironmentNames = BridgeSensitiveEnvironment.reservedNames
+
+    static func validateSensitiveNames(_ environment: SensitiveProcessEnvironment) throws {
+        for entry in environment.entries where macBridgeReservedEnvironmentNames.contains(entry.name) {
+            throw BridgeFailure.remote(
+                "Sensitive environment variable '\(entry.name)' is controlled by the Mac bridge and cannot be set per command; choose another name. The command was not started."
+            )
+        }
+    }
+
+    /// Merge contract shared by the payload builder and the focused test.
+    static func mergedEnvironmentPayload(
+        environment: [String: String],
+        sensitiveEnvironment: SensitiveProcessEnvironment?
+    ) -> [String: String] {
+        var merged = environment
+        if let sensitiveEnvironment {
+            for entry in sensitiveEnvironment.entries {
+                merged[entry.name] = entry.value
+            }
+        }
+        return merged
+    }
+
+    /// The sensitive dictionary is merged into the SAME `environment` object
+    /// the companion passes to `BridgeJobs`' child envp. It is never part of
+    /// `command`, `commandFile`/staged script, `owner.json`, the job receipt
+    /// or the output log. Kept internal so the contract can be tested without
+    /// a live bridge.
+    static func startPayload(jobID: String, workspaceID: String, command: String, cwd: String,
+                             environment: [String: String],
+                             sensitiveEnvironment: SensitiveProcessEnvironment?,
+                             sensitiveEnvironmentNames: [String],
+                             columns: Int, rows: Int) -> [String: BridgeValue] {
+        let merged = mergedEnvironmentPayload(
+            environment: environment,
+            sensitiveEnvironment: sensitiveEnvironment
+        )
+        var payload: [String: BridgeValue] = [
+            "jobID": .string(jobID), "workspaceID": .string(workspaceID),
+            "command": .string(command), "cwd": .string(cwd),
+            "environment": .object(merged.mapValues(BridgeValue.string)),
+            "columns": .integer(Int64(columns)), "rows": .integer(Int64(rows)),
+        ]
+        // Names only, never values. Omitted for an ordinary command so its
+        // payload stays byte-compatible with older companions.
+        if !sensitiveEnvironmentNames.isEmpty {
+            payload["sensitiveEnvironmentNames"] = .array(sensitiveEnvironmentNames.map(BridgeValue.string))
+        }
+        return payload
+    }
+
+    /// Authenticated, additive negotiation. `ping` is a paired-client request
+    /// with a signed response; an old companion does not advertise the
+    /// capability, so this fails before any sensitive value enters a start
+    /// payload. Checked on every sensitive request (a reconnected/downgraded
+    /// companion must not silently lose redaction).
+    private func ensureSensitiveRedactionCapability() async throws {
+        let response = try await client.call("ping")
+        let capabilities = response["capabilities"]?.array?.compactMap { $0.string } ?? []
+        guard capabilities.contains(BridgeSensitiveEnvironment.capability) else {
+            throw BridgeFailure.remote(
+                "Update Floe Bridge on this Mac before using Skill secrets: this companion cannot redact secret values from its terminal output. No secret value was sent."
+            )
+        }
     }
     private func sendInput(_ data: Data, jobID: String) async throws {
         var offset = 0
@@ -231,15 +341,29 @@ public actor MacBridgeExecutionRouter: LocalShellBackend {
     public nonisolated func normalizedRunDeadline(_ requested: ShellExecutionDeadline) -> ShellExecutionDeadline {
         defaultBackend.normalizedRunDeadline(requested)
     }
-    private func isMac(_ environment: ToolEnvironment?) -> Bool { environment?.variables["FLOE_EXECUTION_BACKEND"] == "macBridge" }
+    public nonisolated func supportsSensitiveProcessEnvironment(for environment: ToolEnvironment?) -> Bool {
+        if isMac(environment) { return true }
+        return defaultBackend.supportsSensitiveProcessEnvironment(for: environment)
+    }
+    private nonisolated func isMac(_ environment: ToolEnvironment?) -> Bool {
+        environment?.variables["FLOE_EXECUTION_BACKEND"] == "macBridge"
+    }
     public func run(_ request: ShellRunRequest, cancellation: CancellationToken?) async -> ShellRunOutcome {
         if isMac(request.toolEnvironment) { return await bridge.run(request, cancellation: cancellation) }
+        if request.sensitiveEnvironment != nil,
+           !defaultBackend.supportsSensitiveProcessEnvironment(for: request.toolEnvironment) {
+            return .failed(message: "The selected execution target cannot receive a per-process secret environment. Choose the Linux or Mac execution target, or use an opaque native credential. No secret value was sent.")
+        }
         return await defaultBackend.run(request, cancellation: cancellation)
     }
     public func openSession(_ request: ShellOpenRequest, cancellation: CancellationToken?) async throws -> ShellOpenResult {
         if isMac(request.toolEnvironment) {
             macSessions.insert(request.sessionID)
             return try await bridge.openSession(request, cancellation: cancellation)
+        }
+        if request.sensitiveEnvironment != nil,
+           !defaultBackend.supportsSensitiveProcessEnvironment(for: request.toolEnvironment) {
+            throw LinuxGuestError.perProcessEnvironmentUnsupported(found: "the selected backend has no per-process channel")
         }
         return try await defaultBackend.openSession(request, cancellation: cancellation)
     }

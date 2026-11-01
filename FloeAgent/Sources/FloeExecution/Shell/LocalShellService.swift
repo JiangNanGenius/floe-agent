@@ -161,6 +161,7 @@ public actor LocalShellService {
         command: String,
         cwd: String,
         environment: [String: String],
+        skillConfiguration: SkillProcessConfiguration? = nil,
         stdin: String?,
         requestedTimeout: TimeInterval?,
         timeoutPolicy: ShellTimeoutPolicy = .advisory,
@@ -234,6 +235,17 @@ public actor LocalShellService {
         // Host substrate paths must not replace the selected Mac/SSH machine's environment.
         var mergedEnvironment = selectedBackend == "remoteSSH" || selectedBackend == "macBridge" ? [:] : environmentDefaults
         for (key, value) in environment { mergedEnvironment[key] = value }
+        if let skillConfiguration {
+            do {
+                try skillConfiguration.validateOverrides(environment)
+                for (key, value) in skillConfiguration.environment { mergedEnvironment[key] = value }
+                try ShellInputValidation.validate(command: command, cwd: cwd, environment: mergedEnvironment, stdin: stdin)
+                try await skillConfiguration.revalidate()
+                try context.cancellation.throwIfCancelled()
+            } catch {
+                return .outcome(.failed(message: "Skill configuration is unavailable or changed. Inspect skill.config before retrying."))
+            }
+        }
         // The backend session key is the runtime-issued per-CLIENT scope, not
         // the bare provider tool-call id: a parent run and two delegated
         // children of the same task may legitimately all be handed provider
@@ -244,11 +256,16 @@ public actor LocalShellService {
         // with its recorded outcome. The provider-visible call id is
         // unchanged (it is still journaled in `toolCallID`).
         let resolved = resolvedDeadline(requestedTimeout, policy: timeoutPolicy, environment: context.environment)
+        if skillConfiguration?.sensitiveEnvironment?.isEmpty == false,
+           !backend.supportsSensitiveProcessEnvironment(for: context.environment) {
+            return .outcome(.failed(message: "The selected execution target cannot receive this Skill's secret environment. No secret value was sent."))
+        }
         let request = ShellRunRequest(
             command: command,
             cwd: cwd,
             rootURL: root,
             environment: mergedEnvironment,
+            sensitiveEnvironment: skillConfiguration?.sensitiveEnvironment,
             stdin: stdin,
             deadline: resolved.deadline,
             gateTimeout: normalizedGateWait(nil),
@@ -276,7 +293,8 @@ public actor LocalShellService {
             )
         }
         let started = Date()
-        let outcome = await backend.run(request, cancellation: context.cancellation)
+        let rawOutcome = await backend.run(request, cancellation: context.cancellation)
+        let outcome = skillConfiguration?.sanitize(rawOutcome) ?? rawOutcome
         if let reminderKey { await durationReminder?.end(key: reminderKey) }
         let durationMs = Int(Date().timeIntervalSince(started) * 1000)
         await record(outcome: outcome, command: command, cwd: cwd, context: context, durationMs: durationMs)

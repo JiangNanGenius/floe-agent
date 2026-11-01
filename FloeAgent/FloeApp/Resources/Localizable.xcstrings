@@ -1,6 +1,57 @@
 {
   "sourceLanguage": "en",
   "strings": {
+    "execution.location.unavailable_on_device": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The saved execution location is unavailable on this device. Choose an available location to continue."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "原运行位置无法在此设备使用，请选择可用的位置继续。"
+          }
+        }
+      }
+    },
+    "settings.licenses.document.ictrl.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "iCTRL — Apache License 2.0"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "iCTRL — Apache 2.0 许可"
+          }
+        }
+      }
+    },
+    "settings.licenses.document.ictrl_notice.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "iCTRL — attribution and notices"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "iCTRL — 来源与声明"
+          }
+        }
+      }
+    },
     "cad.blend.history.referencesMissing": {
       "extractionState": "manual",
       "localizations": {

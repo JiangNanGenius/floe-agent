@@ -334,8 +334,8 @@ public struct CatalogToolExecutor: ToolExecutor {
                 // These tools enforce their own bounded JSON pages. A second 4K
                 // cut here destroys the JSON and its continuation cursor.
                 maximumSummaryCharacters: ["notes.read", "notes.search"].contains(call.toolName) ? 196_608 :
-                    (["skill.read", "skill.list", "skill.search", "checklist.readPlan", "checklist.updatePlan", "image.models"].contains(call.toolName) ? 262_144 :
-                        (["conversation.search", "conversation.read"].contains(call.toolName) ? 98_304 : 4096)),
+                    (["user.ask", "skill.read", "skill.list", "skill.search", "checklist.readPlan", "checklist.updatePlan", "image.models"].contains(call.toolName) ? 262_144 :
+                        (["conversation.search", "conversation.read", "skill.config", "ios.bridge.observe", "ios.bridge.control"].contains(call.toolName) ? 98_304 : 4096)),
                 capturedOutput: output.capturedOutput ?? output.summary,
                 capturedOutputTruncated: output.capturedOutput == nil
                     ? output.summaryTruncated : output.capturedOutputTruncated,
@@ -578,6 +578,9 @@ public actor FloeAgentRuntime {
         /// checkpoint metadata can name still-waiting requests. Nil keeps
         /// the historical recovery policy for runs without questions.
         public var userQuestionRecovery: (any UserQuestionRuntimeRecovery)?
+        /// Live presentation subset of the compiled/frozen task ceiling.
+        /// Main-runtime only; nil preserves the historical catalog behavior.
+        public var currentToolAvailability: (@Sendable () async -> Set<String>)?
         public init(
             conversationID: UUID = UUID(),
             provider: ProviderProfile,
@@ -620,7 +623,8 @@ public actor FloeAgentRuntime {
             serviceStorePaths: [String: String] = [:],
             toolResultCaptureRoot: URL? = nil,
             outstandingDependencies: (@Sendable () async -> [RunDependencyLabel])? = nil,
-            userQuestionRecovery: (any UserQuestionRuntimeRecovery)? = nil
+            userQuestionRecovery: (any UserQuestionRuntimeRecovery)? = nil,
+            currentToolAvailability: (@Sendable () async -> Set<String>)? = nil
         ) {
             self.conversationID = conversationID
             self.provider = provider
@@ -667,6 +671,7 @@ public actor FloeAgentRuntime {
             self.toolResultCaptureRoot = toolResultCaptureRoot
             self.outstandingDependencies = outstandingDependencies
             self.userQuestionRecovery = userQuestionRecovery
+            self.currentToolAvailability = currentToolAvailability
         }
     }
 
@@ -713,6 +718,7 @@ public actor FloeAgentRuntime {
     /// from per-turn schemas: delegated children discover against exactly the
     /// parent's real ceiling, never a wider raw registry.
     private var cachedRuntimeCatalogNames: Set<String>?
+    private var currentAvailableToolNames: Set<String>?
     /// Serializes human approval escalations. The parent resolves calls
     /// serially, but concurrent children can reach the policy at the same
     /// time; an approval card must never be re-targeted by a second
@@ -723,6 +729,11 @@ public actor FloeAgentRuntime {
     /// checkpoints, audit events or logs. App hosts use this to replace raw
     /// credential fields with Keychain-backed references.
     private let toolCallNormalizer: (@Sendable (ToolCall) async throws -> ToolCall)?
+    private let modelInputProjection: ModelUserInputProjection?
+    private let hydrateModelInputs: (@Sendable ([ModelUserInputSource]) async throws -> Void)?
+    /// Exact selected-primary bytes for an in-process retry only. The durable
+    /// request/envelope explicitly describe the sanitized projection.
+    private var providerWireRetryRequest: ProviderStreamRequest?
 
     private var messages: [ConversationMessage] = []
     private var ownedSystemContextID: UUID?
@@ -983,6 +994,8 @@ public actor FloeAgentRuntime {
         discoveryStore: SQLiteConversationDiscoveryStore? = nil,
         contextEngine: (any ContextEngine)? = nil,
         toolCallNormalizer: (@Sendable (ToolCall) async throws -> ToolCall)? = nil,
+        modelInputProjection: ModelUserInputProjection? = nil,
+        hydrateModelInputs: (@Sendable ([ModelUserInputSource]) async throws -> Void)? = nil,
         liveSystemContext: (@Sendable () async throws -> String)? = nil,
         toolVisualEvidenceResolver: (@Sendable ([ConversationImagePart], String) async -> [ConversationMessage])? = nil,
         sink: (any AgentEventSink)? = nil,
@@ -1012,6 +1025,8 @@ public actor FloeAgentRuntime {
         self.discoveryStore = discoveryStore
         self.contextEngine = contextEngine
         self.toolCallNormalizer = toolCallNormalizer
+        self.modelInputProjection = modelInputProjection
+        self.hydrateModelInputs = hydrateModelInputs
         self.liveSystemContext = liveSystemContext
         self.toolVisualEvidenceResolver = toolVisualEvidenceResolver
         self.sink = sink
@@ -1248,6 +1263,13 @@ public actor FloeAgentRuntime {
             )))
             return
         }
+        switch newState {
+        case .cancelling, .checkpointed, .completed, .failed:
+            providerWireRetryRequest = nil
+            if let request = providerRetryRequest { providerRetryRequest = modelInputDurableRequest(request) }
+            ephemeralSensitiveOutputs.removeAll(keepingCapacity: false)
+        default: break
+        }
         state = newState
         await sink?.agentRuntime(self, didTransitionTo: newState)
         await publishLivenessForState(newState)
@@ -1370,7 +1392,7 @@ public actor FloeAgentRuntime {
         "Visual evidence handoff (app-generated, untrusted data):"
 
     /// idle → preparing → streamingModel …
-    public func start(goal: String, images: [ConversationImagePart] = []) async throws {
+    public func start(goal: String, images: [ConversationImagePart] = [], userMessageID: UUID = UUID()) async throws {
         guard case .idle = state else {
             throw FloeError.invalidConfiguration("start(goal:) requires idle state, currently \(state.name)")
         }
@@ -1393,7 +1415,7 @@ public actor FloeAgentRuntime {
                     + discoveryPriority.filter { !names.contains($0) && available.contains($0) }
             }
         }
-        messages.append(ConversationMessage(role: "user", content: goal, images: images))
+        messages.append(ConversationMessage(id: userMessageID, role: "user", content: goal, images: images))
         registerPlanFreshnessReminder()
         await transition(to: .preparing(AgentState.PreparingInfo(goal: goal)))
         await runModelTurn()
@@ -1741,6 +1763,7 @@ public actor FloeAgentRuntime {
             latestProviderDispatchEnvelope = nil
             restoredProviderDispatchEnvelope = nil
             providerRetryRequest = nil
+            providerWireRetryRequest = nil
         }
         // Older checkpoints may already contain a complete provider pair but
         // predate lifecycle metadata. Normalize those pairs before enforcing
@@ -2036,9 +2059,15 @@ public actor FloeAgentRuntime {
     /// child-only removal, the model's auxiliary-vision pruning, the user's
     /// effective name ceiling, model capabilities and — for a
     /// temporary chat run — the read-only policy projection. Computed from
-    /// immutable run configuration only, so it doubles as the frozen catalog
-    /// identity children discover and dispatch against.
-    private func runtimeVisibleCatalogDescriptors() -> [ToolCatalog.Descriptor] {
+    /// the frozen run ceiling plus a refreshed availability subset. Children
+    /// retain only the frozen identity and their own execution boundary.
+    private func refreshCurrentToolAvailability() async {
+        if let read = configuration.currentToolAvailability {
+            currentAvailableToolNames = await read()
+        }
+    }
+
+    private func runtimeVisibleCatalogDescriptors(includeCurrentAvailability: Bool = true) -> [ToolCatalog.Descriptor] {
         var descriptors: [ToolCatalog.Descriptor]
         if configuration.conversationMode == .plan {
             descriptors = PlanToolPolicy().allowedDescriptors(from: executor.allDescriptors)
@@ -2062,6 +2091,9 @@ public actor FloeAgentRuntime {
         }
         if let allowed = configuration.allowedToolNames {
             descriptors.removeAll { !allowed.contains($0.name) }
+        }
+        if includeCurrentAvailability, let available = currentAvailableToolNames {
+            descriptors.removeAll { !available.contains($0.name) }
         }
         // Local models use the SAME task-authorized catalog as cloud. The
         // runtime no longer applies a second curated-name fence: browser.*,
@@ -2088,7 +2120,7 @@ public actor FloeAgentRuntime {
     /// child dispatcher still enforces the boundary and the parent ceiling.
     private func runtimeVisibleCatalogNameSet() -> Set<String> {
         if let cachedRuntimeCatalogNames { return cachedRuntimeCatalogNames }
-        var names = Set(runtimeVisibleCatalogDescriptors().map(\.name))
+        var names = Set(runtimeVisibleCatalogDescriptors(includeCurrentAvailability: false).map(\.name))
         for descriptor in executor.allDescriptors
         where descriptor.executionBoundary == .childOnly {
             if let allowed = configuration.allowedToolNames,
@@ -2310,7 +2342,7 @@ public actor FloeAgentRuntime {
     private func runSingleModelTurn() async {
         let hasFreshSteer = !pendingSteers.isEmpty
         if hasFreshSteer, !streamText.isEmpty {
-            messages.append(ConversationMessage(role: "assistant", content: streamText, reasoningContent: responseReasoning))
+            messages.append(ConversationMessage(role: "assistant", content: modelInputProjection?.redacted(streamText) ?? streamText, reasoningContent: modelInputProjection?.redacted(responseReasoning) ?? responseReasoning))
             await sink?.agentRuntime(self, didCompleteAssistantStep: streamText)
         }
         await consumeSteersAtStepBoundary()
@@ -2321,6 +2353,7 @@ public actor FloeAgentRuntime {
             latestProviderDispatchEnvelope = nil
             latestProviderDispatchRequest = nil
             providerRetryRequest = nil
+            providerWireRetryRequest = nil
         }
         // Sink callbacks perform durable persistence and therefore suspend.
         // A user cancel/pause can win during that suspension; never revive a
@@ -2330,6 +2363,13 @@ public actor FloeAgentRuntime {
             return
         default:
             break
+        }
+        // Refresh only at a real new turn. A transport/restart retry keeps
+        // the committed canonical request and its exact schema envelope.
+        if providerRetryRequest == nil { await refreshCurrentToolAvailability() }
+        switch state {
+        case .cancelling, .paused, .checkpointed, .completed, .failed: return
+        default: break
         }
         if providerRetryRequest == nil, let liveSystemContext {
             do {
@@ -2439,7 +2479,7 @@ public actor FloeAgentRuntime {
                 }
             } catch {
                 logger.warning(
-                    "contextCompactionFailed run=\(runID.uuidString) forced=\(wasForcedCompaction) error=\(error.localizedDescription)"
+                    "contextCompactionFailed run=\(runID.uuidString) forced=\(wasForcedCompaction) error=\(modelInputProjection?.redacted(error.localizedDescription) ?? error.localizedDescription)"
                 )
                 await publishContextCompression(ContextCompressionSnapshot(
                     phase: .failed,
@@ -2619,6 +2659,11 @@ public actor FloeAgentRuntime {
                 for: descriptor.name, userGoal: statefulRouteGoal
             ) else { return nil }
             return "\(CompatToolNames.wireName(descriptor.name, for: configuration.provider)): \(reason)"
+        }
+        do { try await hydrateModelInputs?(modelInputSources()) }
+        catch {
+            await failRun(message: "User input credentials are unavailable on this device. Unlock or restore the existing credential before continuing.", recoverable: true)
+            return
         }
         var legacyMessages = messages.map { (role: $0.role, content: $0.content) }
         var contentMessages = messages.map { message in
@@ -2825,7 +2870,7 @@ public actor FloeAgentRuntime {
         // ref. A paging page is never re-summarized.
         let evidenceBudget = min(
             Self.providerToolEvidenceBudgetBytes(
-                messages: contentMessages,
+                messages: modelInputWireMessages(contentMessages),
                 schemas: toolSchemasForRequest,
                 contextWindowTokens: configuration.model.limits.contextTokens,
                 reservedOutputTokens: Self.contextOutputReservation(limits: configuration.model.limits)
@@ -2884,7 +2929,7 @@ public actor FloeAgentRuntime {
             return
         }
         let requestSize = ProviderRequestSizer.measure(
-            messages: contentMessages,
+            messages: modelInputWireMessages(contentMessages),
             schemas: toolSchemasForRequest,
             replayedToolPairs: replayedToolPairs,
             contextWindowTokens: configuration.model.limits.contextTokens,
@@ -2931,8 +2976,29 @@ public actor FloeAgentRuntime {
         // do not rebuild a compacted prompt or regenerate a tool request after
         // the provider has already crossed the network boundary.
         let request = providerRetryRequest ?? freshRequest
+        let wireRequest = providerWireRetryRequest ?? modelInputWireRequest(request)
+        let durableRequest = modelInputDurableRequest(request)
+        let disclosesModelInput = !didVerifyFinalAnswer && modelInputProjection != nil && (
+            wireRequest.effectiveMessages != durableRequest.effectiveMessages
+                || !wireRequest.toolResults.elementsEqual(durableRequest.toolResults, by: {
+                    $0.callID == $1.callID && $0.output == $1.output
+                })
+        )
+        if disclosesModelInput {
+            let actualSize = ProviderRequestSizer.measure(messages: wireRequest.effectiveMessages,
+                schemas: wireRequest.toolSchemas, replayedToolPairs: wireRequest.replayedToolPairs,
+                contextWindowTokens: configuration.model.limits.contextTokens,
+                reservedOutputTokens: Self.contextOutputReservation(limits: configuration.model.limits))
+            let fixed = actualSize.messageTokens + actualSize.schemaTokens + actualSize.replayTokens
+                + actualSize.reservedOutputTokens + actualSize.safetyMarginTokens
+            guard fixed <= actualSize.contextWindowTokens,
+                  wireRequest.toolResults.reduce(0, { $0 + $1.output.utf8.count }) <= min(actualSize.toolResultBudgetBytes, Self.maximumProviderToolResultBytes) else {
+                await failRun(message: "The disclosed user input does not fit this model's context window. Use an existing credential reference or a larger context model.", recoverable: true)
+                return
+            }
+        }
         let dispatchEnvelope = Self.dispatchEnvelope(
-            request: request,
+            request: durableRequest,
             conversationMode: configuration.conversationMode
         )
         if let restored = restoredProviderDispatchEnvelope,
@@ -2946,11 +3012,15 @@ public actor FloeAgentRuntime {
         restoredProviderDispatchEnvelope = nil
         latestProviderDispatchEnvelope = dispatchEnvelope
         latestProviderDispatchRequest = Self.persistedDispatchSnapshot(
-            request: request,
+            request: durableRequest,
             runID: runID,
             sensitiveCallIDs: sensitiveOutputCallIDs,
             capturableCallIDs: durableCaptureCallIDs
         )
+        if disclosesModelInput {
+            latestProviderDispatchRequest?.modelInputProjection = "selected-primary-user-input"
+            latestProviderDispatchEnvelope?.modelInputProjection = "selected-primary-user-input"
+        }
         logger.info(
             "promptAssembly run=\(runID.uuidString) digest=\(Self.promptAssemblyDigest(messages: legacyMessages, descriptors: catalogDescriptors)) tools=\(request.toolSchemas.count) pendingCalls=\(request.pendingToolCalls.count) pendingResults=\(request.toolResults.count) mode=\(configuration.conversationMode.rawValue)"
         )
@@ -3026,8 +3096,16 @@ public actor FloeAgentRuntime {
                 : "Waiting for the cloud model's first event",
             isRecoverable: true
         )
+        // Publication callbacks above suspend. Cancellation/temporary End
+        // must win before any materialized user input crosses the network.
+        switch state {
+        case .cancelling, .paused, .checkpointed, .completed, .failed: return
+        default: break
+        }
+        guard !Task.isCancelled, !cancellationToken.isCancelled else { return }
         startProviderWatchdog(attempt: providerAttemptNumber)
-        var dispatchRequest = request
+        if providerWireRetryRequest == nil { providerWireRetryRequest = wireRequest }
+        var dispatchRequest = wireRequest
         let attempt = providerAttemptNumber
         dispatchRequest.onToolArgumentsProgress = { [weak self] in
             await self?.handleToolArgumentsProgress(attempt: attempt)
@@ -3393,7 +3471,17 @@ public actor FloeAgentRuntime {
             do {
                 var canonicalCall = call
                 canonicalCall.toolName = ToolAliasTable.canonical(call.toolName)
-                let normalized = try await toolCallNormalizer?(canonicalCall) ?? canonicalCall
+                var normalized = try await toolCallNormalizer?(canonicalCall) ?? canonicalCall
+                if normalized.toolName == UserAskTool.name {
+                    // Question text is durable derived conversation data.
+                    normalized.argumentsJSON = modelInputProjection?.redactedJSON(normalized.argumentsJSON) ?? normalized.argumentsJSON
+                }
+                if normalized.toolName.hasPrefix("exec.") || normalized.toolName.hasPrefix("jobs.") || normalized.toolName.hasPrefix("subagent.") || normalized.toolName == DelegateTool.name || normalized.toolName == "conversation.spawn" || normalized.toolName.hasPrefix("agent.delegate") || normalized.toolName.hasPrefix("delegate.") || normalized.toolName.hasPrefix("memory.") || normalized.toolName == "image.inspect" {
+                    let safe = modelInputProjection?.redactedJSON(normalized.argumentsJSON) ?? normalized.argumentsJSON
+                    if safe != normalized.argumentsJSON {
+                        throw FloeError.validationFailed("Use an authorized credential reference; commands need a secret environment binding and delegated or auxiliary requests must not contain plaintext credentials")
+                    }
+                }
                 pendingToolBatch.append(normalized.withIDContext(runID: runID))
             } catch {
                 pendingToolBatch.removeAll(keepingCapacity: true)
@@ -3455,6 +3543,7 @@ public actor FloeAgentRuntime {
                 // not a transport retry and therefore must not replay the
                 // pre-compaction dispatch envelope.
                 providerRetryRequest = nil
+                providerWireRetryRequest = nil
                 latestProviderDispatchEnvelope = nil
                 latestProviderDispatchRequest = nil
                 restoredProviderDispatchEnvelope = nil
@@ -3560,8 +3649,8 @@ public actor FloeAgentRuntime {
             guard !cancellationToken.isCancelled else { return }
             if !resumedChildOutcomes.isEmpty {
                 if !streamText.isEmpty {
-                    messages.append(ConversationMessage(role: "assistant", content: streamText,
-                                                        reasoningContent: responseReasoning))
+                    messages.append(ConversationMessage(role: "assistant", content: modelInputProjection?.redacted(streamText) ?? streamText,
+                                                        reasoningContent: modelInputProjection?.redacted(responseReasoning) ?? responseReasoning))
                     await sink?.agentRuntime(self, didCompleteAssistantStep: streamText)
                 }
                 let outcomes = resumedChildOutcomes
@@ -3626,7 +3715,7 @@ public actor FloeAgentRuntime {
             return
         }
         if !streamText.isEmpty {
-            messages.append(ConversationMessage(role: "assistant", content: streamText, reasoningContent: responseReasoning))
+            messages.append(ConversationMessage(role: "assistant", content: modelInputProjection?.redacted(streamText) ?? streamText, reasoningContent: modelInputProjection?.redacted(responseReasoning) ?? responseReasoning))
             await sink?.agentRuntime(self, didCompleteAssistantStep: streamText)
         }
         await consumeSteersAtStepBoundary()
@@ -3679,7 +3768,7 @@ public actor FloeAgentRuntime {
     /// blocker. Tool schemas stay enabled for this one repair turn.
     private func beginDeferredActionRepair() async {
         deferredActionRepairCount += 1
-        messages.append(ConversationMessage(role: "assistant", content: streamText, reasoningContent: responseReasoning))
+        messages.append(ConversationMessage(role: "assistant", content: modelInputProjection?.redacted(streamText) ?? streamText, reasoningContent: modelInputProjection?.redacted(responseReasoning) ?? responseReasoning))
         await sink?.agentRuntime(self, didCompleteAssistantStep: streamText)
         await transition(to: .verifying)
         messages.append(ConversationMessage(
@@ -3718,7 +3807,7 @@ public actor FloeAgentRuntime {
     /// the action did not complete.
     private func beginActionClaimRepair() async {
         actionClaimRepairCount += 1
-        messages.append(ConversationMessage(role: "assistant", content: streamText, reasoningContent: responseReasoning))
+        messages.append(ConversationMessage(role: "assistant", content: modelInputProjection?.redacted(streamText) ?? streamText, reasoningContent: modelInputProjection?.redacted(responseReasoning) ?? responseReasoning))
         await sink?.agentRuntime(self, didCompleteAssistantStep: streamText)
         await transition(to: .verifying)
         messages.append(ConversationMessage(
@@ -3757,7 +3846,7 @@ public actor FloeAgentRuntime {
         forcedStopReason = stopReason
         isFinalizingWithoutTools = true
         let sealedDraft = streamText
-        messages.append(ConversationMessage(role: "assistant", content: streamText, reasoningContent: responseReasoning))
+        messages.append(ConversationMessage(role: "assistant", content: modelInputProjection?.redacted(streamText) ?? streamText, reasoningContent: modelInputProjection?.redacted(responseReasoning) ?? responseReasoning))
         await sink?.agentRuntime(self, didCompleteAssistantStep: sealedDraft)
         // Record the sealed draft BEFORE the verification turn replaces
         // `streamText`. The confirm signal re-sends this exact text so
@@ -4918,6 +5007,7 @@ public actor FloeAgentRuntime {
                 // streams. Re-read readiness through the SAME filtered
                 // catalog, never the global executor directory. Discovery is
                 // runtime metadata only; executor/child policy stays intact.
+                await refreshCurrentToolAvailability()
                 discoverableDescriptors = runtimeVisibleCatalogDescriptors()
             }
             if call.toolName == ToolDiscovery.listName {
@@ -5281,6 +5371,31 @@ public actor FloeAgentRuntime {
                 routeStopped = true
                 noProgressDetected = true
             }
+            if call.toolName == UserAskTool.name,
+               let receipt = try? JSONDecoder().decode(UserQuestionToolReceipt.self, from: Data(result.outputSummary.utf8)) {
+                let sources = receipt.answers.filter { $0.source == .human }.compactMap { answer in
+                    answer.freeText.map { ModelUserInputSource(id: ModelUserInputProjection.questionSourceID(answer.questionID), text: $0) }
+                }
+                do {
+                    try await hydrateModelInputs?(sources)
+                    if let projection = modelInputProjection {
+                        var live = receipt
+                        for index in live.answers.indices where live.answers[index].source == .human {
+                            if let text = live.answers[index].freeText {
+                                live.answers[index].freeText = projection.liveText(for: ModelUserInputSource(
+                                    id: ModelUserInputProjection.questionSourceID(live.answers[index].questionID), text: text))
+                            }
+                        }
+                        if live != receipt, let bytes = try? JSONEncoder().encode(live) {
+                            result.ephemeralSensitiveOutput = String(decoding: bytes, as: UTF8.self)
+                        }
+                    }
+                } catch {
+                    result.status = .needsUser
+                    result.outputSummary = "The answer is saved but its credential is unavailable. Unlock or restore the existing credential before continuing."
+                    result.outputDigest = FloeDigest.sha256Hex(Data(result.outputSummary.utf8))
+                }
+            }
             // The typed sensitive body is model-visible for exactly the next
             // request. Move it to the transient map and strip it from the
             // settled result BEFORE classification, audit, capture, events,
@@ -5472,6 +5587,16 @@ public actor FloeAgentRuntime {
         for call: ToolCall
     ) -> ToolResult {
         var finalized = result
+        let safeSummary = modelInputProjection?.redacted(finalized.outputSummary) ?? finalized.outputSummary
+        if safeSummary != finalized.outputSummary {
+            finalized.outputSummary = safeSummary
+            finalized.outputDigest = FloeDigest.sha256Hex(Data(safeSummary.utf8))
+        }
+        let safeCapture = finalized.capturedOutput.map { modelInputProjection?.redacted($0) ?? $0 }
+        if safeCapture != finalized.capturedOutput {
+            finalized.outputDigest = FloeDigest.sha256Hex(Data(finalized.outputSummary.utf8))
+        }
+        finalized.capturedOutput = safeCapture
         var identity = Data(runID.uuidString.utf8)
         identity.append(Data(call.id.utf8))
         identity.append(Data(call.toolName.utf8))
@@ -5538,6 +5663,93 @@ public actor FloeAgentRuntime {
     /// replaced by an explicit omission marker, and every persisted tool-call
     /// argument set is scrubbed of Cookie/Authorization values. The live
     /// request (and its in-memory retry copy) is untouched.
+    private func modelInputDurableRequest(_ request: ProviderStreamRequest) -> ProviderStreamRequest {
+        guard let projection = modelInputProjection else { return request }
+        var safe = request
+        safe.messages = request.messages.map { (role: $0.role, content: projection.redacted($0.content)) }
+        safe.contentMessages = request.contentMessages.map { message in
+            var copy = message
+            copy.content = message.content.map { part in
+                if case .text(let text) = part { return .text(projection.redacted(text)) }
+                return part
+            }
+            copy.reasoningContent = copy.reasoningContent.map(projection.redacted)
+            return copy
+        }
+        safe.toolResults = request.toolResults.map { (callID: $0.callID, output: projection.redacted($0.output)) }
+        safe.pendingToolCalls = request.pendingToolCalls.map { call in
+            var copy = call; copy.argumentsJSON = projection.redactedJSON(copy.argumentsJSON); return copy
+        }
+        safe.replayedToolPairs = request.replayedToolPairs.map { pair in
+            var copy = pair
+            copy.call.argumentsJSON = projection.redactedJSON(copy.call.argumentsJSON)
+            copy.result.outputSummary = projection.redacted(copy.result.outputSummary)
+            copy.assistantReasoning = copy.assistantReasoning.map(projection.redacted)
+            return copy
+        }
+        safe.pendingAssistantReasoning = request.pendingAssistantReasoning.map(projection.redacted)
+        return safe
+    }
+
+    private func modelInputSources() -> [ModelUserInputSource] {
+        var sources = messages.filter { $0.role == "user" }.map { ModelUserInputSource(id: $0.id, text: $0.content) }
+        let calls = pendingToolCalls.isEmpty ? activeProviderPendingCalls : pendingToolCalls
+        let results = pendingToolCalls.isEmpty ? activeProviderPendingResults : pendingToolResults
+        let questionCalls = Set(calls.filter { $0.toolName == UserAskTool.name }.map(\.id))
+        for result in results where questionCalls.contains(result.callID) {
+            guard let receipt = try? JSONDecoder().decode(UserQuestionToolReceipt.self, from: Data(result.outputSummary.utf8)) else { continue }
+            sources += receipt.answers.filter { $0.source == .human }.compactMap { answer in
+                answer.freeText.map { ModelUserInputSource(id: ModelUserInputProjection.questionSourceID(answer.questionID), text: $0) }
+            }
+        }
+        return sources
+    }
+
+    private func modelInputWireMessages(_ input: [ProviderMessage]) -> [ProviderMessage] {
+        guard !didVerifyFinalAnswer, let projection = modelInputProjection else { return input }
+        let sources = messages.filter { $0.role == "user" }.map { ModelUserInputSource(id: $0.id, text: $0.content) }
+        return input.map { message in
+            guard message.role == "user" else { return message }
+            var copy = message
+            copy.content = message.content.map { part in
+                guard case .text(let text) = part, let source = sources.first(where: { $0.text == text }) else { return part }
+                return .text(projection.liveText(for: source))
+            }
+            return copy
+        }
+    }
+
+    private func modelInputWireRequest(_ request: ProviderStreamRequest) -> ProviderStreamRequest {
+        guard !didVerifyFinalAnswer, let projection = modelInputProjection else { return request }
+        var wire = request
+        let sources = messages.filter { $0.role == "user" }.map { ModelUserInputSource(id: $0.id, text: $0.content) }
+        wire.messages = request.messages.map { message in
+            guard message.role == "user", let source = sources.first(where: { $0.text == message.content }) else { return message }
+            return (role: message.role, content: projection.liveText(for: source))
+        }
+        wire.contentMessages = modelInputWireMessages(request.contentMessages)
+        let questionCalls = Set(request.pendingToolCalls.filter { $0.toolName == UserAskTool.name }.map(\.id))
+        wire.toolResults = request.toolResults.map { item in
+            guard questionCalls.contains(item.callID),
+                  let result = (pendingToolResults + activeProviderPendingResults).first(where: { $0.callID == item.callID }),
+                  var receipt = try? JSONDecoder().decode(UserQuestionToolReceipt.self, from: Data(result.outputSummary.utf8)) else { return item }
+            let safeReceipt = receipt
+            for index in receipt.answers.indices where receipt.answers[index].source == .human {
+                if let text = receipt.answers[index].freeText {
+                    receipt.answers[index].freeText = projection.liveText(for: ModelUserInputSource(
+                        id: ModelUserInputProjection.questionSourceID(receipt.answers[index].questionID), text: text))
+                }
+            }
+            guard receipt != safeReceipt else { return item }
+            let encoder = JSONEncoder()
+            encoder.outputFormatting = [.sortedKeys]
+            guard let bytes = try? encoder.encode(receipt) else { return item }
+            let notice = "Ephemeral sensitive tool output for this request only. It is not persisted, audited, captured or pageable; do not repeat it unless the user asks.\n"
+            return (callID: item.callID, output: notice + Self.modelVisibleToolResult(result, body: String(decoding: bytes, as: UTF8.self)))
+        }
+        return wire
+    }
+
     private static func persistedDispatchSnapshot(
         request: ProviderStreamRequest,
         runID: UUID,
@@ -6998,7 +7210,7 @@ public actor FloeAgentRuntime {
         let isConfirmation = didVerifyFinalAnswer
             && streamText.trimmingCharacters(in: .whitespacesAndNewlines).uppercased() == "CONFIRM"
         if !streamText.isEmpty, !isConfirmation {
-            messages.append(ConversationMessage(role: "assistant", content: streamText, reasoningContent: responseReasoning))
+            messages.append(ConversationMessage(role: "assistant", content: modelInputProjection?.redacted(streamText) ?? streamText, reasoningContent: modelInputProjection?.redacted(responseReasoning) ?? responseReasoning))
         }
         await releaseRunAuthorities()
         await transition(to: .completed(AgentState.CompletionInfo(
@@ -7064,7 +7276,7 @@ public actor FloeAgentRuntime {
         await emit(.completed(.init(stopReason: stopReason)))
         if !streamText.isEmpty {
             messages.append(ConversationMessage(
-                role: "assistant", content: streamText, reasoningContent: responseReasoning))
+                role: "assistant", content: modelInputProjection?.redacted(streamText) ?? streamText, reasoningContent: modelInputProjection?.redacted(responseReasoning) ?? responseReasoning))
         }
         await releaseRunAuthorities()
         do {
@@ -7153,7 +7365,7 @@ public actor FloeAgentRuntime {
             // The in-memory context was not modified; the original messages
             // remain the retry basis.
             logger.warning(
-                "contextHistoryFallback run=\(runID.uuidString) forced=\(force) error=\(error.localizedDescription)"
+                "contextHistoryFallback run=\(runID.uuidString) forced=\(force) error=\(modelInputProjection?.redacted(error.localizedDescription) ?? error.localizedDescription)"
             )
         }
     }
@@ -7178,6 +7390,20 @@ public actor FloeAgentRuntime {
             persistedState = .preparing(AgentState.PreparingInfo(
                 goal: messages.last(where: { $0.role == "user" })?.content ?? ""
             ))
+        case .waitingApproval(var info):
+            info.toolCall = ToolArgumentSanitizer.sanitizedForPersistence(info.toolCall)
+            info.toolCall.argumentsJSON = modelInputProjection?.redactedJSON(info.toolCall.argumentsJSON) ?? info.toolCall.argumentsJSON
+            info.reason = modelInputProjection?.redacted(info.reason) ?? info.reason
+            persistedState = .waitingApproval(info)
+        case .preparing(var info):
+            info.goal = modelInputProjection?.redacted(info.goal) ?? info.goal
+            persistedState = .preparing(info)
+        case .failed(var info):
+            info.message = modelInputProjection?.redacted(info.message) ?? info.message
+            persistedState = .failed(info)
+        case .checkpointed(var info):
+            info.reason = info.reason.map { modelInputProjection?.redacted($0) ?? $0 }
+            persistedState = .checkpointed(info)
         default:
             persistedState = state
         }
@@ -7186,7 +7412,12 @@ public actor FloeAgentRuntime {
         // as an assistant message loses the real continuation point and makes
         // the model repeat completed work. Committed assistant steps already
         // live in `messages`.
-        let checkpointMessages = messages
+        let checkpointMessages = messages.map { message in
+            var copy = message
+            copy.content = modelInputProjection?.redacted(copy.content) ?? copy.content
+            copy.reasoningContent = copy.reasoningContent.map { modelInputProjection?.redacted($0) ?? $0 }
+            return copy
+        }
         let iterationSnapshot = await budgetLedger.snapshot()
         // Pending results cross this boundary as the same bounded projection
         // the live request carried: the durable record must stay
@@ -7205,11 +7436,14 @@ public actor FloeAgentRuntime {
                 ToolArgumentSanitizer.containsSensitiveValues(
                     $0.argumentsJSON,
                     toolName: $0.toolName
-                )
+                ) || (modelInputProjection?.redactedJSON($0.argumentsJSON) ?? $0.argumentsJSON) != $0.argumentsJSON
             }
             .map(\.id)
-        let checkpointCalls = rawCheckpointCalls
-            .map(ToolArgumentSanitizer.sanitizedForPersistence)
+        let checkpointCalls = rawCheckpointCalls.map { call in
+            var copy = ToolArgumentSanitizer.sanitizedForPersistence(call)
+            copy.argumentsJSON = modelInputProjection?.redactedJSON(copy.argumentsJSON) ?? copy.argumentsJSON
+            return copy
+        }
         let sensitiveCallIDs = Array(
             Set(scrubbedCallIDs).union(sensitivePendingCallIDs)
                 .union(sensitiveOutputCallIDs)
@@ -7255,10 +7489,13 @@ public actor FloeAgentRuntime {
             },
             providerDispatchEnvelope: latestProviderDispatchEnvelope,
             providerDispatchRequest: latestProviderDispatchRequest,
-            pendingAssistantReasoning: checkpointReasoning,
+            pendingAssistantReasoning: checkpointReasoning.map { modelInputProjection?.redacted($0) ?? $0 },
             replayedToolPairs: replayableToolHistory.map { pair in
                 var copy = pair
                 copy.call = ToolArgumentSanitizer.sanitizedForPersistence(pair.call)
+                copy.call.argumentsJSON = modelInputProjection?.redactedJSON(copy.call.argumentsJSON) ?? copy.call.argumentsJSON
+                copy.result.outputSummary = modelInputProjection?.redacted(copy.result.outputSummary) ?? copy.result.outputSummary
+                copy.assistantReasoning = copy.assistantReasoning.map { modelInputProjection?.redacted($0) ?? $0 }
                 return copy
             },
             ownedSystemContextID: ownedSystemContextID,
@@ -7448,6 +7685,7 @@ public actor FloeAgentRuntime {
         latestProviderDispatchRequest = nil
         restoredProviderDispatchEnvelope = nil
         providerRetryRequest = nil
+        providerWireRetryRequest = nil
         activeProviderPendingCalls.removeAll(keepingCapacity: true)
         activeProviderPendingResults.removeAll(keepingCapacity: true)
         providerRetryCount = 0

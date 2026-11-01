@@ -69,8 +69,11 @@ if constants["max_commands"] < 4:
     problems.append("maxCommands=%d cannot run the 4-way overlap check" % constants["max_commands"])
 if constants["max_sessions"] < 2:
     problems.append("maxSessions=%d cannot open the 2 PTY sessions" % constants["max_sessions"])
+if not pipeline_contract.caps_env_field(source):
+    problems.append("runner source does not emit the additive env=1 CAPS field")
 if problems:
     raise SystemExit("build_runner: " + "; ".join(problems))
+constants["env"] = 1 if pipeline_contract.caps_env_field(source) else 0
 with open(sys.argv[2], "w", encoding="utf-8") as handle:
     json.dump(constants, handle, indent=2)
     handle.write("\n")
@@ -79,8 +82,13 @@ CONSTANTS_PY
 runner_version="$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["runner_version"])' \
     "$out/runner-constants.txt")"
 
-make -C "$runner_dir" riscv64 >"$out/runner-build.log" 2>&1
-cp "$runner_dir/floe-exec-riscv64" "$out/floe-exec-riscv64"
+# Always compile the exact source into the requested output directory. Reusing
+# an ignored source-tree binary based on timestamps cannot prove its headers
+# match runner-source-sha256.txt, and output paths may contain spaces.
+riscv64-linux-gnu-gcc -std=gnu11 -O2 -Wall -Wextra -Werror -D_GNU_SOURCE \
+    -static -I"$runner_dir" \
+    -o "$out/floe-exec-riscv64" "$runner_dir/floe_exec.c" \
+    >"$out/runner-build.log" 2>&1
 riscv64-linux-gnu-gcc -std=gnu11 -O2 -Wall -Wextra -Werror -D_GNU_SOURCE \
     -static -I"$runner_dir" \
     -c -o "$out/floe-exec-riscv64.o" "$runner_dir/floe_exec.c" \

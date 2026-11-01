@@ -137,6 +137,10 @@ def main():
     caps_payload = (verdict.get("capsPayload") or "").strip()
     caps = pipeline_contract.parse_caps(caps_payload)
     require(caps is not None, "verdict records a verbatim CAPS payload: %r" % caps_payload)
+    if caps is not None:
+        # The manifest records the stable runner-owned payload, not the host's
+        # HELLO echo.
+        caps_payload = caps["payload"]
     # A runner-only update whose guest cannot reach the network is not
     # shippable: the component's whole purpose is a usable Linux environment
     # (apt/pip/npm). The guest's own bounded DNS probe decides `up`; a
@@ -146,6 +150,8 @@ def main():
                "verdict CAPS payload carries a first-boot net= state"):
         require(caps.get("net") == "up",
                 "guest reports net=up (its bounded DNS probe answered): %r" % caps_payload)
+    require(caps is not None and caps.get("env") == "1",
+            "verdict CAPS payload advertises the additive env=1 capability: %r" % caps_payload)
     if failures:
         return 1
 
@@ -182,12 +188,14 @@ def main():
                 runner_source = handle.read()
         require(pipeline_contract.caps_net_field(runner_source),
                 "runner source emits the first-boot net= capability field")
+        require(pipeline_contract.caps_env_field(runner_source),
+                "runner source emits the additive env=1 capability field")
         source_caps = pipeline_contract.expected_caps({
             "runner_version": constants.get("runner_version", ""),
             "protocol": constants.get("protocol", 0),
             "max_commands": constants.get("max_commands", 0),
             "max_sessions": constants.get("max_sessions", 0)},
-            net_status="up")
+            net_status="up", env_status="1")
         require(source_caps == caps_payload,
                 "guest CAPS payload %r equals the runner source constants %r" % (caps_payload, source_caps))
         require(caps.get("protocol") == 3, "guest CAPS payload says protocol=3")

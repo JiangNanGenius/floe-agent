@@ -64,7 +64,7 @@ final class MCPServiceCreationAppBackend: MCPServiceCreationBackend {
         }
         return await environment.environmentRegistry.all().filter {
             $0.kind == .project && $0.ownerID == owner && $0.state == .active
-                && !$0.requiresRebuild && ($0.executionBackend == .linuxVM || $0.executionBackend == .macBridge)
+                && !$0.requiresRebuild && ($0.executionBackend == .linuxVM || ($0.executionBackend == .macBridge && LocalBridgePlatform.current.supportsMacBridge))
         }.map { MCPServiceCreationOption(id: $0.id, title: ($0.name ?? FloeL10n.l("skills.mcp.creation.project_environment")) + ($0.executionBackend == .macBridge ? " · Mac" : " · Linux")) }
     }
 
@@ -489,6 +489,9 @@ final class MCPServiceCreationAppBackend: MCPServiceCreationBackend {
               selected.kind == .project, selected.ownerID == owner,
               selected.state == .active, !selected.requiresRebuild,
               selected.executionBackend == .linuxVM || selected.executionBackend == .macBridge else { throw ownershipError() }
+        if selected.executionBackend == .macBridge, !LocalBridgePlatform.current.supportsMacBridge {
+            throw FloeError.invalidConfiguration(String(localized: "execution.location.unavailable_on_device"))
+        }
         if selected.executionBackend == .macBridge, !(await MacBridgeClient.shared.isConnected()) {
             throw FloeError.invalidConfiguration(String(localized: "mac.bridge.disconnected"))
         }

@@ -104,6 +104,218 @@ import Foundation
 import FloeCore
 import FloeTools
 
+// MARK: - Per-process sensitive environment
+//
+// General Skill secrets need a delivery channel that is distinct from
+// `ShellRunRequest.environment`: the ordinary dictionary is exported as a
+// shell preamble (argv text and, for large scripts, a staged workspace
+// file), which must never carry a credential. This type is the native-only
+// request payload for exactly one guest child:
+//   * it is never built from model tool arguments;
+//   * it is never rendered into a shell command, staged file, stdin, job
+//     record, checkpoint or log;
+//   * the guest runner merges it into that child's envp only, so PID 1 and
+//     concurrent tasks keep their own environment.
+// Values are bounded and validated before any frame is written. All error
+// text names the variable, never the value.
+
+public struct SensitiveProcessEnvironment: Sendable, Equatable {
+    public struct Entry: Sendable, Equatable {
+        public let name: String
+        public let value: String
+
+        public init(name: String, value: String) {
+            self.name = name
+            self.value = value
+        }
+    }
+
+    /// Mirrors the guest runner's bounds (floe_exec.c MAX_ENV_*): the host
+    /// never frames a block the pinned runner would reject, and the runner
+    /// independently rejects anything above them.
+    public static let maximumEntries = 64
+    public static let maximumNameUTF8Bytes = 128
+    public static let maximumValueUTF8Bytes = 32 * 1024
+    public static let maximumTotalUTF8Bytes = 64 * 1024
+
+    public let entries: [Entry]
+
+    public init(entries: [Entry]) throws {
+        guard entries.count <= Self.maximumEntries else {
+            throw SensitiveProcessEnvironmentError.tooManyEntries(
+                count: entries.count, maximum: Self.maximumEntries
+            )
+        }
+        var seen = Set<String>()
+        var total = 0
+        for entry in entries {
+            let nameBytes = entry.name.utf8.count
+            let valueBytes = entry.value.utf8.count
+            guard !entry.name.isEmpty else {
+                throw SensitiveProcessEnvironmentError.emptyName
+            }
+            guard nameBytes <= Self.maximumNameUTF8Bytes else {
+                throw SensitiveProcessEnvironmentError.nameTooLong(
+                    name: entry.name, bytes: nameBytes, maximum: Self.maximumNameUTF8Bytes
+                )
+            }
+            guard entry.name.range(of: "^[A-Za-z_][A-Za-z0-9_]*$", options: .regularExpression) != nil else {
+                throw SensitiveProcessEnvironmentError.invalidName(entry.name)
+            }
+            guard !entry.value.utf8.contains(0) else {
+                throw SensitiveProcessEnvironmentError.valueContainsNUL(name: entry.name)
+            }
+            guard valueBytes <= Self.maximumValueUTF8Bytes else {
+                throw SensitiveProcessEnvironmentError.valueTooLong(
+                    name: entry.name, bytes: valueBytes, maximum: Self.maximumValueUTF8Bytes
+                )
+            }
+            guard seen.insert(entry.name).inserted else {
+                throw SensitiveProcessEnvironmentError.duplicateName(entry.name)
+            }
+            total += nameBytes + 1 + valueBytes
+            guard total <= Self.maximumTotalUTF8Bytes else {
+                throw SensitiveProcessEnvironmentError.totalTooLarge(
+                    bytes: total, maximum: Self.maximumTotalUTF8Bytes
+                )
+            }
+        }
+        self.entries = entries
+    }
+
+    public init(_ variables: [String: String]) throws {
+        try self.init(entries: variables
+            .map { Entry(name: $0.key, value: $0.value) }
+            .sorted { $0.name < $1.name })
+    }
+
+    public var isEmpty: Bool { entries.isEmpty }
+    public var count: Int { entries.count }
+
+    /// Variable names only (safe for diagnostics and field-level receipts).
+    public var names: [String] { entries.map(\.name) }
+
+    /// A copy for a backend that needs the full environment dictionary. Do
+    /// not persist or log the result; prefer `redactor` for output handling.
+    public var valuesByName: [String: String] {
+        Dictionary(uniqueKeysWithValues: entries.map { ($0.name, $0.value) })
+    }
+
+    /// Exact envBlock size without building a second copy of the values.
+    var wireByteCount: Int {
+        entries.reduce(4) { total, entry in
+            total + 4 + entry.name.utf8.count + 4 + entry.value.utf8.count
+        }
+    }
+
+    /// Framing-order representation consumed by `LinuxGuestFraming` (kept
+    /// primitive there so the wire encoder has no dependency on this type).
+    var wireEntries: [(name: String, value: String)] {
+        entries.map { (name: $0.name, value: $0.value) }
+    }
+
+    /// Rejects a sensitive name that the same request also sets as an
+    /// ordinary variable: the preamble and the child envp would disagree.
+    public func validateDisjoint(from ordinary: [String: String]) throws {
+        let names = Set(entries.map(\.name))
+        let overlap = ordinary.keys.filter { names.contains($0) }.sorted()
+        guard overlap.isEmpty else {
+            throw SensitiveProcessEnvironmentError.conflictsWithOrdinaryEnvironment(overlap)
+        }
+    }
+}
+
+extension SensitiveProcessEnvironment: CustomStringConvertible, CustomDebugStringConvertible {
+    /// Deliberately redacted: values never appear in an interpolation,
+    /// logger call, diagnostic dump or crash description.
+    public var description: String {
+        "SensitiveProcessEnvironment(entries: \(entries.count))"
+    }
+    public var debugDescription: String { description }
+}
+
+public enum SensitiveProcessEnvironmentError: Error, LocalizedError, Sendable, Equatable {
+    case emptyName
+    case invalidName(String)
+    case nameTooLong(name: String, bytes: Int, maximum: Int)
+    case valueContainsNUL(name: String)
+    case valueTooLong(name: String, bytes: Int, maximum: Int)
+    case duplicateName(String)
+    case tooManyEntries(count: Int, maximum: Int)
+    case totalTooLarge(bytes: Int, maximum: Int)
+    case conflictsWithOrdinaryEnvironment([String])
+
+    public var errorDescription: String? {
+        switch self {
+        case .emptyName:
+            return "A sensitive environment variable name is empty; use POSIX names such as OPENAI_API_KEY"
+        case .invalidName(let name):
+            return "Sensitive environment variable '\(name)' is not a POSIX name (letters, digits and underscore, not starting with a digit)"
+        case .nameTooLong(let name, let bytes, let maximum):
+            return "Sensitive environment variable '\(name)' is \(bytes) bytes; the name limit is \(maximum) bytes"
+        case .valueContainsNUL(let name):
+            return "Sensitive environment variable '\(name)' contains a NUL byte, which a process environment cannot carry"
+        case .valueTooLong(let name, let bytes, let maximum):
+            return "Sensitive environment variable '\(name)' is \(bytes) bytes; the per-value limit is \(maximum) bytes"
+        case .duplicateName(let name):
+            return "Sensitive environment variable '\(name)' is set more than once"
+        case .tooManyEntries(let count, let maximum):
+            return "\(count) sensitive environment variables were requested; the limit is \(maximum)"
+        case .totalTooLarge(let bytes, let maximum):
+            return "Sensitive environment values total \(bytes) bytes; the limit is \(maximum) bytes"
+        case .conflictsWithOrdinaryEnvironment(let names):
+            return "These variables are set twice (ordinary and sensitive): \(names.joined(separator: ", "))"
+        }
+    }
+}
+
+/// One scoped delivery attempt. The shell backend creates a ticket, runs the
+/// production `LinuxCommandRunning.run`/`openSession` call inside
+/// `SensitiveProcessEnvironmentCarrier.$pending.withValue`, and checks
+/// `wasConsumed` afterwards. A backend that does not implement this channel
+/// cannot consume the ticket, so the caller fails instead of silently
+/// running the command without its secrets.
+public final class SensitiveProcessEnvironmentTicket: @unchecked Sendable {
+    public let environment: SensitiveProcessEnvironment
+    private let lock = NSLock()
+    private var consumed = false
+
+    public init(_ environment: SensitiveProcessEnvironment) {
+        self.environment = environment
+    }
+
+    /// Only the Linux guest command channel calls this. The first call wins;
+    /// a second consumer in the same task gets nil instead of a duplicate
+    /// delivery.
+    func consume() -> SensitiveProcessEnvironment? {
+        lock.lock()
+        defer { lock.unlock() }
+        guard !consumed else { return nil }
+        consumed = true
+        return environment
+    }
+
+    public var wasConsumed: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return consumed
+    }
+}
+
+/// Task-scoped carrier for the one production hop that still takes the
+/// ordinary `LinuxCommandRunning` signature (shell backend → TinyEMU service
+/// → registry → this channel). Task-local values are per command task, so
+/// two concurrent children never share a ticket.
+public enum SensitiveProcessEnvironmentCarrier {
+    @TaskLocal public static var pending: SensitiveProcessEnvironmentTicket?
+}
+
+/// Marker adopted by the production Linux service that routes through
+/// `LinuxGuestCommandChannel`. A `LinuxCommandRunning` backend that does not
+/// adopt it is refused by `LinuxGuestShellBackend` before any command runs,
+/// so a per-process secret can never be dropped silently.
+public protocol LinuxGuestSensitiveEnvironmentDelivering: Sendable {}
+
 enum LinuxGuestFraming {
     static let markerByte: UInt8 = 0x1e
     /// Guest→host frame names the router accepts. Anything else after a
@@ -155,6 +367,53 @@ enum LinuxGuestFraming {
         let fields: [String] = [workingDirectory ?? "", standardInput ?? ""] + argv
         appendUInt32(UInt32(fields.count), to: &payload)
         for field in fields {
+            let bytes = Data(field.utf8)
+            appendUInt32(UInt32(bytes.count), to: &payload)
+            payload.append(bytes)
+        }
+        return payload
+    }
+
+    /// Wire block for the sensitive environment field. The layout is
+    /// `u32 entryCount` then `u32 nameBytes + name`, `u32 valueBytes + value`.
+    /// Validation happens in `SensitiveProcessEnvironment`; this encoder is
+    /// used only after a successful validation and never expands a value into
+    /// a string that could be logged.
+    static func environmentBlock(entries: [(name: String, value: String)]) -> Data {
+        var block = Data()
+        appendUInt32(UInt32(entries.count), to: &block)
+        for entry in entries {
+            let name = Data(entry.name.utf8)
+            let value = Data(entry.value.utf8)
+            appendUInt32(UInt32(name.count), to: &block)
+            block.append(name)
+            appendUInt32(UInt32(value.count), to: &block)
+            block.append(value)
+        }
+        return block
+    }
+
+    /// EXECENV payload `[cwd, stdin, envBlock, argv...]`. A nil or empty
+    /// environment is the ordinary EXEC payload; there is deliberately no
+    /// mixed form in which env bytes land in a plain field.
+    static func payload(
+        of argv: [String],
+        workingDirectory: String?,
+        standardInput: String?,
+        environmentEntries: [(name: String, value: String)]?
+    ) -> Data {
+        guard let environmentEntries, !environmentEntries.isEmpty else {
+            return payload(of: argv, workingDirectory: workingDirectory, standardInput: standardInput)
+        }
+        var payload = Data()
+        let environmentBytes = environmentBlock(entries: environmentEntries)
+        let fields: [String] = [workingDirectory ?? "", standardInput ?? ""] + argv
+        appendUInt32(UInt32(fields.count + 1), to: &payload)
+        for (index, field) in fields.enumerated() {
+            if index == 2 {
+                appendUInt32(UInt32(environmentBytes.count), to: &payload)
+                payload.append(environmentBytes)
+            }
             let bytes = Data(field.utf8)
             appendUInt32(UInt32(bytes.count), to: &payload)
             payload.append(bytes)
@@ -233,6 +492,42 @@ enum LinuxGuestFraming {
             payload.append(bytes)
         }
         return payload
+    }
+
+    /// OPENENV payload `[mode, cwd, columns, rows, envBlock, argv...]`. A nil
+    /// or empty environment is the ordinary OPEN payload.
+    static func sessionPayload(
+        argv: [String],
+        workingDirectory: String?,
+        columns: Int,
+        rows: Int,
+        environmentEntries: [(name: String, value: String)]?
+    ) -> Data {
+        guard let environmentEntries, !environmentEntries.isEmpty else {
+            return sessionPayload(argv: argv, workingDirectory: workingDirectory, columns: columns, rows: rows)
+        }
+        var payload = Data()
+        let environmentBytes = environmentBlock(entries: environmentEntries)
+        let fields: [String] = ["pty", workingDirectory ?? "", "\(max(1, columns))", "\(max(1, rows))"] + argv
+        appendUInt32(UInt32(fields.count + 1), to: &payload)
+        for (index, field) in fields.enumerated() {
+            if index == 4 {
+                appendUInt32(UInt32(environmentBytes.count), to: &payload)
+                payload.append(environmentBytes)
+            }
+            let bytes = Data(field.utf8)
+            appendUInt32(UInt32(bytes.count), to: &payload)
+            payload.append(bytes)
+        }
+        return payload
+    }
+
+    /// The runner advertises `env=1` only when it implements EXECENV/OPENENV.
+    /// An older runner's CAPS omits it, so a sensitive request fails closed
+    /// instead of falling back to an inline export.
+    static func supportsEnvironmentDelivery(capabilities: String?) -> Bool {
+        guard let capabilities else { return false }
+        return capabilities.split(separator: " ").contains("env=1")
     }
 
     static func sessionInputLine(sessionID: String, bytes: Data) -> Data {
@@ -1254,6 +1549,9 @@ public actor LinuxGuestCommandChannel {
     private var stream: AsyncStream<Data>?
     private var consoleReader: Task<Void, Never>?
     private var negotiated = false
+    /// Last CAPS payload accepted for this boot. Used only to gate the
+    /// sensitive environment frame (`env=1`); it carries no secret.
+    private var negotiatedCapabilities: String?
     /// Live per-token streams. The router writes, token owners read.
     private var tokenStreams: [String: LinuxGuestTokenStream] = [:]
     /// Console byte residue between router reads (frames split across chunks).
@@ -1514,6 +1812,7 @@ public actor LinuxGuestCommandChannel {
                         found: capabilities
                     )
                 }
+                negotiatedCapabilities = capabilities
                 return capabilities
             }
         }
@@ -1622,7 +1921,15 @@ public actor LinuxGuestCommandChannel {
                 found: capabilities
             )
         }
+        negotiatedCapabilities = capabilities
         negotiated = true
+    }
+
+    /// True when the negotiated runner advertised per-process environment
+    /// delivery (`env=1`). A legacy serial channel never answers CAPS, so it
+    /// stays false and sensitive requests fail closed.
+    public var supportsPerProcessEnvironment: Bool {
+        !legacySerialMode && LinuxGuestFraming.supportsEnvironmentDelivery(capabilities: negotiatedCapabilities)
     }
 
     // MARK: token routing
@@ -2072,6 +2379,55 @@ public actor LinuxGuestCommandChannel {
         maxOutputBytes: Int? = nil,
         cancellation: CancellationToken? = nil
     ) async throws -> LinuxCommandResult {
+        // The shell backend scopes a ticket around the ordinary
+        // LinuxCommandRunning call (service → registry → here). A backend
+        // that never reaches this channel leaves it unconsumed, and the
+        // shell backend fails instead of running without the secrets.
+        let sensitive = SensitiveProcessEnvironmentCarrier.pending?.consume()
+        return try await runInternal(
+            argv: argv,
+            workingDirectory: workingDirectory,
+            standardInput: standardInput,
+            sensitiveEnvironment: sensitive,
+            deadline: deadline,
+            maxOutputBytes: maxOutputBytes,
+            cancellation: cancellation
+        )
+    }
+
+    /// Native-only EXEC entry for one target child's environment. Callers
+    /// must have resolved an authorized scoped secret handle; this is not a
+    /// model tool surface and the values are never part of a command string.
+    public func run(
+        argv: [String],
+        workingDirectory: String? = nil,
+        standardInput: String? = nil,
+        sensitiveEnvironment: SensitiveProcessEnvironment,
+        deadline: ShellExecutionDeadline,
+        maxOutputBytes: Int? = nil,
+        cancellation: CancellationToken? = nil
+    ) async throws -> LinuxCommandResult {
+        try await runInternal(
+            argv: argv,
+            workingDirectory: workingDirectory,
+            standardInput: standardInput,
+            sensitiveEnvironment: sensitiveEnvironment,
+            deadline: deadline,
+            maxOutputBytes: maxOutputBytes,
+            cancellation: cancellation
+        )
+    }
+
+    private func runInternal(
+        argv: [String],
+        workingDirectory: String?,
+        standardInput: String?,
+        sensitiveEnvironment: SensitiveProcessEnvironment?,
+        deadline: ShellExecutionDeadline,
+        maxOutputBytes: Int?,
+        cancellation: CancellationToken?
+    ) async throws -> LinuxCommandResult {
+        let sensitive = (sensitiveEnvironment?.isEmpty == false) ? sensitiveEnvironment : nil
         let breadcrumbID = UUID()
         var breadcrumbCompleted = false
         ExecutionBreadcrumbs.shared.record(.shell, .began, id: breadcrumbID)
@@ -2103,6 +2459,13 @@ public actor LinuxGuestCommandChannel {
         }
         try await ensureNegotiated()
         ExecutionBreadcrumbs.shared.record(.shell, .negotiated, id: breadcrumbID)
+        if sensitive != nil {
+            guard LinuxGuestFraming.supportsEnvironmentDelivery(capabilities: negotiatedCapabilities) else {
+                throw LinuxGuestError.perProcessEnvironmentUnsupported(
+                    found: legacySerialMode ? nil : negotiatedCapabilities
+                )
+            }
+        }
 
         let token = breadcrumbID.uuidString
         let tokenStream = LinuxGuestTokenStream()
@@ -2136,10 +2499,21 @@ public actor LinuxGuestCommandChannel {
                 "command and working directory exceed the \(limits.maxCommandBytes)-byte guest command envelope; the shell backend stages oversized script bodies"
             )
         }
+        if let sensitive {
+            // The environment has its own bound: it is not command text and
+            // must not be blamed on (or hidden by) the script-size policy.
+            let environmentBytes = sensitive.wireByteCount
+            guard environmentBytes <= limits.maxSensitiveEnvironmentBytes else {
+                throw LinuxGuestError.invalidConfiguration(
+                    "sensitive environment payload is \(environmentBytes) bytes; the limit is \(limits.maxSensitiveEnvironmentBytes) bytes"
+                )
+            }
+        }
         let payload = LinuxGuestFraming.payload(
             of: argv,
             workingDirectory: workingDirectory,
-            standardInput: standardInput
+            standardInput: standardInput,
+            environmentEntries: sensitive?.wireEntries
         )
         guard payload.count <= limits.maxEnvelopeBytes else {
             throw LinuxGuestError.invalidConfiguration(
@@ -2218,7 +2592,11 @@ public actor LinuxGuestCommandChannel {
         }
 
         ExecutionBreadcrumbs.shared.record(.shell, .sending, id: breadcrumbID)
-        try await send(LinuxGuestFraming.payloadFrames(name: "EXEC", token: token, payload: payload))
+        try await send(LinuxGuestFraming.payloadFrames(
+            name: sensitive == nil ? "EXEC" : "EXECENV",
+            token: token,
+            payload: payload
+        ))
         trace(.sent, token: token)
 
         ExecutionBreadcrumbs.shared.record(.shell, .awaitingReply, id: breadcrumbID)
@@ -2469,6 +2847,47 @@ public actor LinuxGuestCommandChannel {
         columns: Int,
         rows: Int
     ) async throws -> LinuxGuestInteractiveSession {
+        let sensitive = SensitiveProcessEnvironmentCarrier.pending?.consume()
+        return try await openSessionInternal(
+            sessionID: sessionID,
+            argv: argv,
+            workingDirectory: workingDirectory,
+            sensitiveEnvironment: sensitive,
+            columns: columns,
+            rows: rows
+        )
+    }
+
+    /// Native-only PTY entry with a per-process environment. The opened
+    /// shell and everything it spawns sees the values in its own envp; the
+    /// values are never part of the OPEN command string.
+    public func openSession(
+        sessionID: String,
+        argv: [String],
+        workingDirectory: String?,
+        sensitiveEnvironment: SensitiveProcessEnvironment,
+        columns: Int,
+        rows: Int
+    ) async throws -> LinuxGuestInteractiveSession {
+        try await openSessionInternal(
+            sessionID: sessionID,
+            argv: argv,
+            workingDirectory: workingDirectory,
+            sensitiveEnvironment: sensitiveEnvironment,
+            columns: columns,
+            rows: rows
+        )
+    }
+
+    private func openSessionInternal(
+        sessionID: String,
+        argv: [String],
+        workingDirectory: String?,
+        sensitiveEnvironment: SensitiveProcessEnvironment?,
+        columns: Int,
+        rows: Int
+    ) async throws -> LinuxGuestInteractiveSession {
+        let sensitive = (sensitiveEnvironment?.isEmpty == false) ? sensitiveEnvironment : nil
         guard !argv.isEmpty else {
             throw LinuxGuestError.invalidConfiguration("session argv must not be empty")
         }
@@ -2485,21 +2904,50 @@ public actor LinuxGuestCommandChannel {
             throw LinuxGuestError.invalidConfiguration("too many guest sessions in flight (max \(limits.maxConcurrentSessions))")
         }
         try await ensureNegotiated()
+        if sensitive != nil {
+            guard LinuxGuestFraming.supportsEnvironmentDelivery(capabilities: negotiatedCapabilities) else {
+                throw LinuxGuestError.perProcessEnvironmentUnsupported(
+                    found: legacySerialMode ? nil : negotiatedCapabilities
+                )
+            }
+        }
 
         let payload = LinuxGuestFraming.sessionPayload(
             argv: argv,
             workingDirectory: workingDirectory,
             columns: columns,
-            rows: rows
+            rows: rows,
+            environmentEntries: sensitive?.wireEntries
         )
         // A session envelope above the command bound would be refused by the
         // guest assembler without ever producing a BEGIN: the host must fail
         // closed here instead of leaving a session that only times out.
         // Interactive input itself is unbounded per line through
-        // shell.exchange; only the start command travels in OPEN.
-        guard payload.count <= limits.maxCommandBytes else {
+        // shell.exchange; only the start command travels in OPEN. The
+        // sensitive environment is a separate bounded field, never counted
+        // as command text.
+        let commandPayload = LinuxGuestFraming.sessionPayload(
+            argv: argv,
+            workingDirectory: workingDirectory,
+            columns: columns,
+            rows: rows
+        )
+        guard commandPayload.count <= limits.maxCommandBytes else {
             throw LinuxGuestError.invalidConfiguration(
                 "session start command exceeds the \(limits.maxCommandBytes)-byte guest command envelope; open the session with a short command and continue with shell.exchange input, or run the long script body through exec.shell, which stages it as a script file"
+            )
+        }
+        if let sensitive {
+            let environmentBytes = sensitive.wireByteCount
+            guard environmentBytes <= limits.maxSensitiveEnvironmentBytes else {
+                throw LinuxGuestError.invalidConfiguration(
+                    "sensitive environment payload is \(environmentBytes) bytes; the limit is \(limits.maxSensitiveEnvironmentBytes) bytes"
+                )
+            }
+        }
+        guard payload.count <= limits.maxEnvelopeBytes else {
+            throw LinuxGuestError.invalidConfiguration(
+                "session start command plus the sensitive environment exceeds the \(limits.maxEnvelopeBytes)-byte guest envelope"
             )
         }
 
@@ -2517,7 +2965,11 @@ public actor LinuxGuestCommandChannel {
         sessions[sessionID] = session
 
         do {
-            try await send(LinuxGuestFraming.payloadHeader("OPEN", token: sessionID, payload: payload))
+            try await send(LinuxGuestFraming.payloadHeader(
+                sensitive == nil ? "OPEN" : "OPENENV",
+                token: sessionID,
+                payload: payload
+            ))
         } catch {
             unregisterToken(sessionID)
             sessions.removeValue(forKey: sessionID)
@@ -2588,6 +3040,7 @@ public actor LinuxGuestCommandChannel {
         }
         legacySerialMode = true
         negotiated = false
+        negotiatedCapabilities = nil
     }
 
     /// Returns to protocol-3 mode after the guest rebooted into the new
@@ -2605,6 +3058,7 @@ public actor LinuxGuestCommandChannel {
         routerPending.removeAll(keepingCapacity: false)
         sectionOwner = nil
         routerDiagnosticsState = RouterDiagnostics()
+        negotiatedCapabilities = nil
         // Reboot boundary: host work captured before the reset belongs to the
         // old boot's tokens and its reply must never be written into the new
         // runner's console. The generation bump makes a completion that is

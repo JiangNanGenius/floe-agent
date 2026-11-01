@@ -128,6 +128,7 @@ public actor ConversationRunService {
     private let runningInputStore: (any RunningInputStore)?
     private let intelligenceStore: SQLiteIntelligenceStore?
     private let secretForRedaction: String?
+    private let modelInputProjection: ModelUserInputProjection?
     private let streamedTextLimitBytes: Int
     /// Whether the selected model advertises native structured tool calling.
     /// When false the run-context system message omits the tool list so the
@@ -345,6 +346,8 @@ public actor ConversationRunService {
         checkpointStore: (any CheckpointStore)? = nil,
         contextEngine: (any ContextEngine)? = HybridContextEngine(),
         toolCallNormalizer: (@Sendable (ToolCall) async throws -> ToolCall)? = nil,
+        modelInputProjection: ModelUserInputProjection? = nil,
+        hydrateModelInputs: (@Sendable ([ModelUserInputSource]) async throws -> Void)? = nil,
         toolVisualEvidenceResolver: (@Sendable ([ConversationImagePart], String) async -> [ConversationMessage])? = nil,
         intelligenceStore: SQLiteIntelligenceStore? = nil,
         discoveryStore: SQLiteConversationDiscoveryStore? = nil,
@@ -372,6 +375,7 @@ public actor ConversationRunService {
         self.currentUserImages = currentUserImages
         self.resourceAccessCleanup = resourceAccessCleanup
         self.secretForRedaction = credentials.apiKey
+        self.modelInputProjection = modelInputProjection
         self.streamedTextLimitBytes = configuration.model.limits.clientOutputSafetyBytes
         self.modelSupportsTools = configuration.toolsEnabled && configuration.model.capabilities.contains(.tools)
         self.usesLocalPrompt = configuration.provider.kind == .local
@@ -418,6 +422,8 @@ public actor ConversationRunService {
             discoveryStore: discoveryStore,
             contextEngine: contextEngine,
             toolCallNormalizer: toolCallNormalizer,
+            modelInputProjection: modelInputProjection,
+            hydrateModelInputs: hydrateModelInputs,
             liveSystemContext: refreshContext,
             toolVisualEvidenceResolver: toolVisualEvidenceResolver,
             sink: forwarder,
@@ -628,14 +634,14 @@ public actor ConversationRunService {
             chatFastMode: chatFastMode,
             temporaryReadOnly: temporaryReadOnly
         ))
-        try await runtime.start(goal: goal, images: currentUserImages)
+        try await runtime.start(goal: goal, images: currentUserImages, userMessageID: userMessageID)
     }
 
     /// Starts provider/tool execution for a launch that has already been
     /// committed by `RunLaunchStore`. This method deliberately performs no
     /// initial run/message writes: provider I/O can never race a missing
     /// conversation foreign key, and retries cannot duplicate the user turn.
-    public func startPrepared(goal: String) async throws {
+    public func startPrepared(goal: String, userMessageID: UUID = UUID()) async throws {
         logger.info("Run \(runID.uuidString) starting from prepared launch")
         if conversationMode == .goal {
             guard await ensureDurableGoal(objective: goal) else {
@@ -655,7 +661,7 @@ public actor ConversationRunService {
             chatFastMode: chatFastMode,
             temporaryReadOnly: temporaryReadOnly
         ))
-        try await runtime.start(goal: goal, images: currentUserImages)
+        try await runtime.start(goal: goal, images: currentUserImages, userMessageID: userMessageID)
     }
 
     /// Restores the exact original run without appending another user turn.
@@ -1300,13 +1306,14 @@ public actor ConversationRunService {
                 scheduleRecoveryPoint()
             }
         case .toolRequest(let call):
+            let safeArguments = modelInputProjection?.redactedJSON(call.argumentsJSON) ?? call.argumentsJSON
             await flushAssistantSegment()
             await flushReasoning()
             logger.info("toolRequested run=\(runID.uuidString) tool=\(call.toolName) callID=\(call.id)")
             if conversationMode == .plan, call.toolName == PlanSubmission.toolName,
                let submission = try? JSONDecoder().decode(
                    PlanSubmission.self,
-                   from: call.argumentsJSON
+                   from: safeArguments
                 ), submission.validationErrors.isEmpty {
                 receivedStructuredPlan = true
                 let prior: PlanDraft?
@@ -1317,7 +1324,7 @@ public actor ConversationRunService {
                 }
                 var draft = submission.draft(conversationID: conversationID, prior: prior)
                 draft.digest = Self.stableTextDigest(
-                    String(decoding: call.argumentsJSON, as: UTF8.self)
+                    String(decoding: safeArguments, as: UTF8.self)
                 )
                 if await savePlanReliably(draft) {
                     eventChannel.yield(.planChanged(PlanSnapshot(
@@ -1333,7 +1340,7 @@ public actor ConversationRunService {
             // Truncating raw JSON first could cut the value in half, leave an
             // object unparsable, and make the fallback miss a nested cookie.
             let fullySanitized = ToolArgumentSanitizer.redactedArgumentsJSON(
-                call.argumentsJSON,
+                safeArguments,
                 toolName: call.toolName
             )
             let boundedInput = Data(fullySanitized.prefix(32 * 1_024))
@@ -1454,10 +1461,9 @@ public actor ConversationRunService {
             if ![.network, .server, .rateLimited].contains(error.kind) {
                 await flushAssistantSegment()
             }
-            let redactedMessage = SecretRedactor.redact(
-                error.providerMessage,
-                secret: secretForRedaction
-            )
+            let redactedMessage = modelInputProjection?.redacted(SecretRedactor.redact(
+                error.providerMessage, secret: secretForRedaction
+            )) ?? SecretRedactor.redact(error.providerMessage, secret: secretForRedaction)
             logger.error(
                 "Run \(runID.uuidString) provider error kind=\(error.kind.rawValue) httpStatus=\(error.httpStatus.map(String.init) ?? "none") message=\(String(redactedMessage.prefix(500)))"
             )
@@ -1685,7 +1691,7 @@ public actor ConversationRunService {
         _ = try? await runStore.appendEvent(
             runID: runID,
             kind: .reasoning,
-            payloadJSON: Self.jsonPayload(["text": text])
+            payloadJSON: Self.jsonPayload(["text": modelInputProjection?.redacted(text) ?? text])
         )
     }
 
@@ -1706,7 +1712,7 @@ public actor ConversationRunService {
                 _ = try await runStore.appendEvent(
                     runID: runID,
                     kind: kind,
-                    payloadJSON: payloadJSON
+                    payloadJSON: String(decoding: modelInputProjection?.redactedJSON(Data(payloadJSON.utf8), preservingNativeIdentity: true) ?? Data(payloadJSON.utf8), as: UTF8.self)
                 )
                 return true
             } catch {
@@ -1727,10 +1733,17 @@ public actor ConversationRunService {
         boundary: String,
         completionCritical: Bool = true
     ) async -> Bool {
+        var safeMessage = message
+        safeMessage.content = modelInputProjection?.redacted(message.content) ?? message.content
+        safeMessage.parts = message.parts.map { part in
+            var copy = part
+            copy.text = copy.text.map { modelInputProjection?.redacted($0) ?? $0 }
+            return copy
+        }
         var lastError: Error?
         for attempt in 1...3 {
             do {
-                try await conversationStore.appendMessage(message)
+                try await conversationStore.appendMessage(safeMessage)
                 return true
             } catch {
                 lastError = error
@@ -1811,10 +1824,12 @@ public actor ConversationRunService {
         _ record: RunErrorRecord,
         completionCritical: Bool
     ) async -> Bool {
+        var safeRecord = record
+        safeRecord.message = modelInputProjection?.redacted(record.message) ?? record.message
         var lastError: Error?
         for attempt in 1...3 {
             do {
-                try await runStore.recordError(record)
+                try await runStore.recordError(safeRecord)
                 return true
             } catch {
                 lastError = error
@@ -1914,6 +1929,7 @@ public actor ConversationRunService {
 
     private func persistPlanDraft(from text: String) async {
         guard let intelligenceStore, !receivedStructuredPlan, !text.isEmpty else { return }
+        let text = modelInputProjection?.redacted(text) ?? text
         let prior = try? await intelligenceStore.latestPlan(conversationID: conversationID)
         let lines = text.components(separatedBy: .newlines)
         let headingIndices = lines.indices.filter {

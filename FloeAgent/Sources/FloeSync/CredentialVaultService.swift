@@ -9,6 +9,31 @@ public struct CredentialHandle: Sendable, Codable, Hashable, Identifiable {
     public init(id: UUID) { self.id = id }
 }
 
+/// Whether a stored credential can be used right now. `locked` means the
+/// Keychain item exists but its protection class is temporarily unavailable
+/// (for example a locked device): callers must not delete, re-pair or
+/// downgrade the item in that state.
+public enum CredentialAvailability: Sendable, Equatable {
+    case available
+    case missing
+    case locked
+    case failed(String)
+}
+
+/// Internal capability minted only after a native configuration resolver has
+/// verified the exact installation/profile/target/revision binding. Its
+/// initializer is module-internal so the App layer cannot turn a model-supplied
+/// identifier into secret access.
+public struct ScopedCredentialUse: Sendable, Hashable {
+    public let credentialID: UUID
+    public let purpose: String
+
+    init(credentialID: UUID, purpose: String) {
+        self.credentialID = credentialID
+        self.purpose = purpose
+    }
+}
+
 /// Outcome of one saved-credential sync request. The counts are per-record
 /// truth: `migrated` moved namespaces (or completed a previously interrupted
 /// move), `missingOnDevice` stays honestly untouched because no namespace on
@@ -49,6 +74,10 @@ public actor CredentialVaultService {
     private let records: CredentialStore
     private let local: any VaultSecretStore
     private let synchronized: any VaultSecretStore
+    /// Device-bound namespace. It shares the local service/account shape (so
+    /// pre-existing device-bound items stay readable) but writes with
+    /// `WhenUnlockedThisDeviceOnly` and is never synchronized.
+    private let deviceBound: any VaultSecretStore
     /// Device-local sync switches. Production is `.standard` (exactly the
     /// previous behavior); the internal test seam injects an isolated suite
     /// so synthetic migration tests never mutate real App sync settings.
@@ -58,6 +87,11 @@ public actor CredentialVaultService {
         self.records = records
         self.local = KeychainStore(service: Self.serviceName, synchronizable: false)
         self.synchronized = KeychainStore(service: Self.serviceName, synchronizable: true)
+        self.deviceBound = KeychainStore(
+            service: Self.serviceName,
+            synchronizable: false,
+            accessibility: .whenUnlockedThisDeviceOnly
+        )
         self.preferencesDefaults = .standard
     }
 
@@ -69,11 +103,13 @@ public actor CredentialVaultService {
         records: CredentialStore,
         local: any VaultSecretStore,
         synchronized: any VaultSecretStore,
+        deviceBound: (any VaultSecretStore)? = nil,
         preferencesSuite: String
     ) {
         self.records = records
         self.local = local
         self.synchronized = synchronized
+        self.deviceBound = deviceBound ?? local
         self.preferencesDefaults = UserDefaults(suiteName: preferencesSuite) ?? .standard
     }
 
@@ -99,11 +135,12 @@ public actor CredentialVaultService {
             kind: kind, owner: owner, hostID: durableHostID, origin: origin,
             label: label, synchronizable: false, deviceBound: deviceBound
         )
-        try local.store(account: record.keychainAccount, secret: secret)
+        let target = deviceBound ? self.deviceBound : local
+        try target.store(account: record.keychainAccount, secret: secret)
         do {
             try await records.save(record)
         } catch {
-            try? local.delete(account: record.keychainAccount)
+            try? target.delete(account: record.keychainAccount)
             throw error
         }
         return CredentialHandle(id: record.id)
@@ -124,8 +161,9 @@ public actor CredentialVaultService {
         guard var record = try await records.record(id: handle.id) else {
             throw FloeError.notFound("credential \(handle.id.uuidString)")
         }
-        try local.store(account: record.keychainAccount, secret: secret)
-        if record.synchronizable {
+        let primary = record.deviceBound ? deviceBound : local
+        try primary.store(account: record.keychainAccount, secret: secret)
+        if record.synchronizable, !record.deviceBound {
             do {
                 try synchronized.store(account: record.keychainAccount, secret: secret)
             } catch {
@@ -172,6 +210,9 @@ public actor CredentialVaultService {
         guard let record = try await records.record(id: handle.id) else {
             throw FloeError.notFound("credential \(handle.id.uuidString)")
         }
+        if record.deviceBound {
+            return try deviceBound.read(account: record.keychainAccount)
+        }
         if record.synchronizable {
             guard SyncControlPreferences.load(from: preferencesDefaults).savedCredentialsEnabled else {
                 throw FloeError.unauthorized
@@ -180,6 +221,86 @@ public actor CredentialVaultService {
             catch KeychainStoreError.itemNotFound { return try local.read(account: record.keychainAccount) }
         }
         return try local.read(account: record.keychainAccount)
+    }
+
+    /// Resolves a credential only through a scope token minted by the native
+    /// skill-configuration resolver after it re-verified the stored binding,
+    /// installation identity and pinned revision. Never exposed to the model.
+    public func resolveForScopedUse(
+        _ handle: CredentialHandle,
+        use: ScopedCredentialUse
+    ) async throws -> Data {
+        guard handle.id == use.credentialID, !use.purpose.isEmpty else {
+            throw FloeError.unauthorized
+        }
+        return try await resolveForApprovedUse(handle)
+    }
+
+    /// Secret-free metadata lookup for native configuration validation.
+    public func metadata(_ handle: CredentialHandle) async throws -> CredentialRecord? {
+        try await records.record(id: handle.id)
+    }
+
+    /// Non-destructive availability probe. Never deletes or rewrites the
+    /// Keychain item and distinguishes a locked protection class from a
+    /// genuinely absent secret.
+    public func availability(_ handle: CredentialHandle) async -> CredentialAvailability {
+        guard let record = try? await records.record(id: handle.id) else {
+            return .missing
+        }
+        let store: any VaultSecretStore
+        if record.deviceBound {
+            store = deviceBound
+        } else if record.synchronizable {
+            store = synchronized
+        } else {
+            store = local
+        }
+        do {
+            _ = try store.read(account: record.keychainAccount)
+            return .available
+        } catch KeychainStoreError.itemNotFound {
+            if record.synchronizable, !record.deviceBound,
+               (try? local.read(account: record.keychainAccount)) != nil {
+                return .available
+            }
+            return .missing
+        } catch KeychainStoreError.interactionNotAllowed {
+            return .locked
+        } catch {
+            return .failed(String(SecretRedactor.redact(error.localizedDescription).prefix(200)))
+        }
+    }
+
+    /// Converts a one-time task-scoped capture (already verified by the
+    /// caller against its run/tool/field origin) into a vault credential
+    /// without copying the secret bytes. Only metadata changes; the Keychain
+    /// account keeps addressing the same item.
+    public func adoptCapturedCredential(
+        _ handle: CredentialHandle,
+        kind: CredentialKind,
+        owner: CredentialOwner,
+        label: String,
+        hostID: UUID?,
+        origin: String?
+    ) async throws {
+        guard var record = try await records.record(id: handle.id) else {
+            throw FloeError.notFound("credential \(handle.id.uuidString)")
+        }
+        guard !record.deviceBound else {
+            throw FloeError.validationFailed("A device-bound credential cannot be adopted as an ordinary card")
+        }
+        // Prove the secret is present (and distinguish a locked Keychain)
+        // before changing ownership metadata.
+        _ = try local.read(account: record.keychainAccount)
+        record.kind = kind
+        record.owner = owner
+        record.label = label
+        record.hostID = hostID
+        record.origin = origin
+        record.synchronizable = false
+        record.updatedAt = Date()
+        try await records.save(record)
     }
 
     /// Turns saved-credential synchronization on or off for every vault
@@ -351,7 +472,9 @@ public actor CredentialVaultService {
     }
 
     public func status(_ record: CredentialRecord) async -> SyncStatus {
-        let store = record.synchronizable ? synchronized : local
+        let store = record.deviceBound
+            ? deviceBound
+            : (record.synchronizable ? synchronized : local)
         do {
             _ = try store.read(account: record.keychainAccount)
             return .synced
@@ -375,6 +498,7 @@ public actor CredentialVaultService {
             do {
                 try local.delete(account: item.keychainAccount)
                 try synchronized.delete(account: item.keychainAccount)
+                try deviceBound.delete(account: item.keychainAccount)
                 try await records.completeDeletion(account: item.keychainAccount)
             } catch {
                 try? await records.recordDeletionFailure(

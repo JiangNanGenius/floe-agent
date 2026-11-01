@@ -13,6 +13,7 @@ import FloeProviders
 import FloeSync
 import FloeTools
 import FloeAgentRuntime
+import FloeIOSAutomation
 
 extension Notification.Name {
     static let floeOpenConversation = Notification.Name("org.floeagent.open-conversation")
@@ -38,6 +39,11 @@ extension BackgroundRunCoordinator {
     /// before teardown. Ten honest seconds — long enough to read the outcome,
     /// short enough not to pretend the work is still running.
     nonisolated static let terminalStateDwell: TimeInterval = 10
+    /// Hard upper bound for local device automation after the system accepts a
+    /// continued-processing task. The system expiration handler normally
+    /// fences earlier; this cap prevents an unbounded background claim if a
+    /// callback is lost. It is not a promise that the system grants this long.
+    nonisolated static let continuedAutomationWindow: TimeInterval = 5 * 60
     /// Repeat taps of the same notification within this window route once.
     nonisolated static let duplicateNotificationRouteWindow: TimeInterval = 2.5
     /// Freshness window for a published guest metrics sample; older samples
@@ -415,6 +421,12 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
     private static let visualSurfacePolicyDefaultsKey = "backgroundVisualSurfacePolicy.v2"
     private var notifiedApprovalRuns: Set<UUID> = []
     private var lease: BackgroundExecutionLease?
+    /// Native local-automation window facts. Only a foreground scene is
+    /// unbounded (user-visible); background automation needs a REAL short
+    /// completion lease or an accepted continued-processing task. The native
+    /// client rechecks this deadline before and after dispatch.
+    private var backgroundAutomationWindowStartedAt: Date?
+    private var continuedAutomationAcceptedAt: Date?
     private var refreshWork: Task<Void, Never>?
     /// Fenced generation bookkeeping for the BGAppRefresh lifecycle. The
     /// scheduler races each task instance's expiration callback against the
@@ -1042,6 +1054,32 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
         UNUserNotificationCenter.current().delegate = self
     }
 
+    /// Authoritative execution window for local device automation. A
+    /// foreground scene is user-visible and unbounded. In the background the
+    /// window is bounded by the accepted continued-processing task's
+    /// conservative cap, otherwise by the real short completion lease's
+    /// expiration. With no hold the window is already expired, so the native
+    /// client refuses before dispatch instead of claiming background authority
+    /// from mere run registration or app state.
+    func iosAutomationExecutionWindow(
+        at now: Date = Date()
+    ) -> IOSAutomationExecutionWindow {
+        if effectiveScenePhase == .active {
+            return .foreground(at: now)
+        }
+        let startedAt = backgroundAutomationWindowStartedAt ?? now
+        if let accepted = continuedAutomationAcceptedAt {
+            return .backgroundRun(
+                startedAt: startedAt,
+                deadline: accepted.addingTimeInterval(Self.continuedAutomationWindow)
+            )
+        }
+        if let lease {
+            return .backgroundRun(startedAt: startedAt, deadline: lease.expiresAt)
+        }
+        return .backgroundRun(startedAt: startedAt, deadline: now)
+    }
+
     func didStart(
         conversationID: UUID,
         runID: UUID,
@@ -1361,6 +1399,9 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
     /// checkpoint into a failure notification or tearing down PiP. Browser
     /// takeover and other explicit user-action boundaries use this path.
     func didSuspend(runID: UUID, message: String) {
+        // A suspended run is waiting for the user, not executing tools. Release
+        // its persistent device-input ownership without fencing other tasks.
+        environment.iosBridgeIntegration.suspendRun(runID: runID)
         guard var active = activeRuns[runID] else { return }
         active.stage = message
         active.progress = max(active.progress, 60)
@@ -1458,6 +1499,10 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
     }
 
     private func finishRun(runID: UUID, outcome: TerminalOutcome, message: String?) {
+        // Release this exact run's persistent device-input ownership on every
+        // terminal route (success, failure, cancellation). Release does not
+        // cancel another run's in-flight device call.
+        environment.iosBridgeIntegration.runDidFinish(runID: runID)
         guard let finished = activeRuns.removeValue(forKey: runID) else { return }
         let succeeded = outcome.succeeded
         continuedEligibility.finishRun(runID)
@@ -3601,6 +3646,13 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
         }
         task.progress.totalUnitCount = 100
         task.progress.completedUnitCount = continuedEligibility.hasEligibleWork ? 5 : 100
+        // A real accepted continued task is the only extended background hold.
+        // Keep the first acceptance time (no sliding extension from duplicate
+        // callbacks) and give native device automation that bounded window.
+        if continuedAutomationAcceptedAt == nil {
+            continuedAutomationAcceptedAt = Date()
+        }
+        environment.iosBridgeIntegration.backgroundExecutionWindowChanged()
         FloeLogger(category: .app).info(
             "backgroundTaskAccepted kind=continued identifier=\(task.identifier) activeRuns=\(activeRuns.count) handles=\(continuedTaskHandleCount)"
         )
@@ -3695,6 +3747,11 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
         // Also cancel submitted-but-not-yet-accepted requests, including stale
         // concrete identifiers discoverable from a previous process.
         BackgroundPolicyRegistry.shared.cancelContinuedProcessingRequests()
+        continuedAutomationAcceptedAt = nil
+        // Recompute the native device-automation hold. On expiration/cancel
+        // this fences in-flight callbacks; in the foreground it only cancels
+        // the timer.
+        environment.iosBridgeIntegration.backgroundExecutionWindowChanged()
     }
 
     func handleScenePhase(_ phase: ScenePhase, sceneID: String) {
@@ -3725,6 +3782,13 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
             pauseLinuxMetricsSampling()
             resumeBackgroundSurfaceIfNeeded()
             lease = BackgroundPolicyRegistry.shared.beginShortCompletion(name: "Keep agent run active")
+            // Local device automation keeps working only inside this real
+            // bounded hold (or a later accepted continued task); entering the
+            // background alone is not an indefinite authority.
+            if backgroundAutomationWindowStartedAt == nil {
+                backgroundAutomationWindowStartedAt = Date()
+            }
+            environment.iosBridgeIntegration.backgroundExecutionWindowChanged()
             Task { [weak self] in
                 guard let self else { return }
                 // An active VM whose per-environment preference allows
@@ -3746,6 +3810,10 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
             }
         case .active:
             isAppInBackground = false
+            // A foreground scene owns an unbounded user-visible window again.
+            backgroundAutomationWindowStartedAt = nil
+            continuedAutomationAcceptedAt = nil
+            environment.iosBridgeIntegration.foregroundEntered()
             resumeLinuxMetricsSampling()
             pipCarouselTask?.cancel()
             pipCarouselTask = nil

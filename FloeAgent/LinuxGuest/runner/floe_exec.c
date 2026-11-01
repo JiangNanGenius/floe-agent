@@ -15,9 +15,31 @@
 // -----------------------------------
 // The host opens the channel with `\x1eFLOE-HELLO <token>\x1e` and the
 // runner answers `FLOE-CAPS <token> runner=<version> protocol=3
-// maxCommands=N maxSessions=M` + `FLOE-END <token> 0`. Older hosts never
-// send HELLO and are still served (one command at a time is a host choice,
-// not a guest requirement).
+// maxCommands=N maxSessions=M env=1 ...` + `FLOE-END <token> 0`. Older
+// hosts never send HELLO and are still served (one command at a time is a
+// host choice, not a guest requirement).
+//
+// Per-process sensitive environment (additive, CAPS env=1)
+// ---------------------------------------------------------
+// The ordinary EXEC/OPEN payloads never carry an environment field. A host
+// that needs to deliver credentials to exactly one child uses the explicit
+// frames instead:
+//
+//   \x1eFLOE-EXECENV <token> <payloadBytes> <chunkCount>\x1e\n  (+ CHUNKs + RUN)
+//   payload = [cwd, stdin, envBlock, argv0, argv1, ...]
+//
+//   \x1eFLOE-OPENENV <id> <payloadBytes> <chunkCount>\x1e\n     (+ CHUNKs + RUN)
+//   payload = [mode="pty", cwd, columns, rows, envBlock, argv0, ...]
+//
+// envBlock = u32 entryCount, then per entry u32 nameBytes + name,
+//            u32 valueBytes + value. Names are the POSIX subset
+//            [A-Za-z_][A-Za-z0-9_]*; NUL, duplicates, more than
+//            MAX_ENV_ENTRIES / MAX_ENV_VALUE / MAX_ENV_BYTES are rejected
+//            before any child exists. Values are never placed in argv, a
+//            staged script, stdin, the console echo (the tty is raw) or the
+//            runner's global environment: the merged child envp is built in
+//            the parent and assigned to `environ` only in the forked child,
+//            so PID 1 and every other task keep their own environment.
 //
 // One-shot commands — CONCURRENT
 // ------------------------------
@@ -130,7 +152,7 @@
 #define FLOE_MARK 0x1e
 #define FLOE_CANCEL 0x03
 
-#define FLOE_RUNNER_VERSION "2.0.0"
+#define FLOE_RUNNER_VERSION "2.1.0"
 #define FLOE_PROTOCOL_VERSION 3
 
 // Last reported network state, exposed in the CAPS answer (`net=...`) so the
@@ -145,6 +167,13 @@ static floe_net_status g_net_status = FLOE_NET_DOWN;
 #define MAX_PAYLOAD (256 * 1024)
 // Sanity bound on the field table inside one envelope.
 #define MAX_FIELDS 4096
+// Per-process environment bounds (EXECENV/OPENENV envBlock). Kept equal to
+// the host's SensitiveProcessEnvironment limits; a frame above any bound is
+// rejected before a child exists and never falls back to an inline export.
+#define MAX_ENV_ENTRIES 64
+#define MAX_ENV_NAME 128
+#define MAX_ENV_VALUE (32 * 1024)
+#define MAX_ENV_BYTES (64 * 1024)
 // Sanity bound on the chunk count of one envelope.
 #define MAX_CHUNKS 4096
 // Longest accepted token (UUIDs are 36 bytes).
@@ -346,9 +375,9 @@ static int emit_failed(const char *token, const char *reason) {
 
 // Capability answer to FLOE-HELLO.
 static int emit_caps(const char *token) {
-    char buf[MAX_TOKEN + 128];
+    char buf[MAX_TOKEN + 192];
     int n = snprintf(buf, sizeof buf,
-                     "\x1e" "FLOE-CAPS %s runner=%s protocol=%d maxCommands=%d maxSessions=%d net=%s hostArchive=%s\x1e",
+                     "\x1e" "FLOE-CAPS %s runner=%s protocol=%d maxCommands=%d maxSessions=%d env=1 net=%s hostArchive=%s\x1e",
                      token, FLOE_RUNNER_VERSION, FLOE_PROTOCOL_VERSION,
                      MAX_CONCURRENT_COMMANDS, MAX_CONCURRENT_SESSIONS,
                      floe_net_status_text(g_net_status),
@@ -530,6 +559,95 @@ static void free_argv(char **argv, int argc) {
 }
 
 // ---------------------------------------------------------------------------
+// Per-process environment (EXECENV / OPENENV)
+// ---------------------------------------------------------------------------
+
+static uint32_t read_be32(const unsigned char *p) {
+    return ((uint32_t)p[0] << 24) | ((uint32_t)p[1] << 16) |
+           ((uint32_t)p[2] << 8) | (uint32_t)p[3];
+}
+
+static int env_name_valid(const unsigned char *name, size_t len) {
+    if (len == 0 || len > MAX_ENV_NAME) return 0;
+    unsigned char first = name[0];
+    if (!((first >= 'A' && first <= 'Z') || (first >= 'a' && first <= 'z') || first == '_')) {
+        return 0;
+    }
+    for (size_t i = 1; i < len; i++) {
+        unsigned char c = name[i];
+        if (!((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') ||
+              (c >= '0' && c <= '9') || c == '_')) {
+            return 0;
+        }
+    }
+    return 1;
+}
+
+static void free_env(char **envp, int count) {
+    if (!envp) return;
+    for (int i = 0; i < count; i++) free(envp[i]);
+    free(envp);
+}
+
+// Parses one envBlock into a NULL-terminated `NAME=VALUE` vector. The block
+// is bounded, must be consumed exactly, and never yields a partial vector:
+// any malformed entry fails the whole request before a child is forked.
+static int env_block_parse(const unsigned char *block, size_t len, char ***out, int *out_count) {
+    *out = NULL;
+    *out_count = 0;
+    if (!block || len < 4 || len > MAX_ENV_BYTES) return -1;
+    uint32_t count = read_be32(block);
+    size_t off = 4;
+    if (count > MAX_ENV_ENTRIES) return -1;
+    if (count == 0) return off == len ? 0 : -1;
+    char **envp = calloc((size_t)count + 1, sizeof *envp);
+    if (!envp) return -1;
+    size_t total = 0;
+    for (uint32_t i = 0; i < count; i++) {
+        if (off + 4 > len) goto fail;
+        uint32_t name_len = read_be32(block + off);
+        off += 4;
+        if (name_len == 0 || name_len > MAX_ENV_NAME || name_len > len - off) goto fail;
+        const unsigned char *name = block + off;
+        off += name_len;
+        if (memchr(name, 0, name_len) != NULL || !env_name_valid(name, name_len)) goto fail;
+        if (off + 4 > len) goto fail;
+        uint32_t value_len = read_be32(block + off);
+        off += 4;
+        if (value_len > MAX_ENV_VALUE || value_len > len - off) goto fail;
+        const unsigned char *value = block + off;
+        off += value_len;
+        if (memchr(value, 0, value_len) != NULL) goto fail;
+        total += (size_t)name_len + 1 + (size_t)value_len;
+        if (total > MAX_ENV_BYTES) goto fail;
+        // Duplicate names are ambiguous in a child envp; reject rather than
+        // picking a winner silently.
+        for (uint32_t j = 0; j < i; j++) {
+            const char *previous = envp[j];
+            const char *equals = strchr(previous, '=');
+            size_t previous_len = equals ? (size_t)(equals - previous) : strlen(previous);
+            if (previous_len == name_len && memcmp(previous, name, name_len) == 0) goto fail;
+        }
+        size_t entry_len = (size_t)name_len + 1 + (size_t)value_len;
+        char *entry = malloc(entry_len + 1);
+        if (!entry) goto fail;
+        memcpy(entry, name, name_len);
+        entry[name_len] = '=';
+        memcpy(entry + name_len + 1, value, value_len);
+        entry[entry_len] = '\0';
+        envp[i] = entry;
+    }
+    if (off != len) goto fail;
+    envp[count] = NULL;
+    *out = envp;
+    *out_count = (int)count;
+    return 0;
+fail:
+    free_env(envp, (int)count);
+    return -1;
+}
+
+// ---------------------------------------------------------------------------
 // Requests
 // ---------------------------------------------------------------------------
 
@@ -537,6 +655,9 @@ typedef struct {
     char *cwd;
     unsigned char *input;
     size_t input_len;
+    /// NULL unless the frame was EXECENV; `NAME=VALUE` strings only.
+    char **envp;
+    int envc;
     int argc;
     char **argv;
 } exec_request;
@@ -544,15 +665,17 @@ typedef struct {
 static void exec_request_free(exec_request *r) {
     free(r->cwd);
     free(r->input);
+    free_env(r->envp, r->envc);
     free_argv(r->argv, r->argc);
     memset(r, 0, sizeof *r);
 }
 
-static int exec_request_parse(const unsigned char *payload, size_t plen, exec_request *out) {
+static int exec_request_parse(const unsigned char *payload, size_t plen, exec_request *out, int expect_env) {
     memset(out, 0, sizeof *out);
     field_table t;
     if (fields_split(payload, plen, &t) != 0) return -1;
-    if (t.count < 3) {
+    uint32_t first_argv = expect_env ? 3u : 2u;
+    if (t.count < first_argv + 1) {
         fields_free(&t);
         return -1;
     }
@@ -561,7 +684,10 @@ static int exec_request_parse(const unsigned char *payload, size_t plen, exec_re
     out->input = field_dup_bytes(payload, t.offsets[1], t.lengths[1]);
     out->input_len = t.lengths[1];
     if (t.lengths[1] > 0 && !out->input) goto fail;
-    out->argv = fields_to_argv(payload, &t, 2, &out->argc);
+    if (expect_env) {
+        if (env_block_parse(payload + t.offsets[2], t.lengths[2], &out->envp, &out->envc) != 0) goto fail;
+    }
+    out->argv = fields_to_argv(payload, &t, first_argv, &out->argc);
     if (!out->argv) goto fail;
     fields_free(&t);
     return 0;
@@ -576,6 +702,9 @@ typedef struct {
     char *cwd;
     int cols;
     int rows;
+    /// NULL unless the frame was OPENENV; `NAME=VALUE` strings only.
+    char **envp;
+    int envc;
     int argc;
     char **argv;
 } open_request;
@@ -583,6 +712,7 @@ typedef struct {
 static void open_request_free(open_request *r) {
     free(r->mode);
     free(r->cwd);
+    free_env(r->envp, r->envc);
     free_argv(r->argv, r->argc);
     memset(r, 0, sizeof *r);
 }
@@ -597,11 +727,12 @@ static int parse_decimal(const char *text, long *out) {
     return 0;
 }
 
-static int open_request_parse(const unsigned char *payload, size_t plen, open_request *out) {
+static int open_request_parse(const unsigned char *payload, size_t plen, open_request *out, int expect_env) {
     memset(out, 0, sizeof *out);
     field_table t;
     if (fields_split(payload, plen, &t) != 0) return -1;
-    if (t.count < 5) { // [mode, cwd, cols, rows, argv0...]
+    uint32_t first_argv = expect_env ? 5u : 4u; // [mode, cwd, cols, rows, (env), argv0...]
+    if (t.count < first_argv + 1) {
         fields_free(&t);
         return -1;
     }
@@ -614,10 +745,13 @@ static int open_request_parse(const unsigned char *payload, size_t plen, open_re
              parse_decimal(cols, &cols_value) == 0 && parse_decimal(rows, &rows_value) == 0;
     free(cols);
     free(rows);
+    if (ok && expect_env) {
+        if (env_block_parse(payload + t.offsets[4], t.lengths[4], &out->envp, &out->envc) != 0) ok = 0;
+    }
     if (ok) {
         out->cols = (int)cols_value;
         out->rows = (int)rows_value;
-        out->argv = fields_to_argv(payload, &t, 4, &out->argc);
+        out->argv = fields_to_argv(payload, &t, first_argv, &out->argc);
         if (!out->argv) ok = 0;
     }
     fields_free(&t);
@@ -672,7 +806,9 @@ static int spawn_request_parse(const unsigned char *payload, size_t plen, spawn_
 enum {
     ASM_NONE = 0,
     ASM_EXEC,
+    ASM_EXEC_ENV,
     ASM_OPEN,
+    ASM_OPEN_ENV,
     ASM_SPAWN,
 };
 
@@ -1206,6 +1342,57 @@ static void child_close_wake_pipe(void) {
 // Process spawning
 // ---------------------------------------------------------------------------
 
+extern char **environ;
+
+// Merges this request's overrides into a fresh child-only envp. The runner's
+// own `environ` is never modified: the vector is assigned in the forked
+// child immediately before execvp, so PID 1 and every other in-flight task
+// keep their environment and two commands with different values cannot see
+// each other's entries.
+static char **build_child_env(char **overrides, int count) {
+    if (!overrides || count <= 0) return NULL;
+    int base = 0;
+    if (environ) {
+        while (environ[base]) base++;
+    }
+    char **result = calloc((size_t)base + (size_t)count + 1, sizeof *result);
+    if (!result) return NULL;
+    int used = 0;
+    for (int i = 0; i < base; i++) {
+        const char *entry = environ[i];
+        const char *equals = strchr(entry, '=');
+        size_t entry_name_len = equals ? (size_t)(equals - entry) : strlen(entry);
+        int overridden = 0;
+        for (int j = 0; j < count; j++) {
+            const char *override_equals = strchr(overrides[j], '=');
+            size_t override_name_len = override_equals
+                ? (size_t)(override_equals - overrides[j]) : strlen(overrides[j]);
+            if (entry_name_len == override_name_len &&
+                memcmp(entry, overrides[j], entry_name_len) == 0) {
+                overridden = 1;
+                break;
+            }
+        }
+        if (overridden) continue;
+        result[used] = strdup(entry);
+        if (!result[used]) {
+            free_env(result, used);
+            return NULL;
+        }
+        used++;
+    }
+    for (int j = 0; j < count; j++) {
+        result[used] = strdup(overrides[j]);
+        if (!result[used]) {
+            free_env(result, used);
+            return NULL;
+        }
+        used++;
+    }
+    result[used] = NULL;
+    return result;
+}
+
 // The child gets its stdio from the three pipe ends and must not keep any
 // other copy of the six pipe fds: a leftover write end of the child's own
 // stdin pipe would keep the pipe open after the runner closes its copy, so
@@ -1222,9 +1409,18 @@ static pid_t spawn_command_child(
     int err_read,
     int err_write
 ) {
+    char **child_env = NULL;
+    if (req->envc > 0) {
+        child_env = build_child_env(req->envp, req->envc);
+        if (!child_env) return -2;
+    }
     pid_t pid = fork();
-    if (pid < 0) return -1;
+    if (pid < 0) {
+        free_env(child_env, req->envc);
+        return -1;
+    }
     if (pid == 0) {
+        if (child_env) environ = child_env;
         (void)setpgid(0, 0);
         child_reset_signals();
         (void)dup2(in_read, STDIN_FILENO);
@@ -1254,6 +1450,7 @@ static pid_t spawn_command_child(
         child_message("floe-exec: empty argv\n");
         _exit(127);
     }
+    free_env(child_env, req->envc);
     return pid;
 }
 
@@ -1924,7 +2121,9 @@ static void start_command(command_state *c, const char *token, exec_request *req
         close(in_pipe[0]); close(in_pipe[1]);
         close(out_pipe[0]); close(out_pipe[1]);
         close(err_pipe[0]); close(err_pipe[1]);
-        fail_command(c, 125, "floe-exec: cannot fork\n");
+        fail_command(c, 125, pid == -2
+                     ? "floe-exec: cannot prepare the per-process environment\n"
+                     : "floe-exec: cannot fork\n");
         return;
     }
 
@@ -2137,13 +2336,24 @@ static void start_session(pty_session *s, const char *token, open_request *req) 
     (void)ioctl(master, TIOCSWINSZ, &ws);
 
     const char *cwd = req->cwd && req->cwd[0] ? req->cwd : default_cwd();
+    char **child_env = NULL;
+    if (req->envc > 0) {
+        child_env = build_child_env(req->envp, req->envc);
+        if (!child_env) {
+            close(master);
+            emit_session_failure(token, 125, "floe-exec: cannot prepare the per-process environment");
+            return;
+        }
+    }
     pid_t pid = fork();
     if (pid < 0) {
+        free_env(child_env, req->envc);
         close(master);
         emit_session_failure(token, 125, "floe-exec: cannot fork the session");
         return;
     }
     if (pid == 0) {
+        if (child_env) environ = child_env;
         (void)setsid();
         child_reset_signals();
         int slave = open(slave_path, O_RDWR);
@@ -2177,6 +2387,7 @@ static void start_session(pty_session *s, const char *token, open_request *req) 
         child_message("floe-exec: empty argv\n");
         _exit(127);
     }
+    free_env(child_env, req->envc);
 
     set_nonblocking(master);
     s->active = 1;
@@ -2289,10 +2500,12 @@ static int parse_two_decimals(const unsigned char *args, size_t len, size_t *fir
     return 0;
 }
 
-static int start_exec_payload(const char *token, const unsigned char *payload, size_t plen) {
+static int start_exec_payload(const char *token, const unsigned char *payload, size_t plen, int expect_env) {
     exec_request req;
-    if (exec_request_parse(payload, plen, &req) != 0) {
-        emit_failure(token, 1, 125, "floe-exec: malformed EXEC payload");
+    if (exec_request_parse(payload, plen, &req, expect_env) != 0) {
+        emit_failure(token, 1, 125, expect_env
+                     ? "floe-exec: malformed EXECENV payload or invalid environment"
+                     : "floe-exec: malformed EXEC payload");
         return -1;
     }
     command_state *slot = command_free_slot();
@@ -2303,7 +2516,14 @@ static int start_exec_payload(const char *token, const unsigned char *payload, s
     }
     // The optional floe-host archive bridge is a runner built-in: it never
     // forks, it forwards a bounded request to the host and relays the reply.
+    // A per-process environment would have no child to receive it, so the
+    // request is refused instead of silently dropping the values.
     if (req.argc >= 1 && req.argv[0] && strcmp(req.argv[0], "floe-host") == 0) {
+        if (req.envc > 0) {
+            exec_request_free(&req);
+            emit_failure(token, 1, 125, "floe-exec: floe-host does not accept a per-process environment");
+            return -1;
+        }
         start_host_archive_command(slot, token, &req);
         return 0;
     }
@@ -2311,10 +2531,12 @@ static int start_exec_payload(const char *token, const unsigned char *payload, s
     return 0;
 }
 
-static int start_open_payload(const char *token, const unsigned char *payload, size_t plen) {
+static int start_open_payload(const char *token, const unsigned char *payload, size_t plen, int expect_env) {
     open_request req;
-    if (open_request_parse(payload, plen, &req) != 0) {
-        emit_session_failure(token, 125, "floe-exec: malformed OPEN payload");
+    if (open_request_parse(payload, plen, &req, expect_env) != 0) {
+        emit_session_failure(token, 125, expect_env
+                             ? "floe-exec: malformed OPENENV payload or invalid environment"
+                             : "floe-exec: malformed OPEN payload");
         return -1;
     }
     if (!req.mode || strcmp(req.mode, "pty") != 0) {
@@ -2360,6 +2582,38 @@ static void handle_frame(const unsigned char *body, size_t len) {
         return;
     }
 
+    if (name_len == 7 && memcmp(body, "EXECENV", 7) == 0) {
+        size_t payload_bytes = 0;
+        uint32_t chunks = 0;
+        if (parse_two_decimals(args, args_len, &payload_bytes, &chunks) == 0) {
+            (void)asm_begin(ASM_EXEC_ENV, token, payload_bytes, chunks);
+            return;
+        }
+        size_t cap = args_len / 4 * 3 + 4;
+        unsigned char *payload = malloc(cap);
+        if (!payload) {
+            emit_failure(token, 1, 125, "floe-exec: cannot allocate the EXECENV payload");
+            return;
+        }
+        long decoded = b64_decode(args, args_len, payload, cap);
+        if (decoded < 0) {
+            free(payload);
+            emit_failure(token, 1, 125, "floe-exec: malformed inline EXECENV payload");
+            return;
+        }
+        (void)start_exec_payload(token, payload, (size_t)decoded, 1);
+        free(payload);
+        return;
+    }
+
+    if (name_len == 7 && memcmp(body, "OPENENV", 7) == 0) {
+        size_t payload_bytes = 0;
+        uint32_t chunks = 0;
+        if (parse_two_decimals(args, args_len, &payload_bytes, &chunks) != 0) return;
+        (void)asm_begin(ASM_OPEN_ENV, token, payload_bytes, chunks);
+        return;
+    }
+
     if (name_len == 4 && memcmp(body, "EXEC", 4) == 0) {
         size_t payload_bytes = 0;
         uint32_t chunks = 0;
@@ -2379,7 +2633,7 @@ static void handle_frame(const unsigned char *body, size_t len) {
             emit_failure(token, 1, 125, "floe-exec: malformed inline EXEC payload");
             return;
         }
-        (void)start_exec_payload(token, payload, (size_t)decoded);
+        (void)start_exec_payload(token, payload, (size_t)decoded, 0);
         free(payload);
         return;
     }
@@ -2457,10 +2711,10 @@ static void handle_frame(const unsigned char *body, size_t len) {
         if (!a || a->kind == ASM_NONE) return;
         if (a->chunks_received != a->chunks_expected ||
             a->payload.len != a->expected) {
-            if (a->kind == ASM_OPEN) {
+            if (a->kind == ASM_OPEN || a->kind == ASM_OPEN_ENV) {
                 emit_session_failure(token, 125, "floe-exec: incomplete chunked payload");
             } else {
-                emit_failure(token, a->kind == ASM_EXEC, 125,
+                emit_failure(token, a->kind == ASM_EXEC || a->kind == ASM_EXEC_ENV, 125,
                              "floe-exec: incomplete chunked payload");
             }
             asm_reset(a);
@@ -2481,10 +2735,10 @@ static void handle_frame(const unsigned char *body, size_t len) {
         a->expected = 0;
         a->chunks_expected = 0;
         a->chunks_received = 0;
-        if (kind == ASM_EXEC) {
-            (void)start_exec_payload(token, payload, plen);
-        } else if (kind == ASM_OPEN) {
-            (void)start_open_payload(token, payload, plen);
+        if (kind == ASM_EXEC || kind == ASM_EXEC_ENV) {
+            (void)start_exec_payload(token, payload, plen, kind == ASM_EXEC_ENV);
+        } else if (kind == ASM_OPEN || kind == ASM_OPEN_ENV) {
+            (void)start_open_payload(token, payload, plen, kind == ASM_OPEN_ENV);
         } else {
             do_spawn(token, payload, plen);
         }

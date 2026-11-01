@@ -2,6 +2,7 @@
 import SwiftUI
 import UIKit
 import FloeExecution
+import FloeCore
 import FloeMacBridgeProtocol
 
 @MainActor
@@ -22,7 +23,7 @@ final class MacBridgeConnectionCenter: ObservableObject {
             Task { @MainActor [weak self] in self?.connected = connected }
         }
     }
-    static var isMac: Bool { ProcessInfo.processInfo.isiOSAppOnMac }
+    static var isMac: Bool { LocalBridgePlatform.current.supportsMacBridge }
     static var downloadURL: URL? {
         guard let text = Bundle.main.object(forInfoDictionaryKey: "FloeMacBridgeDownloadURL") as? String,
               let url = URL(string: text), url.scheme == "https", url.host == "www.floe-agent.com" else { return nil }
@@ -254,7 +255,7 @@ struct MacBridgeDisconnectedBanner: View {
     let onUseBackup: () -> Void
     @ObservedObject private var center = MacBridgeConnectionCenter.shared
     var body: some View {
-        if isMacEnvironment && !center.connected {
+        if MacBridgeConnectionCenter.isMac && isMacEnvironment && !center.connected {
             HStack {
                 Label("mac.bridge.disconnected", systemImage: "cable.connector.slash")
                 Spacer()

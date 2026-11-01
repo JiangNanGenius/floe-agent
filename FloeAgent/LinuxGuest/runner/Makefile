@@ -24,19 +24,21 @@ RISCV_BIN := floe-exec-riscv64
 CLOCK_CHECK_BIN := clock-arg-check
 NET_CHECK_BIN := net-plan-check
 HOST_ARCHIVE_CHECK_BIN := host-archive-check
+ENV_CHECK_BIN := env-transport-check
+RUNNER_HEADERS := floe_clock.h floe_net.h floe_host_archive.h
 
-.PHONY: all host riscv64 check check-clock check-net check-host-archive clean
+.PHONY: all host riscv64 check check-clock check-net check-host-archive check-env clean
 
 all: host
 
 host: $(HOST_BIN)
 
-$(HOST_BIN): floe_exec.c floe_clock.h
+$(HOST_BIN): floe_exec.c $(RUNNER_HEADERS)
 	$(CC) $(CFLAGS) -o $@ $<
 
 riscv64: $(RISCV_BIN)
 
-$(RISCV_BIN): floe_exec.c floe_clock.h
+$(RISCV_BIN): floe_exec.c $(RUNNER_HEADERS)
 	$(CROSS_CC) $(CFLAGS) -static -o $@ $<
 
 # Full stdio protocol check (host framing + runner child processes).
@@ -59,6 +61,14 @@ check-net: $(NET_CHECK_BIN)
 $(NET_CHECK_BIN): floe_net.h ../tests/net_plan_check.c
 	$(CC) $(CFLAGS) -I. -o $@ ../tests/net_plan_check.c
 
+# Real-stdio check for the per-process sensitive environment transport
+# (EXECENV/OPENENV, CAPS env=1): child envp delivery, argv/stdin separation,
+# two concurrent secrets, invalid/oversized/duplicate/NUL blocks and PID-1
+# environment isolation. Builds the host runner and drives it over pipes.
+check-env: $(HOST_BIN)
+	$(CC) $(CFLAGS) -o $(ENV_CHECK_BIN) env_transport_check.c
+	./$(ENV_CHECK_BIN) ./$(HOST_BIN)
+
 # Native check for the optional floe-host archive bridge (capability
 # negotiation, request parsing, bounded payload encoding, reply decoding).
 # Pure functions: no console, no filesystem writes.
@@ -72,4 +82,4 @@ $(CLOCK_CHECK_BIN): floe_clock.h ../tests/clock_arg_check.c
 	$(CC) $(CFLAGS) -I. -o $@ ../tests/clock_arg_check.c
 
 clean:
-	rm -f $(HOST_BIN) $(RISCV_BIN) $(CLOCK_CHECK_BIN) $(NET_CHECK_BIN) $(HOST_ARCHIVE_CHECK_BIN)
+	rm -f $(HOST_BIN) $(RISCV_BIN) $(CLOCK_CHECK_BIN) $(NET_CHECK_BIN) $(HOST_ARCHIVE_CHECK_BIN) $(ENV_CHECK_BIN)

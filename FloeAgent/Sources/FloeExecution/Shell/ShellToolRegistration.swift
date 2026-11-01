@@ -17,16 +17,17 @@ public func registerShellTools(
     pythonInstaller: ManagedPythonInstallService? = nil,
     capabilityInstaller: CapabilityInstaller? = nil,
     wasmStore: SignedWasmCapabilityStore? = nil,
-    dependencyGate: (any SkillDependencyInvocationGating)? = nil
+    dependencyGate: (any SkillDependencyInvocationGating)? = nil,
+    configurationProvider: (any SkillProcessConfigurationProviding)? = nil
 ) -> Bool {
     ToolCatalog.register(LocalShellTool.self)
-    registry.register(LocalShellTool(shell: shell, pythonInstaller: pythonInstaller, dependencyGate: dependencyGate))
+    registry.register(LocalShellTool(shell: shell, pythonInstaller: pythonInstaller, dependencyGate: dependencyGate, configurationProvider: configurationProvider))
 
     ToolCatalog.register(ShellOpenTool.self)
     ToolCatalog.register(ShellExchangeTool.self)
     ToolCatalog.register(ShellCloseTool.self)
     ToolCatalog.register(ShellSignalTool.self)
-    registry.register(ShellOpenTool(center: sessions))
+    registry.register(ShellOpenTool(center: sessions, configurationProvider: configurationProvider, dependencyGate: dependencyGate))
     registry.register(ShellExchangeTool(center: sessions))
     registry.register(ShellCloseTool(center: sessions))
     registry.register(ShellSignalTool(center: sessions))

@@ -58,11 +58,11 @@ RUNNER_SOURCE = """\
 #define MAX_CONCURRENT_COMMANDS 8
 #define MAX_CONCURRENT_SESSIONS 4
 static const char *caps_format =
-    "\\x1e" "FLOE-CAPS %s runner=%s protocol=%d maxCommands=%d maxSessions=%d net=%s\\x1e";
+    "\\x1e" "FLOE-CAPS %s runner=%s protocol=%d maxCommands=%d maxSessions=%d env=1 net=%s\\x1e";
 """
 # The same runner without the first-boot network field: the packaging gate
 # must fail closed when the guest answers net=up but the source cannot emit it.
-RUNNER_SOURCE_NO_NET = RUNNER_SOURCE.replace("maxSessions=%d net=%s", "maxSessions=%d")
+RUNNER_SOURCE_NO_NET = RUNNER_SOURCE.replace("maxSessions=%d env=1 net=%s", "maxSessions=%d env=1")
 RUNNER_NET_HEADER = "/* synthetic first-boot networking header for the pipeline self-check */\n"
 ENGINE_SOURCE = """\
 public enum LinuxGuestImageArtifact {
@@ -125,7 +125,7 @@ public struct LinuxGuestImage {
 VERDICT_CHECKS = ["boot clock applied", "HELLO answered", "final marker"]
 # The runner's CAPS payload with the first-boot network field: the update's
 # boot gate requires net=up (the runner's bounded DNS probe answered).
-CAPS_WITH_NET = "runner=2.0.0 protocol=3 maxCommands=8 maxSessions=4 net=up"
+CAPS_WITH_NET = "runner=2.0.0 protocol=3 maxCommands=8 maxSessions=4 env=1 net=up"
 CAPS_LEGACY = "runner=2.0.0 protocol=3 maxCommands=8 maxSessions=4"
 # Pinned predecessor identity for the synthetic base manifest (the package
 # must read these from the manifest bytes, not from notes).
@@ -230,7 +230,7 @@ def check_contract(out, repo):
            "runner constants parse")
     caps = pipeline_contract.expected_caps(constants)
     expect(caps == CAPS_LEGACY, "CAPS payload format without the network field")
-    expect(pipeline_contract.expected_caps(constants, net_status="up") == CAPS_WITH_NET,
+    expect(pipeline_contract.expected_caps(constants, net_status="up", env_status=1) == CAPS_WITH_NET,
            "CAPS payload format with the network field")
     try:
         pipeline_contract.expected_caps(constants, net_status="degraded")
@@ -247,7 +247,7 @@ def check_contract(out, repo):
            "a pre-network CAPS payload still parses, with no network claim")
     expect(pipeline_contract.parse_caps(CAPS_WITH_NET.replace("net=up", "net=degraded")) is None,
            "an unknown network value does not parse")
-    expect(pipeline_contract.parse_caps("runner=1.0 protocol=3 maxCommands=8 maxSessions=4 net=up extra") is None,
+    expect(pipeline_contract.parse_caps("runner=1.0 protocol=3 maxCommands=8 maxSessions=4 env=1 net=up extra") is None,
            "a CAPS payload with a trailing field does not parse")
     expect(pipeline_contract.caps_net_field(RUNNER_SOURCE),
            "the runner source's net= capability slot is discovered")
@@ -391,6 +391,12 @@ def check_guest_protocol(out):
     expect(verdict["capsPayload"] == CAPS_WITH_NET,
            "verdict records the verbatim CAPS payload with the network field")
     expect(verdict["netStatus"] == "up", "verdict records the network state")
+    expect(verdict["envSupport"] == "1", "verdict records the process-environment capability")
+    missing_env = write(os.path.join(out, "missing-env-transcript.txt"),
+                        transcript_for(CAPS_WITH_NET.replace(" env=1", "")))
+    expect(quiet(guest_protocol_check.run_assert, missing_env, share,
+                 os.path.join(out, "missing-env-verdict.json")) == 1,
+           "a protocol-current runner without env=1 fails the new component boot gate")
     expect(verdict["serviceTicks"] == 4 and verdict["failures"] == 0, "verdict records service ticks")
 
     bad = write(os.path.join(out, "bad-transcript.txt"),
@@ -414,13 +420,13 @@ def check_guest_protocol(out):
     # answered (net=partial), and a transcript whose userland probes failed
     # must all fail the boot gate instead of shipping a degraded component.
     no_device = write(os.path.join(out, "net-down-transcript.txt"),
-                      transcript_for("runner=2.0.0 protocol=3 maxCommands=8 maxSessions=4 net=down",
+                      transcript_for("runner=2.0.0 protocol=3 maxCommands=8 maxSessions=4 env=1 net=down",
                                      net="down", device=False))
     expect(quiet(guest_protocol_check.run_assert, no_device, share,
                  os.path.join(out, "net-down-verdict.json")) == 1,
            "a guest without eth0 (net=down) fails the boot gate")
     partial = write(os.path.join(out, "net-partial-transcript.txt"),
-                    transcript_for("runner=2.0.0 protocol=3 maxCommands=8 maxSessions=4 net=partial",
+                    transcript_for("runner=2.0.0 protocol=3 maxCommands=8 maxSessions=4 env=1 net=partial",
                                    net="partial", device=False))
     expect(quiet(guest_protocol_check.run_assert, partial, share,
                  os.path.join(out, "net-partial-verdict.json")) == 1,
@@ -655,11 +661,11 @@ def check_package(out):
     # component exists to give the App a usable network (apt/pip/npm).
     degraded_paths = make_fixture(os.path.join(out, "netdown"))
     args, env = package_env(degraded_paths, base_toolchain,
-                            caps="runner=2.0.0 protocol=3 maxCommands=8 maxSessions=4 net=down")
+                            caps="runner=2.0.0 protocol=3 maxCommands=8 maxSessions=4 env=1 net=down")
     expect(run_package(args, env).returncode != 0, "a net=down guest verdict fails closed")
     partial_paths = make_fixture(os.path.join(out, "netpartial"))
     args, env = package_env(partial_paths, base_toolchain,
-                            caps="runner=2.0.0 protocol=3 maxCommands=8 maxSessions=4 net=partial")
+                            caps="runner=2.0.0 protocol=3 maxCommands=8 maxSessions=4 env=1 net=partial")
     expect(run_package(args, env).returncode != 0, "a net=partial guest verdict fails closed")
     missing_field_paths = make_fixture(os.path.join(out, "netabsent"))
     args, env = package_env(missing_field_paths, base_toolchain, caps=CAPS_LEGACY)

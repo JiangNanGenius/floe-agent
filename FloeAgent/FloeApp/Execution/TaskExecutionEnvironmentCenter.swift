@@ -211,7 +211,11 @@ final class TaskExecutionEnvironmentCenter: ObservableObject {
         let backend: TaskExecutionTarget.Backend
         switch record.effectiveExecutionBackend {
         case .linuxVM: backend = .linuxVM
-        case .macBridge: backend = .macBridge
+        case .macBridge:
+            guard LocalBridgePlatform.current.supportsMacBridge else {
+                throw FloeError.invalidConfiguration(String(localized: "execution.location.unavailable_on_device"))
+            }
+            backend = .macBridge
         case .remoteSSH: backend = .remoteSSH
         case .native: throw FloeError.validationFailed(copy("请先选择可用的运行环境。", "Choose an available execution environment first."))
         }
@@ -246,6 +250,9 @@ final class TaskExecutionEnvironmentCenter: ObservableObject {
             record = try await registry.ensureSessionContainer(conversationID: conversationID.uuidString,
                 workspaceID: workspaceID, workspaceRootPath: root.path, executionBackend: .linuxVM, forceNew: fresh)
         case .mac:
+            guard LocalBridgePlatform.current.supportsMacBridge else {
+                throw FloeError.invalidConfiguration(String(localized: "execution.location.unavailable_on_device"))
+            }
             guard await MacBridgeClient.shared.isConnected() else { throw TaskExecutionAvailabilityError(message: copy("请先连接这台 Mac。", "Connect this Mac first.")) }
             record = try await registry.ensureMacBridgeSessionContainer(conversationID: conversationID.uuidString,
                 workspaceID: workspaceID, workspaceRootPath: root.path, forceNew: fresh)
@@ -261,6 +268,9 @@ final class TaskExecutionEnvironmentCenter: ObservableObject {
     }
 
     private func validateChoicePolicy(_ choice: Choice, conversationID: UUID) async throws {
+        if case .mac = choice.kind, !LocalBridgePlatform.current.supportsMacBridge {
+            throw FloeError.invalidConfiguration(String(localized: "execution.location.unavailable_on_device"))
+        }
         if case .ssh = choice.kind,
            try await SQLiteWorkspaceStore(database: environment.database).taskPolicy(conversationID: conversationID).remoteExecutionAllowed == false {
             throw TaskExecutionAvailabilityError(message: copy("此任务已关闭远程执行，请先在权限中开启。", "Remote execution is disabled for this task. Enable it in permissions first."))

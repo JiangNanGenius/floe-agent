@@ -105,7 +105,9 @@ def application_pins(project):
 FIRST_PARTY_SIBLING_PACKAGES = {
     "FloeMacBridge": {
         "path": "../FloeMacBridge",
-        "manifestSHA256": "9e7d644c30cec24a1119f0fde370031b72c20c14f26345cf320ef2e1df34b9b0",
+        # Reviewed change: add the existing-app/PTY test target only. The
+        # shipping targets and external dependency graph are unchanged.
+        "manifestSHA256": "1414211cbc93cc641db58b302c89d2933e85dfeb6bd4d6b6c9f7e642d7983db9",
     },
 }
 

@@ -160,15 +160,18 @@ public struct LocalShellTool: AgentTool {
     private let shell: LocalShellService
     private let pythonInstaller: ManagedPythonInstallService?
     private let dependencyGate: (any SkillDependencyInvocationGating)?
+    private let configurationProvider: (any SkillProcessConfigurationProviding)?
 
     public init(
         shell: LocalShellService,
         pythonInstaller: ManagedPythonInstallService? = nil,
-        dependencyGate: (any SkillDependencyInvocationGating)? = nil
+        dependencyGate: (any SkillDependencyInvocationGating)? = nil,
+        configurationProvider: (any SkillProcessConfigurationProviding)? = nil
     ) {
         self.shell = shell
         self.pythonInstaller = pythonInstaller
         self.dependencyGate = dependencyGate
+        self.configurationProvider = configurationProvider
     }
 
     public func validate(_ args: Arguments) throws {
@@ -304,12 +307,21 @@ public struct LocalShellTool: AgentTool {
                 throw FloeError.cancelled
             }
         }
+        let processConfiguration: SkillProcessConfiguration?
+        if let skillID = args.skillID?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !skillID.isEmpty, let configurationProvider {
+            processConfiguration = try await configurationProvider.processConfiguration(skillID: skillID, context: context)
+            try processConfiguration?.validateOverrides(args.env ?? [:])
+        } else {
+            processConfiguration = nil
+        }
         let isBackground = context.toolCallID?.hasPrefix("jobs.") == true
         let cwd = args.cwd ?? "."
         let result = await shell.run(
             command: command,
             cwd: cwd,
             environment: args.env ?? [:],
+            skillConfiguration: processConfiguration,
             stdin: args.stdin,
             requestedTimeout: requestedTimeout,
             timeoutPolicy: timeoutPolicy,

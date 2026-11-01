@@ -395,7 +395,8 @@ public actor BackgroundJobService {
         }
         start(job: persisted, scope: scope, workspaceRootURL: workspaceRootURL,
               allowedWorkspacePaths: allowedWorkspacePaths, allowedToolNames: allowedToolNames,
-              origin: origin, prepared: prepared, progressDocument: progressDocument)
+              origin: origin, prepared: prepared, progressDocument: progressDocument,
+              approvalGrantID: approvalGrantID ?? runtimeAuthority?.approvalGrantID)
         return persisted
     }
 
@@ -407,7 +408,8 @@ public actor BackgroundJobService {
         allowedToolNames: Set<String>?,
         origin: NativeJobOrigin,
         prepared: (any NativeJobPreparedOperation)?,
-        progressDocument: NativeJobProgressDocument
+        progressDocument: NativeJobProgressDocument,
+        approvalGrantID: UUID?
     ) {
         let token = CancellationToken()
         cancellations[job.id] = token
@@ -493,6 +495,7 @@ public actor BackgroundJobService {
                         runID: job.runID,
                         toolCallID: "jobs.\(job.id.uuidString)",
                         toolIdempotencyKey: "job:\(job.id.uuidString)",
+                        approvalGrantID: approvalGrantID,
                         scope: scope,
                         allowedToolNames: allowedToolNames,
                         workspaceRootURL: workspaceRootURL,

@@ -27,6 +27,18 @@ public typealias VNCStatusProvider = @Sendable () async -> VNCToolConnectionStat
 public typealias VNCConnectAction = @Sendable () async throws -> VNCSessionHandle?
 public typealias VNCReconnectAction = @Sendable () async throws -> VNCSessionHandle?
 public typealias VNCDisconnectAction = @Sendable () async -> VNCToolConnectionStatus
+/// Explicit target selection. `hostID` and `connectionID` both come from
+/// `ssh.listHosts`; the app layer resolves them against the saved host store.
+public typealias VNCTargetedConnectAction = @Sendable (
+    _ hostID: UUID,
+    _ connectionID: UUID,
+    _ context: ToolContext
+) async throws -> VNCSessionHandle?
+public typealias VNCTargetedReconnectAction = @Sendable (
+    _ hostID: UUID,
+    _ connectionID: UUID,
+    _ context: ToolContext
+) async throws -> VNCSessionHandle?
 
 /// Task-scoped dependency seam: wire tests exercise real RFB and screenshots
 /// without starting Apple's unrelated OCR model compiler in a short-lived host.
@@ -49,6 +61,12 @@ public struct VNCToolConnectionStatus: Sendable, Codable, Hashable {
     public var configuredEndpointCount: Int
     public var sessionID: UUID?
     public var target: String?
+    /// Saved-device and named-connection identity for the active target.
+    /// Present when the app layer can resolve them; never required by tools.
+    public var hostID: UUID?
+    public var connectionID: UUID?
+    public var connectionName: String?
+    public var transport: String?
     public var toolManaged: Bool
     public var idleTimeoutSeconds: Int?
     public var failure: VNCConnectionFailure?
@@ -58,6 +76,10 @@ public struct VNCToolConnectionStatus: Sendable, Codable, Hashable {
         configuredEndpointCount: Int,
         sessionID: UUID? = nil,
         target: String? = nil,
+        hostID: UUID? = nil,
+        connectionID: UUID? = nil,
+        connectionName: String? = nil,
+        transport: String? = nil,
         toolManaged: Bool = false,
         idleTimeoutSeconds: Int? = nil,
         failure: VNCConnectionFailure? = nil
@@ -66,6 +88,10 @@ public struct VNCToolConnectionStatus: Sendable, Codable, Hashable {
         self.configuredEndpointCount = configuredEndpointCount
         self.sessionID = sessionID
         self.target = target
+        self.hostID = hostID
+        self.connectionID = connectionID
+        self.connectionName = connectionName
+        self.transport = transport
         self.toolManaged = toolManaged
         self.idleTimeoutSeconds = idleTimeoutSeconds
         self.failure = failure
@@ -91,6 +117,10 @@ enum VNCToolSupport {
             "configuredEndpointCount": status.configuredEndpointCount,
             "sessionID": status.sessionID?.uuidString ?? NSNull(),
             "target": status.target ?? NSNull(),
+            "hostID": status.hostID?.uuidString ?? NSNull(),
+            "connectionID": status.connectionID?.uuidString ?? NSNull(),
+            "connectionName": status.connectionName ?? NSNull(),
+            "transport": status.transport ?? NSNull(),
             "toolManaged": status.toolManaged,
             "idleTimeoutSeconds": status.idleTimeoutSeconds ?? NSNull(),
             "failure": NSNull()
@@ -401,52 +431,128 @@ public struct VNCStatusTool: AgentTool {
 }
 
 public struct VNCConnectTool: AgentTool {
-    public struct Arguments: Decodable, Sendable { public init() {} }
+    public struct Arguments: Decodable, Sendable {
+        public var hostID: String?
+        public var connectionID: String?
+
+        public init(hostID: String? = nil, connectionID: String? = nil) {
+            self.hostID = hostID
+            self.connectionID = connectionID
+        }
+    }
     public static let name = "vnc.connect"
     public static let toolDescription =
-        "Connect the single configured or previously selected VNC endpoint and keep the tool-managed session alive for the idle grace period. Use vnc.status first when the connection is ambiguous."
-    public static let parametersJSON = #"{"type":"object","properties":{},"additionalProperties":false}"#
+        "Connect a saved VNC endpoint and keep the tool-managed session alive for the idle grace period. When more than one endpoint is saved, pass hostID and connectionID from ssh.listHosts. With neither argument, the single configured or previously selected endpoint is used. Returns the exact resolved host/connection target and any stage-specific failure."
+    public static let parametersJSON = #"{"type":"object","properties":{"hostID":{"type":"string","description":"Saved host UUID from ssh.listHosts"},"connectionID":{"type":"string","description":"VNC connection UUID from ssh.listHosts"}},"additionalProperties":false}"#
     public static let riskLabels: Set<RiskLabel> = [.controlsGUI, .accessesCredentials]
     public static let isSideEffecting = true
     public static let toolEffect: ToolEffect = .mutating
     public static let requiresHostScope = false
     private let connection: VNCConnectAction
+    private let targetedConnection: VNCTargetedConnectAction?
     private let statusProvider: VNCStatusProvider
 
-    public init(connection: @escaping VNCConnectAction, statusProvider: @escaping VNCStatusProvider) {
+    public init(
+        connection: @escaping VNCConnectAction,
+        targetedConnection: VNCTargetedConnectAction? = nil,
+        statusProvider: @escaping VNCStatusProvider
+    ) {
         self.connection = connection
+        self.targetedConnection = targetedConnection
         self.statusProvider = statusProvider
     }
-    public func validate(_ args: Arguments) throws {}
+    public func validate(_ args: Arguments) throws {
+        _ = try VNCTargetArguments.resolve(args.hostID, args.connectionID)
+    }
     public func execute(_ args: Arguments, context: ToolContext) async throws -> ToolExecutionOutput {
         try context.cancellation.throwIfCancelled()
-        _ = try await connection()
+        if let target = try VNCTargetArguments.resolve(args.hostID, args.connectionID) {
+            guard let targetedConnection else {
+                throw FloeError.invalidConfiguration(
+                    "Explicit VNC endpoint selection is not connected in this build. Open the viewer for the intended connection or reconnect the app."
+                )
+            }
+            _ = try await targetedConnection(target.hostID, target.connectionID, context)
+        } else {
+            _ = try await connection()
+        }
         return try VNCToolSupport.statusOutput(await statusProvider())
     }
 }
 
 public struct VNCReconnectTool: AgentTool {
-    public struct Arguments: Decodable, Sendable { public init() {} }
+    public struct Arguments: Decodable, Sendable {
+        public var hostID: String?
+        public var connectionID: String?
+
+        public init(hostID: String? = nil, connectionID: String? = nil) {
+            self.hostID = hostID
+            self.connectionID = connectionID
+        }
+    }
     public static let name = "vnc.reconnect"
     public static let toolDescription =
-        "Discard a stale tool-managed VNC session and perform a fresh handshake. A non-retryable authentication failure remains blocked until the saved credential or endpoint is updated."
-    public static let parametersJSON = #"{"type":"object","properties":{},"additionalProperties":false}"#
+        "Discard the tool-managed VNC session and perform a fresh handshake. Pass hostID and connectionID from ssh.listHosts to target one saved endpoint when several exist; omit both to reconnect the active tool-managed session. A non-retryable authentication failure remains blocked until the saved credential or endpoint is updated."
+    public static let parametersJSON = #"{"type":"object","properties":{"hostID":{"type":"string","description":"Saved host UUID from ssh.listHosts"},"connectionID":{"type":"string","description":"VNC connection UUID from ssh.listHosts"}},"additionalProperties":false}"#
     public static let riskLabels: Set<RiskLabel> = [.controlsGUI, .accessesCredentials]
     public static let isSideEffecting = true
     public static let toolEffect: ToolEffect = .mutating
     public static let requiresHostScope = false
     private let reconnect: VNCReconnectAction
+    private let targetedReconnect: VNCTargetedReconnectAction?
     private let statusProvider: VNCStatusProvider
 
-    public init(reconnect: @escaping VNCReconnectAction, statusProvider: @escaping VNCStatusProvider) {
+    public init(
+        reconnect: @escaping VNCReconnectAction,
+        targetedReconnect: VNCTargetedReconnectAction? = nil,
+        statusProvider: @escaping VNCStatusProvider
+    ) {
         self.reconnect = reconnect
+        self.targetedReconnect = targetedReconnect
         self.statusProvider = statusProvider
     }
-    public func validate(_ args: Arguments) throws {}
+    public func validate(_ args: Arguments) throws {
+        _ = try VNCTargetArguments.resolve(args.hostID, args.connectionID)
+    }
     public func execute(_ args: Arguments, context: ToolContext) async throws -> ToolExecutionOutput {
         try context.cancellation.throwIfCancelled()
-        _ = try await reconnect()
+        if let target = try VNCTargetArguments.resolve(args.hostID, args.connectionID) {
+            guard let targetedReconnect else {
+                throw FloeError.invalidConfiguration(
+                    "Explicit VNC endpoint selection is not connected in this build. Open the viewer for the intended connection or reconnect the app."
+                )
+            }
+            _ = try await targetedReconnect(target.hostID, target.connectionID, context)
+        } else {
+            _ = try await reconnect()
+        }
         return try VNCToolSupport.statusOutput(await statusProvider())
+    }
+}
+
+/// Resolves the optional explicit VNC target pair. Both or neither; a UUID
+/// pair alone is never accepted because a connection id is only unique within
+/// its saved host in practice (ids are generated per host).
+enum VNCTargetArguments {
+    struct Target: Sendable, Hashable {
+        let hostID: UUID
+        let connectionID: UUID
+    }
+
+    static func resolve(_ hostID: String?, _ connectionID: String?) throws -> Target? {
+        switch (hostID, connectionID) {
+        case (nil, nil):
+            return nil
+        case let (rawHost?, rawConnection?):
+            guard let host = UUID(uuidString: rawHost), let connection = UUID(uuidString: rawConnection) else {
+                throw FloeError.validationFailed("hostID and connectionID must be UUIDs")
+            }
+            return Target(hostID: host, connectionID: connection)
+        default:
+            throw FloeError.validationFailed(
+                "hostID and connectionID must be provided together"
+            )
+        }
     }
 }
 
@@ -898,6 +1004,8 @@ public func registerVNCTools(
     connect: @escaping VNCConnectAction,
     reconnect: VNCReconnectAction? = nil,
     disconnect: VNCDisconnectAction? = nil,
+    connectTarget: VNCTargetedConnectAction? = nil,
+    reconnectTarget: VNCTargetedReconnectAction? = nil,
     sessionProvider: @escaping VNCSessionProvider
 ) -> VNCSessionProvider {
     ToolCatalog.register(VNCStatusTool.self)
@@ -913,9 +1021,14 @@ public func registerVNCTools(
     ToolCatalog.register(VNCDragTool.self)
     ToolCatalog.register(VNCKeyPressTool.self)
     registry.register(VNCStatusTool(statusProvider: statusProvider))
-    registry.register(VNCConnectTool(connection: connect, statusProvider: statusProvider))
+    registry.register(VNCConnectTool(
+        connection: connect,
+        targetedConnection: connectTarget,
+        statusProvider: statusProvider
+    ))
     registry.register(VNCReconnectTool(
         reconnect: reconnect ?? sessionProvider,
+        targetedReconnect: reconnectTarget,
         statusProvider: statusProvider
     ))
     registry.register(VNCDisconnectTool(disconnect: disconnect ?? { await statusProvider() }))

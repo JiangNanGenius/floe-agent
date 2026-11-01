@@ -12,6 +12,30 @@ import FloeModels
 
 @Suite("Native job execution closure")
 struct NativeJobExecutionTests {
+    @Test("A Skill job retains its native approval grant and a second job inherits none")
+    func skillJobKeepsOnlyItsOwnGrant() async throws {
+        let (db, _, run, workspace) = try await fixture()
+        defer { try? FileManager.default.removeItem(at: workspace) }
+        let registry = ToolRunnerRegistry(), grant = UUID()
+        registry.register(AnyAgentTool(descriptor: ToolCatalog.Descriptor(
+            name: "exec.shell", toolDescription: "Configured Skill fixture",
+            parametersJSON: #"{"type":"object"}"#, riskLabels: [],
+            isSideEffecting: true, effect: .mutating
+        )) { _, context in
+            guard context.approvalGrantID == grant else { throw FloeError.unauthorized }
+            return ToolExecutionOutput(digesting: "Configured invocation accepted")
+        })
+        let service = BackgroundJobService(store: BackgroundJobStore(database: db), registry: registry)
+        let approved = try await service.submit(runID: run, toolCallID: "approved-skill",
+            targetTool: "exec.shell", payloadJSON: Data(#"{"skillID":"fixture"}"#.utf8),
+            scope: .local, workspaceRootURL: workspace, allowedWorkspacePaths: [], approvalGrantID: grant)
+        #expect(try await waitForTerminal(service, id: approved.id).state == .completed)
+        let unapproved = try await service.submit(runID: run, toolCallID: "unapproved-skill",
+            targetTool: "exec.shell", payloadJSON: Data(#"{"skillID":"fixture"}"#.utf8),
+            scope: .local, workspaceRootURL: workspace, allowedWorkspacePaths: [])
+        #expect(try await waitForTerminal(service, id: unapproved.id).state == .failed)
+    }
+
     // MARK: - Fixtures
 
     private func fixture() async throws -> (DatabaseManager, UUID, UUID, URL) {

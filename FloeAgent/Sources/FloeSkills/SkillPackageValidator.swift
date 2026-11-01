@@ -104,6 +104,19 @@ public struct SkillPackageValidator: Sendable {
             return platform
         })
 
+        if let configuration = manifest.configuration {
+            try configuration.validate()
+            // Declaring a secret or native connection is a credential
+            // requirement; the package must also request the compiled
+            // credential capability so permission review sees it.
+            if configuration.fields.contains(where: { $0.kind != .variable }),
+               !capabilities.contains(.credentials) {
+                throw SkillValidationError.invalidManifest(
+                    "configuration declares secrets or connections without the credentials capability"
+                )
+            }
+        }
+
         try validatePythonPackages(manifest, capabilities: capabilities)
         try validateScripts(
             inventory,
@@ -320,7 +333,8 @@ public struct SkillPackageValidator: Sendable {
         }
         let allowedKeys: Set<String> = [
             "schemaVersion", "id", "version", "capabilities", "tools",
-            "platforms", "scriptRuntime", "pythonPackages", "runtime"
+            "platforms", "scriptRuntime", "pythonPackages", "runtime",
+            "configuration"
         ]
         if let unknown = dictionary.keys.first(where: { !allowedKeys.contains($0) }) {
             throw SkillValidationError.invalidManifest("unknown field '\(unknown)'")

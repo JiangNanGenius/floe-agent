@@ -9,6 +9,15 @@ public enum SkillCapability: String, Codable, CaseIterable, Sendable, Hashable {
     case network = "network"
     case browserObserve = "browser.observe"
     case browserInteract = "browser.interact"
+    /// Read-only observation of the current device through a trusted native
+    /// automation client (screen/state snapshots). Distinct from browser
+    /// automation and from remote execution; unrelated backends must not
+    /// alias it.
+    case deviceObserve = "device.observe"
+    /// Interactive control of the current device through a trusted native
+    /// automation client. Always paired with task-level GUI authority; it is
+    /// not a shell, browser or remote-execution capability.
+    case deviceInteract = "device.interact"
     case credentials = "credentials"
     case localJavaScript = "javascript.local"
     case localPython = "python.local"
@@ -92,6 +101,10 @@ public struct SkillManifest: Codable, Equatable, Sendable {
     /// automatically, so old signed package bytes stay valid and unknown
     /// compatibility is never falsely certified.
     public var runtime: SkillRuntimeRequirements?
+    /// Optional user-fillable configuration declaration (ordinary variables,
+    /// Keychain-backed secrets and native connection requirements). Absent on
+    /// every legacy manifest; values never live in the package.
+    public var configuration: SkillConfigurationRequirements?
 
     public init(
         schemaVersion: Int = 1,
@@ -102,7 +115,8 @@ public struct SkillManifest: Codable, Equatable, Sendable {
         platforms: [String] = [SkillPlatform.iOS.rawValue],
         scriptRuntime: SkillScriptRuntime = .none,
         pythonPackages: [SkillPythonPackageRequirement] = [],
-        runtime: SkillRuntimeRequirements? = nil
+        runtime: SkillRuntimeRequirements? = nil,
+        configuration: SkillConfigurationRequirements? = nil
     ) {
         self.schemaVersion = schemaVersion
         self.id = id
@@ -113,11 +127,12 @@ public struct SkillManifest: Codable, Equatable, Sendable {
         self.scriptRuntime = scriptRuntime
         self.pythonPackages = pythonPackages
         self.runtime = runtime
+        self.configuration = configuration
     }
 
     private enum CodingKeys: String, CodingKey {
         case schemaVersion, id, version, capabilities, tools, platforms
-        case scriptRuntime, pythonPackages, runtime
+        case scriptRuntime, pythonPackages, runtime, configuration
     }
 
     public init(from decoder: any Decoder) throws {
@@ -135,6 +150,10 @@ public struct SkillManifest: Codable, Equatable, Sendable {
             forKey: .pythonPackages
         ) ?? []
         runtime = try container.decodeIfPresent(SkillRuntimeRequirements.self, forKey: .runtime)
+        configuration = try container.decodeIfPresent(
+            SkillConfigurationRequirements.self,
+            forKey: .configuration
+        )
     }
 }
 

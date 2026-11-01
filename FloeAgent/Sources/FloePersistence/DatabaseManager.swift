@@ -55,8 +55,9 @@ public actor DatabaseManager {
     /// Note: the v54 lane shipped `PRAGMA user_version = 54` while this
     /// constant still read 53; v55 restores the alignment invariant.
     /// v56 adds durable task-bound user questions; v57 adds the trusted
-    /// conversation origin used by scheduled-task presentation.
-    public static let currentSchemaVersion = 58
+    /// conversation origin used by scheduled-task presentation; v59 adds the
+    /// generic per-skill configuration store.
+    public static let currentSchemaVersion = 59
 
     public init(path: URL) throws {
         self.pool = try DatabasePool(path: path.path, configuration: Self.configuration())
@@ -133,6 +134,7 @@ public actor DatabaseManager {
         V56UserQuestions.register(into: &migrator)
         V57SchedulePresentation.register(into: &migrator)
         V58TaskExecutionBindings.register(into: &migrator)
+        V59SkillConfiguration.register(into: &migrator)
     }
 
     private static func configuration() -> Configuration {

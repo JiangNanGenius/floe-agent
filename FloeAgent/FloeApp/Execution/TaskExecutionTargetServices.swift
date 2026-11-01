@@ -24,6 +24,7 @@ extension AppEnvironment {
                 architectures: ["riscv64"], backend: .linuxVM, distribution: "debian",
                 launchGeneration: generation, isConnected: linuxGuestService != nil, resolution: .resolved)
         case .macBridge:
+            guard LocalBridgePlatform.current.supportsMacBridge else { return nil }
             return .macBridge(environmentID: environmentID, runID: runID,
                 architecture: record.architecture ?? "arm64", runtimeGeneration: record.runtimeGeneration,
                 isConnected: await MacBridgeClient.shared.isConnected())

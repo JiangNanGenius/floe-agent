@@ -82,6 +82,11 @@ public enum UserQuestionRequestState: String, Codable, Sendable, Hashable {
     case cancelled
 }
 
+public enum UserQuestionAnswerSensitivity: String, Codable, Sendable, Hashable {
+    case ordinary
+    case credential
+}
+
 // MARK: - Request surface
 
 public struct UserQuestionOption: Codable, Sendable, Hashable, Identifiable {
@@ -123,6 +128,7 @@ public struct UserQuestionFallback: Codable, Sendable, Hashable {
 public struct UserQuestionDraft: Codable, Sendable, Hashable {
     public var id: String?
     public var question: String
+    public var answerSensitivity: UserQuestionAnswerSensitivity
     public var options: [UserQuestionOption]
     public var selection: UserQuestionSelectionMode
     public var allowsFreeText: Bool
@@ -137,6 +143,7 @@ public struct UserQuestionDraft: Codable, Sendable, Hashable {
     public init(
         id: String? = nil,
         question: String,
+        answerSensitivity: UserQuestionAnswerSensitivity = .ordinary,
         options: [UserQuestionOption] = [],
         selection: UserQuestionSelectionMode = .single,
         allowsFreeText: Bool = false,
@@ -146,6 +153,7 @@ public struct UserQuestionDraft: Codable, Sendable, Hashable {
     ) {
         self.id = id
         self.question = question
+        self.answerSensitivity = answerSensitivity
         self.options = options
         self.selection = selection
         self.allowsFreeText = allowsFreeText
@@ -155,13 +163,14 @@ public struct UserQuestionDraft: Codable, Sendable, Hashable {
     }
 
     private enum CodingKeys: String, CodingKey {
-        case id, question, options, selection, allowsFreeText, waitPolicy, timeoutSeconds, fallback
+        case id, question, answerSensitivity, options, selection, allowsFreeText, waitPolicy, timeoutSeconds, fallback
     }
 
     public init(from decoder: any Decoder) throws {
         let values = try decoder.container(keyedBy: CodingKeys.self)
         id = try values.decodeIfPresent(String.self, forKey: .id)
         question = try values.decode(String.self, forKey: .question)
+        answerSensitivity = try values.decodeIfPresent(UserQuestionAnswerSensitivity.self, forKey: .answerSensitivity) ?? .ordinary
         options = try values.decodeIfPresent([UserQuestionOption].self, forKey: .options) ?? []
         selection = try values.decodeIfPresent(UserQuestionSelectionMode.self, forKey: .selection) ?? .single
         allowsFreeText = try values.decodeIfPresent(Bool.self, forKey: .allowsFreeText) ?? false
@@ -420,6 +429,7 @@ public struct UserQuestionRequest: Codable, Sendable, Hashable {
                 ordinal: index,
                 localID: localID,
                 text: trimmedText,
+                answerSensitivity: draft.answerSensitivity,
                 options: normalizedOptions,
                 selectionMode: draft.selection,
                 allowsFreeText: normalizedOptions.isEmpty ? true : draft.allowsFreeText,
@@ -489,6 +499,8 @@ public struct UserQuestion: Codable, Sendable, Hashable, Identifiable {
     public var ordinal: Int
     public var localID: String
     public var text: String
+    /// Optional for legacy persisted JSON; nil has ordinary semantics.
+    public var answerSensitivity: UserQuestionAnswerSensitivity? = nil
     public var options: [UserQuestionOption]
     public var selectionMode: UserQuestionSelectionMode
     public var allowsFreeText: Bool
@@ -519,6 +531,7 @@ public struct UserQuestion: Codable, Sendable, Hashable, Identifiable {
         ordinal: Int,
         localID: String,
         text: String,
+        answerSensitivity: UserQuestionAnswerSensitivity = .ordinary,
         options: [UserQuestionOption],
         selectionMode: UserQuestionSelectionMode,
         allowsFreeText: Bool,
@@ -543,6 +556,7 @@ public struct UserQuestion: Codable, Sendable, Hashable, Identifiable {
         self.ordinal = ordinal
         self.localID = localID
         self.text = text
+        self.answerSensitivity = answerSensitivity
         self.options = options
         self.selectionMode = selectionMode
         self.allowsFreeText = allowsFreeText

@@ -228,6 +228,17 @@ public actor SQLiteSkillStore {
         }
     }
 
+    /// One installed skill row without loading the whole library.
+    public func skill(id: String) async throws -> PersistedSkill? {
+        try await database.reader { db in
+            try Row.fetchOne(db, sql: """
+                SELECT skills.*, app_settings.value_json AS source_tracking_json
+                FROM skills LEFT JOIN app_settings ON app_settings.key = ? || skills.id
+                WHERE skills.id = ?
+                """, arguments: [Self.sourceTrackingPrefix, id]).map(Self.row)
+        }
+    }
+
     public func all() async throws -> [PersistedSkill] {
         try await database.reader { db in
             try Row.fetchAll(db, sql: """

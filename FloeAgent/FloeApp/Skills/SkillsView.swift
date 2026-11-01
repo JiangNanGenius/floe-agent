@@ -345,7 +345,10 @@ struct SkillsView: View {
                 )
             }
         }
-        .sheet(item: $updatingSkill) { skill in SkillGitHubUpgradeSheet(center: center, skill: skill) }
+        .sheet(item: $updatingSkill) { skill in
+            SkillGitHubUpgradeSheet(center: center, skill: skill)
+                .environment(\.skillConfigurationAccess, environment.skillConfigurationUIAccess)
+        }
         .sheet(item: $center.pendingInstallation, onDismiss: { Task { await center.cancelPendingInstallation() } }) { pending in
             SkillInstallReviewSheet(center: center, pending: pending)
         }
@@ -685,8 +688,12 @@ private struct SkillGitHubUpgradeSheet: View {
     @ObservedObject var center: SkillsCenter
     let skill: PersistedSkill
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.skillConfigurationAccess) private var configurationAccess
     @State private var confirmingRollback = false
     @State private var confirmingRemoval = false
+    @State private var removingSkill = false
+    @State private var configurationCleanupPending = false
+    @State private var removalError: String?
     /// A detail sheet can only review its own row's staged candidate.
     private var candidate: SkillUpgradeCandidate? {
         guard center.pendingUpgrade?.snapshot.package.manifest.id == skill.id else { return nil }
@@ -696,6 +703,15 @@ private struct SkillGitHubUpgradeSheet: View {
     var body: some View {
         NavigationStack {
             Form {
+                Section {
+                    NavigationLink {
+                        SkillConfigurationEntryView(skill: skill)
+                    } label: {
+                        Label(SkillConfigurationCopy.title, systemImage: "slider.horizontal.3")
+                            .frame(minHeight: FloeTheme.minimumTarget)
+                    }
+                    .accessibilityIdentifier("skills.configuration.\(skill.id)")
+                }
                 Section {
                     LabeledContent("skills.update.installed", value: "v\(skill.version)")
                     if let candidate {
@@ -756,26 +772,71 @@ private struct SkillGitHubUpgradeSheet: View {
                     }
                 }
                 if let error = center.errorMessage { Text(error).foregroundStyle(.red) }
+                if let removalError {
+                    Section {
+                        Text(removalError).foregroundStyle(.red)
+                        if configurationCleanupPending {
+                            Button(SkillConfigurationCopy.text("Retry configuration cleanup", "重试清理配置")) {
+                                Task { await removeSkill(disposition: .deleteCurrentProfile) }
+                            }
+                        }
+                    }
+                }
             }
-            .disabled(center.isWorking || center.isBatchRunning)
-            .overlay { if center.isWorking || center.isBatchRunning { ProgressView() } }
+            .disabled(center.isWorking || center.isBatchRunning || removingSkill)
+            .overlay { if center.isWorking || center.isBatchRunning || removingSkill { ProgressView() } }
             .navigationTitle(skill.name)
-            .toolbar { ToolbarItem(placement: .cancellationAction) { Button("action.cancel") { if candidate != nil { center.cancelUpgrade() }; dismiss() }.disabled(center.isWorking) } }
+            .toolbar { ToolbarItem(placement: .cancellationAction) { Button("action.cancel") { if candidate != nil { center.cancelUpgrade() }; dismiss() }.disabled(center.isWorking || removingSkill) } }
             .confirmationDialog("skills.skills_view.restore_previous_content_and_grants", isPresented: $confirmingRollback) {
                 Button("skills.skills_view.roll_back", role: .destructive) { Task { await center.rollbackLatestUpgrade(skill: skill); if center.errorMessage == nil { dismiss() } } }
                                 .disabled(center.isBatchRunning)
             }
             .confirmationDialog("skills.remove.title", isPresented: $confirmingRemoval) {
-                Button("action.delete", role: .destructive) {
+                Button(SkillConfigurationCopy.text("Uninstall · keep configuration", "卸载并保留配置"), role: .destructive) {
                     if candidate != nil { center.cancelUpgrade() }
-                    Task {
-                        await center.remove(skill)
-                        if center.errorMessage == nil { dismiss() }
+                    Task { await removeSkill(disposition: .retain) }
+                }
+                if configurationAccess?.uninstall != nil {
+                    Button(SkillConfigurationCopy.text("Uninstall · delete this configuration", "卸载并删除此配置"), role: .destructive) {
+                        if candidate != nil { center.cancelUpgrade() }
+                        Task { await removeSkill(disposition: .deleteCurrentProfile) }
                     }
                 }
+            } message: {
+                Text(SkillConfigurationCopy.text(
+                    "Shared credentials used elsewhere and data in separate apps are kept.",
+                    "其他配置使用的共享凭据和独立应用数据会保留。"))
             }
-            .interactiveDismissDisabled(center.isWorking)
+            .interactiveDismissDisabled(center.isWorking || removingSkill)
             .onDisappear { if !center.isWorking && candidate != nil { center.cancelUpgrade() } }
+        }
+    }
+
+    private func removeSkill(disposition: SkillConfigurationUninstallDisposition) async {
+        guard !removingSkill else { return }
+        removingSkill = true
+        defer { removingSkill = false }
+        removalError = nil
+        do {
+            if let access = configurationAccess, let uninstall = access.uninstall {
+                try await uninstall(skill, access.scope(skill), disposition)
+            } else {
+                // The existing removal path retains dormant configuration.
+                // Destructive cleanup is offered only with an ordered native
+                // coordinator; never delete credentials before uninstalling.
+                await center.remove(skill)
+                guard center.errorMessage == nil else { return }
+            }
+            dismiss()
+        } catch SkillConfigurationUninstallError.cleanupPending {
+            configurationCleanupPending = true
+            removalError = SkillConfigurationCopy.text(
+                "The skill was uninstalled. Configuration cleanup is incomplete; retry it here.",
+                "技能已卸载，配置尚未清理完成，可在此重试。")
+        } catch {
+            removalError = SkillConfigurationCopy.text(
+                "The skill could not be uninstalled. Its saved configuration was kept.",
+                "未能卸载技能，已保存的配置仍保留。")
         }
     }
 
@@ -1340,7 +1401,9 @@ private struct SkillInstallReviewSheet: View {
                 Section("skills.review.source") { Text(pending.sourceURL.absoluteString).font(.footnote) }
                 Section("skills.review.permissions") {
                     if pending.capabilityNames.isEmpty { Text("skills.review.none") }
-                    ForEach(pending.capabilityNames, id: \.self) { Text($0) }
+                    ForEach(pending.capabilityNames, id: \.self) { capability in
+                        Text(SkillConfigurationCopy.capabilityTitle(capability))
+                    }
                 }
                 if !pending.toolNames.isEmpty {
                     Section("skills.review.tools") { ForEach(pending.toolNames, id: \.self) { Text($0) } }

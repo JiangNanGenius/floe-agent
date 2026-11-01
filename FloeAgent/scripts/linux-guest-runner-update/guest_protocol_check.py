@@ -218,7 +218,7 @@ REQUIRED = [
     ("guest userland resolved a name through the guest resolver",
      rb"FLOE_NET_DNS_OK"),
     ("HELLO answered", rb"FLOE-CAPS hello1 runner=[^\s]+ protocol=3 "
-                       rb"maxCommands=[0-9]+ maxSessions=[0-9]+ net=[a-z]+"),
+                       rb"maxCommands=[0-9]+ maxSessions=[0-9]+ env=1 net=[a-z]+"),
     ("HELLO end", rb"FLOE-END hello1 0"),
     ("cc1 overlap", rb"FLOE_CC1_OF_4"), ("cc2 overlap", rb"FLOE_CC2_OF_4"),
     ("cc3 overlap", rb"FLOE_CC3_OF_4"), ("cc4 overlap", rb"FLOE_CC4_OF_4"),
@@ -297,12 +297,16 @@ def run_assert(transcript_path, share_dir, out_path):
     # runner source constants of the same commit, so the claim is not a regex
     # paraphrase of what the guest answered.
     caps_frame = CAPS_FRAME.search(blob)
-    caps_payload = caps_frame.group(2).decode("ascii", "replace").strip() if caps_frame else None
-    caps = pipeline_contract.parse_caps(caps_payload) if caps_payload else None
+    caps_payload_raw = caps_frame.group(2).decode("ascii", "replace").strip() if caps_frame else None
+    caps = pipeline_contract.parse_caps(caps_payload_raw) if caps_payload_raw else None
+    # The stable manifest payload excludes the host advertisement echo.
+    caps_payload = caps["payload"] if caps else caps_payload_raw
     extra = [
         ("HELLO token is hello1 and the answer is a framed 0x1e CAPS frame",
          caps_frame is not None and caps_frame.group(1) == b"hello1"),
-        ("CAPS payload parses as runner=/protocol=/maxCommands=/maxSessions=/net=", caps is not None),
+        ("CAPS payload parses as runner=/protocol=/maxCommands=/maxSessions=/env=/net=", caps is not None),
+        ("CAPS advertises per-process environment delivery (env=1)",
+         caps is not None and caps["env"] == "1"),
         ("CAPS reports the first-boot network field",
          caps is not None and caps["net"] in pipeline_contract.CAPS_NET_STATUSES),
         ("CAPS network state is up (the guest DNS probe answered)",
@@ -326,6 +330,9 @@ def run_assert(transcript_path, share_dir, out_path):
                "protocol": caps["protocol"] if caps else None,
                "maxCommands": caps["maxCommands"] if caps else None,
                "maxSessions": caps["maxSessions"] if caps else None,
+               "envSupport": caps["env"] if caps else None,
+               "hostArchive": caps["hostArchive"] if caps else None,
+               "capsPayloadRaw": caps_payload_raw,
                "netStatus": caps["net"] if caps else None,
                "checks": checks, "failures": failed}
     with open(out_path, "w", encoding="utf-8") as handle:

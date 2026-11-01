@@ -354,6 +354,9 @@ final class SkillsCenter: ObservableObject {
 
     func verifiedHubCatalogEntries(context: ToolContext) async throws -> [SkillHubCatalogEntry] {
         if context.environment?.variables["FLOE_EXECUTION_BACKEND"] == "macBridge" {
+            guard LocalBridgePlatform.current.supportsMacBridge else {
+                throw FloeError.invalidConfiguration(String(localized: "execution.location.unavailable_on_device"))
+            }
             let originals = MacOriginalSkillsCenter.shared
             await originals.refresh(using: environment)
             return try originals.catalogEntries()
@@ -509,6 +512,9 @@ final class SkillsCenter: ObservableObject {
 
     func verifiedHubCatalogDetail(id: String, context: ToolContext) async throws -> SkillHubCatalogDetail? {
         if context.environment?.variables["FLOE_EXECUTION_BACKEND"] == "macBridge" {
+            guard LocalBridgePlatform.current.supportsMacBridge else {
+                throw FloeError.invalidConfiguration(String(localized: "execution.location.unavailable_on_device"))
+            }
             return try await MacOriginalSkillsCenter.shared.catalogDetail(id: id, using: environment)
         }
         try SkillIdentifier.validate(id)
@@ -597,7 +603,8 @@ final class SkillsCenter: ObservableObject {
 
     func installMacOriginalSkill(_ request: SkillHubInstallRequest, context: ToolContext) async throws -> MacOriginalSkillInstallReceipt {
         try context.cancellation.throwIfCancelled()
-        guard !context.temporaryReadOnly, !context.publicWebOnly, context.approvalGrantID != nil,
+        guard LocalBridgePlatform.current.supportsMacBridge,
+              !context.temporaryReadOnly, !context.publicWebOnly, context.approvalGrantID != nil,
               let environmentID = context.environmentID ?? context.environment?.id,
               await environment.environmentRegistry.record(id: environmentID)?.effectiveExecutionBackend == .macBridge else {
             throw SkillHubInstallError.userChoiceBlocked
@@ -1769,6 +1776,21 @@ final class SkillsCenter: ObservableObject {
         return authority
     }
 
+    /// Exact enabled installation and this run's pinned package. A package
+    /// update never silently replaces instructions underneath a secret use.
+    func configurationInvocation(skillID: String, runID: UUID) async throws -> (skill: PersistedSkill, manifest: SkillManifest) {
+        guard let skill = try await environment.skillStore.skill(id: skillID), skill.status == "enabled" else {
+            throw FloeError.unauthorized
+        }
+        let pinned = try snapshot(for: skill, runID: runID)
+        let grants = try await environment.skillStore.allowedCapabilities(skillID: skillID)
+        guard pinned.package.canonicalSHA256 == skill.rewrittenDigest,
+              Set(pinned.package.manifest.capabilities).isSubset(of: grants) else {
+            throw FloeError.validationFailed("The Skill or its access changed. Start a new run before using its configuration.")
+        }
+        return (skill, pinned.package.manifest)
+    }
+
     func dependencyAuthorization(skillID: String) async -> SkillDependencyAuthority? {
         guard let row = try? await environment.skillStore.all().first(where: { $0.id == skillID }),
               let snapshot = try? snapshot(for: row, runID: nil),
@@ -2901,7 +2923,7 @@ final class SkillsCenter: ObservableObject {
         if let runtimeTargetResolver {
             return await runtimeTargetResolver.resolve(runID, resourceContext)
         }
-        if let runID, MacOriginalSkillsCenter.shared.isMacRun(runID) {
+        if LocalBridgePlatform.current.supportsMacBridge, let runID, MacOriginalSkillsCenter.shared.isMacRun(runID) {
             return .macBridge(
                 environmentID: resourceContext?.environmentID ?? "",
                 runID: runID
@@ -2930,12 +2952,24 @@ final class SkillsCenter: ObservableObject {
             .workspaceRead, .workspaceWrite, .workspaceDelete, .network,
             .browserObserve, .browserInteract
         ]
+        // Installation requires the compiled configuration/automation
+        // capability, not an already paired connection. Pairing and current
+        // readiness are enforced later by the native dispatcher.
+        capabilities.formUnion(Self.configurationCapabilities(platform: .current))
         if case .available = await environment.localPythonProbe.probe() {
             capabilities.insert(.localPython)
         }
         var tools = Set(ToolCatalog.allDescriptors.map(\.name))
         if !capabilities.contains(.localPython) { tools.remove(LocalPythonTool.name) }
         return (capabilities, tools)
+    }
+
+    static func configurationCapabilities(platform: LocalBridgePlatform) -> Set<SkillCapability> {
+        var capabilities: Set<SkillCapability> = [.credentials]
+        if platform.supportsIOSAutomation {
+            capabilities.formUnion([.deviceObserve, .deviceInteract])
+        }
+        return capabilities
     }
 
     /// A bounded model-safe limitation note. A remote/default target never
@@ -3143,7 +3177,13 @@ final class SkillsCenter: ObservableObject {
             return now.timeIntervalSince(skill.updatedAt) > 90 * 24 * 60 * 60
         }
         for skill in stale {
-            try? await environment.skillStore.setEnabled(false, id: skill.id)
+            do {
+                try await environment.skillStore.setEnabled(false, id: skill.id)
+                await environment.iosBridgeIntegration.skillStateDidChange(skillID: skill.id)
+            } catch {
+                // A failed durable disable must not be reported as applied.
+                continue
+            }
         }
     }
 
@@ -3279,7 +3319,7 @@ final class SkillsCenter: ObservableObject {
         let compatibilityContext = await appCompatibilityContext()
         // A resumed run may have migrated since its Mac-original snapshot
         // was pinned. Historical membership never overrides the live target.
-        let isMacOriginalRun = target?.backend == .macBridge
+        let isMacOriginalRun = LocalBridgePlatform.current.supportsMacBridge && target?.backend == .macBridge
             && (runID.map { MacOriginalSkillsCenter.shared.isMacRun($0) } ?? false)
 
         let rows = try await environment.skillStore.all().filter { id == nil || $0.id == id }
@@ -3545,6 +3585,7 @@ final class SkillsCenter: ObservableObject {
             _ = try await SkillInstallStagingService(installationRoot: installationRoot, metadataStore: metadata)
                 .installRewrittenPackage(at: temporary, provenance: provenance, replaceExisting: true, manifestOverride: Self.sidecarManifest(for: skill))
         }
+        await environment.iosBridgeIntegration.skillStateDidChange(skillID: skill.id)
         await load()
         return "status=applied id=\(skill.id) action=\(request.action.rawValue); use skill.read for the current digest"
     }

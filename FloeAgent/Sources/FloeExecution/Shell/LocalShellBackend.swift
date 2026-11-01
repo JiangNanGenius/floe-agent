@@ -98,6 +98,115 @@ public enum ShellTimeoutPolicy: String, Sendable, Codable, Equatable, Hashable {
     case advisory
 }
 
+/// Replaces exact sensitive values in command output, terminal streams and
+/// diagnostic strings. Longest values are replaced first so one secret that
+/// contains another cannot leave a partial value behind. This is a
+/// containment aid, not a sandbox: an authorized child can still transform or
+/// transfer a value it received.
+public struct SensitiveValueRedactor: Sendable, Equatable {
+    public static let placeholder = "[REDACTED]"
+
+    private let patterns: [[UInt8]]
+    private let placeholderBytes: [UInt8]
+
+    public init(values: [String], placeholder: String = SensitiveValueRedactor.placeholder) {
+        let unique = Set(values.filter { !$0.isEmpty })
+        self.patterns = unique
+            .sorted { lhs, rhs in
+                if lhs.utf8.count != rhs.utf8.count { return lhs.utf8.count > rhs.utf8.count }
+                return lhs < rhs
+            }
+            .map { Array($0.utf8) }
+        self.placeholderBytes = Array(placeholder.utf8)
+    }
+
+    public var isActive: Bool { !patterns.isEmpty }
+
+    public func redact(_ text: String) -> String {
+        guard isActive else { return text }
+        return String(decoding: redact(Data(text.utf8)), as: UTF8.self)
+    }
+
+    /// Complete-output variant for a one-shot result: after exact replacement
+    /// it also replaces a trailing proper prefix of a secret. A child that
+    /// stops after printing part of a credential must not leave that prefix
+    /// in the stored result. This can over-redact ordinary text ending in such
+    /// a prefix; security containment wins for the explicit sensitive path.
+    public func redactComplete(_ text: String) -> String {
+        guard isActive else { return text }
+        return String(decoding: redactComplete(Data(text.utf8)), as: UTF8.self)
+    }
+
+    public func redactComplete(_ data: Data) -> Data {
+        guard isActive else { return data }
+        var output = redact(data)
+        let bytes = [UInt8](output)
+        let suffix = longestHeldSuffix(bytes)
+        guard suffix > 0 else { return output }
+        let suffixStart = output.index(output.endIndex, offsetBy: -suffix)
+        output.removeSubrange(suffixStart..<output.endIndex)
+        output.append(contentsOf: placeholderBytes)
+        return output
+    }
+
+    public func redact(_ data: Data) -> Data {
+        guard isActive else { return data }
+        let bytes = [UInt8](data)
+        var output = Data()
+        output.reserveCapacity(bytes.count)
+        var index = 0
+        while index < bytes.count {
+            var matched: [UInt8]?
+            for pattern in patterns where index + pattern.count <= bytes.count {
+                if bytes[index..<index + pattern.count].elementsEqual(pattern) {
+                    matched = pattern
+                    break
+                }
+            }
+            if let matched {
+                output.append(contentsOf: placeholderBytes)
+                index += matched.count
+            } else {
+                output.append(bytes[index])
+                index += 1
+            }
+        }
+        return output
+    }
+
+    private func longestHeldSuffix(_ bytes: [UInt8]) -> Int {
+        var best = 0
+        for pattern in patterns {
+            let limit = min(pattern.count - 1, bytes.count)
+            guard limit > best else { continue }
+            var length = limit
+            while length > best {
+                let base = bytes.count - length
+                var matches = true
+                for offset in 0..<length where bytes[base + offset] != pattern[offset] {
+                    matches = false
+                    break
+                }
+                if matches {
+                    best = length
+                    break
+                }
+                length -= 1
+            }
+        }
+        return best
+    }
+}
+
+extension SensitiveProcessEnvironment {
+    /// Output/diagnostic containment for this exact set of values. Kept out
+    /// of the transport file so the Linux channel has no dependency on the
+    /// shell redaction helper.
+    public var redactor: SensitiveValueRedactor {
+        SensitiveValueRedactor(values: entries.map(\.value))
+    }
+}
+
 /// One bounded, non-interactive shell invocation.
 public struct ShellRunRequest: Sendable {
     /// Shell command string. Pipelines, redirections and globs are resolved
@@ -107,8 +216,17 @@ public struct ShellRunRequest: Sendable {
     public var cwd: String
     /// Workspace root for relative paths; native commands share the App process.
     public var rootURL: URL
-    /// Additional environment exported for this run only.
+    /// Additional ordinary environment for this run only. It is rendered
+    /// into the backend's command preamble; never put a credential here.
     public var environment: [String: String]
+    /// Native-only per-process credential environment. Delivered through a
+    /// backend's explicit sensitive channel (the Linux guest EXECENV/OPENENV
+    /// frames or the Mac Bridge environment field), never through the shell
+    /// command text, staged script, stdin or an ordinary job record. It is
+    /// populated only by resolved, authorized Skill secret handles; model
+    /// tool arguments cannot set it. nil keeps the request byte-identical to
+    /// the ordinary path.
+    public var sensitiveEnvironment: SensitiveProcessEnvironment?
     /// Optional stdin content (≤256 KiB enforced by the tool).
     public var stdin: String?
     /// The execution deadline this run receives. `.unlimited` (the policy
@@ -131,6 +249,7 @@ public struct ShellRunRequest: Sendable {
         cwd: String,
         rootURL: URL,
         environment: [String: String] = [:],
+        sensitiveEnvironment: SensitiveProcessEnvironment? = nil,
         stdin: String? = nil,
         deadline: ShellExecutionDeadline = .unlimited,
         gateTimeout: TimeInterval = 5,
@@ -143,6 +262,7 @@ public struct ShellRunRequest: Sendable {
         self.cwd = cwd
         self.rootURL = rootURL
         self.environment = environment
+        self.sensitiveEnvironment = sensitiveEnvironment
         self.stdin = stdin
         self.deadline = deadline
         self.gateTimeout = gateTimeout
@@ -185,7 +305,11 @@ public struct ShellOpenRequest: Sendable {
     public var command: String
     public var cwd: String
     public var rootURL: URL
+    /// Ordinary environment; rendered into the command preamble.
     public var environment: [String: String]
+    /// Native-only per-process credential environment (see
+    /// `ShellRunRequest.sensitiveEnvironment`).
+    public var sensitiveEnvironment: SensitiveProcessEnvironment?
     public var columns: Int
     public var rows: Int
     /// Bounded wait for the engine's process-wide run gate before the session
@@ -204,6 +328,7 @@ public struct ShellOpenRequest: Sendable {
         cwd: String = ".",
         rootURL: URL,
         environment: [String: String] = [:],
+        sensitiveEnvironment: SensitiveProcessEnvironment? = nil,
         columns: Int = 80,
         rows: Int = 24,
         gateTimeout: TimeInterval = 5,
@@ -216,6 +341,7 @@ public struct ShellOpenRequest: Sendable {
         self.cwd = cwd
         self.rootURL = rootURL
         self.environment = environment
+        self.sensitiveEnvironment = sensitiveEnvironment
         self.columns = columns
         self.rows = rows
         self.gateTimeout = gateTimeout
@@ -652,6 +778,11 @@ public final class ShellGuestRunShapeCenter: @unchecked Sendable {
 public protocol LocalShellBackend: Sendable {
     func run(_ request: ShellRunRequest, cancellation: CancellationToken?) async -> ShellRunOutcome
 
+    /// Dynamic-dispatch capability requirement: a caller holding
+    /// `any LocalShellBackend` must see the concrete backend's answer. The
+    /// default extension returns false; Linux and Mac override it.
+    func supportsSensitiveProcessEnvironment(for environment: ToolEnvironment?) -> Bool
+
     /// The deadline this backend will actually enforce for one run, given
     /// the service-normalized value. Synchronous and read-only so the tool
     /// receipt and the journal can name the same deadline the command truly
@@ -672,6 +803,13 @@ public protocol LocalShellBackend: Sendable {
 }
 
 public extension LocalShellBackend {
+    /// True only when THIS target has an explicit per-process secret channel
+    /// (Linux guest EXECENV/OPENENV, Mac Bridge envp). The default is false so
+    /// the caller can refuse a sensitive request instead of letting a backend
+    /// silently run without it. The environment is the resolved execution
+    /// target, never model-supplied raw values.
+    func supportsSensitiveProcessEnvironment(for environment: ToolEnvironment?) -> Bool { false }
+
     func signalSession(sessionID: String, signal: ShellSignal) async {}
     func resizeSession(sessionID: String, columns: Int, rows: Int) async {}
 

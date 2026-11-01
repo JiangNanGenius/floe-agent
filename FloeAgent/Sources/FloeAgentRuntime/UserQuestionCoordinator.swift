@@ -89,6 +89,7 @@ public actor UserQuestionCoordinator: UserQuestionAnswering, UserQuestionRuntime
     private let store: UserQuestionStore
     private let eventHandler: (@Sendable (UserQuestionEvent) async -> Void)?
     private let now: @Sendable () -> Date
+    private let answerNormalizer: (@Sendable (UserQuestionAnswer, UserQuestion, Bool) async throws -> UserQuestionAnswer)?
 
     /// One parked execution per request. The continuation is resumed by the
     /// next accepted answer, expiry, cancel or terminal fence.
@@ -106,11 +107,13 @@ public actor UserQuestionCoordinator: UserQuestionAnswering, UserQuestionRuntime
     public init(
         store: UserQuestionStore,
         eventHandler: (@Sendable (UserQuestionEvent) async -> Void)? = nil,
-        now: @escaping @Sendable () -> Date = { Date() }
+        now: @escaping @Sendable () -> Date = { Date() },
+        answerNormalizer: (@Sendable (UserQuestionAnswer, UserQuestion, Bool) async throws -> UserQuestionAnswer)? = nil
     ) {
         self.store = store
         self.eventHandler = eventHandler
         self.now = now
+        self.answerNormalizer = answerNormalizer
     }
 
     // MARK: - Tool entry point
@@ -176,7 +179,8 @@ public actor UserQuestionCoordinator: UserQuestionAnswering, UserQuestionRuntime
         target: UserQuestionAnswerTarget,
         draft: UserQuestionAnswer
     ) async throws -> UserQuestionDraftReceipt {
-        try await store.saveDraft(target: target, draft: draft, now: now())
+        let safe = try await normalizedAnswer(draft, target: target, partial: true)
+        return try await store.saveDraft(target: target, draft: safe, now: now())
     }
 
     /// Notification-specific entry. The bridge can only target identifiers
@@ -214,9 +218,10 @@ public actor UserQuestionCoordinator: UserQuestionAnswering, UserQuestionRuntime
         target: UserQuestionAnswerTarget,
         answer: UserQuestionAnswer
     ) async throws -> UserQuestionAnswerReceipt {
+        let safe = try await normalizedAnswer(answer, target: target, partial: false)
         let receipt = try await store.submitHumanAnswer(
             target: target,
-            answer: answer,
+            answer: safe,
             now: now()
         )
         guard receipt.accepted else { return receipt }
@@ -242,6 +247,20 @@ public actor UserQuestionCoordinator: UserQuestionAnswering, UserQuestionRuntime
             await emit(.answerAvailable(delivery))
         }
         return receipt
+    }
+
+    private func normalizedAnswer(_ answer: UserQuestionAnswer, target: UserQuestionAnswerTarget,
+                                  partial: Bool) async throws -> UserQuestionAnswer {
+        guard let normalizer = answerNormalizer else { return answer }
+        guard let snapshot = try await store.snapshot(requestID: target.requestID),
+              snapshot.conversationID == target.conversationID, snapshot.runID == target.runID,
+              let question = snapshot.questions.first(where: { $0.questionID == target.questionID }),
+              question.isPending, question.revision == target.expectedRevision else {
+            // Preserve the store's canonical stale/already-settled receipt.
+            return answer
+        }
+        let validated = try answer.validated(for: question, partial: partial)
+        return try await normalizer(validated, question, snapshot.isEphemeral)
     }
 
     // MARK: - Cancel / expiry

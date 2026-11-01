@@ -1528,8 +1528,10 @@ public actor TinyEMULinuxGuestRegistry {
             do {
                 // Persistent-disk runner upgrade: the disk is a mutable clone,
                 // so a new catalog image does not change the runner inside it.
-                // Probe the booted runner; when it predates protocol 3 and the
-                // image ships a verified runner artifact, replace
+                // Probe the booted runner; when it predates protocol 3, or it
+                // is protocol-current but lacks an additive capability the
+                // trusted image manifest explicitly requires, and the image
+                // ships a verified runner artifact, replace
                 // /usr/local/bin/floe-exec in the guest from those bytes
                 // (preserving every installed package and file) and reboot
                 // into the new runner. Without an artifact the start fails with
@@ -1826,12 +1828,12 @@ public actor TinyEMULinuxGuestRegistry {
     // MARK: persistent-disk runner upgrade
 
     /// Ensures the runner booted inside this environment's persistent disk
-    /// matches the protocol this build speaks, and returns the channel the
-    /// session must use. The disk is a mutable clone of the verified base, so
-    /// a catalog image update alone never changes the runner inside it; this
-    /// path upgrades the runner in-guest from the image's verified standalone
-    /// runner artifact, preserving every installed package and file, or fails
-    /// with an actionable error.
+    /// matches the protocol and capability contract this build requires, and
+    /// returns the channel the session must use. The disk is a mutable clone
+    /// of the verified base, so a catalog image update alone never changes the
+    /// runner inside it; this path upgrades the runner in-guest from the
+    /// image's verified standalone runner artifact, preserving every installed
+    /// package and file, or fails with an actionable error.
     ///
     /// Console ownership: a TinyEMU VM has exactly ONE immutable console
     /// stream and the channel has exactly one router reading it. Cancelling
@@ -1842,9 +1844,13 @@ public actor TinyEMULinuxGuestRegistry {
     ///  1. Probe the *live* runner with FLOE-HELLO on the production channel.
     ///     The runner-upgrade ledger is a record, never a substitute for this
     ///     probe: a disk upgraded elsewhere still has to answer.
-    ///  2. A protocol-3 answer means the disk is current; the session keeps
-    ///     this channel.
-    ///  3. Otherwise (legacy runner): require the image's verified
+    ///  2. A live answer that satisfies the trusted image contract means the
+    ///     disk is current; the session keeps this channel. Protocol 3 alone
+    ///     is sufficient for an image with no additive requirement; when the
+    ///     image's `runnerCapabilities` explicitly carries `env=1`, the live
+    ///     CAPS must carry it too.
+    ///  3. Otherwise (legacy runner, or a protocol-current runner missing a
+    ///     required additive capability): require the image's verified
     ///     `runnerArtifact` + `runnerCapabilities`, switch the one channel
     ///     into legacy serial mode (`enterLegacySerialMode`: no HELLO, one
     ///     exchange at a time, same reader) and run the upgrade. Every step
@@ -1858,10 +1864,11 @@ public actor TinyEMULinuxGuestRegistry {
     ///     keeps reading, so the rebooted output reaches the same reader.
     ///  5. At the reboot boundary `resetRouterState()` drops the old boot's
     ///     routing state and `leaveLegacySerialMode()` restores negotiation;
-    ///     only after the rebooted runner answers CAPS equal to the manifest's
-    ///     expectation is the channel handed to the session. Any failure
-    ///     leaves the persistent disk in place with an honest error and the
-    ///     caller closes the VM.
+    ///     only after the rebooted runner answers CAPS that satisfy the
+    ///     manifest's requirement (protocol 3 plus every explicitly required
+    ///     additive capability) is the channel handed to the session. Any
+    ///     failure leaves the persistent disk in place with an honest error
+    ///     and the caller closes the VM.
     private func ensureGuestRunnerCurrent(
         descriptor: LinuxGuestEnvironmentDescriptor,
         image: LinuxGuestImage,
@@ -1873,10 +1880,15 @@ public actor TinyEMULinuxGuestRegistry {
         let expected = image.runnerCapabilities?.trimmingCharacters(in: .whitespacesAndNewlines)
 
         // 1. Live probe. A legacy runner never answers, so the probe is
-        // bounded and returns nil rather than hanging.
-        if let capabilities = try await channel.probeCapabilities(
+        // bounded and returns nil rather than hanging. The compatibility
+        // decision reads the LIVE answer, never the ledger.
+        let liveCapabilities = try await channel.probeCapabilities(
             timeout: limits.runnerProbeTimeout, requireCurrentProtocol: false
-        ), isCurrentProtocol(capabilities) {
+        )
+        let decision = LinuxGuestRunnerUpgradePolicy.evaluate(
+            required: expected, live: liveCapabilities
+        )
+        if decision == .current, let capabilities = liveCapabilities {
             try await channel.acceptExternalNegotiation(capabilities: capabilities)
             // Keep the ledger truthful for diagnostics, but it is written
             // only because the live runner answered; it is never read as
@@ -1890,32 +1902,58 @@ public actor TinyEMULinuxGuestRegistry {
             }
             return (channel, capabilities)
         }
+        guard case .upgrade(let upgradeReason) = decision else {
+            // The policy never reports current for a nil live answer, but an
+            // unforeseen change must not silently accept an unproven runner.
+            throw LinuxGuestError.runnerUpgradeRequired(
+                required: "protocol 3 runner",
+                found: "the live runner did not answer capability negotiation"
+            )
+        }
 
-        // 2. Legacy runner. Without a verified artifact there is no safe
+        // Describe the requirement and the live failure once, so every
+        // artifact/verification branch below keeps an actionable, distinct
+        // reason (missing artifact vs. missing capability vs. failed install).
+        let requiredSummary: String
+        let foundSummary: String
+        switch upgradeReason {
+        case .legacyRunner:
+            requiredSummary = "protocol 3 runner"
+            foundSummary = "legacy pre-protocol-3 runner inside the environment disk"
+        case .requiredCapabilityMissing(let capability):
+            requiredSummary =
+                "protocol 3 runner with the additive '\(capability)' capability"
+            foundSummary =
+                "the live runner reports '\(boundedDetail(liveCapabilities ?? "no capability answer"))' without the required '\(capability)' capability"
+        }
+
+        // 2. Legacy/stale runner. Without a verified artifact there is no safe
         // upgrade; fail with an actionable error rather than booting a runner
-        // that cannot route concurrent tokens.
+        // that cannot route concurrent tokens or deliver the required
+        // capability. The artifact path below is the same for both cases:
+        // it replaces only the runner binary inside the persistent disk.
         guard let artifact = image.runnerArtifact else {
             throw LinuxGuestError.runnerUpgradeRequired(
-                required: "protocol 3 runner (image '\(image.id)' ships no verified runner upgrade artifact)",
-                found: "legacy pre-protocol-3 runner inside the environment disk"
+                required: "\(requiredSummary) (image '\(image.id)' ships no verified runner upgrade artifact)",
+                found: foundSummary
             )
         }
         guard artifact.role == .runner else {
             throw LinuxGuestError.runnerUpgradeRequired(
-                required: "protocol 3 runner (image '\(image.id)' declares its runner artifact with the 'runner' role, not '\(artifact.role.rawValue)')",
-                found: "legacy pre-protocol-3 runner inside the environment disk"
+                required: "\(requiredSummary) (image '\(image.id)' declares its runner artifact with the 'runner' role, not '\(artifact.role.rawValue)')",
+                found: foundSummary
             )
         }
         guard let expected, !expected.isEmpty else {
             throw LinuxGuestError.runnerUpgradeRequired(
-                required: "protocol 3 runner (image '\(image.id)' records no runnerCapabilities payload)",
-                found: "legacy pre-protocol-3 runner inside the environment disk"
+                required: "\(requiredSummary) (image '\(image.id)' records no runnerCapabilities payload)",
+                found: foundSummary
             )
         }
         guard let imageDirectory else {
             throw LinuxGuestError.runnerUpgradeRequired(
-                required: "protocol 3 runner",
-                found: "legacy runner, and this resolver cannot verify the upgrade artifact bytes"
+                required: requiredSummary,
+                found: "\(foundSummary), and this resolver cannot verify the upgrade artifact bytes"
             )
         }
         // Same containment/symlink/size/digest checks as the boot artifacts;
@@ -1955,15 +1993,31 @@ public actor TinyEMULinuxGuestRegistry {
         await channel.resetRouterState()
         await channel.leaveLegacySerialMode()
 
-        // 5. The rebooted runner must answer on the same reader with exactly
-        // the contract the manifest declared.
+        // 5. The rebooted runner must answer on the same reader with the
+        // contract the manifest declared. A nominal protocol version is not
+        // enough: an explicitly required additive capability must be present
+        // in the ACTUAL post-upgrade CAPS before this channel is accepted.
         let rebootProbeTimeout = max(15, limits.runnerProbeTimeout)
         guard let capabilities = try await channel.probeCapabilities(
             timeout: rebootProbeTimeout, requireCurrentProtocol: false
-        ), isCurrentProtocol(capabilities) else {
+        ) else {
+            throw LinuxGuestError.runnerUpgradeRequired(
+                required: expected,
+                found: "the guest rebooted but the runner did not answer capability negotiation"
+            )
+        }
+        switch LinuxGuestRunnerUpgradePolicy.evaluate(required: expected, live: capabilities) {
+        case .current:
+            break
+        case .upgrade(.legacyRunner):
             throw LinuxGuestError.runnerUpgradeRequired(
                 required: expected,
                 found: "the guest rebooted but the runner still does not answer protocol 3"
+            )
+        case .upgrade(.requiredCapabilityMissing(let capability)):
+            throw LinuxGuestError.runnerUpgradeRequired(
+                required: expected,
+                found: "the guest rebooted but the live runner reports '\(boundedDetail(capabilities))' without the explicitly required '\(capability)' capability; the installed artifact did not provide it"
             )
         }
         guard runnerIdentity(of: capabilities) == runnerIdentity(of: expected) else {
@@ -2277,15 +2331,6 @@ public actor TinyEMULinuxGuestRegistry {
         let allowed = Set("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789/._-")
         guard guestPath.allSatisfy({ allowed.contains($0) }) else { return nil }
         return guestPath
-    }
-
-    private func isCurrentProtocol(_ capabilities: String) -> Bool {
-        for field in capabilities.split(separator: " ") where field.hasPrefix("protocol=") {
-            if let value = Int(field.dropFirst("protocol=".count)) {
-                return value >= 3
-            }
-        }
-        return false
     }
 
     /// Runner-owned fields of a CAPS payload, for identity comparison. The

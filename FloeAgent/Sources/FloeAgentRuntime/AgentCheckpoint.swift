@@ -88,8 +88,9 @@ public struct AgentToolLifecycleEntry: Sendable, Codable, Hashable {
     }
 }
 
-/// Stable, secret-free description of the exact provider boundary that was
-/// committed before a request went onto the wire. It lets recovery reject a
+/// Stable, secret-free description of the canonical provider boundary that
+/// was committed before dispatch. A modelInputProjection marker explicitly
+/// distinguishes a safe recovery projection from materialized RAM-only input. It lets recovery reject a
 /// run restored with a different provider/model and keeps the prompt, schema
 /// and tool-pairing inputs auditable without persisting credentials or raw
 /// image bytes a second time.
@@ -100,6 +101,9 @@ public struct ProviderDispatchEnvelope: Sendable, Codable, Hashable {
     public var modelID: UUID
     public var remoteModelID: String
     public var conversationMode: String
+    /// Digest of the canonical safe request. A non-nil projection marker
+    /// explicitly means it is not a hash of disclosed plaintext wire bytes.
+    public var modelInputProjection: String? = nil
     public var messagesDigest: String
     public var toolSchemasDigest: String
     public var pendingCallIDs: [String]
@@ -136,8 +140,9 @@ public struct ProviderDispatchEnvelope: Sendable, Codable, Hashable {
     }
 }
 
-/// Secret-free, wire-neutral copy of the exact request that crossed the
-/// provider boundary. A digest alone can detect drift, but cannot replay the
+/// Secret-free, wire-neutral recovery copy of the request. When marked with
+/// modelInputProjection, authorized user plaintext is rehydrated only in RAM
+/// for the selected primary; this is not a claim to retain exact raw bytes. A digest alone can detect drift, but cannot replay the
 /// original request after a process restart. Persisting this snapshot keeps
 /// recovery independent from a second compaction pass or catalog ordering.
 public struct ProviderDispatchRequestSnapshot: Sendable, Codable, Hashable {
@@ -166,6 +171,8 @@ public struct ProviderDispatchRequestSnapshot: Sendable, Codable, Hashable {
 
     public var provider: ProviderProfile
     public var model: ModelProfile
+    /// Raw source input is materialized only in RAM for the selected primary.
+    public var modelInputProjection: String? = nil
     public var messages: [Message]
     public var toolResults: [Result]
     public var pendingToolCalls: [ToolCall]

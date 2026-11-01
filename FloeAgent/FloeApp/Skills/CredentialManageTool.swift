@@ -20,25 +20,24 @@ struct CredentialManageTool: AgentTool {
         /// providerAPIKey, sshPassword, sshPrivateKey, vncPassword,
         /// websitePassword or genericToken (create only).
         var kind: String?
-        /// One-time secret for create/update; never returned afterwards.
+        /// One-time secret for create/update, or the run-bound
+        /// ⟨credential:id⟩ reference produced by argument normalization.
         var secret: String?
         /// Optional paired-host UUID the credential belongs to.
         var hostID: String?
     }
 
-    static let name = "credential.manage"
-    static let toolDescription = "Manage credential cards directly: list (secret-free metadata only), create (label + kind + one-time secret), update (id + new label and/or replacement secret), delete (id). Returns the stable ⟨credential:id⟩ reference for use wherever a credentialInput is accepted. Secrets are stored in the device Keychain and never returned."
-    static let parametersJSON = #"{"type":"object","properties":{"action":{"type":"string","enum":["list","create","update","delete"]},"id":{"type":"string","description":"Credential UUID (update/delete)"},"label":{"type":"string","maxLength":200},"kind":{"type":"string","enum":["providerAPIKey","sshPassword","sshPrivateKey","vncPassword","websitePassword","genericToken"]},"secret":{"type":"string","description":"One-time setup/replacement secret; never returned"},"hostID":{"type":"string","description":"Optional paired-host UUID"}},"required":["action"],"additionalProperties":false}"#
+    static let name = CredentialCardService.toolName
+    static let toolDescription = "Manage credential cards directly: list (secret-free metadata only), create (label + kind + one-time secret), update (id + new label and/or replacement secret), delete (id). Returns the stable ⟨credential:id⟩ reference for use wherever a credentialInput is accepted. Secrets are stored in the device Keychain and never returned. A normalized ⟨credential:id⟩ reference is consumed as the one-time value, never stored as literal secret text."
+    static let parametersJSON = #"{"type":"object","properties":{"action":{"type":"string","enum":["list","create","update","delete"]},"id":{"type":"string","description":"Credential UUID (update/delete)"},"label":{"type":"string","maxLength":200},"kind":{"type":"string","enum":["providerAPIKey","sshPassword","sshPrivateKey","vncPassword","websitePassword","genericToken"]},"secret":{"type":"string","description":"One-time setup/replacement secret, or the run-bound ⟨credential:id⟩ reference; never returned"},"hostID":{"type":"string","description":"Optional paired-host UUID"}},"required":["action"],"additionalProperties":false}"#
     static let riskLabels: Set<RiskLabel> = [.accessesCredentials, .persistsPersonalData]
     static let isSideEffecting = true
     static let toolEffect: ToolEffect = .mutating
 
-    private let vault: CredentialVaultService
-    private let store: CredentialStore
+    private let service: CredentialCardService
 
-    init(vault: CredentialVaultService, store: CredentialStore) {
-        self.vault = vault
-        self.store = store
+    init(service: CredentialCardService) {
+        self.service = service
     }
 
     func validate(_ args: Arguments) throws {
@@ -79,15 +78,19 @@ struct CredentialManageTool: AgentTool {
             throw FloeError.validationFailed("Credential management requires approval")
         }
         switch args.action {
-        case "list": return try await list()
-        case "create": return try await create(args)
-        case "update": return try await update(args)
-        default: return try await delete(args)
+        case "list":
+            return try await list()
+        case "create":
+            return try await create(args, context: context)
+        case "update":
+            return try await update(args, context: context)
+        default:
+            return try await delete(args)
         }
     }
 
     private func list() async throws -> ToolExecutionOutput {
-        let cards = try await store.cards()
+        let cards = try await service.list()
         let rows: [[String: Any]] = cards.map { card in
             var row: [String: Any] = [
                 "id": card.id.uuidString,
@@ -104,36 +107,47 @@ struct CredentialManageTool: AgentTool {
         return Self.output(String(decoding: data, as: UTF8.self))
     }
 
-    private func create(_ args: Arguments) async throws -> ToolExecutionOutput {
-        let handle = try await vault.capture(
-            Data(args.secret!.utf8),
-            kind: CredentialKind(rawValue: args.kind!)!,
-            owner: .vault,
-            label: args.label!.trimmingCharacters(in: .whitespacesAndNewlines),
-            hostID: args.hostID.flatMap(UUID.init(uuidString:)),
-            origin: "credential.manage"
+    private func create(_ args: Arguments, context: ToolContext) async throws -> ToolExecutionOutput {
+        guard let kind = args.kind.flatMap(CredentialKind.init(rawValue:)) else {
+            throw FloeError.validationFailed("create requires a valid kind")
+        }
+        let mutation = try await service.create(
+            CredentialCardCreateInput(
+                label: args.label!,
+                kind: kind,
+                secret: args.secret,
+                hostID: args.hostID.flatMap(UUID.init(uuidString:))
+            ),
+            runID: context.runID
         )
-        return Self.output("status=ok action=create id=\(handle.id.uuidString) reference=⟨credential:\(handle.id.uuidString)⟩ secretReturned=false")
+        var text = "status=ok action=create id=\(mutation.id.uuidString) reference=⟨credential:\(mutation.id.uuidString)⟩ secretReturned=false"
+        if let warning = mutation.cleanupWarning {
+            text += " warning=\(warning)"
+        }
+        return Self.output(text)
     }
 
-    private func update(_ args: Arguments) async throws -> ToolExecutionOutput {
-        let handle = CredentialHandle(id: UUID(uuidString: args.id!)!)
-        var changed: [String] = []
-        if let label = args.label?.trimmingCharacters(in: .whitespacesAndNewlines), !label.isEmpty {
-            try await vault.updateLabel(handle, label: label)
-            changed.append("label")
+    private func update(_ args: Arguments, context: ToolContext) async throws -> ToolExecutionOutput {
+        guard let id = UUID(uuidString: args.id!) else {
+            throw FloeError.validationFailed("update requires a credential UUID")
         }
-        if let secret = args.secret, !secret.isEmpty {
-            try await vault.replaceSecret(handle, secret: Data(secret.utf8))
-            changed.append("secret")
+        let mutation = try await service.update(
+            CredentialCardUpdateInput(id: id, label: args.label, secret: args.secret),
+            runID: context.runID
+        )
+        var text = "status=ok action=update id=\(mutation.id.uuidString) changed=\(mutation.changed.joined(separator: ","))"
+        if let warning = mutation.cleanupWarning {
+            text += " warning=\(warning)"
         }
-        return Self.output("status=ok action=update id=\(handle.id.uuidString) changed=\(changed.joined(separator: ","))")
+        return Self.output(text)
     }
 
     private func delete(_ args: Arguments) async throws -> ToolExecutionOutput {
-        let handle = CredentialHandle(id: UUID(uuidString: args.id!)!)
-        try await vault.delete(handle)
-        return Self.output("status=ok action=delete id=\(handle.id.uuidString)")
+        guard let id = UUID(uuidString: args.id!) else {
+            throw FloeError.validationFailed("delete requires a credential UUID")
+        }
+        try await service.delete(id: id)
+        return Self.output("status=ok action=delete id=\(id.uuidString)")
     }
 
     private static func output(_ text: String) -> ToolExecutionOutput {
@@ -142,8 +156,19 @@ struct CredentialManageTool: AgentTool {
 }
 
 @MainActor
-func registerCredentialManageTool(vault: CredentialVaultService, store: CredentialStore, registry: ToolRunnerRegistry = .shared) {
+func registerCredentialManageTool(
+    vault: CredentialVaultService,
+    store: CredentialStore,
+    skillConfigurationStore: SkillConfigurationStore? = nil,
+    registry: ToolRunnerRegistry = .shared
+) {
     ToolCatalog.register(CredentialManageTool.self)
-    registry.register(CredentialManageTool(vault: vault, store: store))
+    registry.register(CredentialManageTool(
+        service: CredentialCardService(
+            records: store,
+            vault: vault,
+            skillConfigurationStore: skillConfigurationStore
+        )
+    ))
 }
 #endif

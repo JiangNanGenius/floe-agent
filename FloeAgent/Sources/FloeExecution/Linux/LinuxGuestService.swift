@@ -45,6 +45,10 @@ public enum LinuxGuestError: Error, LocalizedError, Sendable, Equatable {
     /// a lower protocol): concurrent tokens would corrupt output, so the
     /// channel fails closed until the runner component is updated.
     case runnerUpgradeRequired(required: String, found: String?)
+    /// The negotiated runner predates the additive per-process environment
+    /// frames (CAPS `env=1`). Secret values were NOT sent and no inline
+    /// export fallback exists; the guest image component must be updated.
+    case perProcessEnvironmentUnsupported(found: String?)
     /// The request asks for two harts but THIS image (kernel/firmware) has
     /// no SMP capability evidence. This is a permanent shape/image mismatch,
     /// reported immediately as an actionable error — distinct from a
@@ -102,6 +106,9 @@ public enum LinuxGuestError: Error, LocalizedError, Sendable, Equatable {
         case .runnerUpgradeRequired(let required, let found):
             let detail = found.map { " (guest reported: \($0))" } ?? " (guest runner does not answer capability negotiation)"
             return "The Linux guest runner is too old: this build requires \(required)\(detail). Update the guest image component."
+        case .perProcessEnvironmentUnsupported(let found):
+            let detail = found.map { " (guest reported: \($0))" } ?? " (the guest did not report per-process environment support)"
+            return "This Linux guest runner does not support per-process secret environment delivery\(detail). No secret value was sent and no inline export fallback was used. Update the Linux guest image component (runner 2.1.0 or newer), then retry."
         case .smpUnsupportedByImage(let id):
             return "The Linux image for environment \(id) does not support two cores: its verified manifest does not prove SMP (the matching CONFIG_SMP kernel/firmware pair). Install or update the Linux image component (Settings → Execution environment) and retry, or start a new environment once the SMP-capable image is published; an explicit 2-core request is refused and never silently reduced to one core."
         case .shapeExceedsPoolCapacity(let detail):
@@ -158,6 +165,11 @@ public struct LinuxGuestLimits: Sendable, Equatable {
     /// as a "command exceeds" message. The tool's own stdin policy is a
     /// separate, smaller bound owned by the shell validation layer.
     public var maxEnvelopeBytes: Int
+    /// Ceiling for the per-process sensitive environment block (EXECENV /
+    /// OPENENV). Kept at the runner's own MAX_ENV_BYTES (64 KiB) so the host
+    /// never frames an environment the pinned runner would reject; this is a
+    /// separate budget from the command text and stdin.
+    public var maxSensitiveEnvironmentBytes: Int
     public var defaultCommandTimeout: TimeInterval
     public var maxCommandTimeout: TimeInterval
     /// How long to wait for the guest console to answer a command.
@@ -219,6 +231,7 @@ public struct LinuxGuestLimits: Sendable, Equatable {
         maxOutputBytes: Int = 1024 * 1024,
         maxCommandBytes: Int = 32 * 1024,
         maxEnvelopeBytes: Int = 256 * 1024,
+        maxSensitiveEnvironmentBytes: Int = 64 * 1024,
         defaultCommandTimeout: TimeInterval = 300,
         maxCommandTimeout: TimeInterval = 1800,
         commandTimeout: TimeInterval = 300,
@@ -243,6 +256,13 @@ public struct LinuxGuestLimits: Sendable, Equatable {
         // scripts are unaffected — they never ride the envelope.
         self.maxCommandBytes = max(1024, min(Self.runnerEnvelopeBytes, maxCommandBytes))
         self.maxEnvelopeBytes = max(self.maxCommandBytes, min(Self.runnerEnvelopeBytes, maxEnvelopeBytes))
+        // The runner's MAX_ENV_BYTES is 64 KiB and its block is a field in
+        // the 256 KiB envelope, so both the runner bound and the envelope
+        // bound apply.
+        self.maxSensitiveEnvironmentBytes = max(
+            1024,
+            min(Self.runnerEnvelopeBytes, maxSensitiveEnvironmentBytes)
+        )
         self.defaultCommandTimeout = defaultCommandTimeout
         self.maxCommandTimeout = maxCommandTimeout
         self.commandTimeout = commandTimeout
@@ -1386,3 +1406,11 @@ enum LinuxGuestBootArguments {
         return fields.joined(separator: " ")
     }
 }
+
+/// The production TinyEMU service is the only `LinuxCommandRunning`
+/// implementation whose `run`/`openSession` path reaches
+/// `LinuxGuestCommandChannel` (through `TinyEMULinuxGuestRegistry`). Adopting
+/// this marker lets `LinuxGuestShellBackend` deliver a scoped sensitive
+/// environment ticket through that existing signature; any other backend is
+/// refused before a command runs instead of silently dropping the values.
+extension TinyEMULinuxCommandService: LinuxGuestSensitiveEnvironmentDelivering {}

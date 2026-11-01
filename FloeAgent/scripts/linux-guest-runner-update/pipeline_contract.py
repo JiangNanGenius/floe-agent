@@ -24,7 +24,9 @@ import re
 CAPS_PATTERN = re.compile(
     r"^runner=(?P<runner>\S+) protocol=(?P<protocol>\d+) "
     r"maxCommands=(?P<maxCommands>\d+) maxSessions=(?P<maxSessions>\d+)"
-    r"(?: net=(?P<net>up|partial|down))?$")
+    r"(?: env=(?P<env>0|1))?"
+    r"(?: net=(?P<net>up|partial|down))?"
+    r"(?: hostArchive=(?P<hostArchive>\S+))?$")
 
 # The first-boot network vocabulary the runner answers (floe_net.h). The
 # field is optional in the pattern so a pre-network runner still parses, but
@@ -40,6 +42,13 @@ CAPS_NET_STATUSES = ("up", "partial", "down")
 # "net=" on the same source line is not mistaken for the emission.
 CAPS_NET_FIELD_PATTERN = re.compile(
     r"FLOE-CAPS[^\n\"]*maxSessions=(?:%d|[0-9]+)[^\n\"]*net=%s")
+
+# The additive per-process environment capability (`env=1`) and the
+# host-advertised archive echo (`hostArchive=`). The latter is NOT runner-owned:
+# it echoes whatever this host offered in HELLO, exactly like the engine's
+# `runnerIdentity` exclusion, so it never enters the stable manifest payload.
+CAPS_ENV_FIELD_PATTERN = re.compile(
+    r"FLOE-CAPS[^\n\"]*maxSessions=(?:%d|[0-9]+)[^\n\"]*env=1[^\n\"]*net=%s")
 
 ROLE_ENUM_PATTERN = re.compile(
     r"enum\s+Role\s*:\s*String\s*,\s*Codable\s*,\s*Sendable\s*\{(?P<body>[^}]*)\}",
@@ -194,19 +203,26 @@ def parse_runner_constants(text):
     return parsed
 
 
-def expected_caps(constants, net_status=None):
-    """The exact CAPS payload the runner answers for these constants.
+def expected_caps(constants, net_status=None, env_status=None):
+    """The exact stable CAPS payload for these source constants.
 
     `net_status` is the first-boot network state the runner reports at
     runtime (`up`/`partial`/`down`); None renders a pre-network payload so a
-    legacy runner can still be compared against its own source.
+    legacy runner can still be compared against its own source. `env_status`
+    is the additive per-process environment capability (`0`/`1`); None keeps
+    the historical payload without an `env=` field. The host-advertised
+    `hostArchive=` echo is never included: it is not a runner-owned field.
     """
     if net_status is not None and net_status not in CAPS_NET_STATUSES:
         raise ValueError("unknown net status %r (expected one of %s)"
                          % (net_status, ", ".join(CAPS_NET_STATUSES)))
+    if env_status is not None and env_status not in (0, 1, "0", "1"):
+        raise ValueError("unknown env status %r (expected 0 or 1)" % (env_status,))
     payload = "runner=%s protocol=%d maxCommands=%d maxSessions=%d" % (
         constants["runner_version"], constants["protocol"],
         constants["max_commands"], constants["max_sessions"])
+    if env_status is not None:
+        payload += " env=%s" % env_status
     if net_status is not None:
         payload += " net=%s" % net_status
     return payload
@@ -217,22 +233,41 @@ def caps_net_field(runner_source):
     return CAPS_NET_FIELD_PATTERN.search(runner_source or "") is not None
 
 
+def caps_env_field(runner_source):
+    """True when the runner source emits the additive `env=1` field."""
+    return CAPS_ENV_FIELD_PATTERN.search(runner_source or "") is not None
+
+
 def parse_caps(payload):
     """Parse a verbatim CAPS payload, or None when it is not one.
 
-    The `net=` field is optional so payloads from a pre-network runner still
-    parse; callers that require the field (the boot gate) check `caps["net"]`
-    and use `caps_net_field(source)` to know whether the source emits it.
+    `env=` and `net=` are optional so older payloads still parse; callers that
+    require them check the parsed fields and use `caps_env_field` /
+    `caps_net_field` to know whether the source emits them. `hostArchive=` is
+    accepted but excluded from `payload` (the stable manifest string), because
+    it echoes the host's HELLO advertisement rather than a runner capability.
     """
     if payload is None:
         return None
     match = CAPS_PATTERN.match(payload.strip())
     if not match:
         return None
+    stable_fields = [
+        "runner=%s" % match.group("runner"),
+        "protocol=%s" % match.group("protocol"),
+        "maxCommands=%s" % match.group("maxCommands"),
+        "maxSessions=%s" % match.group("maxSessions"),
+    ]
+    if match.group("env") is not None:
+        stable_fields.append("env=%s" % match.group("env"))
+    if match.group("net") is not None:
+        stable_fields.append("net=%s" % match.group("net"))
     return {"runner": match.group("runner"), "protocol": int(match.group("protocol")),
             "maxCommands": int(match.group("maxCommands")),
             "maxSessions": int(match.group("maxSessions")),
-            "net": match.group("net"), "payload": payload.strip()}
+            "env": match.group("env"), "net": match.group("net"),
+            "hostArchive": match.group("hostArchive"),
+            "payload": " ".join(stable_fields), "rawPayload": payload.strip()}
 
 
 def artifact_roles(swift_source):

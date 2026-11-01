@@ -21,6 +21,9 @@ public func registerExecutionTools(
     remoteHostStore: RemoteHostStore? = nil,
     vncPasswordWriter: VNCPasswordWriter? = nil,
     vncPasswordDeleter: VNCPasswordDeleter? = nil,
+    secretDeleter: SecretReferenceDeleter? = nil,
+    aliasDeleter: SSHAuthLegacyAliasDeleter? = nil,
+    credentialInputResolver: CredentialInputResolver? = nil,
     remoteHostUpdateObserver: RemoteHostUpdateObserver? = nil,
     bluetoothSerialService: (any BluetoothSerialServicing)? = nil,
     httpRequestService: HTTPRequestService = HTTPRequestService(),
@@ -138,6 +141,9 @@ public func registerExecutionTools(
             store: remoteHostStore,
             passwordWriter: vncPasswordWriter,
             passwordDeleter: vncPasswordDeleter,
+            secretDeleter: secretDeleter,
+            aliasDeleter: aliasDeleter,
+            credentialInputResolver: credentialInputResolver,
             updateObserver: remoteHostUpdateObserver
         ))
         let rawConnections = RawRemoteConnectionService()

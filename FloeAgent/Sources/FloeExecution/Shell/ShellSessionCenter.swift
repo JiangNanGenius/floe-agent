@@ -50,6 +50,7 @@ public actor ShellSessionCenter {
         var expiresAt: Date
         var buffer: String
         var alive: Bool
+        var skillConfiguration: SkillProcessConfiguration?
     }
 
     /// Outcome of a session-scoped operation (close/signal/resize). `applied`
@@ -114,10 +115,15 @@ public actor ShellSessionCenter {
         cancellation: CancellationToken?,
         forTerminal: Bool = false,
         toolEnvironment: ToolEnvironment? = nil,
-        clientSessionID: String? = nil
+        clientSessionID: String? = nil,
+        skillConfiguration: SkillProcessConfiguration? = nil
     ) async throws -> ShellOpenResult {
         try cancellation?.throwIfCancelled()
+        try skillConfiguration?.validateOverrides(environment)
+        var processEnvironment = environment
+        for (name, value) in skillConfiguration?.environment ?? [:] { processEnvironment[name] = value }
         try ShellInputValidation.validate(command: command, cwd: cwd, environment: environment)
+        try ShellInputValidation.validate(command: command, cwd: cwd, environment: processEnvironment)
         _ = try ShellInputValidation.directory(cwd: cwd, root: rootURL)
         if !command.isEmpty {
             let verdict = policy.evaluate(command)
@@ -132,11 +138,23 @@ public actor ShellSessionCenter {
         defer { pendingOpens -= 1 }
         let sessionID = UUID().uuidString.lowercased()
         let lease = try await ToolEnvironmentRouting.shared.acquire(ToolContext(runID: runID, workspaceRootURL: rootURL, cancellation: cancellation ?? CancellationToken(), environmentID: toolEnvironment?.id, environment: toolEnvironment))
+        do {
+            try await skillConfiguration?.revalidate()
+            try cancellation?.throwIfCancelled()
+            if skillConfiguration?.sensitiveEnvironment?.isEmpty == false,
+               !backend.supportsSensitiveProcessEnvironment(for: lease.context.environment) {
+                throw FloeError.validationFailed("Update the selected execution target before using this Skill's secret environment.")
+            }
+        } catch {
+            await lease.finish()
+            throw error
+        }
         let request = ShellOpenRequest(
             command: command,
             cwd: cwd,
             rootURL: rootURL,
-            environment: environment,
+            environment: processEnvironment,
+            sensitiveEnvironment: skillConfiguration?.sensitiveEnvironment,
             columns: max(20, min(columns, 500)),
             rows: max(5, min(rows, 200)),
             gateTimeout: configuration.gateWaitTimeout,
@@ -146,8 +164,15 @@ public actor ShellSessionCenter {
             prepareLinuxIfMissing: !forTerminal
         )
         let result: ShellOpenResult
-        do { result = try await backend.openSession(request, cancellation: cancellation) }
-        catch { await lease.finish(); throw error }
+        do {
+            result = try await backend.openSession(request, cancellation: cancellation)
+            try await skillConfiguration?.revalidate()
+            try cancellation?.throwIfCancelled()
+        } catch {
+            await backend.closeSession(sessionID: sessionID)
+            await lease.finish()
+            throw error
+        }
         let entry = Entry(
             sessionID: sessionID,
             schedulerID: UUID(),
@@ -156,7 +181,8 @@ public actor ShellSessionCenter {
             environmentLease: lease,
             expiresAt: Date().addingTimeInterval(configuration.sessionLifetime),
             buffer: "",
-            alive: result.alive
+            alive: result.alive,
+            skillConfiguration: skillConfiguration
         )
         if result.alive {
             sessions[sessionID] = entry
@@ -167,9 +193,9 @@ public actor ShellSessionCenter {
         }
         return ShellOpenResult(
             sessionID: sessionID,
-            initialOutput: SecretRedactor.redact(ShellOutputSanitizer.sanitize(ShellInputValidation.prefix(result.initialOutput, maxBytes: configuration.maximumBufferBytes))),
+            initialOutput: SecretRedactor.redact(ShellOutputSanitizer.sanitize(ShellInputValidation.prefix(skillConfiguration?.sanitizeOutput(result.initialOutput) ?? result.initialOutput, maxBytes: configuration.maximumBufferBytes))),
             alive: result.alive,
-            terminalOutput: forTerminal ? (result.terminalOutput ?? Data(result.initialOutput.utf8)) : nil
+            terminalOutput: forTerminal ? (skillConfiguration.map { Data($0.sanitizeOutput(result.initialOutput).utf8) } ?? result.terminalOutput ?? Data(result.initialOutput.utf8)) : nil
         )
     }
 
@@ -190,6 +216,16 @@ public actor ShellSessionCenter {
             throw OwnerMismatch(sessionID: sessionID)
         }
         try cancellation?.throwIfCancelled()
+        do {
+            try await entry.skillConfiguration?.revalidate()
+            try cancellation?.throwIfCancelled()
+        } catch {
+            await closeUnchecked(sessionID: sessionID)
+            throw error
+        }
+        guard sessions[sessionID]?.schedulerID == entry.schedulerID else {
+            throw FloeError.notFound("Unknown or expired shell session \(sessionID)")
+        }
         // Interactive input is user keystrokes on an already-approved session,
         // not a fresh command: it is never re-run through the command policy
         // (that would block ordinary typing such as fragments of a longer
@@ -229,8 +265,11 @@ public actor ShellSessionCenter {
             return ShellExchangeResult(output: "", alive: false, exitCode: result.exitCode, failure: result.failure, bytesRead: result.bytesRead, bytesWritten: result.bytesWritten)
         }
         entry.alive = result.alive
+        if let config = entry.skillConfiguration, let failure = result.failure {
+            result.failure = config.sanitizeOutput(failure)
+        }
         entry.expiresAt = Date().addingTimeInterval(configuration.sessionLifetime)
-        var drained = result.output
+        var drained = entry.skillConfiguration?.sanitizeOutput(result.output) ?? result.output
         if drained.utf8.count > configuration.maximumBufferBytes {
             drained = ShellInputValidation.prefix(drained, maxBytes: configuration.maximumBufferBytes)
         }
@@ -241,7 +280,7 @@ public actor ShellSessionCenter {
         } else {
             await closeUnchecked(sessionID: sessionID)
         }
-        return ShellExchangeResult(output: cleanOutput, alive: result.alive, exitCode: result.exitCode, terminalOutput: forTerminal ? (result.terminalOutput ?? Data(result.output.utf8)) : nil, failure: result.failure, bytesRead: result.bytesRead, bytesWritten: result.bytesWritten)
+        return ShellExchangeResult(output: cleanOutput, alive: result.alive, exitCode: result.exitCode, terminalOutput: forTerminal ? (entry.skillConfiguration.map { Data($0.sanitizeOutput(result.output).utf8) } ?? result.terminalOutput ?? Data(result.output.utf8)) : nil, failure: result.failure, bytesRead: result.bytesRead, bytesWritten: result.bytesWritten)
     }
 
     /// Closes the caller's own session. `ownerMismatch` means a live session

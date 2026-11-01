@@ -2064,11 +2064,100 @@ final class ConversationCenter: ObservableObject {
         return id
     }
 
-    /// Discards the session (RAM only) without touching durable stores.
+    /// RAM materializations belong to one main run, not to the shared
+    /// provider adapter used by titles, memory or delegated children.
+    private var modelInputProjections: [UUID: ModelUserInputProjection] = [:]
+    private var modelInputProjectionOwners: [UUID: UUID] = [:]
+
+    private func clearModelInputProjection(_ runID: UUID) {
+        modelInputProjections.removeValue(forKey: runID)?.clear()
+        modelInputProjectionOwners[runID] = nil
+    }
+
+    private func modelInputProjection(for runID: UUID, conversationID: UUID) -> ModelUserInputProjection {
+        modelInputProjectionOwners[runID] = conversationID
+        if let value = modelInputProjections[runID] { return value }
+        let value = ModelUserInputProjection()
+        modelInputProjections[runID] = value
+        return value
+    }
+
+    private func hydrateModelUserInputs(_ sources: [ModelUserInputSource], runID: UUID,
+                                       conversationID: UUID, workspaceID: UUID?, temporary: Bool) async throws {
+        if temporary {
+            guard let session = temporarySession, session.conversation.id == conversationID,
+                  (try await session.runStore.run(id: runID)) != nil,
+                  temporarySession?.incarnation == session.incarnation else { throw CancellationError() }
+        }
+        let projection = modelInputProjection(for: runID, conversationID: conversationID)
+        for source in sources {
+            let credentialIDs = ModelUserInputProjection.credentialIDs(in: source.text)
+            guard !credentialIDs.isEmpty else { continue }
+            var values: [UUID: String] = [:]
+            for id in credentialIDs {
+                let reference = CapturedSecret.placeholder(for: id)
+                if projection.contains(reference: reference) { continue }
+                // Temporary data never falls through to a durable vault read.
+                guard !temporary else { throw FloeError.unauthorized }
+                guard let record = try await environment.credentialStore.record(id: id),
+                      record.origin == "chat-ingress" || record.origin?.hasPrefix("user-question-ingress:") == true else { continue }
+                let owned: Bool
+                switch record.owner {
+                case .conversation(let owner): owned = owner == conversationID
+                case .workspace(let owner): owned = owner == workspaceID
+                case .vault: owned = true // explicit reference in this native user message
+                default: owned = false
+                }
+                guard owned else { throw FloeError.unauthorized }
+                let bytes = try await environment.credentialVault.resolveForApprovedUse(CredentialHandle(id: id))
+                guard let value = String(data: bytes, encoding: .utf8) else { throw FloeError.storageCorrupted("User input is not text") }
+                values[id] = value
+            }
+            try projection.register(source: source, values: values)
+        }
+    }
+
+    /// The known question field can capture an unlabeled/short credential;
+    /// ordinary replies retain ordinary text semantics and only use the
+    /// existing explicit-label scanner. Neither path grants tool authority.
+    func normalizeQuestionAnswer(_ answer: UserQuestionAnswer, question: UserQuestion,
+                                 ephemeral: Bool) async throws -> UserQuestionAnswer {
+        guard let raw = answer.freeText, !raw.isEmpty else { return answer }
+        let ingress: (sanitizedText: String, captures: [CapturedSecret])
+        if question.answerSensitivity == .credential,
+           SecretIngressScanner.credentialID(from: raw) == nil {
+            let capture = CapturedSecret(label: "Credential", value: Data(raw.utf8))
+            ingress = (capture.placeholder, [capture])
+        } else {
+            let scanned = SecretIngressScanner.scan(raw)
+            ingress = (scanned.sanitizedText, scanned.captures)
+        }
+        if !ephemeral {
+            for capture in ingress.captures {
+                _ = try await environment.credentialVault.capture(capture.value, kind: .genericToken,
+                    owner: .conversation(question.conversationID), label: "Question credential", id: capture.id,
+                    origin: "user-question-ingress:" + question.questionID)
+            }
+        } else {
+            guard let session = temporarySession, session.conversation.id == question.conversationID,
+                  (try await session.runStore.run(id: question.runID)) != nil,
+                  temporarySession?.incarnation == session.incarnation else { throw CancellationError() }
+        }
+        guard !isClearingHistory, !deletingConversationIDs.contains(question.conversationID) else { throw CancellationError() }
+        try modelInputProjection(for: question.runID, conversationID: question.conversationID).register(
+            id: ModelUserInputProjection.questionSourceID(question.questionID),
+            safe: ingress.sanitizedText, live: raw, captures: ingress.captures)
+        var safe = answer
+        safe.freeText = ingress.sanitizedText
+        return safe
+    }
+
     private func discardTemporarySession() async {
         guard let session = temporarySession else { return }
         let id = session.conversation.id
         let questionRunIDs = temporaryRunIDs
+        let disclosureRunIDs = modelInputProjectionOwners.compactMap { $0.value == id ? $0.key : nil }
+        for runID in disclosureRunIDs { modelInputProjections[runID]?.close() }
         temporarySession = nil
         lastPromotedConversationID = nil
         promotionContext = nil
@@ -2078,6 +2167,7 @@ final class ConversationCenter: ObservableObject {
         await session.conversationStore.close()
         await session.runStore.close()
         await session.runningInputStore.close()
+        for runID in disclosureRunIDs { clearModelInputProjection(runID) }
         // RAM-only personal-query snapshots never outlive their session.
         await PersonalToolCursorStore.shared.revoke(fallbackRunIDs: temporaryRunIDs)
         await automaticReasoningEffortCoordinator.cancelAndForget(runIDs: temporaryRunIDs)
@@ -2167,6 +2257,8 @@ final class ConversationCenter: ObservableObject {
         keepOperationID = nil
         // Observable tombstone: from this exact line the temporary surface
         // no longer exists — no routing, no new sends, no resumable state.
+        let disclosureRunIDs = modelInputProjectionOwners.compactMap { $0.value == id ? $0.key : nil }
+        for runID in disclosureRunIDs { modelInputProjections[runID]?.close() }
         temporarySession = nil
         lastPromotedConversationID = nil
         promotionContext = nil
@@ -2229,7 +2321,10 @@ final class ConversationCenter: ObservableObject {
         }
         for runID in ownedRunIDs {
             runTasks[runID] = nil
+            clearModelInputProjection(runID)
         }
+
+        for runID in disclosureRunIDs { clearModelInputProjection(runID) }
 
         // ---- Durable commit settlement, separately and without relaunch. --
         // The session is already destroyed, so nothing here can reactivate
@@ -2713,7 +2808,8 @@ final class ConversationCenter: ObservableObject {
         guard let workspaceRoot else { return nil }
         let canonicalRoot = workspaceRoot.resolvingSymlinksInPath().standardizedFileURL
         let owned = await registry.containersOwned(by: conversationID.uuidString)
-        for container in owned where container.kind == .session
+        for container in owned where (container.effectiveExecutionBackend != .macBridge || LocalBridgePlatform.current.supportsMacBridge)
+            && container.kind == .session
             && container.state != .deleting
             && (container.effectiveExecutionBackend == .linuxVM
                 || container.effectiveExecutionBackend == .macBridge) {
@@ -2774,6 +2870,9 @@ final class ConversationCenter: ObservableObject {
         let sessions = await registry.containersOwned(by: conversationID.uuidString)
         let macSessions = sessions.filter { $0.kind == .session && $0.effectiveExecutionBackend == .macBridge }
         if !macSessions.isEmpty {
+            guard LocalBridgePlatform.current.supportsMacBridge else {
+                throw FloeError.invalidConfiguration(String(localized: "execution.location.unavailable_on_device"))
+            }
             let root = taskRoot.resolvingSymlinksInPath().standardizedFileURL
             for record in macSessions where record.state != .deleting {
                 if let recorded = try await registry.workspaceRoot(for: record.id),
@@ -2783,7 +2882,7 @@ final class ConversationCenter: ObservableObject {
             }
             throw FloeError.invalidConfiguration(String(localized: "mac.bridge.workspace_changed"))
         }
-        if macBridgeConnected, !sessions.contains(where: { $0.kind == .session }) {
+        if LocalBridgePlatform.current.supportsMacBridge, macBridgeConnected, !sessions.contains(where: { $0.kind == .session }) {
             let root = taskRoot.resolvingSymlinksInPath().standardizedFileURL
             let record = try await registry.ensureMacBridgeSessionContainer(
                 conversationID: conversationID.uuidString,
@@ -3661,6 +3760,14 @@ final class ConversationCenter: ObservableObject {
             case (nil, nil): return nil
             }
         }()
+        // Optional native automation may be installed/configured by this
+        // same run. Keep compiled main-only names in the task ceiling; the
+        // live App evaluator narrows discovery and execution rechecks it.
+        let optionalIOSNames = Set(availableDescriptors.filter {
+            $0.name.hasPrefix("ios.bridge.") && $0.executionBoundary == .mainRunOnly
+        }.map(\.name))
+        let permittedIOSNames = taskPolicyToolNames.map { optionalIOSNames.intersection($0) } ?? optionalIOSNames
+        if let ceiling = allowedToolNames { allowedToolNames = ceiling.union(permittedIOSNames) }
         let appleEnabledTools = AppleCapabilityPreferences.filteredToolNames(
             from: availableDescriptors
         )
@@ -3914,7 +4021,10 @@ final class ConversationCenter: ObservableObject {
                     dependencies: runDependencyStore,
                     jobs: jobServiceForRun)
             },
-            userQuestionRecovery: environment.userQuestions.coordinator
+            userQuestionRecovery: environment.userQuestions.coordinator,
+            currentToolAvailability: { [weak environment] in
+                await environment?.iosBridgeDiscoverableToolNames() ?? []
+            }
         )
         await environment.subagentRunnerRegistry.register(
             SubagentRunner(
@@ -4004,6 +4114,7 @@ final class ConversationCenter: ObservableObject {
             runID: runID, conversationID: conversationID, identity: browserRecipient
         )
         BrowserProviderTrustCoordinator.shared.setCurrentProvider(browserRecipient)
+        let userInputProjection = modelInputProjection(for: runID, conversationID: conversationID)
         return ConversationRunService(
             configuration: configuration,
             adapter: providerAdapter(for: provider, ownerRunID: runID),
@@ -4020,6 +4131,12 @@ final class ConversationCenter: ObservableObject {
             checkpointStore: isTemporary ? nil : environment.checkpointStore,
             contextEngine: makeContextEngine(provider: provider, model: model),
             toolCallNormalizer: credentialArgumentNormalizer,
+            modelInputProjection: userInputProjection,
+            hydrateModelInputs: { [weak self] sources in
+                guard let self else { throw CancellationError() }
+                try await self.hydrateModelUserInputs(sources, runID: runID,
+                    conversationID: conversationID, workspaceID: canonicalWorkspaceID, temporary: isTemporary)
+            },
             toolVisualEvidenceResolver: { [weak self, model] images, request in
                 guard let self, !Task.isCancelled else { return [] }
                 let evidence = await self.visualEvidence(images: images, userRequest: request,
@@ -4083,7 +4200,10 @@ final class ConversationCenter: ObservableObject {
                 store: environment.personalizationStore,
                 workspaceID: canonicalWorkspaceID
             ),
-            resourceAccessCleanup: taskRootLease?.release
+            resourceAccessCleanup: {
+                taskRootLease?.release()
+                userInputProjection.close()
+            }
         )
     }
 
@@ -4544,7 +4664,7 @@ final class ConversationCenter: ObservableObject {
             }
             FloeLogger(category: .app).info(
                 "startRunResumesAwaitingDependency conversation=\(conversationID.uuidString) run=\(waiting.id.uuidString)")
-            return try await resumeRunWithInput(waiting, content: trimmed, attachments: attachments)
+            return try await resumeRunWithInput(waiting, content: goal, attachments: attachments)
         }
         let launchToken = launchFence.issue(scope: conversationID)
 
@@ -4552,13 +4672,12 @@ final class ConversationCenter: ObservableObject {
         defer { finishLaunch() }
         await launchTestHooks.beforeCapture?()
         // Capture before any durable message/checkpoint is written. The user
-        // still sees a secure card, while provider context and recovery state
-        // receive only a reusable credential reference. TEMPORARY conversations
-        // never persist ingress secrets: the scanner already replaced them
-        // with unresolved ⟨credential:…⟩ placeholders in the sanitized goal
-        // (the web-only ceiling has no credential tools to resolve them), so
-        // the raw bytes never reach the provider, Keychain or the
-        // credential DB — the retention contract is bounded RAM only.
+        // still sees a secure card and canonical recovery state receives
+        // a reusable credential reference. TEMPORARY conversations
+        // never persist ingress secrets: canonical text keeps credential
+        // placeholders. The selected main model may receive the actual user
+        // input from bounded RAM; temporary input never enters Keychain or
+        // the credential database.
         if !launchIsTemporary {
             try await captureIngressSecrets(
                 ingress.captures,
@@ -4591,6 +4710,15 @@ final class ConversationCenter: ObservableObject {
             providerProfile: provider,
             modelProfile: model
         ))
+        guard launchFence.isValid(launchToken) else { throw CancellationError() }
+        do {
+            try modelInputProjection(for: runID, conversationID: conversationID).register(id: prepared.userMessage.id,
+                safe: trimmed, live: goal.trimmingCharacters(in: .whitespacesAndNewlines), captures: ingress.captures)
+        } catch {
+            try? await runStore(for: conversationID).updateRunState(id: runID, state: "failed", endedAt: Date())
+            clearModelInputProjection(runID)
+            throw error
+        }
         if let canvasContext {
             do {
                 try await CanvasRunContextStore(database: environment.database).save(
@@ -4742,6 +4870,14 @@ final class ConversationCenter: ObservableObject {
             providerProfile: provider,
             modelProfile: model
         ))
+        do {
+            try modelInputProjection(for: runID, conversationID: prepared.conversation.id).register(id: prepared.userMessage.id,
+                safe: trimmed, live: goal.trimmingCharacters(in: .whitespacesAndNewlines), captures: ingress.captures)
+        } catch {
+            try? await runStore(for: prepared.conversation.id).updateRunState(id: runID, state: "failed", endedAt: Date())
+            clearModelInputProjection(runID)
+            throw error
+        }
         await recordPersonalizationActivity(userMessages: 1, workspaceID: workspaceID)
         guard !isClearingHistory else {
             throw FloeError.validationFailed("Conversation history was cleared during launch")
@@ -5493,10 +5629,23 @@ final class ConversationCenter: ObservableObject {
         if isTemporaryConversation(conversationID), !attachments.isEmpty {
             throw FloeError.validationFailed("Temporary chat only accepts text")
         }
+        let ingress = SecretIngressScanner.scan(trimmed)
+        let temporary = isTemporaryConversation(conversationID)
+        if !temporary { try await captureIngressSecrets(ingress.captures, owner: .conversation(conversationID)) }
+        let inputID = UUID()
+        do {
+            try modelInputProjection(for: expectedRunID, conversationID: conversationID).register(id: inputID, safe: ingress.sanitizedText,
+                live: trimmed, captures: ingress.captures)
+        } catch is CancellationError {
+            // A completed ordinary run may still receive queued guidance.
+            // Its next owner rehydrates the saved native message references.
+            if temporary { throw CancellationError() }
+        }
         let input = try await runningInputStore(for: conversationID).enqueue(PendingUserInput(
+            id: inputID,
             conversationID: conversationID,
             targetRunID: expectedRunID,
-            content: trimmed,
+            content: ingress.sanitizedText,
             mode: mode,
             attachments: attachments,
             selectedModelID: selectedModelID,
@@ -5599,15 +5748,19 @@ final class ConversationCenter: ObservableObject {
         } else {
             resolvedPair = try await resolveProviderAndModel()
         }
+        let ingress = SecretIngressScanner.scan(content)
+        try await captureIngressSecrets(ingress.captures, owner: .conversation(record.conversationID))
+        let safeContent = ingress.sanitizedText
         let messageID = UUID()
+        try modelInputProjection(for: record.id, conversationID: record.conversationID).register(id: messageID, safe: safeContent, live: content, captures: ingress.captures)
         let createdAt = Date()
         try await conversationStore(for: record.conversationID).appendMessage(PersistedMessage(
             id: messageID,
             conversationID: record.conversationID,
             role: "user",
-            content: content,
+            content: safeContent,
             createdAt: createdAt,
-            parts: [MessagePart(messageID: messageID, partIndex: 0, kind: .text, text: content)],
+            parts: [MessagePart(messageID: messageID, partIndex: 0, kind: .text, text: safeContent)],
             runID: record.id
         ))
         return try await resumeExistingRun(
@@ -5617,7 +5770,7 @@ final class ConversationCenter: ObservableObject {
             startOrigin: .explicitUserAction,
             resumption: RuntimeSteerInput(
                 id: messageID,
-                content: content,
+                content: safeContent,
                 images: ConversationHistoryAssembler.inlineImages(attachments),
                 attachments: attachments,
                 createdAt: createdAt
@@ -5772,6 +5925,7 @@ final class ConversationCenter: ObservableObject {
     private func startPreparedService(
         _ service: ConversationRunService,
         goal: String,
+        userMessageID: UUID = UUID(),
         automaticTitle: (conversationID: UUID, provider: ProviderProfile, model: ModelProfile)? = nil,
         goalContinuation: (
             conversationID: UUID,
@@ -5800,6 +5954,7 @@ final class ConversationCenter: ObservableObject {
             return await self.performPreparedService(
                 service,
                 goal: goal,
+                userMessageID: userMessageID,
                 automaticTitle: automaticTitle,
                 goalContinuation: goalContinuation
             )
@@ -6170,6 +6325,7 @@ final class ConversationCenter: ObservableObject {
             return await self.performPreparedService(
                 service,
                 goal: goal,
+                userMessageID: prepared.userMessage.id,
                 automaticTitle: shouldGenerateTitle ? (conversationID, provider, model) : nil,
                 goalContinuation: executionMode == .goal
                     ? (conversationID, provider, model, prepared.workspace.id)
@@ -6188,6 +6344,7 @@ final class ConversationCenter: ObservableObject {
         error: Error
     ) async {
         activeRuns[runID] = nil
+        clearModelInputProjection(runID)
         runServices[runID] = nil
         runTasks[runID] = nil
         // Route through the run's own frozen authority: a destroyed session's
@@ -6295,6 +6452,7 @@ final class ConversationCenter: ObservableObject {
     private func performPreparedService(
         _ service: ConversationRunService,
         goal: String,
+        userMessageID: UUID = UUID(),
         automaticTitle: (conversationID: UUID, provider: ProviderProfile, model: ModelProfile)?,
         goalContinuation: (
             conversationID: UUID,
@@ -6309,7 +6467,7 @@ final class ConversationCenter: ObservableObject {
         let outcome: Result<Void, Error>
         var terminalState = "failed"
         do {
-            try await service.startPrepared(goal: goal)
+            try await service.startPrepared(goal: goal, userMessageID: userMessageID)
             let snapshot = await service.snapshot()
             terminalState = snapshot.stateName
             if snapshot.stateName == "completed" || snapshot.stateName == "checkpointed" {
@@ -6435,6 +6593,7 @@ final class ConversationCenter: ObservableObject {
         // service channel, so `track` cannot always release this ownership.
         // Clear it explicitly or the UI will believe a failed run is still
         // active and refuse to resume it.
+        clearModelInputProjection(service.runID)
         runServices[service.runID] = nil
         snapshotTasks[service.runID]?.cancel()
         snapshotTasks[service.runID] = nil
@@ -6845,6 +7004,12 @@ final class ConversationCenter: ObservableObject {
 
     /// Cancels a live run. The runtime owns the terminal transition.
     func cancel(runID: UUID) async {
+        // An explicit cancel releases this run's persistent local-device input
+        // ownership immediately. If it was the only Bridge user the native
+        // client is fenced, so a dispatched mutation is reported unknown and
+        // is never replayed; another task's ownership is not touched.
+        environment.iosBridgeIntegration.cancelRun(runID: runID)
+        modelInputProjections[runID]?.close()
         // Cancel the owner task unconditionally. A run can move from
         // attachment preprocessing into a live service between the UI tap
         // and this actor hop; choosing only one side leaves that race alive.
@@ -7127,6 +7292,7 @@ final class ConversationCenter: ObservableObject {
             snapshotTasks[runID] = nil
             runTasks[runID]?.cancel()
             runTasks[runID] = nil
+            clearModelInputProjection(runID)
             runServices[runID] = nil
             activeRuns[runID] = nil
         }
@@ -7247,6 +7413,7 @@ final class ConversationCenter: ObservableObject {
             conversationIDs.contains(service.conversationID) ? runID : nil
         }
         for runID in retainedRunIDs {
+            clearModelInputProjection(runID)
             snapshotTasks[runID]?.cancel()
             snapshotTasks[runID] = nil
             runServices[runID] = nil
@@ -7626,6 +7793,7 @@ final class ConversationCenter: ObservableObject {
         // The resumed invocation no longer owns execution, even if a terminal
         // stream notification raced the observer. Releasing the service here
         // keeps `hasLiveOwner` from disabling Continue on a parked run.
+        clearModelInputProjection(service.runID)
         runServices[service.runID] = nil
         snapshotTasks[service.runID]?.cancel()
         snapshotTasks[service.runID] = nil
@@ -8562,6 +8730,7 @@ final class ConversationCenter: ObservableObject {
     private func apply(_ snapshot: ConversationRunService.Snapshot) {
         let existing = activeRuns[snapshot.runID]
         if snapshot.isTerminal {
+            modelInputProjections[snapshot.runID]?.close()
             // Durable history already owns terminal runs. Keeping them in the
             // live-owner projection made every failed launch look paused and
             // caused Continue to chase a run that had already ended.
