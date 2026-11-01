@@ -162,6 +162,11 @@ public enum CADDatumPlaneFormFixture {
                             + "\(offset["message"] as? String ?? "unknown error")")
                 }
                 let offsetID = ConstructionPlaneID(raw: uuid)
+                guard let support = document.session.document.planes.first(where: { $0.id == offsetID }),
+                      support.plane.normal.y > 0.99,
+                      abs(support.plane.origin.y - plateThickness) < 1e-6 else {
+                    throw fixtureError("The anchor support must be the actual +Y top cap at the plate thickness.")
+                }
 
                 let lineA = UUID()
                 let sketchA = Sketch(
@@ -373,7 +378,7 @@ public enum CADDatumPlaneFormFixture {
             guard (row["kind"] as? String) == "planar",
                   let normal = row["normal"] as? [Any], normal.count == 3,
                   let y = number(normal[1]) else { return false }
-            return abs(y) > 0.99
+            return y > 0.99
         }
         guard let top = tops.max(by: { lhs, rhs in
             (number(lhs["areaMM2"]) ?? 0) < (number(rhs["areaMM2"]) ?? 0)

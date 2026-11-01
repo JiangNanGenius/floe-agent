@@ -349,6 +349,7 @@ struct CADAnimationTimelineView: View {
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+        .accessibilityElement(children: .contain)
         .accessibilityIdentifier("CADAnimationTracks")
     }
 
@@ -457,6 +458,7 @@ struct CADAnimationTimelineView: View {
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+        .accessibilityElement(children: .contain)
         .accessibilityIdentifier("CADAnimationKeyframes")
     }
 

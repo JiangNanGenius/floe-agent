@@ -336,12 +336,11 @@ nonisolated struct Sketch: Identifiable, Codable, Equatable, Sendable {
         RectangleConstruction.recoverLegacyGroups(in: &self)
     }
 
-    /// Explicit so a legacy (support == nil) sketch keeps the exact pre-M07
-    /// key set and byte identity; the optional field is omitted, not null.
-    /// Keys follow the existing CodingKeys declaration order (the order the
-    /// previous synthesized encoder used), not the property order — a
-    /// reordered key would change the stored blob bytes of an untouched
-    /// legacy document.
+    /// A legacy (support == nil) sketch keeps the pre-M07 key set: omit the
+    /// optional field instead of writing null. The record encoder controls
+    /// canonical key ordering; encode-call order alone does not stabilize
+    /// JSONEncoder's output. Unchanged opaque stored rows retain their bytes
+    /// through the existing persistence guards.
     func encode(to encoder: Encoder) throws {
         var container = encoder.container(keyedBy: CodingKeys.self)
         try container.encode(id, forKey: .id)
