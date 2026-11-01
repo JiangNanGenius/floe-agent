@@ -12,6 +12,7 @@ let package = Package(
         .target(name: "FloeMacBridgeProtocol"),
         .target(name: "CBridgePTY", linkerSettings: [.linkedLibrary("util", .when(platforms: [.macOS]))]),
         .executableTarget(name: "FloeMacBridgeApp", dependencies: ["FloeMacBridgeProtocol", "CBridgePTY"]),
-        .testTarget(name: "FloeMacBridgeProtocolTests", dependencies: ["FloeMacBridgeProtocol"])
+        .testTarget(name: "FloeMacBridgeProtocolTests", dependencies: ["FloeMacBridgeProtocol"]),
+        .testTarget(name: "FloeMacBridgeAppTests", dependencies: ["FloeMacBridgeApp", "FloeMacBridgeProtocol"])
     ]
 )
