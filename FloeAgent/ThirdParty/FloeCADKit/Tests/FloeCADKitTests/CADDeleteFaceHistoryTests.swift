@@ -433,11 +433,16 @@ final class CADDeleteFaceHistoryTests: XCTestCase {
         let names = ElementNaming.extrudeNames(creator: creator, ancestry: ancestry, outer: profile, holes: [])
         let families = Dictionary(grouping: ancestry.rows.filter { $0.inputKind == .edge && $0.relation == .generated },
                                   by: { $0.inputSubshape }).mapValues { Set($0.map(\.resultFace)) }
-        let family = try XCTUnwrap(families.values.first { $0.count > 1 },
+        let originalFaces = OCCTKernel.faceInfo(original)
+        // Fixed physical selection: the negative-Z wall of the first segment
+        // from original186. Dictionary order must not pick an easier side.
+        let removed = try XCTUnwrap(originalFaces.filter { face in
+            face.normal.z < -0.99 && face.centroid.y < spine[1].y
+                && families.values.contains { $0.count > 1 && $0.contains(face.index) }
+        }.min { $0.index < $1.index })
+        let family = try XCTUnwrap(families.values.first { $0.contains(removed.index) && $0.count > 1 },
                                   "The real bent pipe must generate multiple walls from one profile boundary")
         for index in family { XCTAssertTrue(try XCTUnwrap(names[index]).requiresExactSignature) }
-        let originalFaces = OCCTKernel.faceInfo(original)
-        let removed = try XCTUnwrap(originalFaces.filter { family.contains($0.index) }.min { $0.centroid.y < $1.centroid.y })
         let name = try XCTUnwrap(names[removed.index])
         let reference = FaceRef(body: BodyRef(producer: creator, bodyID: bodyID), creator: creator,
             role: .derived(index: removed.index), signature: try XCTUnwrap(removed.signature), elementName: name)
@@ -447,8 +452,32 @@ final class CADDeleteFaceHistoryTests: XCTestCase {
         }
         let before = try body(original)
         let beforeTable = ElementNaming.attach(names, to: SignatureNaming().faceTable(for: before, createdBy: creator, scheme: .generic),
-                                               channel: OCCTKernel.renderMeshFaceChannel(from: original))
+                                               channel: OCCTKernel.renderMeshFaceChannel(from: original), body: before)
         XCTAssertNotNil(SignatureNaming().resolve(reference, in: before, table: beforeTable))
+        var stale = beforeTable
+        stale.nativeMeshRevision = before.meshRevision + 1
+        XCTAssertNil(SignatureNaming().resolve(reference, in: before, table: stale))
+        var foreign = beforeTable
+        foreign.nativeBodyID = BodyID()
+        XCTAssertNil(SignatureNaming().resolve(reference, in: before, table: foreign))
+        var missing = beforeTable
+        missing.nativeFaceNames?.removeValue(forKey: removed.index)
+        XCTAssertNil(SignatureNaming().resolve(reference, in: before, table: missing))
+        var malformedChannel = beforeTable
+        malformedChannel.nativeFaceChannel?.removeLast()
+        XCTAssertNil(SignatureNaming().resolve(reference, in: before, table: malformedChannel))
+        let channel = OCCTKernel.renderMeshFaceChannel(from: original)
+        var claimed: Set<Int> = []
+        for member in originalFaces.filter({ family.contains($0.index) }) {
+            let operand = FaceRef(body: reference.body, creator: creator, role: .derived(index: member.index),
+                signature: try XCTUnwrap(member.signature), elementName: try XCTUnwrap(names[member.index]))
+            let resolved = try XCTUnwrap(SignatureNaming().resolve(operand, in: before, table: beforeTable))
+            XCTAssertFalse(resolved.triangles.isEmpty)
+            XCTAssertTrue(resolved.triangles.allSatisfy { channel[$0] == UInt32(member.index) },
+                          "A merged display patch cannot include the neighboring native face")
+            XCTAssertTrue(claimed.isDisjoint(with: resolved.triangles))
+            claimed.formUnion(resolved.triangles)
+        }
         var moved = SketchPlane.ground
         moved.origin = spine[1]
         let nextHistory = OCCTShapeHistory()
@@ -460,7 +489,7 @@ final class CADDeleteFaceHistoryTests: XCTestCase {
         XCTAssertFalse(OCCTKernel.faceInfo(next).contains { simd_distance($0.centroid, removed.centroid) < 1e-5 })
         let after = try body(next)
         let afterTable = ElementNaming.attach(nextNames, to: SignatureNaming().faceTable(for: after, createdBy: creator, scheme: .generic),
-                                              channel: OCCTKernel.renderMeshFaceChannel(from: next))
+                                              channel: OCCTKernel.renderMeshFaceChannel(from: next), body: after)
         XCTAssertNil(SignatureNaming().resolve(reference, in: after, table: afterTable))
         let attachment = XCTAttachment(string: "Actual bent native sweep: original multi-wall family=\(family.sorted()), selected centroid=\(removed.centroid); first spine segment removed, old name absent=\(!nextNames.values.contains(name)), original volume=\(OCCTKernel.volume(original)), remaining volume=\(OCCTKernel.volume(next)).")
         attachment.name = "actual-sweep-first-sibling-identity"

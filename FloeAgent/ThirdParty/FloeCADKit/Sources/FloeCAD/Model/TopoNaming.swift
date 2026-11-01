@@ -8,10 +8,9 @@
 //  of the whole exercise — re-resolves a persisted `FaceRef` back to a concrete
 //  face after the owning feature is rebuilt with different parameters.
 //
-//  Tranche 1 ships the geometric `SignatureNaming`: a face is identified by its
-//  normal + centroid + area, so a `FaceRef` survives a rebuild that moves/grows
-//  the face (a bigger box's +Z face is still the +Z face). `MaterialTagNaming`
-//  (O(1) tag lookup) is a tranche-2 swap behind this same facade.
+//  Author-owned and native-history names follow parameter changes. Unnamed
+//  compatibility references need a unique exact fingerprint, not a similarity
+//  score. A recorded name that disappears cannot select a nearby surface.
 //
 //  All types are `nonisolated` (pure geometry, off the main actor) per repo
 //  convention. Face signatures are computed in BODY-LOCAL space (`body.render`),
@@ -28,6 +27,13 @@ import simd
 /// enumerated face carrying its role, geometric signature, and triangle indices.
 nonisolated struct FaceTable: Codable, Sendable {
     var entries: [Entry]
+    /// Exact provenance of the adopted native tessellation. A display patch
+    /// may contain adjacent coplanar native faces, so its majority name alone
+    /// cannot locate each original face. Missing on old/mesh-only tables.
+    var nativeFaceNames: [Int: ElementName]? = nil
+    var nativeFaceChannel: [UInt32]? = nil
+    var nativeBodyID: BodyID? = nil
+    var nativeMeshRevision: UInt64? = nil
 
     struct Entry: Codable, Sendable {
         var role: FaceRole
@@ -205,6 +211,7 @@ nonisolated struct SignatureNaming: TopoNaming {
     }
 
     func resolve(_ ref: FaceRef, in body: Body, table: FaceTable?) -> ResolvedFace? {
+        guard ref.body.bodyID == body.id else { return nil }
         let faces = Self.enumerate(body.render)
         guard !faces.isEmpty else { return nil }
 
@@ -218,6 +225,13 @@ nonisolated struct SignatureNaming: TopoNaming {
         // newly created face happens to have identical geometry.
         if let name = ref.elementName {
             guard let table else { return nil }
+            if let names = table.nativeFaceNames, let channel = table.nativeFaceChannel {
+                guard table.nativeBodyID == body.id, table.nativeMeshRevision == body.meshRevision else { return nil }
+                let indices = names.compactMap { $0.value == name ? $0.key : nil }
+                guard indices.count == 1, let index = indices.first else { return nil }
+                return Self.resolveNativeFace(ref, index: index, channel: channel,
+                                              body: body, fullFaces: faces)
+            }
             let matches = table.entries.enumerated().filter { $0.element.elementName == name }
             guard matches.count == 1, let match = matches.first, match.offset < faces.count else { return nil }
             let entry = match.element, face = faces[match.offset]
@@ -289,6 +303,49 @@ nonisolated struct SignatureNaming: TopoNaming {
         }
         return ResolvedFace(planar: face.planar, cylinder: face.cylinder,
                             confidence: 1, elementName: matchedName, margin: .infinity)
+    }
+
+    /// Slice the current native face's OWN triangles before recovering its
+    /// editing geometry. Display grouping may have merged it with a coplanar
+    /// neighbor; neither a majority vote nor the neighbor's outline is its
+    /// geometry. The channel comes only from the adopted native mesh.
+    private static func resolveNativeFace(_ ref: FaceRef, index: Int, channel: [UInt32],
+                                          body: Body, fullFaces: [EnumeratedFace]) -> ResolvedFace? {
+        guard let native = UInt32(exactly: index), native > 0,
+              ref.elementName?.hasSupportedOperationIdentity != false,
+              body.render.indices.count % 3 == 0,
+              channel.count == body.render.triangleCount,
+              let brep = body.brep,
+              let signature = OCCTKernel.faceInfo(brep).first(where: { $0.index == index })?.signature,
+              kindCompatible(signature.kind, ref.signature.kind) else { return nil }
+        let selected = channel.indices.filter { channel[$0] == native }
+        guard !selected.isEmpty else { return nil }
+        var mesh = body.render
+        mesh.indices = selected.flatMap { triangle in
+            Array(body.render.indices[(triangle * 3)..<(triangle * 3 + 3)])
+        }
+        let patches = enumerate(mesh).filter { kindCompatible($0.signature.kind, signature.kind) }
+        guard patches.count == 1, var face = patches.first else { return nil }
+        if ref.elementName?.requiresExactSignature == true,
+           !exactSignature(signature, ref.signature), !exactSignature(face.signature, ref.signature) { return nil }
+        if var plane = face.planar {
+            guard plane.triangles.allSatisfy({ selected.indices.contains($0) }) else { return nil }
+            plane.triangles = plane.triangles.map { selected[$0] }
+            face.planar = plane
+        }
+        if var cylinder = face.cylinder {
+            guard cylinder.triangles.allSatisfy({ selected.indices.contains($0) }) else { return nil }
+            cylinder.triangles = cylinder.triangles.map { selected[$0] }
+            // A sliced side mesh has no caps. Preserve the existing whole-
+            // body flag only when the original fit covered these SAME facets.
+            let triangles = Set(cylinder.triangles)
+            cylinder.matchesWholeBody = fullFaces.contains {
+                $0.cylinder?.matchesWholeBody == true && Set($0.triangles) == triangles
+            }
+            face.cylinder = cylinder
+        }
+        return ResolvedFace(planar: face.planar, cylinder: face.cylinder,
+                            confidence: 1, elementName: ref.elementName)
     }
 
     // MARK: Scoring

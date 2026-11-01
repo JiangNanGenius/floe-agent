@@ -1187,7 +1187,7 @@ nonisolated extension FeatureGraph {
                     euclidMesh: solid, revision: nextRevision())
             }
             var table = state.naming.faceTable(for: body, createdBy: node.id, scheme: .extrude(outer))
-            table = ElementNaming.attach(names, to: table, channel: channel)
+            table = ElementNaming.attach(names, to: table, channel: channel, body: body)
             state.put(body, table: table)
             if !names.isEmpty { state.kernelNames[id] = names }
             return
@@ -1316,7 +1316,7 @@ nonisolated extension FeatureGraph {
         if let resultHandle, !resultNames.isEmpty {
             table = ElementNaming.attach(
                 resultNames, to: table,
-                channel: OCCTKernel.renderMeshFaceChannel(from: resultHandle))
+                channel: OCCTKernel.renderMeshFaceChannel(from: resultHandle), body: result)
         }
         state.put(result, table: table)
         if !resultNames.isEmpty { state.kernelNames[result.id] = resultNames }
@@ -1429,7 +1429,7 @@ nonisolated extension FeatureGraph {
         if let accHandle, !accNames.isEmpty {
             table = ElementNaming.attach(
                 accNames, to: table,
-                channel: OCCTKernel.renderMeshFaceChannel(from: accHandle))
+                channel: OCCTKernel.renderMeshFaceChannel(from: accHandle), body: acc)
         }
         state.put(acc, table: table)
         if !accNames.isEmpty { state.kernelNames[acc.id] = accNames }
@@ -1961,7 +1961,7 @@ nonisolated extension FeatureGraph {
                     if !outNames.isEmpty {
                         table = ElementNaming.attach(
                             outNames, to: table,
-                            channel: OCCTKernel.renderMeshFaceChannel(from: handle))
+                            channel: OCCTKernel.renderMeshFaceChannel(from: handle), body: result)
                     }
                     state.put(result, table: table)
                     if !outNames.isEmpty {
@@ -2106,7 +2106,7 @@ nonisolated extension FeatureGraph {
                 if !outNames.isEmpty {
                     newTable = ElementNaming.attach(
                         outNames, to: newTable,
-                        channel: OCCTKernel.renderMeshFaceChannel(from: hollow))
+                        channel: OCCTKernel.renderMeshFaceChannel(from: hollow), body: result)
                 }
                 state.put(result, table: newTable)
                 if !outNames.isEmpty { state.kernelNames[result.id] = outNames }
@@ -2219,7 +2219,7 @@ nonisolated extension FeatureGraph {
         if !outNames.isEmpty {
             newTable = ElementNaming.attach(
                 outNames, to: newTable,
-                channel: OCCTKernel.renderMeshFaceChannel(from: healed))
+                channel: OCCTKernel.renderMeshFaceChannel(from: healed), body: result)
         }
         state.put(result, table: newTable)
         if !outNames.isEmpty { state.kernelNames[result.id] = outNames }
@@ -2308,7 +2308,7 @@ nonisolated extension FeatureGraph {
         if let outHandle, !outNames.isEmpty {
             newTable = ElementNaming.attach(
                 outNames, to: newTable,
-                channel: OCCTKernel.renderMeshFaceChannel(from: outHandle))
+                channel: OCCTKernel.renderMeshFaceChannel(from: outHandle), body: result)
         }
         state.put(result, table: newTable)
         if !outNames.isEmpty { state.kernelNames[result.id] = outNames }
@@ -2479,7 +2479,7 @@ nonisolated extension FeatureGraph {
         if let resultHandle, !resultNames.isEmpty {
             table = ElementNaming.attach(
                 resultNames, to: table,
-                channel: OCCTKernel.renderMeshFaceChannel(from: resultHandle))
+                channel: OCCTKernel.renderMeshFaceChannel(from: resultHandle), body: result)
         }
         state.put(result, table: table)
         if !resultNames.isEmpty { state.kernelNames[result.id] = resultNames }
@@ -2694,7 +2694,7 @@ nonisolated extension FeatureGraph {
             if !names.isEmpty {
                 table = ElementNaming.attach(
                     names, to: table,
-                    channel: OCCTKernel.renderMeshFaceChannel(from: outcome.handle))
+                    channel: OCCTKernel.renderMeshFaceChannel(from: outcome.handle), body: result)
             }
             state.put(result, table: table)
             if !names.isEmpty { state.kernelNames[result.id] = names }

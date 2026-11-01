@@ -311,9 +311,19 @@ nonisolated enum ElementNaming {
     /// majority of its triangles on one kernel face to claim its name;
     /// anything less stays unnamed.
     static func attach(_ names: [Int: ElementName], to table: FaceTable,
-                       channel: [UInt32]) -> FaceTable {
+                       channel: [UInt32], body: Body? = nil) -> FaceTable {
         guard !names.isEmpty, !channel.isEmpty else { return table }
         var out = table
+        out.nativeFaceNames = nil
+        out.nativeFaceChannel = nil
+        out.nativeBodyID = nil
+        out.nativeMeshRevision = nil
+        if let body, body.brep != nil, channel.count == body.render.triangleCount {
+            out.nativeFaceNames = names
+            out.nativeFaceChannel = channel
+            out.nativeBodyID = body.id
+            out.nativeMeshRevision = body.meshRevision
+        }
         for i in out.entries.indices {
             var votes: [UInt32: Int] = [:]
             for triangle in out.entries[i].triangles where triangle < channel.count {
@@ -481,6 +491,7 @@ nonisolated enum ElementNaming {
     static func kernelNames(from table: FaceTable,
                             channel: [UInt32]) -> [Int: ElementName] {
         guard !channel.isEmpty else { return [:] }
+        if table.nativeFaceChannel == channel, let names = table.nativeFaceNames { return names }
         var out: [Int: ElementName] = [:]
         var conflicted: Set<Int> = []
         for entry in table.entries {
