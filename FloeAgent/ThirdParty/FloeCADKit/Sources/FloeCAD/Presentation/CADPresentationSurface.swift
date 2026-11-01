@@ -957,8 +957,6 @@ final class CADPresentationRenderController: NSObject, UIGestureRecognizerDelega
                 case .invalid:
                     // Never show an uncut draft in place of the requested cut.
                     return nil
-                case .removed:
-                    return nil
                 case .clipped(let clipped):
                     guard !clipped.indices.isEmpty else { return nil }
                     var mesh = body
