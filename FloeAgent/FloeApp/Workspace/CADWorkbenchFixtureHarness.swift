@@ -21,6 +21,27 @@
 import SwiftUI
 import FloeCAD
 
+/// X30 recovery UI input. These are DEBUG-only launch choices for the native
+/// editor export-recovery qualification; they are never read by product code.
+enum CADEditorExportRecoveryFixtureMode: String, Equatable {
+    case interrupted
+    case completed
+    case cancelled
+    case empty
+
+    static let resetArgument = "--ui-test-cad-recovery-reset"
+
+    var launchArgument: String { "--ui-test-cad-recovery-\(rawValue)" }
+
+    static func selected(from arguments: [String]) -> Self? {
+        if arguments.contains(Self.interrupted.launchArgument) { return .interrupted }
+        if arguments.contains(Self.completed.launchArgument) { return .completed }
+        if arguments.contains(Self.cancelled.launchArgument) { return .cancelled }
+        if arguments.contains(Self.empty.launchArgument) { return .empty }
+        return nil
+    }
+}
+
 enum CADQualificationFixture {
     /// Builds (or rebuilds, deterministically) the qualification package and
     /// opens it. Expected volume: 60000 − 250π mm³.
@@ -206,6 +227,150 @@ enum CADQualificationFixture {
             document.close()
             throw error
         }
+    }
+
+    /// X30 native editor export-recovery UI fixture. It owns one real saved
+    /// package and one real `NativeCADTaskRegistry` file under its own
+    /// `EditorExportRecovery` root. The only deletion path is the explicit
+    /// `--ui-test-cad-recovery-reset` launch argument, and it removes only this
+    /// fixture root. A first launch seeds one record through the production
+    /// App adapter (`beginAnimationExport`); a later launch reopens the exact
+    /// package and record without reseeding.
+    ///
+    /// `interrupted` leaves the record running on disk. Reading it through a
+    /// new registry instance applies the production load-time downgrade to
+    /// interrupted. `completed`/`cancelled` record terminal input states; they
+    /// deliberately create no video and do not represent a rendered result.
+    @MainActor
+    static func openEditorExportRecovery(
+        mode: CADEditorExportRecoveryFixtureMode,
+        reset: Bool
+    ) async throws -> FloeCADDocument {
+        let root = try editorExportRecoveryRoot()
+        let documentURL = root.appendingPathComponent("editor-export-recovery.floecad")
+        let registryURL = root.appendingPathComponent("native-tasks.json")
+        if reset {
+            if FileManager.default.fileExists(atPath: root.path) {
+                try FileManager.default.removeItem(at: root)
+            }
+        } else if !FileManager.default.fileExists(atPath: documentURL.path) {
+            throw CADDocumentError(
+                code: "fixture_missing",
+                message: "The saved editor export-recovery fixture is missing; the first launch must reseed it.")
+        }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let shouldSeed = !FileManager.default.fileExists(atPath: documentURL.path)
+        let document: FloeCADDocument
+        if shouldSeed {
+            document = try await createEditorExportRecoveryDocument(at: documentURL)
+        } else {
+            document = try await FloeCADDocument.open(at: documentURL)
+        }
+        if shouldSeed, mode != .empty {
+            try await seedEditorExportRecoveryRecord(
+                mode: mode, document: document, registryURL: registryURL)
+        }
+        // Always install the REAL App adapter, backed by the fixture-root
+        // registry, on the actual document the workbench presents.
+        let registry = NativeCADTaskRegistry(fileURL: registryURL)
+        let adapter = NativeCADEditorAnimationExportRecovery(
+            documentURL: document.url, registry: registry)
+        document.installAnimationExportRecoverySink(adapter)
+        return document
+    }
+
+    @MainActor
+    private static func createEditorExportRecoveryDocument(
+        at url: URL
+    ) async throws -> FloeCADDocument {
+        let document = try await FloeCADDocument.create(
+            at: url, name: "Recovery animation")
+        do {
+            _ = try makeExtrudedBody(document, name: "Plate",
+                                     min: [0, 0], max: [100, 60], distance: 10)
+            let clip = try document.createAnimationClip(
+                name: "Recovery orbit", duration: 1.5)
+            let track = try document.addAnimationTrack(
+                clipID: clip.id, target: .camera)
+            _ = try document.setAnimationKeyframe(
+                clipID: clip.id, trackID: track.id, time: 0,
+                camera: CADAnimationCameraValue(
+                    target: SIMD3(0.1, 0, 0.03), distance: 0.4,
+                    azimuthRadians: 0.5, elevationRadians: 0.4,
+                    fovYDegrees: 60))
+            _ = try document.setAnimationKeyframe(
+                clipID: clip.id, trackID: track.id, time: clip.duration,
+                camera: CADAnimationCameraValue(
+                    target: SIMD3(0.1, 0, 0.03), distance: 0.4,
+                    azimuthRadians: 0.7, elevationRadians: 0.4,
+                    fovYDegrees: 60))
+            let save = await document.save()
+            guard save.succeeded else {
+                throw CADDocumentError(
+                    code: "fixture_save_failed",
+                    message: save.error ?? "The editor export-recovery fixture could not be saved.")
+            }
+            return document
+        } catch {
+            document.close()
+            throw error
+        }
+    }
+
+    @MainActor
+    private static func seedEditorExportRecoveryRecord(
+        mode: CADEditorExportRecoveryFixtureMode,
+        document: FloeCADDocument,
+        registryURL: URL
+    ) async throws {
+        guard let clip = document.animationLoadState().activeClip else {
+            throw CADDocumentError(
+                code: "fixture_animation_missing",
+                message: "The editor export-recovery fixture has no active clip.")
+        }
+        // Exact native UI choices used by the notice and the restored sheet:
+        // portrait, 720p (720x1280), 24 fps, HEVC and Higher quality.
+        let options = CADAnimationExportOptions(
+            orientation: .portrait, resolution: .p720, frameRate: .fps24,
+            codec: .hevc, quality: .higher)
+        let request = CADAnimationExportRecoveryRequest(
+            documentURL: document.url,
+            options: options.recoveryOptions,
+            sourceRevision: document.revision,
+            sourceContentSHA256: document.contentSHA256,
+            sourceChangeCount: document.liveChangeCount,
+            clipID: clip.id,
+            clipDuration: clip.duration,
+            suggestedFilename: "Recovery animation.mp4")
+        let registry = NativeCADTaskRegistry(fileURL: registryURL)
+        let adapter = NativeCADEditorAnimationExportRecovery(
+            documentURL: document.url, registry: registry)
+        let id = try await adapter.beginAnimationExport(request)
+        switch mode {
+        case .interrupted, .empty:
+            // Leave the on-disk state exactly as beginAnimationExport wrote
+            // it. A fresh registry instance later performs the real downgrade.
+            break
+        case .completed:
+            await adapter.finishAnimationExport(
+                id: id, outcome: .completed,
+                detail: "fixture terminal completed record; no renderer ran")
+        case .cancelled:
+            await adapter.finishAnimationExport(
+                id: id, outcome: .cancelled,
+                detail: "fixture terminal cancelled record; no renderer ran")
+        }
+    }
+
+    /// The fixture registry and package share one dedicated directory; no
+    /// shared production file is read, written or deleted.
+    @MainActor
+    private static func editorExportRecoveryRoot() throws -> URL {
+        try FileManager.default.url(for: .applicationSupportDirectory,
+                                    in: .userDomainMask,
+                                    appropriateFor: nil, create: true)
+            .appendingPathComponent(
+                "FloeAgent/CADFixtures/EditorExportRecovery", isDirectory: true)
     }
 
     /// E29/X31 NEGATIVE native OBJ options fixture: two real saved bodies where
@@ -507,6 +672,14 @@ struct CADWorkbenchFixtureHarness: View {
                 } else if arguments.contains("--ui-test-cad-face-rotation") {
                     document = try await CADQualificationFixture.openFaceRotation(
                         reset: arguments.contains("--ui-test-cad-face-rotation-reset"))
+                } else if let recoveryMode = CADEditorExportRecoveryFixtureMode.selected(
+                    from: arguments) {
+                    // X30 exact native editor export recovery: real document,
+                    // real App adapter, fixture-root registry, no auto export.
+                    document = try await CADQualificationFixture.openEditorExportRecovery(
+                        mode: recoveryMode,
+                        reset: arguments.contains(
+                            CADEditorExportRecoveryFixtureMode.resetArgument))
                 } else if arguments.contains("--ui-test-cad-obj-coverage") {
                     // E29/X31 native OBJ options: real mixed valid/stale
                     // material-range receipt, saved and reopened.

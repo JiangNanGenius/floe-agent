@@ -1330,4 +1330,204 @@ final class CADMeshExportOptionsNativeSheetUITests: XCTestCase {
         XCTAssertTrue(app.buttons["CADCompactMoreMenu"].isHittable)
     }
 }
+
+// MARK: - X30 direct native editor export recovery
+
+@MainActor
+private enum CADEditorExportRecoveryLaunch {
+    static let reset = "--ui-test-cad-recovery-reset"
+    static let interrupted = "--ui-test-cad-recovery-interrupted"
+    static let completed = "--ui-test-cad-recovery-completed"
+    static let cancelled = "--ui-test-cad-recovery-cancelled"
+    static let empty = "--ui-test-cad-recovery-empty"
+
+    static func arguments(_ mode: String? = nil, reset: Bool) -> [String] {
+        CADNativeSheetLaunch.ipad
+            + (mode.map { [$0] } ?? [])
+            + (reset ? [Self.reset] : [])
+    }
+
+    static func app(_ mode: String? = nil, reset: Bool) -> XCUIApplication {
+        let app = XCUIApplication()
+        app.launchArguments = arguments(mode, reset: reset)
+        return app
+    }
+}
+
+@MainActor
+final class CADEditorAnimationExportRecoveryUITests: XCTestCase {
+    private let noticeIdentifier = "CADAnimationExportRecovery"
+
+    func testInterruptedNoticeRestoresExactChoicesWithoutStartingExport() throws {
+        continueAfterFailure = false
+        XCUIDevice.shared.orientation = .landscapeLeft
+        let app = CADEditorExportRecoveryLaunch.app(
+            CADEditorExportRecoveryLaunch.interrupted, reset: true)
+        app.launch()
+        defer { app.terminate() }
+        openPresent(app)
+
+        let notice = CADSheetProbe.any(app, noticeIdentifier)
+        XCTAssertTrue(notice.waitForExistence(timeout: 30),
+                      "the real interrupted export record must render its native Present notice")
+        XCTAssertTrue(CADSheetProbe.waitForLabel(notice, contains: "Video export interrupted",
+                                                 timeout: 10))
+        let details = app.staticTexts.matching(NSPredicate(
+            format: "label CONTAINS %@ AND label CONTAINS %@ AND label CONTAINS %@ "
+                + "AND label CONTAINS %@",
+            argumentArray: ["Recovery animation.mp4", "720×1280", "24 fps", "HEVC"]
+        )).firstMatch
+        XCTAssertTrue(details.waitForExistence(timeout: 10),
+                      "the notice must describe the exact saved portrait/720/24/HEVC choices")
+
+        let restore = app.buttons["CADAnimationExportRecoveryRestore"]
+        XCTAssertTrue(CADSheetProbe.waitForHittable(restore, timeout: 20),
+                      "the notice's real Use settings control must be reachable")
+        assertNoExportStarted(app)
+        CADSheetProbe.attach("X30 interrupted notice - exact saved choices", to: self)
+
+        restore.tap()
+        let cancel = app.buttons["CADAnimationExportOptionsCancel"]
+        XCTAssertTrue(cancel.waitForExistence(timeout: 15),
+                      "Use settings must open the shipped native export options sheet")
+        assertPickerShows(app, "CADAnimationExportOrientation", "Portrait")
+        assertPickerShows(app, "CADAnimationExportResolution", "720p")
+        assertPickerShows(app, "CADAnimationExportFrameRate", "24 fps")
+        assertPickerShows(app, "CADAnimationExportCodec", "HEVC (smaller)")
+        assertPickerShows(app, "CADAnimationExportQuality", "Higher quality")
+        XCTAssertTrue(app.staticTexts["36 frames"].waitForExistence(timeout: 5),
+                      "the 1.5 s clip at 24 fps must show the real 36-frame estimate")
+        CADSheetProbe.attach("X30 restored export sheet - portrait 720 24 HEVC higher", to: self)
+
+        cancel.tap()
+        XCTAssertTrue(CADSheetProbe.waitForAbsence(cancel, timeout: 10))
+        assertNoExportStarted(app)
+
+        // Cancelling the restored sheet must not dismiss the durable record.
+        app.terminate()
+        app.launchArguments = CADEditorExportRecoveryLaunch.arguments(
+            CADEditorExportRecoveryLaunch.interrupted, reset: false)
+        app.launch()
+        openPresent(app)
+        let reopenedNotice = CADSheetProbe.any(app, noticeIdentifier)
+        XCTAssertTrue(reopenedNotice.waitForExistence(timeout: 30),
+                      "the untouched interrupted record must reopen with the same document")
+        assertNoExportStarted(app)
+        CADSheetProbe.attach("X30 interrupted record remains after app and document reopen",
+                             to: self)
+    }
+
+    func testDismissalSurvivesAppAndDocumentReopen() throws {
+        continueAfterFailure = false
+        XCUIDevice.shared.orientation = .landscapeLeft
+        let app = CADEditorExportRecoveryLaunch.app(
+            CADEditorExportRecoveryLaunch.interrupted, reset: true)
+        app.launch()
+        defer { app.terminate() }
+        openPresent(app)
+
+        let notice = CADSheetProbe.any(app, noticeIdentifier)
+        XCTAssertTrue(notice.waitForExistence(timeout: 30))
+        let dismiss = app.buttons["CADAnimationExportRecoveryDismiss"]
+        XCTAssertTrue(CADSheetProbe.waitForHittable(dismiss, timeout: 20))
+        CADSheetProbe.attach("X30 interrupted notice before durable dismissal", to: self)
+        dismiss.tap()
+        XCTAssertTrue(CADSheetProbe.waitForAbsence(notice, timeout: 20),
+                      "Dismiss must clear the notice through the production registry adapter")
+        XCTAssertTrue(app.buttons["CADPresentExport"].waitForExistence(timeout: 10),
+                      "the Present controls must remain usable after dismissal")
+        CADSheetProbe.attach("X30 interrupted notice dismissed", to: self)
+
+        app.terminate()
+        app.launchArguments = CADEditorExportRecoveryLaunch.arguments(
+            CADEditorExportRecoveryLaunch.interrupted, reset: false)
+        app.launch()
+        openPresent(app)
+        let reopenedNotice = CADSheetProbe.any(app, noticeIdentifier)
+        XCTAssertFalse(reopenedNotice.waitForExistence(timeout: 5),
+                       "a durable dismissal must survive a new process reopening the same document")
+        assertNoExportStarted(app)
+        CADSheetProbe.attach("X30 dismissed recovery absent after app and document reopen",
+                             to: self)
+    }
+
+    func testCompletedCancelledAndEmptyInputShowNoNotice() throws {
+        continueAfterFailure = false
+        XCUIDevice.shared.orientation = .landscapeLeft
+        assertNoNotice(mode: CADEditorExportRecoveryLaunch.completed,
+                       label: "completed")
+        assertNoNotice(mode: CADEditorExportRecoveryLaunch.cancelled,
+                       label: "cancelled")
+        assertNoNotice(mode: CADEditorExportRecoveryLaunch.empty,
+                       label: "no-record")
+    }
+
+    private func openPresent(_ app: XCUIApplication) {
+        XCTAssertTrue(app.buttons["UndoButton"].waitForExistence(timeout: 60),
+                      "the real saved recovery fixture must open in the workbench")
+        CADSheetProbe.enterPresent(app)
+        CADSheetProbe.waitForPresentSurface(app)
+        XCTAssertTrue(app.buttons["CADPresentExport"].waitForExistence(timeout: 20))
+    }
+
+    private func assertNoNotice(mode: String, label: String) {
+        let app = CADEditorExportRecoveryLaunch.app(mode, reset: true)
+        app.launch()
+        defer { app.terminate() }
+        openPresent(app)
+        let notice = CADSheetProbe.any(app, noticeIdentifier)
+        XCTAssertFalse(notice.waitForExistence(timeout: 5),
+                       "\(label) recovery input must not render an interrupted notice")
+        assertNoExportStarted(app)
+        CADSheetProbe.attach("X30 \(label) recovery input shows no notice", to: self)
+    }
+
+    private func assertNoExportStarted(
+        _ app: XCUIApplication,
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) {
+        let progress = app.descendants(matching: .any)
+            .matching(identifier: "CADAnimationExportProgress").firstMatch
+        XCTAssertFalse(progress.waitForExistence(timeout: 2),
+                       "opening recovery metadata must not start an exporter frame loop",
+                       file: file, line: line)
+        XCTAssertFalse(app.buttons["CADAnimationExportOptionsConfirm"].exists,
+                       "recovery metadata must not open the export options sheet by itself",
+                       file: file, line: line)
+        XCTAssertFalse(app.navigationBars["Save"].exists,
+                       "recovery metadata must not present a file exporter by itself",
+                       file: file, line: line)
+    }
+
+    private func assertPickerShows(
+        _ app: XCUIApplication,
+        _ identifier: String,
+        _ expected: String,
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) {
+        let picker = app.buttons[identifier]
+        XCTAssertTrue(picker.waitForExistence(timeout: 10),
+                      "missing native choice \(identifier)", file: file, line: line)
+        XCTAssertTrue(waitForPickerValue(picker, expected),
+                      "\(identifier) must restore \(expected); label=\(picker.label) "
+                        + "value=\(String(describing: picker.value))",
+                      file: file, line: line)
+    }
+
+    private func waitForPickerValue(_ element: XCUIElement, _ expected: String,
+                                    timeout: TimeInterval = 20) -> Bool {
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            let value = (element.value as? String) ?? ""
+            if value == expected || value.contains(expected) || element.label.contains(expected) {
+                return true
+            }
+            RunLoop.current.run(until: Date().addingTimeInterval(0.1))
+        }
+        let value = (element.value as? String) ?? ""
+        return value == expected || value.contains(expected) || element.label.contains(expected)
+    }
+}
 #endif
