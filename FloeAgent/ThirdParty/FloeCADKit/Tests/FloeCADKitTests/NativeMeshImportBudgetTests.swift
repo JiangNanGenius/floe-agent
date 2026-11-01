@@ -364,6 +364,7 @@ final class NativeMeshImportBudgetTests: XCTestCase {
         let target = try await FloeCADDocument.create(
             at: workDir.appendingPathComponent("target.floecad"), name: "Target")
         defer { if !target.isClosed { target.close() } }
+        let baselineChangeCount = target.session.changeCount
         let token = MeshImportCancellation()
         MeshImportKit.testImportBodyCheckpoint = { built in
             if built == 1 { token.cancel() }
@@ -375,7 +376,8 @@ final class NativeMeshImportBudgetTests: XCTestCase {
         XCTAssertEqual(outcome.errorCode, "cancelled")
         XCTAssertEqual(target.summary().bodyCount, 0,
                        "a cancel between solids must not leave the first solid committed")
-        XCTAssertEqual(target.session.changeCount, 0)
+        XCTAssertEqual(target.session.changeCount, baselineChangeCount,
+                       "cancellation must not add a change to the initialized document")
         XCTAssertFalse(target.session.undoStack.canUndo)
     }
 }

@@ -516,6 +516,64 @@ final class CADNamedVersionTests: XCTestCase {
         reopened.close()
     }
 
+    func testDatumPointsRestoreAndFailedCommitPreserveTheLiveAndPersistedGraphs() async throws {
+        let (document, url) = try await makeDocument("DatumVersions")
+        defer { document.close() }
+        let original = DatumPoint(position: SIMD3(12, 8, 4), name: "Original datum")
+        document.session.perform(AddDatumPointCommand(point: original))
+        try await save(document)
+        let base = try await document.createNamedVersion(name: "One point")
+
+        document.session.perform(UpdateResolvedDatumPointCommand(
+            pointID: original.id, before: original.position, after: SIMD3(30, 16, 9)))
+        let extra = DatumPoint(position: SIMD3(60, 2, 1), name: "Current-only datum")
+        document.session.perform(AddDatumPointCommand(point: extra))
+        try await save(document)
+        let current = document.session.document.datumPoints
+        let currentRevision = document.revision
+        let currentContent = document.contentSHA256
+        let filesBefore = try packageFileHashes(url)
+
+        // Fail the exact disk commit AFTER the checkpoint replaced the live
+        // record graph, so this exercises rollback as well as successful restore.
+        CADNamedVersionTestHooks.beforeRestoreCommit = {
+            CADDocumentFaultInjection.beforeCommit = {
+                throw NSError(domain: "FloeCADVersionTest", code: 81,
+                              userInfo: [NSLocalizedDescriptionKey: "injected datum restore failure"])
+            }
+        }
+        do {
+            _ = try await document.restoreNamedVersion(base.version.id)
+            XCTFail("a failed exact commit must not report a restored document")
+        } catch let error as CADNamedVersionError {
+            guard case .saveFailed = error else {
+                return XCTFail("unexpected restore error: \(error)")
+            }
+        }
+        CADDocumentFaultInjection.beforeCommit = nil
+        CADNamedVersionTestHooks.beforeRestoreCommit = nil
+        XCTAssertEqual(document.revision, currentRevision)
+        XCTAssertEqual(document.contentSHA256, currentContent)
+        XCTAssertEqual(document.session.document.datumPoints, current)
+        XCTAssertEqual(try document.project.datumPoints.map {
+            try JSONDecoder().decode(DatumPoint.self, from: $0.pointData)
+        }, current)
+        XCTAssertTrue(document.project.datumPoints.allSatisfy { $0.project === document.project })
+        XCTAssertEqual(try packageFileHashes(url), filesBefore)
+
+        let restored = try await document.restoreNamedVersion(base.version.id)
+        XCTAssertFalse(restored.alreadyCurrent)
+        XCTAssertEqual(document.session.document.datumPoints, [original])
+        XCTAssertEqual(document.project.datumPoints.map(\.pointID), [original.id.raw])
+        XCTAssertTrue(document.project.datumPoints.allSatisfy { $0.project === document.project })
+        document.close()
+        let reopened = try await FloeCADDocument.open(at: url)
+        defer { reopened.close() }
+        XCTAssertEqual(reopened.session.document.datumPoints, [original])
+        XCTAssertEqual(reopened.project.datumPoints.map(\.pointID), [original.id.raw])
+        XCTAssertTrue(reopened.project.datumPoints.allSatisfy { $0.project === reopened.project })
+    }
+
     // MARK: - Conflict / refusal
 
     func testRestoreConflictAndInvalidNameLeaveCurrentUntouched() async throws {

@@ -24,6 +24,7 @@ nonisolated struct CADProjectSnapshot {
     var sketches: [PersistedSketch]
     var planes: [PersistedPlane]
     var axes: [PersistedAxis]
+    var datumPoints: [PersistedDatumPoint]
     var images: [PersistedImage]
     var symbols: [PersistedSymbol]
     var features: [PersistedFeature]
@@ -53,6 +54,7 @@ nonisolated struct CADProjectSnapshot {
         sketches = project.sketches
         planes = project.planes
         axes = project.axes
+        datumPoints = project.datumPoints
         images = project.images
         symbols = project.symbols
         features = project.features
@@ -83,6 +85,7 @@ nonisolated struct CADProjectSnapshot {
         project.sketches = sketches
         project.planes = planes
         project.axes = axes
+        project.datumPoints = datumPoints
         project.images = images
         project.symbols = symbols
         project.features = features
@@ -106,6 +109,7 @@ nonisolated struct CADProjectSnapshot {
         for row in sketches { row.project = project }
         for row in planes { row.project = project }
         for row in axes { row.project = project }
+        for row in datumPoints { row.project = project }
         for row in images { row.project = project }
         for row in symbols { row.project = project }
         for row in features { row.project = project }
@@ -130,6 +134,7 @@ extension Project {
         sketches = other.sketches
         planes = other.planes
         axes = other.axes
+        datumPoints = other.datumPoints
         images = other.images
         symbols = other.symbols
         features = other.features
@@ -153,6 +158,7 @@ extension Project {
         for row in sketches { row.project = self }
         for row in planes { row.project = self }
         for row in axes { row.project = self }
+        for row in datumPoints { row.project = self }
         for row in images { row.project = self }
         for row in symbols { row.project = self }
         for row in features { row.project = self }

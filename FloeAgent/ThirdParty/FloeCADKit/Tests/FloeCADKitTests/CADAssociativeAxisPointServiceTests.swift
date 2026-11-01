@@ -238,6 +238,19 @@ final class CADAssociativeAxisPointServiceTests: XCTestCase {
         let baseOrigin = record.origin
         XCTAssertGreaterThan(abs(baseOrigin.x), 1e-6)
         let before = copies.map(\.transform.translation)
+        let otherFace = try bottomFace(f)
+        let beforeRefusal = f.document.session.changeCount
+        let mixed = call(f, "datum.axis.update", [
+            "axis_id": id.raw.uuidString, "offset": "20", "expected_offset": storedOffset,
+            "body_id": f.body.raw.uuidString,
+            "face_index": try XCTUnwrap(otherFace["index"]),
+            "query_token": try XCTUnwrap(otherFace["query_token"]),
+        ])
+        XCTAssertEqual(mixed["ok"] as? Bool, false, "\(mixed)")
+        XCTAssertEqual(mixed["error"] as? String, "ambiguous_update", "\(mixed)")
+        XCTAssertEqual(f.document.session.changeCount, beforeRefusal)
+        XCTAssertEqual(try axis(f, id).definition, record.definition)
+        XCTAssertEqual(patternCopies(f, try patternNode(f)).map(\.transform.translation), before)
         let edited = call(f, "datum.axis.update", [
             "axis_id": id.raw.uuidString, "offset": "20", "expected_offset": storedOffset,
         ])
@@ -255,6 +268,58 @@ final class CADAssociativeAxisPointServiceTests: XCTestCase {
         XCTAssertEqual(patternCopies(f, try patternNode(f)).map(\.transform.translation), before)
         f.document.session.redo()
         XCTAssertEqual(try axis(f, id).origin.x, baseOrigin.x + 20, accuracy: 1e-6)
+    }
+
+    func testVariableTransactionUpdatesAxisAndPointCachesTogetherThroughUndoAndReopen() async throws {
+        let f = try await fixture()
+        let variable = call(f, "variable.create", ["name": "datumGap", "expression": "2"])
+        XCTAssertEqual(variable["ok"] as? Bool, true, "\(variable)")
+        let variableID = try XCTUnwrap(variable["variable_id"] as? String)
+        let axisID = try self.axisID(call(f, "datum.axis.create",
+                                         try faceAxisArgs(f, face: topFace(f), offset: "datumGap * 2")))
+        let pointID = try self.pointID(call(f, "datum.point.create", [
+            "kind": "axisPoint", "axis_id": axisID.raw.uuidString, "offset": "datumGap",
+        ]))
+        let initialAxis = try axis(f, axisID)
+        let initialPoint = try point(f, pointID)
+        let changed = call(f, "variable.update", [
+            "variable_id": variableID, "expression": "7", "expected_expression": "2",
+        ])
+        XCTAssertEqual(changed["ok"] as? Bool, true, "\(changed)")
+
+        func assertValues(_ document: FloeCADDocument, gap: Double,
+                          file: StaticString = #filePath, line: UInt = #line) throws {
+            let axisRow = try XCTUnwrap(rows(document, "axes").first {
+                ($0["axis_id"] as? String) == axisID.raw.uuidString
+            }, file: file, line: line)
+            let pointRow = try XCTUnwrap(rows(document, "datumPoints").first {
+                ($0["point_id"] as? String) == pointID.raw.uuidString
+            }, file: file, line: line)
+            XCTAssertEqual(axisRow["value"] as? Double, gap * 2, file: file, line: line)
+            XCTAssertEqual(pointRow["value"] as? Double, gap, file: file, line: line)
+            XCTAssertEqual(axisRow["formula"] as? String, "datumGap * 2", file: file, line: line)
+            XCTAssertEqual(pointRow["formula"] as? String, "datumGap", file: file, line: line)
+            let currentAxis = try XCTUnwrap(document.session.document.axes.first { $0.id == axisID })
+            let currentPoint = try XCTUnwrap(document.session.document.datumPoints.first { $0.id == pointID })
+            XCTAssertEqual(currentAxis.origin.x - initialAxis.origin.x, (gap - 2) * 2,
+                           accuracy: 1e-6, file: file, line: line)
+            XCTAssertEqual(simd_distance(currentPoint.position, currentAxis.origin), gap,
+                           accuracy: 1e-6, file: file, line: line)
+        }
+        try assertValues(f.document, gap: 7)
+        f.document.session.undo()
+        try assertValues(f.document, gap: 2)
+        XCTAssertEqual(try axis(f, axisID), initialAxis)
+        XCTAssertEqual(try point(f, pointID), initialPoint)
+        f.document.session.redo()
+        try assertValues(f.document, gap: 7)
+        let saved = await f.document.save()
+        XCTAssertTrue(saved.succeeded, saved.error ?? "save failed")
+        let url = f.document.url
+        f.document.close()
+        let reopened = try await FloeCADDocument.open(at: url)
+        documents.append(reopened)
+        try assertValues(reopened, gap: 7)
     }
 
     func testFaceAxisFollowsParentThicknessAndReselectsTheOtherFace() async throws {

@@ -1620,11 +1620,14 @@ final class DocumentSession {
             }
         }
         let plan = Self.variableFanOutPlan(document: preview, resolved: resolved)
-        let leading = commands + variableCacheCommands + plan.featureCommands + plan.sketchCommands + plan.planeCommands
+        let leading = commands + variableCacheCommands + plan.featureCommands
+            + plan.sketchCommands + plan.planeCommands + plan.axisCommands + plan.datumPointCommands
         guard !leading.isEmpty else { return false }
         preview.features = plan.graph
         preview.sketches = plan.sketches
         preview.planes = plan.planes
+        preview.axes = plan.axes
+        preview.datumPoints = plan.datumPoints
         return performRebuild(plan.graph, leadingCommands: leading, title: title,
                               previewDocument: preview)
     }

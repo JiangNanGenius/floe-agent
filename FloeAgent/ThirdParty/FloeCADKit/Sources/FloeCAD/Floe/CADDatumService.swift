@@ -1115,7 +1115,13 @@ public final class CADDatumService {
         do {
             let newSize = try size(args["size"])
             let offset = try offsetExpression(args["offset"])
+            let sourceFields = ["kind", "body_id", "face_index", "edge_index", "query_token",
+                                "plane_ids", "points"]
             if let offset {
+                guard !sourceFields.contains(where: { args[$0] != nil }) else {
+                    throw Failure(code: "ambiguous_update",
+                                  message: "Send either offset or the complete source fields, not both.")
+                }
                 guard current.expressionSlots.contains(where: { $0.name == "offset" }) else {
                     throw Failure(code: "offset_unsupported",
                                   message: "This axis kind follows its sources and has no offset.")
@@ -1140,8 +1146,7 @@ public final class CADDatumService {
                               action: "datum.axis.update",
                               extra: ["axis_id": axis.id.raw.uuidString])
             }
-            let reselect = ["kind", "body_id", "face_index", "edge_index", "query_token",
-                            "plane_ids", "points"].contains { args[$0] != nil }
+            let reselect = sourceFields.contains { args[$0] != nil }
             guard reselect else {
                 var commands: [DocumentCommand] = []
                 if let newSize, newSize != axis.length {
