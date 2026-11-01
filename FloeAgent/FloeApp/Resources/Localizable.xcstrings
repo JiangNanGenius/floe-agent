@@ -122390,13 +122390,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Some viewers show only base color and opacity; metallic, roughness, normal and emissive maps use the extended MTL format."
+            "value": "Some viewers show only base color and opacity; metallic, roughness, normal and emissive maps use the extended MTL format, and scalar maps may be read as sRGB where MTL has no colorspace field."
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "部分查看器只显示基础颜色和透明度；金属度、粗糙度、法线和自发光贴图使用扩展 MTL 格式。"
+            "value": "部分查看器只显示基础色和不透明度；金属度、粗糙度、法线和自发光贴图使用扩展 MTL 格式；MTL 没有色彩空间字段，标量贴图可能被当作 sRGB 读取。"
           }
         }
       }
@@ -122475,13 +122475,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Viewers differ on whether the opacity map uses luminance or alpha; this bundle writes grayscale luminance."
+            "value": "Viewers differ on whether the opacity map uses luminance or alpha; this bundle writes the complete mask in both RGB and alpha, with the authored opacity baked in."
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "不同查看器对不透明度贴图使用亮度还是 Alpha 的处理不同；此包写入灰度亮度。"
+            "value": "不同查看器读取不透明度贴图时，有的取亮度，有的取 Alpha；此包会在 RGB 与 Alpha 中写入相同的最终遮罩，并已烘焙作者设定的不透明度。"
           }
         }
       }
@@ -122805,6 +122805,142 @@
           "stringUnit": {
             "state": "translated",
             "value": "文档已更改，请重新检查导出内容。"
+          }
+        }
+      }
+    },
+    "cad.export.reason.tooLargeTexture": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "A material image is larger than this format supports."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "材质图片超出此格式支持的大小。"
+          }
+        }
+      }
+    },
+    "cad.export.reason.faceMissing": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "A face material's triangle range is missing."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "某面材质的三角形范围缺失。"
+          }
+        }
+      }
+    },
+    "cad.export.reason.faceOverlap": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Face material triangle ranges overlap."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "面材质三角形范围重叠。"
+          }
+        }
+      }
+    },
+    "cad.export.reason.normalColorSpace": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This material's normal map needs linear color values."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "该材质的法线贴图必须使用线性颜色值。"
+          }
+        }
+      }
+    },
+    "cad.export.reason.meshUVTransform": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "A mesh UV transform can't be written to this format."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "此格式无法写入网格 UV 变换。"
+          }
+        }
+      }
+    },
+    "cad.export.reason.uvProjected": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Textures use an automatic projection."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "纹理使用自动投影。"
+          }
+        }
+      }
+    },
+    "cad.ui.export.obj.preparing": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Preparing export…"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "正在准备导出…"
+          }
+        }
+      }
+    },
+    "cad.export.reason.faceFallback": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Some face materials use the body material."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "部分面材质使用主体材质。"
           }
         }
       }

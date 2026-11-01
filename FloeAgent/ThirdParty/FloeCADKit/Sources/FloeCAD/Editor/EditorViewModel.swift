@@ -257,10 +257,22 @@ final class EditorViewModel {
     var errorMessage: String?
 
     /// Exact OBJ bundle built by the export options sheet's preflight. The
-    /// confirm reuses this when the live change count is unchanged, so the
-    /// report the user reviewed and the bytes that are saved are one result.
-    /// Cleared after staging; a document edit invalidates it via changeCount.
-    private var objBundlePlanCache: (changeCount: Int, perBody: Bool, acceptPartial: Bool, plan: OBJBundlePlan)?
+    /// confirm reuses this exact plan only while the live document still has
+    /// the reviewed snapshot identity (saved revision + content SHA + every
+    /// body's mesh/face-table revision). It is never rebuilt synchronously on
+    /// the main actor during confirm.
+    private struct OBJBundleReviewCache {
+        var identity: OBJBundleSnapshotIdentity
+        var perBody: Bool
+        var acceptPartial: Bool
+        var plan: OBJBundlePlan
+    }
+    private var objBundleReviewCache: OBJBundleReviewCache?
+    /// Latest-wins ownership for the off-main preflight. A canceled/obsolete
+    /// result is neither cached nor shown; `clearOBJBundlePlan` also cancels
+    /// the worker so a dismissed sheet cannot resurrect it.
+    private var objBundlePreflightGeneration: UInt64 = 0
+    private var objBundlePreflightWorker: Task<OBJBundlePlan, Never>?
 
     /// Short, non-blocking explanation shown as a pill — e.g. why a tool is
     /// unavailable for the current selection. An alert would be too heavy for
@@ -332,9 +344,16 @@ final class EditorViewModel {
 
     /// Bound by the live facade; the stored DesignDocument is not an export
     /// owner. Weak facade callbacks also fence an editor retained after close.
-    @ObservationIgnored var partExportHandler: (@MainActor (String) -> CADExchangeOutcome)?
+    @ObservationIgnored var partExportHandler:
+        (@MainActor (String, Bool, Int?) -> CADExchangeOutcome)?
     @ObservationIgnored var exchangeCoverageHandler:
         (@MainActor (String, CADExchangeSelection) -> Result<CADExchangeCoverage, CADDocumentError>)?
+    #if DEBUG
+    /// Deterministic async-preflight cancellation witness for tests. Never set
+    /// in production; the hook runs on the main actor after the worker starts.
+    @ObservationIgnored var objBundlePreflightSuspensionForTesting:
+        (@MainActor () async -> Void)?
+    #endif
 
     private var exportOwnerUnavailableMessage: String {
         FloeCADStrings.text("cad.error.exportOwnerUnavailable",
@@ -343,13 +362,14 @@ final class EditorViewModel {
 
     /// Geometry-only exports share the authoritative part receipt. Invalid
     /// meshes refuse the write; these formats promise no material channels.
-    private func partMeshExport(format: String) -> Data? {
+    private func partMeshExport(format: String, acceptPartial: Bool = false,
+                                expectedChangeCount: Int? = nil) -> Data? {
         guard exportableBodies() != nil else { return nil }
         guard let partExportHandler else {
             errorMessage = exportOwnerUnavailableMessage
             return nil
         }
-        switch partExportHandler(format) {
+        switch partExportHandler(format, acceptPartial, expectedChangeCount) {
         case let .success(data, _, _):
             return data
         case .coverageRequired, .coverage:
@@ -369,64 +389,242 @@ final class EditorViewModel {
 
     /// OBJ of the whole document, or nil when empty. This is the TRUE
     /// single-file OBJ: geometry and UVs, never MTL/materials/textures.
-    func exportOBJ() -> Data? {
-        partMeshExport(format: "obj")
+    /// A partial continuation writes exactly the included valid bodies; the
+    /// default stays strict, and `expectedChangeCount` fences a reviewed loss.
+    func exportOBJ(acceptPartial: Bool = false,
+                   expectedChangeCount: Int? = nil) -> Data? {
+        partMeshExport(format: "obj", acceptPartial: acceptPartial,
+                       expectedChangeCount: expectedChangeCount)
     }
 
     /// The complete OBJ-with-materials bundle plan (model.obj + model.mtl +
     /// relative textures in one ZIP). `perBody` produces one self-contained
     /// ZIP per body; nothing here mutates the document or material library.
     ///
-    /// The exporter validates every image, digest, UV set and face range before
-    /// returning bytes. The options sheet uses this same plan for its preflight
-    /// report; the confirm reuses the cached plan when `changeCount` is
-    /// unchanged, so there is no second detached export.
+    /// This synchronous seam is retained for tests and non-UI callers. The App
+    /// options sheet uses `objBundlePreflight`, which performs the same exact
+    /// build off the main actor.
     func objBundlePlan(perBody: Bool, acceptPartial: Bool = false,
                        expectedChangeCount: Int? = nil) -> OBJBundlePlan? {
         guard let bodies = coveredMeshBodies(format: "obj_bundle",
                                              acceptPartial: acceptPartial,
                                              expectedChangeCount: expectedChangeCount) else { return nil }
-        if let cache = objBundlePlanCache,
-           cache.changeCount == session.changeCount,
+        let identity = objBundleSnapshotIdentity()
+        if let cache = objBundleReviewCache,
+           cache.identity == identity,
            cache.perBody == perBody,
            cache.acceptPartial == acceptPartial {
             return cache.plan
         }
-        let tables = exportFaceTables(for: bodies)
-        let plan: OBJBundlePlan
-        if perBody {
-            // An empty body has no geometry to write. The single bundle
-            // reports it as skipped; per-body simply has no file to produce.
-            let drawable = bodies.filter {
-                !$0.render.positions.isEmpty && !$0.render.indices.isEmpty
-            }
-            let items = drawable.map { body -> OBJBundlePlanItem in
-                let bodyTables = tables.tables[body.id].map { [body.id: $0] } ?? [:]
-                let bodyRevisions = tables.revisions[body.id].map { [body.id: $0] } ?? [:]
-                return OBJBundlePlanItem(
-                    name: body.name,
-                    result: OBJBundleExporter.export(
-                        bodies: [body],
-                        faceTables: bodyTables,
-                        faceTableRevisions: bodyRevisions))
-            }
-            plan = OBJBundlePlan(perBody: true, single: nil, items: items)
-        } else {
-            plan = OBJBundlePlan(
-                perBody: false,
-                single: OBJBundleExporter.export(
-                    bodies: bodies,
-                    faceTables: tables.tables,
-                    faceTableRevisions: tables.revisions),
-                items: [])
-        }
-        objBundlePlanCache = (session.changeCount, perBody, acceptPartial, plan)
+        // A synchronous test/non-UI build owns the newest generation so a
+        // still-running background preflight cannot overwrite this result.
+        objBundlePreflightWorker?.cancel()
+        objBundlePreflightWorker = nil
+        objBundlePreflightGeneration &+= 1
+        let snapshot = objBundlePreflightSnapshot(bodies: bodies, identity: identity)
+        let plan = OBJBundleExporter.plan(for: snapshot, perBody: perBody)
+        objBundleReviewCache = OBJBundleReviewCache(identity: identity,
+                                                    perBody: perBody,
+                                                    acceptPartial: acceptPartial,
+                                                    plan: plan)
         return plan
     }
 
-    /// Release the potentially large preflight bytes after staging/dismissal.
+    /// Build the exact OBJ bundle preflight off the main actor. The immutable
+    /// snapshot is captured before any await; the detached worker checks
+    /// cancellation, and only the newest generation may publish a result.
+    /// Confirm never rebuilds these bytes: it consumes the cached plan only
+    /// while the live document identity is still exactly the reviewed one.
+    func objBundlePreflight(perBody: Bool, acceptPartial: Bool,
+                            expectedChangeCount: Int) async -> OBJBundlePreflight? {
+        guard expectedChangeCount == session.changeCount else {
+            return Self.objBundlePreflightRefusal(perBody: perBody,
+                                                  code: "obj_bundle_review_stale")
+        }
+        let bodies: [Body]
+        switch coveredMeshBodiesResult(format: "obj_bundle",
+                                       acceptPartial: acceptPartial,
+                                       expectedChangeCount: expectedChangeCount) {
+        case .success(let value):
+            bodies = value
+        case .failure(let error):
+            if error.code == "stale_export" || error.code == "stale_revision" {
+                return Self.objBundlePreflightRefusal(perBody: perBody,
+                                                      code: "obj_bundle_review_stale")
+            }
+            if error.code == "document_closed" {
+                return Self.objBundlePreflightRefusal(perBody: perBody,
+                                                      code: "obj_bundle_owner_unavailable")
+            }
+            if error.code == "export_no_bodies" {
+                return Self.objBundlePreflightEmpty(perBody: perBody)
+            }
+            return Self.objBundlePreflightRefusal(perBody: perBody,
+                                                  code: "obj_bundle_review_failed")
+        }
+
+        let identity = objBundleSnapshotIdentity()
+        if let cache = objBundleReviewCache,
+           cache.identity == identity,
+           cache.perBody == perBody,
+           cache.acceptPartial == acceptPartial {
+            return cache.plan.preflight
+        }
+        objBundleReviewCache = nil
+        let snapshot = objBundlePreflightSnapshot(bodies: bodies, identity: identity)
+
+        objBundlePreflightWorker?.cancel()
+        objBundlePreflightGeneration &+= 1
+        let generation = objBundlePreflightGeneration
+        let worker = Task.detached(priority: .userInitiated) {
+            OBJBundleExporter.plan(for: snapshot, perBody: perBody)
+        }
+        objBundlePreflightWorker = worker
+        #if DEBUG
+        if let suspension = objBundlePreflightSuspensionForTesting {
+            await suspension()
+        }
+        #endif
+        let plan = await withTaskCancellationHandler {
+            await worker.value
+        } onCancel: {
+            worker.cancel()
+        }
+        if objBundlePreflightGeneration == generation {
+            objBundlePreflightWorker = nil
+        }
+        guard !Task.isCancelled,
+              objBundlePreflightGeneration == generation else { return nil }
+
+        // Owner + source fence AFTER the expensive work. A close or edit while
+        // images/ZIP were being prepared invalidates the review entirely.
+        guard let handler = exchangeCoverageHandler else {
+            return Self.objBundlePreflightRefusal(perBody: perBody,
+                                                  code: "obj_bundle_owner_unavailable")
+        }
+        switch handler("obj_bundle", CADExchangeSelection(
+            scope: .part, acceptPartial: acceptPartial,
+            expectedChangeCount: expectedChangeCount)) {
+        case .failure(let error):
+            if error.code == "document_closed" {
+                return Self.objBundlePreflightRefusal(perBody: perBody,
+                                                      code: "obj_bundle_owner_unavailable")
+            }
+            if error.code == "stale_export" || error.code == "stale_revision" {
+                return Self.objBundlePreflightRefusal(perBody: perBody,
+                                                      code: "obj_bundle_review_stale")
+            }
+            return Self.objBundlePreflightRefusal(perBody: perBody,
+                                                  code: "obj_bundle_review_failed")
+        case .success:
+            guard objBundleSnapshotIdentity() == identity else {
+                return Self.objBundlePreflightRefusal(perBody: perBody,
+                                                      code: "obj_bundle_review_stale")
+            }
+        }
+
+        objBundleReviewCache = OBJBundleReviewCache(identity: identity,
+                                                    perBody: perBody,
+                                                    acceptPartial: acceptPartial,
+                                                    plan: plan)
+        return plan.preflight
+    }
+
+    /// Confirm exactly the bytes the sheet reviewed. No exporter runs here: a
+    /// missing/different cache or any source/owner change refuses the write.
+    func reviewedOBJBundlePlan(perBody: Bool, acceptPartial: Bool,
+                               expectedChangeCount: Int) -> OBJBundlePlan? {
+        guard expectedChangeCount == session.changeCount,
+              let cache = objBundleReviewCache,
+              cache.perBody == perBody,
+              cache.acceptPartial == acceptPartial,
+              cache.identity == objBundleSnapshotIdentity() else {
+            errorMessage = FloeCADStrings.text(
+                "cad.error.exportChanged",
+                "The document changed. Review the export again.")
+            clearOBJBundlePlan()
+            return nil
+        }
+        guard let handler = exchangeCoverageHandler else {
+            errorMessage = exportOwnerUnavailableMessage
+            clearOBJBundlePlan()
+            return nil
+        }
+        switch handler("obj_bundle", CADExchangeSelection(
+            scope: .part, acceptPartial: acceptPartial,
+            expectedChangeCount: expectedChangeCount)) {
+        case .failure(let error):
+            errorMessage = error.message
+            clearOBJBundlePlan()
+            return nil
+        case .success:
+            return cache.plan
+        }
+    }
+
+    private func objBundleSnapshotIdentity() -> OBJBundleSnapshotIdentity {
+        let bodies = session.document.bodies.map { body in
+            OBJBundleBodyIdentity(bodyID: body.id.raw,
+                                  meshRevision: body.meshRevision,
+                                  faceTableRevision: session.lastNamingRevisions[body.id])
+        }.sorted { $0.bodyID.uuidString < $1.bodyID.uuidString }
+        return OBJBundleSnapshotIdentity(
+            revision: session.savedIdentity.revision,
+            changeCount: session.changeCount,
+            contentSHA256: session.savedIdentity.contentSHA256,
+            bodies: bodies)
+    }
+
+    private func objBundlePreflightSnapshot(bodies: [Body],
+                                            identity: OBJBundleSnapshotIdentity)
+        -> OBJBundlePreflightSnapshot {
+        let tables = exportFaceTables(for: bodies)
+        return OBJBundlePreflightSnapshot(identity: identity,
+                                          bodies: bodies,
+                                          faceTables: tables.tables,
+                                          faceTableRevisions: tables.revisions)
+    }
+
+    private static func objBundlePreflightRefusal(perBody: Bool,
+                                                  code: String) -> OBJBundlePreflight {
+        let message: String
+        switch code {
+        case "obj_bundle_review_stale":
+            message = FloeCADStrings.text(
+                "cad.error.exportChanged",
+                "The document changed. Review the export again.")
+        case "obj_bundle_owner_unavailable":
+            message = FloeCADStrings.text(
+                "cad.error.exportOwnerUnavailable",
+                "Reopen this document before exporting.")
+        default:
+            message = FloeCADStrings.text(
+                "cad.error.objBundle.generic",
+                "Couldn't export the OBJ bundle. Try again.")
+        }
+        return OBJBundlePreflight(
+            perBody: perBody, materialCount: 0, textureCount: 0,
+            fileCount: 0, byteCount: 0, warnings: [],
+            refusal: OBJBundleDiagnostic(code: code, bodyID: nil,
+                                         textureSlot: nil, message: message),
+            isEmpty: false)
+    }
+
+    private static func objBundlePreflightEmpty(perBody: Bool) -> OBJBundlePreflight {
+        OBJBundlePreflight(
+            perBody: perBody, materialCount: 0, textureCount: 0,
+            fileCount: 0, byteCount: 0, warnings: [],
+            refusal: nil, isEmpty: true)
+    }
+
+    /// Release the potentially large preflight bytes and cancel any in-flight
+    /// worker after staging, cancel or dismissal. The generation bump makes a
+    /// late detached result unable to resurrect the cleared review.
     func clearOBJBundlePlan() {
-        objBundlePlanCache = nil
+        objBundlePreflightGeneration &+= 1
+        objBundlePreflightWorker?.cancel()
+        objBundlePreflightWorker = nil
+        objBundleReviewCache = nil
     }
 
     /// User-facing, localized message for one bundle diagnostic. The detailed
@@ -434,6 +632,18 @@ final class EditorViewModel {
     /// a concise, actionable sentence.
     func objBundleMessage(for diagnostic: OBJBundleDiagnostic) -> String {
         switch diagnostic.code {
+        case "obj_bundle_review_stale":
+            return FloeCADStrings.text(
+                "cad.error.exportChanged",
+                "The document changed. Review the export again.")
+        case "obj_bundle_owner_unavailable":
+            return FloeCADStrings.text(
+                "cad.error.exportOwnerUnavailable",
+                "Reopen this document before exporting.")
+        case "obj_bundle_review_failed":
+            return FloeCADStrings.text(
+                "cad.error.objBundle.generic",
+                "Couldn't prepare the export. Try again.")
         case "obj_bundle_missing_texture":
             return FloeCADStrings.text(
                 "cad.error.objBundle.missingTexture",
@@ -548,29 +758,53 @@ final class EditorViewModel {
     /// needs an explicit partial choice, or nothing is includable.
     private func coveredMeshBodies(format: String, acceptPartial: Bool,
                                     expectedChangeCount: Int? = nil) -> [Body]? {
-        guard let bodies = exportableBodies() else { return nil }
-        guard let exchangeCoverageHandler else {
-            errorMessage = exportOwnerUnavailableMessage
+        switch coveredMeshBodiesResult(format: format, acceptPartial: acceptPartial,
+                                        expectedChangeCount: expectedChangeCount) {
+        case .success(let bodies):
+            return bodies
+        case .failure(let error):
+            errorMessage = error.message
             return nil
+        }
+    }
+
+    /// Result-shaped form used by the background preflight, which must not
+    /// surface a transient alert for a stale/closed review.
+    private func coveredMeshBodiesResult(format: String, acceptPartial: Bool,
+                                          expectedChangeCount: Int? = nil)
+        -> Result<[Body], CADDocumentError> {
+        let all = session.document.bodies
+        guard !all.isEmpty else {
+            return .failure(CADDocumentError(
+                code: "export_no_bodies",
+                message: FloeCADStrings.text(
+                    "cad.error.exportNoBodies",
+                    "Nothing to export — the design has no solid bodies.")))
+        }
+        guard let exchangeCoverageHandler else {
+            return .failure(CADDocumentError(
+                code: "document_closed",
+                message: exportOwnerUnavailableMessage))
         }
         switch exchangeCoverageHandler(
             format, CADExchangeSelection(scope: .part, acceptPartial: acceptPartial,
                                          expectedChangeCount: expectedChangeCount)) {
         case .failure(let error):
-            errorMessage = error.message
-            return nil
+            return .failure(error)
         case .success(let coverage):
             guard !coverage.requiresConfirmation else {
-                errorMessage = partIncompleteMessage
-                return nil
+                return .failure(CADDocumentError(
+                    code: "coverage_incomplete",
+                    message: partIncompleteMessage))
             }
             let included = Set(coverage.items.filter(\.included).map(\.bodyID))
-            let chosen = bodies.filter { included.contains($0.id.raw) }
+            let chosen = all.filter { included.contains($0.id.raw) }
             guard !chosen.isEmpty else {
-                errorMessage = partIncompleteMessage
-                return nil
+                return .failure(CADDocumentError(
+                    code: "coverage_incomplete",
+                    message: partIncompleteMessage))
             }
-            return chosen
+            return .success(chosen)
         }
     }
 
@@ -630,12 +864,50 @@ final class EditorViewModel {
         }
     }
 
+    /// Stable temp filenames for per-body exports. A duplicate body name gets
+    /// the short real UUID appended; the receipt and the payload keep the
+    /// authored name + full body identity. This is the one naming rule the
+    /// file exporter uses, so no file can silently overwrite another.
+    nonisolated static func perBodyFileStems(
+        namesAndIDs: [(name: String, id: UUID)]
+    ) -> [String] {
+        func fileKey(_ name: String) -> String {
+            name.precomposedStringWithCanonicalMapping.folding(
+                options: [.caseInsensitive], locale: Locale(identifier: "en_US_POSIX"))
+        }
+        let stems = namesAndIDs.map { entry -> String in
+            let sanitized = entry.name.replacingOccurrences(of: "/", with: "-")
+            return sanitized.isEmpty ? "Body" : sanitized
+        }
+        let duplicates = Set(Dictionary(grouping: stems, by: fileKey)
+            .filter { $0.value.count > 1 }
+            .keys)
+        var used = Set<String>()
+        var result: [String] = []
+        for (index, entry) in namesAndIDs.enumerated() {
+            let base = stems[index]
+            let shortID = entry.id.uuidString.prefix(8)
+            var stem = duplicates.contains(fileKey(base)) ? "\(base)-\(shortID)" : base
+            var suffix = 2
+            while used.contains(fileKey(stem)) {
+                stem = "\(base)-\(shortID)-\(suffix)"
+                suffix += 1
+            }
+            used.insert(fileKey(stem))
+            result.append(stem)
+        }
+        return result
+    }
+
     /// Per-body OBJ payloads for "Separate File per Body" (plan §B14). These
     /// single-file OBJs contain geometry and UVs only; `objBundlePlan(perBody:
     /// true)` produces the complete per-body appearance bundles.
-    func exportOBJPerBody() -> [(name: String, data: Data)]? {
-        coveredMeshBodies(format: "obj", acceptPartial: false).map { bodies in
-            bodies.map { ($0.name, Data(OBJExporter.obj(bodies: [$0]).utf8)) }
+    func exportOBJPerBody(acceptPartial: Bool = false,
+                          expectedChangeCount: Int? = nil)
+        -> [(name: String, bodyID: UUID, data: Data)]? {
+        coveredMeshBodies(format: "obj", acceptPartial: acceptPartial,
+                          expectedChangeCount: expectedChangeCount).map { bodies in
+            bodies.map { ($0.name, $0.id.raw, Data(OBJExporter.obj(bodies: [$0]).utf8)) }
         }
     }
 
@@ -648,14 +920,16 @@ final class EditorViewModel {
     /// `acceptPartial` is explicit, and then only the included bodies produce
     /// files. Every file is still checked against its own body identity.
     func exportGLBPerBody(acceptPartial: Bool = false,
-                          expectedChangeCount: Int? = nil) -> [(name: String, data: Data)]? {
+                          expectedChangeCount: Int? = nil)
+        -> [(name: String, bodyID: UUID, data: Data)]? {
         guard let bodies = coveredMeshBodies(format: "glb", acceptPartial: acceptPartial,
                                              expectedChangeCount: expectedChangeCount) else { return nil }
         return bodies.map { body in
             let faceTables = exportFaceTables(for: [body])
-            return (body.name, GLBExporter.glb(bodies: [body],
-                                               faceTables: faceTables.tables,
-                                               faceTableRevisions: faceTables.revisions))
+            return (body.name, body.id.raw,
+                    GLBExporter.glb(bodies: [body],
+                                    faceTables: faceTables.tables,
+                                    faceTableRevisions: faceTables.revisions))
         }
     }
 

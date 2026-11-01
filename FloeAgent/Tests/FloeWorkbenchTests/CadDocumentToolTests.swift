@@ -365,6 +365,51 @@ struct CadDocumentToolTests {
         #expect(CadDocumentTool.toolDescription.contains("floecad"))
     }
 
+    @Test("format schema enum is the exact native import+export union")
+    func formatSchemaIsTheNativeFormatUnion() throws {
+        let data = Data(CadDocumentTool.parametersJSON.utf8)
+        let object = try #require(try JSONSerialization.jsonObject(with: data) as? [String: Any])
+        let properties = try #require(object["properties"] as? [String: Any])
+        let format = try #require(properties["format"] as? [String: Any])
+        let enumValues = Set(try #require(format["enum"] as? [String]))
+        let expected = NativeCADPolicy.importExtensions.union(NativeCADPolicy.exportExtensions)
+        #expect(enumValues == expected,
+                "schema format enum must equal the native import/export union")
+        for value in ["3mf", "usdz", "pdf", "svg", "dxf", "csv"] {
+            #expect(enumValues.contains(value),
+                    "supported export format \(value) must not be refused by schema admission")
+        }
+        #expect(NativeCADPolicy.importExtensions.contains("gltf"))
+        #expect(!NativeCADPolicy.exportExtensions.contains("gltf"),
+                "glTF is import-only; the native export writes GLB")
+        #expect(NativeCADPolicy.importExtensions.contains("iges"))
+        #expect(!NativeCADPolicy.exportExtensions.contains("iges"),
+                "IGES export is not available in this build")
+    }
+
+    @Test("native export suffix truth rejects an import-only glTF output")
+    func nativeExportSuffixTruth() async throws {
+        let tool = CadDocumentTool(host: FakeCadHost())
+        await #expect(throws: (any Error).self) {
+            _ = try await execute(
+                tool,
+                #"{"action":"export","path":"part.floecad","output":"part.gltf"}"#)
+        }
+        await #expect(throws: (any Error).self) {
+            _ = try await execute(
+                tool,
+                #"{"action":"export","path":"part.floecad","output":"part.iges"}"#)
+        }
+    }
+
+    @Test("native capability matrix advertises the CSV drawing export")
+    func nativeCapabilityMatrixIncludesCSV() throws {
+        let row = try #require(NativeCADCapabilityMatrix.row(forFormat: "floecad"))
+        #expect(row.export.contains("csv"))
+        #expect(row.export.contains("pdf"))
+        #expect(row.export.contains("dxf"))
+    }
+
     @Test("a .floecad path routes to the native host and never the 2D loader")
     func nativeRepresentationRouting() async throws {
         let host = FakeCadHost()

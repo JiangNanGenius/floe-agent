@@ -179,6 +179,87 @@ nonisolated enum CADFaceMatch: Sendable, Equatable {
     }
 }
 
+/// One resolved face-material triangle group. Shared by the GLB and OBJ
+/// bundle writers so both formats paint exactly the same faces.
+nonisolated struct CADFaceGroup: Sendable, Equatable {
+    var faceIndex: Int
+    var material: BodyMaterialSpec
+    var triangles: [Int]
+}
+
+/// Why one face-material binding could not claim its real triangle range.
+/// The raw values are the diagnostic codes already emitted by the writers.
+nonisolated enum CADFaceGroupIssueKind: String, Sendable, Equatable {
+    case tableUnavailable = "face_triangle_table_unavailable"
+    case missing = "face_triangle_map_missing"
+    case ambiguous = "face_triangle_map_ambiguous"
+    case overlapOrInvalid = "face_triangle_map_overlap_or_invalid"
+    case ambiguousSignature = "ambiguous_face_signature"
+    case unresolvedSignature = "face_signature_unresolved"
+}
+
+nonisolated struct CADFaceGroupIssue: Sendable, Equatable {
+    var kind: CADFaceGroupIssueKind
+    var faceIndex: Int?
+    var materialName: String
+    var capturedIndex: Int?
+    var candidateIndices: [Int]?
+    var detail: String?
+
+    init(kind: CADFaceGroupIssueKind,
+         faceIndex: Int? = nil,
+         materialName: String,
+         capturedIndex: Int? = nil,
+         candidateIndices: [Int]? = nil,
+         detail: String? = nil) {
+        self.kind = kind
+        self.faceIndex = faceIndex
+        self.materialName = materialName
+        self.capturedIndex = capturedIndex
+        self.candidateIndices = candidateIndices
+        self.detail = detail
+    }
+
+    /// The exact unresolved row the OBJ bundle receipt has always carried.
+    var unresolvedDescription: String {
+        switch kind {
+        case .unresolvedSignature:
+            return "face \(capturedIndex ?? -1) [\(materialName)]: "
+                + "\(kind.rawValue) (\(detail ?? ""))"
+        case .ambiguousSignature:
+            return "face \(capturedIndex ?? -1) [\(materialName)]: \(kind.rawValue)"
+        default:
+            return "face \(faceIndex ?? capturedIndex ?? -1) [\(materialName)]: \(kind.rawValue)"
+        }
+    }
+
+    /// The same issue in the GLB extras shape. A signature resolution failure
+    /// keeps its actionable detail in `reason` (the historical contract).
+    var jsonObject: [String: Any] {
+        var object: [String: Any] = [
+            "face_index": faceIndex ?? -1,
+            "material": materialName,
+            "reason": kind == .unresolvedSignature ? (detail ?? kind.rawValue) : kind.rawValue,
+        ]
+        if let candidateIndices { object["candidate_indices"] = candidateIndices }
+        return object
+    }
+}
+
+/// One deterministic face-range decision for a body. `groups` are the
+/// bindings that actually claimed their table triangles; `issues` are the
+/// real missing/ambiguous/overlapping ranges that fell back to the body
+/// material. Coverage, dry-run, the GLB writer and the OBJ bundle writer all
+/// consume this one assessment, so the receipt cannot disagree with the bytes.
+nonisolated struct CADFaceGroupAssessment: Sendable, Equatable {
+    var groups: [CADFaceGroup]
+    var issues: [CADFaceGroupIssue]
+    var claimedTriangles: Set<Int>
+    var remainingTriangles: [Int]
+
+    var isLossless: Bool { issues.isEmpty }
+}
+
 nonisolated enum CADFaceMaterialResolver {
     /// Minimum score for an automatic match. A parameter edit changes a face's
     /// area/centroid, so this must tolerate real resizing while still rejecting
@@ -187,6 +268,93 @@ nonisolated enum CADFaceMaterialResolver {
     /// A match must beat its runner-up by this margin; else the binding is
     /// ambiguous and needs explicit reassignment.
     static let ambiguityMargin: Double = 0.04
+
+    /// Resolve every face binding against one fresh/stale face table. This is
+    /// the single source of truth for both writers and the completeness
+    /// receipt; no caller may infer "complete" from signature matching alone,
+    /// because a fresh table can still lack, ambiguously match or overlap the
+    /// exact triangle range.
+    static func assessGroups(in body: Body,
+                             table: FaceTable?,
+                             tableRevision: UInt64?,
+                             triangleCount overrideTriangleCount: Int? = nil)
+        -> CADFaceGroupAssessment {
+        let triangleCount = overrideTriangleCount
+            ?? (body.render.indices.count / 3)
+        guard triangleCount > 0 else {
+            return CADFaceGroupAssessment(groups: [], issues: [],
+                                          claimedTriangles: [],
+                                          remainingTriangles: [])
+        }
+        let tableIsFresh = table != nil && tableRevision == body.meshRevision
+        let candidates = candidates(for: body)
+        var claimed = Set<Int>()
+        var groups: [CADFaceGroup] = []
+        var issues: [CADFaceGroupIssue] = []
+
+        for binding in body.materialFaceBindings {
+            let materialName = binding.material.materialName ?? "Material"
+            let captured = binding.key.capturedIndex
+            switch match(binding.key, candidates: candidates) {
+            case .resolved(let faceIndex, _):
+                guard tableIsFresh, let table else {
+                    issues.append(CADFaceGroupIssue(
+                        kind: .tableUnavailable, faceIndex: faceIndex,
+                        materialName: materialName, capturedIndex: captured))
+                    continue
+                }
+                var scored: [(score: Double, triangles: [Int])] = []
+                for entry in table.entries {
+                    guard let score = score(binding.key.signature, entry.signature)
+                    else { continue }
+                    scored.append((score, entry.triangles))
+                }
+                scored.sort { $0.score > $1.score }
+                guard let best = scored.first,
+                      best.score >= matchThreshold else {
+                    issues.append(CADFaceGroupIssue(
+                        kind: .missing, faceIndex: faceIndex,
+                        materialName: materialName, capturedIndex: captured))
+                    continue
+                }
+                if scored.count > 1,
+                   best.score - scored[1].score < ambiguityMargin {
+                    issues.append(CADFaceGroupIssue(
+                        kind: .ambiguous, faceIndex: faceIndex,
+                        materialName: materialName, capturedIndex: captured))
+                    continue
+                }
+                let triangles = best.triangles
+                guard !triangles.isEmpty,
+                      triangles.allSatisfy({ $0 >= 0 && $0 < triangleCount }),
+                      triangles.allSatisfy({ !claimed.contains($0) }) else {
+                    issues.append(CADFaceGroupIssue(
+                        kind: .overlapOrInvalid, faceIndex: faceIndex,
+                        materialName: materialName, capturedIndex: captured))
+                    continue
+                }
+                for triangle in triangles { claimed.insert(triangle) }
+                groups.append(CADFaceGroup(faceIndex: faceIndex,
+                                           material: binding.material.clamped,
+                                           triangles: triangles))
+            case .ambiguous(let indices):
+                issues.append(CADFaceGroupIssue(
+                    kind: .ambiguousSignature, faceIndex: nil,
+                    materialName: materialName, capturedIndex: captured,
+                    candidateIndices: indices))
+            case .unresolved(let reason):
+                issues.append(CADFaceGroupIssue(
+                    kind: .unresolvedSignature, faceIndex: captured,
+                    materialName: materialName, capturedIndex: captured,
+                    detail: reason))
+            }
+        }
+
+        let remaining = (0..<triangleCount).filter { !claimed.contains($0) }
+        return CADFaceGroupAssessment(groups: groups, issues: issues,
+                                      claimedTriangles: claimed,
+                                      remainingTriangles: remaining)
+    }
 
     static func candidates(for body: Body) -> [CADFaceCandidate] {
         guard let brep = body.brep else { return [] }

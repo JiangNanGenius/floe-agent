@@ -766,10 +766,12 @@ public struct CadDocumentArguments: Decodable, Sendable {
     public var sourceBodyID: String?
     /// `import`: explicit source format; defaults to the source path
     /// extension. One of step/stp/iges/igs/stl/obj/glb/gltf.
-    /// `export` (native): optional explicit container format. `obj_bundle`
-    /// writes one self-contained .zip (model.obj + model.mtl + textures);
-    /// plain `obj` remains a single .obj with UVs and no materials. Other
-    /// export formats keep their extension-derived behaviour.
+    /// `export` (native): optional explicit container format. One of
+    /// step/stp, stl, obj, obj_bundle, 3mf, glb, usdz, pdf, svg, dxf, csv;
+    /// gltf is import-only (export writes glb). `obj_bundle` writes one
+    /// self-contained .zip (model.obj + model.mtl + textures); plain `obj`
+    /// remains a single .obj with UVs and no materials. pdf/svg/dxf/csv are
+    /// drawing-page exports and need pageID. The output suffix must match.
     public var format: String?
     /// `import`: optional mm-per-file-unit scale for unitless mesh formats
     /// (STL/OBJ); ignored for exact B-rep formats and declared-unit glTF.
@@ -1021,7 +1023,7 @@ public struct CadDocumentTool: AgentTool {
         "expected_source_sha256": { "type": "string", "description": "reference update CAS: the currently pinned source content SHA-256 (from references query)." },
         "expected_staged_sha256": { "type": "string", "description": "reference update CAS: the currently pinned staged geometry SHA-256." },
         "source_body_id": { "type": "string", "format": "uuid", "description": "reference attach: stable source body UUID for a multi-body source; inspect returns the body ids. Omitted only when the source has exactly one body." },
-        "format": { "type": "string", "enum": ["step", "stp", "iges", "igs", "stl", "obj", "obj_bundle", "glb", "gltf"], "description": "import or native export: explicit format. Import: defaults to the source_path extension; a JSON .gltf imports only when its buffers/images are embedded data URIs, external .bin/texture references are reported unsupported, and a self-contained .glb always works. Native export: optional explicit container format; obj_bundle writes one .zip containing model.obj, model.mtl and relative texture resources, while plain obj remains a single .obj with UVs and no materials. With obj_bundle the output path must end in .zip; a .obj path is refused rather than receiving ZIP bytes." },
+        "format": { "type": "string", "enum": ["step", "stp", "iges", "igs", "stl", "obj", "obj_bundle", "3mf", "glb", "gltf", "usdz", "pdf", "svg", "dxf", "csv"], "description": "import or native export: explicit format. Import (step/stp, iges/igs, stl, obj, glb, gltf) defaults to the source_path extension; a JSON .gltf imports only when its buffers/images are embedded data URIs, external .bin/texture references are reported unsupported, and a self-contained .glb always works. Native export accepts step/stp, stl, obj, obj_bundle, 3mf, glb, usdz, pdf, svg, dxf and csv; gltf is import-only (export writes glb), iges/igs are import-only, and 3mf/usdz plus pdf/svg/dxf/csv are export-only in this adapter. obj_bundle writes one .zip containing model.obj, model.mtl and relative texture resources; plain obj remains a single .obj with UVs and no materials. pdf/svg/dxf/csv are drawing-page exports and require page_id; usdz is available where the platform USDZ writer is supported (otherwise usdz_unavailable). The output suffix must match the selected format: step/stp -> .step/.stp, obj_bundle -> .zip, every other export -> .<format> (for example .3mf, .glb, .usdz, .pdf, .svg, .dxf, .csv); a mismatched suffix is refused rather than silently renamed." },
         "unit_scale": { "type": "number", "exclusiveMinimum": 0, "description": "import only: optional millimetres-per-file-unit scale for unitless meshes (STL/OBJ). Ignored for STEP/IGES and declared-unit glTF." },
         "summary": { "type": "string", "maxLength": 2000, "description": "Concise summary of the proposed document change (propose/import)." },
         "operations": {
@@ -1044,7 +1046,7 @@ public struct CadDocumentTool: AgentTool {
         "text": { "type": "string", "description": "2D query filter: text content contains." },
         "offset": { "type": "integer", "minimum": 0, "description": "query pagination offset." },
         "limit": { "type": "integer", "minimum": 1, "maximum": 500, "description": "query pagination size." },
-        "output": { "type": "string", "description": "export relative path. 2D defaults to <name>.export.dxf. Native defaults to <name>.export.step; accepted native formats: step, stl, obj, obj_bundle, 3mf, glb, usdz, pdf, svg, dxf, csv; the path must stay inside the workspace. obj_bundle writes a .zip (model.obj + model.mtl + relative textures) and requires a .zip output path; plain obj writes a single .obj with UVs and no materials. A pdf/svg/dxf export is a DRAWING-page export and also needs page_id (from query kind=drawings). A csv export writes the COMPLETE BOM table for that drawing page (all rows and columns, UTF-8 RFC 4180) and also needs page_id and a .csv output path. With scope=assembly use .step, .glb or .usdz (part-scope obj_bundle is also available): placed occurrences are resolved from the saved assembly, not flattened document bodies." },
+        "output": { "type": "string", "description": "export relative path. 2D defaults to <name>.export.dxf. Native defaults to <name>.export.step; accepted native formats: step/stp, stl, obj, obj_bundle, 3mf, glb, usdz, pdf, svg, dxf, csv; the path must stay inside the workspace and its suffix must match the format. obj_bundle writes a .zip (model.obj + model.mtl + relative textures) and requires a .zip output path; plain obj writes a single .obj with UVs and no materials. A pdf/svg/dxf export is a DRAWING-page export and also needs page_id (from query kind=drawings). A csv export writes the COMPLETE BOM table for that drawing page (all rows and columns, UTF-8 RFC 4180) and also needs page_id and a .csv output path. usdz export is platform-guarded and reports usdz_unavailable where the writer is unavailable. With scope=assembly use .step, .glb or .usdz (part-scope obj_bundle is also available): placed occurrences are resolved from the saved assembly, not flattened document bodies." },
         "page_id": { "type": "string", "format": "uuid", "description": "export: the native drawing page id for pdf/svg/dxf drawing exports and the complete BOM CSV table export, exactly as query with kind=drawings returned it." },
         "body_ids": { "type": "array", "maxItems": 512, "items": { "type": "string", "format": "uuid" }, "description": "export scope=part: exact document body ids. Omit/empty to export every body (historical default)." },
         "instance_ids": { "type": "array", "maxItems": 512, "items": { "type": "string", "format": "uuid" }, "description": "export scope=assembly: exact placed occurrence ids from query kind=assembly/report. Omit/empty for every visible placed part. A subassembly id includes its visible descendant parts." },
@@ -2804,16 +2806,14 @@ public struct CadDocumentTool: AgentTool {
                     .trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
                 var output = args.output
                 if let explicitFormat, !explicitFormat.isEmpty {
-                    let allowed: Set<String> = ["step", "stp", "stl", "obj", "obj_bundle",
-                                                "3mf", "glb", "gltf", "usdz", "pdf",
-                                                "svg", "dxf", "csv"]
+                    let allowed = NativeCADPolicy.exportExtensions
                     guard allowed.contains(explicitFormat) else {
                         throw FloeError.validationFailed(
                             "export format '\(explicitFormat)' is not supported "
-                            + "(step, stp, stl, obj, obj_bundle, 3mf, glb, usdz, pdf, svg, dxf, csv).")
+                            + "(step, stp, stl, obj, obj_bundle, 3mf, glb, usdz, pdf, svg, dxf, csv); "
+                            + "gltf/iges are import-only; glTF export writes .glb.")
                     }
-                    let normalized = explicitFormat == "stp"
-                        ? "step" : (explicitFormat == "gltf" ? "glb" : explicitFormat)
+                    let normalized = explicitFormat == "stp" ? "step" : explicitFormat
                     if output == nil {
                         output = Self.defaultNativeExportPath(for: args.path!, format: normalized)
                     }
@@ -2851,16 +2851,25 @@ public struct CadDocumentTool: AgentTool {
                             "A .zip output requires format=obj_bundle. "
                             + "Plain format=obj writes a single .obj file without materials.")
                     }
+                    if ext == "obj_bundle" {
+                        throw FloeError.validationFailed(
+                            "obj_bundle uses a .zip output path; pass format=obj_bundle with a .zip output.")
+                    }
                     if ext.isEmpty {
                         throw FloeError.validationFailed(
                             "export needs an output path with a format extension, or an explicit format.")
+                    }
+                    guard NativeCADPolicy.exportExtensions.contains(ext) else {
+                        throw FloeError.validationFailed(
+                            "output extension '.\(ext)' is not a supported native export format; "
+                            + "use step/stp, stl, obj, obj_bundle (.zip), 3mf, glb, usdz, pdf, svg, dxf "
+                            + "or csv. gltf/iges are import-only.")
                     }
                 }
                 let resolvedOutput = output ?? Self.defaultNativeExportPath(for: args.path!)
                 let effectiveFormat: String
                 if let explicitFormat, !explicitFormat.isEmpty {
-                    effectiveFormat = explicitFormat == "stp"
-                        ? "step" : (explicitFormat == "gltf" ? "glb" : explicitFormat)
+                    effectiveFormat = explicitFormat == "stp" ? "step" : explicitFormat
                 } else {
                     effectiveFormat = (resolvedOutput as NSString).pathExtension.lowercased()
                 }

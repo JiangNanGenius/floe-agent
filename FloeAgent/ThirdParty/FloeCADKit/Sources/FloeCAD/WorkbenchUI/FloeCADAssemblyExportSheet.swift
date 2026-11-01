@@ -206,6 +206,10 @@ nonisolated enum CADExportCopy {
     }
 
     static func materialWarning(_ warning: String) -> String {
+        if warning.hasPrefix("texture_"), warning.hasSuffix("_too_large") {
+            return FloeCADStrings.text("cad.export.reason.tooLargeTexture",
+                                       "A material image is larger than this format supports.")
+        }
         switch warning {
         case "texture_baseColor_missing", "texture_roughness_missing",
              "texture_metallic_missing", "texture_normal_missing",
@@ -232,9 +236,27 @@ nonisolated enum CADExportCopy {
              "face_material_unresolved":
             return FloeCADStrings.text("cad.export.reason.faceRanges",
                                        "Face material ranges are stale.")
+        case "face_material_missing":
+            return FloeCADStrings.text("cad.export.reason.faceMissing",
+                                       "A face material's triangle range is missing.")
+        case "face_material_overlap":
+            return FloeCADStrings.text("cad.export.reason.faceOverlap",
+                                       "Face material triangle ranges overlap.")
+        case "face_material_fallback":
+            return FloeCADStrings.text("cad.export.reason.faceFallback",
+                                       "Some face materials use the body material.")
         case "unsupported_hdr_emission":
             return FloeCADStrings.text("cad.export.reason.hdrEmission",
                                        "This format cannot keep this glow strength.")
+        case "unsupported_normal_color_space":
+            return FloeCADStrings.text("cad.export.reason.normalColorSpace",
+                                       "This material's normal map needs linear color values.")
+        case "unsupported_mesh_uv_transform":
+            return FloeCADStrings.text("cad.export.reason.meshUVTransform",
+                                       "A mesh UV transform can't be written to this format.")
+        case "texture_uv_projection_fallback", "texture_uv_generated":
+            return FloeCADStrings.text("cad.export.reason.uvProjected",
+                                       "Textures use an automatic projection.")
         default:
             return warning.replacingOccurrences(of: "_", with: " ")
         }

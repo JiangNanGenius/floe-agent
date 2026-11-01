@@ -100,9 +100,10 @@ struct MeshExportOptionsSheet: View {
     let formatName: String
     /// OBJ exposes the materials choice; GLB keeps its existing single format.
     let supportsMaterials: Bool
-    /// Exact bundle preflight for (perBody, includeMaterials). Nil when the
-    /// caller has nothing to validate (GLB / geometry-only OBJ / empty doc).
-    let preflight: (Bool, Bool, Int) -> OBJBundlePreflight?
+    /// Exact bundle preflight for (perBody, acceptPartial, changeCount).
+    /// Runs off the main actor; nil only when the caller has nothing to
+    /// validate (GLB / geometry-only OBJ / empty doc) or was canceled.
+    let preflight: (Bool, Bool, Int) async -> OBJBundlePreflight?
     let currentChangeCount: () -> Int
     let coverageForFormat: (String) -> CADExchangeCoverage?
     /// Localized refusal message for a preflight diagnostic.
@@ -114,14 +115,31 @@ struct MeshExportOptionsSheet: View {
     @State private var includeMaterials = true
     @State private var report: OBJBundlePreflight?
     @State private var prepared = false
+    @State private var preparing = false
     @State private var coverage: CADExchangeCoverage?
     @State private var reviewedChangeCount: Int?
     @Environment(\.dismiss) private var dismiss
 
     private var exportUnavailable: Bool {
-        guard reviewedChangeCount != nil,
+        guard reviewedChangeCount != nil, !preparing,
               let coverage, coverage.includedCount > 0 else { return true }
         return supportsMaterials && includeMaterials && !(report?.isReady ?? false)
+    }
+
+    /// Identity of the exact async preflight request. Toggling any reviewed
+    /// choice cancels the previous task, so an old report can never reappear.
+    private struct PreflightRequest: Equatable {
+        var perBody: Bool
+        var includeMaterials: Bool
+        var acceptPartial: Bool
+        var changeCount: Int
+    }
+
+    private var preflightRequest: PreflightRequest {
+        PreflightRequest(perBody: perBodyFiles,
+                         includeMaterials: includeMaterials,
+                         acceptPartial: coverage?.requiresConfirmation == true,
+                         changeCount: reviewedChangeCount ?? -1)
     }
 
     var body: some View {
@@ -153,7 +171,18 @@ struct MeshExportOptionsSheet: View {
                 if let coverage, !coverage.complete {
                     CADExportCoverageSummary(coverage: coverage)
                 }
-                if supportsMaterials, includeMaterials, prepared, report == nil {
+                if supportsMaterials, includeMaterials, preparing {
+                    Section {
+                        HStack(spacing: 8) {
+                            ProgressView().controlSize(.small)
+                            Text(FloeCADStrings.text(
+                                "cad.ui.export.obj.preparing",
+                                "Preparing export…"))
+                                .foregroundStyle(.secondary)
+                        }
+                        .accessibilityIdentifier("ExportBundlePreparing")
+                    }
+                } else if supportsMaterials, includeMaterials, prepared, report == nil {
                     Section {
                         Text(FloeCADStrings.text(
                             "cad.error.exportNoBodies",
@@ -163,7 +192,7 @@ struct MeshExportOptionsSheet: View {
                             .accessibilityIdentifier("ExportBundleEmpty")
                     }
                 }
-                if supportsMaterials, includeMaterials, let report {
+                if supportsMaterials, includeMaterials, !preparing, let report {
                     Section {
                         if let refusal = report.refusal {
                             Text(message(refusal))
@@ -197,7 +226,7 @@ struct MeshExportOptionsSheet: View {
                         if report.refusal == nil, report.isReady {
                             Text(FloeCADStrings.text(
                                 "cad.ui.export.obj.preflight.mtl",
-                                "Some viewers show only base color and opacity; metallic, roughness, normal and emissive maps use the extended MTL format."))
+                                "Some viewers show only base color and opacity; metallic, roughness, normal and emissive maps use the extended MTL format, and scalar maps may be read as sRGB where MTL has no colorspace field."))
                                 .font(.footnote)
                         }
                     }
@@ -210,6 +239,7 @@ struct MeshExportOptionsSheet: View {
             .onAppear { refresh() }
             .onChange(of: perBodyFiles) { _, _ in refresh() }
             .onChange(of: includeMaterials) { _, _ in refresh() }
+            .task(id: preflightRequest) { await runPreflight() }
             .onDisappear { MacWindowTitle.restore() }
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -219,7 +249,7 @@ struct MeshExportOptionsSheet: View {
                 }
                 ToolbarItem(placement: .confirmationAction) {
                     Button {
-                        guard let reviewedChangeCount else { return }
+                        guard let reviewedChangeCount, !preparing else { return }
                         onExport(perBodyFiles, supportsMaterials && includeMaterials,
                                  coverage?.requiresConfirmation == true, reviewedChangeCount)
                         dismiss()
@@ -246,10 +276,36 @@ struct MeshExportOptionsSheet: View {
         guard supportsMaterials, includeMaterials else {
             report = nil
             prepared = false
+            preparing = false
             return
         }
-        report = preflight(perBodyFiles, includeMaterials, count)
+        // Do not keep showing the previous choice's report while the new
+        // request is queued. `.task(id:)` starts the exact new request.
+        report = nil
+        prepared = false
+        preparing = true
+    }
+
+    /// The expensive image-decode/ZIP build runs in the view model's owned
+    /// background task. `.task(id:)` cancels it when any reviewed choice or the
+    /// sheet disappears; a canceled result is never published here.
+    private func runPreflight() async {
+        guard supportsMaterials, includeMaterials,
+              let count = reviewedChangeCount else {
+            report = nil
+            prepared = false
+            preparing = false
+            return
+        }
+        let acceptPartial = coverage?.requiresConfirmation == true
+        preparing = true
+        report = nil
+        prepared = false
+        let result = await preflight(perBodyFiles, acceptPartial, count)
+        guard !Task.isCancelled else { return }
+        report = result
         prepared = true
+        preparing = false
     }
 
     private func summary(_ report: OBJBundlePreflight) -> String {
@@ -287,7 +343,7 @@ struct MeshExportOptionsSheet: View {
         case "opacity_map_semantics":
             return FloeCADStrings.text(
                 "cad.ui.export.obj.warning.opacitySemantics",
-                "Viewers differ on whether the opacity map uses luminance or alpha; this bundle writes grayscale luminance.")
+                "Viewers differ on whether the opacity map uses luminance or alpha; this bundle writes the complete mask in both RGB and alpha, with the authored opacity baked in.")
         case "emissive_map_unused_zero_factor":
             return FloeCADStrings.text(
                 "cad.ui.export.obj.warning.emissiveUnused",
@@ -1017,9 +1073,10 @@ struct FloeCADEditorView: View {
     }
 
     /// Writes per-body payloads into a fresh temp folder and returns exporter
-    /// items named "<body>.<ext>"; nil (with a user-facing error) on failure.
+    /// items named "<body>.<ext>" (duplicate names gain the body's short UUID);
+    /// nil (with a user-facing error) on failure.
     private func perBodyExportItems(
-        _ payloads: [(name: String, data: Data)]?,
+        _ payloads: [(name: String, bodyID: UUID, data: Data)]?,
         fileExtension: String,
         viewModel: EditorViewModel
     ) -> [ExportFileItem]? {
@@ -1030,14 +1087,20 @@ struct FloeCADEditorView: View {
             try FileManager.default.createDirectory(
                 at: directory, withIntermediateDirectories: true
             )
-            return try payloads.map { payload in
-                let stem = payload.name.replacingOccurrences(of: "/", with: "-")
+            // Duplicate body names are a real document case. The receipt keeps
+            // each body's actual name + UUID; only the temp filename gets the
+            // stable short UUID, so one file can never overwrite another.
+            let stems = EditorViewModel.perBodyFileStems(
+                namesAndIDs: payloads.map { (name: $0.name, id: $0.bodyID) })
+            var items: [ExportFileItem] = []
+            for (index, payload) in payloads.enumerated() {
                 let url = directory
-                    .appendingPathComponent(stem.isEmpty ? "Body" : stem)
+                    .appendingPathComponent(stems[index])
                     .appendingPathExtension(fileExtension)
                 try payload.data.write(to: url)
-                return ExportFileItem(url: url)
+                items.append(ExportFileItem(url: url))
             }
+            return items
         } catch {
             viewModel.errorMessage = "Export failed — please try again."
             return nil
@@ -1060,7 +1123,8 @@ struct FloeCADEditorView: View {
         }
         switch format {
         case .obj where includeMaterials:
-            guard let plan = viewModel.objBundlePlan(
+            // Consume the exact reviewed bytes. Never rebuild them here.
+            guard let plan = viewModel.reviewedOBJBundlePlan(
                 perBody: perBody, acceptPartial: acceptPartial,
                 expectedChangeCount: reviewedChangeCount) else { return }
             guard !plan.hasRefusal else {
@@ -1074,9 +1138,11 @@ struct FloeCADEditorView: View {
                     viewModel.clearOBJBundlePlan()
                     return
                 }
-                let payloads = plan.items.compactMap { item -> (name: String, data: Data)? in
-                    guard let data = item.result.data else { return nil }
-                    return (item.name, data)
+                let payloads = plan.items.compactMap {
+                    item -> (name: String, bodyID: UUID, data: Data)? in
+                    guard let data = item.result.data,
+                          let bodyID = item.bodyID else { return nil }
+                    return (item.name, bodyID, data)
                 }
                 guard payloads.count == plan.items.count else {
                     viewModel.errorMessage = viewModel.objBundleFailureMessage(plan)
@@ -1096,9 +1162,12 @@ struct FloeCADEditorView: View {
             viewModel.clearOBJBundlePlan()
             if perBody {
                 pendingExportItems = perBodyExportItems(
-                    viewModel.exportOBJPerBody(), fileExtension: "obj", viewModel: viewModel
+                    viewModel.exportOBJPerBody(acceptPartial: acceptPartial,
+                                               expectedChangeCount: reviewedChangeCount),
+                    fileExtension: "obj", viewModel: viewModel
                 )
-            } else if let data = viewModel.exportOBJ() {
+            } else if let data = viewModel.exportOBJ(acceptPartial: acceptPartial,
+                                                    expectedChangeCount: reviewedChangeCount) {
                 pendingExport = ExportDocument(
                     data: data, contentType: ExportDocument.objType, fileExtension: "obj"
                 )
@@ -2428,11 +2497,10 @@ struct FloeCADEditorView: View {
                 MeshExportOptionsSheet(
                     formatName: format.rawValue,
                     supportsMaterials: format == .obj,
-                    preflight: { perBody, includeMaterials, count in
-                        guard includeMaterials else { return nil }
-                        return viewModel.objBundlePlan(
-                            perBody: perBody, acceptPartial: true,
-                            expectedChangeCount: count)?.preflight
+                    preflight: { perBody, acceptPartial, count in
+                        await viewModel.objBundlePreflight(
+                            perBody: perBody, acceptPartial: acceptPartial,
+                            expectedChangeCount: count)
                     },
                     currentChangeCount: { viewModel.session.changeCount },
                     coverageForFormat: { viewModel.meshExportCoverage(format: $0) },

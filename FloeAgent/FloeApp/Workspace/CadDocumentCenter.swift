@@ -614,14 +614,19 @@ actor CadDocumentCenter: CadDocumentHost {
         return String(data: data, encoding: .utf8) ?? "{}"
     }
 
-    /// Actionable copy for a refused incomplete export. Only the exchange
-    /// formats have an explicit partial route; mesh-only formats require the
-    /// excluded bodies to be repaired or removed.
+    /// Actionable copy for a refused incomplete export. Every supported part
+    /// receipt has an explicit partial route; a broken/oversized material image
+    /// still refuses the whole OBJ appearance bundle rather than dropping it.
     private static func incompleteExportMessage(format: String) -> String {
-        if ["step", "glb", "usdz"].contains(format) {
-            return "The export receipt is incomplete. Review the excluded objects and "
+        let normalized = format.lowercased()
+        if ["step", "glb", "usdz", "obj_bundle", "stl", "obj", "3mf"].contains(normalized) {
+            var message = "The export receipt is incomplete. Review the excluded objects and "
                 + "material images; retry with scope=part and accept_partial=true only "
                 + "if that partial result is intended. Nothing was written."
+            if normalized == "obj_bundle" {
+                message += " A broken or oversized material image still refuses the whole bundle."
+            }
+            return message
         }
         return "The export receipt is incomplete. Repair or remove the excluded objects; "
             + "this format has no partial-export route. Nothing was written."

@@ -275,86 +275,14 @@ nonisolated enum GLBExporter {
             ])
 
             let triangleCount = body.render.indices.count / 3
-            var claimedTriangles = Set<Int>()
-            struct FaceGroup {
-                var faceIndex: Int
-                var material: BodyMaterialSpec
-                var triangles: [Int]
-            }
-            var faceGroups: [FaceGroup] = []
-            var unresolvedFaceBindings: [[String: Any]] = []
-            let table = faceTables[body.id]
-            let tableIsFresh = table != nil
-                && faceTableRevisions[body.id] == body.meshRevision
-            let candidates = CADFaceMaterialResolver.candidates(for: body)
-
-            for binding in body.materialFaceBindings {
-                let materialName = binding.material.materialName ?? "Material"
-                switch CADFaceMaterialResolver.match(binding.key, candidates: candidates) {
-                case .resolved(let faceIndex, _):
-                    guard tableIsFresh, let table else {
-                        unresolvedFaceBindings.append([
-                            "face_index": faceIndex,
-                            "material": materialName,
-                            "reason": "face_triangle_table_unavailable",
-                        ])
-                        continue
-                    }
-                    var scored: [(score: Double, triangles: [Int])] = []
-                    for entry in table.entries {
-                        guard let score = CADFaceMaterialResolver.score(
-                            binding.key.signature, entry.signature) else { continue }
-                        scored.append((score, entry.triangles))
-                    }
-                    scored.sort { $0.score > $1.score }
-                    guard let best = scored.first,
-                          best.score >= CADFaceMaterialResolver.matchThreshold else {
-                        unresolvedFaceBindings.append([
-                            "face_index": faceIndex,
-                            "material": materialName,
-                            "reason": "face_triangle_map_missing",
-                        ])
-                        continue
-                    }
-                    if scored.count > 1,
-                       best.score - scored[1].score < CADFaceMaterialResolver.ambiguityMargin {
-                        unresolvedFaceBindings.append([
-                            "face_index": faceIndex,
-                            "material": materialName,
-                            "reason": "face_triangle_map_ambiguous",
-                        ])
-                        continue
-                    }
-                    let triangles = best.triangles
-                    guard !triangles.isEmpty,
-                          triangles.allSatisfy({ $0 >= 0 && $0 < triangleCount }),
-                          triangles.allSatisfy({ !claimedTriangles.contains($0) }) else {
-                        unresolvedFaceBindings.append([
-                            "face_index": faceIndex,
-                            "material": materialName,
-                            "reason": "face_triangle_map_overlap_or_invalid",
-                        ])
-                        continue
-                    }
-                    for triangle in triangles { claimedTriangles.insert(triangle) }
-                    faceGroups.append(FaceGroup(faceIndex: faceIndex,
-                                                material: binding.material,
-                                                triangles: triangles))
-                case .ambiguous(let indices):
-                    unresolvedFaceBindings.append([
-                        "face_index": -1,
-                        "candidate_indices": indices,
-                        "material": materialName,
-                        "reason": "ambiguous_face_signature",
-                    ])
-                case .unresolved(let reason):
-                    unresolvedFaceBindings.append([
-                        "face_index": binding.key.capturedIndex ?? -1,
-                        "material": materialName,
-                        "reason": reason,
-                    ])
-                }
-            }
+            let assessment = CADFaceMaterialResolver.assessGroups(
+                in: body,
+                table: faceTables[body.id],
+                tableRevision: faceTableRevisions[body.id],
+                triangleCount: triangleCount)
+            let claimedTriangles = assessment.claimedTriangles
+            let faceGroups = assessment.groups
+            let unresolvedFaceBindings = assessment.issues.map(\.jsonObject)
 
             func primitive(triangles: [Int], material: BodyMaterialSpec) -> [String: Any]? {
                 var indices = [UInt32]()

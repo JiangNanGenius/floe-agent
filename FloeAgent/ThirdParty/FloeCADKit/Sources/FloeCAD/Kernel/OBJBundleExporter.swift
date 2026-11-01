@@ -21,8 +21,11 @@
 //      Wavefront/tinyobjloader PBR MTL extension. Those channels are extensions,
 //      not universal MTL; the receipt says so instead of claiming every viewer
 //      understands them;
-//    * base alpha and the separate opacity map/factor become one grayscale
-//      `map_d` (+ scalar `d`), because MTL has only one opacity channel;
+//    * base alpha, the separate opacity map and the authored effective-opacity
+//      scalar become one final `map_d` mask stored identically in RGB and
+//      alpha; that material writes `d 1` so luminance-sampling and
+//      alpha-sampling viewers apply the product once. Without a mask, `d`
+//      carries the authored scalar;
 //    * a scalar map declared sRGB is converted to linear luminance; a colour
 //      map declared linear is encoded to sRGB. `.bottomLeft` maps are flipped
 //      into top-row-first bytes. No metadata is silently relabelled;
@@ -83,7 +86,14 @@ nonisolated struct OBJBundleMaterial: Sendable, Equatable {
     var baseColor: [Double]
     var metallic: Double
     var roughness: Double
+    /// Authored effective opacity. When `opacityMaskBaked` is true this value
+    /// is baked into the emitted map_d bytes and MTL d is 1.
     var opacity: Double
+    /// True when map_d carries base alpha × opacity luminance × authored
+    /// effective opacity in BOTH RGB and alpha, with MTL d fixed at 1.
+    var opacityMaskBaked: Bool
+    /// The authored effective-opacity scalar baked into that mask.
+    var bakedOpacity: Double?
     var emissive: [Double]
     var textures: [String: String]
     var bodyIDs: [UUID]
@@ -155,16 +165,23 @@ nonisolated struct OBJBundleReceipt: Sendable, Equatable {
                  "unresolved_face_bindings": body.unresolvedFaceBindings]
             },
             "materials": materials.map { material -> [String: Any] in
-                ["name": material.name,
-                 "source_name": material.sourceName,
-                 "base_color": material.baseColor,
-                 "metallic": material.metallic,
-                 "roughness": material.roughness,
-                 "opacity": material.opacity,
-                 "emissive": material.emissive,
-                 "textures": material.textures,
-                 "body_ids": material.bodyIDs.map(\.uuidString),
-                 "notes": material.notes]
+                var object: [String: Any] = [
+                    "name": material.name,
+                    "source_name": material.sourceName,
+                    "base_color": material.baseColor,
+                    "metallic": material.metallic,
+                    "roughness": material.roughness,
+                    "opacity": material.opacity,
+                    "opacity_mask_baked": material.opacityMaskBaked,
+                    "emissive": material.emissive,
+                    "textures": material.textures,
+                    "body_ids": material.bodyIDs.map(\.uuidString),
+                    "notes": material.notes,
+                ]
+                if let baked = material.bakedOpacity {
+                    object["baked_opacity"] = baked
+                }
+                return object
             },
             "textures": textures.map { texture -> [String: Any] in
                 ["path": texture.path,
@@ -205,8 +222,37 @@ nonisolated struct OBJBundleExportResult: Sendable, Equatable {
 
 // MARK: - UI-facing plan / preflight
 
+/// Exact document inputs a reviewed bundle was built from. A preview may only
+/// be confirmed while the live document still has this identity; a name, mesh,
+/// material or face-table change advances at least one component.
+nonisolated struct OBJBundleBodyIdentity: Sendable, Equatable {
+    var bodyID: UUID
+    var meshRevision: UInt64
+    var faceTableRevision: UInt64?
+}
+
+nonisolated struct OBJBundleSnapshotIdentity: Sendable, Equatable {
+    var revision: Int
+    var changeCount: Int
+    var contentSHA256: String
+    var bodies: [OBJBundleBodyIdentity]
+}
+
+/// Immutable value snapshot handed to the background preflight. Body values
+/// are copy-on-write, so no live session/document is touched off the main
+/// actor and a later edit cannot mutate the reviewed bytes.
+nonisolated struct OBJBundlePreflightSnapshot: Sendable {
+    var identity: OBJBundleSnapshotIdentity
+    var bodies: [Body]
+    var faceTables: [BodyID: FaceTable]
+    var faceTableRevisions: [BodyID: UInt64]
+}
+
 nonisolated struct OBJBundlePlanItem: Sendable, Equatable {
     var name: String
+    /// Real document body identity; filenames may be disambiguated, receipts
+    /// and this plan item keep the actual name + UUID.
+    var bodyID: UUID?
     var result: OBJBundleExportResult
 }
 
@@ -217,6 +263,8 @@ nonisolated struct OBJBundlePlan: Sendable, Equatable {
     var perBody: Bool
     var single: OBJBundleExportResult?
     var items: [OBJBundlePlanItem]
+    /// Nil only for plans built by an older synchronous test seam.
+    var snapshot: OBJBundleSnapshotIdentity? = nil
 
     var results: [OBJBundleExportResult] {
         if perBody { return items.map(\.result) }
@@ -282,12 +330,47 @@ nonisolated enum OBJBundleExporter {
 
     static let pbrExtensionWarning = "mtl_pbr_extension"
     static let uvConventionWarning = "obj_uv_bottom_left"
+    static let scalarReaderColorSpaceWarning = "scalar_map_reader_colorspace_unverified"
     static let faceFallbackWarning = "face_material_fallback"
     static let generatedUVWarning = "texture_uv_generated"
     static let scalarNormalizedWarning = "scalar_map_normalized"
     static let baseAlphaBakedWarning = "base_alpha_baked_to_map_d"
     static let opacitySemanticsWarning = "opacity_map_semantics"
     static let textureNormalizedWarning = "texture_rows_or_color_normalized"
+
+    /// Build the exact plan the options sheet reviews. This is nonisolated so
+    /// the caller can run it from a detached task over immutable Body snapshots
+    /// instead of decoding images and assembling a ZIP on the main actor.
+    static func plan(for snapshot: OBJBundlePreflightSnapshot,
+                     perBody: Bool) -> OBJBundlePlan {
+        if perBody {
+            // An empty body has no geometry to write. The single bundle
+            // reports it as skipped; per-body simply has no file to produce.
+            let drawable = snapshot.bodies.filter {
+                !$0.render.positions.isEmpty && !$0.render.indices.isEmpty
+            }
+            let items = drawable.map { body -> OBJBundlePlanItem in
+                let bodyTables = snapshot.faceTables[body.id].map { [body.id: $0] } ?? [:]
+                let bodyRevisions = snapshot.faceTableRevisions[body.id]
+                    .map { [body.id: $0] } ?? [:]
+                return OBJBundlePlanItem(
+                    name: body.name,
+                    bodyID: body.id.raw,
+                    result: export(bodies: [body],
+                                   faceTables: bodyTables,
+                                   faceTableRevisions: bodyRevisions))
+            }
+            return OBJBundlePlan(perBody: true, single: nil, items: items,
+                                 snapshot: snapshot.identity)
+        }
+        return OBJBundlePlan(
+            perBody: false,
+            single: export(bodies: snapshot.bodies,
+                           faceTables: snapshot.faceTables,
+                           faceTableRevisions: snapshot.faceTableRevisions),
+            items: [],
+            snapshot: snapshot.identity)
+    }
 
     static func export(bodies: [Body],
                        faceTables: [BodyID: FaceTable] = [:],
@@ -308,6 +391,10 @@ nonisolated enum OBJBundleExporter {
         var state = BuildState()
         state.warnings.insert(pbrExtensionWarning)
         state.warnings.insert(uvConventionWarning)
+        // MTL/PNG has no portable colorspace field that Blender/three.js MTL
+        // readers all honor; the scalar bytes are linear and the receipt says
+        // that this remains a reader-dependent limitation.
+        state.warnings.insert(scalarReaderColorSpaceWarning)
         if candidates.count < bodies.count {
             state.warnings.insert("empty_body_skipped")
         }
@@ -450,6 +537,7 @@ nonisolated enum OBJBundleExporter {
                 unresolvedFaceBindings: resolved.unresolved))
         }
 
+        if Task.isCancelled { return cancelledResult() }
         if !state.diagnostics.isEmpty {
             return failure(state.diagnostics)
         }
@@ -488,8 +576,10 @@ nonisolated enum OBJBundleExporter {
         zip.addFile(path: objEntryPath, data: objData)
         zip.addFile(path: mtlEntryPath, data: mtlData)
         for texture in textures {
+            if Task.isCancelled { return cancelledResult() }
             zip.addFile(path: texture.path, data: texture.data)
         }
+        if Task.isCancelled { return cancelledResult() }
         let archive = zip.finish()
         guard archive.count <= maximumBundleBytes else {
             return failure([diagnostic("obj_bundle_too_large",
@@ -521,6 +611,8 @@ nonisolated enum OBJBundleExporter {
                 metallic: material.metallic,
                 roughness: material.roughness,
                 opacity: material.opacity,
+                opacityMaskBaked: material.opacityMaskBaked,
+                bakedOpacity: material.bakedOpacity,
                 emissive: material.emissive,
                 textures: Dictionary(uniqueKeysWithValues: material.maps.map {
                     ($0.key.rawValue, $0.value)
@@ -548,6 +640,7 @@ nonisolated enum OBJBundleExporter {
                 "self_contained_relative_paths",
                 "source_document_and_material_library_not_mutated",
                 "plain_obj_remains_a_single_obj_without_materials",
+                "scalar_maps_store_linear_values_no_portable_mtl_colorspace",
             ],
             totalBytes: entries.reduce(0) { $0 + $1.byteCount },
             triangleCount: state.triangleCount,
@@ -574,8 +667,13 @@ nonisolated enum OBJBundleExporter {
     # Wavefront/tinyobjloader PBR MTL extension. Some viewers only read
     # Kd/map_Kd/d/map_d; the export report lists that capability limit.
     # Kd/Ke are the applied display-encoded factors; map_Kd/map_Ke are sRGB.
-    # Scalar maps are linear grayscale; map_d is grayscale luminance with the
-    # scalar d factor applied by the viewer.
+    # Scalar maps are linear grayscale. A mapped opacity mask stores the
+    # complete product (base alpha × opacity map × authored d) in RGB and
+    # alpha; its material writes d=1 so the scalar is never applied twice.
+    # Without map_d, d carries the authored scalar opacity.
+    # MTL has no colorspace field and many readers (including Blender's OBJ
+    # importer) assign sRGB to every image; scalar-map interpretation remains
+    # reader-dependent. Pixel values are not gamma-converted.
 
     """
 
@@ -597,6 +695,8 @@ nonisolated enum OBJBundleExporter {
         var metallic: Double
         var roughness: Double
         var opacity: Double
+        var opacityMaskBaked: Bool
+        var bakedOpacity: Double?
         var emissive: [Double]
         var maps: [MaterialTextureSlot: String]
         var bodyIDs: Set<UUID>
@@ -665,68 +765,23 @@ nonisolated enum OBJBundleExporter {
                                       tableRevision: UInt64?,
                                       warnings: inout Set<String>)
         -> (groups: [PreparedGroup], unresolved: [String]) {
-        let triangleCount = body.render.indices.count / 3
-        guard triangleCount > 0 else { return ([], []) }
-        let tableIsFresh = table != nil && tableRevision == body.meshRevision
-        let candidates = CADFaceMaterialResolver.candidates(for: body)
-        var claimed = Set<Int>()
-        var faceGroups: [PreparedGroup] = []
-        var unresolved: [String] = []
-
-        for binding in body.materialFaceBindings {
-            let materialName = binding.material.materialName ?? "Material"
-            let captured = binding.key.capturedIndex ?? -1
-            switch CADFaceMaterialResolver.match(binding.key, candidates: candidates) {
-            case .resolved(let faceIndex, _):
-                guard tableIsFresh, let table else {
-                    unresolved.append("face \(faceIndex) [\(materialName)]: face_triangle_table_unavailable")
-                    continue
-                }
-                var scored: [(score: Double, triangles: [Int])] = []
-                for entry in table.entries {
-                    guard let score = CADFaceMaterialResolver.score(
-                        binding.key.signature, entry.signature) else { continue }
-                    scored.append((score, entry.triangles))
-                }
-                scored.sort { $0.score > $1.score }
-                guard let best = scored.first,
-                      best.score >= CADFaceMaterialResolver.matchThreshold else {
-                    unresolved.append("face \(faceIndex) [\(materialName)]: face_triangle_map_missing")
-                    continue
-                }
-                if scored.count > 1,
-                   best.score - scored[1].score < CADFaceMaterialResolver.ambiguityMargin {
-                    unresolved.append("face \(faceIndex) [\(materialName)]: face_triangle_map_ambiguous")
-                    continue
-                }
-                let triangles = best.triangles
-                guard !triangles.isEmpty,
-                      triangles.allSatisfy({ $0 >= 0 && $0 < triangleCount }),
-                      triangles.allSatisfy({ !claimed.contains($0) }) else {
-                    unresolved.append("face \(faceIndex) [\(materialName)]: face_triangle_map_overlap_or_invalid")
-                    continue
-                }
-                for triangle in triangles { claimed.insert(triangle) }
-                faceGroups.append(PreparedGroup(faceIndex: faceIndex,
-                                                material: binding.material.clamped,
-                                                triangles: triangles))
-            case .ambiguous:
-                unresolved.append("face \(captured) [\(materialName)]: ambiguous_face_signature")
-            case .unresolved(let reason):
-                unresolved.append("face \(captured) [\(materialName)]: face_signature_unresolved (\(reason))")
-            }
-        }
-
+        let assessment = CADFaceMaterialResolver.assessGroups(
+            in: body, table: table, tableRevision: tableRevision)
+        let unresolved = assessment.issues.map(\.unresolvedDescription)
         if !unresolved.isEmpty { warnings.insert(faceFallbackWarning) }
 
         var groups: [PreparedGroup] = []
-        let remaining = (0..<triangleCount).filter { !claimed.contains($0) }
-        if !remaining.isEmpty {
-            groups.append(PreparedGroup(faceIndex: nil,
-                                        material: (body.material ?? .default).clamped,
-                                        triangles: remaining))
+        if !assessment.remainingTriangles.isEmpty {
+            groups.append(PreparedGroup(
+                faceIndex: nil,
+                material: (body.material ?? .default).clamped,
+                triangles: assessment.remainingTriangles))
         }
-        groups.append(contentsOf: faceGroups)
+        groups.append(contentsOf: assessment.groups.map { group in
+            PreparedGroup(faceIndex: group.faceIndex,
+                          material: group.material,
+                          triangles: group.triangles)
+        })
         return (groups, unresolved)
     }
 
@@ -835,6 +890,8 @@ nonisolated enum OBJBundleExporter {
 
         var maps: [MaterialTextureSlot: String] = [:]
         var notes = Set<String>()
+        var opacityMaskBaked = false
+        var bakedOpacity: Double?
 
         var baseSource: Data?
         var baseDecoded: CADExportImage.Decoded?
@@ -849,6 +906,7 @@ nonisolated enum OBJBundleExporter {
         var opacityColorSpace: MaterialTextureColorSpace = .linear
 
         for slot in MaterialTextureSlot.allCases {
+            if Task.isCancelled { return nil }
             guard let data = spec.textureData(for: slot) else {
                 if declared.contains(where: { $0.slot == slot }) {
                     state.diagnostics.append(diagnostic(
@@ -893,6 +951,7 @@ nonisolated enum OBJBundleExporter {
                 continue
             }
 
+            if Task.isCancelled { return nil }
             let decoded: CADExportImage.Decoded
             switch CADExportImage.decode(data) {
             case .success(let value):
@@ -911,6 +970,7 @@ nonisolated enum OBJBundleExporter {
                 return nil
             }
 
+            if Task.isCancelled { return nil }
             let orientation = spec.textureOrientation(for: slot)
             let colorSpace = spec.textureColorSpace(for: slot)
 
@@ -1071,12 +1131,22 @@ nonisolated enum OBJBundleExporter {
                     alpha[index] = UInt8((Int(alpha[index]) * Int(value) + 127) / 255)
                 }
             }
+            // Bake the authored effective-opacity scalar into the final
+            // mask. RGB and alpha carry the same value so luminance-sampling
+            // and alpha-sampling viewers both see the complete product; MTL d
+            // is 1 for this material so no viewer applies the scalar twice.
+            let scalar = spec.effectiveOpacity
+            let scalarByte = UInt8(min(max((scalar * 255).rounded(), 0), 255))
+            for index in 0..<alpha.count {
+                alpha[index] = UInt8((Int(alpha[index]) * Int(scalarByte) + 127) / 255)
+            }
             var alphaPixels = [UInt8](repeating: 255, count: targetWidth * targetHeight * 4)
             for index in 0..<alpha.count {
                 let offset = index * 4
                 alphaPixels[offset] = alpha[index]
                 alphaPixels[offset + 1] = alpha[index]
                 alphaPixels[offset + 2] = alpha[index]
+                alphaPixels[offset + 3] = alpha[index]
             }
             let pixels = CADExportImage.Pixels(width: targetWidth, height: targetHeight,
                                                rgba: alphaPixels)
@@ -1086,11 +1156,13 @@ nonisolated enum OBJBundleExporter {
                                              sourceData: opacitySource ?? baseSource ?? Data(),
                                              normalized: true,
                                              slot: .opacity,
-                                             note: "combined base alpha, opacity map and alpha channel",
+                                             note: "combined base alpha, opacity map and baked authored opacity; RGB and alpha are the final mask",
                                              state: &state) else {
                 return textureEncodingFailure(materialName, .opacity, body, &state)
             }
             maps[.opacity] = path
+            opacityMaskBaked = true
+            bakedOpacity = scalar
             state.warnings.insert(opacitySemanticsWarning)
             if baseHasAlpha {
                 state.warnings.insert(baseAlphaBakedWarning)
@@ -1164,6 +1236,8 @@ nonisolated enum OBJBundleExporter {
             metallic: spec.metallic,
             roughness: spec.roughness,
             opacity: spec.effectiveOpacity,
+            opacityMaskBaked: opacityMaskBaked,
+            bakedOpacity: bakedOpacity,
             emissive: [effectiveEmission.x, effectiveEmission.y, effectiveEmission.z],
             maps: maps,
             bodyIDs: [body.id.raw],
@@ -1238,7 +1312,11 @@ nonisolated enum OBJBundleExporter {
             if material.emissive.contains(where: { $0 > 0 }) {
                 out += "Ke \(decimal(material.emissive[0])) \(decimal(material.emissive[1])) \(decimal(material.emissive[2]))\n"
             }
-            out += "d \(decimal(material.opacity))\n"
+            if material.opacityMaskBaked {
+                out += "d 1.000000\n"
+            } else {
+                out += "d \(decimal(material.opacity))\n"
+            }
             out += "illum 2\n"
             for slot in MaterialTextureSlot.allCases {
                 guard let path = material.maps[slot] else { continue }

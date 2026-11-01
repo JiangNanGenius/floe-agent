@@ -445,8 +445,8 @@ public extension FloeCADDocument {
             default:
                 return .failure(CADDocumentError(
                     code: "unsupported_format",
-                    message: "Placed-assembly exchange supports step, glb, usdz and part-scope "
-                        + "obj_bundle only; use the existing part export for \(format)."))
+                    message: "Exchange supports step, glb and usdz for parts or assemblies, "
+                        + "and part-scope obj_bundle, stl, obj and 3mf; got '\(format)'."))
             }
         } catch let error as CADDocumentError {
             return .failure(error)
@@ -468,9 +468,11 @@ public extension FloeCADDocument {
     /// writes nothing instead of claiming completeness.
     func nativePartExport(format rawFormat: String,
                           pageID: UUID?,
-                          acceptPartial: Bool = false) -> CADExchangeOutcome {
+                          acceptPartial: Bool = false,
+                          expectedChangeCount: Int? = nil) -> CADExchangeOutcome {
         let format = rawFormat.lowercased()
-        let selection = CADExchangeSelection(scope: .part, acceptPartial: acceptPartial)
+        let selection = CADExchangeSelection(scope: .part, acceptPartial: acceptPartial,
+                                             expectedChangeCount: expectedChangeCount)
         switch format {
         case "step", "glb", "usdz", "obj_bundle":
             return nativeExchangeExport(format: format, pageID: pageID,
@@ -505,8 +507,8 @@ public extension FloeCADDocument {
         default:
             return .failure(CADDocumentError(
                 code: "unsupported_format",
-                message: "Part export supports step, stl, obj, 3mf, glb and usdz; "
-                    + "got '\(rawFormat)'."))
+                message: "Part export supports step, stl, obj, 3mf, glb, usdz and "
+                    + "obj_bundle; got '\(rawFormat)'."))
         }
     }
 }
@@ -521,8 +523,8 @@ private extension FloeCADDocument {
         guard ["step", "glb", "usdz", "obj_bundle", "stl", "obj", "3mf"].contains(format) else {
             throw CADDocumentError(
                 code: "unsupported_format",
-                message: "Placed-assembly exchange supports step, glb, usdz and part-scope "
-                    + "obj_bundle; use the existing part export for \(rawFormat).")
+                message: "Exchange supports step, glb and usdz for parts or assemblies, "
+                    + "and part-scope obj_bundle, stl, obj and 3mf; got '\(rawFormat)'.")
         }
         if !["step", "glb", "usdz"].contains(format), selection.scope == .assembly {
             throw CADDocumentError(
@@ -605,6 +607,7 @@ private extension FloeCADDocument {
         var items: [CADExchangeCoverageItem] = []
         var includedBodies: [Body] = []
         var warnings: [String] = []
+        var informationalNotes: [String] = []
         for body in chosen {
             let matrix = body.transform.matrix
             let mesh = body.render
@@ -629,7 +632,12 @@ private extension FloeCADDocument {
                 included = false
                 reason = "unsupported_face_materials"
             }
-            if included { includedBodies.append(body) }
+            if included {
+                includedBodies.append(body)
+                if usesGeneratedBoxProjection(for: body, format: format) {
+                    informationalNotes.append("texture_uv_generated")
+                }
+            }
             warnings.append(contentsOf: fidelityWarnings)
             items.append(CADExchangeCoverageItem(
                 bodyID: body.id.raw,
@@ -648,7 +656,8 @@ private extension FloeCADDocument {
                                     scope: .part,
                                     selection: selection,
                                     items: items,
-                                    extraWarnings: warnings)
+                                    extraWarnings: warnings,
+                                    informationalNotes: informationalNotes)
         var faceTables: [BodyID: FaceTable] = [:]
         var revisions: [BodyID: UInt64] = [:]
         for body in includedBodies {
@@ -727,6 +736,7 @@ private extension FloeCADDocument {
         var sourceByInstance: [UUID: Body] = [:]
         var occurrenceByInstance: [UUID: CADAssemblyOccurrence] = [:]
         var warnings: [String] = []
+        var informationalNotes: [String] = []
 
         for occurrence in selected {
             occurrenceByInstance[occurrence.instance.id] = occurrence
@@ -808,6 +818,9 @@ private extension FloeCADDocument {
                 glb.isHidden = false
                 glbIndexByInstance[occurrence.instance.id] = glbBodies.count
                 glbBodies.append(glb)
+                if usesGeneratedBoxProjection(for: source, format: format) {
+                    informationalNotes.append("texture_uv_generated")
+                }
             }
             warnings.append(contentsOf: fidelityWarnings)
             items.append(CADExchangeCoverageItem(
@@ -836,7 +849,8 @@ private extension FloeCADDocument {
                                     scope: .assembly,
                                     selection: selection,
                                     items: items,
-                                    extraWarnings: warnings)
+                                    extraWarnings: warnings,
+                                    informationalNotes: informationalNotes)
         guard coverage.includedCount > 0 else {
             return CADExchangePlan(format: format, selection: selection, coverage: coverage,
                                    placedBodies: [], glbBodies: [], sceneGraph: nil,
@@ -949,7 +963,8 @@ private extension FloeCADDocument {
                       scope: CADExchangeScope,
                       selection: CADExchangeSelection,
                       items: [CADExchangeCoverageItem],
-                      extraWarnings: [String]) -> CADExchangeCoverage {
+                      extraWarnings: [String],
+                      informationalNotes: [String] = []) -> CADExchangeCoverage {
         let included = items.filter(\.included).count
         let excluded = items.count - included
         let fidelityWarnings = items.flatMap(\.materialWarnings)
@@ -972,6 +987,13 @@ private extension FloeCADDocument {
         }
         if !extraWarnings.isEmpty {
             notes.append("Warnings: " + Array(Set(extraWarnings)).sorted().prefix(6).joined(separator: ", "))
+        }
+        if !informationalNotes.isEmpty {
+            // Supported export-only behaviour, not a fidelity loss: the
+            // deterministic box projection is recorded instead of pretending
+            // the body authored UVs.
+            notes.append("Informational: "
+                + Array(Set(informationalNotes)).sorted().joined(separator: ", "))
         }
         return CADExchangeCoverage(
             format: format,
@@ -1009,9 +1031,17 @@ private extension FloeCADDocument {
     /// Material/texture gaps are fidelity warnings, not a silent success. The
     /// exporter may still write the mesh with the scalar factors/UV fallback;
     /// the receipt says exactly what was not carried.
+    ///
+    /// The texture predicate is the real writer's, not one shared byte cap:
+    /// GLB can embed any PNG/JPEG inside the decoded-dimension bounds even when
+    /// the encoded image is larger than the 8 MiB material-library limit, while
+    /// USDZ and the OBJ bundle still enforce that authored-material cap.
     func materialWarnings(for body: Body, format: String) -> [String] {
         guard format == "glb" || format == "usdz" || format == "obj_bundle" else { return [] }
         var warnings = Set<String>()
+        func textureIsEmbeddable(_ data: Data) -> Bool {
+            GLBExporter.textureCanBeEmbedded(data)
+        }
         func inspect(_ spec: BodyMaterialSpec?) {
             guard let spec else { return }
             if let metadata = spec.textureMetadata {
@@ -1024,13 +1054,13 @@ private extension FloeCADDocument {
                         warnings.insert("texture_\(item.slot.rawValue)_missing")
                         continue
                     }
-                    if !GLBExporter.textureCanBeEmbedded(data) {
+                    if !textureIsEmbeddable(data) {
                         warnings.insert("texture_\(item.slot.rawValue)_invalid")
                     }
                     if item.verifiedDigest(for: data) == nil {
                         warnings.insert("texture_\(item.slot.rawValue)_identity_mismatch")
                     }
-                    if data.count > CADMaterialLimits.maximumTextureBytes {
+                    if format != "glb", data.count > CADMaterialLimits.maximumTextureBytes {
                         warnings.insert("texture_\(item.slot.rawValue)_too_large")
                     }
                 }
@@ -1039,8 +1069,13 @@ private extension FloeCADDocument {
                 guard let data = spec.textureData(for: slot) else { continue }
                 if data.isEmpty {
                     warnings.insert("texture_\(slot.rawValue)_missing")
-                } else if !GLBExporter.textureCanBeEmbedded(data) {
-                    warnings.insert("texture_\(slot.rawValue)_invalid")
+                } else {
+                    if !textureIsEmbeddable(data) {
+                        warnings.insert("texture_\(slot.rawValue)_invalid")
+                    }
+                    if format != "glb", data.count > CADMaterialLimits.maximumTextureBytes {
+                        warnings.insert("texture_\(slot.rawValue)_too_large")
+                    }
                 }
             }
             if spec.hasAnyTexture,
@@ -1050,8 +1085,15 @@ private extension FloeCADDocument {
                    normals: body.render.normals,
                    indices: body.render.indices,
                    mapping: spec.uvMapping) == nil {
-                warnings.insert(format == "obj_bundle"
-                    ? "texture_uv_projection_fallback" : "texture_uv_unmapped")
+                // GLB and the OBJ bundle generate the same deterministic box
+                // projection for a mesh-sourced textured material with no UVs;
+                // that is supported export behaviour, not a fidelity loss. USDZ
+                // has no such fallback, and an explicit projection that still
+                // yields nil is unmapped for every writer.
+                let meshSource = (spec.uvMapping?.source ?? .mesh) == .mesh
+                if format == "usdz" || !meshSource {
+                    warnings.insert("texture_uv_unmapped")
+                }
             }
             if (format == "usdz" || format == "obj_bundle"),
                let strength = spec.emissiveStrength, strength > 1,
@@ -1080,20 +1122,51 @@ private extension FloeCADDocument {
             let fresh = table != nil
                 && session.lastNamingRevisions[body.id] == body.meshRevision
             if !fresh { warnings.insert("face_material_ranges_unavailable") }
-            let candidates = CADFaceMaterialResolver.candidates(for: body)
-            for binding in body.materialFaceBindings {
-                switch CADFaceMaterialResolver.match(binding.key, candidates: candidates) {
-                case .resolved(_, _):
-                    break
-                case .ambiguous(_):
+            // One shared assessment with both writers: signature matching alone
+            // is not enough — a fresh table can still miss, ambiguously match
+            // or overlap the exact triangle range and fall back to the body
+            // material.
+            let assessment = CADFaceMaterialResolver.assessGroups(
+                in: body,
+                table: table,
+                tableRevision: session.lastNamingRevisions[body.id])
+            for issue in assessment.issues {
+                switch issue.kind {
+                case .tableUnavailable:
+                    warnings.insert("face_material_ranges_unavailable")
+                case .missing:
+                    warnings.insert("face_material_missing")
+                case .ambiguous, .ambiguousSignature:
                     warnings.insert("face_material_ambiguous")
-                case .unresolved(_):
+                case .overlapOrInvalid:
+                    warnings.insert("face_material_overlap")
+                case .unresolvedSignature:
                     warnings.insert("face_material_unresolved")
                 }
             }
         }
         return warnings.sorted()
     }
+
+    /// True when a supported writer will synthesize the deterministic box
+    /// projection for this body. The receipt records the informational fact;
+    /// it does not pretend authored UVs exist and it does not gate the export.
+    func usesGeneratedBoxProjection(for body: Body, format: String) -> Bool {
+        guard format == "glb" || format == "obj_bundle" else { return false }
+        func generated(_ spec: BodyMaterialSpec?) -> Bool {
+            guard let spec, spec.hasAnyTexture,
+                  (spec.uvMapping?.source ?? .mesh) == .mesh else { return false }
+            return MaterialUVProjector.effectiveUVs(
+                meshTexcoords: body.render.texcoords,
+                positions: body.render.positions,
+                normals: body.render.normals,
+                indices: body.render.indices,
+                mapping: spec.uvMapping) == nil
+        }
+        if generated(body.material) { return true }
+        return body.materialFaceBindings.contains { generated($0.material) }
+    }
+
 }
 
 // MARK: - Small value helpers

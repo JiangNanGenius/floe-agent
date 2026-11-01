@@ -15,6 +15,9 @@
 
 import XCTest
 import Foundation
+import CoreGraphics
+import ImageIO
+import UniformTypeIdentifiers
 import simd
 @testable import FloeCAD
 import FloeCore
@@ -304,6 +307,51 @@ final class CADPlacedAssemblyExportCallerTests: XCTestCase {
             assetID: UUID(), slot: .baseColor, mimeType: "image/png",
             colorSpace: .srgb, orientation: .topLeft,
             sha256: CADMaterialTexture.digest(png), byteCount: png.count)]
+        spec.uvMapping = CADMaterialUVMapping(source: .boxProjection, axis: .y,
+                                              scaleMM: SIMD2(20, 20))
+        document.session.perform(SetMaterialCommand(
+            bodyIDs: [BodyID(raw: UUID(uuidString: bodyID)!)],
+            material: spec, document: document.session.document))
+    }
+
+    /// A real PNG whose encoded bytes exceed the 8 MiB material-library cap
+    /// while its dimensions/decoded allocation stay inside the GLB writer and
+    /// MeshImportKit bounds. Deterministic pseudo-random pixels make the PNG
+    /// incompressible, so the byte cap is exercised rather than the header.
+    private func largeValidPNG(width: Int = 1800, height: Int = 1800) throws -> Data {
+        var bytes = [UInt8](repeating: 0, count: width * height * 4)
+        var state: UInt64 = 0x9E3779B97F4A7C15
+        for index in stride(from: 0, to: bytes.count, by: 4) {
+            for channel in 0..<3 {
+                state = state &* 6_364_136_223_846_793_005
+                    &+ 1_442_695_040_888_963_407
+                bytes[index + channel] = UInt8((state >> 33) & 0xFF)
+            }
+            bytes[index + 3] = 255
+        }
+        let provider = try XCTUnwrap(CGDataProvider(data: Data(bytes) as CFData))
+        let image = try XCTUnwrap(CGImage(
+            width: width, height: height, bitsPerComponent: 8, bitsPerPixel: 32,
+            bytesPerRow: width * 4, space: CGColorSpaceCreateDeviceRGB(),
+            bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.last.rawValue),
+            provider: provider, decode: nil, shouldInterpolate: false,
+            intent: .defaultIntent))
+        let output = NSMutableData()
+        let destination = try XCTUnwrap(CGImageDestinationCreateWithData(
+            output, UTType.png.identifier as CFString, 1, nil))
+        CGImageDestinationAddImage(destination, image, nil)
+        XCTAssertTrue(CGImageDestinationFinalize(destination))
+        return output as Data
+    }
+
+    private func addTexture(_ document: FloeCADDocument, bodyID: String, data: Data) {
+        var spec = BodyMaterialSpec(baseColor: SIMD4(0.2, 0.8, 0.3, 1),
+                                    materialName: "Large Texture")
+        spec.baseColorTexture = data
+        spec.textureMetadata = [CADMaterialTextureMetadata(
+            assetID: UUID(), slot: .baseColor, mimeType: "image/png",
+            colorSpace: .srgb, orientation: .topLeft,
+            sha256: CADMaterialTexture.digest(data), byteCount: data.count)]
         spec.uvMapping = CADMaterialUVMapping(source: .boxProjection, axis: .y,
                                               scaleMM: SIMD2(20, 20))
         document.session.perform(SetMaterialCommand(
@@ -686,6 +734,232 @@ final class CADPlacedAssemblyExportCallerTests: XCTestCase {
                                             expectedChangeCount: coverage.changeCount)?.single?.data)
     }
 
+    func testLargeEncodedGLBImageUsesWriterPredicateNotStrictOBJCap() async throws {
+        let url = workspace.appendingPathComponent("LargeGLB.floecad")
+        let document = try await FloeCADDocument.create(at: url, name: "Large GLB")
+        defer { document.close() }
+        let bodyID = addMeshBody(document, name: "Large Texture Slab")
+        let png = try largeValidPNG()
+        XCTAssertGreaterThan(png.count, CADMaterialLimits.maximumTextureBytes)
+        XCTAssertTrue(GLBExporter.textureCanBeEmbedded(png),
+                      "the image is a valid, dimension-bounded PNG")
+        addTexture(document, bodyID: bodyID, data: png)
+        let model = document.viewModel()
+
+        let glbCoverage = try XCTUnwrap(model.glbExportCoverage())
+        XCTAssertTrue(glbCoverage.complete,
+                      "\(glbCoverage.items.map(\.materialWarnings))")
+        XCTAssertFalse(glbCoverage.requiresConfirmation)
+        let glbWarnings = glbCoverage.items.flatMap(\.materialWarnings)
+        XCTAssertFalse(glbWarnings.contains { $0.hasSuffix("_too_large") }, "\(glbWarnings)")
+        let glb = try XCTUnwrap(model.exportGLB())
+        let parsed = try glbJSON(glb)
+        XCTAssertEqual((parsed["images"] as? [[String: Any]])?.count, 1,
+                       "a valid >8 MiB imported GLB image must be embedded")
+
+        // USDZ and the OBJ bundle still enforce the material-library 8 MiB cap;
+        // coverage must say so instead of letting the GLB predicate leak out.
+        let bundleCoverage = try XCTUnwrap(model.meshExportCoverage(format: "obj_bundle"))
+        XCTAssertFalse(bundleCoverage.complete)
+        XCTAssertTrue(bundleCoverage.requiresConfirmation)
+        let bundleWarnings = bundleCoverage.items.flatMap(\.materialWarnings)
+        XCTAssertTrue(bundleWarnings.contains("texture_baseColor_too_large"),
+                      "\(bundleWarnings)")
+        XCTAssertNil(model.objBundlePlan(perBody: false))
+        let partialPlan = try XCTUnwrap(model.objBundlePlan(
+            perBody: false, acceptPartial: true,
+            expectedChangeCount: bundleCoverage.changeCount))
+        XCTAssertTrue(partialPlan.hasRefusal)
+        XCTAssertEqual(partialPlan.firstDiagnostic?.code, "obj_bundle_texture_too_large")
+    }
+
+    func testPlainOBJPartialWritesOnlyIncludedBodiesAndHonorsReviewedCount() async throws {
+        let url = workspace.appendingPathComponent("PlainOBJPartial.floecad")
+        let document = try await FloeCADDocument.create(at: url, name: "Plain OBJ Partial")
+        defer { document.close() }
+        let validID = addMeshBody(document, name: "Valid Slab")
+        _ = addEmptyMeshBody(document, name: "Empty Slab")
+        let model = document.viewModel()
+        let coverage = try XCTUnwrap(model.meshExportCoverage(format: "obj"))
+        XCTAssertFalse(coverage.complete)
+        XCTAssertEqual(coverage.includedCount, 1)
+        XCTAssertEqual(coverage.excludedCount, 1)
+        XCTAssertNil(model.exportOBJ(), "the default remains strict")
+        model.errorMessage = nil
+
+        let partial = try XCTUnwrap(model.exportOBJ(
+            acceptPartial: true, expectedChangeCount: coverage.changeCount))
+        let text = String(decoding: partial, as: UTF8.self)
+        XCTAssertTrue(text.contains("o Valid Slab"))
+        XCTAssertFalse(text.contains("o Empty Slab"))
+        let perBody = try XCTUnwrap(model.exportOBJPerBody(
+            acceptPartial: true, expectedChangeCount: coverage.changeCount))
+        XCTAssertEqual(perBody.count, 1)
+        XCTAssertEqual(perBody[0].name, "Valid Slab")
+        XCTAssertEqual(perBody[0].bodyID.uuidString, validID)
+        XCTAssertNil(model.exportOBJ(acceptPartial: true,
+                                     expectedChangeCount: coverage.changeCount - 1),
+                     "a changed reviewed count must refuse before writing")
+    }
+
+    func testOBJBundleCoverageTreatsFreshOverlapAsLoss() async throws {
+        let url = workspace.appendingPathComponent("OBJOverlapCoverage.floecad")
+        let document = try await FloeCADDocument.create(at: url, name: "OBJ Overlap Coverage")
+        defer { document.close() }
+        let bodyIDString = try makeBox(document, name: "Overlap Box",
+                                       min: [0, 0], max: [20, 20])
+        let bodyID = try XCTUnwrap(UUID(uuidString: bodyIDString))
+        let source = try XCTUnwrap(document.session.document.bodies.first {
+            $0.id.raw == bodyID
+        })
+        let table = try XCTUnwrap(document.session.lastFaceTables[source.id])
+        XCTAssertEqual(document.session.lastNamingRevisions[source.id],
+                       source.meshRevision,
+                       "the fixture must start from a fresh face table")
+        let entry = try XCTUnwrap(table.entries.first { !$0.triangles.isEmpty })
+        let material = BodyMaterialSpec(baseColor: SIMD4(0.8, 0.2, 0.1, 1),
+                                        materialName: "Overlap Face")
+        let binding = CADFaceMaterialBinding(
+            key: CADFaceKey(signature: entry.signature), material: material)
+        document.session.perform(SetMaterialAppearanceCommand(
+            bodyIDs: [source.id],
+            after: [source.id: SetMaterialAppearanceCommand.Snapshot(
+                material: source.material,
+                faceBindings: [binding, binding])],
+            document: document.session.document))
+
+        let model = document.viewModel()
+        let coverage = try XCTUnwrap(model.meshExportCoverage(format: "obj_bundle"))
+        XCTAssertFalse(coverage.complete)
+        XCTAssertTrue(coverage.requiresConfirmation)
+        let warnings = coverage.items.flatMap(\.materialWarnings)
+        XCTAssertTrue(warnings.contains("face_material_overlap"), "\(warnings)")
+        XCTAssertNil(model.objBundlePlan(perBody: false))
+        model.errorMessage = nil
+        let plan = try XCTUnwrap(model.objBundlePlan(
+            perBody: false, acceptPartial: true,
+            expectedChangeCount: coverage.changeCount))
+        let data = try XCTUnwrap(plan.single?.data)
+        let receipt = try XCTUnwrap(plan.single?.receipt)
+        XCTAssertTrue(data.starts(with: Data([0x50, 0x4B, 0x03, 0x04])))
+        XCTAssertTrue(receipt.warnings.contains("face_material_fallback"))
+        XCTAssertTrue(receipt.bodies.flatMap(\.unresolvedFaceBindings)
+            .contains { $0.contains("face_triangle_map_overlap_or_invalid") })
+    }
+
+    func testOBJBundleAsyncPreflightIsSnapshotBoundAndNamesStayDistinct() async throws {
+        let url = workspace.appendingPathComponent("AsyncReview.floecad")
+        let document = try await FloeCADDocument.create(at: url, name: "Async Review")
+        defer { document.close() }
+        let first = addMeshBody(document, name: "Same Name")
+        _ = addMeshBody(document, name: "Same Name")
+        addTexture(document, bodyID: first,
+                   data: Data(base64Encoded:
+                    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=")!)
+        let model = document.viewModel()
+        let count = document.session.changeCount
+
+        let preflightResult = await model.objBundlePreflight(
+            perBody: true, acceptPartial: false, expectedChangeCount: count)
+        let preflight = try XCTUnwrap(preflightResult)
+        XCTAssertNil(preflight.refusal)
+        XCTAssertTrue(preflight.isReady)
+        let reviewed = try XCTUnwrap(model.reviewedOBJBundlePlan(
+            perBody: true, acceptPartial: false, expectedChangeCount: count))
+        XCTAssertEqual(reviewed.items.count, 2)
+        XCTAssertEqual(Set(reviewed.items.compactMap(\.bodyID)).count, 2)
+        XCTAssertEqual(Set(reviewed.items.map(\.name)), Set(["Same Name"]))
+        let cached = try XCTUnwrap(model.objBundlePlan(
+            perBody: true, acceptPartial: false, expectedChangeCount: count))
+        XCTAssertEqual(reviewed.items.compactMap(\.result.data),
+                       cached.items.compactMap(\.result.data),
+                       "confirm must reuse the exact reviewed bytes")
+
+        let payloads = try XCTUnwrap(model.exportOBJPerBody())
+        let stems = EditorViewModel.perBodyFileStems(
+            namesAndIDs: payloads.map { (name: $0.name, id: $0.bodyID) })
+        XCTAssertEqual(Set(stems).count, 2)
+        XCTAssertTrue(stems.allSatisfy { $0.hasPrefix("Same Name-") }, "\(stems)")
+
+        model.clearOBJBundlePlan()
+        XCTAssertNil(model.reviewedOBJBundlePlan(
+            perBody: true, acceptPartial: false, expectedChangeCount: count))
+        let refreshedResult = await model.objBundlePreflight(
+            perBody: true, acceptPartial: false, expectedChangeCount: count)
+        let refreshed = try XCTUnwrap(refreshedResult)
+        XCTAssertNil(refreshed.refusal)
+        _ = addMeshBody(document, name: "Added After Review")
+        XCTAssertNil(model.reviewedOBJBundlePlan(
+            perBody: true, acceptPartial: false, expectedChangeCount: count))
+
+        let closedURL = workspace.appendingPathComponent("ClosedAsyncReview.floecad")
+        let closedDocument = try await FloeCADDocument.create(
+            at: closedURL, name: "Closed Async Review")
+        _ = addMeshBody(closedDocument, name: "Closed Slab")
+        let closedModel = closedDocument.viewModel()
+        let closedCount = closedDocument.session.changeCount
+        closedDocument.close()
+        let closed = await closedModel.objBundlePreflight(
+            perBody: false, acceptPartial: false, expectedChangeCount: closedCount)
+        XCTAssertEqual(closed?.refusal?.code, "obj_bundle_owner_unavailable")
+    }
+
+    func testOBJBundlePreflightCancellationDoesNotCacheOrPublish() async throws {
+        let url = workspace.appendingPathComponent("CancelledPreflight.floecad")
+        let document = try await FloeCADDocument.create(
+            at: url, name: "Cancelled Preflight")
+        defer { document.close() }
+        let bodyID = addMeshBody(document, name: "Cancelled Slab")
+        addTexture(document, bodyID: bodyID,
+                   data: Data(base64Encoded:
+                    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=")!)
+        let model = document.viewModel()
+        let count = document.session.changeCount
+        let started = expectation(description: "preflight started")
+        let release = expectation(description: "preflight release")
+        model.objBundlePreflightSuspensionForTesting = {
+            started.fulfill()
+            await self.fulfillment(of: [release], timeout: 5)
+        }
+        let task = Task {
+            await model.objBundlePreflight(
+                perBody: false, acceptPartial: false,
+                expectedChangeCount: count)
+        }
+        await fulfillment(of: [started], timeout: 5)
+        model.clearOBJBundlePlan()
+        model.objBundlePreflightSuspensionForTesting = nil
+        release.fulfill()
+        let cancelled = await task.value
+        XCTAssertNil(cancelled, "a cleared generation must not publish a result")
+        XCTAssertNil(model.reviewedOBJBundlePlan(
+            perBody: false, acceptPartial: false, expectedChangeCount: count))
+    }
+
+    func testPerBodyExportNamesKeepCaseVariantsAndSharedUUIDPrefixesDistinct() throws {
+        let names = ["Panel", "panel", "a/b", "a-b", "Panel-AAAAAAAA"]
+        let ids = try (1...names.count).map { index in
+            try XCTUnwrap(UUID(uuidString: String(
+                format: "AAAAAAAA-0000-0000-0000-%012d", index)))
+        }
+        let stems = EditorViewModel.perBodyFileStems(
+            namesAndIDs: Array(zip(names, ids)).map { (name: $0.0, id: $0.1) })
+        XCTAssertEqual(stems.count, names.count)
+        XCTAssertEqual(Set(stems.map { $0.lowercased() }).count, names.count,
+                       "a case-insensitive destination must keep every body")
+        let directory = workspace.appendingPathComponent("separate-files", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let payloads = ids.map { Data($0.uuidString.utf8) }
+        for index in names.indices {
+            try payloads[index].write(to: directory.appendingPathComponent(stems[index] + ".obj"),
+                                      options: .atomic)
+        }
+        for index in names.indices {
+            XCTAssertEqual(try Data(contentsOf: directory.appendingPathComponent(stems[index] + ".obj")),
+                           payloads[index], "a later body must not replace an earlier file")
+        }
+    }
+
     /// The GLB options sheet must show the shared receipt and the explicit
     /// partial choice; a future simplification back to a bare toggle would
     /// reintroduce the silent-drop UI.
@@ -700,6 +974,12 @@ final class CADPlacedAssemblyExportCallerTests: XCTestCase {
                       "the partial choice must reach the caller explicitly")
         XCTAssertTrue(editor.contains("viewModel.meshExportCoverage(format: $0)"),
                       "the sheet must read the same plan as cad.document")
+        XCTAssertTrue(editor.contains(".task(id: preflightRequest)"),
+                      "the OBJ preflight must be a cancellable async task")
+        XCTAssertTrue(editor.contains("reviewedOBJBundlePlan("),
+                      "confirm must consume the reviewed plan, not rebuild it")
+        XCTAssertFalse(editor.contains("viewModel.objBundlePlan("),
+                       "the sheet must not run the image/ZIP preflight synchronously")
         XCTAssertTrue(editor.contains("exportGLB(acceptPartial: acceptPartial,"))
         XCTAssertTrue(editor.contains("exportGLBPerBody(acceptPartial: acceptPartial,"))
         XCTAssertTrue(editor.contains("exportSTL()"),

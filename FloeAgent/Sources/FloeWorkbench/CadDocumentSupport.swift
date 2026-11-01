@@ -503,7 +503,7 @@ public enum NativeCADCapabilityMatrix: Sendable {
         FormatRow(format: "floecad", aliases: [], geometryClass: "native",
                   create: true, import: false, view: true, edit: true,
                   export: ["step", "stl", "obj", "obj_bundle", "3mf", "glb",
-                           "usdz", "pdf", "svg", "dxf"],
+                           "usdz", "pdf", "svg", "dxf", "csv"],
                   note: "Native parametric package created with the create action; "
                     + "never build the package by hand. obj_bundle writes one .zip "
                     + "containing model.obj, model.mtl and relative textures; plain obj "

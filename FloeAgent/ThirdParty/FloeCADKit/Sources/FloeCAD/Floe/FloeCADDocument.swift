@@ -560,14 +560,16 @@ public final class FloeCADDocument {
         // Export preflight belongs to this live facade, just like parameter
         // and datum actions below. DesignDocument is only the stored model;
         // it is not a second export owner or a substitute facade.
-        model.partExportHandler = { [weak self] format in
+        model.partExportHandler = { [weak self] format, acceptPartial, expectedChangeCount in
             guard let self, !self.isClosed else {
                 return .failure(CADDocumentError(
                     code: "document_closed",
                     message: FloeCADStrings.text("cad.error.exportOwnerUnavailable",
                                                  "Reopen this document before exporting.")))
             }
-            return self.nativePartExport(format: format, pageID: nil)
+            return self.nativePartExport(format: format, pageID: nil,
+                                         acceptPartial: acceptPartial,
+                                         expectedChangeCount: expectedChangeCount)
         }
         model.exchangeCoverageHandler = { [weak self] format, selection in
             guard let self, !self.isClosed else {

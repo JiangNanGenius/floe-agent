@@ -433,7 +433,8 @@ final class CADOBJMaterialBundleTests: XCTestCase {
         XCTAssertEqual(material.values["Kd"]?.first ?? "", "0.200000 0.400000 0.600000")
         XCTAssertEqual(material.values["Pr"]?.first ?? "", "0.250000")
         XCTAssertEqual(material.values["Pm"]?.first ?? "", "0.750000")
-        XCTAssertEqual(material.values["d"]?.first ?? "", "0.500000")
+        XCTAssertEqual(material.values["d"]?.first ?? "", "1.000000",
+                       "a mapped opacity mask bakes the authored d scalar")
         XCTAssertEqual(material.values["Ke"]?.first ?? "", "0.250000 0.125000 0.062500")
         XCTAssertEqual(material.values["illum"]?.first ?? "", "2")
         XCTAssertEqual(obj.faces[0].material, material.name)
@@ -475,7 +476,15 @@ final class CADOBJMaterialBundleTests: XCTestCase {
         let opacityPixels = try decodePNG(try XCTUnwrap(entries[opacityPath]).data)
         XCTAssertEqual(opacityPixels.width, 1)
         XCTAssertEqual(opacityPixels.height, 1)
-        XCTAssertEqual(Array(opacityPixels.pixels.prefix(4)), [128, 128, 128, 255])
+        // 128/255 opacity luminance × authored d 0.5, in both RGB and alpha.
+        XCTAssertEqual(Array(opacityPixels.pixels.prefix(4)), [64, 64, 64, 64])
+        XCTAssertEqual(receipt.materials.first?.opacity ?? 0, 0.5, accuracy: 1e-9)
+        XCTAssertEqual(receipt.materials.first?.opacityMaskBaked, true)
+        XCTAssertEqual(receipt.materials.first?.bakedOpacity ?? 0, 0.5, accuracy: 1e-9)
+        let materialJSON = try XCTUnwrap(
+            (receipt.jsonObject["materials"] as? [[String: Any]])?.first)
+        XCTAssertEqual(materialJSON["opacity_mask_baked"] as? Bool, true)
+        XCTAssertEqual(materialJSON["baked_opacity"] as? Double ?? 0, 0.5, accuracy: 1e-9)
 
         // Source data is never mutated by an export.
         XCTAssertEqual(body.render.texcoords, sourceUVs)
@@ -525,7 +534,8 @@ final class CADOBJMaterialBundleTests: XCTestCase {
         let mtl = parseMTL(String(decoding: try XCTUnwrap(entries["model.mtl"]).data,
                                   as: UTF8.self))
         XCTAssertEqual(mtl.count, 1)
-        XCTAssertEqual(mtl[0].values["d"]?.first ?? "", "0.500000")
+        XCTAssertEqual(mtl[0].values["d"]?.first ?? "", "1.000000",
+                       "the authored d scalar is baked into map_d")
         XCTAssertTrue(receipt.warnings.contains("base_alpha_baked_to_map_d"))
 
         let basePath = try XCTUnwrap(mapPath(mtl[0], "map_Kd"))
@@ -540,13 +550,35 @@ final class CADOBJMaterialBundleTests: XCTestCase {
         let opacityPixels = try decodePNG(try XCTUnwrap(entries[opacityPath]).data)
         XCTAssertEqual(opacityPixels.width, 2)
         XCTAssertEqual(opacityPixels.height, 1)
-        // base alpha [128, 255] × opacity luminance 128 / 255.
-        XCTAssertEqual(Int(opacityPixels.pixels[0]), 64)
-        XCTAssertEqual(Int(opacityPixels.pixels[1]), 64)
-        XCTAssertEqual(Int(opacityPixels.pixels[2]), 64)
-        XCTAssertEqual(Int(opacityPixels.pixels[4]), 128)
-        XCTAssertEqual(Int(opacityPixels.pixels[5]), 128)
-        XCTAssertEqual(Int(opacityPixels.pixels[6]), 128)
+        // base alpha [128, 255] × opacity luminance 128 / 255 × authored d 0.5.
+        // RGB and alpha must carry the same final mask value.
+        XCTAssertEqual(Array(opacityPixels.pixels[0..<4]), [32, 32, 32, 32])
+        XCTAssertEqual(Array(opacityPixels.pixels[4..<8]), [64, 64, 64, 64])
+        XCTAssertEqual(receipt.materials.first?.opacityMaskBaked, true)
+        XCTAssertEqual(receipt.materials.first?.bakedOpacity ?? 0, 0.5, accuracy: 1e-9)
+    }
+
+    func testScalarOpacityWithoutMaskKeepsDAndReportsNotBaked() throws {
+        let base = try OBJFixture.png([255, 0, 0, 255])
+        var spec = BodyMaterialSpec(
+            baseColor: SIMD4(repeating: 1),
+            baseColorTexture: base,
+            materialName: "Scalar Opacity",
+            opacity: 0.5)
+        spec.textureMetadata = [OBJFixture.metadata(slot: .baseColor, data: base)]
+        let body = OBJFixture.triangle(uv: true, material: spec)
+        let result = OBJBundleExporter.export(bodies: [body])
+        XCTAssertTrue(result.succeeded, "\(result.diagnostics)")
+        let receipt = try XCTUnwrap(result.receipt)
+        let entries = try readStoredZip(try XCTUnwrap(result.data))
+        let mtl = parseMTL(String(decoding: try XCTUnwrap(entries["model.mtl"]).data,
+                                  as: UTF8.self))
+        XCTAssertEqual(mtl.count, 1)
+        XCTAssertEqual(mtl[0].values["d"]?.first ?? "", "0.500000")
+        XCTAssertNil(mapPath(mtl[0], "map_d"))
+        XCTAssertEqual(receipt.materials.first?.opacity ?? 0, 0.5, accuracy: 1e-9)
+        XCTAssertEqual(receipt.materials.first?.opacityMaskBaked, false)
+        XCTAssertNil(receipt.materials.first?.bakedOpacity)
     }
 
     func testLinearBottomLeftColorIsFlippedAndEncodedToSRGB() throws {
@@ -825,6 +857,70 @@ final class CADOBJFaceMaterialTests: XCTestCase {
         XCTAssertEqual(report.unresolvedFaceBindings.count, 1)
         XCTAssertTrue(report.unresolvedFaceBindings[0]
             .contains("face_triangle_map_overlap_or_invalid"))
+    }
+
+    func testFreshTableMissingEntryIsASharedLossAndFallsBack() async throws {
+        let url = workDir.appendingPathComponent("missing.floecad")
+        let document = try await FloeCADDocument.create(at: url, name: "Missing")
+        defer { document.close() }
+        let source = try makeBox(document)
+        let table = try XCTUnwrap(document.session.lastFaceTables[source.id])
+        let entry = try XCTUnwrap(table.entries.first { !$0.triangles.isEmpty })
+        let material = try makeFaceMaterial(
+            name: "Face A", color: SIMD4(0.9, 0.2, 0.1, 1),
+            mapping: CADMaterialUVMapping(source: .planarProjection, axis: .z,
+                                          scaleMM: SIMD2(20, 40)))
+        var candidate = source
+        candidate.material = nil
+        candidate.materialFaceBindings = [CADFaceMaterialBinding(
+            key: CADFaceKey(signature: entry.signature), material: material)]
+        // Fresh revision, but the exact face row is absent. This is the real
+        // hole the old coverage missed: signature matching resolves, the table
+        // does not.
+        let missingTable = FaceTable(entries: table.entries.filter {
+            $0.triangles != entry.triangles
+        })
+        let assessment = CADFaceMaterialResolver.assessGroups(
+            in: candidate, table: missingTable,
+            tableRevision: candidate.meshRevision)
+        XCTAssertFalse(assessment.isLossless)
+        XCTAssertEqual(assessment.issues.map(\.kind), [.missing])
+        XCTAssertTrue(assessment.groups.isEmpty)
+
+        let result = OBJBundleExporter.export(
+            bodies: [candidate],
+            faceTables: [candidate.id: missingTable],
+            faceTableRevisions: [candidate.id: candidate.meshRevision])
+        XCTAssertTrue(result.succeeded, "\(result.diagnostics)")
+        XCTAssertTrue(result.receipt?.warnings.contains("face_material_fallback") == true)
+        let report = try XCTUnwrap(result.receipt?.bodies.first)
+        XCTAssertEqual(report.unresolvedFaceBindings.count, 1)
+        XCTAssertTrue(report.unresolvedFaceBindings[0]
+            .contains("face_triangle_map_missing"))
+    }
+
+    func testSharedAssessmentReportsOverlapThatCoverageMustNotCallComplete() async throws {
+        let url = workDir.appendingPathComponent("overlap-assess.floecad")
+        let document = try await FloeCADDocument.create(at: url, name: "Overlap Assess")
+        defer { document.close() }
+        let source = try makeBox(document)
+        let table = try XCTUnwrap(document.session.lastFaceTables[source.id])
+        let entry = try XCTUnwrap(table.entries.first { !$0.triangles.isEmpty })
+        let material = try makeFaceMaterial(
+            name: "Face A", color: SIMD4(0.9, 0.2, 0.1, 1),
+            mapping: CADMaterialUVMapping(source: .planarProjection, axis: .z,
+                                          scaleMM: SIMD2(20, 40)))
+        let binding = CADFaceMaterialBinding(
+            key: CADFaceKey(signature: entry.signature), material: material)
+        var candidate = source
+        candidate.material = nil
+        candidate.materialFaceBindings = [binding, binding]
+        let assessment = CADFaceMaterialResolver.assessGroups(
+            in: candidate, table: table,
+            tableRevision: candidate.meshRevision)
+        XCTAssertFalse(assessment.isLossless)
+        XCTAssertEqual(assessment.issues.map(\.kind), [.overlapOrInvalid])
+        XCTAssertEqual(assessment.groups.count, 1)
     }
 }
 
