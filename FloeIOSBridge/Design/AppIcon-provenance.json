@@ -1,0 +1,25 @@
+{
+  "tool": "built-in image_gen",
+  "reference": "FloeAgent/FloeApp/Resources/Assets.xcassets/AppIcon.appiconset/AppIcon-1024.png",
+  "referenceSHA256": "19547864334816dbcf0b423bd755d18daeace86cd93ed897b8806a25509d25e2",
+  "prompts": [
+    "Edit the supplied original Floe app icon into the sibling Floe Bridge app icon. Preserve the recognizable dominant folded flowing loop/ribbon silhouette from this exact icon, its luminous cyan to electric-blue to violet glass material, polished rounded folds, dimensional shading, dark midnight-navy full-bleed square background and soft glow. Integrate a compact elegant bridge into the CENTRAL NEGATIVE SPACE of the existing loop, seamlessly using the same cyan-blue-violet glass ribbon material: a clear simple bridge deck and one smooth arch/two short supports, very few structural details, readable at small app-icon sizes. The original Floe folded-loop identity must remain obvious and dominant; the bridge should feel structurally joined with the flowing ribbon, not a separate badge pasted over it. Maintain an uncluttered premium iOS app-icon composition. Do not replace the original logo with a standalone bridge. No letters, text, numbers, extra symbols or watermarks. Deliver one finished opaque square 1024x1024 app icon, edge-to-edge navy background, no rounded outer frame or transparent border; iOS applies the corner mask.",
+    "Make one precise adjustment to this Floe Bridge app icon: raise the ENTIRE small bridge structure (deck, arch and supports together) noticeably higher, by about 10-12% of the total canvas height, so its deck spans the upper-middle of the folded loop's central opening rather than sitting low. Keep the bridge elegant, clearly legible and seamlessly joined to the flowing glass ribbon where it meets the sides. Preserve the dominant original Floe folded-loop silhouette, its exact overall placement and scale, luminous cyan-blue-violet material, dimensional folds, dark midnight-navy square background, glow and all other composition. Do not move the overall logo or merely stretch the bridge supports downward. No new elements, text or badge. One opaque square finished app icon; keep the original outer logo recognizable.",
+    "Refine ONLY the bridge element in this Floe Bridge app icon: make the complete bridge approximately25% larger and visibly more prominent, wider AND taller, with a somewhat thicker bridge deck, arch and supports so it is clearly readable at small app-icon sizes. Keep its center anchored at the same raised upper-middle position in the central opening; do not lower it. The larger bridge should span about three quarters of the outer logo's width and join seamlessly into the cyan/blue/violet ribbon on both sides. Preserve the original Floe folded-loop outer silhouette, overall logo scale/placement, glossy cyan-to-blue-to-violet glass material, dimensional folds, navy full-bleed background and glow. The result must clearly show BOTH the recognizable original Floe mark and a substantial elegant bridge. Do not replace the Floe mark, add a badge, change the background or add text. One finished opaque square app icon."
+  ],
+  "master": "Design/AppIcon-master.png",
+  "masterDimensions": [
+    1254,
+    1254
+  ],
+  "masterSHA256": "daa268807c59e32e15bf0135c7cfcce1a932e55d35bb59b3033a5c715566f4fd",
+  "asset": "Assets.xcassets/AppIcon.appiconset/AppIcon-1024.png",
+  "assetSHA256": "2bcc9fd6267b96ff25dbc0fd113911fa9b534dbe387ae4eca616905bf069d55f",
+  "assetDimensions": [
+    1024,
+    1024
+  ],
+  "alpha": false,
+  "resourceConversion": "sips -z 1024 1024 Design/AppIcon-master.png --out Assets.xcassets/AppIcon.appiconset/AppIcon-1024.png",
+  "sourceAppIconUnchanged": true
+}

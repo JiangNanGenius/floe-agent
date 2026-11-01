@@ -1,0 +1,41 @@
+{
+  "component": "idevice",
+  "license": "MIT",
+  "upstream": "https://github.com/jkcoxson/idevice",
+  "release": "v0.1.68",
+  "tagObject": "75c7a083bba231315af56b202f69c5db45c1b928",
+  "commit": "d32c8189c51c2789496b0768039419c3705498c3",
+  "asset": "idevice-xcframework-v0.1.68.zip",
+  "assetURL": "https://github.com/jkcoxson/idevice/releases/download/v0.1.68/idevice-xcframework-v0.1.68.zip",
+  "assetSHA256": "c9eccdd1942de756d746a2569d93302774ab0eff1cff314ec8118f768b3d8dc7",
+  "slice": "ios-arm64",
+  "sliceArchiveSHA256": "3dbb27b7f772a6d1d65ec509f05573c9337aa9f7621e8aa1db14f693329ca0cc",
+  "note": "Historical upstream release input retained unchanged for provenance. The currently qualified cancellable library is built from nativeDDI original-source/patch/output bindings, never from the upstream prebuilt ABI.",
+  "nativeDDI": {
+    "abiVersion": 1,
+    "patch": "Vendor/idevice-ddi-v1.patch",
+    "patchSHA256": "de1794f83db41b971ac729a34f9c72844d1408c6edc376e27d9186690f6ae5a9",
+    "sourceArchiveURL": "https://codeload.github.com/jkcoxson/idevice/tar.gz/d32c8189c51c2789496b0768039419c3705498c3",
+    "sourceArchiveSHA256": "882282f8b64c3908f28c2d42a556fcf92102ee982d8be3b8b5b448a02572d731",
+    "patchedSourceSHA256": "b26a0ccb9151a0285912eb0aa9258dc17b816cb2e42bd65e0d4069a682eed741",
+    "cargoLockSHA256": "3c1a7710f0cd02f9100e91b97c9f8abc6546f115f7f3255551c990628aea0e16",
+    "buildScriptSHA256": "186729007b74b35cf1880f4468c94c0d2afb11ccac26dd2aad53139eac724849",
+    "rustc": "rustc 1.98.1 (48a229cea 2026-09-01)",
+    "sdk": "27.1",
+    "target": "aarch64-apple-ios",
+    "deploymentTarget": "26.0",
+    "features": [
+      "ring",
+      "cryptexd",
+      "tunnel_tcp_stack",
+      "mobile_image_mounter",
+      "tss",
+      "tcp"
+    ],
+    "note": "Upstream release asset hashes above identify historical input only. Use patched native output below, never the upstream prebuilt library.",
+    "librarySHA256": "d9567089f9bfc35ca583b511e55b195cabe1bfcb41477a616d533521cf6d4a47",
+    "headerSHA256": "5ce01e8b0a7416ee56abe39184db881cd3018a558a3930352526898ff111d778",
+    "verifierSHA256": "10ad4c9ae13101b68e34ff9ebca100aa44e68f79459d2ba3f852bceddbc77dfe",
+    "fetchScriptSHA256": "1f7f7f608c2e0fb8b53ea5093e63c3bb42f8c39a655bae176f9e38369083a357"
+  }
+}
