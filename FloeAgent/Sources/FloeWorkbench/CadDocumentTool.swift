@@ -1253,7 +1253,9 @@ public enum CadDocumentHelp {
                     "capabilities documentation needs a topic name or true")
             }
             topic = trimmed
-        } else if let flag = selector as? Bool {
+        } else if let flag = booleanValue(selector) {
+            // Only a real CFBoolean is `true`; numeric 1 is not accepted as a
+            // boolean substitute for the documentation selector.
             guard flag else {
                 throw FloeError.validationFailed(
                     "capabilities documentation must be a topic name or true")
@@ -1447,15 +1449,51 @@ public enum CadDocumentHelp {
         return result
     }
 
+    /// True only for an actual JSON/CoreFoundation boolean. On Apple
+    /// platforms an `NSNumber` carrying numeric 0 or 1 also satisfies
+    /// `is Bool`, so a plain boolean cast rejected a legitimate `page: 0`.
+    private static func booleanValue(_ value: Any) -> Bool? {
+        guard let number = value as? NSNumber,
+              CFGetTypeID(number as CFTypeRef) == CFBooleanGetTypeID()
+        else { return nil }
+        return number.boolValue
+    }
+
     private static func integer(_ value: Any?, field: String) throws -> Int? {
         guard let value, !(value is NSNull) else { return nil }
-        if value is Bool {
+        if booleanValue(value) != nil {
             throw FloeError.validationFailed("documentation \(field) must be an integer")
         }
+        if let number = value as? NSNumber {
+            // Int(exactly:) is the exact, nontrapping conversion: it rejects
+            // fractions, non-finite values, 2^63 and every other value that is
+            // not representable as Int, instead of rounding or trapping.
+            switch String(cString: number.objCType) {
+            case "d", "f":
+                guard let int = Int(exactly: number.doubleValue) else {
+                    throw FloeError.validationFailed(
+                        "documentation \(field) must be an integer")
+                }
+                return int
+            case "Q", "L", "I", "S", "C":
+                // JSONSerialization parses a positive integer above Int64.max
+                // as an unsigned CFNumber; int64Value would wrap it.
+                guard let int = Int(exactly: number.uint64Value) else {
+                    throw FloeError.validationFailed(
+                        "documentation \(field) must be an integer")
+                }
+                return int
+            default:
+                guard let int = Int(exactly: number.int64Value) else {
+                    throw FloeError.validationFailed(
+                        "documentation \(field) must be an integer")
+                }
+                return int
+            }
+        }
         if let int = value as? Int { return int }
-        if let number = value as? Double, number.rounded() == number,
-           number >= Double(Int.min), number <= Double(Int.max) {
-            return Int(number)
+        if let number = value as? Double, let int = Int(exactly: number) {
+            return int
         }
         throw FloeError.validationFailed("documentation \(field) must be an integer")
     }

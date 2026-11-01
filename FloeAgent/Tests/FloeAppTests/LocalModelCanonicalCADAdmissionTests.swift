@@ -353,6 +353,148 @@ Export native CAD with action "export": scope=part keeps the historical selected
         }
     }
 
+    func testHelpPageSelectorsDistinguishNumbersFromBooleansAndRefuseOverflow() async throws {
+        let tool = CadDocumentTool(host: HelpOnlyHost())
+        let context = ToolContext(
+            runID: UUID(),
+            scope: .local,
+            cancellation: CancellationToken()
+        )
+
+        // `documentation: true` is still a real CFBoolean selector.
+        let topics = try await executeHelp(tool, context: context, [
+            "documentation": true,
+        ])
+        XCTAssertEqual(
+            (try object(topics["documentation"]))["guide_version"] as? Int,
+            CadDocumentHelp.guideVersion
+        )
+
+        // Real JSON numbers 0/1/2 are page indexes, not booleans. Numeric
+        // NSNumber 0/1 satisfies `is Bool` on Apple platforms, which used to
+        // reject page 0 before any page could be read.
+        for page in [0, 1, 2] {
+            let reply = try await executeHelp(tool, context: context, [
+                "documentation": "actions",
+                "page": page,
+                "page_size": 256,
+            ])
+            let doc = try object(reply["documentation"])
+            XCTAssertEqual(doc["page"] as? Int, page)
+            XCTAssertEqual(doc["page_size"] as? Int, 256)
+            XCTAssertNotNil(doc["text"] as? String)
+            XCTAssertNotNil(doc["content_sha256"] as? String)
+        }
+
+        // Numeric page_size 0/1 are parsed as numbers and then refused by the
+        // documented 256...3500 range, never as booleans or a valid page.
+        for pageSize in [0, 1] {
+            let args = try helpArguments([
+                "documentation": "actions",
+                "page_size": pageSize,
+            ])
+            do {
+                try tool.validate(args)
+                _ = try await tool.execute(args, context: context)
+                XCTFail("page_size \(pageSize) must be outside the documented range")
+            } catch let error as FloeError {
+                guard case .validationFailed(let message) = error else {
+                    return XCTFail("unexpected page_size error: \(error)")
+                }
+                XCTAssertTrue(
+                    message.contains(
+                        "page_size must be 256...\(CadDocumentHelp.maximumPageSize)"
+                    ),
+                    message
+                )
+            }
+        }
+
+        // Negative whole numbers are parsed as integers and then refused by
+        // the documented ranges; they are not confused with fractions or
+        // booleans, and the message identifies the range rather than the type.
+        let negativeCases: [(field: String, selector: [String: Any], expected: String)] = [
+            ("page", ["documentation": "actions", "page": -1],
+             "documentation page must be zero or greater"),
+            ("page_size", ["documentation": "actions", "page_size": -1],
+             "documentation page_size must be 256...\(CadDocumentHelp.maximumPageSize)"),
+        ]
+        for item in negativeCases {
+            let args = try helpArguments(item.selector)
+            do {
+                try tool.validate(args)
+                _ = try await tool.execute(args, context: context)
+                XCTFail("negative \(item.field) must be outside the documented range")
+            } catch let error as FloeError {
+                guard case .validationFailed(let message) = error else {
+                    return XCTFail("unexpected negative \(item.field) error: \(error)")
+                }
+                XCTAssertTrue(message.contains(item.expected), message)
+            }
+        }
+
+        // The nested selector object shares the same typed parser.
+        let nested = try await executeHelp(tool, context: context, [
+            "documentation": [
+                "topic": "actions",
+                "page": 0,
+                "page_size": 3000,
+            ],
+        ])
+        XCTAssertEqual((try object(nested["documentation"]))["page"] as? Int, 0)
+
+        // Missing and explicit-null pages preserve the default semantics.
+        for selector in [
+            ["documentation": "actions"] as [String: Any],
+            ["documentation": "actions", "page": NSNull(), "page_size": NSNull()] as [String: Any],
+        ] {
+            let reply = try await executeHelp(tool, context: context, selector)
+            let doc = try object(reply["documentation"])
+            XCTAssertEqual(doc["page"] as? Int, 0)
+            XCTAssertEqual(doc["page_size"] as? Int, CadDocumentHelp.defaultPageSize)
+        }
+
+        // Booleans, fractions and overflowing numbers refuse as that field,
+        // never as a valid page 0/1 and never by trapping the conversion.
+        let refused: [(field: String, selector: [String: Any])] = [
+            ("page", ["documentation": "actions", "page": true]),
+            ("page", ["documentation": "actions", "page": false]),
+            ("page", ["documentation": "actions", "page": 1.5]),
+            ("page", ["documentation": "actions", "page": 1e20]),
+            ("page", ["documentation": "actions", "page": UInt64(Int.max) + 1]),
+            ("page", ["documentation": "actions", "page": 9.223372036854776e18]),
+            ("page_size", ["documentation": "actions", "page_size": true]),
+            ("page_size", ["documentation": "actions", "page_size": false]),
+            ("page_size", ["documentation": "actions", "page_size": 1.5]),
+            ("page_size", ["documentation": "actions", "page_size": 1e20]),
+            ("page_size", ["documentation": "actions", "page_size": UInt64(Int.max) + 1]),
+            ("page_size", ["documentation": "actions", "page_size": 9.223372036854776e18]),
+        ]
+        for item in refused {
+            try await assertHelpRefused(
+                tool,
+                context: context,
+                item.selector,
+                field: item.field
+            )
+        }
+
+        // A numeric documentation selector is not a boolean `true` alias.
+        for numericSelector in [1, 0] {
+            let args = try helpArguments(["documentation": numericSelector])
+            do {
+                try tool.validate(args)
+                _ = try await tool.execute(args, context: context)
+                XCTFail("documentation: \(numericSelector) must not become a boolean selector")
+            } catch let error as FloeError {
+                guard case .validationFailed(let message) = error else {
+                    return XCTFail("unexpected documentation selector error: \(error)")
+                }
+                XCTAssertTrue(message.contains("must be a topic name"))
+            }
+        }
+    }
+
     // MARK: - Production prompt admission at every supported local window
 
     func testRepresentativeWindowsAreTheRealLocalResourcePolicy() {
@@ -467,7 +609,15 @@ Export native CAD with action "export": scope=part keeps the historical selected
 
     func testGenuinelyOversizedInputDefersCanonicalDefinitionWholeWithRetrieval() {
         let tools = [searchDescriptor(), cadDescriptor(), readDescriptor()]
-        let huge = String(repeating: "A", count: 35_000)
+        // A real CAD request with a genuinely oversized body. The earlier
+        // all-"A" fixture had no CAD/action intent, so the planner correctly
+        // never considered the CAD schema and could not truthfully claim it
+        // "did not fit this model window"; the three system-instruction
+        // assertions below were therefore testing an impossible state. Keep
+        // the same oversized budget pressure, but make the turn actually ask
+        // for the canonical CAD definition.
+        let huge = "用 cad.document 创建 40×30×5 毫米支架并读取孔径。"
+            + String(repeating: "A", count: 35_000)
         let build = LocalProviderAdapter.buildPrompt(for: ProviderStreamRequest(
             provider: LocalProviderAdapter.providerProfile,
             model: localModel(
@@ -482,9 +632,20 @@ Export native CAD with action "export": scope=part keeps the historical selected
         XCTAssertFalse(build.selectedTools.contains { $0.name == CadDocumentTool.name })
         XCTAssertTrue(build.fallbackTools.contains { $0.name == CadDocumentTool.name })
         XCTAssertTrue(build.selectedTools.contains { $0.name == "tools.search" })
+        // The deferred fallback carries the complete canonical definition
+        // byte-for-byte; only presentation moved to the tools.search path.
+        XCTAssertEqual(
+            build.fallbackTools.first { $0.name == CadDocumentTool.name }?.parametersJSON,
+            Self.canonicalSchema
+        )
+        XCTAssertEqual(
+            build.fallbackTools.first { $0.name == CadDocumentTool.name }?.description,
+            Self.canonicalDescription
+        )
         XCTAssertTrue(build.systemInstructions.contains("deferred rather than sliced"))
         XCTAssertTrue(build.systemInstructions.contains("did not fit this model window"))
         XCTAssertTrue(build.systemInstructions.contains("Load one exact name with tools.search"))
+        XCTAssertFalse(build.systemInstructions.contains(Self.canonicalSchema))
         XCTAssertFalse(build.systemInstructions.contains(Self.canonicalDescription))
         XCTAssertFalse(build.nativeToolSchemas.contains { $0.name == CadDocumentTool.name })
         XCTAssertLessThanOrEqual(build.estimatedPromptTokens, build.windowPromptTokenBudget)
@@ -844,20 +1005,25 @@ Export native CAD with action "export": scope=part keeps the historical selected
         return try JSONDecoder().decode(CadDocumentArguments.self, from: data)
     }
 
+    private func helpArguments(
+        _ selector: [String: Any]
+    ) throws -> CadDocumentArguments {
+        let payloadData = try JSONSerialization.data(
+            withJSONObject: selector,
+            options: [.sortedKeys]
+        )
+        return try decodeArgs([
+            "action": "capabilities",
+            "payload": String(decoding: payloadData, as: UTF8.self),
+        ])
+    }
+
     private func executeHelp(
         _ tool: CadDocumentTool,
         context: ToolContext,
         _ selector: [String: Any]
     ) async throws -> [String: Any] {
-        let payloadData = try JSONSerialization.data(
-            withJSONObject: selector,
-            options: [.sortedKeys]
-        )
-        let payload = String(decoding: payloadData, as: UTF8.self)
-        let args = try decodeArgs([
-            "action": "capabilities",
-            "payload": payload,
-        ])
+        let args = try helpArguments(selector)
         try tool.validate(args)
         let output = try await tool.execute(args, context: context)
         let text = try XCTUnwrap(output.capturedOutput)
@@ -865,6 +1031,42 @@ Export native CAD with action "export": scope=part keeps the historical selected
         XCTAssertTrue(text.hasPrefix(prefix))
         let json = String(text.dropFirst(prefix.count))
         return try object(try JSONSerialization.jsonObject(with: Data(json.utf8)))
+    }
+
+    /// The same validate → execute path as `executeHelp`, but the selector must
+    /// fail closed with a typed field error before any help page is served.
+    private func assertHelpRefused(
+        _ tool: CadDocumentTool,
+        context: ToolContext,
+        _ selector: [String: Any],
+        field: String,
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) async throws {
+        let args = try helpArguments(selector)
+        do {
+            try tool.validate(args)
+            _ = try await tool.execute(args, context: context)
+            XCTFail(
+                "documentation \(field) accepted a non-integer value",
+                file: file,
+                line: line
+            )
+        } catch let error as FloeError {
+            guard case .validationFailed(let message) = error else {
+                return XCTFail(
+                    "unexpected documentation \(field) error: \(error)",
+                    file: file,
+                    line: line
+                )
+            }
+            XCTAssertTrue(
+                message.contains("documentation \(field) must be an integer"),
+                message,
+                file: file,
+                line: line
+            )
+        }
     }
 }
 
