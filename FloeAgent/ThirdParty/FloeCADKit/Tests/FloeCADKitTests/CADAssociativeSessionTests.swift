@@ -106,6 +106,76 @@ final class CADAssociativeSessionTests: XCTestCase {
         }(), "Fixture lost definition")
     }
 
+    func testReplacingProfileIdentityNeverRebindsTheDeletedNamedWall() async throws {
+        let f = try await fixture(installAssociation: false)
+        let session = f.document.session
+        let original = try XCTUnwrap(session.document.body(with: f.sourceBody))
+        let brep = try XCTUnwrap(original.brep)
+        let side = try XCTUnwrap(OCCTKernel.faceInfo(brep).first { $0.normal.x > 0.99 })
+        let name = try XCTUnwrap(session.lastKernelNames[f.sourceBody]?[side.index])
+        guard case .profileWall = name.source else {
+            return XCTFail("The fixture must select a real profile-owned wall")
+        }
+        let reference = FaceRef(
+            body: BodyRef(producer: f.source.id, bodyID: f.sourceBody),
+            creator: name.creator, role: .extrudeWall(loopIndex: 0, edgeIndex: 0),
+            signature: try XCTUnwrap(side.signature), elementName: name)
+        XCTAssertEqual(session.naming.resolve(reference, in: original,
+                          table: session.lastFaceTables[f.sourceBody])?.elementName, name)
+
+        // Replace the sketch entity, keeping the feature/body/sketch ids and
+        // all geometric dimensions. The old wall identity was deleted; an
+        // identical-looking replacement is not proof that it is the same face.
+        guard case let .extrude(profile, plane, distance, symmetric, boolean, extras) = f.source.kind else {
+            return XCTFail("Expected the production extrusion fixture")
+        }
+        let oldSketch = try XCTUnwrap(session.document.sketch(with: profile.sketchID))
+        var newSketch = oldSketch
+        let replacementID = UUID()
+        newSketch.entities = [.rect(id: replacementID, min: SIMD2(0, 0), max: SIMD2(100, 60))]
+        var newProfile = profile
+        newProfile.entityIDs = [replacementID]
+        let newKind = FeatureKind.extrude(
+            profile: newProfile, plane: plane, distance: distance,
+            symmetric: symmetric, boolean: boolean, extraProfiles: extras)
+        XCTAssertTrue(session.performAssociativeTransaction([
+            ReplaceSketchGeometryCommand(title: "Replace profile identity",
+                                          before: oldSketch, after: newSketch),
+            EditFeatureCommand(featureID: f.source.id, before: f.source.kind, after: newKind),
+        ], title: "Replace profile identity"))
+        XCTAssertTrue(session.lastEvalErrors.isEmpty)
+        let replacement = try XCTUnwrap(session.document.body(with: f.sourceBody))
+        XCTAssertEqual(replacement.render.localAABB.min, original.render.localAABB.min)
+        XCTAssertEqual(replacement.render.localAABB.max, original.render.localAABB.max)
+        XCTAssertFalse(session.lastKernelNames[f.sourceBody]?.values.contains(name) ?? true)
+        XCTAssertNil(session.naming.resolve(reference, in: replacement,
+                        table: session.lastFaceTables[f.sourceBody]),
+                     "A lost named face must not silently bind to similar replacement geometry")
+
+        session.undo()
+        let restored = try XCTUnwrap(session.document.body(with: f.sourceBody))
+        XCTAssertEqual(session.naming.resolve(reference, in: restored,
+                          table: session.lastFaceTables[f.sourceBody])?.elementName, name)
+        XCTAssertEqual(session.document.sketch(with: oldSketch.id)?.entities.map(\.id),
+                       oldSketch.entities.map(\.id))
+        session.redo()
+        let redone = try XCTUnwrap(session.document.body(with: f.sourceBody))
+        XCTAssertNil(session.naming.resolve(reference, in: redone,
+                        table: session.lastFaceTables[f.sourceBody]))
+        let saved = await f.document.save()
+        XCTAssertTrue(saved.succeeded, saved.error ?? "profile replacement must save")
+        let url = f.document.url
+        f.document.close()
+        let reopened = try await FloeCADDocument.open(at: url)
+        documents.append(reopened)
+        reopened.session.rebuildFrom(f.source.id)
+        let loaded = try XCTUnwrap(reopened.session.document.body(with: f.sourceBody))
+        XCTAssertFalse(reopened.session.lastKernelNames[f.sourceBody]?.values.contains(name) ?? true)
+        XCTAssertNil(reopened.session.naming.resolve(reference, in: loaded,
+                        table: reopened.session.lastFaceTables[f.sourceBody]),
+                     "Reopening cannot turn a deleted face identity into a geometric guess")
+    }
+
     func testThicknessEditUpdatesPlaneSketchAndExactChildAsOneUndo() async throws {
         let f = try await fixture()
         let session = f.document.session
