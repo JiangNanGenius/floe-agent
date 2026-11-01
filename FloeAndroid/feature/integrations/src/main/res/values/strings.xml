@@ -29,6 +29,8 @@
     <string name="plugins_import">Import a plugin</string>
     <string name="plugins_enable">Enable</string>
     <string name="plugins_ready">Ready to use</string>
+    <string name="plugins_requires_newer_app">Requires a newer Floe version.</string>
+    <string name="plugins_catalog_unavailable">This plugin is not available for this device.</string>
     <string name="plugins_search">Search plugins</string>
     <string name="skills_import_folder">Import folder</string>
     <string name="skills_creator">Skill Creator</string>

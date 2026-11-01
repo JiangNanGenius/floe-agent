@@ -67,8 +67,14 @@ public enum OfficialSkillHub {
               source.path == catalogPath else { throw Failure.source }
     }
 
+    /// `enforceAppCompatibility` exists so a catalog can still be DECODED,
+    /// signature-verified and cached when this client is below an entry's
+    /// minimum app version. The projection then reports the entry as
+    /// incompatible; install and upgrade always enforce the gate again.
+    /// This never changes a version number or makes an entry installable.
     public static func verifiedPackage(catalog bytes: Data, signature: Data, id: String,
-                                       appVersion: String, trustedKeys: [String: Data]) throws -> Package {
+                                       appVersion: String, trustedKeys: [String: Data],
+                                       enforceAppCompatibility: Bool = true) throws -> Package {
         do {
             _ = try SignedContentFeedVerifier.verifyEnvelope(
                 bytes: bytes, signature: signature, trustedKeys: trustedKeys
@@ -95,10 +101,20 @@ public enum OfficialSkillHub {
                   package.releaseNotes["en"]?.isEmpty == false else { throw Failure.catalog }
         }
         guard let package = catalog.packages.first(where: { $0.id == id }) else { throw Failure.catalog }
-        guard let app = try? SignedContentVersion(appVersion),
-              let minimum = try? SignedContentVersion(package.minimumAppVersion),
-              minimum <= app else { throw Failure.incompatible }
+        if enforceAppCompatibility {
+            guard isAppCompatible(package, appVersion: appVersion) else { throw Failure.incompatible }
+        }
         return package
+    }
+
+    /// The ORIGINAL minimum-app-version rule, isolated so a catalog snapshot
+    /// can report incompatibility without dropping the whole signed feed.
+    public static func isAppCompatible(_ package: Package, appVersion: String) -> Bool {
+        guard let app = try? SignedContentVersion(appVersion),
+              let minimum = try? SignedContentVersion(package.minimumAppVersion) else {
+            return false
+        }
+        return minimum <= app
     }
 
     public static func stage(id: String, appVersion: String, installed: SkillContentSnapshot,

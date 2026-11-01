@@ -78,6 +78,41 @@ public struct SkillUpgradeCandidate: Sendable {
         try self.init(verifiedSource: source, commit: commit, installed: installed, proposed: proposed)
     }
 
+    /// Module-internal entry used only after CuratedSkillHub verified the
+    /// signed schemaVersion-3 channel feed, review record and package ZIP.
+    /// A loose URL or model-supplied catalog can never manufacture this.
+    init(verifiedCurated staged: CuratedSkillHub.StagedSkill, installed: SkillContentSnapshot) throws {
+        let receipt = staged.receipt
+        let proposed = staged.content
+        guard receipt.feedStatus == .production,
+              receipt.feedSignatureKeyID == CuratedSkillHub.productionKeyID,
+              receipt.reviewKeyID == CuratedSkillHub.productionKeyID,
+              receipt.reviewDecision == .approve,
+              receipt.contentDigest == proposed.package.canonicalSHA256,
+              receipt.entryID == proposed.package.manifest.id,
+              receipt.entryVersion == proposed.package.manifest.version else {
+            throw CuratedSkillHubFailure.review("A verified production package is required for this upgrade")
+        }
+        guard installed.package.manifest.id == proposed.package.manifest.id else { throw SkillUpgradeError.identityChanged }
+        guard receipt.publicationCommit.count == 40, receipt.publicationCommit.allSatisfy(\.isHexDigit) else { throw SkillUpgradeError.invalidCommit }
+        let oldVersion = try SignedContentVersion(installed.package.manifest.version)
+        let newVersion = try SignedContentVersion(proposed.package.manifest.version)
+        guard !(newVersion < oldVersion) else { throw SkillUpgradeError.versionRegression }
+        if installed.package.manifest.version == proposed.package.manifest.version,
+           installed.package.canonicalSHA256 != proposed.package.canonicalSHA256 {
+            throw CuratedSkillHubFailure.immutableVersion("A published version cannot change its package bytes")
+        }
+        source = try CuratedSkillHub.source(channel: receipt.channel)
+        commit = receipt.publicationCommit
+        releaseNotes = [:]
+        expectedInstalledDigest = installed.package.canonicalSHA256
+        snapshot = proposed
+        installedSnapshot = installed
+        changedFiles = Set(installed.files.keys).union(proposed.files.keys).filter { installed.files[$0] != proposed.files[$0] }.sorted()
+        addedCapabilities = Set(proposed.package.manifest.capabilities).subtracting(installed.package.manifest.capabilities)
+        addedTools = Set(proposed.package.manifest.tools).subtracting(installed.package.manifest.tools)
+    }
+
     /// Module-internal entry used only after OfficialSkillHub has verified the
     /// signed catalog, package ZIP and canonical digest. App callers cannot
     /// manufacture an official update merely by supplying an allowed URL.

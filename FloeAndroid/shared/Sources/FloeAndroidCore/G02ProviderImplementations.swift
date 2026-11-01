@@ -396,9 +396,10 @@ public struct G02SkillsHostContextProvider: SkillsHostContextProviding {
     }
 
     public func appVersion() -> String? {
-        // Trusted host binds the real semantic version at integration;
-        // nil keeps catalog/official flows fail-closed typed.
-        nil
+        // Android CLIENT compatibility version for the schemaVersion-3
+        // catalog minimumAppVersion gate. It is deliberately separate from
+        // the native display/OTA prerelease (0.1.0-alpha.NN / code N).
+        C02AndroidSkillCompatibility.version
     }
 
     public func rootFingerprint(epoch: UInt64) -> String? {

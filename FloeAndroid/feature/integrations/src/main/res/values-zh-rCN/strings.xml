@@ -20,6 +20,8 @@
     <string name="plugins_import">导入插件</string>
     <string name="plugins_enable">启用</string>
     <string name="plugins_ready">已启用</string>
+    <string name="plugins_requires_newer_app">需要更新版本的 Floe。</string>
+    <string name="plugins_catalog_unavailable">此插件当前不适用于这台设备。</string>
     <string name="plugins_search">搜索插件</string>
     <string name="skills_import_folder">从文件夹导入</string>
     <string name="skills_creator">技能创建器</string>

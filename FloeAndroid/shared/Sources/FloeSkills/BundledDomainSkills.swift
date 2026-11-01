@@ -110,13 +110,13 @@ public enum BundledDomainSkills {
             id: "floe-data-code",
             name: "Data & Code Execution",
             description: "Linux command execution, canvas mutations, and generation boundaries.",
-            version: "1.1.0",
+            version: "1.1.1",
             exposed: false,
             markdown: """
             ## Data & code execution (on-device)
             - Run JavaScript with `node` through `exec.shell` in the selected Linux environment; inspect actual command and package availability first.
             - For Node APIs and HTTP(S), use `node` through `exec.shell`. Install compatible dependencies in the current environment through `npm install NAME`, `pnpm add NAME`, or `python3 -m pip install NAME==VERSION`. These Shell entries share the settings installer, environment ownership and rollback. `pip list/show/freeze/check` inspect effective Python dependencies. For npm/pnpm, a no-argument install reads the current package.json but does not rewrite or reproduce its project lock. Both require and ESM imports resolve environment dependencies. Unsupported native extensions or installation options fail explicitly. Change: managed Shell pip/npm/pnpm and ESM dependency lookup.
-            - Persistent web previews: `floe-service start node server.cjs 8080` or `floe-service start python server.py 8080` in Shell. The script binds `127.0.0.1` using `PORT`. The same lifecycle is available through `jobs.submit` target `exec.localService`. Read its schema before calling. Inspect status/logs, open the returned verified previewURL without opening the sidebar, and stop explicitly when no longer needed. Closing a tab or ending a reply does not stop the service. App termination interrupts it; restart explicitly. Never substitute untracked `&`/daemonization. Static HTML uses the same service with runtime=static and an existing workspace HTML entry.
+            - Persistent web previews: start the service with an explicit command through `exec.shell` in the selected Linux environment (for example `floe-service start node server.cjs 8080` when that guest CLI is actually installed, or `python3 -m http.server 8080`). The script binds `127.0.0.1` using `PORT`. For long-lived work, submit the SAME command through `jobs.submit` targeting `exec.shell`, keep the returned job ID, and query/cancel that job. Inspect the real process and log output, open a verified preview URL only when the host provides one, and stop the exact service explicitly. Closing a tab or ending a reply does not stop it. App or guest termination interrupts it; restart explicitly. Never substitute untracked `&`/daemonization. Static HTML uses an existing workspace-relative HTML entry, with its parent directory and relative assets verified.
             - Statistical runtimes are not implied: query command availability first. GNU R or licensed Stata must actually be installed in the selected environment before use.
             - **Canvas**: `canvas.getState` returns canvasID/documentID/revision/node IDs. Reuse the latest exact revision for patches/generation; mutation results return the new revision and a delta — apply it and continue without re-inspecting unless a revision conflict occurs.
             - **Image configuration**: inspect `image.models` before generation for configured suppliers, exact model IDs, priority/fallback order and supported parameters. When autonomous selection is enabled choose a suitable model and parameters; otherwise keep the preferred model. Unknown parameter metadata is not permission to invent values. Do not automatically repeat an unresolved or timed-out generation.
@@ -169,7 +169,7 @@ public enum BundledDomainSkills {
             id: "floe-shell",
             name: "Local Shell & Packages",
             description: "On-device POSIX commands, environment package managers, interactive sessions and owned preview services.",
-            version: "1.1.1",
+            version: "1.1.2",
             exposed: false,
             markdown: """
             ## Local shell substrate
@@ -181,7 +181,7 @@ public enum BundledDomainSkills {
             - The resolved environment owns the workspace, shared venv, package paths and task attribution. Use `python3 -m pip`, `npm`/`pnpm` and the guest's Debian `apt` when actually available. Inspect the configured sources and compatibility errors; a downloaded package is not a successful import. Package and network availability are discovered, not promised.
             - Linux commands follow the installed guest distribution, not the old iOS-hosted BSD subset. Native Linux ELF, processes and normal Linux filesystem operations execute inside the VM only. Do not apply those claims to the host or an SSH target.
             ### Persistent previews
-            - Use `jobs.submit` target `exec.localService`, or `floe-service`, for owned Node/Python/Shell services; static HTML uses runtime=static and its workspace-relative HTML entry. The HTML's parent directory is served, preserving relative assets.
+            - Start owned Node/Python/Shell services with an explicit command through `exec.shell`; for long-lived work submit the SAME command through `jobs.submit` targeting `exec.shell` and keep the job ID. Static HTML is served from an existing workspace-relative HTML entry after verifying the parent directory and relative assets.
             - Keep the service ID and open its verified previewURL. Closing a browser or ending a reply does not stop it. Stop it explicitly when finished; app/guest termination interrupts it. Never substitute untracked daemonization or trailing `&` for the managed lifecycle.
             ### Boundaries
             - Tool cwd and entry arguments are workspace-relative. Resolve the explicit task environment; never select the first environment or a host temporary path.
@@ -333,7 +333,7 @@ public enum BundledDomainSkills {
             id: "floe-design",
             name: "Design Workflow Guide",
             description: "制作/修改/重构 design work across chat attachments, creative requests, workspace files and Canvas nodes: typed targets, candidate preview/adopt, real format limits and the trusted-confirmation boundary.",
-            version: "1.1.0",
+            version: "1.1.1",
             exposed: false,
             markdown: """
             ## Design workflow (traditional guide)
@@ -355,7 +355,7 @@ public enum BundledDomainSkills {
             - Image: configured routes only — read the public candidates with `image.models`, then `image.generate`; local deterministic edits use `exec.shell` recipes; layered edits need an editor, never a fabricated history.
             - Video: `video.models` candidates and durable generation jobs with real timeline/export verification.
             - Office documents: .docx/.xlsx/.pptx via native package tools or a live Office session; a PDF is never a substitute for the source file.
-            - PDF/Notes: page-accurate work goes through the PDF service and `document.pdf*` tools; protected documents keep their gate.
+            - PDF/Notes: use the existing protected PDF preview gate to read pages and keep Notes PDF behavior unchanged. Android has no native `document.pdf*` editor alias: for other PDF processing, install and run general tooling with `python3 -m pip` or apt through `exec.shell` in the selected Linux environment, then verify the actual output file and format. Protected documents keep their gate.
             - 2D/3D CAD: `.floecad` documents via `cad.document`; STEP/STP, IGES/IGS, STL, OBJ and self-contained GLB import through the guarded import proposal (loose .gltf with external resources is unsupported, never silently dropped).
             ### Boundaries
             - Never create a hidden canvas or a parallel project/runtime to "help" the design flow.

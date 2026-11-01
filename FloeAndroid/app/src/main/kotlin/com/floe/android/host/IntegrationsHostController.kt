@@ -415,7 +415,8 @@ class IntegrationsHostController internal constructor(
         skillsSettingsRevision = page.settingsRevision ?: skillsSettingsRevision
 
         val catalogVersionById: Map<String, String> =
-            page.catalogEntries.associate { it.id to it.version }
+            page.catalogEntries.associate { it.id to it.version } +
+                page.curatedCards.associate { it.id to it.version }
         val installedWithUpdates = merged.map { row ->
             val entry = catalogVersionById[row.skillId]
             val newer = entry != null && IntegrationsWire.isNewerVersion(entry, row.version)
@@ -429,7 +430,8 @@ class IntegrationsHostController internal constructor(
         // so the id is the honest label and the localized release note is
         // the honest summary (never an invented description).
         val installedById = merged.associateBy { it.skillId }
-        val cards = page.catalogEntries.map { entry ->
+        val legacyIds = page.catalogEntries.map { it.id }.toMutableSet()
+        val legacyCards = page.catalogEntries.map { entry ->
             val row = installedById[entry.id]
             val newer = row != null &&
                 IntegrationsWire.isNewerVersion(entry.version, row.version)
@@ -451,6 +453,39 @@ class IntegrationsHostController internal constructor(
                 state = state,
             )
         }
+        // Full schemaVersion-3 channel: verified cards carry real display
+        // text and the host's offer verdict. An incompatible/unavailable
+        // card never renders an Install button. Legacy ids win once.
+        val curatedCards = page.curatedCards.mapNotNull { card ->
+            if (!legacyIds.add(card.id)) return@mapNotNull null
+            val row = installedById[card.id]
+            val newer = row != null &&
+                IntegrationsWire.isNewerVersion(card.version, row.version)
+            val state: com.floe.android.feature.integrations.CatalogCardStateUi = when {
+                card.offer == "incompatible" -> com.floe.android.feature.integrations
+                    .CatalogCardStateUi.Unavailable(
+                        actionString(R.string.plugins_requires_newer_app))
+                card.offer != "installable" -> com.floe.android.feature.integrations
+                    .CatalogCardStateUi.Unavailable(
+                        actionString(R.string.plugins_catalog_unavailable))
+                row == null -> com.floe.android.feature.integrations
+                    .CatalogCardStateUi.NotInstalled
+                newer -> com.floe.android.feature.integrations
+                    .CatalogCardStateUi.UpdateTo(card.version)
+                !row.enabled -> com.floe.android.feature.integrations
+                    .CatalogCardStateUi.InstalledNeedsEnable
+                else -> com.floe.android.feature.integrations
+                    .CatalogCardStateUi.InstalledReady
+            }
+            SkillCatalogCardUi(
+                skillId = card.id,
+                name = localizedText(card.name),
+                version = card.version,
+                summary = localizedText(card.description),
+                state = state,
+            )
+        }
+        val cards = legacyCards + curatedCards
 
         // Reconcile the staged-review map: every live native review has a
         // snapshot row with the REAL echoed revision; reviews that vanished
@@ -543,6 +578,15 @@ class IntegrationsHostController internal constructor(
             .getOrDefault("en")
         return notes.entries.firstOrNull { it.key.startsWith(locale) }?.value
             ?: notes.entries.firstOrNull()?.value
+    }
+
+    private fun localizedText(texts: Map<String, String>): String {
+        if (texts.isEmpty()) return ""
+        val locale = runCatching { java.util.Locale.getDefault().language }
+            .getOrDefault("en")
+        return texts.entries.firstOrNull { it.key.startsWith(locale) }?.value
+            ?: texts["en"]
+            ?: texts.values.firstOrNull().orEmpty()
     }
 
     /** Rewrite-model choices from the ACTUAL configured-and-usable model
@@ -2760,11 +2804,27 @@ internal object IntegrationsWire {
         val releaseNotes: Map<String, String>,
     )
 
+    /** One verified schemaVersion-3 full-catalog card from `curated.cards`.
+     *  Display text is the feed's bilingual name/description; offer state is
+     *  the host's compatibility verdict, never derived in the UI. */
+    class CuratedCard(
+        val id: String,
+        val version: String,
+        val name: Map<String, String>,
+        val description: Map<String, String>,
+        val offer: String,
+        val offerReason: String?,
+        val updateAvailable: Boolean,
+    )
+
     class SkillsSnapshotPage(
         val installed: List<SkillInstalledRowUi>,
         val catalogEntries: List<CatalogEntry>,
         val catalogState: String,
         val catalogLastFailure: String?,
+        val curatedCards: List<CuratedCard>,
+        val curatedState: String?,
+        val curatedLastFailure: String?,
         val pendingReviewRows: List<PendingReviewRow>,
         val autoScriptedUpdates: Boolean,
         val settingsRevision: String?,
@@ -2849,11 +2909,38 @@ internal object IntegrationsWire {
             ?.string("version")?.takeIf { it.isNotEmpty() }
         val nextCursor = (root["nextCursor"] as? JsonPrimitive)
             ?.takeIf { it.isString }?.contentOrNull
+        val curated = root["curated"] as? JsonObject
+        val curatedCards = (curated?.get("cards") as? JsonArray)?.mapNotNull { element ->
+            val obj = element as? JsonObject ?: return@mapNotNull null
+            val id = obj.string("id") ?: return@mapNotNull null
+            val name = (obj["name"] as? JsonObject)?.let {
+                mapOf("en" to (it.string("en") ?: id),
+                      "zh-Hans" to (it.string("zh-Hans") ?: ""))
+            } ?: mapOf("en" to id)
+            val description = (obj["description"] as? JsonObject)?.let {
+                mapOf("en" to (it.string("en") ?: ""),
+                      "zh-Hans" to (it.string("zh-Hans") ?: ""))
+            } ?: emptyMap()
+            CuratedCard(
+                id = id,
+                version = obj.string("version") ?: "",
+                name = name,
+                description = description,
+                offer = obj.string("offer") ?: "unavailable",
+                offerReason = (obj["offerReason"] as? JsonPrimitive)
+                    ?.takeIf { it.isString }?.contentOrNull,
+                updateAvailable = obj.bool("updateAvailable") ?: false,
+            )
+        } ?: emptyList()
         return SkillsSnapshotPage(
             installed = installed,
             catalogEntries = entries,
             catalogState = catalogState,
             catalogLastFailure = (catalog?.get("lastFailure") as? JsonPrimitive)
+                ?.takeIf { it.isString }?.contentOrNull,
+            curatedCards = curatedCards,
+            curatedState = curated?.string("state"),
+            curatedLastFailure = (curated?.get("lastFailure") as? JsonPrimitive)
                 ?.takeIf { it.isString }?.contentOrNull,
             pendingReviewRows = pending,
             autoScriptedUpdates = settings?.bool("autoScriptedUpdates") ?: false,
