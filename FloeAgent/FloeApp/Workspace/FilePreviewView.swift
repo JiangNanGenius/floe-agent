@@ -548,16 +548,15 @@ struct FilePreviewView: View {
                         let legacySurface = message.contains("IGES surfaces are not solids")
                         let geometryClass = proposal.preview.importGeometryClass
                             ?? (isMesh ? "mesh" : legacySurface ? "surface" : "solid")
-                        let geometryLabel: String
-                        switch geometryClass {
+                        let geometryLabel: String = switch geometryClass {
                         case "mesh":
-                            geometryLabel = String(localized: "cad.native.import_geometry_mesh")
+                            String(localized: "cad.native.import_geometry_mesh")
                         case "surface":
-                            geometryLabel = String(localized: "cad.native.import_geometry_surface")
+                            String(localized: "cad.native.import_geometry_surface")
                         case "mixed":
-                            geometryLabel = String(localized: "cad.native.import_geometry_mixed")
+                            String(localized: "cad.native.import_geometry_mixed")
                         default:
-                            geometryLabel = String(localized: "cad.native.import_geometry_solid")
+                            String(localized: "cad.native.import_geometry_solid")
                         }
                         Text(String(format: String(localized: "cad.native.import_detail"),
                                     spec.fileName ?? spec.sourceRelativePath,
