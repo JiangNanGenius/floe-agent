@@ -147,7 +147,7 @@ final class CADAnimationAuthoringTests: XCTestCase {
         // the unknown member. That is exactly why the record cannot stay
         // schema 1: if that reader rewrites the key it drops the curve. The
         // version contract below is the protection, not the additive decode.
-        struct LegacyKeyframe: Decodable {
+        struct LegacyKeyframe: Codable {
             let id: UUID
             let time: Double
             let interpolation: CADAnimationInterpolation
