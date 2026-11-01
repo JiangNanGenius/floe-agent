@@ -1892,6 +1892,10 @@ final class DocumentSession {
                                  name: $0.name, suppressed: $0.suppressed,
                                  kind: $0.kindData, outputBodyIDs: $0.outputBodyIDData)
             },
+            bodies: project.bodies.map {
+                CADBodyRecord(bodyID: $0.bodyID, name: $0.name, transform: $0.transformData,
+                              isHidden: $0.isHidden, faceMaterials: $0.faceMaterialsData)
+            },
             drawings: project.drawingsData,
             animation: project.animationData)
         project.hasOpaqueAssociations = project.hasOpaqueAssociations || associationAssessment?.isOpaqueReadOnly == true
