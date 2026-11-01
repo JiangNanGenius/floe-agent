@@ -1051,7 +1051,7 @@ targets:
       # the actual modules the App already links; registering them requires
       # `bash FloeAgent/scripts/gen_project.sh` in the same apply step.
       #   * B runtime/persistence/execution cases use the shared helpers in
-      #     Tests/FloeAgentRuntimeTests/AgentRuntimeTests.swift (already
+      #     Tests/FloeAgentRuntimeTests/RuntimeTestDoubles.swift (already
       #     registered in this target) — no duplicated test helpers.
       #   * D's App-level native CAD closure suite runs against the real
       #     FloeCAD engine (FloeCADKit product already linked).
@@ -1139,9 +1139,11 @@ targets:
       # the TEST-ONLY FloeTestSupport product (mock adapters). Real Runtime
       # issuer/child/local-guest/repository policy cases run with the warm
       # App graph; the App target never depends on the test product.
-      # AgentRuntimeTests.swift supplies the shared mock helpers that the
-      # runtime fixture uses (no duplicated parallel helpers).
+      # RuntimeTestDoubles.swift supplies the original shared helpers; keep
+      # them in the same App test module after their source-file move.
       - path: Tests/FloeAgentRuntimeTests/AgentRuntimeTests.swift
+      - path: Tests/FloeAgentRuntimeTests/RuntimeTestDoubles.swift
+      - path: Tests/FloeAgentRuntimeTests/ModelUserInputProjectionTests.swift
       - path: Tests/FloeAgentRuntimeTests/DeterministicLocalApprovalRuntimeTests.swift
       # D (coordinator preference): the two ZIPFoundation-backed Office suites
       # run in the same App test bundle. The package below is the ALREADY
