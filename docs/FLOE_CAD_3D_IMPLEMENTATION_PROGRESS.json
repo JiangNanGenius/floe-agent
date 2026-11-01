@@ -2041,7 +2041,8 @@
         "status": "partial_atomic_selection_and_receipts_actual_App_verified",
         "source_changes": [
           "47d8110bda8e669c8973100cddce9baae1168d1d",
-          "531fb22707f7162bfb897d692f982163e8b7e4ab"
+          "531fb22707f7162bfb897d692f982163e8b7e4ab",
+          "2921b0d4160579fe964ed84575ced9683be4fb13"
         ],
         "verification": [
           {
@@ -2050,6 +2051,16 @@
             "passed": 18,
             "failed": 0,
             "skipped": 0,
+            "physical_device": false
+          },
+          {
+            "source": "2921b0d4160579fe964ed84575ced9683be4fb13",
+            "scope": "Actual App legacy mesh atomic invalid-tool refusal and quantified concave BRep/mesh behavior; all prior18 regression cases included",
+            "passed": 20,
+            "failed": 0,
+            "skipped": 0,
+            "exact_volume_tolerance_mm3": 0.0001,
+            "mesh_volume_tolerance_mm3": 0.15,
             "physical_device": false
           }
         ],
@@ -2086,7 +2097,7 @@
         ],
         "notes": [],
         "evidence_level": "baseline_plus_verified_delta",
-        "verified_delta": "Actual App168/native16818/18 closes skipped invalid-edge and named-lookalike fallback; complete index receipts, duplicate picks and atomic undo/save-reopen pass. Advanced radius/chamfer/concave clauses remain.",
+        "verified_delta": "Actual App169/native16920/20 closes native/legacy skipped selections and named-lookalike fallback; complete receipts, atomic undo/save-reopen, and quantified actual concave exact/mesh behavior pass. Advanced radius/chamfer clauses remain.",
         "acceptance_pending": "多边圆角明确列全部处理/拒绝的边；支持所需两距离倒角/变半径作为扩展，凹边行为与精确等级清楚。"
       }
     },
@@ -8340,7 +8351,7 @@
     "license_delta": "GLTFKit2 ownMIT/cgltfMIT do notclear precompiled libktx4.2.1 etcdec exception; prefer existing O3DV+same-r176 localGLTFLoader qualification"
   },
   "current_integration_verification": {
-    "source": "531fb22707f7162bfb897d692f982163e8b7e4ab",
+    "source": "2921b0d4160579fe964ed84575ced9683be4fb13",
     "all_106_retained": true,
     "all_106_accepted": false,
     "release_ready": false,
@@ -8412,11 +8423,11 @@
       "scope": "Actual App/native and real prepaid vision model; no physical-device performance or release claim."
     },
     "latest_edge_blend_batch": {
-      "source": "531fb22707f7162bfb897d692f982163e8b7e4ab",
-      "passed": 18,
+      "source": "2921b0d4160579fe964ed84575ced9683be4fb13",
+      "passed": 20,
       "failed": 0,
       "skipped": 0,
-      "scope": "Exact named/mixed/legacy edge selection; whole-operation failure, complete receipts, undo/redo/reopen and existing hole/variable/name regression. Whole M21/M26 remain pending."
+      "scope": "Atomic exact and mesh blend selections, complete receipts, actual quantified concave geometry, undo/redo/reopen and11adjacent regressions. Advanced M21/M26 pending."
     }
   }
 }
