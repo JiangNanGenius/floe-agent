@@ -2133,7 +2133,7 @@ def main(argv: list | None = None) -> int:
     )
     inputs = PublicationInputs(
         ipa=Path(args.ipa).expanduser(),
-        sidecar=Path(args.sha256).expanduser() if args.sha256 else None,
+        sidecar=Path(args.sidecar).expanduser() if args.sidecar else None,
         summary=Path(args.public_summary).expanduser(),
         notes=Path(args.notes).expanduser(),
         receipt=Path(args.qualification_receipt).expanduser(),

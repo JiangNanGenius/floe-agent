@@ -7,6 +7,7 @@ import json
 import sys
 import tempfile
 import unittest
+from unittest import mock
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -24,6 +25,17 @@ class PublisherTests(unittest.TestCase):
 
     def tearDown(self) -> None:
         self.temporary.cleanup()
+
+    def test_cli_sidecar_argument_reaches_publisher(self) -> None:
+        args = ["--ipa", str(self.fixture.ipa), "--sha256", str(self.fixture.sidecar),
+                "--public-summary", str(self.fixture.summary), "--notes", str(self.fixture.notes),
+                "--qualification-receipt", str(self.fixture.receipt), "--version", "1.0.0",
+                "--build", "18", "--source-ref", "a" * 40, "--check"]
+        with mock.patch.object(pub.Publisher, "run", return_value=(0, {"ok": True})) as run:
+            with mock.patch.object(pub.Publisher, "__init__", return_value=None) as construct:
+                self.assertEqual(pub.main(args), 0)
+                self.assertEqual(construct.call_args.args[0].sidecar, self.fixture.sidecar)
+                run.assert_called_once()
 
     def run_publisher(self, *, publish=False, client=None, verifier=None, downloader=None, inputs=None):
         publisher, client, verifier, downloader = support.make_publisher(
