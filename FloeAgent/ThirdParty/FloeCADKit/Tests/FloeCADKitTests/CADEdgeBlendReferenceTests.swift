@@ -321,4 +321,120 @@ final class CADEdgeBlendReferenceTests: XCTestCase {
         XCTAssertLessThan(abs(OCCTKernel.volume(try XCTUnwrap(
             reopened.session.document.bodies.first?.brep))), 8_000)
     }
+
+    func testHistoryCannotPreselectALookalikeForAMissingNamedEdge() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("FloeEdgeHistory-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let document = try await FloeCADDocument.create(at: root.appendingPathComponent("Part.floecad"), name: "Edge history")
+        defer { document.close() }
+        let f = try fixture()
+        document.session.perform(AddSketchCommand(sketch: f.sketch))
+        document.session.recordAndRebuild([f.source], title: "Source")
+        var lost = f.edges[0].reference
+        var name = try XCTUnwrap(lost.faceNames)
+        name.faceA.creator = FeatureID()
+        lost.faceNames = name
+        let node = blend(f, refs: [lost], fillet: true)
+        // Preserve an explicitly broken history operand; the consumed box
+        // still has an indistinguishable geometric edge at the old position.
+        document.session.record(node)
+        let count = document.session.undoStack.undoCommands.count
+        let model = document.viewModel()
+        _ = model.beginBlendEdit(node.id)
+        XCTAssertTrue(model.blendSelectedEdges.isEmpty,
+                      "History must not turn a lost identity into a geometric replacement")
+        XCTAssertNotNil(model.errorMessage)
+        XCTAssertEqual(document.session.undoStack.undoCommands.count, count)
+        XCTAssertEqual(abs(OCCTKernel.volume(try XCTUnwrap(document.session.document.bodies.first?.brep))),
+                       8_000, accuracy: 1e-4)
+    }
+
+    func testRemovedMemberOfARealTwoEdgeFamilyCannotRoundTheSurvivingEdge() throws {
+        let leftCircle = UUID(), rightCircle = UUID()
+        // Put each periodic seam outside the visible arc of the lens. This
+        // leaves two actual named cylindrical walls meeting at two edges,
+        // rather than a seam splitting one wall into separately named faces.
+        let left = Sketch(name: "Left", plane: SketchPlane(origin: SIMD3(-5, 0, 0),
+            xAxis: SIMD3(-1, 0, 0), yAxis: SIMD3(0, 0, 1)),
+            entities: [.circle(id: leftCircle, center: .zero, radius: 10)])
+        let right = Sketch(name: "Right", plane: SketchPlane(origin: SIMD3(5, 0, 0),
+            xAxis: SIMD3(1, 0, 0), yAxis: SIMD3(0, 0, -1)),
+            entities: [.circle(id: rightCircle, center: .zero, radius: 10)])
+        let body = BodyID(), other = BodyID()
+        func cylinder(_ sketch: Sketch, entity: UUID, output: BodyID) -> FeatureNode {
+            FeatureNode(name: sketch.name, kind: .extrude(
+                profile: ProfileRef(sketchID: sketch.id, entityIDs: [entity], holeEntityIDs: [], seedPoint: .zero),
+                plane: PlaneRef(source: .sketch(sketch.id)), distance: Expr(value: 20),
+                symmetric: false, boolean: BooleanIntent(op: .newBody, resolvedTargets: []), extraProfiles: []),
+                outputBodyIDs: [output])
+        }
+        let a = cylinder(left, entity: leftCircle, output: body)
+        let b = cylinder(right, entity: rightCircle, output: other)
+        let intersect = FeatureNode(name: "Lens", kind: .boolean(kind: .intersect,
+            target: BodyRef(producer: a.id, bodyID: body), tools: [BodyRef(producer: b.id, bodyID: other)]),
+            outputBodyIDs: [body])
+        func evaluateNodes(_ nodes: [FeatureNode]) -> EvalResult {
+            FeatureGraph(nodes: nodes).evaluate(sketches: [left, right], planes: [], naming: SignatureNaming()) {
+                self.revision += 1
+                return self.revision
+            }
+        }
+        let prefix = [a, b, intersect]
+        let initial = evaluateNodes(prefix)
+        XCTAssertTrue(initial.errors.isEmpty, "\(initial.errors)")
+        let original = try XCTUnwrap(initial.bodies.first { $0.id == body })
+        let brep = try XCTUnwrap(original.brep)
+        let nativeNames = try XCTUnwrap(initial.kernelNames[body])
+        let adjacency = OCCTKernel.edgeFaceAdjacency(brep)
+        // This deliberately describes the shipped legacy representation:
+        // an ordinal among edges between the same two named faces.
+        var families: [EdgeName: [Int]] = [:]
+        for edge in adjacency.sorted(by: { $0.edge < $1.edge }) {
+            guard let faceA = nativeNames[edge.faceA], let faceB = nativeNames[edge.faceB] else { continue }
+            families[EdgeName(faceA: faceA, faceB: faceB, occurrence: 0), default: []].append(edge.edge)
+        }
+        let family = try XCTUnwrap(families.first { $0.value.count == 2 },
+                                  "Fixture must contain the actual two-edge family")
+        let selectedIndex = try XCTUnwrap(family.value.first)
+        let selected = try XCTUnwrap(EdgeTopology.selectableEdges(from: original.render).first {
+            let midpoint = $0.midpoint
+            return OCCTKernel.nearestEdgeIndex(brep,
+                to: SIMD3(Double(midpoint.x), Double(midpoint.y), Double(midpoint.z)),
+                tolerance: OCCTKernel.matchTolerance(for: brep)) == selectedIndex
+        })
+        let signature = EdgeTopology.signature(of: selected)
+        guard abs(signature.direction.y) > 0.99, abs(signature.length - 20) < 1e-4 else {
+            XCTFail("The selected family must be the two vertical lens intersections")
+            throw NSError(domain: "LensFixture", code: 1)
+        }
+        let oldRef = EdgeRef(body: BodyRef(producer: intersect.id, bodyID: body),
+                            signature: signature, faceNames: family.key)
+        let cutterBody = BodyID()
+        let cutter = FeatureNode(name: "Remove selected seam", kind: .primitive(
+            spec: .box(width: 40, depth: 20, height: 30),
+            placement: Transform3D(translation: SIMD3(0, -5, signature.midpoint.z > 0 ? 15 : -15))),
+            outputBodyIDs: [cutterBody])
+        let cut = FeatureNode(name: "Trim lens", kind: .boolean(kind: .subtract,
+            target: BodyRef(producer: intersect.id, bodyID: body),
+            tools: [BodyRef(producer: cutter.id, bodyID: cutterBody)]), outputBodyIDs: [body])
+        let trimmedNodes = prefix + [cutter, cut]
+        let trimmed = evaluateNodes(trimmedNodes)
+        XCTAssertTrue(trimmed.errors.isEmpty, "\(trimmed.errors)")
+        let input = try XCTUnwrap(trimmed.bodies.first { $0.id == body })
+        let inputBRep = try XCTUnwrap(input.brep)
+        XCTAssertNil(OCCTKernel.nearestEdgeIndex(inputBRep, to: signature.midpoint,
+                                               tolerance: OCCTKernel.matchTolerance(for: inputBRep)))
+        let fillet = FeatureNode(name: "Original seam fillet", kind: .fillet(
+            body: oldRef.body, edges: [oldRef], radius: Expr(value: 1)), outputBodyIDs: [body])
+        let actual = evaluateNodes(trimmedNodes + [fillet])
+        let inputVolume = abs(OCCTKernel.volume(inputBRep))
+        let resultVolume = abs(OCCTKernel.volume(try XCTUnwrap(actual.bodies.first { $0.id == body }?.brep)))
+        let evidence = XCTAttachment(string: "Actual OCCT lens; removed edge index=\(selectedIndex), midpoint=\(signature.midpoint); input volume=\(inputVolume), output=\(resultVolume), errors=\(actual.errors)")
+        evidence.name = "real-removed-two-edge-family.txt"
+        evidence.lifetime = .keepAlways
+        add(evidence)
+        XCTAssertNotNil(actual.errors[fillet.id], "A removed identity must not become the surviving ordinal-zero edge")
+        XCTAssertEqual(resultVolume, inputVolume, accuracy: 1e-4)
+    }
 }
