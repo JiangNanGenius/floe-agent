@@ -59,31 +59,57 @@ nonisolated struct CADFaceMaterialBinding: Codable, Equatable, Sendable {
 /// never used as identity across a rebuild. Authoring/model digests exclude
 /// this derived cache, while the ordinary package content digest covers it.
 nonisolated struct CADFaceNamingSnapshot: Codable, Sendable {
-    var version: Int = 1
+    var version: Int = 2
     var bodyID: BodyID
     var meshSHA256: String
     var brepSHA256: String
+    /// Proves the deserialized kernel's actual face numbering and partitions.
+    /// This is a cold-load cache check, never an identity across a rebuild.
+    var nativePartitionSHA256: String
     var table: FaceTable
 
     private static func digest(_ data: Data) -> String {
         SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
     }
 
+    private static func nativePartition(_ handle: BRepHandle)
+        -> (render: RenderMesh, channel: [UInt32], sha256: String) {
+        let native = OCCTKernel.renderMesh(from: handle)
+        let render = RenderMesh(positions: native.positions, normals: native.normals, indices: native.indices)
+        let channel = OCCTKernel.renderMeshFaceChannel(from: handle)
+        var hasher = SHA256()
+        hasher.update(data: Data("FloeCAD.NativeFacePartition.v1".utf8))
+        hasher.update(data: MeshBlob.encode(render))
+        withUnsafeBytes(of: UInt64(channel.count).littleEndian) { hasher.update(data: Data($0)) }
+        channel.map(\.littleEndian).withUnsafeBufferPointer { hasher.update(data: Data(buffer: $0)) }
+        let hash = hasher.finalize().map { String(format: "%02x", $0) }.joined()
+        return (render, channel, hash)
+    }
+
+    private static func sameGeometry(_ lhs: RenderMesh, _ rhs: RenderMesh) -> Bool {
+        lhs.positions == rhs.positions && lhs.normals == rhs.normals && lhs.indices == rhs.indices
+    }
+
     static func encode(table: FaceTable, body: Body, mesh: Data, brep: Data?) -> Data? {
-        guard let brep, body.brep != nil, table.nativeBodyID == body.id,
+        guard let brep, let handle = body.brep, table.nativeBodyID == body.id,
               table.nativeMeshRevision == body.meshRevision else { return nil }
+        let native = nativePartition(handle)
+        if let channel = table.nativeFaceChannel {
+            guard channel == native.channel, sameGeometry(native.render, body.render) else { return nil }
+        }
         var stable = table
         // Session revision counters change on open/undo, not authoring intent.
         stable.nativeMeshRevision = 0
-        let value = Self(bodyID: body.id, meshSHA256: digest(mesh), brepSHA256: digest(brep), table: stable)
+        let value = Self(bodyID: body.id, meshSHA256: digest(mesh), brepSHA256: digest(brep),
+            nativePartitionSHA256: native.sha256, table: stable)
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys]
         return try? encoder.encode(value)
     }
 
     static func restore(_ data: Data, body: Body, mesh: Data, brep: Data?) -> FaceTable? {
-        guard let brep, body.brep != nil,
-              let saved = try? JSONDecoder().decode(Self.self, from: data), saved.version == 1,
+        guard let brep, let handle = body.brep,
+              let saved = try? JSONDecoder().decode(Self.self, from: data), saved.version == 2,
               saved.bodyID == body.id, saved.table.nativeBodyID == body.id,
               saved.table.nativeMeshRevision == 0,
               saved.meshSHA256 == digest(mesh), saved.brepSHA256 == digest(brep),
@@ -94,6 +120,11 @@ nonisolated struct CADFaceNamingSnapshot: Codable, Sendable {
               }),
               saved.table.nativeFaceChannel == nil
                 || saved.table.nativeFaceChannel?.count == body.render.triangleCount else { return nil }
+        let native = nativePartition(handle)
+        guard native.sha256 == saved.nativePartitionSHA256 else { return nil }
+        if let channel = saved.table.nativeFaceChannel {
+            guard channel == native.channel, sameGeometry(native.render, body.render) else { return nil }
+        }
         var restored = saved.table
         // Exact saved-byte ownership was checked above, independently of a
         // previous process's session counter.

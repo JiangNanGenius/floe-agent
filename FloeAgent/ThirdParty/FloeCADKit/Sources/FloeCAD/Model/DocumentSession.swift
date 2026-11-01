@@ -145,6 +145,8 @@ final class DocumentSession {
 
     private struct PreparedFaceRangeTable {
         var meshRevision: UInt64
+        var render: RenderMesh
+        var brep: BRepHandle?
         var table: FaceTable
     }
 
@@ -162,12 +164,17 @@ final class DocumentSession {
     /// it reuses the cached table across view refreshes until the body's mesh
     /// revision actually changes.
     func faceRangeTable(for body: Body, preparingForAssignment: Bool = false) -> FaceTable? {
+        // Callers may hold a value copy. A matching numeric generation alone
+        // cannot lend the current document's names to another render/handle.
+        guard let current = document.body(with: body.id), current.meshRevision == body.meshRevision,
+              current.render == body.render, current.brep === body.brep else { return nil }
         let liveTable = lastNamingRevisions[body.id] == body.meshRevision ? lastFaceTables[body.id] : nil
         if let liveTable, liveTable.nativeFaceSignatures != nil { return liveTable }
         guard preparingForAssignment || !body.materialFaceBindings.isEmpty else { return liveTable }
         guard body.brep != nil else { return liveTable }
         if let prepared = preparedFaceRangeTables[body.id],
-           prepared.meshRevision == body.meshRevision {
+           prepared.meshRevision == body.meshRevision,
+           prepared.render == body.render, prepared.brep === body.brep {
             return prepared.table.entries.isEmpty ? nil : prepared.table
         }
         // Validate only when preparing a new revision, rather than walking
@@ -184,7 +191,7 @@ final class DocumentSession {
         let table = CADFaceNamingSnapshot.prepare(liveTable ?? SignatureNaming.currentFaceTable(for: body),
             for: body, names: liveTable == nil ? nil : lastKernelNames[body.id])
         preparedFaceRangeTables[body.id] = PreparedFaceRangeTable(
-            meshRevision: body.meshRevision, table: table)
+            meshRevision: body.meshRevision, render: body.render, brep: body.brep, table: table)
         return table.entries.isEmpty ? nil : table
     }
 
@@ -1127,6 +1134,14 @@ final class DocumentSession {
     /// describe, from the DOCUMENT's post-apply state.
     private func captureNamingRevisions<S: Sequence>(for ids: S) where S.Element == BodyID {
         let wanted = Set(ids)
+        if !preparedFaceRangeTables.isEmpty {
+            let current = Dictionary(uniqueKeysWithValues: document.bodies.map { ($0.id, $0) })
+            preparedFaceRangeTables = preparedFaceRangeTables.filter { id, cache in
+                guard let body = current[id] else { return false }
+                return cache.meshRevision == body.meshRevision
+                    && cache.render == body.render && cache.brep === body.brep
+            }
+        }
         for body in document.bodies where wanted.contains(body.id) {
             if let table = lastFaceTables[body.id] {
                 lastFaceTables[body.id] = table.rebindingNativeRevision(afterOwnedRestore: body)
@@ -1977,7 +1992,8 @@ final class DocumentSession {
             if let cache = persisted.faceNamingSnapshotData,
                let table = CADFaceNamingSnapshot.restore(cache, body: body,
                    mesh: persisted.meshData, brep: persisted.brepData) {
-                restoredFaceRanges[body.id] = PreparedFaceRangeTable(meshRevision: body.meshRevision, table: table)
+                restoredFaceRanges[body.id] = PreparedFaceRangeTable(meshRevision: body.meshRevision,
+                    render: body.render, brep: body.brep, table: table)
             }
             loaded.bodies.append(body)
         }

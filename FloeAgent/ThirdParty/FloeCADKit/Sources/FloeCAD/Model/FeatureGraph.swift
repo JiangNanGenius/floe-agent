@@ -2337,18 +2337,16 @@ nonisolated extension FeatureGraph {
     /// in an identity `Body` and fed straight to `KernelOps.boolean`.
     /// Emit a whole-solid feature's result.
     ///
-    /// `brep` is the ANALYTIC solid when the op could build one. It is adopted
-    /// rather than merely stored, so the rendered mesh comes from OCCT's
-    /// tessellation of the exact shape — a revolved circle then renders as a
-    /// true torus instead of a 48-gon approximation, and every downstream
-    /// fillet, boolean and STEP export stays exact. Nil keeps the Euclid mesh
-    /// exactly as before, which is what a sweep along a path OCCT refuses, or
-    /// a loft with holes, still needs.
+    /// `brep` is the exact solid when the operation could build one. Sweep
+    /// adopts its native render so face materials and History use the actual
+    /// same partitions; other operations retain their existing render policy.
+    /// Nil keeps the mesh-only path, including unsupported paths/holed lofts.
     private func emitFullSolid(
         _ node: FeatureNode,
         mesh: Euclid.Mesh,
         brep: BRepHandle? = nil,
         kernelNames: [Int: ElementName] = [:],
+        nativeRender: Bool = false,
         boolean: BooleanIntent,
         scheme: FaceScheme,
         into state: inout EvalState,
@@ -2368,26 +2366,26 @@ nonisolated extension FeatureGraph {
                 id: id, name: node.name, transform: .identity, primitive: nil,
                 euclidMesh: mesh, revision: nextRevision())
             if OCCTKernel.useOCCTAsSourceOfTruth, let brep {
-                // ASSIGN, do not adopt. Adopting would replace the render with
-                // OCCT's own tessellation, and for a revolved circle that is
-                // 49,928 triangles against the Euclid mesh's 4,608 — measured.
-                // The naming pass that follows scales badly in the triangle
-                // count (`faceTable` already takes ~65 s on the 4,608-triangle
-                // version), so adopting turns a slow step into an unusable one.
-                //
-                // Assigning gets what this work is actually for: the body
-                // carries an exact solid, so STEP export, analytic fillets and
-                // OCCT booleans all work on it. The render stays the mesh the
-                // user already saw. Same split the box primitive uses.
-                body.brep = brep
+                if nativeRender {
+                    guard body.adoptBRep(brep) else {
+                        state.errors[node.id] = .kernelFailure("native solid could not be tessellated")
+                        return
+                    }
+                } else {
+                    // Preserve the existing revolve/loft tessellation policy;
+                    // it cannot claim a native face-to-render channel.
+                    body.brep = brep
+                }
             }
-            let table = state.naming.faceTable(for: body, createdBy: node.id, scheme: scheme)
+            var table = state.naming.faceTable(for: body, createdBy: node.id, scheme: scheme)
+            if nativeRender, let brep = body.brep {
+                table = ElementNaming.attach(kernelNames, to: table,
+                    channel: OCCTKernel.renderMeshFaceChannel(from: brep), body: body)
+            }
             state.put(body, table: table)
             // The COMPOSABLE identity layer (kernel-face indices → names).
-            // No table attach here: the render is NOT the kernel
-            // tessellation, so the triangle channel cannot align — but the
-            // kernel-side consumers (/v1/faces, identity blends, boolean
-            // composition) key on indices and work regardless.
+            // Non-native renders keep only the composable map; their triangle
+            // indices cannot borrow the kernel tessellation's face channel.
             if body.brep != nil, !kernelNames.isEmpty {
                 state.kernelNames[id] = kernelNames
             }
@@ -2789,6 +2787,7 @@ nonisolated extension FeatureGraph {
             brep = solid
         }
         emitFullSolid(node, mesh: mesh, brep: brep, kernelNames: names,
+                      nativeRender: true,
                       boolean: boolean, scheme: .generic,
                       into: &state, next: nextRevision)
     }

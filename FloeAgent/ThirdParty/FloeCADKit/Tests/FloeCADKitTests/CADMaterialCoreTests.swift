@@ -614,6 +614,21 @@ final class CADMaterialCoreTests: XCTestCase {
         invalid = snapshot; invalid.table.nativeFaceChannel = []
         XCTAssertNil(CADFaceNamingSnapshot.restore(try JSONEncoder().encode(invalid),
             body: body, mesh: mesh, brep: brep))
+        invalid = snapshot; invalid.nativePartitionSHA256 = String(repeating: "0", count: 64)
+        XCTAssertNil(CADFaceNamingSnapshot.restore(try JSONEncoder().encode(invalid),
+            body: body, mesh: mesh, brep: brep))
+        invalid = snapshot
+        var swappedChannel = try XCTUnwrap(invalid.table.nativeFaceChannel)
+        let other = try XCTUnwrap(swappedChannel.indices.first { swappedChannel[$0] != swappedChannel[0] })
+        swappedChannel.swapAt(0, other)
+        invalid.table.nativeFaceChannel = swappedChannel
+        XCTAssertEqual(swappedChannel.count, snapshot.table.nativeFaceChannel?.count)
+        XCTAssertNil(CADFaceNamingSnapshot.restore(try JSONEncoder().encode(invalid),
+            body: body, mesh: mesh, brep: brep),
+            "Equal stored byte hashes and triangle counts do not authorize a changed native partition")
+        invalid = snapshot; invalid.version = 1
+        XCTAssertNil(CADFaceNamingSnapshot.restore(try JSONEncoder().encode(invalid),
+            body: body, mesh: mesh, brep: brep), "An obsolete advisory cache must be ignored")
         let originalManifest = try CADAssociativeFormatFixture.manifest(url)
         document.close()
         let valid = try await FloeCADDocument.open(at: url)
@@ -988,8 +1003,8 @@ final class CADMaterialCoreTests: XCTestCase {
         let diskBefore = try XCTUnwrap(identityBefore)
         XCTAssertNil(reopened.session.lastFaceTables[body.id])
 
-        // Explicit malformed INPUT snapshots, before a cold cache has been
-        // admitted. The actual document and its persisted render stay intact.
+        // Explicit malformed INPUT value copies. Neither a warm nor a cold
+        // range cache may admit them by their unchanged ID/revision alone.
         var badPosition = body
         badPosition.render.positions[0].x = .nan
         XCTAssertNil(reopened.session.faceRangeTable(for: badPosition))
@@ -999,6 +1014,13 @@ final class CADMaterialCoreTests: XCTestCase {
         var badIndex = body
         badIndex.render.indices[0] = .max
         XCTAssertNil(reopened.session.faceRangeTable(for: badIndex))
+        var changedFiniteRender = body
+        changedFiniteRender.render.positions[0].x += 1
+        XCTAssertNil(reopened.session.faceRangeTable(for: changedFiniteRender))
+        var foreignHandle = body
+        foreignHandle.brep = try XCTUnwrap(OCCTKernel.primitiveShape(
+            .box(width: 100, depth: 60, height: 10), placement: .identity))
+        XCTAssertNil(reopened.session.faceRangeTable(for: foreignHandle))
 
         let valid = try XCTUnwrap(reopened.session.faceRangeTable(for: body))
         XCTAssertFalse(valid.entries.isEmpty,
