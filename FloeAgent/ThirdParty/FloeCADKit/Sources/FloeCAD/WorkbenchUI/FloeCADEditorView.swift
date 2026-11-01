@@ -124,15 +124,6 @@ struct MeshExportOptionsSheet: View {
         return supportsMaterials && includeMaterials && !(report?.isReady ?? false)
     }
 
-    private var requiresPartialChoice: Bool {
-        coverage?.requiresConfirmation == true
-    }
-
-    private var exportUnavailable: Bool {
-        guard formatName == "GLB" else { return false }
-        return (coverage?.includedCount ?? 0) == 0
-    }
-
     var body: some View {
         NavigationStack {
             Form {
