@@ -485,6 +485,36 @@ final class CADPresentationRenderController: NSObject, UIGestureRecognizerDelega
     }
 
     func apply(_ scene: CADPresentationScene) {
+        if let current = currentScene,
+           current.documentKey == scene.documentKey {
+            // A SwiftUI update can re-deliver the SAME scene while its build
+            // is still in flight (the store refresh schedules one and the
+            // capture test applies it directly too). Cancelling that build
+            // would run its cancellation handler, which resumes the waiters
+            // for this exact key as false and discards the stage the scene
+            // owner is waiting for. Treat an in-flight duplicate as
+            // idempotent; a failed/cancelled task still retries below.
+            if current.buildKey == scene.buildKey,
+               buildKey != scene.buildKey,
+               failedBuildKey != scene.buildKey,
+               let task = buildTask,
+               !task.isCancelled {
+                // Adopt the latest metadata (revision/name); the render
+                // inputs and stage identity are byte-identical.
+                currentScene = scene
+                currentBounds = scene.bounds
+                return
+            }
+            // A pending SwiftUI body can also carry an OLDER generation than
+            // the scene already requested. `changeCount` only moves forward
+            // for one live document (edits, undo/redo and load), so applying
+            // that value would retire the newer build and resume its waiters
+            // false; keep the requested owner. Same-generation scene changes
+            // still apply normally.
+            if scene.changeCount < current.changeCount {
+                return
+            }
+        }
         let previousKey = currentScene?.buildKey
         if previousKey != scene.buildKey { failedBuildKey = nil }
         currentScene = scene

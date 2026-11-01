@@ -874,9 +874,17 @@ final class CADViewOverlayPresentationTests: XCTestCase {
         let sectionedResult = try await CADPresentationEntityBuilder(
             cache: CADPresentationResourceCache()).build(scene: sectionedScene)
         let sectionedBounds = try XCTUnwrap(bodyBounds(in: sectionedResult))
-        XCTAssertGreaterThanOrEqual(sectionedBounds.min.x, 19.9,
-                                    "the real presented mesh starts at the cut")
-        XCTAssertGreaterThan(sectionedBounds.max.x, 39.9)
+        // `bodyBounds` reads the RealityKit stage in presentation metres while
+        // the persisted plane is authored at 20 mm. Convert the SAME intended
+        // thresholds (19.9 mm / 39.9 mm) instead of comparing units: this is
+        // not a relaxed cut and production geometry scaling is unchanged.
+        XCTAssertGreaterThanOrEqual(sectionedBounds.min.x, 0.0199,
+                                    "the real presented mesh starts at the 20 mm cut (metres)")
+        XCTAssertGreaterThan(sectionedBounds.max.x, 0.0399)
+        XCTAssertEqual(sectionedBounds.min.x, 0.02, accuracy: 1e-4,
+                       "the presented cut is the authored 20 mm plane")
+        XCTAssertEqual(sectionedBounds.max.x, 0.04, accuracy: 1e-4,
+                       "the kept half still reaches the authored 40 mm face")
         let guides = sectionedResult.stage.children.filter {
             $0.name.hasPrefix("CADPresentationMeasurementGuide")
         }
@@ -1340,7 +1348,8 @@ final class CADViewOverlayPresentCaptureTests: XCTestCase {
 
         XCTAssertEqual(controller.installedBuildKey, firstKey,
                        "the previous stage must still be mounted at this instant")
-        XCTAssertEqual(controller.requestedBuildKey, nextScene.buildKey)
+        XCTAssertEqual(controller.requestedBuildKey, nextScene.buildKey,
+                       "the real scene value is the current request before its build")
         XCTAssertFalse(controller.isStageCurrent(buildKey: firstKey),
                        "the installed-but-superseded stage is not the current scene")
         XCTAssertFalse(controller.isStageReady)
@@ -1368,10 +1377,24 @@ final class CADViewOverlayPresentCaptureTests: XCTestCase {
         XCTAssertEqual(controller.installedBuildKey, firstKey,
                        "the refusal happened while the old stage was installed")
 
+        // The store refresh has already scheduled a SwiftUI update carrying
+        // this same nextScene. It re-delivers B while this waiter is live; a
+        // duplicate request must not cancel B's build or resolve the waiter
+        // false (the native152 signature). No sleep is used here.
         let installed = await controller.awaitStage(buildKey: nextScene.buildKey)
         XCTAssertTrue(installed, "the requested scene must still install normally")
         XCTAssertEqual(controller.installedBuildKey, nextScene.buildKey)
         XCTAssertTrue(controller.isStageReady)
+
+        // A pending SwiftUI body can still deliver the pre-refresh scene value
+        // after B installed. That value is an older document generation, so it
+        // must be ignored instead of tearing the current stage down.
+        controller.apply(firstScene)
+        XCTAssertEqual(controller.requestedBuildKey, nextScene.buildKey,
+                       "an obsolete scene cannot become the requested owner")
+        XCTAssertEqual(controller.installedBuildKey, nextScene.buildKey)
+        XCTAssertTrue(controller.isStageReady,
+                      "the requested scene remains ready after the stale update")
     }
 }
 #endif

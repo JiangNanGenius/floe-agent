@@ -101,14 +101,26 @@ public extension FloeCADDocument {
         // Clearing an already-empty overlay must not push a schema-only undo
         // boundary onto an ordinary document.
         let clean = overlay.sanitized
-        if clean.isEmpty, viewOverlayState.isEmpty { return true }
+        if clean.isEmpty, viewOverlayState.isEmpty {
+            syncCachedViewModelViewOverlay()
+            return true
+        }
         let before = session.document.sceneSettingsData
         guard let after = CADViewOverlayCodec.settingsData(before, applying: overlay) else {
+            syncCachedViewModelViewOverlay()
             return false
         }
-        guard after != before else { return true }
+        guard after != before else {
+            syncCachedViewModelViewOverlay()
+            return true
+        }
         session.perform(SetSceneSettingsDataCommand(before: before, after: after))
-        return session.document.sceneSettingsData == after
+        let committed = session.document.sceneSettingsData == after
+        // The live editor mirror follows the authoritative bytes after both a
+        // successful commit and a refused write; the bytes never move to the
+        // mirror's stale value.
+        syncCachedViewModelViewOverlay()
+        return committed
     }
 
     /// Persist one section plane (or clear it with nil).
@@ -219,10 +231,19 @@ private extension FloeCADDocument {
         if session.writeBlock != nil { return false }
         let before = session.document.sceneSettingsData
         guard let after = CADViewOverlayCodec.settingsData(before, updating: update) else {
+            syncCachedViewModelViewOverlay()
             return false
         }
-        guard after != before else { return true }
+        guard after != before else {
+            syncCachedViewModelViewOverlay()
+            return true
+        }
         session.perform(SetSceneSettingsDataCommand(before: before, after: after))
-        return session.document.sceneSettingsData == after
+        let committed = session.document.sceneSettingsData == after
+        // Same authority rule as `applyViewOverlay`: a cached Section Off
+        // badge must see the persisted cut after a service/Present mutation,
+        // and a refused write must restore the mirror from the real bytes.
+        syncCachedViewModelViewOverlay()
+        return committed
     }
 }

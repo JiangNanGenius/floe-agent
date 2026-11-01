@@ -619,6 +619,16 @@ public final class FloeCADDocument {
         return model
     }
 
+    /// Keep the one cached editor mirror aligned when a facade/service/Present
+    /// API writes the shared `sceneSettings` overlay. The document bytes stay
+    /// the sole authority; this only refreshes the live Section Off/guide
+    /// mirror, exactly as entering Edit after Present already does. A section
+    /// drag in progress keeps its transient plane (`reloadViewOverlayFromDocument`
+    /// owns that guard).
+    func syncCachedViewModelViewOverlay() {
+        cachedViewModel?.reloadViewOverlayFromDocument()
+    }
+
     // MARK: Helpers
 
     private static func jsonEnvelope(ok: Bool, error: String, message: String) -> Data {

@@ -797,7 +797,7 @@ struct LocalCompleteContractSizingTests {
         #expect(apple.selectedTools.contains { $0.name == "apple.location.current" })
         #expect(apple.nativeToolSchemas.isEmpty)
         #expect(Set(apple.fallbackTools.map(\.name))
-            == ["apple.automation.list", "apple.location.current", CadDocumentTool.name])
+            == ["apple.automation.list", "apple.location.current", "cad.document"])
         #expect(apple.requiresToolCall)
     }
 
