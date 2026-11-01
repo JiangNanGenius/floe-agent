@@ -165,6 +165,89 @@ final class CADEdgeBlendReferenceTests: XCTestCase {
         }
     }
 
+    func testMeshBlendCannotSilentlySkipAnInvalidSelectedTool() throws {
+        let fixture = try fixture()
+        let body = try XCTUnwrap(evaluate(fixture).bodies.first)
+        let edge = try XCTUnwrap(EdgeTopology.selectableEdges(from: body.render).first)
+        func d(_ point: SIMD3<Float>) -> SIMD3<Double> {
+            SIMD3(Double(point.x), Double(point.y), Double(point.z))
+        }
+        let valid = BlendEdgeSpec(p0: d(edge.start), p1: d(edge.end),
+                                  normalA: d(edge.normalA), normalB: d(edge.normalB),
+                                  isConvex: edge.isConvex)
+        let invalid = BlendEdgeSpec(p0: d(edge.start), p1: d(edge.start),
+                                    normalA: d(edge.normalA), normalB: d(edge.normalB),
+                                    isConvex: edge.isConvex)
+        for fillet in [true, false] {
+            let mesh = body.euclidMesh()
+            let standalone = KernelOps.blendEdges(mesh: mesh, edges: [valid],
+                                                  amount: 1, isFillet: fillet)
+            XCTAssertFalse(standalone.polygons.isEmpty)
+            for selection in [[valid, invalid], [invalid, valid]] {
+                let refused = KernelOps.blendEdges(mesh: mesh, edges: selection,
+                                                   amount: 1, isFillet: fillet)
+                XCTAssertTrue(refused.polygons.isEmpty,
+                              "One bad selected tool must reject the entire legacy mesh blend")
+            }
+        }
+    }
+
+    func testConcaveNativeAndMeshBlendsReportTheirActualGeometricEffect() throws {
+        let points: [SIMD2<Double>] = [
+            .zero, SIMD2(40, 0), SIMD2(40, 10), SIMD2(20, 10), SIMD2(20, 30), SIMD2(0, 30),
+        ]
+        let ids = points.map { _ in UUID() }
+        let sketch = Sketch(name: "Reentrant corner", plane: .ground,
+                            entities: points.indices.map { index in
+            .line(id: ids[index], a: points[index], b: points[(index + 1) % points.count])
+        })
+        let bodyID = BodyID()
+        let source = FeatureNode(name: "L profile", kind: .extrude(
+            profile: ProfileRef(sketchID: sketch.id, entityIDs: ids,
+                                holeEntityIDs: [], seedPoint: SIMD2(5, 5)),
+            plane: PlaneRef(source: .sketch(sketch.id)), distance: Expr(value: 10),
+            symmetric: false, boolean: BooleanIntent(op: .newBody, resolvedTargets: []),
+            extraProfiles: []), outputBodyIDs: [bodyID])
+        let fixture = Fixture(sketch: sketch, source: source, body: bodyID, edges: [])
+        let original = evaluate(fixture)
+        XCTAssertTrue(original.errors.isEmpty, "\(original.errors)")
+        let body = try XCTUnwrap(original.bodies.first)
+        let brep = try XCTUnwrap(body.brep)
+        XCTAssertEqual(try volume(original), 8_000, accuracy: 1e-5)
+        let concave = try XCTUnwrap(EdgeTopology.selectableEdges(from: body.render)
+            .first { !$0.isConvex && abs($0.direction.y) > 0.99 })
+        let midpoint = concave.midpoint
+        let index = try XCTUnwrap(OCCTKernel.nearestEdgeIndex(
+            brep, to: SIMD3(Double(midpoint.x), Double(midpoint.y), Double(midpoint.z)),
+            tolerance: OCCTKernel.matchTolerance(for: brep)))
+        let names = ElementNaming.edgeNames(adjacency: OCCTKernel.edgeFaceAdjacency(brep),
+                                            names: try XCTUnwrap(original.kernelNames[bodyID]))
+        let ref = EdgeRef(body: BodyRef(producer: source.id, bodyID: bodyID),
+                          signature: EdgeTopology.signature(of: concave),
+                          faceNames: try XCTUnwrap(names[index]))
+        func d(_ point: SIMD3<Float>) -> SIMD3<Double> {
+            SIMD3(Double(point.x), Double(point.y), Double(point.z))
+        }
+        let spec = BlendEdgeSpec(p0: d(concave.start), p1: d(concave.end),
+                                 normalA: d(concave.normalA), normalB: d(concave.normalB),
+                                 isConvex: false)
+        for fillet in [true, false] {
+            let exact = evaluate(fixture, blend: blend(fixture, refs: [ref], fillet: fillet))
+            XCTAssertTrue(exact.errors.isEmpty, "\(exact.errors)")
+            let expected = 8_000 + 10 * (fillet ? 1 - Double.pi / 4 : 0.5)
+            XCTAssertEqual(try volume(exact), expected, accuracy: 1e-4)
+            XCTAssertNotNil(exact.bodies.first?.brep)
+            let mesh = KernelOps.blendEdges(mesh: body.euclidMesh(), edges: [spec],
+                                            amount: 1, isFillet: fillet)
+            XCTAssertFalse(mesh.polygons.isEmpty)
+            // The legacy tessellated path is an approximation, never an
+            // analytic BRep. Quantify its actual effect against the exact one.
+            let approximate = Body(id: bodyID, name: "Mesh blend", euclidMesh: mesh, revision: 0)
+            XCTAssertNil(approximate.brep)
+            XCTAssertEqual(abs(MeasureKit.volume(of: approximate)), expected, accuracy: 0.15)
+        }
+    }
+
     // Exercise the actual command transaction, not just graph evaluation.
     // Every failure must retain the undo stack and the exact saved identity.
     func testPublicBlendReceiptsReportAllEdgesAndRollbackKernelFailures() async throws {

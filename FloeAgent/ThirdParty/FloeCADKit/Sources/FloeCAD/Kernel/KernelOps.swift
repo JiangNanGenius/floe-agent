@@ -418,14 +418,25 @@ nonisolated extension KernelOps {
     /// corner wedges overlap near-tangentially on a curved rim, and unioning or
     /// serially subtracting dozens of them is both slow and crashes Euclid's
     /// healer; the swept tool avoids the pile-up entirely. Isolated straight
-    /// edges keep the original corner-wedge path. Degenerate edges are skipped;
-    /// returns `mesh` unchanged when nothing yields a tool.
+    /// edges keep the original corner-wedge path. An invalid requested tool
+    /// refuses the whole blend with an empty mesh; it cannot silently leave
+    /// a partial selection applied.
     static func blendEdges(
         mesh: Euclid.Mesh,
         edges: [BlendEdgeSpec],
         amount: Double,
         isFillet: Bool
     ) -> Euclid.Mesh {
+        func finite(_ value: SIMD3<Double>) -> Bool {
+            value.x.isFinite && value.y.isFinite && value.z.isFinite
+        }
+        guard amount.isFinite, edges.allSatisfy({ edge in
+            finite(edge.p0) && finite(edge.p1)
+                && finite(edge.normalA) && finite(edge.normalB)
+                && simd_length(edge.p1 - edge.p0) > 1e-6
+                && simd_length(edge.normalA) > 1e-6
+                && simd_length(edge.normalB) > 1e-6
+        }) else { return Euclid.Mesh([]) }
         guard amount > 1e-6 else { return mesh }
         var result = mesh
         // Convex and concave edges are chained SEPARATELY. They are never
@@ -436,7 +447,11 @@ nonisolated extension KernelOps {
         for convex in [true, false] {
             let group = edges.filter { $0.isConvex == convex }
             guard !group.isEmpty else { continue }
-            for chain in chainedSpecs(group) {
+            let chains = chainedSpecs(group)
+            guard chains.reduce(0, { $0 + $1.segments.count }) == group.count else {
+                return Euclid.Mesh([])
+            }
+            for chain in chains {
                 let tool: Euclid.Mesh?
                 if chain.segments.count == 1 {
                     let s = chain.segments[0]
@@ -461,7 +476,9 @@ nonisolated extension KernelOps {
                     }
                     tool = sweptBlendTool(chain: chain, amount: amount, isFillet: isFillet)
                 }
-                guard let tool, !tool.polygons.isEmpty else { continue }
+                guard let tool, !tool.polygons.isEmpty else {
+                    return Euclid.Mesh([])
+                }
                 // The whole point of the convex/concave split: a convex blend
                 // takes the corner AWAY, a concave one FILLS it in.
                 result = convex

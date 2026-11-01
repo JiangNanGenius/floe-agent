@@ -220,3 +220,7 @@ The command receipt reports requested, processed and rejected indices with the
 existing atomic transaction and rollback. No feature format, OCCT binary or
 legacy decoding changes. Focused App-hosted regression tests are added; their
 actual execution status is recorded separately in the current batch evidence.
+
+The legacy Euclid mesh path also refuses invalid tools or an incompletely
+ordered selection rather than skipping it. Native and mesh concave-corner
+effects are checked separately; a tessellated result never claims exact BRep.
