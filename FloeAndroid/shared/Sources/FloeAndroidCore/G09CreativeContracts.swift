@@ -417,10 +417,10 @@ public enum G09OptionalUpdateWire<Value: Codable & Sendable>: Decodable, Sendabl
     }
 }
 
-/// R1 media edit vocabulary. It deliberately excludes timeline/music/caption
-/// commands (R2), renderer-produced raster merges and selection fill/cut
-/// (R2); those need renderer assets that direct R1 CORE does not own. Adding
-/// a case here is additive; the host never accepts an unknown `type`.
+/// R1 media edit vocabulary plus the C03 layer operations. Fill/cut are pure
+/// validated commands; merge/copy still require a renderer-staged asset via
+/// the existing `MediaCommandEnrichmentHost`. Adding a case here is additive;
+/// the host never accepts an unknown `type`.
 public enum G09MediaCommandWire: Decodable, Sendable {
     case addAsset(MediaAssetReference)
     case relinkAsset(assetID: UUID, relativePath: String)
@@ -439,12 +439,17 @@ public enum G09MediaCommandWire: Decodable, Sendable {
     case flipLayer(id: UUID, horizontal: Bool)
     case clearLayerMask(id: UUID)
     case setLayerSelectionMask(id: UUID, selection: G09OptionalUpdateWire<ImageSelection>)
+    case fillSelection(colorHex: String, opacity: Double, name: String?)
+    case cutSelection(layerID: UUID)
+    case mergeLayers(ids: [UUID], name: String?, raster: MergedLayerRaster)
+    case copySelection(sourceLayerID: UUID, name: String?, raster: MergedLayerRaster)
 
     private enum CodingKeys: String, CodingKey {
         case type
         case asset, assetID, relativePath, width, height, frameRate
         case layer, id, transform, opacity, isHidden, isLocked, adjustment, text, crop
         case orderedIDs, toIndex, name, stroke, selection, horizontal
+        case layerID, ids, raster, sourceLayerID, colorHex
     }
 
     private enum Kind: String, Decodable {
@@ -452,6 +457,7 @@ public enum G09MediaCommandWire: Decodable, Sendable {
         case reorderLayers, moveLayer, removeLayer, duplicateLayer
         case addFreehandStroke, setCanvasAdjustment, setImageSelection
         case flipLayer, clearLayerMask, setLayerSelectionMask
+        case fillSelection, cutSelection, mergeLayers, copySelection
     }
 
     public init(from decoder: any Decoder) throws {
@@ -513,6 +519,25 @@ public enum G09MediaCommandWire: Decodable, Sendable {
                 id: try container.decode(UUID.self, forKey: .id),
                 selection: try container.decode(
                     G09OptionalUpdateWire<ImageSelection>.self, forKey: .selection))
+        case .fillSelection:
+            self = .fillSelection(
+                colorHex: try container.decodeIfPresent(String.self, forKey: .colorHex)
+                    ?? "#FFFFFF",
+                opacity: try container.decodeIfPresent(Double.self, forKey: .opacity) ?? 1.0,
+                name: try container.decodeIfPresent(String.self, forKey: .name))
+        case .cutSelection:
+            self = .cutSelection(
+                layerID: try container.decode(UUID.self, forKey: .layerID))
+        case .mergeLayers:
+            self = .mergeLayers(
+                ids: try container.decode([UUID].self, forKey: .ids),
+                name: try container.decodeIfPresent(String.self, forKey: .name),
+                raster: try container.decode(MergedLayerRaster.self, forKey: .raster))
+        case .copySelection:
+            self = .copySelection(
+                sourceLayerID: try container.decode(UUID.self, forKey: .sourceLayerID),
+                name: try container.decodeIfPresent(String.self, forKey: .name),
+                raster: try container.decode(MergedLayerRaster.self, forKey: .raster))
         }
     }
 
@@ -554,6 +579,15 @@ public enum G09MediaCommandWire: Decodable, Sendable {
             return .clearLayerMask(id: id)
         case .setLayerSelectionMask(let id, let selection):
             return .setLayerSelectionMask(id: id, selection: selection.mapped { $0 })
+        case .fillSelection(let colorHex, let opacity, let name):
+            return .fillSelection(colorHex: colorHex, opacity: opacity, name: name)
+        case .cutSelection(let layerID):
+            return .cutSelection(layerID: layerID)
+        case .mergeLayers(let ids, let name, let raster):
+            return .mergeLayers(ids: ids, name: name, raster: raster)
+        case .copySelection(let sourceLayerID, let name, let raster):
+            return .copySelection(
+                sourceLayerID: sourceLayerID, name: name, raster: raster)
         }
     }
 }

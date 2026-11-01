@@ -646,25 +646,247 @@ final class G09R2MediaProjectToolHost: MediaProjectHost, @unchecked Sendable {
         return result
     }
 
+    /// Renders ONLY the named visible layers through the SAME native image
+    /// renderer/preview pipeline used by export, then registers the verified
+    /// full-canvas PNG as a project asset for `mergeLayers`.
+    ///
+    /// The renderer input is an internal derived projection of the EXACT
+    /// project revision/draft (same project id/canvas/assets; only the layer
+    /// subset changes; no whole-canvas adjustment, matching the fixed iOS
+    /// `renderMerge`). It is never published as a project export. The output
+    /// ticket is the existing bounded IMAGE ticket; its bytes/dimensions/hash
+    /// are verified before the asset is handed to the shared command engine.
     func renderMergeAsset(project: MediaProject, layerIDs: [UUID],
                           name: String?) async throws -> MergePreparation {
-        throw G09R2MediaToolFailure.rendererCompositeUnavailable(
-            "the platform exposes only whole-project image/video rendering; a per-layer transparent composite is not available"
-        ).floError
+        guard project.kind == .image, let canvas = project.canvas else {
+            throw G09R2MediaToolFailure.rendererCompositeUnavailable(
+                "merge requires an initialized image project").floError
+        }
+        let ids = Set(layerIDs)
+        guard ids.count >= 2, layerIDs.count == ids.count else {
+            throw G09R2MediaToolFailure.rendererCompositeUnavailable(
+                "merge requires at least two distinct layers").floError
+        }
+        guard layerIDs.allSatisfy({ id in
+            project.imageLayers.contains { $0.id == id && !$0.isLocked }
+        }) else {
+            throw G09R2MediaToolFailure.rendererCompositeUnavailable(
+                "a merge layer is missing or locked").floError
+        }
+        var rendered = project
+        rendered.imageLayers = project.imageLayers.filter { ids.contains($0.id) }
+        // iOS `renderMerge` deliberately does not apply the whole-canvas
+        // adjustment; the result is exactly the selected layers' contribution.
+        rendered.canvasAdjustment = CanvasAdjustment()
+        return try await renderDerivedAsset(
+            project: rendered,
+            canvas: canvas,
+            name: name ?? "Merged layers",
+            suffix: "merge")
     }
 
+    /// The exact copy-selection projection: one source layer, its own mask,
+    /// adjustment and transform intact, the project selection kept on the
+    /// project, and the canvas adjustment kept for the post-composite step.
+    ///
+    /// It deliberately does NOT append a region erase mask to the layer. That
+    /// older shortcut applied the selection before the whole-canvas
+    /// adjustment; the App UI and fixed iOS apply the canvas adjustment first
+    /// and the complete selection last. The Kotlin renderer receives this
+    /// projection through the bounded IMAGE ticket and runs the shared
+    /// `renderCopySelection` pipeline.
+    static func copySelectionProjection(
+        project: MediaProject,
+        sourceLayerID: UUID
+    ) throws -> MediaProject {
+        guard project.kind == .image, project.canvas != nil else {
+            throw G09R2MediaToolFailure.rendererCompositeUnavailable(
+                "copy requires an initialized image project").floError
+        }
+        guard let source = project.imageLayers.first(where: { $0.id == sourceLayerID }) else {
+            throw G09R2MediaToolFailure.rendererCompositeUnavailable(
+                "the copy source layer is missing").floError
+        }
+        guard !source.isLocked else {
+            throw G09R2MediaToolFailure.rendererCompositeUnavailable(
+                "the copy source layer is locked").floError
+        }
+        guard !source.isHidden, source.opacity > 0 else {
+            throw G09R2MediaToolFailure.rendererCompositeUnavailable(
+                "the copy source layer is hidden or fully transparent").floError
+        }
+        guard let selection = project.imageSelection, !selection.isEmpty,
+              !selection.shapes.isEmpty else {
+            throw G09R2MediaToolFailure.rendererCompositeUnavailable(
+                "copy requires a non-empty shaped selection").floError
+        }
+        var rendered = project
+        rendered.imageLayers = [source]
+        return rendered
+    }
+
+    /// Renders ONE layer through the real pipeline and limits it to the
+    /// project selection AFTER the whole-canvas adjustment, producing a
+    /// full-canvas transparent asset for `copySelection`. The original layer,
+    /// selection, masks and bytes are untouched.
     func renderCopySelectionAsset(project: MediaProject,
                                   sourceLayerID: UUID) async throws -> MergePreparation {
-        throw G09R2MediaToolFailure.rendererCompositeUnavailable(
-            "selection-limited layer rasterization is not available in the current platform renderer"
-        ).floError
+        guard let canvas = project.canvas else {
+            throw G09R2MediaToolFailure.rendererCompositeUnavailable(
+                "copy requires an initialized image project").floError
+        }
+        let rendered = try Self.copySelectionProjection(
+            project: project, sourceLayerID: sourceLayerID)
+        return try await renderDerivedAsset(
+            project: rendered,
+            canvas: canvas,
+            name: "Selection Copy",
+            suffix: "copy",
+            copySelection: G09R2ImageCopySelectionDTO(sourceLayerID: sourceLayerID))
+    }
+
+    private func renderDerivedAsset(
+        project: MediaProject,
+        canvas: MediaCanvas,
+        name: String,
+        suffix: String,
+        copySelection: G09R2ImageCopySelectionDTO? = nil
+    ) async throws -> MergePreparation {
+        guard let sourceSession = currentSession else {
+            throw G09R2MediaToolFailure.generationStopped.floError
+        }
+        guard project.revision == sourceSession.project.revision,
+              project.id == sourceSession.project.id else {
+            throw G09R2MediaToolFailure.projectChanged.floError
+        }
+        let derivedSession = G09R2MediaToolSession(
+            epoch: sourceSession.epoch,
+            root: sourceSession.root,
+            media: sourceSession.media,
+            project: project,
+            storage: sourceSession.storage,
+            origin: sourceSession.origin,
+            projectRoot: sourceSession.projectRoot,
+            conversationID: sourceSession.conversationID,
+            workspaceID: sourceSession.workspaceID,
+            taskDigest: sourceSession.taskDigest,
+            accessProof: sourceSession.accessProof,
+            bindingID: sourceSession.bindingID)
+        let attempt = "c03-\(suffix)-\(UUID().uuidString.prefix(8))"
+        let outputRelative = "Workbench/Exports/\(attempt).png"
+        let settings = G09R2ImageExportSettingsDTO(
+            format: "png",
+            width: canvas.width,
+            height: canvas.height,
+            quality: 1.0,
+            preserveTransparency: true,
+            stripMetadata: true,
+            fileName: attempt)
+        let prepared = try await G09R2MediaToolExport.prepare(
+            session: derivedSession,
+            kind: .image,
+            outputRelativePath: outputRelative,
+            imageSettings: settings,
+            videoSettings: nil,
+            copySelection: copySelection,
+            mailbox: mailbox)
+        var finished = false
+        var publishedOutput: URL?
+        do {
+            let reply = try await G09R2MediaToolExport.awaitTerminal(
+                prepared: prepared,
+                mailbox: mailbox,
+                cancellation: nil,
+                config: config)
+            guard reply.status == .completed, let receipt = reply.receipt else {
+                throw G09R2MediaToolFailure.exportFailed(
+                    reply.errorCode ?? "rendererCompositeUnavailable").floError
+            }
+            let output = try G09R2MediaToolExport.verify(
+                receipt: receipt,
+                descriptor: prepared.descriptor,
+                expectedOwner: sourceSession.accessProof,
+                expectedEpoch: sourceSession.epoch)
+            G09R2MediaToolExport.finish(prepared, mailbox: mailbox)
+            finished = true
+            publishedOutput = output
+            let preparation = try registerRenderedAsset(
+                output: output,
+                canvas: canvas,
+                name: name,
+                suffix: suffix,
+                projectRoot: sourceSession.projectRoot)
+            _ = try C03LayerRasterVerifier.verify(
+                preparation, project: sourceSession.project, root: sourceSession.projectRoot)
+            return preparation
+        } catch {
+            if !finished {
+                G09R2MediaToolExport.abandon(prepared, mailbox: mailbox)
+            } else if let publishedOutput {
+                try? FileManager.default.removeItem(at: publishedOutput)
+            }
+            throw error
+        }
+    }
+
+    private func registerRenderedAsset(
+        output: URL,
+        canvas: MediaCanvas,
+        name: String,
+        suffix: String,
+        projectRoot: URL
+    ) throws -> MergePreparation {
+        let assets = try G09R2MediaToolFile.ensureRealSubdirectories(
+            root: projectRoot, components: ["Workbench", "Assets"])
+        let fileName = "\(UUID().uuidString.prefix(8))-\(suffix).png"
+        let target = assets.appendingPathComponent(fileName)
+        guard !FileManager.default.fileExists(atPath: target.path) else {
+            throw G09R2MediaToolFailure.exportFailed("stagedAssetExists").floError
+        }
+        do {
+            try FileManager.default.moveItem(at: output, to: target)
+        } catch {
+            throw G09R2MediaToolFailure.exportFailed("stagedAssetMove").floError
+        }
+        guard let size = G09R2MediaToolFile.regularFileSize(target.path),
+              size > 0,
+              let hash = try? G09R2MediaToolFile.digest(ofFileAt: target) else {
+            try? FileManager.default.removeItem(at: target)
+            throw G09R2MediaToolFailure.exportFailed("stagedAssetUnverified").floError
+        }
+        let relative = "Workbench/Assets/\(fileName)"
+        guard G09CreativeAssetHost.safeRelativePath(relative) else {
+            try? FileManager.default.removeItem(at: target)
+            throw G09R2MediaToolFailure.exportFailed("stagedAssetPath").floError
+        }
+        let assetID = UUID()
+        let asset = MediaAssetReference(
+            id: assetID,
+            kind: .image,
+            relativePath: relative,
+            originalName: "\(name).png",
+            byteCount: size,
+            contentHash: hash)
+        return MergePreparation(
+            asset: asset,
+            raster: MergedLayerRaster(
+                assetID: assetID, width: canvas.width, height: canvas.height,
+                contentHash: hash))
     }
 
     func discardStagedAsset(_ asset: MediaAssetReference) async {
-        // This host never stages merge rasters: `renderMergeAsset` and
-        // `renderCopySelectionAsset` refuse before any file is created. There
-        // is therefore nothing this build owns to delete; a future composite
-        // renderer must register its staged files here and delete ONLY those.
+        guard asset.kind == .image,
+              asset.relativePath.hasPrefix("Workbench/Assets/"),
+              let session = currentSession,
+              let url = G09R2MediaToolFile.containedURL(
+                root: session.projectRoot, relativePath: asset.relativePath),
+              G09R2MediaToolFile.regularFileSize(url.path) != nil else {
+            return
+        }
+        // Only an unreferenced staged merge/copy asset is removed; the
+        // project's own assets are never deleted by this cleanup.
+        guard !session.project.assets.contains(where: { $0.id == asset.id }) else { return }
+        try? FileManager.default.removeItem(at: url)
     }
 
     // MARK: Scoped helpers / capability (truthful subset)
@@ -678,10 +900,13 @@ final class G09R2MediaProjectToolHost: MediaProjectHost, @unchecked Sendable {
 
     /// The ONE truthful capability answer for this project. It replaces the
     /// portable tool's older prose instead of appending a second, partly
-    /// contradictory list: merge/copy are explicitly unsupported, image
-    /// exports are png/jpeg, video exports are h264/hevc, and automatic apply
-    /// uses the runtime authority for the exact task call (no mandatory
-    /// per-edit UI prompt).
+    /// contradictory list: merge/copy/fill/cut are real native operations,
+    /// image exports are png/jpeg/heic, video exports are h264/hevc, and
+    /// automatic apply uses the runtime authority for the exact task call (no
+    /// mandatory per-edit UI prompt). The tool itself is only discoverable
+    /// while `G09R2MediaToolAvailability` reports a live, epoch-exact renderer
+    /// consumer; `G09R2MediaToolRegistration.capability` reports the same
+    /// state instead of a fixed prose claim.
     func normalizedCapabilityText() -> String? {
         guard let session = currentSession else { return nil }
         return Self.capabilityText(project: session.project)
@@ -702,10 +927,12 @@ final class G09R2MediaProjectToolHost: MediaProjectHost, @unchecked Sendable {
         ]
         if project.kind == .image {
             lines += [
-                "image_commands: add_image_layer, update_layer, add_freehand_stroke, reorder_layers, move_layer, duplicate_layer, remove_layer, set_selection, clear_selection, set_layer_selection, add_mask_stroke, clear_layer_mask, flip_layer, align_layers, set_canvas_adjustment, add_asset, relink_asset, set_canvas",
-                "merge_layers: unsupported by this host (typed layerCompositeRendererUnavailable; no per-layer transparent composite renderer)",
-                "copy_selection: unsupported by this host (typed selectionCompositeRendererUnavailable)",
-                "image_export_formats: png, jpeg (heic is not supported by this host)",
+                "image_commands: add_image_layer, update_layer, add_freehand_stroke, reorder_layers, move_layer, duplicate_layer, remove_layer, set_selection, clear_selection, set_layer_selection, add_mask_stroke, clear_layer_mask, flip_layer, align_layers, set_canvas_adjustment, add_asset, relink_asset, set_canvas, fill_selection, cut_selection",
+                "merge_layers: renderer-backed via the bounded IMAGE ticket; only visible selected layers are composited into a registered full-canvas PNG",
+                "copy_selection: renderer-backed via the bounded IMAGE ticket; the source layer is rendered, the whole-canvas adjustment is applied, then the complete selection mask (same order as the UI/iOS)",
+                "fill_selection: native command; adds a real fill layer masked by the complete current selection",
+                "cut_selection: native command; appends one reversible region mask stroke to the source layer",
+                "image_export_formats: png, jpeg, heic (HEIC is 8-bit SDR via AndroidX HeifWriter 1.1.0; HDR sources are refused, never silently tone-mapped)",
                 "selection: rectangle|ellipse|lasso with replace|add|subtract, feather 0..0.5, invert",
                 "masks: non-destructive erase/restore strokes; original pixels are never destroyed",
                 "typography: size, tracking, leading, alignment, stroke, shadow, named fonts",
@@ -728,7 +955,7 @@ final class G09R2MediaProjectToolHost: MediaProjectHost, @unchecked Sendable {
     }
 
     static let actions = ["capabilities", "read", "propose", "apply", "export"]
-    static let imageFormats = ["png", "jpeg"]
+    static let imageFormats = ["png", "jpeg", "heic"]
     static let videoCodecs = ["h264", "hevc"]
     static let measurableImageFormats = ["png", "jpeg", "webp", "gif", "bmp"]
 
@@ -736,11 +963,12 @@ final class G09R2MediaProjectToolHost: MediaProjectHost, @unchecked Sendable {
         availability: G09R2MediaToolAvailability = .shared
     ) -> [String] {
         let snapshot = availability.snapshot()
+        let rendererState = snapshot.available ? "supported" : "unavailable"
         var lines: [String] = [
-            "host_export: image png/jpeg; video h264/hevc via the real platform renderer",
+            "host_export: image png/jpeg/heic (HEIC 8-bit SDR); video h264/hevc via the real platform renderer",
             "host_measure_layers: supported for text/freehand/fill and png/jpeg/webp/gif/bmp image assets",
-            "host_merge_layers: unsupported by this host (layerCompositeRendererUnavailable)",
-            "host_copy_selection: unsupported by this host (selectionCompositeRendererUnavailable)",
+            "host_merge_layers: \(rendererState) via the bounded IMAGE render ticket and the real platform image renderer",
+            "host_copy_selection: \(rendererState) via the bounded IMAGE render ticket and the real platform image renderer",
         ]
         lines.append("host_renderer_ready: \(snapshot.available ? "true" : "false")")
         if let reason = snapshot.reason {
@@ -772,7 +1000,7 @@ final class G09R2MediaProjectToolHost: MediaProjectHost, @unchecked Sendable {
         let format = options.format.rawValue.lowercased()
         guard imageFormats.contains(format) else {
             throw G09R2MediaToolFailure.exportUnsupported(
-                "\(format.uppercased()) image output is unavailable; use PNG or JPEG").floError
+                "\(format.uppercased()) image output is unavailable; use PNG, JPEG or HEIC").floError
         }
         guard options.quality.isFinite, (0.01...1).contains(options.quality) else {
             throw G09R2MediaToolFailure.exportUnsupported(

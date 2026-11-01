@@ -390,4 +390,7 @@
     <string name="media_r2_transcribe">转写音频</string>
     <string name="media_r2_transcribing">正在转写…</string>
     <string name="media_r2_transcribe_unavailable">请先添加音频或视频片段。</string>
+    <string name="media_image_sdr_export_boundary">图像导出为 8 位 SDR。HDR 或高位深素材需先另行转为 SDR。</string>
+    <string name="media_image_preserve_transparency">保留透明</string>
+    <string name="media_image_heic_alpha_boundary">HEIC 不支持透明。若素材含透明像素，请关闭“保留透明”以压平。</string>
 </resources>

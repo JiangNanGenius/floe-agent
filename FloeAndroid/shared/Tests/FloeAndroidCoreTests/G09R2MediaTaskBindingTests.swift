@@ -592,9 +592,13 @@ final class G09R2MediaTaskBindingTests: XCTestCase {
         try await scoped.authorizeAccess(
             projectID: project.id, access: access(task: task, environmentID: "env-run-a"))
         let text = try XCTUnwrap(scoped.normalizedCapabilityText())
-        XCTAssertTrue(text.contains("merge_layers: unsupported"))
-        XCTAssertTrue(text.contains("copy_selection: unsupported"))
-        XCTAssertTrue(text.contains("image_export_formats: png, jpeg"))
+        XCTAssertTrue(text.contains("merge_layers: renderer-backed"))
+        XCTAssertTrue(text.contains("copy_selection: renderer-backed"))
+        XCTAssertTrue(text.contains("fill_selection: native command"))
+        XCTAssertTrue(text.contains("cut_selection: native command"))
+        XCTAssertTrue(text.contains("image_export_formats: png, jpeg, heic"))
+        XCTAssertFalse(text.contains("merge_layers: unsupported"))
+        XCTAssertFalse(text.contains("copy_selection: unsupported"))
         XCTAssertFalse(text.contains("heic (alpha)"))
         XCTAssertFalse(text.contains("user_confirm(grant) -> apply"))
     }

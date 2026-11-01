@@ -39,6 +39,9 @@ dependencies {
     implementation(libs.media3.exoplayer)
     implementation(libs.media3.transformer)
     implementation(libs.media3.effect)
+    // C03 real HEIC still-image encoder (AndroidX HeifWriter 1.1.0). This is a
+    // codec-backed HEIF writer, never Bitmap.compress with a .heic extension.
+    implementation(libs.androidx.heifwriter)
 
     testImplementation(libs.junit)
     testImplementation(libs.kotlinx.coroutines.core)

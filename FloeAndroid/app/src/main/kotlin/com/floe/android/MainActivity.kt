@@ -3,6 +3,7 @@ package com.floe.android
 
 import android.Manifest
 import android.content.Intent
+import android.os.Build
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -12,6 +13,7 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.repeatOnLifecycle
 import com.floe.android.host.creative.GenerationReturnNavigation
+import com.floe.android.host.gallery.GalleryPermissionRequester
 import kotlinx.coroutines.launch
 
 class MainActivity : ComponentActivity() {
@@ -24,6 +26,17 @@ class MainActivity : ComponentActivity() {
         ActivityResultContracts.RequestPermission(),
     ) { granted ->
         (application as FloeApplication).runtimeHost?.onVoicePermissionResult(granted)
+    }
+
+    /**
+     * API 28 gallery save only. The request originates from the explicit
+     * "Save to Gallery" user action; API 29+ own-media inserts never request a
+     * broad storage/read permission.
+     */
+    private val galleryPermissionLauncher = registerForActivityResult(
+        ActivityResultContracts.RequestPermission(),
+    ) { granted ->
+        GalleryPermissionRequester.complete(granted)
     }
     override fun onResume() {
         super.onResume()
@@ -56,6 +69,19 @@ class MainActivity : ComponentActivity() {
                     ?.collect {
                         voicePermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
                     }
+            }
+        }
+        lifecycleScope.launch {
+            repeatOnLifecycle(Lifecycle.State.STARTED) {
+                GalleryPermissionRequester.requests.collect {
+                    if (Build.VERSION.SDK_INT <= 28) {
+                        galleryPermissionLauncher.launch(
+                            Manifest.permission.WRITE_EXTERNAL_STORAGE,
+                        )
+                    } else {
+                        GalleryPermissionRequester.complete(false)
+                    }
+                }
             }
         }
         enableEdgeToEdge()

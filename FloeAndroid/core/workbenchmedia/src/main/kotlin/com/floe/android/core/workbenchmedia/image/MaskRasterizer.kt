@@ -71,7 +71,10 @@ internal object MaskRasterizer {
         val canvas = Canvas(mask)
         canvas.drawColor(Color.WHITE)
         for (stroke in strokes) {
-            if (stroke.points.size < 2) continue
+            // Region strokes (selection cut/copy masks) carry a complete
+            // vector selection and intentionally have no freehand points.
+            // They must be rasterized through the SAME selection pipeline as
+            // the displayed marching-ants selection before any point check.
             if (stroke.region != null) {
                 val regionMask = renderSelection(stroke.region, width, height) ?: continue
                 canvas.drawBitmap(
@@ -87,6 +90,7 @@ internal object MaskRasterizer {
                 regionMask.recycle()
                 continue
             }
+            if (stroke.points.size < 2) continue
             val strokeBitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
             val strokeCanvas = Canvas(strokeBitmap)
             val path = Path()

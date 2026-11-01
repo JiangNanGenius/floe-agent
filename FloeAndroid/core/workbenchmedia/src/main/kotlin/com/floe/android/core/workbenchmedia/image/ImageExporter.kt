@@ -17,6 +17,7 @@ import com.floe.android.core.workbenchmedia.util.refusal
 import com.floe.android.core.workbenchmedia.util.writeFullySync
 import com.floe.android.core.workbenchmedia.video.ImageVerifier
 import com.floe.android.core.workbenchmedia.video.VerifiedOutput
+import com.floe.android.feature.workbench.ImageCopySelection
 import com.floe.android.feature.workbench.ImageExportSettings
 import com.floe.android.feature.workbench.asset
 import java.io.ByteArrayOutputStream
@@ -31,36 +32,75 @@ internal data class EncodedImage(
 )
 
 /**
- * Real PNG/JPEG image export and preview. HEIC is not offered: the source
- * stage has no qualified platform HEIF writer path, and a fake
- * `Bitmap.CompressFormat` value is not invented. Every output is encoded,
- * decoded back, dimension/format checked, fsynced to a task-owned staging file
- * and only then atomically published.
+ * Real PNG/JPEG/HEIC image export and PNG preview. HEIC uses the actual
+ * AndroidX HeifWriter 1.1.0 codec path (never `Bitmap.compress`). Every output
+ * is encoded, re-read, dimension/format checked, fsynced to a task-owned
+ * staging file and only then atomically published. The HEIC path is explicitly
+ * 8-bit SDR; HDR sources are refused instead of being silently tone-mapped.
  */
 internal object ImageExporter {
     const val MAX_OUTPUT_PIXELS = 16_000_000L
     const val MAX_OUTPUT_EDGE = 8_192
     const val MAX_OUTPUT_BYTES = 512L * 1024L * 1024L
 
-    fun validate(snapshot: VerifiedSnapshot, settings: ImageExportSettings): Pair<Int, Int> {
+    fun validate(
+        snapshot: VerifiedSnapshot,
+        settings: ImageExportSettings,
+        copySelection: ImageCopySelection? = null,
+    ): Pair<Int, Int> {
         if (snapshot.projection.project.kind != "image") {
             throw refusal(UNSUPPORTED_FORMAT_IMAGE, "The snapshot is not an image project")
         }
         val canvas = snapshot.projection.project.canvas
             ?: throw refusal(RENDER_UNSUPPORTED, "Image project has no canvas")
         val format = settings.format.lowercase()
-        if (format != "png" && format != "jpeg") {
+        if (format != "png" && format != "jpeg" && format != "heic") {
+            throw refusal(RENDER_UNSUPPORTED, "Unsupported image format ${settings.format}")
+        }
+        if (copySelection != null && format != "png") {
+            // A C03 model copy is a staged layer asset, not a user export: the
+            // asset verifier, the UI path and the renderer all require an
+            // exact full-canvas PNG. Fail before any HEIC/JPEG work.
             throw refusal(
-                RENDER_UNSUPPORTED,
-                if (format == "heic") {
-                    "HEIC export is unavailable because no qualified platform HEIF writer is implemented"
-                } else {
-                    "Unsupported image format ${settings.format}"
-                },
+                INVALID_PAYLOAD,
+                "A selection copy render must be a full-canvas PNG",
             )
         }
         if (!settings.quality.isFinite() || settings.quality < 0.01 || settings.quality > 1.0) {
             throw refusal(INVALID_PAYLOAD, "Export quality must be 0.01...1")
+        }
+        val hdr = HdrSourceProbe.projectHasHdrSource(snapshot.projection.project, snapshot.root)
+        if (hdr.isHdr) {
+            throw refusal(
+                RENDER_UNSUPPORTED,
+                "This image pipeline exports 8-bit SDR and cannot preserve this HDR/high-bit-depth source " +
+                    "(${hdr.detail ?: "hdr"}); the original is retained",
+            )
+        }
+        if (format == "heic") {
+            val capability = HeicEncoderCapability.supports(
+                settings.width ?: canvas.width,
+                settings.height ?: canvas.height,
+            )
+            if (!capability.supported) {
+                throw refusal(
+                    RENDER_UNSUPPORTED,
+                    capability.reason ?: "HEIC export is unavailable on this device",
+                )
+            }
+            if (!settings.stripMetadata) {
+                throw refusal(
+                    RENDER_UNSUPPORTED,
+                    "HEIC metadata preservation is not available; turn on strip metadata",
+                )
+            }
+            if (settings.preserveTransparency && projectHasTransparency(snapshot)) {
+                throw refusal(
+                    INVALID_PAYLOAD,
+                    "HEIC export cannot preserve transparency on this device; " +
+                        "turn off transparency to flatten over white",
+                )
+            }
         }
         val hasWidth = settings.width != null
         val hasHeight = settings.height != null
@@ -77,6 +117,43 @@ internal object ImageExporter {
                 "Image output exceeds the bounded ${MAX_OUTPUT_PIXELS / 1_000_000} MP / ${MAX_OUTPUT_EDGE}px budget",
             )
         }
+        if (copySelection != null) {
+            // The renderer applies the project selection last; the staged
+            // asset must therefore be exactly the full project canvas.
+            if (width != canvas.width || height != canvas.height) {
+                throw refusal(
+                    INVALID_PAYLOAD,
+                    "A selection copy render must use the exact canvas dimensions",
+                )
+            }
+            if (copySelection.sourceLayerID.isBlank()) {
+                throw refusal(INVALID_PAYLOAD, "A selection copy render needs a source layer")
+            }
+            val layer = snapshot.projection.project.imageLayers.firstOrNull {
+                it.id == copySelection.sourceLayerID
+            } ?: throw refusal(
+                RENDER_UNSUPPORTED,
+                "The selection copy source layer is missing",
+            )
+            if (layer.isHidden || layer.opacity <= 0.0) {
+                throw refusal(
+                    RENDER_UNSUPPORTED,
+                    "A hidden or fully transparent layer cannot be copied",
+                )
+            }
+            val selection = snapshot.projection.project.imageSelection
+                ?: throw refusal(
+                    INVALID_PAYLOAD,
+                    "A selection copy render needs a project selection",
+                )
+            val parsed = MaskRasterizer.parseSelection(selection)
+            if (parsed == null || parsed.shapes.isEmpty()) {
+                throw refusal(
+                    INVALID_PAYLOAD,
+                    "A selection copy render needs a shaped selection",
+                )
+            }
+        }
         if (format == "jpeg" && settings.preserveTransparency && projectHasTransparency(snapshot)) {
             throw refusal(
                 INVALID_PAYLOAD,
@@ -86,12 +163,26 @@ internal object ImageExporter {
         return width to height
     }
 
-    fun encode(snapshot: VerifiedSnapshot, settings: ImageExportSettings): EncodedImage {
-        val (width, height) = validate(snapshot, settings)
-        val renderer = ImageProjectRenderer(snapshot)
-        val bitmap = renderer.render(ImageRenderTarget(width, height, preview = false))
+    fun encode(
+        snapshot: VerifiedSnapshot,
+        settings: ImageExportSettings,
+        copySelection: ImageCopySelection? = null,
+    ): EncodedImage {
+        val (width, height) = validate(snapshot, settings, copySelection)
+        val bitmap = renderBitmap(snapshot, width, height, copySelection)
         try {
             val format = settings.format.lowercase()
+            if (format == "heic") {
+                // Byte-array callers are preview/test helpers; the service
+                // export path below streams the encoded file instead.
+                val temp = File.createTempFile("floe-heic-", ".heic")
+                try {
+                    val encoded = HeicImageEncoder.encode(bitmap, settings.quality, temp)
+                    return EncodedImage(encoded.file.readBytes(), width, height, format)
+                } finally {
+                    temp.delete()
+                }
+            }
             val bytes = compress(bitmap, format, settings.quality, settings.preserveTransparency)
             return EncodedImage(bytes, width, height, format)
         } finally {
@@ -137,11 +228,12 @@ internal object ImageExporter {
         settings: ImageExportSettings,
         output: File,
         attemptID: String,
+        copySelection: ImageCopySelection? = null,
         cancelled: () -> Boolean = { false },
     ): VerifiedOutput {
         if (cancelled()) throw refusal(RENDER_CANCELLED, "Export was cancelled")
-        val encoded = encode(snapshot, settings)
-        if (cancelled()) throw refusal(RENDER_CANCELLED, "Export was cancelled")
+        val format = settings.format.lowercase()
+        val (width, height) = validate(snapshot, settings, copySelection)
         if (output.exists()) throw refusal(WRITE_FAILED, "The output attempt path already exists")
         val parent = output.parentFile
             ?: throw refusal(STORAGE_UNAVAILABLE, "Output directory is unavailable")
@@ -151,6 +243,40 @@ internal object ImageExporter {
         val staging = File(parent, ".$attemptID.${output.extension}.part")
         if (staging.exists()) staging.delete()
         try {
+            if (format == "heic") {
+                val bitmap = renderBitmap(snapshot, width, height, copySelection)
+                try {
+                    if (cancelled()) throw refusal(RENDER_CANCELLED, "Export was cancelled")
+                    val flattened = if (settings.preserveTransparency) {
+                        bitmap
+                    } else {
+                        flattenOverWhite(bitmap)
+                    }
+                    try {
+                        HeicImageEncoder.encode(flattened, settings.quality, staging)
+                    } finally {
+                        if (flattened !== bitmap) flattened.recycle()
+                    }
+                } finally {
+                    bitmap.recycle()
+                }
+                if (cancelled()) throw refusal(RENDER_CANCELLED, "Export was cancelled")
+                if (HeifHeaderInspector.detect(staging) != "heic") {
+                    throw refusal(RENDERER_UNAVAILABLE, "Encoded HEIC header could not be re-detected")
+                }
+                val verified = ImageVerifier.verify(
+                    staging,
+                    width,
+                    height,
+                    "heic",
+                    MAX_OUTPUT_BYTES,
+                )
+                if (cancelled()) throw refusal(RENDER_CANCELLED, "Export was cancelled")
+                atomicReplace(staging, output)
+                return verified
+            }
+            val encoded = encode(snapshot, settings)
+            if (cancelled()) throw refusal(RENDER_CANCELLED, "Export was cancelled")
             writeFullySync(staging, encoded.bytes)
             val detected = ImageVerifier.detectFormat(staging)
             if (detected != encoded.format) {
@@ -170,6 +296,31 @@ internal object ImageExporter {
             if (staging.exists()) staging.delete()
             throw failure
         }
+    }
+
+    /**
+     * The ONE image render selection point for export/ticket work. An ordinary
+     * ticket renders the whole project; a copy-selection ticket reuses the
+     * EXACT shared `ImageProjectRenderer.renderCopySelection` pipeline that
+     * the App UI and fixed iOS use: source layer (with its own mask,
+     * adjustment and transform), whole-canvas adjustment, then the complete
+     * project selection mask. Never a pre-adjustment mask substitution.
+     */
+    private fun renderBitmap(
+        snapshot: VerifiedSnapshot,
+        width: Int,
+        height: Int,
+        copySelection: ImageCopySelection?,
+    ): Bitmap {
+        val renderer = ImageProjectRenderer(snapshot)
+        val target = ImageRenderTarget(width, height, preview = false)
+        if (copySelection == null) return renderer.render(target)
+        val selection = snapshot.projection.project.imageSelection
+            ?: throw refusal(
+                INVALID_PAYLOAD,
+                "A selection copy render needs a project selection",
+            )
+        return renderer.renderCopySelection(copySelection.sourceLayerID, selection, target)
     }
 
     private fun compress(
@@ -200,6 +351,10 @@ internal object ImageExporter {
                     if (encoded !== bitmap) encoded.recycle()
                 }
             }
+            "heic" -> throw refusal(
+                RENDER_UNSUPPORTED,
+                "HEIC must be encoded through the real HeifWriter path, not Bitmap.compress",
+            )
             else -> throw refusal(RENDER_UNSUPPORTED, "Unsupported image format $format")
         }
         return output.toByteArray()

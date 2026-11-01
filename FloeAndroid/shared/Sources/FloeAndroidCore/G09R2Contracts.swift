@@ -727,6 +727,19 @@ public struct G09R2ImageExportSettingsDTO: Codable, Sendable, Equatable {
     public var fileName: String
 }
 
+/// Closed typed render purpose for a C03 selection copy. The complete
+/// selection itself comes from the verified project snapshot; this only names
+/// the source layer so the native IMAGE renderer can apply the whole-canvas
+/// adjustment first and the project selection last, exactly like the App UI
+/// and fixed iOS. It is never inferred from a project name or attempt prefix.
+public struct G09R2ImageCopySelectionDTO: Codable, Sendable, Equatable {
+    public var sourceLayerID: UUID
+
+    public init(sourceLayerID: UUID) {
+        self.sourceLayerID = sourceLayerID
+    }
+}
+
 public struct G09R2ExportVerificationDTO: Codable, Sendable, Equatable {
     public var playable: Bool
     public var decodedDurationSeconds: Double?
@@ -789,6 +802,9 @@ public struct G09R2RenderTicketDescriptorDTO: Codable, Sendable, Equatable {
     public var previewWindow: G09R2PreviewWindowDTO?
     public var expiresAt: Date
     public var descriptorByteCount: Int
+    /// Optional C03 render purpose; nil on every pre-C03 caller, so their
+    /// descriptor JSON and render behavior stay unchanged.
+    public var copySelection: G09R2ImageCopySelectionDTO? = nil
 }
 
 public struct G09R2ClaimedRenderTicketDTO: Codable, Sendable, Equatable {

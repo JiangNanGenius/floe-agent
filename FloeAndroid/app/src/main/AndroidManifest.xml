@@ -27,6 +27,11 @@
          stopSelf when idle and the App does not use it as a keepalive. -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PROCESSING" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <!-- C03 gallery save: API 28 only. API 29+ inserts its OWN image/video
+         rows through MediaStore and does not request broad READ permission. -->
+    <uses-permission
+        android:name="android.permission.WRITE_EXTERNAL_STORAGE"
+        android:maxSdkVersion="28" />
     <!-- G07.3B: user-created Agent schedules; wake-up receivers reconcile the
          durable schedule ledger instead of starting a foreground service at boot.
          Exact timing requires the user's Alarms & reminders special access. -->

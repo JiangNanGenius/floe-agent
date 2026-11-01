@@ -16,9 +16,13 @@ sealed interface OptionalUpdate<out T> {
 /**
  * Closed R1 media edit vocabulary.
  *
- * R1 supports image-project structural edits and ordinary undo/redo. Timeline
- * trim/split, captions, music, renderer raster merges and selection fill/cut
- * remain R2; unknown host command types are rejected, never silently applied.
+ * R1 supports image-project structural edits and ordinary undo/redo. The
+ * C03 image closure adds the fixed-iOS layer operations that are still backed
+ * by the same validated transaction engine: selection fill (a real `.fill`
+ * layer), non-destructive selection cut (one region mask stroke), and
+ * renderer-produced copy/merge rasters committed through `addAsset`. A caller
+ * never supplies a raster path or hash authority; the C03 raster port and the
+ * native command validator own those checks.
  */
 sealed interface MediaEditCommand {
     data class AddAsset(val asset: MediaAssetReference) : MediaEditCommand
@@ -69,4 +73,33 @@ sealed interface MediaEditCommand {
         val id: String,
         val selection: OptionalUpdate<JsonObject>,
     ) : MediaEditCommand
+
+    /** Non-destructive cut: appends one region mask stroke for the selection. */
+    data class CutSelection(val layerID: String) : MediaEditCommand
+
+    /** Raster merge of two or more contiguous layers (renderer-staged asset). */
+    data class MergeLayers(
+        val ids: List<String>,
+        val name: String? = null,
+        val raster: MergedLayerRaster,
+    ) : MediaEditCommand
+
+    /** Copy the selection ∩ source layer into a new full-canvas image layer. */
+    data class CopySelection(
+        val sourceLayerID: String,
+        val name: String? = null,
+        val raster: MergedLayerRaster,
+    ) : MediaEditCommand
 }
+
+/**
+ * Renderer-produced full-canvas transparent raster. `assetID` must name the
+ * exact asset registered by the host; `contentHash` is checked by the native
+ * command path and never treated as caller write authority.
+ */
+data class MergedLayerRaster(
+    val assetID: String,
+    val width: Int,
+    val height: Int,
+    val contentHash: String? = null,
+)

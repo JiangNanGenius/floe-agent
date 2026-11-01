@@ -208,6 +208,7 @@ private fun MediaAssetRow(
 internal fun MediaLayersPanel(
     controller: MediaEditorController,
     onAddText: () -> Unit,
+    onLayerOperations: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     Column(modifier.fillMaxSize().background(Floe.colors.readingSurface)) {
@@ -225,6 +226,13 @@ internal fun MediaLayersPanel(
                 onClick = onAddText,
                 enabled = controller.isImageProject && controller.writable &&
                     !controller.busy && !controller.needsReload,
+            )
+            FloeCapsuleAction(
+                label = if (java.util.Locale.getDefault().language == "zh") "选区" else "Select",
+                onClick = onLayerOperations,
+                enabled = controller.isImageProject && controller.writable &&
+                    !controller.busy && !controller.needsReload,
+                tint = Floe.colors.accent,
             )
         }
         FloeDivider()

@@ -427,16 +427,25 @@ internal class MediaRenderTicketService(
         val settings = descriptor.imageSettings
             ?: return TicketOutcome.Failed(RenderTicketReplyStatus.UNSUPPORTED, "renderUnsupported")
         val extension = settings.format.lowercase()
-        if (extension != "png" && extension != "jpeg" ||
+        if (extension != "png" && extension != "jpeg" && extension != "heic" ||
             output.name != "${descriptor.attemptID}.$extension"
         ) {
+            return TicketOutcome.Failed(RenderTicketReplyStatus.UNSUPPORTED, "renderUnsupported")
+        }
+        if (descriptor.copySelection != null && descriptor.kind != MediaExportKind.IMAGE) {
             return TicketOutcome.Failed(RenderTicketReplyStatus.UNSUPPORTED, "renderUnsupported")
         }
         if (job.control.cancelRequested) {
             return TicketOutcome.Failed(RenderTicketReplyStatus.CANCELLED, RENDER_CANCELLED)
         }
         val verified = try {
-            ImageExporter.writeVerified(snapshot, settings, output, descriptor.attemptID) {
+            ImageExporter.writeVerified(
+                snapshot = snapshot,
+                settings = settings,
+                output = output,
+                attemptID = descriptor.attemptID,
+                copySelection = descriptor.copySelection,
+            ) {
                 job.control.cancelRequested
             }
         } catch (failure: MediaRefusal) {
@@ -451,7 +460,11 @@ internal class MediaRenderTicketService(
                 binding = receiptBinding(descriptor, snapshot.root),
                 kind = descriptor.kind,
                 outputRelativePath = descriptor.outputRelativePath,
-                mimeType = if (format == "png") "image/png" else "image/jpeg",
+                mimeType = when (format) {
+                    "png" -> "image/png"
+                    "heic" -> "image/heic"
+                    else -> "image/jpeg"
+                },
                 byteCount = verified.byteCount,
                 sha256 = verified.sha256,
                 verification = verified.verification,

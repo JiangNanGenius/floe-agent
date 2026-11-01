@@ -1,0 +1,19 @@
+{
+  "artifact": "androidx.heifwriter:heifwriter",
+  "version": "1.1.0",
+  "group": "androidx.heifwriter",
+  "source": "https://dl.google.com/dl/android/maven2/androidx/heifwriter/heifwriter/1.1.0/heifwriter-1.1.0.aar",
+  "sources": "https://dl.google.com/dl/android/maven2/androidx/heifwriter/heifwriter/1.1.0/heifwriter-1.1.0-sources.jar",
+  "release_page": "https://developer.android.com/jetpack/androidx/releases/heifwriter",
+  "license": "Apache-2.0",
+  "license_file": "LICENSE.txt",
+  "license_sha256": "809fa1ed21450f59827d1e9aec720bbc4b687434fa22283c6cb5dd82a47ab9c0",
+  "purpose": "Real 8-bit SDR HEIF/HEIC still-image encoding on Android (MediaCodec image/vnd.android.heic or the documented HEVC fallback). No Bitmap.compress HEIC fake.",
+  "pinned": true,
+  "build_owner": "Main",
+  "notes": [
+    "The dependency coordinate and version are exact; no dynamic version or range.",
+    "The Gradle and lockfile changes are supplied as an exact private Main patch because central build files are Main-owned in the C01-C08 batch.",
+    "HeifWriter 1.1.0 hard-codes highBitDepthEnabled=false, so HDR sources are refused by the Floe HEIC boundary rather than silently tone-mapped."
+  ]
+}

@@ -24,6 +24,25 @@ import com.floe.android.feature.canvas.CreativeStorageLayer
  * recorded project JSON. Descriptor ≤ 64 KiB, reply ≤ 1 MiB; neither is a
  * second project document.
  */
+
+/**
+ * CLOSED typed render purpose for a C03 selection-copy raster.
+ *
+ * It is deliberately an explicit ticket field, never inferred from a project
+ * name, attempt prefix or other recorded metadata. When present, the IMAGE
+ * renderer draws the source layer (its own mask/adjustment/transform intact),
+ * applies the whole-canvas adjustment, and only then applies the project's
+ * complete vector selection — the same order as the App UI and fixed iOS.
+ *
+ * The selection itself is read from the verified project snapshot, so the
+ * ticket cannot substitute a second selection source. Absent on every old
+ * caller, which keeps their descriptor bytes and render behavior unchanged.
+ */
+data class ImageCopySelection(
+    /** Project layer id (UUID string) that the selection is copied from. */
+    val sourceLayerID: String,
+)
+
 data class RenderTicketDescriptor(
     val ticketID: String,
     val descriptorVersion: Int,
@@ -57,6 +76,12 @@ data class RenderTicketDescriptor(
     val previewWindow: PreviewWindow? = null,
     val expiresAt: String,
     val descriptorByteCount: Int,
+    /**
+     * Optional typed render purpose. Null for ordinary preview/export tickets
+     * (all pre-C03 callers), in which case descriptor JSON and rendering are
+     * byte-for-byte the previous behavior.
+     */
+    val copySelection: ImageCopySelection? = null,
 )
 
 data class ClaimedRenderTicket(

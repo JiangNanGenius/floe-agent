@@ -126,7 +126,15 @@ struct G09R2MediaToolCapabilityDTO: Encodable, Sendable {
     var imageFormats: [String]
     var videoCodecs: [String]
     var measurableImageFormats: [String]
+    /// True only while the real native command/CAS backend is bound and not
+    /// stopping; fill/cut do not need the raster consumer.
+    var fillSelection: Bool
+    /// True only while the real native command/CAS backend is bound and not
+    /// stopping.
+    var cutSelection: Bool
+    /// True only while the real render-ticket consumer is bound and live.
     var mergeLayers: Bool
+    /// True only while the real render-ticket consumer is bound and live.
     var copySelection: Bool
     var enrichmentReasons: [String: String]
 }
@@ -134,8 +142,34 @@ struct G09R2MediaToolCapabilityDTO: Encodable, Sendable {
 enum G09R2MediaToolRegistration {
     /// The actual portable tool instance currently installed. Retained only
     /// for bounded diagnostics; no caller can bypass the registry.
-    static func capability() -> G09R2MediaToolCapabilityDTO {
-        let snapshot = G09R2MediaToolAvailability.shared.snapshot()
+    ///
+    /// Capability is derived from the SAME `G09R2MediaToolAvailability`
+    /// snapshot that gates `runner.isAvailable`. A bound/consumer-ready
+    /// renderer advertises the real fill/cut/merge/copy implementations; an
+    /// unbound, stopped, disabled or consumer-less generation advertises false
+    /// with the actual reason. No fixed prose and no fake ready state.
+    static func capability(
+        availability: G09R2MediaToolAvailability = .shared
+    ) -> G09R2MediaToolCapabilityDTO {
+        let snapshot = availability.snapshot()
+        // Fill/cut commit through the native project command/CAS backend and
+        // do not rasterize; they are available once the exact session epoch is
+        // bound and not stopping. Merge/copy additionally require the real
+        // render-ticket consumer lease (bind alone is not proof).
+        let commandsReady = snapshot.enabled && snapshot.epoch != nil &&
+            snapshot.reason != "rootStopping"
+        let rendererReady = snapshot.available
+        var reasons: [String: String] = [:]
+        if !commandsReady {
+            let reason = snapshot.reason ?? "nativeCommandBackendUnavailable"
+            reasons["fill_selection"] = reason
+            reasons["cut_selection"] = reason
+        }
+        if !rendererReady {
+            let reason = snapshot.reason ?? "rendererUnavailable"
+            reasons["merge_layers"] = reason
+            reasons["copy_selection"] = reason
+        }
         return G09R2MediaToolCapabilityDTO(
             registered: true,
             enabled: snapshot.enabled,
@@ -147,12 +181,11 @@ enum G09R2MediaToolRegistration {
             imageFormats: G09R2MediaProjectToolHost.imageFormats,
             videoCodecs: G09R2MediaProjectToolHost.videoCodecs,
             measurableImageFormats: G09R2MediaProjectToolHost.measurableImageFormats,
-            mergeLayers: false,
-            copySelection: false,
-            enrichmentReasons: [
-                "merge_layers": "layerCompositeRendererUnavailable",
-                "copy_selection": "selectionCompositeRendererUnavailable",
-            ])
+            fillSelection: commandsReady,
+            cutSelection: commandsReady,
+            mergeLayers: rendererReady,
+            copySelection: rendererReady,
+            enrichmentReasons: reasons)
     }
 
     /// Installs the ORIGINAL `MediaProjectTool` over the REAL host. The

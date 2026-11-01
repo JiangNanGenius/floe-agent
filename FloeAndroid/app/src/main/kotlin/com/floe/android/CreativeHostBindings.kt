@@ -25,10 +25,14 @@ import com.floe.android.feature.canvas.ui.state.CanvasWorkspaceSession
 import com.floe.android.feature.workbench.ui.api.MediaAgentOwnerContext
 import com.floe.android.feature.workbench.ui.api.MediaAssetImport
 import com.floe.android.feature.workbench.ui.api.MediaEditorPorts
+import com.floe.android.feature.workbench.ui.api.MediaGallerySavePort
+import com.floe.android.feature.workbench.ui.api.MediaLayerRasterPort
 import com.floe.android.feature.workbench.ui.api.MediaPickedSource
 import com.floe.android.feature.workbench.ui.api.MediaSourceCreate
 import com.floe.android.feature.workbench.ui.api.MediaTranscriptionPort
 import com.floe.android.feature.workbench.ui.api.MediaTranscriptionReceipt
+import com.floe.android.host.gallery.MediaGallerySaveController
+import com.floe.android.host.gallery.MediaLayerRasterController
 import com.floe.android.host.voice.C03VoiceFailure
 import com.floe.android.feature.workbench.ui.r2.WorkbenchR2Ports
 import com.floe.android.feature.workbench.ui.state.MediaWorkspaceSession
@@ -184,6 +188,16 @@ internal object CreativeUiHost {
  */
 internal class CreativeHostControllerBundle(val app: FloeApplication) {
     val workbenchR2Ports: WorkbenchR2Ports by lazy { app.mediaWorkbench.r2Ports }
+
+    /** One shared App-owned layer raster bridge for the current controller. */
+    val mediaLayerRaster: MediaLayerRasterPort by lazy {
+        MediaLayerRasterController { app.creativeHost }
+    }
+
+    /** One shared App-owned gallery save bridge; no per-editor duplicate store. */
+    val gallerySave: MediaGallerySavePort by lazy {
+        MediaGallerySaveController(app, { app.creativeHost })
+    }
 }
 
 private class CanvasPorts(private val bundle: CreativeHostControllerBundle) : CanvasEditorPorts {
@@ -247,6 +261,12 @@ private class MediaPorts(private val bundle: CreativeHostControllerBundle) : Med
             bundle.app.mediaWorkbench.workspacePrestage.consume(source.uri)
         }
     }
+
+    override val layerRaster: MediaLayerRasterPort
+        get() = bundle.mediaLayerRaster
+
+    override val gallerySave: MediaGallerySavePort
+        get() = bundle.gallerySave
 
     override val transcription = MediaTranscriptionPort { context, assetID, expectedRevision ->
         val voice = bundle.app.runtimeHost?.voiceOrNull()

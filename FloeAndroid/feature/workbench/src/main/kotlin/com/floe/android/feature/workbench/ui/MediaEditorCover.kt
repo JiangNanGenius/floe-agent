@@ -113,6 +113,7 @@ internal fun MediaEditorCover(
     var showAi by remember(editor) { mutableStateOf(false) }
     var showAskAi by remember(editor) { mutableStateOf(false) }
     var showExport by remember(editor) { mutableStateOf(false) }
+    var showLayerOperations by remember(editor) { mutableStateOf(false) }
     val drawingLayerName = stringResource(R.string.media_layer_freehand)
     val importVideo: (() -> Unit)? = mediaPicker?.let { picker ->
         {
@@ -274,6 +275,7 @@ internal fun MediaEditorCover(
                                             MediaLayersPanel(
                                                 controller = editor,
                                                 onAddText = { showAddText = true },
+                                                onLayerOperations = { showLayerOperations = true },
                                                 modifier = Modifier.weight(1f),
                                             )
                                         }
@@ -462,6 +464,12 @@ internal fun MediaEditorCover(
         MediaExportSheet(
             controller = editor,
             onDismiss = { showExport = false },
+        )
+    }
+    if (showLayerOperations) {
+        MediaLayerOperationsSheet(
+            controller = editor,
+            onDismiss = { showLayerOperations = false },
         )
     }
     if (showAddText) {
@@ -699,6 +707,7 @@ private fun MediaPanelSheet(
                 MediaPanel.LAYERS -> MediaLayersPanel(
                     controller = editor,
                     onAddText = onAddText,
+                    onLayerOperations = { showLayerOperations = true },
                     modifier = Modifier.weight(1f),
                 )
                 MediaPanel.PROPERTIES -> MediaPropertiesPanel(

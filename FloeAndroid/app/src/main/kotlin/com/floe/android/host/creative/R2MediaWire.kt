@@ -11,6 +11,7 @@ import com.floe.android.feature.workbench.CaptionStyle
 import com.floe.android.feature.workbench.ClaimedRenderTicket
 import com.floe.android.feature.workbench.CreativeProjectContext
 import com.floe.android.feature.workbench.ExportVerification
+import com.floe.android.feature.workbench.ImageCopySelection
 import com.floe.android.feature.workbench.ImageExportSettings
 import com.floe.android.feature.workbench.LargeImportJobHandle
 import com.floe.android.feature.workbench.LargeImportRequest
@@ -436,7 +437,13 @@ internal object R2MediaWire {
         },
         expiresAt = value.string("expiresAt").orEmpty(),
         descriptorByteCount = value.int("descriptorByteCount") ?: 0,
+        copySelection = (value["copySelection"] as? JsonObject)?.let(::decodeCopySelection),
     )
+
+    private fun decodeCopySelection(value: JsonObject): ImageCopySelection =
+        ImageCopySelection(
+            sourceLayerID = value.string("sourceLayerID")
+                ?: throw CreativeException("invalidResponse", "missingCopySelectionLayer"))
 
     private fun decodeKind(raw: String?): MediaExportKind = when (raw) {
         "video" -> MediaExportKind.VIDEO
@@ -626,6 +633,11 @@ internal object R2MediaWire {
             }
             put("expiresAt", descriptor.expiresAt)
             put("descriptorByteCount", descriptor.descriptorByteCount)
+            descriptor.copySelection?.let { purpose ->
+                put("copySelection", buildJsonObject {
+                    put("sourceLayerID", purpose.sourceLayerID)
+                })
+            }
         }
 
     fun decodeAuthorityGrant(value: JsonObject?): R2AuthorityGrant? {

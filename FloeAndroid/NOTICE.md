@@ -89,3 +89,16 @@ materials required by the applicable licenses.
 ## Embedded terminal
 
 The selected terminal-emulator sources and TerminalRenderer from termux/termux-app v0.118.3 (5b657c6adf4304e5198951ce815fe0205dcac29c) use the upstream terminal-library Apache-2.0 exception. Full license texts and lineage are in `licenses/terminal` and packaged under `assets/legal/terminal`. Only the documented parser/buffer/renderer subset is reused; Floe owns the execution lifecycle. Source hashes and the two documented patches are recorded in `feature/terminal/PROVENANCE-TERMUX.md`.
+
+## C03 image encoding and C04 offline viewing
+
+AndroidX HeifWriter 1.1.0 (`androidx.heifwriter:heifwriter`) is Apache-2.0.
+The exact upstream license and pinned provenance are bundled at
+`assets/legal/heifwriter/` and retained in `licenses/heifwriter/`.
+
+The read-only CAD viewer retains its pinned CAD/OCCT source notices, license
+texts and source locations under `assets/cad_viewer/` and
+`licenses/cad_viewer/`. MiSans font license and provenance are also bundled
+under `assets/legal/cad-viewer/`. Android-specific adapters do not change
+those upstream terms. Component source availability and final package
+contents remain part of release qualification.

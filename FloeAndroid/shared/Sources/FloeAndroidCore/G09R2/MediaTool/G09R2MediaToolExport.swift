@@ -32,6 +32,7 @@ enum G09R2MediaToolExport {
         outputRelativePath: String,
         imageSettings: G09R2ImageExportSettingsDTO?,
         videoSettings: G09R2VideoExportSettingsDTO?,
+        copySelection: G09R2ImageCopySelectionDTO? = nil,
         mailbox: G09R2MediaRenderHostMailbox
     ) async throws -> G09R2MediaToolPreparedExport {
         G09R2SnapshotLeases.shared.purgeExpired()
@@ -39,7 +40,7 @@ enum G09R2MediaToolExport {
         switch kind {
         case .image:
             guard let imageSettings, videoSettings == nil,
-                  ["png", "jpeg"].contains(imageSettings.format.lowercased()),
+                  ["png", "jpeg", "heic"].contains(imageSettings.format.lowercased()),
                   G09R2MediaProjectToolHost.safeExportComponent(imageSettings.fileName) else {
                 throw G09R2MediaToolFailure.exportUnsupported("invalid image settings").floError
             }
@@ -52,6 +53,25 @@ enum G09R2MediaToolExport {
             extensionValue = "mp4"
         case .preview:
             throw G09R2MediaToolFailure.exportUnsupported("preview tickets are not a tool export").floError
+        }
+        if let copySelection {
+            // The C03 model copy is a staged layer raster: a full-canvas PNG
+            // of one existing source layer plus the verified project
+            // selection. The native renderer applies the whole-canvas
+            // adjustment before the selection mask. No other ticket kind,
+            // format or scaled size may claim this purpose.
+            guard kind == .image,
+                  let imageSettings,
+                  imageSettings.format.lowercased() == "png",
+                  let canvas = session.project.canvas,
+                  (imageSettings.width ?? canvas.width) == canvas.width,
+                  (imageSettings.height ?? canvas.height) == canvas.height,
+                  session.project.imageLayers.contains(
+                    where: { $0.id == copySelection.sourceLayerID }),
+                  session.project.imageSelection?.shapes.isEmpty == false else {
+                throw G09R2MediaToolFailure.exportUnsupported(
+                    "a selection copy must render a full-canvas PNG of an existing source layer").floError
+            }
         }
         let expectedRelative = "Workbench/Exports/" +
             (kind == .image ? imageSettings!.fileName : videoSettings!.fileName) +
@@ -214,7 +234,8 @@ enum G09R2MediaToolExport {
             // The mailbox hard deadline is 10 minutes; the tool uses the full
             // bounded transport budget instead of shortening long exports.
             expiresAt: min(expiresAt, now.addingTimeInterval(600)),
-            descriptorByteCount: 0)
+            descriptorByteCount: 0,
+            copySelection: copySelection)
         let descriptorData: Data
         do {
             descriptorData = try encodeDescriptor(&descriptor)
@@ -359,11 +380,22 @@ enum G09R2MediaToolExport {
         switch descriptor.kind {
         case .image:
             guard let settings = descriptor.imageSettings,
-                  descriptor.videoSettings == nil,
-                  ["png", "jpeg"].contains(settings.format.lowercased()),
-                  receipt.verification.codec.lowercased() == settings.format.lowercased(),
-                  receipt.mimeType == (settings.format.lowercased() == "png"
-                                       ? "image/png" : "image/jpeg") else {
+                  descriptor.videoSettings == nil else {
+                throw G09R2MediaToolFailure.exportFailed(
+                    "renderOutputUnverified").floError
+            }
+            let format = settings.format.lowercased()
+            let mime: String
+            if format == "heic" {
+                mime = "image/heic"
+            } else if format == "png" {
+                mime = "image/png"
+            } else {
+                mime = "image/jpeg"
+            }
+            guard ["png", "jpeg", "heic"].contains(format),
+                  receipt.verification.codec.lowercased() == format,
+                  receipt.mimeType == mime else {
                 throw G09R2MediaToolFailure.exportFailed(
                     "renderOutputUnverified").floError
             }

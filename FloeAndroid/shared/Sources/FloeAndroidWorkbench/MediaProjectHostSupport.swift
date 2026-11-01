@@ -126,12 +126,22 @@ public enum MediaCommandEnrichment {
         var index = 0
         while index < commands.count {
             if case .addAsset(let asset) = commands[index],
-               index + 1 < commands.count,
-               case .mergeLayers(_, _, let raster) = commands[index + 1],
-               raster.assetID == asset.id {
-                assets.append(asset)
-                index += 2
-                continue
+               index + 1 < commands.count {
+                let next = commands[index + 1]
+                let matched: Bool
+                switch next {
+                case .mergeLayers(_, _, let raster):
+                    matched = raster.assetID == asset.id
+                case .copySelection(_, _, let raster):
+                    matched = raster.assetID == asset.id
+                default:
+                    matched = false
+                }
+                if matched {
+                    assets.append(asset)
+                    index += 2
+                    continue
+                }
             }
             index += 1
         }
@@ -215,6 +225,23 @@ public enum MediaProjectCommandCoding {
             return .mergeLayers(ids: try uuidArray(value, "ids"),
                                 name: optionalString(value, "name"),
                                 raster: MergedLayerRaster(assetID: UUID(), width: 0, height: 0))
+        case "fill_selection":
+            // The fill layer is built by the shared command engine from the
+            // current selection; the model never supplies a fabricated raster.
+            return .fillSelection(
+                colorHex: optionalString(value, "color_hex") ?? "#FFFFFF",
+                opacity: double(value, "opacity") ?? 1.0,
+                name: optionalString(value, "name"))
+        case "cut_selection":
+            return .cutSelection(layerID: try uuid(value, "layer_id"))
+        case "copy_selection":
+            // The masked full-canvas raster is rendered by the host during
+            // proposal enrichment (selection ∩ source layer); this is a
+            // placeholder replaced before validation.
+            return .copySelection(
+                sourceLayerID: try uuid(value, "source_layer_id"),
+                name: optionalString(value, "name"),
+                raster: MergedLayerRaster(assetID: UUID(), width: 0, height: 0))
         case "set_canvas_adjustment":
             return .setCanvasAdjustment(try adjustment(.object(value)))
 

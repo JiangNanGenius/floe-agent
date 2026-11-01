@@ -5,6 +5,9 @@ coroutines = "1.9.0"
 # G09-R2 exact Media3 pin verified against Google Maven metadata 2026-10-26
 # and GitHub tag 1.11.1. No dynamic version and no FFmpeg/local model.
 media3 = "1.11.1"
+# C03 real HEIF/HEIC still-image encoder. Exact stable release (AndroidX
+# release page reviewed 2026-11-02); no dynamic version or Bitmap.compress fake.
+heifwriter = "1.1.0"
 compose-bom = "2026.09.00"
 activity = "1.11.0"
 core = "1.17.0"
@@ -45,6 +48,7 @@ media3-common = { module = "androidx.media3:media3-common", version.ref = "media
 media3-exoplayer = { module = "androidx.media3:media3-exoplayer", version.ref = "media3" }
 media3-transformer = { module = "androidx.media3:media3-transformer", version.ref = "media3" }
 media3-effect = { module = "androidx.media3:media3-effect", version.ref = "media3" }
+androidx-heifwriter = { module = "androidx.heifwriter:heifwriter", version.ref = "heifwriter" }
 sora-editor = { module = "io.github.rosemoe:editor", version.ref = "sora" }
 commonmark = { module = "org.commonmark:commonmark", version.ref = "commonmark" }
 commonmark-ext-gfm-tables = { module = "org.commonmark:commonmark-ext-gfm-tables", version.ref = "commonmark" }

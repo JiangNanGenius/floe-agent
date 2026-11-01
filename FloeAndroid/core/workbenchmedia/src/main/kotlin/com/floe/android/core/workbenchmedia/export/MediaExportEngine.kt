@@ -248,7 +248,7 @@ internal class MediaExportEngine(
     ) {
         if (job.cancelRequested.get()) throw refusal(RENDER_CANCELLED, "Export was cancelled")
         val extension = request.settings.format.lowercase()
-        if (extension != "png" && extension != "jpeg") {
+        if (extension != "png" && extension != "jpeg" && extension != "heic") {
             throw refusal(com.floe.android.core.workbenchmedia.util.RENDER_UNSUPPORTED, "Unsupported image format ${request.settings.format}")
         }
         val outputRelative = "Workbench/Exports/${job.attemptID}.$extension"
@@ -283,7 +283,11 @@ internal class MediaExportEngine(
             ),
             kind = MediaExportKind.IMAGE,
             outputRelativePath = outputRelative,
-            mimeType = if (extension == "png") "image/png" else "image/jpeg",
+            mimeType = when (extension) {
+                "png" -> "image/png"
+                "heic" -> "image/heic"
+                else -> "image/jpeg"
+            },
             byteCount = verified.byteCount,
             sha256 = verified.sha256,
             verification = verified.verification,

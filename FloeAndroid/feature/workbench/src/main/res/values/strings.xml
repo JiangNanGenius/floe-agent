@@ -392,4 +392,7 @@
     <string name="media_r2_transcribe">Transcribe audio</string>
     <string name="media_r2_transcribing">Transcribing…</string>
     <string name="media_r2_transcribe_unavailable">Add an audio or video clip to transcribe it.</string>
+    <string name="media_image_sdr_export_boundary">Image exports use 8-bit SDR. Convert HDR or higher-bit-depth sources to SDR separately first.</string>
+    <string name="media_image_preserve_transparency">Preserve transparency</string>
+    <string name="media_image_heic_alpha_boundary">HEIC cannot preserve transparency. Turn off Preserve transparency to flatten transparent pixels.</string>
 </resources>

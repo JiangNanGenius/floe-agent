@@ -13,6 +13,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -32,6 +33,7 @@ import com.floe.android.design.FloeBadgePill
 import com.floe.android.design.FloeBadgeTone
 import com.floe.android.design.FloeCapsuleAction
 import com.floe.android.design.FloeDivider
+import com.floe.android.design.FloeInlineSwitch
 import com.floe.android.design.FloePlainFormField
 import com.floe.android.design.FloeText
 import com.floe.android.feature.workbench.CodecCapability
@@ -349,6 +351,7 @@ private fun ImageExportForm(
         mutableStateOf(formats.firstOrNull() ?: "png")
     }
     var quality by remember { mutableFloatStateOf(0.95f) }
+    var preserveTransparency by remember { mutableStateOf(true) }
     var fileName by remember(controller.projectID) {
         mutableStateOf(defaultFileName(controller.project.name))
     }
@@ -375,6 +378,12 @@ private fun ImageExportForm(
         }
     }
     SectionTitle(stringResource(R.string.media_r2_image_export))
+    FloeText(
+        stringResource(R.string.media_image_sdr_export_boundary),
+        style = Floe.typography.metadata,
+        color = Floe.colors.tertiaryLabel,
+        modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp),
+    )
     OptionRow(
         label = stringResource(R.string.media_r2_format),
         values = formats,
@@ -407,6 +416,30 @@ private fun ImageExportForm(
         format = { "${(it * 100).roundToInt()}%" },
         onCommit = { quality = it },
     )
+    Row(
+        Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 2.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        FloeText(
+            stringResource(R.string.media_image_preserve_transparency),
+            style = Floe.typography.metadata,
+            color = Floe.colors.secondaryLabel,
+            modifier = Modifier.weight(1f),
+        )
+        FloeInlineSwitch(
+            checked = preserveTransparency,
+            onCheckedChange = { preserveTransparency = it },
+            description = stringResource(R.string.media_image_preserve_transparency),
+        )
+    }
+    if (format == "heic") {
+        FloeText(
+            stringResource(R.string.media_image_heic_alpha_boundary),
+            style = Floe.typography.metadata,
+            color = Floe.colors.tertiaryLabel,
+            modifier = Modifier.padding(horizontal = 16.dp, vertical = 2.dp),
+        )
+    }
     FloePlainFormField(
         label = stringResource(R.string.media_r2_file_name),
         value = fileName,
@@ -427,6 +460,7 @@ private fun ImageExportForm(
                         width = width.toIntOrNull()?.takeIf { it > 0 },
                         height = height.toIntOrNull()?.takeIf { it > 0 },
                         quality = quality.toDouble(),
+                        preserveTransparency = preserveTransparency,
                         fileName = sanitizeFileName(fileName),
                     ),
                 )
@@ -544,6 +578,7 @@ private fun VerifiedReceipt(
 ) {
     val scope = rememberCoroutineScope()
     var notice by remember(jobID) { mutableStateOf<Int?>(null) }
+    LaunchedEffect(jobID) { controller.clearGallerySave() }
     Column(
         Modifier
             .fillMaxWidth()
@@ -578,29 +613,90 @@ private fun VerifiedReceipt(
             style = Floe.typography.metadata,
             color = Floe.colors.tertiaryLabel,
         )
-        FloeCapsuleAction(
-            label = stringResource(R.string.media_r2_save_share),
-            onClick = {
-                scope.launch {
-                    when (controller.deliverExport(jobID, receipt)) {
-                        WorkbenchExportDeliveryResult.Delivered -> {
-                            notice = R.string.media_r2_delivered
+        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            FloeCapsuleAction(
+                label = stringResource(R.string.media_r2_save_share),
+                onClick = {
+                    scope.launch {
+                        when (controller.deliverExport(jobID, receipt)) {
+                            WorkbenchExportDeliveryResult.Delivered -> {
+                                notice = R.string.media_r2_delivered
+                            }
+                            WorkbenchExportDeliveryResult.Cancelled -> notice = null
+                            is WorkbenchExportDeliveryResult.Failed -> {
+                                notice = R.string.media_r2_delivery_failed
+                            }
+                            else -> notice = R.string.media_r2_delivery_failed
                         }
-                        WorkbenchExportDeliveryResult.Cancelled -> notice = null
-                        is WorkbenchExportDeliveryResult.Failed -> {
-                            notice = R.string.media_r2_delivery_failed
-                        }
-                        else -> notice = R.string.media_r2_delivery_failed
                     }
-                }
-            },
-            tint = Floe.colors.accent,
-        )
+                },
+                tint = Floe.colors.accent,
+            )
+            if (controller.gallerySaveAvailable) {
+                FloeCapsuleAction(
+                    label = if (java.util.Locale.getDefault().language == "zh") {
+                        "保存到相册"
+                    } else {
+                        "Save to Gallery"
+                    },
+                    onClick = { controller.saveReceiptToGallery(jobID, receipt) },
+                    enabled = !controller.gallerySave.busy,
+                    showHairline = false,
+                )
+            }
+        }
         notice?.let {
             FloeText(
                 stringResource(it),
                 style = Floe.typography.metadata,
                 color = Floe.colors.secondaryLabel,
+            )
+        }
+        controller.gallerySave.savedDisplayName?.let { name ->
+            FloeText(
+                if (java.util.Locale.getDefault().language == "zh") {
+                    "已保存到相册：$name"
+                } else {
+                    "Saved to Gallery: $name"
+                },
+                style = Floe.typography.metadata,
+                color = Floe.colors.success,
+            )
+            FloeCapsuleAction(
+                label = if (java.util.Locale.getDefault().language == "zh") {
+                    "清除提示"
+                } else {
+                    "Dismiss"
+                },
+                onClick = { controller.clearGallerySave() },
+                showHairline = false,
+            )
+        }
+        controller.gallerySave.permission?.let {
+            FloeText(
+                if (java.util.Locale.getDefault().language == "zh") {
+                    "保存到系统相册需要存储权限。请从系统设置允许后重试。"
+                } else {
+                    "Saving to the system gallery needs storage permission. Allow it in system settings and retry."
+                },
+                style = Floe.typography.metadata,
+                color = Floe.colors.pending,
+            )
+        }
+        controller.gallerySave.failure?.let { _ ->
+            FloeText(
+                if (java.util.Locale.getDefault().language == "zh") {
+                    "保存到相册失败，已验证的导出文件仍保留。"
+                } else {
+                    "Gallery save failed; the verified export is still retained."
+                },
+                style = Floe.typography.metadata,
+                color = Floe.colors.destructive,
+            )
+            FloeCapsuleAction(
+                label = stringResource(R.string.media_r2_retry),
+                onClick = { controller.saveReceiptToGallery(jobID, receipt) },
+                showHairline = false,
             )
         }
     }

@@ -41,6 +41,7 @@ import com.floe.android.feature.workbench.MediaAssetReceipt
 import com.floe.android.feature.workbench.MediaAssetReference
 import com.floe.android.feature.workbench.MediaCanvas
 import com.floe.android.feature.workbench.MediaEditCommand
+import com.floe.android.feature.workbench.MergedLayerRaster
 import com.floe.android.feature.workbench.MediaMutationReceipt
 import com.floe.android.feature.workbench.MediaProject
 import com.floe.android.feature.workbench.MediaProjectEnvelope
@@ -566,6 +567,28 @@ internal object CreativeWire {
             put("type", "setLayerSelectionMask"); put("id", command.id)
             put("selection", encodeOptionalUpdate(command.selection) { it })
         }
+        is MediaEditCommand.CutSelection -> buildJsonObject {
+            put("type", "cutSelection"); put("layerID", command.layerID)
+        }
+        is MediaEditCommand.MergeLayers -> buildJsonObject {
+            put("type", "mergeLayers")
+            putJsonArray("ids") { command.ids.forEach { add(JsonPrimitive(it)) } }
+            command.name?.let { put("name", it) }
+            put("raster", encodeMergedLayerRaster(command.raster))
+        }
+        is MediaEditCommand.CopySelection -> buildJsonObject {
+            put("type", "copySelection")
+            put("sourceLayerID", command.sourceLayerID)
+            command.name?.let { put("name", it) }
+            put("raster", encodeMergedLayerRaster(command.raster))
+        }
+    }
+
+    private fun encodeMergedLayerRaster(value: MergedLayerRaster): JsonObject = buildJsonObject {
+        put("assetID", value.assetID)
+        put("width", value.width)
+        put("height", value.height)
+        value.contentHash?.let { put("contentHash", it) }
     }
 
     private fun encodeMediaAsset(value: MediaAssetReference): JsonObject = buildJsonObject {

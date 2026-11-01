@@ -19,9 +19,11 @@ import com.floe.android.feature.workbench.ImageGenerationRequest
 import com.floe.android.feature.workbench.ImageLayer
 import com.floe.android.feature.workbench.ImageLayerAdjustment
 import com.floe.android.feature.workbench.ImageTextContent
+import com.floe.android.feature.workbench.MediaAssetMetadata
 import com.floe.android.feature.workbench.MediaAssetProbeRequest
 import com.floe.android.feature.workbench.MediaAssetReference
 import com.floe.android.feature.workbench.MediaEditCommand
+import com.floe.android.feature.workbench.MergedLayerRaster
 import com.floe.android.feature.workbench.MediaExportKind
 import com.floe.android.feature.workbench.MediaExportState
 import com.floe.android.feature.workbench.MediaProjectEnvelope
@@ -37,6 +39,9 @@ import com.floe.android.feature.workbench.VideoTransitionKind
 import com.floe.android.feature.workbench.WorkbenchHostApi
 import com.floe.android.feature.workbench.WorkbenchR2Limits
 import com.floe.android.feature.workbench.ui.api.MediaEditorPorts
+import com.floe.android.feature.workbench.ui.api.MediaGalleryCollection
+import com.floe.android.feature.workbench.ui.api.MediaGallerySaveOutcome
+import com.floe.android.feature.workbench.ui.api.MediaLayerRasterRequest
 import com.floe.android.feature.workbench.ui.api.MediaPickedSource
 import com.floe.android.feature.workbench.ui.presentation.MediaBitmapLoader
 import com.floe.android.feature.workbench.ui.presentation.MediaCommandPlanner
@@ -54,6 +59,9 @@ import com.floe.android.feature.workbench.ui.r2.WorkbenchR2Ports
 import com.floe.android.feature.workbench.ui.r2.WorkbenchVideoMath
 import java.util.UUID
 import kotlin.math.max
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.put
+import kotlinx.serialization.json.putJsonArray
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.launch
@@ -176,6 +184,8 @@ class MediaEditorController internal constructor(
         }
     val canUndo: Boolean get() = envelope.project.canUndo && !busy && !needsReload
     val canRedo: Boolean get() = envelope.project.canRedo && !busy && !needsReload
+    val layerRasterAvailable: Boolean get() = ports.layerRaster != null
+    val gallerySaveAvailable: Boolean get() = ports.gallerySave != null
 
     private val operationMutex = Mutex()
     @Volatile private var retired = false
@@ -312,6 +322,395 @@ class MediaEditorController internal constructor(
                 } finally {
                     busy = false
                 }
+            }
+        }
+    }
+
+    // MARK: - C03 selection / layer merge / copy / fill / cut
+
+    val hasSelection: Boolean
+        get() = envelope.project.imageSelection?.let(::selectionHasShapes) == true
+
+    fun clearLayerOperation() {
+        layerOperation = LayerOperationState()
+    }
+
+    fun clearGallerySave() {
+        gallerySave = GallerySaveState()
+    }
+
+    /** Full-canvas rectangle selection; the same vector selection engine as a drawn shape. */
+    fun selectAll() {
+        if (!isImageProject) return
+        launchCommand(
+            MediaEditCommand.SetImageSelection(selectAllSelection()),
+            successCompletion = LayerOperationCompletion.SELECTION_SET,
+        )
+    }
+
+    fun clearSelection() {
+        if (!isImageProject) return
+        launchCommand(
+            MediaEditCommand.SetImageSelection(null),
+            successCompletion = LayerOperationCompletion.SELECTION_CLEARED,
+        )
+    }
+
+    /**
+     * Explicit normalized rectangle selection (0...1). This is the same
+     * vector rectangle shape the shared command engine/rendering mask accepts;
+     * it is not a pixel-snapshot or a second selection store.
+     */
+    fun setRectangleSelection(x: Double, y: Double, width: Double, height: Double) {
+        if (!isImageProject) return
+        if (!x.isFinite() || !y.isFinite() || !width.isFinite() || !height.isFinite() ||
+            x < 0.0 || y < 0.0 || width <= 0.0 || height <= 0.0 ||
+            x + width > 1.0001 || y + height > 1.0001
+        ) {
+            layerOperation = LayerOperationState(
+                failure = MediaFailure(MediaFailureKind.INVALID_REQUEST, "invalidSelectionRect"),
+            )
+            return
+        }
+        launchCommand(
+            MediaEditCommand.SetImageSelection(
+                rectangleSelection(
+                    x.coerceIn(0.0, 1.0),
+                    y.coerceIn(0.0, 1.0),
+                    width.coerceIn(0.0, 1.0 - x.coerceIn(0.0, 1.0)),
+                    height.coerceIn(0.0, 1.0 - y.coerceIn(0.0, 1.0)),
+                ),
+            ),
+            successCompletion = LayerOperationCompletion.SELECTION_SET,
+        )
+    }
+
+    /**
+     * Selection fill: a real `.fill` image layer masked by the complete vector
+     * selection. This is the fixed iOS `fillSelection` semantics, not a
+     * bucket-fill that guesses a colour from neighboring pixels.
+     */
+    fun fillSelection(colorHex: String = "#FFFFFF", opacity: Double = 1.0) {
+        if (!isImageProject || busy || !writable || needsReload) return
+        val selection = envelope.project.imageSelection
+        if (selection == null || !selectionHasShapes(selection)) {
+            layerOperation = LayerOperationState(
+                failure = MediaFailure(MediaFailureKind.INVALID_REQUEST, "selectionRequired"),
+            )
+            return
+        }
+        val layerID = UUID.randomUUID().toString()
+        val layer = ImageLayer(
+            id = layerID,
+            kind = "fill",
+            name = "Fill",
+            transform = com.floe.android.feature.workbench.ImageLayerTransform(),
+            opacity = opacity.coerceIn(0.0, 1.0),
+            selectionMask = selection,
+            fillColorHex = colorHex,
+        )
+        launchCommand(
+            MediaEditCommand.AddImageLayer(layer),
+            onSuccess = { selectedLayerID = layerID },
+            successCompletion = LayerOperationCompletion.FILLED,
+        )
+    }
+
+    /** Non-destructive cut: the native engine appends one region mask stroke. */
+    fun cutSelection(layerID: String? = selectedLayerID) {
+        if (!isImageProject) return
+        val id = layerID ?: return
+        val layer = envelope.project.imageLayers.firstOrNull { it.id == id } ?: return
+        if (layer.isLocked) {
+            layerOperation = LayerOperationState(
+                failure = MediaFailure(MediaFailureKind.INVALID_REQUEST, "layerLocked"),
+            )
+            return
+        }
+        if (!hasSelection) {
+            layerOperation = LayerOperationState(
+                failure = MediaFailure(MediaFailureKind.INVALID_REQUEST, "selectionRequired"),
+            )
+            return
+        }
+        launchCommand(
+            MediaEditCommand.CutSelection(layerID = id),
+            successCompletion = LayerOperationCompletion.CUT,
+        )
+    }
+
+    /**
+     * Renders the selection ∩ source layer through the real platform renderer,
+     * registers the verified PNG as a project asset, then commits addAsset +
+     * copySelection as ONE native CAS/undo transaction.
+     */
+    fun copySelectionToNewLayer(sourceLayerID: String? = selectedLayerID) {
+        val port = ports.layerRaster
+        if (port == null || !isImageProject || busy || !writable || needsReload) return
+        val sourceID = sourceLayerID ?: return
+        val source = envelope.project.imageLayers.firstOrNull { it.id == sourceID } ?: return
+        if (source.isLocked) {
+            layerOperation = LayerOperationState(
+                failure = MediaFailure(MediaFailureKind.INVALID_REQUEST, "layerLocked"),
+            )
+            return
+        }
+        val selection = envelope.project.imageSelection
+        if (selection == null || !selectionHasShapes(selection)) {
+            layerOperation = LayerOperationState(
+                failure = MediaFailure(MediaFailureKind.INVALID_REQUEST, "selectionRequired"),
+            )
+            return
+        }
+        runLayerRasterTransaction(port, "copySelection", listOf(sourceID), selection) { receipt ->
+            val asset = receipt.toAssetReference()
+            listOf(
+                MediaEditCommand.AddAsset(asset),
+                MediaEditCommand.CopySelection(
+                    sourceLayerID = sourceID,
+                    name = "Selection Copy",
+                    raster = MergedLayerRaster(
+                        assetID = receipt.assetID,
+                        width = receipt.width,
+                        height = receipt.height,
+                        contentHash = receipt.sha256,
+                    ),
+                ),
+            )
+        }
+    }
+
+    /**
+     * Renders ONLY the named visible layers through the shared full-canvas
+     * renderer (no whole-canvas adjustment), registers the verified PNG, then
+     * commits addAsset + mergeLayers as ONE native CAS/undo transaction.
+     */
+    fun mergeLayers(layerIDs: List<String>, name: String? = null) {
+        val port = ports.layerRaster
+        val ids = layerIDs.distinct()
+        if (port == null || !isImageProject || busy || !writable || needsReload) return
+        if (ids.size < 2 || ids.size != layerIDs.size) {
+            layerOperation = LayerOperationState(
+                failure = MediaFailure(MediaFailureKind.INVALID_REQUEST, "mergeNeedsTwoLayers"),
+            )
+            return
+        }
+        if (ids.any { id ->
+                val layer = envelope.project.imageLayers.firstOrNull { it.id == id }
+                layer == null || layer.isLocked
+            }
+        ) {
+            layerOperation = LayerOperationState(
+                failure = MediaFailure(MediaFailureKind.INVALID_REQUEST, "layerLocked"),
+            )
+            return
+        }
+        val mergeName = name?.trim()?.takeIf { it.isNotEmpty() }
+        runLayerRasterTransaction(port, "merge", ids, null) { receipt ->
+            val asset = receipt.toAssetReference()
+            listOf(
+                MediaEditCommand.AddAsset(asset),
+                MediaEditCommand.MergeLayers(
+                    ids = ids,
+                    name = mergeName,
+                    raster = MergedLayerRaster(
+                        assetID = receipt.assetID,
+                        width = receipt.width,
+                        height = receipt.height,
+                        contentHash = receipt.sha256,
+                    ),
+                ),
+            )
+        }
+    }
+
+    private fun runLayerRasterTransaction(
+        port: com.floe.android.feature.workbench.ui.api.MediaLayerRasterPort,
+        mode: String,
+        layerIDs: List<String>,
+        selection: kotlinx.serialization.json.JsonObject?,
+        build: (com.floe.android.feature.workbench.ui.api.MediaLayerRasterReceipt) -> List<MediaEditCommand>,
+    ): Boolean {
+        if (busy || !writable || needsReload) return false
+        val completion = if (mode == "merge") {
+            LayerOperationCompletion.MERGED
+        } else {
+            LayerOperationCompletion.COPIED
+        }
+        scope.launch {
+            operationMutex.withLock {
+                if (retired) return@withLock
+                busy = true
+                failure = null
+                layerOperation = LayerOperationState(busy = true)
+                try {
+                    val request = MediaLayerRasterRequest(
+                        layerIDs = layerIDs,
+                        selection = selection,
+                        name = if (mode == "merge") "Merged layers" else "Selection copy",
+                    )
+                    val receipt = port.renderLayerRaster(
+                        context = r2Context,
+                        expectedRevision = envelope.project.revision,
+                        mode = mode,
+                        request = request,
+                    )
+                    if (retired) return@withLock
+                    if (receipt.projectID != projectID ||
+                        receipt.projectRevision != envelope.project.revision
+                    ) {
+                        layerOperation = LayerOperationState(
+                            failure = MediaFailure(
+                                MediaFailureKind.REVISION_CONFLICT,
+                                "layerRasterRevisionChanged",
+                            ),
+                        )
+                        return@withLock
+                    }
+                    if (!applyCommandsLocked(build(receipt))) {
+                        layerOperation = LayerOperationState(
+                            failure = failure ?: MediaFailure(
+                                MediaFailureKind.REVISION_CONFLICT,
+                                "layerCommitFailed",
+                            ),
+                        )
+                        return@withLock
+                    }
+                    layerOperation = LayerOperationState(completed = completion)
+                    selectedLayerID = envelope.project.imageLayers
+                        .firstOrNull { it.assetID == receipt.assetID }?.id
+                } catch (cancelled: CancellationException) {
+                    throw cancelled
+                } catch (error: Throwable) {
+                    handleFailure(error)
+                    layerOperation = LayerOperationState(failure = MediaFailures.from(error))
+                } finally {
+                    busy = false
+                    if (layerOperation.busy) {
+                        layerOperation = layerOperation.copy(busy = false)
+                    }
+                }
+            }
+        }
+        return Unit
+    }
+
+    private fun selectAllSelection(): kotlinx.serialization.json.JsonObject = buildJsonObject {
+        put("feather", 0.0)
+        put("inverted", false)
+        putJsonArray("shapes") {
+            add(buildJsonObject {
+                put("kind", "rectangle")
+                put("operation", "replace")
+                putJsonArray("points") {
+                    add(buildJsonObject { put("x", 0.0); put("y", 0.0) })
+                    add(buildJsonObject { put("x", 1.0); put("y", 1.0) })
+                }
+            })
+        }
+    }
+
+    private fun rectangleSelection(
+        x: Double,
+        y: Double,
+        width: Double,
+        height: Double,
+    ): kotlinx.serialization.json.JsonObject = buildJsonObject {
+        put("feather", 0.0)
+        put("inverted", false)
+        putJsonArray("shapes") {
+            add(buildJsonObject {
+                put("kind", "rectangle")
+                put("operation", "replace")
+                putJsonArray("points") {
+                    add(buildJsonObject { put("x", x); put("y", y) })
+                    add(buildJsonObject { put("x", x + width); put("y", y + height) })
+                }
+            })
+        }
+    }
+
+    private fun selectionHasShapes(value: kotlinx.serialization.json.JsonObject): Boolean {
+        val shapes = value["shapes"] as? kotlinx.serialization.json.JsonArray ?: return false
+        return shapes.isNotEmpty()
+    }
+
+    private fun com.floe.android.feature.workbench.ui.api.MediaLayerRasterReceipt
+        .toAssetReference(): MediaAssetReference = MediaAssetReference(
+            id = assetID,
+            kind = "image",
+            relativePath = relativePath,
+            originalName = originalName,
+            byteCount = byteCount,
+            contentHash = sha256,
+            metadata = MediaAssetMetadata(width = width, height = height, hasAlpha = true),
+        )
+
+    // MARK: - Gallery save
+
+    /**
+     * Saves one verified image/video export receipt to the device gallery
+     * through the App-owned MediaStore port. The receipt is re-proved against
+     * the live project root inside the host; this controller never passes a
+     * path or fabricates a URI.
+     */
+    fun saveReceiptToGallery(jobID: String, receipt: com.floe.android.feature.workbench.MediaExportReceipt) {
+        val port = ports.gallerySave
+        if (port == null || gallerySave.busy) return
+        if (receipt.binding.projectID != projectID) {
+            gallerySave = GallerySaveState(
+                failure = MediaFailure(MediaFailureKind.OWNER_BLOCKED, "galleryOwnerMismatch"),
+            )
+            return
+        }
+        val job = r2?.exports?.job(jobID)
+        if (job != null && !job.owner.matches(r2Context)) {
+            gallerySave = GallerySaveState(
+                failure = MediaFailure(MediaFailureKind.OWNER_BLOCKED, "galleryOwnerMismatch"),
+            )
+            return
+        }
+        val collection = if (receipt.kind == MediaExportKind.IMAGE) {
+            MediaGalleryCollection.IMAGE
+        } else {
+            MediaGalleryCollection.VIDEO
+        }
+        scope.launch {
+            gallerySave = GallerySaveState(busy = true)
+            try {
+                when (val outcome = port.saveToGallery(r2Context, receipt, collection)) {
+                    is MediaGallerySaveOutcome.Saved -> {
+                        gallerySave = GallerySaveState(savedDisplayName = outcome.displayName)
+                    }
+                    is MediaGallerySaveOutcome.PermissionRequired -> {
+                        gallerySave = GallerySaveState(permission = outcome.permission)
+                    }
+                    is MediaGallerySaveOutcome.Failed -> {
+                        gallerySave = GallerySaveState(
+                            failure = MediaFailure(
+                                when (outcome.code) {
+                                    "galleryOwnerMismatch", "galleryRootRefused",
+                                    "gallerySourceRefused", "gallerySourceChanged" ->
+                                        MediaFailureKind.OWNER_BLOCKED
+                                    "galleryStagingUnavailable", "galleryDirectoryUnavailable",
+                                    "galleryPendingInsertFailed", "galleryWriteFailed" ->
+                                        MediaFailureKind.STORAGE
+                                    "unsupportedMimeType", "collectionMismatch",
+                                    "invalidReceipt", "unverifiedReceipt" ->
+                                        MediaFailureKind.INVALID_REQUEST
+                                    else -> MediaFailureKind.EXPORT
+                                },
+                                outcome.code,
+                                outcome.retryable,
+                            ),
+                            pendingCleaned = outcome.pendingCleaned,
+                        )
+                    }
+                }
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (error: Throwable) {
+                gallerySave = GallerySaveState(failure = MediaFailures.from(error))
             }
         }
     }
@@ -1057,6 +1456,7 @@ class MediaEditorController internal constructor(
         successNotice: MediaNotice? = null,
         clearSelection: Boolean = false,
         onSuccess: (() -> Unit)? = null,
+        successCompletion: LayerOperationCompletion? = null,
     ) {
         if (busy || !writable || needsReload) return
         scope.launch {
@@ -1069,6 +1469,9 @@ class MediaEditorController internal constructor(
                     if (applied) {
                         if (successNotice != null) notice = successNotice
                         if (clearSelection) selectedLayerID = null
+                        if (successCompletion != null) {
+                            layerOperation = LayerOperationState(completed = successCompletion)
+                        }
                         onSuccess?.invoke()
                     }
                 } catch (cancelled: CancellationException) {
@@ -1082,7 +1485,11 @@ class MediaEditorController internal constructor(
         }
     }
 
-    private suspend fun executeCommandLocked(command: MediaEditCommand): Boolean {
+    private suspend fun executeCommandLocked(command: MediaEditCommand): Boolean =
+        applyCommandsLocked(listOf(command))
+
+    private suspend fun applyCommandsLocked(commands: List<MediaEditCommand>): Boolean {
+        if (commands.isEmpty()) return false
         val expected = envelope.project.revision
         try {
             host.apply(
@@ -1092,7 +1499,7 @@ class MediaEditorController internal constructor(
                 storage = storage,
                 origin = origin,
                 opID = newOperationID(),
-                commands = listOf(command),
+                commands = commands,
             )
         } catch (cancelled: CancellationException) {
             throw cancelled
@@ -1293,3 +1700,27 @@ enum class VideoNotice {
     MUSIC_REMOVED,
     CANVAS_UPDATED,
 }
+
+/** User-visible terminal outcome of one C03 layer operation. */
+enum class LayerOperationCompletion {
+    SELECTION_SET,
+    SELECTION_CLEARED,
+    FILLED,
+    CUT,
+    COPIED,
+    MERGED,
+}
+
+data class LayerOperationState(
+    val busy: Boolean = false,
+    val completed: LayerOperationCompletion? = null,
+    val failure: MediaFailure? = null,
+)
+
+data class GallerySaveState(
+    val busy: Boolean = false,
+    val savedDisplayName: String? = null,
+    val permission: String? = null,
+    val failure: MediaFailure? = null,
+    val pendingCleaned: Boolean = true,
+)

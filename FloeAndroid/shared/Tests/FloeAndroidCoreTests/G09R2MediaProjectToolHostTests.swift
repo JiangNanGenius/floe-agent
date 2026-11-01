@@ -738,15 +738,29 @@ final class G09R2MediaProjectToolHostTests: XCTestCase {
         }
         XCTAssertFalse(installed(), "no accepted epoch is bound yet")
         XCTAssertNil(registry.runner(named: MediaProjectTool.name))
+        let unbound = G09R2MediaToolRegistration.capability(availability: availability)
+        XCTAssertFalse(unbound.mergeLayers)
+        XCTAssertFalse(unbound.copySelection)
+        XCTAssertFalse(unbound.fillSelection)
+        XCTAssertFalse(unbound.cutSelection)
+        XCTAssertEqual(unbound.enrichmentReasons["merge_layers"], "notBound")
 
         availability.markBound(epoch: epoch)
         XCTAssertTrue(installed())
         XCTAssertNotNil(registry.runner(named: MediaProjectTool.name))
-        XCTAssertEqual(
-            G09R2MediaToolRegistration.capability().mergeLayers, false)
+        let ready = G09R2MediaToolRegistration.capability(availability: availability)
+        XCTAssertTrue(ready.mergeLayers)
+        XCTAssertTrue(ready.copySelection)
+        XCTAssertTrue(ready.fillSelection)
+        XCTAssertTrue(ready.cutSelection)
+        XCTAssertTrue(ready.enrichmentReasons.isEmpty)
 
         availability.markStopping(epoch: epoch)
         XCTAssertFalse(installed(), "root stop must hide the tool")
+        let stopping = G09R2MediaToolRegistration.capability(availability: availability)
+        XCTAssertFalse(stopping.mergeLayers)
+        XCTAssertFalse(stopping.copySelection)
+        XCTAssertEqual(stopping.reason, "rootStopping")
         availability.markBound(epoch: epoch)
         availability.setEnabled(false)
         XCTAssertFalse(installed(), "an explicit disable must hide the tool")
@@ -881,21 +895,21 @@ final class G09R2MediaProjectToolHostTests: XCTestCase {
         }
     }
 
-    func testMergeAndCopySelectionReturnTypedRefusalWithoutWriting() async throws {
+    func testInvalidMergeAndCopyInputsReturnTypedRefusalWithoutWriting() async throws {
         try await makeFixture()
         let project = try await createProject()
         let loaded = try await authorizeAndLoad(project.id)
         do {
             _ = try await host.renderMergeAsset(
                 project: loaded, layerIDs: [UUID()], name: nil)
-            XCTFail("merge must be refused while no composite renderer exists")
+            XCTFail("a one-layer merge is invalid and must be refused before rendering")
         } catch {
             assertValidationFailure(error)
         }
         do {
             _ = try await host.renderCopySelectionAsset(
                 project: loaded, sourceLayerID: UUID())
-            XCTFail("copy selection must be refused while no composite renderer exists")
+            XCTFail("a missing copy source must be refused before rendering")
         } catch {
             assertValidationFailure(error)
         }

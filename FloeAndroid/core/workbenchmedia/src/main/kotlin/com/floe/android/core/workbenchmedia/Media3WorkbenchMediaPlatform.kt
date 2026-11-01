@@ -7,6 +7,7 @@ import com.floe.android.core.workbenchmedia.MediaLifecycleKind
 import com.floe.android.core.workbenchmedia.MediaLifecyclePinRequest
 import com.floe.android.core.workbenchmedia.capability.MediaCapabilityProbe
 import com.floe.android.core.workbenchmedia.export.ExportRuntime
+import com.floe.android.core.workbenchmedia.image.HeicEncoderCapability
 import com.floe.android.core.workbenchmedia.image.ImageExporter
 import com.floe.android.core.workbenchmedia.lifecycle.LifecyclePinTracker
 import com.floe.android.core.workbenchmedia.playback.Media3PlaybackHandle
@@ -56,7 +57,31 @@ internal class Media3WorkbenchMediaPlatform(
 ) : WorkbenchMediaPlatform {
     private val planner = CompositionPlanner(capabilities)
 
-    override fun capabilities(): RenderCapabilities = capabilities.capabilities()
+    override fun capabilities(): RenderCapabilities {
+        val base = capabilities.capabilities()
+        // HEIC is appended from the actual AndroidX HeifWriter capability
+        // probe. The core codec probe intentionally stays codec-only; this
+        // wrapper is the one place that can truthfully combine the real
+        // MediaCodec HEIC/HEVC encoder surface with the image output formats.
+        val heic = HeicEncoderCapability.probe()
+        val formats = if (heic.supported && "heic" !in base.imageFormats) {
+            base.imageFormats + "heic"
+        } else {
+            base.imageFormats
+        }
+        val reasons = base.unavailableReasons.toMutableMap()
+        if (heic.supported) {
+            reasons["image.heic"] =
+                "HEIC is 8-bit SDR via AndroidX HeifWriter 1.1.0; HDR sources require an explicit SDR conversion"
+        } else {
+            reasons["image.heic"] = heic.reason ?: "HEIC encoder is unavailable"
+        }
+        return base.copy(
+            imageFormats = formats,
+            heicSupported = heic.supported,
+            unavailableReasons = reasons,
+        )
+    }
 
     override fun createPlayer(request: PlaybackRequest): PlaybackHandle {
         validateBindingStructure(request.binding)
