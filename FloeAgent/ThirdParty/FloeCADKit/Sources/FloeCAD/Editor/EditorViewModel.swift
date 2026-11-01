@@ -6197,6 +6197,14 @@ final class EditorViewModel {
                         role: .derived(index: 0), signature: $0.signature,
                         elementName: $0.elementName ?? mintElementName(body: input, triangle: $0.triangles.first))
             }
+            // Accepting the existing pick changes no operation. Do not add
+            // an empty history step that steals the next Undo from the
+            // deletion itself. Explicit feature rebuilds retain their API.
+            if case let .deleteFace(currentBody, currentFaces)? = session.document.features.node(featureID)?.kind,
+               currentBody == bodyRef, currentFaces == faceRefs {
+                cancelDeleteFace()
+                return
+            }
             prepareForHistoryChange()
             resetDeleteFaceState()
             session.editFeature(featureID, to: .deleteFace(body: bodyRef, faces: faceRefs))
