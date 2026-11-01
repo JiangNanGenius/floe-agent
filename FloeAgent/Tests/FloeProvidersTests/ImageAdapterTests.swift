@@ -396,7 +396,7 @@ struct ImageAdapterTests {
         do {
             _ = try await VolcengineImageAdapter(session: session).perform(
                 RemoteImageRequest(operation: .generate, prompt: "synthetic contract request",
-                                   modelRemoteID: model.remoteModelID, selection: selection),
+                                   selection: selection, modelRemoteID: model.remoteModelID),
                 provider: profile, credentials: ProviderCredentials(apiKey: "test-key"))
             Issue.record("The actual provider error must surface")
         } catch {
@@ -406,8 +406,8 @@ struct ImageAdapterTests {
         #expect(requests.count == 1, "No account check, model discovery or fallback request")
         let request = try #require(requests.first)
         #expect(request.url?.path == "/api/plan/v3/images/generations")
-        let body = try #require(JSONSerialization.jsonObject(
-            with: try #require(request.httpBody)) as? [String: Any])
+        let bodyData = try #require(request.httpBody)
+        let body = try #require(JSONSerialization.jsonObject(with: bodyData) as? [String: Any])
         #expect(body["model"] as? String == model.remoteModelID)
     }
 
