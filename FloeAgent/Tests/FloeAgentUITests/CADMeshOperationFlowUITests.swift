@@ -124,7 +124,7 @@ final class CADMeshOperationFlowUITests: XCTestCase {
         guard tapMode("Mesh") else { return false }
         guard waitFor(meshBodyRow(), "the mesh-only fixture body must appear",
                       timeout: 30) else { return false }
-        return true
+        return ensureMeshBodySelected()
     }
 
     private func openToolsSheet() -> Bool {

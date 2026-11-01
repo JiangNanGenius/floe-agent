@@ -190,8 +190,10 @@ final class CADIGESSurfaceRoundTripTests: XCTestCase {
         }
         let bounds = try bodyBounds(bodies)
         XCTAssertEqual(bounds.max.x - bounds.min.x, 20, accuracy: 1e-6)
-        XCTAssertEqual(bounds.max.y - bounds.min.y, 30, accuracy: 1e-6)
-        XCTAssertEqual(bounds.max.z - bounds.min.z, 40, accuracy: 1e-6)
+        // The native box contract centers X/Z and places its base on Y = 0:
+        // width is X, height is Y, and depth is Z (OCCTBridge::MakeBox).
+        XCTAssertEqual(bounds.max.y - bounds.min.y, 40, accuracy: 1e-6)
+        XCTAssertEqual(bounds.max.z - bounds.min.z, 30, accuracy: 1e-6)
 
         let note = try XCTUnwrap(payload["note"] as? String)
         XCTAssertTrue(note.contains("not solids"), note)
@@ -238,6 +240,16 @@ final class CADIGESSurfaceRoundTripTests: XCTestCase {
         XCTAssertTrue(imported.isOK)
         let importedSurfaces = try XCTUnwrap(object(imported)["surfacesImported"] as? Int)
         XCTAssertGreaterThanOrEqual(importedSurfaces, 1)
+
+        // Pin the existing centered, Y-up native primitive independently of
+        // the later translation/readback, rather than assuming a corner origin.
+        let initialBounds = try bodyBounds(document.session.document.bodies)
+        XCTAssertEqual(initialBounds.min.x, -10, accuracy: 1e-6)
+        XCTAssertEqual(initialBounds.min.y, 0, accuracy: 1e-6)
+        XCTAssertEqual(initialBounds.min.z, -15, accuracy: 1e-6)
+        XCTAssertEqual(initialBounds.max.x, 10, accuracy: 1e-6)
+        XCTAssertEqual(initialBounds.max.y, 40, accuracy: 1e-6)
+        XCTAssertEqual(initialBounds.max.z, 15, accuracy: 1e-6)
 
         // Ordinary document edit: move every imported surface by the same
         // delta through the SAME undoable command the editor uses. A
@@ -309,12 +321,12 @@ final class CADIGESSurfaceRoundTripTests: XCTestCase {
             XCTAssertFalse(body.surfaceBRep?.containsSolid ?? true)
         }
         let reopenedBounds = try bodyBounds(reopenedBodies)
-        XCTAssertEqual(reopenedBounds.min.x, 10, accuracy: 1e-6)
+        XCTAssertEqual(reopenedBounds.min.x, 0, accuracy: 1e-6)
         XCTAssertEqual(reopenedBounds.min.y, -5, accuracy: 1e-6)
-        XCTAssertEqual(reopenedBounds.min.z, 7, accuracy: 1e-6)
-        XCTAssertEqual(reopenedBounds.max.x, 30, accuracy: 1e-6)
-        XCTAssertEqual(reopenedBounds.max.y, 25, accuracy: 1e-6)
-        XCTAssertEqual(reopenedBounds.max.z, 47, accuracy: 1e-6)
+        XCTAssertEqual(reopenedBounds.min.z, -8, accuracy: 1e-6)
+        XCTAssertEqual(reopenedBounds.max.x, 20, accuracy: 1e-6)
+        XCTAssertEqual(reopenedBounds.max.y, 35, accuracy: 1e-6)
+        XCTAssertEqual(reopenedBounds.max.z, 22, accuracy: 1e-6)
     }
 
     // MARK: - Persistence identity
@@ -544,6 +556,12 @@ final class CADIGESSurfaceRoundTripTests: XCTestCase {
     /// The interactive tools must refuse BEFORE entering a picking/drag mode:
     /// no preview, no ReplaceBody, no undo step and no dropped surface handle.
     func testLiveFaceAndBodyToolsRefuseExactOpenSurfaceWithoutMutation() throws {
+        // This test checks the English fallback wording as well as geometry.
+        // The App installs its current-language localizer globally; restore it
+        // after this synchronous test without changing the user's language.
+        let previousLocalizer = FloeCADStrings.localizer
+        FloeCADStrings.localizer = nil
+        defer { FloeCADStrings.localizer = previousLocalizer }
         XCTAssertTrue(importIGES(try singleFaceIGES(), name: "Sheet").isOK)
         let body = try XCTUnwrap(document.session.document.bodies.first)
         let surface = try XCTUnwrap(body.surfaceBRep)

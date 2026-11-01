@@ -395,7 +395,7 @@ final class CADMeshPanelConsentUITests: XCTestCase {
 
     private func triangleCount(in text: String) -> Int? {
         guard let marker = text.range(of: "△") else { return nil }
-        let prefix = text[..<marker.lowerBound]
+        let prefix = text[..<marker.lowerBound].trimmingCharacters(in: .whitespacesAndNewlines)
         let digits = prefix.reversed().prefix { $0.isNumber }.reversed()
         return Int(String(digits))
     }
