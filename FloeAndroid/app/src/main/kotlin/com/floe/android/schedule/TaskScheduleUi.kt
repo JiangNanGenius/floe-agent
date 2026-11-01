@@ -117,6 +117,17 @@ fun TaskScheduleDestination(
     var exactAllowed by remember {
         mutableStateOf(TaskSchedulePlatform.exactAlarmAllowed(context))
     }
+    val entryFocus by
+        com.floe.android.host.entryflow.C07EntryFlowHost.scheduleFocus.collectAsState()
+    LaunchedEffect(entryFocus?.requestID) {
+        val focus = entryFocus ?: return@LaunchedEffect
+        when (val result = controller.detail(focus.scheduleID)) {
+            is TaskScheduleResult.Ok -> editing = result.value
+            is TaskScheduleResult.Failure -> actionError = result.code
+        }
+        com.floe.android.host.entryflow.C07EntryFlowHost
+            .consumeScheduleFocus(focus.requestID)
+    }
     // Compact/phone Back returns to the Task Center list instead of leaving
     // the app; the persistent-sidebar (tablet) surface keeps platform Back.
     androidx.activity.compose.BackHandler(enabled = compact) { onBack() }

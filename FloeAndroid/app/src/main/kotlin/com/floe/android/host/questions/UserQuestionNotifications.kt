@@ -25,7 +25,9 @@ import android.os.Build
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
 import androidx.core.app.RemoteInput
+import com.floe.android.MainActivity
 import com.floe.android.feature.conversation.ConversationSessionToken
+import com.floe.android.host.entryflow.C07EntryNotification
 import com.floe.android.feature.conversation.UserQuestionAnswerRequestUi
 import com.floe.android.feature.conversation.UserQuestionSnapshotUi
 import java.util.Locale
@@ -64,16 +66,23 @@ internal object UserQuestionNotifications {
         }
         if (!notificationsAllowed(context)) return
         ensureChannel(context)
-        val launch = context.packageManager.getLaunchIntentForPackage(context.packageName)
-            ?.apply { addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP) }
-        val contentIntent = launch?.let {
-            PendingIntent.getActivity(
-                context,
-                notificationId(session.conversationId),
-                it,
-                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
-            )
-        }
+        // C07 identifier-only return: the content tap opens the EXACT durable
+        // conversation so the existing question surface re-reads the live
+        // pending state. No question text/answer is placed in the Intent and
+        // no answer is submitted by tapping.
+        val launch = Intent(context, MainActivity::class.java)
+            .setAction(C07EntryNotification.ACTION_QUESTION)
+            .setPackage(context.packageName)
+            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
+            .putExtra(C07EntryNotification.EXTRA_CONVERSATION_ID, session.conversationId)
+            .putExtra(C07EntryNotification.EXTRA_REQUEST_ID, question.requestId)
+            .putExtra(C07EntryNotification.EXTRA_QUESTION_ID, question.questionId)
+        val contentIntent = PendingIntent.getActivity(
+            context,
+            notificationId(session.conversationId),
+            launch,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+        )
         val builder = NotificationCompat.Builder(context, CHANNEL_ID)
             .setSmallIcon(context.applicationInfo.icon)
             .setContentTitle(if (chinese()) "Floe 需要你的输入" else "Floe needs your input")

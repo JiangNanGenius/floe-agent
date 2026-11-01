@@ -13,6 +13,7 @@ import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
 import com.floe.android.MainActivity
 import com.floe.android.R
+import com.floe.android.host.entryflow.C07EntryNotification
 
 /**
  * Actionable platform notices for scheduled tasks. A missing exact-alarm
@@ -117,8 +118,13 @@ internal object TaskScheduleNotifications {
     }
 
     private fun openAppIntent(context: Context, scheduleID: String): PendingIntent {
+        // C07 explicit schedule return. The App host re-reads the EXISTING
+        // schedule store before opening the Task Center schedules surface; a
+        // removed/stale schedule is refused with honest copy.
         val intent = Intent(context, MainActivity::class.java)
+            .setAction(C07EntryNotification.ACTION_SCHEDULE)
             .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
+            .putExtra(C07EntryNotification.EXTRA_SCHEDULE_ID, scheduleID)
             .putExtra(EXTRA_SCHEDULE_ID, scheduleID)
         return PendingIntent.getActivity(
             context,

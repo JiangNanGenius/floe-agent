@@ -14,6 +14,7 @@ import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.repeatOnLifecycle
 import com.floe.android.host.capture.PacketCaptureNavigation
 import com.floe.android.host.creative.GenerationReturnNavigation
+import com.floe.android.host.entryflow.C07EntryFlowHost
 import com.floe.android.host.gallery.GalleryPermissionRequester
 import kotlinx.coroutines.launch
 
@@ -57,6 +58,11 @@ class MainActivity : ComponentActivity() {
     }
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        // C07 external entry: SEND/SEND_MULTIPLE, content VIEW, floe:// links
+        // and question/schedule notification taps. Admission is data-only and
+        // idempotent across rotation/recreation; the App-owned host applies the
+        // real policy and asks for a destination before any copy.
+        C07EntryFlowHost.admit(this, intent)
         // Cold-Activity launch: the explicit generation notification PendingIntent
         // delivers its opaque return token here. The shell resolves it later
         // against the LIVE registered foreground claim + captured project
@@ -95,6 +101,7 @@ class MainActivity : ComponentActivity() {
         // Warm launch: keep the newest Intent so an Activity recreation does
         // not replay an older route; the one-shot owner still dedupes by id.
         setIntent(intent)
+        C07EntryFlowHost.admit(this, intent)
         admitGenerationReturn(intent)
         PacketCaptureNavigation.submitFromIntent(intent, packageName)
         admitCalendarRoute(intent)

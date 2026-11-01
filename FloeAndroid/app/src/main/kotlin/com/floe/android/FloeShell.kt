@@ -78,6 +78,11 @@ import com.floe.android.design.InspectorRoute
 import com.floe.android.design.MoreDestination
 import com.floe.android.host.capture.PacketCaptureNavigation
 import com.floe.android.host.calendar.C06CalendarNavigation
+import com.floe.android.host.entryflow.C07EntryFlowFeature
+import com.floe.android.host.entryflow.C07EntryFlowHost
+import com.floe.android.host.entryflow.C07EntryFlowSurface
+import com.floe.android.host.entryflow.C07EntryNavigation
+import com.floe.android.host.entryflow.C07HomeAttachmentStager
 import com.floe.android.design.SidebarSelection
 import com.floe.android.design.WorkbenchSelection
 import com.floe.android.feature.canvas.CreativeAvailability
@@ -273,6 +278,19 @@ private fun FloeShellContent(
         // CREATE_DOCUMENT launcher mounts exactly once with the other
         // platform pickers; a null service (fixtures) is inert.
         com.floe.android.host.output.RunOutputSavePickerEffect(application?.runOutputs)
+        LaunchedEffect(runtimeHost) {
+            val host = runtimeHost ?: return@LaunchedEffect
+            C07EntryFlowHost.attach(host)
+            C07EntryFlowHost.installHomeAttachmentStager(
+                object : C07HomeAttachmentStager {
+                    override fun stage(uris: List<android.net.Uri>): Boolean {
+                        val (nonce, generation) =
+                            host.conversations.rootWorkspace.currentDraftOwner()
+                        return host.attachments.stageDraftUris(nonce, generation, uris)
+                    }
+                },
+            )
+        }
         LaunchedEffect(runtimeHost) {
             // ONE serial consumer for host navigation. Collecting (instead of
             // keying a LaunchedEffect on the value) means clearing the
@@ -619,6 +637,60 @@ private fun FloeShellContent(
             )
         }
 
+        // C07 external entry route. The App host has already re-read the
+        // existing conversation/schedule store and refused stale targets; this
+        // consumer only commits the ordinary route, with the EXISTING
+        // temporary-chat fence and the existing schedule sub-view token.
+        LaunchedEffect(runtimeHost) {
+            runtimeHost ?: return@LaunchedEffect
+            C07EntryFlowHost.navigation.collect { requested ->
+                val request = requested ?: return@collect
+                when (request) {
+                    is C07EntryNavigation.OpenTask -> navigateTo(
+                        target = SidebarSelection.Conversation(request.conversationID),
+                        openSchedules = false,
+                        onCommitted = { C07EntryFlowHost.consumeNavigation(request) },
+                        onRefused = {
+                            C07EntryFlowHost.navigationRefused()
+                            C07EntryFlowHost.consumeNavigation(request)
+                        },
+                    )
+                    is C07EntryNavigation.OpenSchedule -> navigateTo(
+                        target = SidebarSelection.Workbench(WorkbenchSelection.OVERVIEW),
+                        openSchedules = true,
+                        onCommitted = { C07EntryFlowHost.consumeNavigation(request) },
+                        onRefused = {
+                            C07EntryFlowHost.navigationRefused()
+                            C07EntryFlowHost.consumeNavigation(request)
+                        },
+                    )
+                    is C07EntryNavigation.OpenNewTask -> navigateTo(
+                        target = SidebarSelection.Workbench(WorkbenchSelection.NEW_TASK),
+                        openSchedules = false,
+                        onCommitted = {
+                            request.intakeID?.let(C07EntryFlowHost::applyTaskDestination)
+                            C07EntryFlowHost.consumeNavigation(request)
+                        },
+                        onRefused = {
+                            request.intakeID?.let {
+                                C07EntryFlowHost.taskDestinationRefused(it, temporary = true)
+                            }
+                            C07EntryFlowHost.consumeNavigation(request)
+                        },
+                    )
+                    C07EntryNavigation.OpenNotes -> navigateTo(
+                        target = SidebarSelection.More(MoreDestination.NOTES),
+                        openSchedules = false,
+                        onCommitted = { C07EntryFlowHost.consumeNavigation(request) },
+                        onRefused = {
+                            C07EntryFlowHost.navigationRefused()
+                            C07EntryFlowHost.consumeNavigation(request)
+                        },
+                    )
+                }
+            }
+        }
+
         // Generation notification return. This is the shell's single route
         // authority: it re-proves the opaque token against the LIVE registered
         // foreground claim, the exact captured project context and the CURRENT
@@ -939,6 +1011,21 @@ private fun FloeShellContent(
             )
         }
 
+        // C07 share/setup surfaces. Both are dismissible Dialogs over the
+        // CURRENT route; arrival never navigates. The notice is a small
+        // bounded card, not a second navigation layer.
+        C07EntryFlowSurface(
+            onOpenSettingsSection = { key ->
+                settingsSectionKey = key
+                settingsVisible = true
+            },
+            modifier = Modifier
+                .align(Alignment.BottomCenter)
+                .navigationBarsPadding()
+                .imePadding()
+                .padding(horizontal = 16.dp, vertical = 8.dp),
+        )
+
         SettingsSheet(
             visible = settingsVisible,
             initialSection = settingsSectionKey,
@@ -976,7 +1063,11 @@ private fun FloeShellContent(
             // PLAY flavour returns an empty list and imports no channel type.
             externalSections =
                 com.floe.android.host.settings.DistributionSettingsFeature.sections() +
-                    listOf(com.floe.android.host.dataexchange.C07DataExchangeFeature.settingsSection(runtimeHost)),
+                    listOf(
+                        com.floe.android.host.dataexchange.C07DataExchangeFeature
+                            .settingsSection(runtimeHost),
+                        C07EntryFlowFeature.settingsSection(),
+                    ),
         )
 
         // G05-R3 Alpha14: one self-update surface (full channel only; the

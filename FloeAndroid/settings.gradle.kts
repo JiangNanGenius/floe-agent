@@ -109,6 +109,10 @@ include(":feature:systemservices")
 // C07 manual backup/restore and document-package exchange presentation. The
 // App host owns SAF and the Swift bridge; Main generates this module's lock.
 include(":feature:dataexchange")
+// C07 App-entry presentation: share/open chooser, skippable setup guide and
+// the user-authored local feedback/diagnostics export. The App host owns the
+// Intent/grant/Notes/staging policy; Main generates this module's lockfile.
+include(":feature:entryflow")
 // C02 durable task execution target: presentation only; the App host owns
 // the trusted `floe.target/19` client and the Swift domain owns the target.
 include(":feature:executiontarget")

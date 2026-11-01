@@ -17,6 +17,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -81,6 +82,19 @@ fun HomeLaunchpadPage(
     val freshTaskUiScope = rememberCoroutineScope()
     var field by remember {
         mutableStateOf(TextFieldValue(HomeDraftTransfer.draft(FloeFoundation.draftStore)))
+    }
+    // C07 explicit share→New Task merge. The host has already appended the
+    // shared text to the SAME RAM Home draft; this adopts that exact merged
+    // value once (never a background auto-send and never a temporary session).
+    val entryDraftAdoption by
+        com.floe.android.host.entryflow.C07EntryFlowHost.homeDraftAdoption.collectAsState()
+    LaunchedEffect(entryDraftAdoption?.revision) {
+        val adoption = entryDraftAdoption ?: return@LaunchedEffect
+        if (field.text != adoption.text) {
+            field = TextFieldValue(adoption.text)
+        }
+        com.floe.android.host.entryflow.C07EntryFlowHost
+            .consumeHomeDraftAdoption(adoption.revision)
     }
     // The RAM draft store is updated synchronously with every edit so a
     // navigation/rotation cancellation can never race ahead of the last

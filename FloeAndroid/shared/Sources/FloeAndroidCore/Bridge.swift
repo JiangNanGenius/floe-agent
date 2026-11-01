@@ -47,7 +47,8 @@ public enum AndroidBridge {
                 || requestVersion == BridgeV17.version
                 || requestVersion == BridgeV18.version
                 || requestVersion == BridgeV22.version
-                || requestVersion == BridgeV21.version else {
+                || requestVersion == BridgeV21.version
+                || requestVersion == BridgeV24.version else {
             return response(["ok": false, "error": "unsupportedVersion"])
         }
         if requestVersion == BridgeV2.version {
@@ -383,6 +384,23 @@ public enum AndroidBridge {
                                 stampVersion: BridgeV21.version)
             }
             return response(object, stampVersion: BridgeV21.version)
+        }
+        if requestVersion == BridgeV24.version {
+            // Additive C07 host-only App-entry policy channel: strict floe://
+            // route parsing and bounded share/open descriptor validation. No
+            // file, network, store, task, schedule, approval or credential
+            // operation; the platform host owns Intent admission and grants.
+            // V1-V23 branches above remain byte-identical.
+            let object = C07AppEntryBridge.handle(requestData: data,
+                                                  fallbackRequestID: requestID)
+            let encoded = (try? JSONSerialization.data(withJSONObject: object,
+                                                       options: [.sortedKeys]))
+                ?? Data(#"{"ok":false,"error":"encoding"}"#.utf8)
+            guard encoded.count <= BridgeV24.maximumResponseBytes else {
+                return response(["ok": false, "error": "responseTooLarge"],
+                                stampVersion: BridgeV24.version)
+            }
+            return response(object, stampVersion: BridgeV24.version)
         }
         switch request["operation"] as? String {
         case "handshake":

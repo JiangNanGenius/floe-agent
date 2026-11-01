@@ -567,6 +567,8 @@ dependencies {
     // C07 backup/restore and document-package presentation; the App-owned
     // data-exchange controller owns SAF and the trusted bridge.
     implementation(project(":feature:dataexchange"))
+    // C07 App-entry presentation (share chooser, setup guide, feedback).
+    implementation(project(":feature:entryflow"))
     // C02 per-task execution target sheet; the App-owned controller owns the
     // trusted bridge and the Swift domain owns pinning/migration/CAS.
     implementation(project(":feature:executiontarget"))
