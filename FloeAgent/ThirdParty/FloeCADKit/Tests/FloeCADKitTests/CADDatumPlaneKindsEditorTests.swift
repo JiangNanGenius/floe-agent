@@ -154,13 +154,13 @@ final class CADDatumPlaneKindsEditorTests: XCTestCase {
                 ["sketch_id": ref.sketchID.raw.uuidString,
                  "entity_id": ref.entityID.uuidString, "role": ref.role.rawValue] as [String: Any]
             }]))
-        guard case let .threePoints(edited)? = try XCTUnwrap(
+        guard case let .threePoints(edited) = try XCTUnwrap(
             f.document.session.document.planes.first { $0.id == planeID }?.definition) else {
             return XCTFail("lost three-point definition")
         }
         XCTAssertEqual(edited.points, swapped)
         model.undo()
-        guard case let .threePoints(restored)? = try XCTUnwrap(
+        guard case let .threePoints(restored) = try XCTUnwrap(
             f.document.session.document.planes.first { $0.id == planeID }?.definition) else {
             return XCTFail("lost three-point definition after undo")
         }
