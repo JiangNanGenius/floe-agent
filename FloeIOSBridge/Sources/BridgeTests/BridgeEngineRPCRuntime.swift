@@ -124,6 +124,13 @@ final class BridgeEngineRPCRuntime: BridgeRPCExecutor, BridgeScreenFrameProvider
                                      alertsKnown: alerts.known,
                                      alertCount: alerts.count,
                                      hittableAlertCount: alerts.hittableCount)
+        let helper = BRForegroundHelperLastDiagnostic()
+        let helperDiagnostic: [String: BridgeRPCJSONValue] = [
+            "source": .string(helper["source"] as? String ?? "unavailable"),
+            "reason_code": .string(helper["reason_code"] as? String ?? "not_observed"),
+            "candidate_count": .int((helper["candidate_count"] as? NSNumber)?.intValue ?? 0),
+            "captured_at": .double((helper["captured_at"] as? NSNumber)?.doubleValue ?? 0),
+        ]
         lastAuthorizationGuardUptime = ProcessInfo.processInfo.systemUptime
         lastAuthorizationGuard = [
             "reason_code": .string(decision.rawValue),
@@ -134,6 +141,7 @@ final class BridgeEngineRPCRuntime: BridgeRPCExecutor, BridgeScreenFrameProvider
             "target_query_known": .bool(targetObservation?.queryKnown ?? false),
             "overlay_states": .object(overlayStates),
             "foreground_relation": .string(foreground.rawValue),
+            "foreground_helper": .object(helperDiagnostic),
             "overlay_foreground": .bool(overlayForeground),
             "overlay_states_known": .bool(overlayStatesKnown),
             "alerts_known": .bool(alerts.known),

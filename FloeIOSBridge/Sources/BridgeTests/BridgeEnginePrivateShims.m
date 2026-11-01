@@ -1,6 +1,4 @@
 #import "BridgeEnginePrivateShims.h"
-#import <UIKit/UIKit.h>
-#import <XCTest/XCTest.h>
 #import <dispatch/dispatch.h>
 #import <notify.h>
 #import <stdatomic.h>
@@ -24,25 +22,6 @@ static id BRCallObject(id target, NSString *selectorName) {
     void *raw = NULL;
     [invocation getReturnValue:&raw];
     return (__bridge id)raw;
-}
-
-static int32_t BRCallInt32(id target, NSString *selectorName) {
-    if (!target) { return 0; }
-    SEL selector = NSSelectorFromString(selectorName);
-    if (![target respondsToSelector:selector]) { return 0; }
-    NSMethodSignature *signature = [target methodSignatureForSelector:selector];
-    if (!signature) { return 0; }
-    NSInvocation *invocation = [NSInvocation invocationWithMethodSignature:signature];
-    invocation.target = target;
-    invocation.selector = selector;
-    @try {
-        [invocation invoke];
-    } @catch (__unused NSException *exception) {
-        return 0;
-    }
-    int32_t value = 0;
-    [invocation getReturnValue:&value];
-    return value;
 }
 
 static NSInteger BRCallInteger(id target, NSString *selectorName) {
@@ -491,15 +470,6 @@ BOOL BRPressLockButton(void) {
 
 #pragma mark - Foreground app
 
-BOOL BRForegroundHelperAvailable(void) {
-    Class deviceClass = NSClassFromString(@"XCUIDevice");
-    if (!deviceClass) { return NO; }
-    id device = BRCallObject(deviceClass, @"sharedDevice");
-    id client = BRCallObject(device, @"accessibilityInterface");
-    return client != nil
-        && [client respondsToSelector:NSSelectorFromString(@"activeApplications")];
-}
-
 NSInteger BRAppStateForBundleIdentifier(NSString *bundleIdentifier) {
     if (bundleIdentifier.length == 0) { return 0; }
     Class appClass = NSClassFromString(@"XCUIApplication");
@@ -530,59 +500,190 @@ BOOL BRAppStateAvailable(void) {
     return appClass != nil && [appClass instancesRespondToSelector:NSSelectorFromString(@"state")];
 }
 
-static NSString *BRBundleIDForElement(id element) {
-    if (!element) { return nil; }
-    NSString *identifier = BRCallObject(element, @"bundleIdentifier");
-    if (identifier.length > 0) { return [identifier copy]; }
-    identifier = BRCallObject(element, @"bundleID");
-    if (identifier.length > 0) { return [identifier copy]; }
-    int32_t pid = BRCallInt32(element, @"processIdentifier");
-    if (pid <= 0) { return nil; }
-    Class appClass = NSClassFromString(@"XCUIApplication");
-    if (!appClass) { return nil; }
-    id alloced = [appClass alloc];
-    SEL selector = NSSelectorFromString(@"initWithProcessID:");
-    if (![alloced respondsToSelector:selector]) { return nil; }
-    NSMethodSignature *signature = [alloced methodSignatureForSelector:selector];
-    NSInvocation *invocation = [NSInvocation invocationWithMethodSignature:signature];
-    invocation.target = alloced;
-    invocation.selector = selector;
-    pid_t processID = (pid_t)pid;
-    [invocation setArgument:&processID atIndex:2];
+// This section deliberately accepts only validated Objective-C ABI shapes.
+// A private selector's presence alone does not establish a safe return type.
+static const char *BRForegroundUnqualifiedType(const char *type) {
+    while (*type && strchr("rnNoORV", *type)) { type++; }
+    return type;
+}
+
+static BOOL BRForegroundObjectSignature(NSMethodSignature *signature, NSUInteger arguments) {
+    return signature && signature.numberOfArguments == arguments
+        && *BRForegroundUnqualifiedType(signature.methodReturnType) == '@'
+        && signature.methodReturnLength == sizeof(id);
+}
+
+static BOOL BRForegroundHasObjectGetter(id target, NSString *name) {
     @try {
-        [invocation invoke];
-    } @catch (__unused NSException *exception) {
+        SEL selector = NSSelectorFromString(name);
+        return target && [target respondsToSelector:selector]
+            && BRForegroundObjectSignature([target methodSignatureForSelector:selector], 2);
+    } @catch (__unused NSException *exception) { return NO; }
+}
+
+static id BRForegroundObject(id target, NSString *name) {
+    @try {
+        if (!BRForegroundHasObjectGetter(target, name)) { return nil; }
+        SEL selector = NSSelectorFromString(name);
+        NSInvocation *call = [NSInvocation invocationWithMethodSignature:[target methodSignatureForSelector:selector]];
+        call.target = target;
+        call.selector = selector;
+        [call invoke];
+        __unsafe_unretained id value = nil;
+        [call getReturnValue:&value];
+        return value;
+    } @catch (__unused NSException *exception) { return nil; }
+}
+
+static int32_t BRForegroundPID(id target) {
+    for (NSString *name in @[@"processIdentifier", @"processID"]) {
+        @try {
+            SEL selector = NSSelectorFromString(name);
+            if (![target respondsToSelector:selector]) { continue; }
+            NSMethodSignature *signature = [target methodSignatureForSelector:selector];
+            if (!signature || signature.numberOfArguments != 2) { return 0; }
+            const char *type = BRForegroundUnqualifiedType(signature.methodReturnType);
+            if ((*type != 'i' && *type != 'q') || signature.methodReturnLength > sizeof(int64_t)) { return 0; }
+            NSInvocation *call = [NSInvocation invocationWithMethodSignature:signature];
+            call.target = target;
+            call.selector = selector;
+            [call invoke];
+            int64_t value = 0;
+            if (*type == 'i') {
+                int32_t small = 0;
+                [call getReturnValue:&small];
+                value = small;
+            } else { [call getReturnValue:&value]; }
+            return value > 0 && value <= INT32_MAX ? (int32_t)value : 0;
+        } @catch (__unused NSException *exception) { return 0; }
+    }
+    return 0;
+}
+
+static id BRForegroundMonitoredApp(id tracker, int32_t pid) {
+    @try {
+        SEL selector = NSSelectorFromString(@"monitoredApplicationWithProcessIdentifier:");
+        if (!tracker || pid <= 0 || ![tracker respondsToSelector:selector]) { return nil; }
+        NSMethodSignature *signature = [tracker methodSignatureForSelector:selector];
+        if (!BRForegroundObjectSignature(signature, 3)
+            || strcmp(BRForegroundUnqualifiedType([signature getArgumentTypeAtIndex:2]), @encode(int32_t)) != 0) { return nil; }
+        NSInvocation *call = [NSInvocation invocationWithMethodSignature:signature];
+        call.target = tracker;
+        call.selector = selector;
+        [call setArgument:&pid atIndex:2];
+        [call invoke];
+        __unsafe_unretained id value = nil;
+        [call getReturnValue:&value];
+        return value;
+    } @catch (__unused NSException *exception) { return nil; }
+}
+
+static NSString *BRForegroundBundleID(id app) {
+    for (NSString *name in @[@"bundleIdentifier", @"bundleID"]) {
+        id value = BRForegroundObject(app, name);
+        if ([value isKindOfClass:NSString.class] && [value length] > 0 && [value length] <= 256) {
+            return [value copy];
+        }
+    }
+    return nil;
+}
+
+static NSLock *BRForegroundDiagnosticLock(void) {
+    static NSLock *lock;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{ lock = [NSLock new]; });
+    return lock;
+}
+static NSDictionary<NSString *, id> *BRLastForegroundDiagnostic;
+static void BRRecordForeground(NSString *source, NSString *reason, NSUInteger count) {
+    NSLock *lock = BRForegroundDiagnosticLock();
+    [lock lock];
+    BRLastForegroundDiagnostic = @{@"source": source, @"reason_code": reason,
+                                  @"candidate_count": @(count),
+                                  @"captured_at": @([NSDate date].timeIntervalSince1970)};
+    [lock unlock];
+}
+NSDictionary<NSString *, id> *BRForegroundHelperLastDiagnostic(void) {
+    NSLock *lock = BRForegroundDiagnosticLock();
+    [lock lock];
+    NSDictionary *value = [BRLastForegroundDiagnostic copy];
+    [lock unlock];
+    return value ?: @{@"reason_code": @"not_observed"};
+}
+
+static NSString *BRResolveForeground(id device, NSInteger (^stateForBundle)(NSString *)) {
+    id client = BRForegroundObject(device, @"accessibilityInterface");
+    id system = BRForegroundObject(device, @"system");
+    NSString *source = @"unavailable";
+    id value = nil;
+    if (BRForegroundHasObjectGetter(client, @"activeForegroundApplications")) {
+        source = @"accessibility_foreground";
+        value = BRForegroundObject(client, @"activeForegroundApplications");
+    } else if (BRForegroundHasObjectGetter(system, @"activeForegroundApplications")) {
+        source = @"system_foreground";
+        value = BRForegroundObject(system, @"activeForegroundApplications");
+    } else if (BRForegroundHasObjectGetter(client, @"activeApplications")) {
+        source = @"accessibility_active";
+        value = BRForegroundObject(client, @"activeApplications");
+    }
+    if (![value isKindOfClass:NSArray.class] || [value count] == 0 || [value count] > 32) {
+        BRRecordForeground(source, @"applications_unknown", 0);
         return nil;
     }
-    void *rawApp = NULL;
-    [invocation getReturnValue:&rawApp];
-    id app = (__bridge_transfer id)rawApp;
-    if (!app) { return nil; }
-    NSString *resolved = BRCallObject(app, @"bundleID");
-    return [resolved copy];
+    NSArray *apps = value;
+    id tracker = BRForegroundObject(client, @"applicationProcessTracker");
+    NSString *candidate = nil;
+    for (id element in apps) {
+        NSString *bundle = BRForegroundBundleID(element);
+        if (!bundle) { bundle = BRForegroundBundleID(BRForegroundMonitoredApp(tracker, BRForegroundPID(element))); }
+        if (!bundle) { BRRecordForeground(source, @"identity_unknown", apps.count); return nil; }
+        NSInteger state = stateForBundle(bundle);
+        if (state < 1 || state > 4) { BRRecordForeground(source, @"state_unknown", apps.count); return nil; }
+        if (state != 4) { continue; }
+        NSString *lower = bundle.lowercaseString;
+        if ([lower isEqualToString:@"com.apple.springboard"]) { continue; }
+        if ([@[@"com.apple.authkitui", @"com.apple.localauthentication.remoteui",
+               @"com.apple.authenticationservices.ui", @"com.apple.passcodesettings"] containsObject:lower]) {
+            BRRecordForeground(source, @"authorization_foreground", apps.count);
+            return nil;
+        }
+        if (candidate && [candidate caseInsensitiveCompare:bundle] != NSOrderedSame) {
+            BRRecordForeground(source, @"multiple_foreground", apps.count);
+            return nil;
+        }
+        candidate = bundle;
+    }
+    BRRecordForeground(source, candidate ? @"unique_foreground" : @"no_ordinary_foreground", apps.count);
+    return candidate;
+}
+
+BOOL BRForegroundHelperAvailable(void) {
+    id device = BRForegroundObject(NSClassFromString(@"XCUIDevice"), @"sharedDevice");
+    id client = BRForegroundObject(device, @"accessibilityInterface");
+    id system = BRForegroundObject(device, @"system");
+    return BRForegroundHasObjectGetter(client, @"activeForegroundApplications")
+        || BRForegroundHasObjectGetter(system, @"activeForegroundApplications")
+        || BRForegroundHasObjectGetter(client, @"activeApplications");
 }
 
 NSString *BRCurrentForegroundBundleID(void) {
-    Class deviceClass = NSClassFromString(@"XCUIDevice");
-    if (!deviceClass) { return nil; }
-    id device = BRCallObject(deviceClass, @"sharedDevice");
-    id client = BRCallObject(device, @"accessibilityInterface");
-    NSArray *apps = BRCallObject(client, @"activeApplications");
-    if (![apps isKindOfClass:[NSArray class]] || apps.count == 0) { return nil; }
-    NSString *springboard = nil;
-    for (id element in apps) {
-        NSString *bundleIdentifier = BRBundleIDForElement(element);
-        if (bundleIdentifier.length == 0) { continue; }
-        if ([bundleIdentifier isEqualToString:@"com.apple.springboard"]) {
-            springboard = bundleIdentifier;
-            continue;
-        }
-        NSInteger state = BRAppStateForBundleIdentifier(bundleIdentifier);
-        if (state == 4 || state == 0) { return bundleIdentifier; }
+    id device = BRForegroundObject(NSClassFromString(@"XCUIDevice"), @"sharedDevice");
+    @try {
+        return BRResolveForeground(device, ^NSInteger(NSString *bundle) {
+            return BRAppStateForBundleIdentifier(bundle);
+        });
+    } @catch (__unused NSException *exception) {
+        BRRecordForeground(@"unavailable", @"query_failed", 0);
+        return nil;
     }
-    if (springboard) { return springboard; }
-    return BRBundleIDForElement(apps.firstObject);
 }
+
+#if BRIDGE_ENGINE_TESTING
+NSString *BRForegroundBundleIDForTesting(id device, NSInteger (^stateForBundle)(NSString *)) {
+    @try { return BRResolveForeground(device, stateForBundle); }
+    @catch (__unused NSException *exception) { return nil; }
+}
+#endif
 
 #pragma mark - Installed apps
 

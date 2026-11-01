@@ -47,10 +47,17 @@ FOUNDATION_EXPORT BOOL BRLockStateKnown(void);
 FOUNDATION_EXPORT NSInteger BRLockRawState(void);
 FOUNDATION_EXPORT BOOL BRIsLocked(void);
 
-/// Resolves the frontmost app bundle id through XCTest's accessibility
-/// interface. Returns nil when the private path is unavailable.
+/// Resolves one known ordinary foreground app through current XCTest monitored
+/// applications (legacy AX elements resolve through their process tracker).
+/// Unknown state/identity, system authorization or multiple apps return nil.
 FOUNDATION_EXPORT BOOL BRForegroundHelperAvailable(void);
 FOUNDATION_EXPORT NSString * _Nullable BRCurrentForegroundBundleID(void);
+/// Fixed branch/count/time facts only. Never contains bundle IDs or AX values.
+FOUNDATION_EXPORT NSDictionary<NSString *, id> *BRForegroundHelperLastDiagnostic(void);
+#if BRIDGE_ENGINE_TESTING
+FOUNDATION_EXPORT NSString * _Nullable BRForegroundBundleIDForTesting(
+    id device, NSInteger (^stateForBundle)(NSString *));
+#endif
 
 /// Installed-app enumeration through LSApplicationWorkspace.
 FOUNDATION_EXPORT BOOL BRInstalledAppsAvailable(void);
