@@ -176,4 +176,75 @@ final class CADDeleteFaceHistoryTests: XCTestCase {
             XCTAssertEqual(abs(OCCTKernel.volume(try XCTUnwrap(retained.brep))), 12_000 - 90 * .pi, accuracy: 1e-4)
         }
     }
+
+    func testRemovingOneOfThreeRealFaceFragmentsCannotRebindItsOrdinalToASurvivor() async throws {
+        let bodyID = BodyID(), firstSlotID = BodyID(), secondSlotID = BodyID(), removalID = BodyID()
+        let source = FeatureNode(name: "Plate", kind: .primitive(
+            spec: .box(width: 60, depth: 20, height: 10), placement: .identity), outputBodyIDs: [bodyID])
+        func slot(_ x: Double, _ output: BodyID) -> FeatureNode {
+            FeatureNode(name: "Slot", kind: .primitive(spec: .box(width: 5, depth: 40, height: 30),
+                placement: Transform3D(translation: SIMD3(x, -10, 0))), outputBodyIDs: [output])
+        }
+        let a = slot(-10, firstSlotID), b = slot(10, secondSlotID)
+        let target = BodyRef(producer: source.id, bodyID: bodyID)
+        let tools = [BodyRef(producer: a.id, bodyID: firstSlotID), BodyRef(producer: b.id, bodyID: secondSlotID)]
+        var cut = FeatureNode(name: "Three regions", kind: .boolean(kind: .subtract, target: target, tools: tools),
+                              outputBodyIDs: [bodyID])
+        var revision: UInt64 = 0
+        func evaluate(_ nodes: [FeatureNode]) -> EvalResult {
+            FeatureGraph(nodes: nodes).evaluate(sketches: [], planes: [], naming: SignatureNaming()) {
+                revision += 1
+                return revision
+            }
+        }
+        let initial = evaluate([source, a, b, cut])
+        XCTAssertTrue(initial.errors.isEmpty, "\(initial.errors)")
+        let input = try XCTUnwrap(initial.bodies.first { $0.id == bodyID })
+        XCTAssertEqual(abs(OCCTKernel.volume(try XCTUnwrap(input.brep))), 10_000, accuracy: 1e-4)
+        let table = try XCTUnwrap(initial.faceTables[bodyID])
+        let tops = table.entries.filter { $0.signature.normal.y > 0.99 }
+        XCTAssertEqual(tops.count, 3, "The fixture must really split one top face into three disconnected regions")
+        let picked = try XCTUnwrap(tops.first {
+            guard case let .opFace(operation, _, index)? = $0.elementName?.source else { return false }
+            return operation == cut.id && index == 0
+        })
+        let reference = FaceRef(body: BodyRef(producer: cut.id, bodyID: bodyID), creator: cut.id,
+            role: picked.role, signature: picked.signature, elementName: picked.elementName)
+        let originalFace = try XCTUnwrap(SignatureNaming().resolve(reference, in: input, table: table)?.planar)
+        let corners = originalFace.outline.map { originalFace.origin + originalFace.basisX * $0.x + originalFace.basisY * $0.y }
+        let minimum = try XCTUnwrap(corners.map(\.x).min()), maximum = try XCTUnwrap(corners.map(\.x).max())
+        let remove = FeatureNode(name: "Remove original region", kind: .primitive(
+            spec: .box(width: maximum - minimum + 2, depth: 40, height: 30),
+            placement: Transform3D(translation: SIMD3((minimum + maximum) / 2, -10, 0))), outputBodyIDs: [removalID])
+        cut.kind = .boolean(kind: .subtract, target: target,
+                            tools: tools + [BodyRef(producer: remove.id, bodyID: removalID)])
+        let prefix = [source, a, b, remove, cut]
+        let actual = evaluate(prefix)
+        XCTAssertTrue(actual.errors.isEmpty, "\(actual.errors)")
+        let surviving = try XCTUnwrap(actual.bodies.first { $0.id == bodyID })
+        let survivingTable = try XCTUnwrap(actual.faceTables[bodyID])
+        XCTAssertEqual(survivingTable.entries.filter { $0.signature.normal.y > 0.99 }.count, 2)
+        XCTAssertFalse(OCCTKernel.faceInfo(try XCTUnwrap(surviving.brep)).contains {
+            $0.normal.y > 0.99 && simd_distance($0.centroid, picked.signature.centroid) < 1e-5
+        }, "The selected physical region must actually have disappeared")
+        let rebound = SignatureNaming().resolve(reference, in: surviving, table: survivingTable)
+        let aliases = survivingTable.entries.filter { $0.elementName == picked.elementName }.map { $0.signature.centroid }
+        let attachment = XCTAttachment(string: "Actual three-to-two OCCT face split; removed centroid=\(picked.signature.centroid), old name=\(String(describing: picked.elementName)), current alias centroids=\(aliases), resolved=\(rebound != nil)")
+        attachment.name = "real-removed-three-face-fragment.txt"
+        attachment.lifetime = .keepAlways
+        add(attachment)
+        XCTAssertNil(rebound, "A deleted face must not become the surviving fragment with its old ordinal")
+
+        let document = try await FloeCADDocument.create(at: directory.appendingPathComponent("FaceSplit.floecad"), name: "Face split")
+        documents.append(document)
+        document.session.recordAndRebuild(prefix, title: "Two regions")
+        let deletion = FeatureNode(name: "Original region operation", kind: .deleteFace(body: reference.body, faces: [reference]), outputBodyIDs: [bodyID])
+        document.session.record(deletion)
+        let undo = document.session.undoStack.undoCommands.count
+        let model = document.viewModel()
+        XCTAssertFalse(model.beginDeleteFaceEdit(deletion.id))
+        XCTAssertTrue(model.deleteFaceTargets.isEmpty)
+        XCTAssertNotNil(model.errorMessage)
+        XCTAssertEqual(document.session.undoStack.undoCommands.count, undo)
+    }
 }
