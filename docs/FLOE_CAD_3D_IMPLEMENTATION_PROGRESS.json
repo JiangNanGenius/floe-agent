@@ -1070,25 +1070,47 @@
       "package": "mechanical",
       "implementation": {
         "stage": "B",
-        "status": "component_verified",
+        "status": "verified",
         "source_changes": [
           "variable.create/update/delete and feature.setExpression via existing service/parser",
           "Token-safe rename, exact dependency deletion refusal, expected-expression fences",
           "Explicit public/stored formula units, including legacy radian expressions"
         ],
         "verification": [
-          "9 variable/formula runtime tests passed after correcting an unrelated redo fixture; 1 USDZ routing test capability-skipped",
-          "New Swift6 test objects compiled against updated component module",
-          "2 focused actual Swift6 macOS tool-routing/typed-source-write contract tests passed"
+          {
+            "kind": "Swift6_actual_App_build_for_testing",
+            "source": "b7e93e32614a5ed0a6f55b89284a52716114eb03",
+            "passed": true,
+            "elapsed_seconds": 103.731
+          },
+          {
+            "kind": "actual_App_nonpaid_policy_and_receipt_tests",
+            "passed": 12,
+            "failed": 0,
+            "skipped": 0
+          },
+          {
+            "kind": "actual_App_real_prepaid_model_three_turn_formula_undo_reopen",
+            "source": "b7e93e32614a5ed0a6f55b89284a52716114eb03",
+            "passed": 1,
+            "failed": 0,
+            "skipped": 0,
+            "actual_turns": 3,
+            "observed": "width驱动同一拉伸和孔径；变量修改后实际BRep联动，一次撤销恢复原模型摘要及全部ID，新桥接实例重开一致。",
+            "retained_raw_package_stages": 4,
+            "verified_raw_files": 32,
+            "reported_aggregate_tokens": 1134645,
+            "original_failed_and_skipped_runs_preserved": true
+          }
         ],
         "limitations": [
-          "真实LLM多轮、完整App与实体设备仍待验；H1新增孔公式入口另随未编译孔包验收。早期USDZ writer跳过属于历史记录，后续已有原生writer与组件通过证据。"
+          "规范iPad模拟器中的实际App和真实套餐模型；不代表实体设备复杂模型性能或整轮发版完成。"
         ]
       },
       "alignment_review": {
-        "disposition": "qualified_slice",
+        "disposition": "verified",
         "existing": "基线已有：UI变量面板完整增改删，native query可读取variables；CAD参数服务支持数值字段和草图尺寸。",
-        "remaining": "变量CRUD/公式绑定服务和工具合同已验证；仍需真实LLM多轮与全App/设备链路，孔公式新增入口尚待H1运行。",
+        "remaining": "本项原验收通过。",
         "evidence": [
           {
             "path": "docs/FLOE_CAD_3D_IMPLEMENTATION_PROGRESS.json",
@@ -1125,8 +1147,8 @@
           "矩阵limitations中“USDZ caller因ModelIO不可用跳过”是早期记录，后续原生writer与caller已通过；不可当当前未验证项。"
         ],
         "evidence_level": "baseline_plus_verified_delta",
-        "verified_delta": "变量CRUD、稳定ID公式绑定、token改名、引用删除拒绝和显式角度单位合同已组件/工具验证。",
-        "acceptance_pending": "LLM创建width变量、把拉伸/孔径绑定width表达式、再改width，全程通过同一命令服务和undo，不拼包JSON。"
+        "verified_delta": "真实模型三轮经同一CAD命令服务完成变量创建/绑定/联动/一次撤销；实际BRep、全部ID与保存重开已核验。",
+        "acceptance_pending": false
       }
     },
     {
@@ -8351,7 +8373,7 @@
     "license_delta": "GLTFKit2 ownMIT/cgltfMIT do notclear precompiled libktx4.2.1 etcdec exception; prefer existing O3DV+same-r176 localGLTFLoader qualification"
   },
   "current_integration_verification": {
-    "source": "2921b0d4160579fe964ed84575ced9683be4fb13",
+    "source": "b7e93e32614a5ed0a6f55b89284a52716114eb03",
     "all_106_retained": true,
     "all_106_accepted": false,
     "release_ready": false,
@@ -8384,8 +8406,8 @@
       "actual_OBJ": "真实OBJ/MTL/PNG显示、缺失贴图及仅资源变化后的旧帧拒绝通过。",
       "scope": "本地实际渲染与资源来源；不冒充原生可编辑BRep，也不代替真实LLM视觉连续编辑。"
     },
-    "accepted_original_criteria": 55,
-    "pending_original_criteria": 51,
+    "accepted_original_criteria": 56,
+    "pending_original_criteria": 50,
     "device_acceptance": "iPad通过的功能复用验收，iPhone仅确认界面；不使用用户手机。",
     "latest_native_batch": {
       "source": "589d93372a40743e5dac88acb1935ca111ff3781",
@@ -8428,6 +8450,21 @@
       "failed": 0,
       "skipped": 0,
       "scope": "Atomic exact and mesh blend selections, complete receipts, actual quantified concave geometry, undo/redo/reopen and11adjacent regressions. Advanced M21/M26 pending."
+    },
+    "real_model_formulas": {
+      "source": "b7e93e32614a5ed0a6f55b89284a52716114eb03",
+      "actualModelTurns": 3,
+      "passed": 1,
+      "failed": 0,
+      "skipped": 0,
+      "exactRawPackages": 4,
+      "verifiedRawFiles": 32,
+      "reportedUsage": {
+        "inputTokens": 178616,
+        "cacheReadTokens": 938240,
+        "outputTokens": 17789,
+        "aggregate": 1134645
+      }
     }
   }
 }
