@@ -35,6 +35,9 @@ enum class IntegrationsPane {
      * ⇄ the fileImporter step). Key = formId. */
     SKILL_IMPORT,
 
+    /** Full-catalog entry detail sheet. Key = skillId. */
+    SKILL_DETAIL,
+
     /** Install review sheet (⇄ SkillInstallReviewSheet). Key = reviewId. */
     INSTALL_REVIEW,
 

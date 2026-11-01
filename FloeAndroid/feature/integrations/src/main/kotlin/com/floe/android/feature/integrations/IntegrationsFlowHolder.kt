@@ -129,9 +129,51 @@ class IntegrationsFlowHolder(
 
     fun refreshCatalog(force: Boolean): Boolean = host.refreshCatalog(force)
 
+    fun updateHubSearchQuery(value: String) {
+        hubSearchQuery.value = value
+        if (!showingInstalled.value) host.searchCatalog(value)
+    }
+
+    fun selectHubSegment(installed: Boolean) {
+        showingInstalled.value = installed
+        if (!installed) host.searchCatalog(hubSearchQuery.value)
+    }
+
+    fun loadMoreCatalog(): Boolean = host.loadMoreCatalog()
+
     fun installOfficialSkill(skillId: String): IntegrationsFlowResult =
         if (host.installOfficialSkill(skillId)) IntegrationsFlowResult.Accepted
         else rejected(RejectedReason.HOST_UNAVAILABLE)
+
+    /**
+     * Open the dedicated full-catalog detail sheet. The host owns the verified
+     * `curated.detail` read; the holder only pushes the pane and keeps the
+     * request identity so a late response cannot land in a newer sheet.
+     */
+    fun openSkillDetail(skillId: String): IntegrationsFlowResult {
+        // Only one detail sheet exists at a time. Opening another entry from
+        // the hub replaces the top detail pane so a stale underlying sheet
+        // can never show a loading state after the host moved on.
+        val top = navigation.top
+        if (top.pane == IntegrationsPane.SKILL_DETAIL) {
+            navigation.back()
+            host.dismissSkillDetail(top.key)
+        }
+        navigation.push(IntegrationsPane.SKILL_DETAIL, skillId)
+        return if (host.loadSkillDetail(skillId)) {
+            IntegrationsFlowResult.Accepted
+        } else {
+            // Nothing started: never leave a sheet stuck in loading.
+            navigation.closeTopIf(IntegrationsPane.SKILL_DETAIL, skillId)
+            rejected(RejectedReason.HOST_UNAVAILABLE)
+        }
+    }
+
+    /** Close the detail sheet only when it is still the top pane. */
+    fun closeSkillDetail(skillId: String) {
+        navigation.closeTopIf(IntegrationsPane.SKILL_DETAIL, skillId)
+        host.dismissSkillDetail(skillId)
+    }
 
     /**
      * Enable toggle. NOTE (SKL-SOURCE-NO-GRANT): flipping enable never grants
@@ -670,6 +712,7 @@ class IntegrationsFlowHolder(
                 mcpEditors.slot(top.key)?.let { cancelMcpEditor(it.identity) }
             IntegrationsPane.SKILL_CREATOR, IntegrationsPane.SKILL_FINDER, IntegrationsPane.SKILL_IMPORT ->
                 closeForm(top.key)
+            IntegrationsPane.SKILL_DETAIL -> closeSkillDetail(top.key)
             IntegrationsPane.INSTALL_REVIEW -> top.key.toLongOrNull()?.let { key ->
                 // Back on the review sheet without confirming = drop review.
                 host.cancelPendingInstallation(key)

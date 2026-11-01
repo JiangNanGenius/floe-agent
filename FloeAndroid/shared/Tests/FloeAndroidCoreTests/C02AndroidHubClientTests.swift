@@ -365,4 +365,95 @@ final class C02AndroidHubClientTests: XCTestCase {
             reviewSignature: Data("not-a-signature".utf8),
             publicationCommit: publicationCommit)
     }
+
+    // MARK: - Runtime-component target/supply classification
+
+    func testRuntimeComponentReportsExactTargetMismatchBeforeAnySupplyClaim() throws {
+        let descriptor = try makeEngineDescriptor()
+        let availability = C02RuntimeComponentPlanBuilder.availability(
+            descriptor: descriptor, actualOS: "linux", actualArch: "arm64",
+            appVersion: "1.7.60", publicationCommit: String(repeating: "a", count: 40))
+        guard case .targetMismatch(let declared, let actual) = availability else {
+            return XCTFail("expected a precise target mismatch")
+        }
+        XCTAssertEqual(declared, "linux/riscv64")
+        XCTAssertEqual(actual, "linux/arm64")
+    }
+
+    func testRuntimeComponentTargetMatchStillHonorsTheAppVersionFloor() throws {
+        let descriptor = try makeEngineDescriptor()
+        let availability = C02RuntimeComponentPlanBuilder.availability(
+            descriptor: descriptor, actualOS: "linux", actualArch: "riscv64",
+            appVersion: "0.1.0", publicationCommit: String(repeating: "a", count: 40))
+        guard case .clientVersionFloor(let minimum, let actual) = availability else {
+            return XCTFail("expected the app-version floor")
+        }
+        XCTAssertEqual(minimum, "1.7.60")
+        XCTAssertEqual(actual, "0.1.0")
+    }
+
+    func testRuntimeComponentPlanPinsTheExactArtifactAndGuestCache() throws {
+        let descriptor = try makeEngineDescriptor()
+        let commit = String(repeating: "b", count: 40)
+        let availability = C02RuntimeComponentPlanBuilder.availability(
+            descriptor: descriptor, actualOS: "linux", actualArch: "riscv64",
+            appVersion: "1.7.60", publicationCommit: commit)
+        guard case .portable(let plan) = availability else {
+            return XCTFail("expected a portable exact-target plan")
+        }
+        XCTAssertEqual(plan.componentID, "impeccable-engine")
+        XCTAssertEqual(plan.componentVersion, "0.1.17+floe.1.1.1")
+        XCTAssertEqual(plan.artifactSize, descriptor.artifact.size)
+        XCTAssertEqual(plan.artifactSHA256, descriptor.artifact.sha256)
+        XCTAssertTrue(plan.artifactURL.contains(commit))
+        XCTAssertTrue(plan.artifactURL.contains("engines/impeccable/dist/"))
+        XCTAssertTrue(plan.guestPath.hasPrefix("~/.floe/runtime-components/"))
+        XCTAssertTrue(plan.guestPath.contains(descriptor.artifact.sha256))
+        let provision = try XCTUnwrap(C02RuntimeComponentCommands.provision(plan))
+        XCTAssertTrue(provision.contains("component=provisioned"))
+        XCTAssertTrue(provision.contains("os.link"))
+        let verify = try XCTUnwrap(C02RuntimeComponentCommands.verify(plan))
+        XCTAssertTrue(verify.contains("component=verified"))
+        XCTAssertTrue(verify.contains("engine-probe"))
+        XCTAssertTrue(verify.contains("contract"))
+    }
+
+    func testRuntimeComponentWithoutImmutableCommitIsSupplyRejected() throws {
+        let descriptor = try makeEngineDescriptor()
+        let availability = C02RuntimeComponentPlanBuilder.availability(
+            descriptor: descriptor, actualOS: "linux", actualArch: "riscv64",
+            appVersion: "1.7.60", publicationCommit: "not-a-commit")
+        guard case .supplyRejected = availability else {
+            return XCTFail("expected a supply rejection")
+        }
+    }
+
+    private func makeEngineDescriptor() throws -> SkillRuntimeDependencyDescriptor {
+        let path = SkillRuntimeDependency.expectedArtifactPath(
+            componentVersion: "0.1.17+floe.1.1.1",
+            triple: SkillRuntimeDependency.frozenTargetTriple)
+        let object: [String: Any] = [
+            "schemaVersion": 1,
+            "componentID": SkillRuntimeDependency.knownComponentID,
+            "componentVersion": "0.1.17+floe.1.1.1",
+            "minimumAppVersion": "1.7.60",
+            "target": [
+                "os": "linux",
+                "arch": "riscv64",
+                "triple": SkillRuntimeDependency.frozenTargetTriple,
+                "format": SkillRuntimeDependency.frozenTargetFormat,
+            ],
+            "artifact": [
+                "path": path,
+                "size": 1_234,
+                "sha256": String(repeating: "c", count: 64),
+            ],
+            "captureContract": [
+                "version": 1,
+                "sha256": String(repeating: "d", count: 64),
+            ],
+        ]
+        let data = try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])
+        return try SkillRuntimeDependency.decode(data)
+    }
 }

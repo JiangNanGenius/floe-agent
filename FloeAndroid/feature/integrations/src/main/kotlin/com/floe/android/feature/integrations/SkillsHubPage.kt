@@ -84,12 +84,15 @@ fun SkillsHubPage(
         )
     }
     val cards = remember(skills.catalogCards, query) {
-        SkillsDisplayLogic.filterRows(
-            rows = skills.catalogCards,
+        val legacyMatches = SkillsDisplayLogic.filterRows(
+            rows = skills.catalogCards.filterNot { it.detailAvailable },
             query = query,
             nameOf = { it.name },
             summaryOf = { it.summary },
-        )
+        ).mapTo(HashSet()) { it.skillId }
+        // Curated matches already come from the complete native search,
+        // including tags and bilingual text beyond this loaded page.
+        skills.catalogCards.filter { it.detailAvailable || it.skillId in legacyMatches }
     }
     val installedById = remember(skills.installed) {
         skills.installed.associateBy { it.skillId }
@@ -115,7 +118,7 @@ fun SkillsHubPage(
 
             FloeSearchField(
                 value = query,
-                onValueChange = { holder.hubSearchQuery.value = it },
+                onValueChange = holder::updateHubSearchQuery,
                 placeholder = stringResource(R.string.plugins_search),
                 modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp),
             )
@@ -126,7 +129,7 @@ fun SkillsHubPage(
                     stringResource(R.string.plugins_installed),
                 ),
                 selectedIndex = if (holder.showingInstalled.value) 1 else 0,
-                onSelect = { holder.showingInstalled.value = it == 1 },
+                onSelect = { holder.selectHubSegment(it == 1) },
                 modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp),
             )
 
@@ -151,10 +154,27 @@ fun SkillsHubPage(
                                                 holder.setSkillEnabled(row.skillId, row.revision, true)
                                             },
                                             onUpdate = { holder.openUpgrade(card.skillId) },
+                                            onOpenDetail = if (card.detailAvailable) {
+                                                { holder.openSkillDetail(card.skillId) }
+                                            } else {
+                                                null
+                                            },
                                         )
                                     },
                                 )
                             }
+                        }
+                    }
+                    if (skills.catalogPagingBusy) {
+                        Box(Modifier.fillMaxWidth().padding(12.dp), contentAlignment = Alignment.Center) {
+                            FloeActivityIndicator()
+                        }
+                    } else if (skills.catalogHasMore) {
+                        FloeSettingsSectionCard(title = null) {
+                            FloeActionRow(
+                                label = stringResource(R.string.skills_catalog_load_more),
+                                onClick = { holder.loadMoreCatalog() },
+                            )
                         }
                     }
                     // ⇄ import actions section — THREE DIFFERENT destinations
@@ -243,6 +263,9 @@ fun SkillsHubPage(
                 skills.catalogError?.let {
                     IntegrationMetaLine(it, modifier = Modifier.testTag("skills.catalogError"))
                 }
+                skills.curatedError?.let {
+                    IntegrationMetaLine(it, modifier = Modifier.testTag("skills.curatedError"))
+                }
                 skills.errorMessage?.let {
                     IntegrationIssueLine(it, modifier = Modifier.testTag("skills.errorMessage"))
                 }
@@ -284,8 +307,19 @@ private fun CatalogCard(
     onInstall: () -> Unit,
     onEnable: (SkillInstalledRowUi) -> Unit,
     onUpdate: () -> Unit,
+    onOpenDetail: (() -> Unit)?,
 ) {
-    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .then(
+                onOpenDetail?.let { open ->
+                    Modifier.clickable(onClick = open)
+                        .testTag("skills.catalogDetail_${card.skillId}")
+                } ?: Modifier
+            ),
+        verticalArrangement = Arrangement.spacedBy(6.dp),
+    ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             FloeText(
                 card.name,
@@ -310,6 +344,13 @@ private fun CatalogCard(
             maxLines = 3,
             overflow = TextOverflow.Ellipsis,
         )
+        onOpenDetail?.let { open ->
+            CardActionText(
+                label = stringResource(R.string.skills_detail_open),
+                tag = "skills.catalogOpenDetail",
+                onClick = open,
+            )
+        }
         when (val action = SkillsDisplayLogic.catalogAction(card.state)) {
             CatalogCardAction.Install -> CardActionText(
                 label = stringResource(R.string.action_install),

@@ -463,12 +463,226 @@ enum C02ForegroundDispatchPolicy {
     static func shouldDispatch(cancelled: Bool) -> Bool { !cancelled }
 }
 
+// MARK: - Runtime-component target/supply classification
+
+/// One verified runtime-component plan. It is derived from the strict
+/// descriptor inside the already digest-verified installed snapshot and the
+/// signed curated receipt's immutable publication commit; nothing here comes
+/// from a model payload or a mutable marker.
+struct C02RuntimeComponentPlan: Equatable, Sendable {
+    let componentID: String
+    let componentVersion: String
+    let artifactSize: Int
+    let artifactSHA256: String
+    let artifactURL: String
+    /// Guest-owned cache path. The file never lives on the native host: the
+    /// selected task Linux downloads, verifies, stores and probes it.
+    let guestPath: String
+    let contractSHA256: String
+    let contractVersion: Int
+    let fileName: String
+}
+
+/// Precise reason the signed component cannot be prepared in the ACTUAL
+/// selected task Linux. These are supply/target/version facts, never a
+/// generic "device unsupported" claim and never a fake ready state.
+enum C02RuntimeComponentAvailability: Equatable, Sendable {
+    case portable(C02RuntimeComponentPlan)
+    case targetMismatch(declared: String, actual: String)
+    case clientVersionFloor(minimum: String, actual: String)
+    case supplyRejected(reason: String)
+}
+
+enum C02RuntimeComponentPlanBuilder {
+    static func quote(_ value: String) -> String? {
+        guard !value.contains("'"), !value.contains("\n"), !value.contains("\r"),
+              !value.contains("\0") else { return nil }
+        return "'" + value + "'"
+    }
+
+    /// Compare the descriptor with the guest-probed target and the Android
+    /// client identity. Ordering is deliberate: a different architecture is
+    /// reported as a target/supply fact before the app-version floor, so the
+    /// current app-local RISC-V engine is never mislabeled as a missing
+    /// device capability or a broken cache.
+    static func availability(
+        descriptor: SkillRuntimeDependencyDescriptor,
+        actualOS: String,
+        actualArch: String,
+        appVersion: String,
+        publicationCommit: String
+    ) -> C02RuntimeComponentAvailability {
+        let declared = "\(descriptor.target.os)/\(descriptor.target.arch)"
+        let actual = "\(actualOS)/\(actualArch)"
+        guard publicationCommit.count == 40,
+              publicationCommit.allSatisfy(\.isHexDigit) else {
+            return .supplyRejected(reason: "the verified curated receipt has no immutable publication commit")
+        }
+        guard descriptor.target.os == actualOS,
+              descriptor.target.arch == actualArch else {
+            return .targetMismatch(declared: declared, actual: actual)
+        }
+        guard SkillRuntimeDependency.isCompatible(
+            minimumAppVersion: descriptor.minimumAppVersion, appVersion: appVersion) else {
+            return .clientVersionFloor(minimum: descriptor.minimumAppVersion,
+                                       actual: appVersion)
+        }
+        guard SkillRuntimeDependency.isCaptureContractVersionSupported(
+            descriptor.captureContract.version) else {
+            return .supplyRejected(
+                reason: "the signed component capture-contract version is not supported by this build")
+        }
+        let expectedPath = SkillRuntimeDependency.expectedArtifactPath(
+            componentVersion: descriptor.componentVersion,
+            triple: descriptor.target.triple)
+        guard descriptor.artifact.path == expectedPath,
+              (descriptor.artifact.path.split(separator: "/").last.map(String.init) ?? "")
+                == SkillRuntimeDependency.frozenEngineFileName,
+              !descriptor.artifact.path.split(separator: "/").contains("..") else {
+            return .supplyRejected(reason: "the signed descriptor artifact path is outside the frozen component layout")
+        }
+        guard let encodedPath = descriptor.artifact.path.addingPercentEncoding(
+                withAllowedCharacters: .urlPathAllowed) else {
+            return .supplyRejected(reason: "the signed descriptor artifact path is not URL-safe")
+        }
+        let url = "https://raw.githubusercontent.com/\(CuratedSkillHub.owner)/"
+            + "\(CuratedSkillHub.repository)/\(publicationCommit.lowercased())/"
+            + "\(encodedPath)"
+        // The guest path is assembled only from the allowlisted component id,
+        // its strict numeric version and the exact lowercase digest. The
+        // shell-quoted form below is never derived from JSON path segments.
+        let guestPath = "~/.floe/runtime-components/"
+            + "\(descriptor.componentID)/\(descriptor.componentVersion)/"
+            + "\(descriptor.artifact.sha256)/\(SkillRuntimeDependency.frozenEngineFileName)"
+        return .portable(C02RuntimeComponentPlan(
+            componentID: descriptor.componentID,
+            componentVersion: descriptor.componentVersion,
+            artifactSize: descriptor.artifact.size,
+            artifactSHA256: descriptor.artifact.sha256,
+            artifactURL: url,
+            guestPath: guestPath,
+            contractSHA256: descriptor.captureContract.sha256,
+            contractVersion: descriptor.captureContract.version,
+            fileName: SkillRuntimeDependency.frozenEngineFileName))
+    }
+}
+
+enum C02RuntimeComponentCommands {
+    /// Read-only cache verification. A missing/mismatched file exits non-zero
+    /// without touching it. On success it chmods the exact verified cache file
+    /// and runs the two fixed component verbs.
+    static func verify(_ plan: C02RuntimeComponentPlan) -> String? {
+        guard let path = C02RuntimeComponentPlanBuilder.quote(plan.guestPath),
+              let sha = C02RuntimeComponentPlanBuilder.quote(plan.artifactSHA256),
+              let version = C02RuntimeComponentPlanBuilder.quote(plan.componentVersion),
+              let contractSHA = C02RuntimeComponentPlanBuilder.quote(plan.contractSHA256) else {
+            return nil
+        }
+        return """
+        python3 - \(path) \(sha) \(plan.artifactSize) \(version) \(contractSHA) \(plan.contractVersion) <<'PY'
+        import hashlib, os, stat, subprocess, sys
+        path, sha, size, version, contract_sha, contract_version = sys.argv[1:7]
+        path = os.path.expanduser(path)
+        try:
+            flags = os.O_RDONLY | getattr(os, 'O_NOFOLLOW', 0)
+            with os.fdopen(os.open(path, flags), 'rb') as handle:
+                info = os.fstat(handle.fileno())
+                if not stat.S_ISREG(info.st_mode) or info.st_size != int(size):
+                    raise SystemExit(3)
+                digest = hashlib.sha256()
+                for chunk in iter(lambda: handle.read(262144), b''):
+                    digest.update(chunk)
+            if digest.hexdigest() != sha:
+                raise SystemExit(4)
+            os.chmod(path, 0o755)
+            probe = subprocess.run([path, 'engine-probe'], capture_output=True, timeout=30)
+            expected = 'impeccable-engine ' + version + '\\n'
+            if probe.returncode != 0 or probe.stdout.decode('utf-8', 'strict') != expected:
+                raise SystemExit(5)
+            contract = subprocess.run([path, 'contract'], capture_output=True, timeout=30)
+            if contract.returncode != 0:
+                raise SystemExit(6)
+            if hashlib.sha256(contract.stdout).hexdigest() != contract_sha:
+                raise SystemExit(7)
+            if int(contract_version) not in (1,):
+                raise SystemExit(8)
+            print('component=verified version=' + version + ' sha256=' + sha)
+        except subprocess.TimeoutExpired:
+            raise SystemExit(9)
+        except OSError:
+            raise SystemExit(10)
+        PY
+        """
+    }
+
+    /// Provisioning is a single guest-owned fixed command. The URL is built
+    /// from the compiled Hub repository + the receipt's immutable commit +
+    /// the descriptor's exact allowlisted path; the bytes must match the
+    /// descriptor size and SHA-256 BEFORE an atomic hard-link publish. A
+    /// concurrent or foreign file at the destination is preserved and fails
+    /// closed.
+    static func provision(_ plan: C02RuntimeComponentPlan) -> String? {
+        guard let url = C02RuntimeComponentPlanBuilder.quote(plan.artifactURL),
+              let path = C02RuntimeComponentPlanBuilder.quote(plan.guestPath),
+              let sha = C02RuntimeComponentPlanBuilder.quote(plan.artifactSHA256) else {
+            return nil
+        }
+        return """
+        python3 - \(url) \(path) \(sha) \(plan.artifactSize) <<'PY'
+        import hashlib, os, sys, urllib.request, uuid
+        url, dest, sha, size = sys.argv[1:5]
+        dest = os.path.expanduser(dest)
+        size = int(size)
+        temporary = None
+        try:
+            # A foreign/damaged cache entry is preserved as found: fail
+            # closed before any network use. The hard-link publish below still
+            # closes the race against a concurrent writer.
+            if os.path.lexists(dest):
+                raise SystemExit(4)
+            request = urllib.request.Request(
+                url, headers={'User-Agent': 'FloeAgent-runtime-component'})
+            with urllib.request.urlopen(request, timeout=120) as response:
+                data = response.read(size + 1)
+            if len(data) != size or hashlib.sha256(data).hexdigest() != sha:
+                raise SystemExit(3)
+            directory = os.path.dirname(dest)
+            os.makedirs(directory, exist_ok=True)
+            temporary = os.path.join(
+                directory, '.partial-' + uuid.uuid4().hex)
+            with open(temporary, 'wb') as handle:
+                handle.write(data)
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.chmod(temporary, 0o755)
+            try:
+                # Atomic publish that NEVER overwrites a foreign/concurrent
+                # cache entry: hard-link creation fails with EEXIST instead of
+                # replacing the destination like rename(2) would.
+                os.link(temporary, dest)
+            except FileExistsError:
+                raise SystemExit(4)
+            os.unlink(temporary)
+            temporary = None
+            print('component=provisioned')
+        finally:
+            if temporary is not None:
+                try:
+                    os.unlink(temporary)
+                except OSError:
+                    pass
+        PY
+        """
+    }
+}
+
 public actor C02SkillDependencyPreparation {
     public struct Configuration: Sendable {
         public var maximumDeclarationBytes: Int
         public var maximumPipLockBytes: Int
         public var probeTimeout: TimeInterval
         public var foregroundInstallTimeout: TimeInterval
+        public var runtimeComponentInstallTimeout: TimeInterval
         public var jobPollIntervalNanos: UInt64
         public var jobWaitCeiling: TimeInterval
 
@@ -476,12 +690,14 @@ public actor C02SkillDependencyPreparation {
                     maximumPipLockBytes: Int = 131_072,
                     probeTimeout: TimeInterval = 15,
                     foregroundInstallTimeout: TimeInterval = 120,
+                    runtimeComponentInstallTimeout: TimeInterval = 300,
                     jobPollIntervalNanos: UInt64 = 500_000_000,
                     jobWaitCeiling: TimeInterval = 900) {
             self.maximumDeclarationBytes = maximumDeclarationBytes
             self.maximumPipLockBytes = maximumPipLockBytes
             self.probeTimeout = probeTimeout
             self.foregroundInstallTimeout = foregroundInstallTimeout
+            self.runtimeComponentInstallTimeout = runtimeComponentInstallTimeout
             self.jobPollIntervalNanos = jobPollIntervalNanos
             self.jobWaitCeiling = jobWaitCeiling
         }
@@ -695,16 +911,23 @@ public actor C02SkillDependencyPreparation {
                 return .refused(reason: "dependencyPreparationCancelled", requirements: outcomes)
             }
             if requirement.kind == .runtimeComponent {
-                let deferred = C02DependencyRequirementReceipt(
-                    kind: requirement.kind.rawValue, name: requirement.name,
-                    version: requirement.version, required: requirement.required,
-                    verified: false, evidence: "not offered by this Android build",
-                    deferredReason: "runtime components are not installed by the Android dependency channel")
-                if requirement.required {
-                    outcomes.append(deferred)
-                    return .refused(reason: "runtimeComponentUnavailable", requirements: outcomes)
+                let component = await prepareRuntimeComponent(
+                    requirement, snapshot: snapshot, receipt: receipt,
+                    facts: facts, context: context)
+                if let jobID = component.pendingJobID {
+                    retainedLeases[jobID] = lease
+                    pendingJobsBySkill[skillID] = jobID
+                    leaseRetained = true
+                    outcomes.append(component.receipt)
+                    Task { await self.waitForRetainedJob(jobID: jobID, skillID: skillID) }
+                    return .pending(reason: "runtimeComponentInstallOwnedPending",
+                                    jobID: jobID, requirements: outcomes)
                 }
-                outcomes.append(deferred)
+                outcomes.append(component.receipt)
+                if !component.verified && requirement.required {
+                    return .refused(reason: "requiredRuntimeComponentNotAvailable",
+                                    requirements: outcomes)
+                }
                 continue
             }
             if requirement.required == false {
@@ -842,6 +1065,130 @@ public actor C02SkillDependencyPreparation {
                 return
             }
             try? await Task.sleep(nanoseconds: configuration.jobPollIntervalNanos)
+        }
+    }
+
+    private struct RuntimeComponentResult: Sendable {
+        let receipt: C02DependencyRequirementReceipt
+        let verified: Bool
+        let pendingJobID: UUID?
+    }
+
+    /// Prepares exactly one packaged runtime component. The descriptor comes
+    /// from the digest-verified installed snapshot; the retrieval pin is the
+    /// immutable publication commit recorded by the verified curated receipt.
+    /// The target is compared with the ACTUAL guest probe BEFORE any network
+    /// or mutation. The guest owns the download/cache/probe; the native host
+    /// never downloads or executes the artifact.
+    private func prepareRuntimeComponent(
+        _ requirement: SkillDependencyRequirement,
+        snapshot: SkillContentSnapshot,
+        receipt: CuratedSkillHub.Receipt,
+        facts: TargetFacts,
+        context: ToolContext
+    ) async -> RuntimeComponentResult {
+        func failed(_ reason: String, descriptor: SkillRuntimeDependencyDescriptor?) -> RuntimeComponentResult {
+            RuntimeComponentResult(
+                receipt: C02DependencyRequirementReceipt(
+                    kind: requirement.kind.rawValue,
+                    name: descriptor?.componentID
+                        ?? (requirement.name.isEmpty ? "runtimeComponent" : requirement.name),
+                    version: descriptor?.componentVersion ?? requirement.version,
+                    required: requirement.required,
+                    verified: false,
+                    evidence: String(reason.prefix(240)),
+                    deferredReason: String(reason.prefix(240))),
+                verified: false,
+                pendingJobID: nil)
+        }
+
+        guard let path = requirement.componentDescriptorPath,
+              let bytes = snapshot.files[path],
+              bytes.count <= SkillRuntimeDependency.maximumDescriptorBytes,
+              let descriptor = try? SkillRuntimeDependency.decode(bytes) else {
+            return failed("the packaged runtime-component descriptor is missing or failed strict validation", descriptor: nil)
+        }
+        let availability = C02RuntimeComponentPlanBuilder.availability(
+            descriptor: descriptor,
+            actualOS: facts.os,
+            actualArch: facts.arch,
+            appVersion: C02AndroidSkillCompatibility.version,
+            publicationCommit: receipt.publicationCommit)
+        switch availability {
+        case .targetMismatch(let declared, let actual):
+            return failed(
+                "the signed component targets \(declared); the selected task Linux is \(actual); no signed artifact for the selected architecture is supplied",
+                descriptor: descriptor)
+        case .clientVersionFloor(let minimum, let actual):
+            return failed(
+                "the signed component requires app version \(minimum); the Android client compatibility version is \(actual); this is a supply/version fact, not a missing device capability",
+                descriptor: descriptor)
+        case .supplyRejected(let reason):
+            return failed(reason, descriptor: descriptor)
+        case .portable(let plan):
+            if Task.isCancelled || context.cancellation.isCancelled {
+                return failed("dependencyPreparationCancelled", descriptor: descriptor)
+            }
+            guard let verifyCommand = C02RuntimeComponentCommands.verify(plan),
+                  let provisionCommand = C02RuntimeComponentCommands.provision(plan) else {
+                return failed("the verified component plan could not be encoded safely", descriptor: descriptor)
+            }
+            let existing = await runShell(
+                command: verifyCommand, context: context,
+                timeout: configuration.probeTimeout, stdin: nil, preferJob: false)
+            if existing.succeeded, existing.text.contains("component=verified") {
+                return RuntimeComponentResult(
+                    receipt: C02DependencyRequirementReceipt(
+                        kind: requirement.kind.rawValue, name: plan.componentID,
+                        version: plan.componentVersion, required: requirement.required,
+                        verified: true,
+                        evidence: "component \(plan.componentID) \(plan.componentVersion) sha256 \(plan.artifactSHA256) probe+contract verified"),
+                    verified: true, pendingJobID: nil)
+            }
+            if Task.isCancelled || context.cancellation.isCancelled {
+                return failed("dependencyPreparationCancelled", descriptor: descriptor)
+            }
+            let provision = await runShell(
+                command: provisionCommand, context: context,
+                timeout: configuration.runtimeComponentInstallTimeout,
+                stdin: nil, preferJob: true)
+            if let jobID = provision.pendingJobID {
+                return RuntimeComponentResult(
+                    receipt: C02DependencyRequirementReceipt(
+                        kind: requirement.kind.rawValue, name: plan.componentID,
+                        version: plan.componentVersion, required: requirement.required,
+                        verified: false,
+                        evidence: "component install job accepted; exact job settlement pending",
+                        deferredReason: "the download/cache/probe job is still owned; no foreground replay and no lease release while it may be live"),
+                    verified: false,
+                    pendingJobID: jobID)
+            }
+            if !provision.succeeded {
+                if Task.isCancelled || context.cancellation.isCancelled
+                    || provision.exit == 130 {
+                    return failed("dependencyPreparationCancelled", descriptor: descriptor)
+                }
+                let exitText = provision.exit.map { String($0) } ?? "unknown"
+                return failed(
+                    "component download/verification did not complete: "
+                        + (provision.failure ?? "exit=\(exitText)"),
+                    descriptor: descriptor)
+            }
+            let readback = await runShell(
+                command: verifyCommand, context: context,
+                timeout: configuration.probeTimeout, stdin: nil, preferJob: false)
+            guard readback.succeeded, readback.text.contains("component=verified") else {
+                return failed(
+                    "component readback did not prove the exact artifact digest, probe handshake and contract digest",
+                    descriptor: descriptor)
+            }
+            return RuntimeComponentResult(
+                receipt: C02DependencyRequirementReceipt(
+                    kind: requirement.kind.rawValue, name: plan.componentID,
+                    version: plan.componentVersion, required: requirement.required,
+                    verified: true,
+                    evidence: "component \(plan.componentID) \(plan.componentVersion) sha256 \(plan.artifactSHA256) probe+contract verified"),
+                verified: true, pendingJobID: nil)
         }
     }
 
@@ -1074,8 +1421,10 @@ public actor C02SkillDependencyPreparation {
                                   timeout: configuration.foregroundInstallTimeout,
                                   stdin: nil, preferJob: true)
         case .runtimeComponent:
+            // Defensive: the requirement loop routes components through
+            // prepareRuntimeComponent before this generic installer.
             return ShellResult(exit: nil, text: "", timedOut: false,
-                               failure: "runtime components are not offered by this Android build")
+                               failure: "runtime-component provisioning requires the dedicated verified component path")
         }
     }
 

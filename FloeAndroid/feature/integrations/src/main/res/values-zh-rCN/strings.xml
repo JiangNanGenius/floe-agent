@@ -95,6 +95,46 @@
     <string name="skills_update_rollback_confirm_message">将恢复上一版本及其权限决定。</string>
 
     <!-- folder import -->
+    <!-- full-catalog detail sheet -->
+    <string name="skills_detail_title">插件详情</string>
+    <string name="skills_detail_close">完成</string>
+    <string name="skills_detail_open">详情</string>
+    <string name="skills_detail_version">版本</string>
+    <string name="skills_detail_category">分类</string>
+    <string name="skills_detail_tags">标签</string>
+    <string name="skills_detail_platforms">平台</string>
+    <string name="skills_detail_runtime">运行时</string>
+    <string name="skills_detail_execution">执行环境</string>
+    <string name="skills_detail_package">安装包</string>
+    <string name="skills_detail_package_size">大小</string>
+    <string name="skills_detail_package_digest">SHA-256</string>
+    <string name="skills_detail_availability">可用性</string>
+    <string name="skills_detail_installed_version">已安装版本</string>
+    <string name="skills_detail_not_installed">尚未安装</string>
+    <string name="skills_detail_installed_disabled">已安装，当前已停用。</string>
+    <string name="skills_detail_update_available">有可用的新版本</string>
+    <string name="skills_detail_rollback_available">可以恢复上一版本</string>
+    <string name="skills_detail_dependencies">依赖</string>
+    <string name="skills_detail_no_dependencies">未声明依赖。</string>
+    <string name="skills_detail_dependencies_after_install">安装后会显示依赖详情。</string>
+    <string name="skills_detail_dependency_readiness">就绪状态</string>
+    <string name="skills_detail_readiness_task_required">在此技能于所选任务 Linux 环境中运行时进行校验。</string>
+    <string name="skills_detail_readiness_pending">尚未校验。</string>
+    <string name="skills_detail_required">必需</string>
+    <string name="skills_detail_optional">可选</string>
+    <string name="skills_detail_manage">查看更新或恢复</string>
+    <string name="skills_detail_unavailable">暂时无法读取详情。</string>
+    <string name="skills_detail_loading">正在读取详情…</string>
+    <string name="skills_detail_runtime_component">运行时组件</string>
+    <string name="skills_detail_component_unavailable">当前 Android 任务 Linux 环境不可用</string>
+    <string name="skills_detail_component_riscv">仅在 RISC-V 任务 Linux 环境中运行。</string>
+    <string name="skills_detail_kind_pip">Python 包</string>
+    <string name="skills_detail_kind_apt">系统包</string>
+    <string name="skills_detail_kind_npm">npm 包</string>
+    <string name="skills_detail_kind_font">字体</string>
+    <string name="skills_detail_kind_runtime_component">运行时组件</string>
+    <string name="skills_detail_kind_unknown">依赖</string>
+    <string name="skills_catalog_unavailable">插件完整目录当前不可用。</string>
     <string name="skills_import_title">导入技能文件夹</string>
     <string name="skills_import_footer">Floe 会复制并校验所选文件夹；原文件夹不会被修改。</string>
     <string name="skills_import_missing">未选择文件夹</string>
@@ -164,4 +204,6 @@
     <string name="mcp_local_network_recovery_detail">需在系统设置中允许后才能访问本地网络。公网服务器仍可正常使用。</string>
 
     <string name="mcp_save_failed_notice">无法保存，修改内容已保留。请检查连接设置后重试。</string>
+    <string name="skills_catalog_load_more">加载更多</string>
+    <string name="skills_catalog_query_too_long">请缩短搜索文字后重试。</string>
 </resources>

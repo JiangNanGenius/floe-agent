@@ -750,11 +750,13 @@ public actor SkillsDomain {
         // rollback path could legitimately find (bounded directory scan of
         // the ORIGINAL .upgrade-history layout; contents never leak).
         let rollbackIDs = Self.completedUpgradeJournalSkillIDs(installationRoot: installationRoot)
-        var objects: [[String: Any]] = []
-        var bytes = 0
-        var index = start
-        while index < rows.count, objects.count < ConfigPageBudget.maximumItemsPerPage {
-            let row = rows[index]
+        // Build the canonical row projections once; the composer then selects
+        // a whole-reply bounded page. Installed rows stay metadata-only
+        // (description parsed via the ORIGINAL parseSkillMarkdown, ≤1024 like
+        // ManagedSkill.discoveryMetadata) and never carry the full markdown.
+        var projections: [[String: Any]] = []
+        projections.reserveCapacity(rows.count)
+        for row in rows {
             var descriptionText = ""
             if let metadata = try? validator.parseSkillMarkdown(Data(row.skillMarkdown.utf8)) {
                 descriptionText = String(metadata.description.prefix(1_024))
@@ -774,24 +776,16 @@ public actor SkillsDomain {
                 "description": descriptionText,
                 "rollbackAvailable": rollbackIDs.contains(row.id),
             ]
-            let candidate = try Self.canonicalData(object)
-            let overhead = objects.isEmpty ? 2 : 1
-            if bytes + candidate.count + overhead > ConfigPageBudget.maximumPageItemsBytes {
-                if objects.isEmpty {
-                    throw ConfigDomainError(code: .payloadTooLarge, reason: "itemDoesNotFitPage")
-                }
-                break
-            }
-            objects.append(object)
-            bytes += candidate.count + overhead
-            index += 1
+            projections.append(object)
         }
-        return [
-            "skills": objects,
-            "hasMore": index < rows.count,
-            "nextCursor": index < rows.count ? String(index) : NSNull(),
+        // Repeated non-paged fields are part of the exact whole-reply
+        // measurement. The full schemaVersion-3 card list is deliberately
+        // NOT embedded here: it is fetched through the separately bounded
+        // `curated.cards` page chain so a 48 KiB row page plus a second
+        // 48 KiB card page can never compose an oversized event frame.
+        let base: [String: Any] = [
             "catalog": catalogProjection(),
-            "curated": await curatedProjection(),
+            "curated": curatedProjection(),
             "pendingReviews": reviews.values.map { review in
                 ["reviewToken": review.token,
                  "skillID": review.skillID,
@@ -803,6 +797,9 @@ public actor SkillsDomain {
             },
             "settings": try await settingsDocument(),
         ]
+        let page = try C02BoundedSkillSnapshot.compose(
+            base: base, rows: projections, cursor: start)
+        return page.payload
     }
 
     /// Bounded markdown detail window (byteOffset / maxBytes ≤ 32 KiB owned
@@ -941,23 +938,23 @@ public actor SkillsDomain {
         -> sending [String: Any] {
         if !force, let cache = curatedCatalogCache {
             if now.timeIntervalSince(cache.checkedAt) < 3_600 {
-                return ["state": "upToDate", "curated": await curatedProjection()]
+                return ["state": "upToDate", "curated": curatedProjection()]
             }
             if let retryAfter = cache.retryAfter, now < retryAfter {
                 return ["state": "retryBackoff",
                         "retryAfter": Self.iso8601String(from: retryAfter),
-                        "curated": await curatedProjection()]
+                        "curated": curatedProjection()]
             }
         }
         if !force, let fallback = curatedFailureFallback, now < fallback.retryAfter {
             return ["state": "retryBackoff",
                     "retryAfter": Self.iso8601String(from: fallback.retryAfter),
-                    "curated": await curatedProjection()]
+                    "curated": curatedProjection()]
         }
         guard let appVersion = Self.validatedAppVersion(hostContext.appVersion()) else {
             recordCuratedCatalogFailure(reason: "appVersionUnbound", now: now)
             return ["state": "failed", "reason": "appVersionUnbound",
-                    "curated": await curatedProjection()]
+                    "curated": curatedProjection()]
         }
         do {
             let publication = try await CuratedSkillHub.loadPublication(
@@ -980,12 +977,12 @@ public actor SkillsDomain {
                 lastFailure: nil, retryAfter: nil)
             return ["state": "refreshed",
                     "checkedAt": Self.iso8601String(from: now),
-                    "curated": await curatedProjection()]
+                    "curated": curatedProjection()]
         } catch {
             let reason = Self.curatedFailureReason(error)
             recordCuratedCatalogFailure(reason: reason, now: now)
             return ["state": "failed", "reason": reason,
-                    "curated": await curatedProjection()]
+                    "curated": curatedProjection()]
         }
     }
 
@@ -1010,28 +1007,53 @@ public actor SkillsDomain {
                                appVersion: appVersion,
                                preferredLanguages: Locale.preferredLanguages)
         card.removeValue(forKey: "searchText")
-        var dependencies: [String: Any] = ["state": "notRequired"]
+        var dependencies: [String: Any] = ["state": "notInstalled"]
         if let installed {
             dependencies = dependencyDeclarationSummary(skillID: skillID, row: installed)
         }
-        return [
+        let result: [String: Any] = [
             "entry": curatedEntryProjection(entry, preferredLanguages: Locale.preferredLanguages),
             "offer": card["offer"] ?? "unavailable",
             "offerReason": card["offerReason"] ?? NSNull(),
             "installed": !(installed == nil),
             "installedVersion": installed?.version ?? NSNull(),
+            "installedRevision": installed?.rewrittenDigest ?? NSNull(),
             "installedEnabled": installed.map { $0.status == "enabled" } ?? false,
             "updateAvailable": card["updateAvailable"] ?? false,
             "rollbackAvailable": card["rollbackAvailable"] ?? false,
             "dependencies": dependencies,
             "card": card,
         ]
+        // The detail reply is one entry, but its signed text/path fields can
+        // still be large. Keep the same actual-serialized-byte bound as every
+        // other page instead of letting the bridge drop an oversized frame.
+        guard let encoded = ConfigJSON.canonicalData(result),
+              encoded.count <= ConfigPageBudget.maximumPageItemsBytes else {
+            throw ConfigDomainError(code: .payloadTooLarge, reason: "curatedDetailTooLarge")
+        }
+        return result
+    }
+
+    /// Bounded full-catalog page. This is the ONLY transport for the complete
+    /// schemaVersion-3 card list; the snapshot/refresh projections carry
+    /// metadata only. Cards remain individually whole and every entry is
+    /// reachable through the opaque catalog/query-bound `nextPageToken`.
+    public func curatedCards(pageToken: String? = nil) async throws -> sending [String: Any] {
+        try await curatedCardPage(query: "", pageToken: pageToken, normalized: "")
     }
 
     /// Local substring search over the verified feed's id, tags, bilingual
     /// name/description and category. The feed is source-backed; no client
-    /// list of four ids exists here.
-    public func curatedSearch(query: String) async throws -> sending [String: Any] {
+    /// list of four ids exists here. Search results use the same bounded page
+    /// contract as the full-catalog chain.
+    public func curatedSearch(query: String, pageToken: String? = nil) async throws -> sending [String: Any] {
+        let needle = try C02CuratedSearchPage.normalizedQuery(query)
+        return try await curatedCardPage(query: query, pageToken: pageToken,
+                                         normalized: needle)
+    }
+
+    private func curatedCardPage(query: String, pageToken: String?,
+                                 normalized needle: String) async throws -> sending [String: Any] {
         _ = try requireBinding()
         guard let cache = curatedCatalogCache else {
             throw ConfigDomainError(code: .needsConfiguration,
@@ -1040,7 +1062,6 @@ public actor SkillsDomain {
         let rows = try await store.all()
         let rollbackIDs = Self.completedUpgradeJournalSkillIDs(installationRoot: installationRoot)
         let appVersion = Self.validatedAppVersion(hostContext.appVersion())
-        let needle = query.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         let cards = curatedCards(feed: cache.publication.feed, rows: rows,
                                  rollbackIDs: rollbackIDs, appVersion: appVersion,
                                  preferredLanguages: Locale.preferredLanguages)
@@ -1054,7 +1075,10 @@ public actor SkillsDomain {
                 visible.removeValue(forKey: "searchText")
                 return visible
             }
-        return ["query": query, "count": cards.count, "cards": cards]
+        return try C02CuratedSearchPage.make(
+            cards: cards, query: query,
+            catalogSHA256: cache.publication.verifiedFeed.catalogSHA256,
+            pageToken: pageToken)
     }
 
     // MARK: Curated install / upgrade routing
@@ -1166,30 +1190,39 @@ public actor SkillsDomain {
         }
     }
 
-    /// The full-catalog projection. The legacy `catalog` object is untouched;
-    /// this object is additive and can be ignored by old clients.
-    private func curatedProjection() async -> sending [String: Any] {
+    /// The full-catalog metadata projection. The legacy `catalog` object is
+    /// untouched; this object is additive and can be ignored by old clients.
+    ///
+    /// Cards are intentionally NOT embedded here. A full schemaVersion-3 feed
+    /// can be much larger than one bridge frame, and the ordinary installed-row
+    /// snapshot already consumes most of its 48 KiB page budget. The verified
+    /// card list is projected through the separately bounded
+    /// `curated.cards` / `curated.search` page chain; `cardsPaged` makes that
+    /// explicit instead of silently hiding entries. `cardCount` is the real
+    /// feed count and `installableCount` is computed from the same signed
+    /// offer gate without materializing card dictionaries.
+    private func curatedProjection() -> sending [String: Any] {
         guard let cache = curatedCatalogCache else {
             if let fallback = curatedFailureFallback {
                 return ["state": "failed",
                         "lastFailure": fallback.reason,
-                        "retryAfter": Self.iso8601String(from: fallback.retryAfter)]
+                        "retryAfter": Self.iso8601String(from: fallback.retryAfter),
+                        "cards": [], "cardsPaged": true, "cardCount": 0]
             }
-            return ["state": "unavailable"]
+            return ["state": "unavailable",
+                    "cards": [], "cardsPaged": true, "cardCount": 0]
         }
-        let rows = (try? await store.all()) ?? []
-        let rollbackIDs = Self.completedUpgradeJournalSkillIDs(installationRoot: installationRoot)
         let appVersion = Self.validatedAppVersion(hostContext.appVersion())
         let feed = cache.publication.feed
-        let cards = curatedCards(feed: feed, rows: rows, rollbackIDs: rollbackIDs,
-                                 appVersion: appVersion,
-                                 preferredLanguages: Locale.preferredLanguages)
-            .map { card -> [String: Any] in
-                var visible = card
-                visible.removeValue(forKey: "searchText")
-                return visible
+        var installable = 0
+        if let appVersion {
+            for entry in feed.entries {
+                if case .installable = CuratedSkillHub.offerState(
+                    for: entry, mode: .production, appVersion: appVersion) {
+                    installable += 1
+                }
             }
-        let installable = cards.filter { ($0["offer"] as? String) == "installable" }.count
+        }
         var projection: [String: Any] = [
             "state": cache.lastFailure != nil ? "staleCached" : "ready",
             "checkedAt": Self.iso8601String(from: cache.checkedAt),
@@ -1211,7 +1244,9 @@ public actor SkillsDomain {
                 "offerQualified": feed.counts.offerQualified,
             ],
             "installableCount": installable,
-            "cards": cards,
+            "cardCount": feed.entries.count,
+            "cardsPaged": true,
+            "cards": [],
         ]
         projection["auditedSourceCommit"] = feed.sourceCommit ?? NSNull()
         projection["lastFailure"] = cache.lastFailure ?? NSNull()
@@ -1363,14 +1398,75 @@ public actor SkillsDomain {
               let declaration = try? SkillDependency.decode(data) else {
             return ["state": "notDeclared"]
         }
+        // The runtime-component requirement carries no name/version in its
+        // own bytes: both come from the strictly decoded pinned descriptor.
+        // Expose the descriptor facts here so the detail sheet can show a
+        // precise supply/target state instead of an empty dependency row.
+        var runtimeComponents: [[String: Any]] = []
+        for profile in declaration.profiles {
+            for requirement in profile.requirements where requirement.kind == .runtimeComponent {
+                guard let path = requirement.componentDescriptorPath else { continue }
+                let descriptorURL = packageRoot.appendingPathComponent(path)
+                guard let descriptorData = try? Data(contentsOf: descriptorURL,
+                                                     options: [.mappedIfSafe]),
+                      descriptorData.count <= SkillRuntimeDependency.maximumDescriptorBytes,
+                      let descriptor = try? SkillRuntimeDependency.decode(descriptorData) else {
+                    continue
+                }
+                let appVersion = C02AndroidSkillCompatibility.version
+                let versionMet = SkillRuntimeDependency.isCompatible(
+                    minimumAppVersion: descriptor.minimumAppVersion,
+                    appVersion: appVersion)
+                let targetIsAppLocalRiscV = descriptor.target.os == "linux"
+                    && descriptor.target.arch == "riscv64"
+                    && descriptor.target.triple == SkillRuntimeDependency.frozenTargetTriple
+                runtimeComponents.append([
+                    "componentID": descriptor.componentID,
+                    "componentVersion": descriptor.componentVersion,
+                    "minimumAppVersion": descriptor.minimumAppVersion,
+                    "targetOS": descriptor.target.os,
+                    "targetArch": descriptor.target.arch,
+                    "targetTriple": descriptor.target.triple,
+                    "targetFormat": descriptor.target.format,
+                    "artifactSize": descriptor.artifact.size,
+                    "artifactSHA256": descriptor.artifact.sha256,
+                    "clientVersionMet": versionMet,
+                    "classification": targetIsAppLocalRiscV
+                        ? "appLocalRiscVGuestArtifact"
+                        : "taskLinuxCandidate",
+                    "androidSupply": targetIsAppLocalRiscV
+                        ? (versionMet ? "requiresRiscVTaskLinux" : "clientVersionFloorNotMet")
+                        : "requiresTaskEnvironmentComparison",
+                    "reason": targetIsAppLocalRiscV
+                        ? (versionMet
+                            ? "the signed component targets the app-local RISC-V Linux guest; it can run only where the selected task Linux is RISC-V"
+                            : "the signed component's minimum app version is above the Android client compatibility version; this is a supply/version fact, not a missing device capability")
+                        : "the signed component targets a Linux architecture; preparation compares it with the actual selected task Linux before any download",
+                ])
+            }
+        }
+        let component = runtimeComponents.first
         let profiles: [[String: Any]] = declaration.profiles.map { profile in
             ["id": profile.id, "os": profile.os,
              "architectures": profile.architectures,
              "requirements": profile.requirements.map { requirement -> [String: Any] in
-                 ["kind": requirement.kind.rawValue, "name": requirement.name,
-                  "version": requirement.version ?? NSNull(),
-                  "required": requirement.required,
-                  "purpose": requirement.purpose]
+                 let isComponent = requirement.kind == .runtimeComponent
+                 let name: String = isComponent
+                    ? (component?["componentID"] as? String ?? "runtimeComponent")
+                    : requirement.name
+                 let version: Any
+                 if let pinned = requirement.version {
+                     version = pinned
+                 } else if isComponent,
+                           let componentVersion = component?["componentVersion"] as? String {
+                     version = componentVersion
+                 } else {
+                     version = NSNull()
+                 }
+                 return ["kind": requirement.kind.rawValue, "name": name,
+                         "version": version,
+                         "required": requirement.required,
+                         "purpose": requirement.purpose]
              }]
         }
         return [
@@ -1378,6 +1474,7 @@ public actor SkillsDomain {
             "schemaVersion": declaration.schemaVersion,
             "declarationSHA256": FloeDigest.sha256Hex(data),
             "profiles": profiles,
+            "runtimeComponents": runtimeComponents,
             "readiness": [
                 "state": "taskRequired",
                 "reason": "dependency verification runs inside the approved skill invocation in a selected task Linux environment",

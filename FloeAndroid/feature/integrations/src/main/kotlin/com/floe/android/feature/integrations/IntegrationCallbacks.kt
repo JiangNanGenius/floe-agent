@@ -70,10 +70,25 @@ interface IntegrationUiCallbacks {
     /** Pull-to-refresh / explicit refresh. True = check started. */
     fun refreshCatalog(force: Boolean): Boolean
 
+    /** Search the complete verified catalog, including unloaded pages. */
+    fun searchCatalog(query: String) {}
+
+    /** Continue after the automatic page budget on explicit user demand. */
+    fun loadMoreCatalog(): Boolean = false
+
     /* -------------------------------- skills -------------------------------- */
 
     /** Official hub install (⇄ installOfficialSkill). True = started. */
     fun installOfficialSkill(skillId: String): Boolean
+
+    /** Read one verified full-catalog entry for the detail sheet
+     * (⇄ `skills.list` operation `curated.detail`). True = request started;
+     * the host publishes [SkillDetailUi] (or an honest unavailable state). */
+    fun loadSkillDetail(skillId: String): Boolean
+
+    /** Detail sheet dismissed; any in-flight read for this id becomes
+     * stale and must not publish into a newer sheet. */
+    fun dismissSkillDetail(skillId: String)
 
     /** Enable/disable, revision-bound (⇄ expectedDigest). True = accepted;
      * a changed skill surfaces the host's conflict error via projection. */

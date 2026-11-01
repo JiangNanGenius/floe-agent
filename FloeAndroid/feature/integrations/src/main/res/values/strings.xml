@@ -104,6 +104,46 @@
     <string name="skills_update_rollback_confirm_message">This restores the previous version and its permission decisions.</string>
 
     <!-- folder import (Android surface for the fileImporter step) -->
+    <!-- full-catalog detail sheet -->
+    <string name="skills_detail_title">Plugin details</string>
+    <string name="skills_detail_close">Done</string>
+    <string name="skills_detail_open">Details</string>
+    <string name="skills_detail_version">Version</string>
+    <string name="skills_detail_category">Category</string>
+    <string name="skills_detail_tags">Tags</string>
+    <string name="skills_detail_platforms">Platforms</string>
+    <string name="skills_detail_runtime">Runtime</string>
+    <string name="skills_detail_execution">Execution</string>
+    <string name="skills_detail_package">Package</string>
+    <string name="skills_detail_package_size">Size</string>
+    <string name="skills_detail_package_digest">SHA-256</string>
+    <string name="skills_detail_availability">Availability</string>
+    <string name="skills_detail_installed_version">Installed version</string>
+    <string name="skills_detail_not_installed">Not installed</string>
+    <string name="skills_detail_installed_disabled">Installed, currently disabled.</string>
+    <string name="skills_detail_update_available">A newer version is available</string>
+    <string name="skills_detail_rollback_available">A previous version can be restored</string>
+    <string name="skills_detail_dependencies">Dependencies</string>
+    <string name="skills_detail_no_dependencies">No dependencies are declared.</string>
+    <string name="skills_detail_dependencies_after_install">Dependency details appear after installation.</string>
+    <string name="skills_detail_dependency_readiness">Readiness</string>
+    <string name="skills_detail_readiness_task_required">Verification runs when this skill runs in a selected task Linux environment.</string>
+    <string name="skills_detail_readiness_pending">Not verified yet.</string>
+    <string name="skills_detail_required">Required</string>
+    <string name="skills_detail_optional">Optional</string>
+    <string name="skills_detail_manage">Review update or restore</string>
+    <string name="skills_detail_unavailable">Details are unavailable right now.</string>
+    <string name="skills_detail_loading">Loading details…</string>
+    <string name="skills_detail_runtime_component">Runtime component</string>
+    <string name="skills_detail_component_unavailable">Not available for the Android task Linux environment</string>
+    <string name="skills_detail_component_riscv">Runs only in a RISC-V task Linux environment.</string>
+    <string name="skills_detail_kind_pip">Python package</string>
+    <string name="skills_detail_kind_apt">System package</string>
+    <string name="skills_detail_kind_npm">npm package</string>
+    <string name="skills_detail_kind_font">Font</string>
+    <string name="skills_detail_kind_runtime_component">Runtime component</string>
+    <string name="skills_detail_kind_unknown">Dependency</string>
+    <string name="skills_catalog_unavailable">The full plugin catalog is unavailable right now.</string>
     <string name="skills_import_title">Import skill folder</string>
     <string name="skills_import_footer">Floe copies and validates the selected folder; the original folder is never modified.</string>
     <string name="skills_import_missing">No staged folder</string>
@@ -175,4 +215,6 @@
     <string name="mcp_local_network_recovery_detail">Local network access is blocked until allowed in system settings. Public internet servers keep working.</string>
 
     <string name="mcp_save_failed_notice">Couldn\'t save. Your changes are still here. Check the connection settings and try again.</string>
+    <string name="skills_catalog_load_more">Load more</string>
+    <string name="skills_catalog_query_too_long">Shorten the search text and try again.</string>
 </resources>

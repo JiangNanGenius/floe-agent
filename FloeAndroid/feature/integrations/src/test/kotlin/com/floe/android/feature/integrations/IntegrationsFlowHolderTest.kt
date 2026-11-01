@@ -68,11 +68,19 @@ class IntegrationsFlowHolderTest {
         var seed: McpEditorSeedUi? = null
         val localNetworkActions = mutableListOf<Unit>()
         var localNetworkActionAccepted = true
+        val detailLoads = mutableListOf<String>()
+        val detailDismissals = mutableListOf<String>()
+        var detailAccepted = true
 
         override fun load() { loadCount++ }
         override fun closeAll() { closeAllCount++ }
         override fun refreshCatalog(force: Boolean): Boolean = true
         override fun installOfficialSkill(skillId: String): Boolean = true
+        override fun loadSkillDetail(skillId: String): Boolean {
+            detailLoads += skillId
+            return detailAccepted
+        }
+        override fun dismissSkillDetail(skillId: String) { detailDismissals += skillId }
         override fun setSkillEnabled(skillId: String, expectedRevision: String, enabled: Boolean): Boolean {
             enabledSkills += Triple(skillId, expectedRevision, enabled)
             return true
@@ -893,4 +901,65 @@ class IntegrationsFlowHolderTest {
             (result as IntegrationsFlowResult.Rejected).reason)
     }
 
+
+    @Test
+    fun `detail sheet opens one host read and dismisses the same id`() {
+        val host = FakeHost()
+        val holder = IntegrationsFlowHolder(host)
+        assertEquals(IntegrationsFlowResult.Accepted, holder.openSkillDetail("skill-a"))
+        assertEquals(listOf("skill-a"), host.detailLoads)
+        assertEquals(IntegrationsPane.SKILL_DETAIL, holder.navigation.top.pane)
+        assertEquals("skill-a", holder.navigation.top.key)
+
+        holder.closeSkillDetail("skill-a")
+        assertEquals(listOf("skill-a"), host.detailDismissals)
+        assertEquals(IntegrationsPane.SKILLS_HUB, holder.navigation.top.pane)
+    }
+
+    @Test
+    fun `back closes the detail sheet and notifies the host`() {
+        val host = FakeHost()
+        val holder = IntegrationsFlowHolder(host)
+        holder.openSkillDetail("skill-a")
+        assertTrue(holder.back())
+        assertEquals(IntegrationsPane.SKILLS_HUB, holder.navigation.top.pane)
+        assertEquals(listOf("skill-a"), host.detailDismissals)
+    }
+
+    @Test
+    fun `opening another entry replaces the single detail sheet`() {
+        val host = FakeHost()
+        val holder = IntegrationsFlowHolder(host)
+        holder.openSkillDetail("skill-a")
+        holder.openSkillDetail("skill-b")
+        assertEquals(IntegrationsPane.SKILL_DETAIL, holder.navigation.top.pane)
+        assertEquals("skill-b", holder.navigation.top.key)
+        assertEquals(2, holder.navigation.depth)
+        assertEquals(listOf("skill-a"), host.detailDismissals)
+        assertEquals(listOf("skill-a", "skill-b"), host.detailLoads)
+    }
+
+    @Test
+    fun `detail sheet never remains open when the host refuses the read`() {
+        val host = FakeHost().apply { detailAccepted = false }
+        val holder = IntegrationsFlowHolder(host)
+        val result = holder.openSkillDetail("skill-a")
+        assertTrue(result is IntegrationsFlowResult.Rejected)
+        assertEquals(IntegrationsPane.SKILLS_HUB, holder.navigation.top.pane)
+    }
+
+    @Test
+    fun `detail install and manage routes reuse the existing host effects`() {
+        val host = FakeHost()
+        val holder = IntegrationsFlowHolder(host)
+        holder.openSkillDetail("skill-a")
+        assertEquals(IntegrationsFlowResult.Accepted, holder.installOfficialSkill("skill-a"))
+        // Update and rollback both open the existing upgrade sheet, which
+        // owns the explicit apply/rollback confirmation.
+        holder.openUpgrade("skill-a")
+        assertEquals(IntegrationsPane.UPGRADE_REVIEW, holder.navigation.top.pane)
+        assertEquals("skill-a", holder.navigation.top.key)
+        holder.cancelUpgrade("skill-a")
+        assertEquals(listOf("skill-a"), host.upgradeCancels)
+    }
 }

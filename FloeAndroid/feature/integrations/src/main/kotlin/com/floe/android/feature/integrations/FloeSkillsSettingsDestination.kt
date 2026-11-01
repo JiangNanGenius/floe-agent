@@ -232,6 +232,24 @@ fun FloeSkillsSettingsDestination(
                 }
             }
 
+            IntegrationsPane.SKILL_DETAIL -> {
+                val skillId = entry.key
+                FloePageSheet(
+                    visible = true,
+                    onDismiss = { holder.closeSkillDetail(skillId) },
+                    widthFraction = if (wide) IntegrationsSheetMetrics.SKILL_DETAIL_WIDTH_FRACTION else 1f,
+                    heightFraction = if (wide) IntegrationsSheetMetrics.SKILL_DETAIL_HEIGHT_FRACTION else 1f,
+                    placement = if (wide) FloeSheetPlacement.CENTER else FloeSheetPlacement.BOTTOM,
+                ) {
+                    SkillDetailPage(
+                        skillId = skillId,
+                        detail = state.skillDetail,
+                        holder = holder,
+                        onClose = { holder.closeSkillDetail(skillId) },
+                    )
+                }
+            }
+
             IntegrationsPane.INSTALL_REVIEW -> {
                 val review = state.installReview?.takeIf { it.reviewId.toString() == entry.key }
                     ?: return@forEach

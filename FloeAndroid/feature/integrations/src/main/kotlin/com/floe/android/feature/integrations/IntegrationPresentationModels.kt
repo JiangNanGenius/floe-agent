@@ -256,6 +256,10 @@ data class SkillCatalogCardUi(
     /** ⇄ pluginSummary(definition): one-sentence purpose. */
     val summary: String,
     val state: CatalogCardStateUi,
+    /** True only for a verified schemaVersion-3 entry whose detail backend
+     * exists (`curated.detail`). Legacy four-item cards keep a compact row
+     * and never open a detail sheet with no backend. */
+    val detailAvailable: Boolean = false,
 )
 
 /** ⇄ the card's conditional affordance block, one-to-one. */
@@ -285,6 +289,121 @@ data class RewriteModelUi(
     val modelId: String,
     val displayName: String,
 )
+
+/**
+ * One full-catalog entry detail (⇄ `skills.list` operation `curated.detail`).
+ * Every value comes from the verified schemaVersion-3 feed plus the actual
+ * installed row; the sheet never derives availability or a dependency ready
+ * state on its own. Localized display text is resolved by the host.
+ */
+data class SkillDetailUi(
+    val skillId: String,
+    val name: String,
+    val description: String,
+    val notes: String?,
+    val version: String,
+    val category: String,
+    val tags: List<String>,
+    val installPlatforms: List<String>,
+    val scriptRuntime: String,
+    val executionOS: String?,
+    val executionArch: String?,
+    val executionEvidence: String?,
+    val containsScripts: Boolean,
+    val packageSize: Long?,
+    val packageSHA256: String?,
+    val minAppVersion: String?,
+    val offer: String,
+    val offerReason: String?,
+    val installed: Boolean,
+    val installedVersion: String?,
+    val installedRevision: String?,
+    val installedEnabled: Boolean,
+    val updateAvailable: Boolean,
+    val rollbackAvailable: Boolean,
+    val dependencies: SkillDetailDependenciesUi,
+    val isLoading: Boolean = false,
+    val errorMessage: String? = null,
+) {
+    /** The UI may only show an install trigger when the host's signed offer
+     * says installable and the row is not installed. */
+    val canInstall: Boolean get() = !installed && offer == "installable"
+    /** Update/rollback route through the existing upgrade sheet. */
+    val canUpdate: Boolean get() = installed && updateAvailable
+    val canManageRollback: Boolean get() = installed && rollbackAvailable
+
+    companion object {
+        /** Honest pre-response state; never renders an action. */
+        fun loading(skillId: String): SkillDetailUi = SkillDetailUi(
+            skillId = skillId, name = skillId, description = "", notes = null,
+            version = "", category = "", tags = emptyList(),
+            installPlatforms = emptyList(), scriptRuntime = "",
+            executionOS = null, executionArch = null, executionEvidence = null,
+            containsScripts = false, packageSize = null, packageSHA256 = null,
+            minAppVersion = null, offer = "unavailable", offerReason = null,
+            installed = false, installedVersion = null, installedRevision = null,
+            installedEnabled = false, updateAvailable = false,
+            rollbackAvailable = false,
+            dependencies = SkillDetailDependenciesUi.NOT_DECLARED,
+            isLoading = true, errorMessage = null)
+
+        /** Honest unavailable state with a host-localized message. */
+        fun failed(skillId: String, message: String): SkillDetailUi =
+            loading(skillId).copy(isLoading = false, errorMessage = message)
+    }
+}
+
+/** Dependency declaration facts shown in the detail sheet. */
+data class SkillDetailDependenciesUi(
+    val state: String,
+    val schemaVersion: Int?,
+    val declarationSHA256: String?,
+    val readinessState: String?,
+    val readinessReason: String?,
+    val profiles: List<SkillDetailDependencyProfileUi>,
+    val runtimeComponents: List<SkillDetailRuntimeComponentUi>,
+) {
+    companion object {
+        val NOT_DECLARED = SkillDetailDependenciesUi(
+            state = "notDeclared", schemaVersion = null,
+            declarationSHA256 = null, readinessState = null,
+            readinessReason = null, profiles = emptyList(),
+            runtimeComponents = emptyList(),
+        )
+    }
+}
+
+data class SkillDetailDependencyProfileUi(
+    val id: String,
+    val os: String,
+    val architectures: List<String>,
+    val requirements: List<SkillDetailDependencyRequirementUi>,
+)
+
+data class SkillDetailDependencyRequirementUi(
+    val kind: String,
+    val name: String,
+    val version: String?,
+    val required: Boolean,
+    val purpose: String,
+)
+
+/** Precise signed runtime-component facts. A missing Android/task-Linux
+ * artifact is a supply/version state, never "device unsupported". */
+data class SkillDetailRuntimeComponentUi(
+    val componentID: String,
+    val componentVersion: String,
+    val minimumAppVersion: String?,
+    val targetOS: String?,
+    val targetArch: String?,
+    val targetTriple: String?,
+    val classification: String?,
+    val androidSupply: String?,
+    val reason: String?,
+) {
+    val unavailableOnAndroidTaskLinux: Boolean
+        get() = androidSupply == "notPublishedForAndroidTaskLinux"
+}
 
 /** ⇄ SkillsCenter rewrite/create outcome, addressed to one form session. */
 data class SkillsFormOutcomeUi(
@@ -758,6 +877,9 @@ data class SkillsHubUiState(
     val catalogChecking: Boolean,
     /** ⇄ center.catalogError ("updates cannot be checked right now"). */
     val catalogError: String?,
+    /** Full schemaVersion-3 catalog unavailable/stale copy. Kept separate
+     * from the legacy four-item catalog so neither failure hides the other. */
+    val curatedError: String? = null,
     val installed: List<SkillInstalledRowUi>,
     /** ⇄ center.rewriteModels / defaultRewriteModelID for the Finder sheet. */
     val rewriteModels: List<RewriteModelUi>,
@@ -770,6 +892,8 @@ data class SkillsHubUiState(
     /** Outcome for the current transient form session (creator/finder/
      * folder import), keyed by the module's form id. */
     val formOutcome: SkillsFormOutcomeUi? = null,
+    val catalogHasMore: Boolean = false,
+    val catalogPagingBusy: Boolean = false,
 ) {
     val installedIds: Set<String> get() = installed.mapTo(HashSet()) { it.skillId }
 }
@@ -787,4 +911,7 @@ data class IntegrationsDestinationState(
     /** Active MCP editor projection, or null; ignored unless its identity
      * matches the module's open editor session (epoch guard). */
     val editor: McpEditorUiState? = null,
+    /** Open full-catalog detail sheet; ignored unless its skill id matches
+     * the pane key (stale-root/request fence). */
+    val skillDetail: SkillDetailUi? = null,
 )

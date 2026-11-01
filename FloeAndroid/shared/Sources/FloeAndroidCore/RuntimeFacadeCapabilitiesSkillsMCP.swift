@@ -109,6 +109,7 @@ enum SkillsListOperation: String, Sendable, CaseIterable {
     case catalogRefresh = "catalog.refresh"    // refresh BOTH independent catalogs
     case curatedRefresh = "curated.refresh"    // schemaVersion-3 full channel only
     case curatedDetail = "curated.detail"      // one verified full-catalog entry
+    case curatedCards = "curated.cards"        // bounded full-catalog card page
     case curatedSearch = "curated.search"      // source-backed search over the feed
     case detail                                // bounded markdown window
     case settingsRead = "settings.read"        // skills settings document
@@ -254,11 +255,26 @@ public actor SkillsCommandRouter {
                 throw ConfigDomainError(code: .invalidEnvelope, reason: "curatedDetailSkillID")
             }
             return CapabilitiesReplies.completed(try await domain.curatedDetail(skillID: skillID))
+        case SkillsListOperation.curatedCards.rawValue:
+            try ConfigJSON.closed(payload, allowed: ["operation", "cursor", "pageToken"],
+                                  context: "skillsCuratedCards")
+            guard payload["pageToken"] == nil || payload["pageToken"] is String,
+                  cursor == nil || cursor == "0" else {
+                throw ConfigDomainError(code: .invalidEnvelope, reason: "curatedCardsPageShape")
+            }
+            return CapabilitiesReplies.completed(try await domain.curatedCards(
+                pageToken: payload["pageToken"] as? String))
         case SkillsListOperation.curatedSearch.rawValue:
-            try ConfigJSON.closed(payload, allowed: ["operation", "query", "cursor"],
+            try ConfigJSON.closed(payload, allowed: ["operation", "query", "cursor", "pageToken"],
                                   context: "skillsCuratedSearch")
+            guard payload["query"] == nil || payload["query"] is String,
+                  payload["pageToken"] == nil || payload["pageToken"] is String,
+                  cursor == nil || cursor == "0" else {
+                throw ConfigDomainError(code: .invalidEnvelope, reason: "curatedSearchPageShape")
+            }
             let query = (payload["query"] as? String) ?? ""
-            return CapabilitiesReplies.completed(try await domain.curatedSearch(query: query))
+            return CapabilitiesReplies.completed(try await domain.curatedSearch(
+                query: query, pageToken: payload["pageToken"] as? String))
         case SkillsListOperation.detail.rawValue:
             try ConfigJSON.closed(payload,
                                   allowed: ["operation", "skillId", "byteOffset",
