@@ -50,6 +50,11 @@ struct CADMeshPanelView: View {
         var title: String
         var args: [String: Any]
         var destructive: Bool
+        /// Whether this preview's request carried the user's explicit
+        /// `forceMesh` consent. Apply uses this captured value, never a newer
+        /// toggle state, so a later opt-in cannot authorize an older preview
+        /// and a revocation can only invalidate it.
+        var downgradeAcknowledged: Bool
         var previewLines: [String]
         var mesh: [String: Any]
         var previewHash: String
@@ -286,6 +291,14 @@ struct CADMeshPanelView: View {
             operationID = nil
             busy = false
         }
+        .onChange(of: allowMeshDowngrade) { _, isAllowed in
+            // Revoking the explicit consent invalidates any preview that was
+            // computed under it, in flight or already shown. The user must opt
+            // in and preview again; a destructive preview can never become
+            // actionable through a later toggle change. The in-flight request
+            // is additionally fenced where its reply is published.
+            if !isAllowed { pending = nil }
+        }
     }
 
     // MARK: Operations
@@ -361,13 +374,23 @@ struct CADMeshPanelView: View {
     /// the main actor, computes the actual result geometry off the UI and
     /// returns a bounded mesh snapshot + content hash. Apply passes those exact
     /// values back so the committed result is provably the one inspected.
+    ///
+    /// The explicit "Allow destructive mesh edits" consent is captured into the
+    /// request at submission: with it off (the default) the service still
+    /// refuses a precise B-rep; with it on the request carries `forceMesh`, so
+    /// the user inspects the real downgraded result instead of a refusal. A
+    /// later toggle change never rewrites this request.
     private func preview(args: [String: Any], title: String, destructive: Bool) {
         operationTask?.cancel()
         let id = UUID()
         operationID = id
+        // The consent that governs this request is the toggle state now, not
+        // whenever the reply arrives or Apply is tapped.
+        let downgradeAcknowledged = destructive && allowMeshDowngrade
         // An older Apply preview must not stay actionable while a new
         // computation is in flight.
         pending = nil
+        outcome = [:]
         busy = true
         operationTask = Task { @MainActor in
             // Identity-scoped cleanup: only this operation may clear busy or
@@ -376,6 +399,7 @@ struct CADMeshPanelView: View {
             let service = CADMeshService(document: document)
             var previewArgs = args
             previewArgs["preview"] = true
+            if downgradeAcknowledged { previewArgs["forceMesh"] = true }
             let reply = await service.handleAsync(
                 action: args["action"] as? String ?? "boundary",
                 args: previewArgs)
@@ -383,6 +407,10 @@ struct CADMeshPanelView: View {
             // must not publish a preview; the owner task and its service
             // worker have already been joined by handleAsync.
             guard operationID == id, !Task.isCancelled else { return }
+            // Revoking consent while the request was running invalidates its
+            // result: never publish an actionable destructive preview the
+            // current UI state no longer permits.
+            guard !destructive || !downgradeAcknowledged || allowMeshDowngrade else { return }
             guard reply["ok"] as? Bool == true,
                   let mesh = reply["mesh"] as? [String: Any],
                   let hash = reply["previewHash"] as? String else {
@@ -395,13 +423,14 @@ struct CADMeshPanelView: View {
             let triangles = reply["triangleCount"] as? Int ?? 0
             lines.append(FloeCADStrings.format("cad.workbench.mesh.previewTriangles",
                                                "%@ triangles in the result", triangles))
-            if destructive && !allowMeshDowngrade {
+            if destructive && !downgradeAcknowledged {
                 lines.append(FloeCADStrings.text("cad.workbench.mesh.downgradeHint",
                                                  "Analytic bodies will be refused unless “Allow destructive mesh edits” is on."))
             }
             pending = PendingMeshOperation(title: title,
                                            args: args,
                                            destructive: destructive,
+                                           downgradeAcknowledged: downgradeAcknowledged,
                                            previewLines: lines,
                                            mesh: mesh,
                                            previewHash: hash,
@@ -412,7 +441,22 @@ struct CADMeshPanelView: View {
 
     private func applyPending(_ operation: PendingMeshOperation) {
         var args = operation.args
-        if operation.destructive, allowMeshDowngrade { args["forceMesh"] = true }
+        // Apply only the consent captured with this preview. Reading the live
+        // toggle to *grant* consent here would let a later opt-in authorize a
+        // preview that was never inspected under that consent.
+        if operation.destructive, operation.downgradeAcknowledged {
+            // Re-check revocation locally: `onChange` clears the pending card,
+            // but if this Apply still runs, re-preview through the real service
+            // (which now refuses the precise body) instead of silently applying
+            // a downgrade the user no longer permits.
+            guard allowMeshDowngrade else {
+                pending = nil
+                preview(args: operation.args, title: operation.title,
+                        destructive: operation.destructive)
+                return
+            }
+            args["forceMesh"] = true
+        }
         args["expectedPreviewHash"] = operation.previewHash
         if let revision = operation.previewRevision { args["expectedRevision"] = revision }
         if let count = operation.previewChangeCount { args["expectedChangeCount"] = count }
@@ -427,6 +471,9 @@ struct CADMeshPanelView: View {
         // A pending preview from an earlier computation is stale by definition
         // once a new edit starts; never leave its Apply button actionable.
         pending = nil
+        // A new operation replaces the previous outcome line; an old refusal
+        // must not be read as the result of this request.
+        outcome = [:]
         busy = true
         operationTask = Task { @MainActor in
             defer { finishOperation(id) }

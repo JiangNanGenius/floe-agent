@@ -19,6 +19,7 @@
 
 #if DEBUG && canImport(SwiftUI) && canImport(UIKit)
 import SwiftUI
+import Foundation
 import FloeCAD
 
 /// X30 recovery UI input. These are DEBUG-only launch choices for the native
@@ -40,6 +41,36 @@ enum CADEditorExportRecoveryFixtureMode: String, Equatable {
         if arguments.contains(Self.empty.launchArgument) { return .empty }
         return nil
     }
+}
+
+/// One-shot scheduling gate for the native Mesh panel UI flow. It delays only
+/// the FIRST real detached compute of each heavy action in this launch, so a
+/// UI test can act while a real worker is in flight. The hold is a bounded
+/// sleep (no semaphore is acquired), so a failed test cannot leave a worker
+/// parked indefinitely; result geometry is always the real kernel output.
+private final class CADMeshPanelFlowGate: @unchecked Sendable {
+    private let lock = NSLock()
+    private var claimed: Set<String> = []
+
+    func claim(_ action: String) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        guard !claimed.contains(action) else { return false }
+        claimed.insert(action)
+        return true
+    }
+}
+
+private enum CADMeshPanelFlowTiming {
+    /// Interaction windows, not performance measurements. The service's real
+    /// 10 s compute deadline starts only after the probe returns. The UI test's
+    /// `latePublicationDeadline` (38 s) is the 30 s repair hold plus margin.
+    static let holdSeconds: [String: TimeInterval] = [
+        "repair": 30,
+        "simplify": 4,
+        "combine": 30,
+        "boolean": 30,
+    ]
 }
 
 enum CADQualificationFixture {
@@ -602,6 +633,23 @@ struct CADWorkbenchFixtureHarness: View {
     @State private var document: FloeCADDocument?
     @State private var error: String?
 
+    /// The App fixture cannot reach FloeCAD's internal `testHeavyComputeProbe`.
+    /// This DEBUG-only launch choice installs the one existing scheduling seam
+    /// through the public debug-fixture surface. It is absent unless the flag
+    /// is present, and there is no Release build of this file.
+    @MainActor
+    private static func installMeshPanelFlowProbeIfRequested() {
+        guard ProcessInfo.processInfo.arguments.contains("--ui-test-cad-mesh-panel-flow") else {
+            return
+        }
+        let gate = CADMeshPanelFlowGate()
+        CADDebugFixtures.installMeshPanelComputeProbe { action, _ in
+            guard let hold = CADMeshPanelFlowTiming.holdSeconds[action], hold > 0,
+                  gate.claim(action) else { return }
+            Thread.sleep(forTimeInterval: hold)
+        }
+    }
+
     var body: some View {
         Group {
             if let document {
@@ -654,6 +702,7 @@ struct CADWorkbenchFixtureHarness: View {
         .accessibilityIdentifier("CADFixtureHarness")
         .task {
             guard document == nil, error == nil else { return }
+            Self.installMeshPanelFlowProbeIfRequested()
             do {
                 let arguments = ProcessInfo.processInfo.arguments
                 if arguments.contains("--ui-test-cad-hole-form") {

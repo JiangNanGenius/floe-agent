@@ -297,6 +297,19 @@ public enum CADDebugFixtures {
             document: document.session.document))
     }
 
+    // MARK: - Native App UI scheduling seam
+
+    /// Installs the existing `CADMeshService.testHeavyComputeProbe` for the
+    /// native App's `--ui-test-cad-mesh-panel-flow` UI qualification. The
+    /// closure may only delay real detached compute; it must never synthesize
+    /// geometry. `nil` removes the seam. This whole file is DEBUG-only, so a
+    /// Release build contains neither this helper nor the probe call site.
+    public static func installMeshPanelComputeProbe(
+        _ probe: (@Sendable (String, Int) -> Void)?
+    ) {
+        CADMeshService.testHeavyComputeProbe = probe
+    }
+
     // MARK: - Helpers
 
     private static func run(_ document: FloeCADDocument,

@@ -1324,6 +1324,8 @@ targets:
       # regressions. Package test target also builds it; this explicit entry is
       # what makes it execute in FloeAppTests. Regenerate with gen_project.sh.
       - path: ThirdParty/FloeCADKit/Tests/FloeCADKitTests/CADIGESSurfaceRoundTripTests.swift
+      - path: ThirdParty/FloeCADKit/Tests/FloeCADKitTests/CADIGESTests.swift
+      - path: ThirdParty/FloeCADKit/Tests/FloeCADKitTests/CADMeshPreviewConsentTests.swift
       # Original X28 (animation export options UI → real exporter settings →
       # media read-back): options mapping/persistence tests plus the App-host
       # RealityKit export read-back fixture. Regenerate with gen_project.sh.
