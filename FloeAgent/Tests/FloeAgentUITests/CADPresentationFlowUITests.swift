@@ -773,9 +773,8 @@ private enum CADSheetProbe {
     }
 
     /// Expand the presented sheet to its large detent through the standard
-    /// sheet grabber, so every Form row is laid out and visible. A downward
-    /// swipe inside a detent sheet can start an interactive dismissal, so the
-    /// cases never rely on scrolling back up.
+    /// sheet grabber before walking its Form. Subsequent scrolling stays
+    /// inside the Form rather than starting on the grabber/navigation bar.
     static func expandSheet(_ title: String, in app: XCUIApplication) {
         let bar = app.navigationBars[title]
         guard bar.exists else { return }
@@ -784,13 +783,34 @@ private enum CADSheetProbe {
                    thenDragTo: app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.12)))
     }
 
-    /// Scroll the presented sheet's real Form upward until the control is
-    /// visible. Only used as a fallback after the sheet is expanded.
+    /// Reveal a control in either direction in the expanded sheet's real
+    /// Form. A control can still exist in the AX tree above the viewport;
+    /// asking its hittability there can itself fail with an invalid activation
+    /// point (actual OBJ partial-coverage UI139). Check its visible frame first
+    /// and move back toward it without dragging the sheet's grabber.
     static func reveal(_ element: XCUIElement, in app: XCUIApplication,
                        sheet title: String, swipes: Int = 8) {
         for _ in 0..<swipes {
-            if element.exists && element.isHittable { return }
-            (sheetScrollView(title: title, in: app) ?? app).swipeUp()
+            let form = sheetScrollView(title: title, in: app)
+            let bar = app.navigationBars[title]
+            let frame = form?.frame ?? app.frame
+            let top = bar.exists ? max(frame.minY, bar.frame.maxY) : frame.minY
+            let viewport = CGRect(x: frame.minX, y: top,
+                                  width: frame.width, height: max(0, frame.maxY - top))
+            var towardEarlierRows = false
+            if element.exists {
+                let target = element.frame
+                let center = CGPoint(x: target.midX, y: target.midY)
+                if !target.isEmpty, viewport.contains(center), element.isHittable { return }
+                towardEarlierRows = target.maxY <= viewport.minY
+                    || target.midY < viewport.minY
+            }
+            let scroll = form ?? app
+            let startY: CGFloat = towardEarlierRows ? 0.32 : 0.72
+            let endY: CGFloat = towardEarlierRows ? 0.72 : 0.32
+            scroll.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: startY))
+                .press(forDuration: 0.05, thenDragTo: scroll.coordinate(
+                    withNormalizedOffset: CGVector(dx: 0.5, dy: endY)))
         }
     }
 
