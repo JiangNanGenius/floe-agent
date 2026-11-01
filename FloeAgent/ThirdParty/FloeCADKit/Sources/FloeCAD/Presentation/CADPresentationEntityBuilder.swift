@@ -261,7 +261,7 @@ final class CADPresentationEntityBuilder {
         if body.faceGroups.isEmpty {
             let resource: MeshResource
             switch outcome(for: .base) {
-            case .removed:
+            case .clipped(let value) where value.isFullyClipped:
                 return nil
             case .invalid(let reason):
                 noteInvalid(reason)
@@ -318,7 +318,7 @@ final class CADPresentationEntityBuilder {
         var faceEntities: [Int: ModelEntity] = [:]
         if !baseTriangles.isEmpty {
             switch outcome(for: .base) {
-            case .removed:
+            case .clipped(let value) where value.isFullyClipped:
                 break
             case .invalid(let reason):
                 noteInvalid(reason)
@@ -366,7 +366,7 @@ final class CADPresentationEntityBuilder {
         for group in body.faceGroups {
             try Task.checkCancellation()
             switch outcome(for: .face(group.faceIndex)) {
-            case .removed:
+            case .clipped(let value) where value.isFullyClipped:
                 continue
             case .invalid(let reason):
                 noteInvalid(reason)
