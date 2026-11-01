@@ -459,6 +459,20 @@ nonisolated enum CADFaceMaterialResolver {
     /// ambiguous and needs explicit reassignment.
     static let ambiguityMargin: Double = 0.04
 
+    static var displayRangeUnavailableMessage: String {
+        FloeCADStrings.text("cad.material.error.faceRangeUnavailable",
+            "Can't apply a material to this face. Rebuild the model or select the whole body.")
+    }
+
+    /// New assignments need an actual range now. Existing unresolved saved
+    /// bindings remain available for repair and do not block another face.
+    static func hasDisplayRanges(for keys: [CADFaceKey], in body: Body, table: FaceTable?) -> Bool {
+        var candidate = body
+        candidate.materialFaceBindings = keys.map { CADFaceMaterialBinding(key: $0, material: .default) }
+        let result = assessGroups(in: candidate, table: table, tableRevision: body.meshRevision)
+        return result.isLossless && result.groups.count == keys.count
+    }
+
     /// Resolve every face binding against one fresh/stale face table. This is
     /// the single source of truth for both writers and the completeness
     /// receipt; no caller may infer "complete" from signature matching alone,
@@ -472,7 +486,14 @@ nonisolated enum CADFaceMaterialResolver {
         let triangleCount = overrideTriangleCount
             ?? (body.render.indices.count / 3)
         guard triangleCount > 0 else {
-            return CADFaceGroupAssessment(groups: [], issues: [],
+            let issues = body.materialFaceBindings.enumerated().map { index, binding in
+                var issue = CADFaceGroupIssue(kind: .tableUnavailable,
+                    materialName: binding.material.materialName ?? "Material",
+                    capturedIndex: binding.key.capturedIndex)
+                issue.bindingIndex = index
+                return issue
+            }
+            return CADFaceGroupAssessment(groups: [], issues: issues,
                                           claimedTriangles: [],
                                           remainingTriangles: [])
         }

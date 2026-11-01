@@ -868,6 +868,13 @@ final class CADMaterialDraftModel {
                     indices.count)
                 return
             }
+            guard CADFaceMaterialResolver.hasDisplayRanges(for: [key], in: body,
+                table: document.session.faceRangeTable(for: body, preparingForAssignment: true)) else {
+                let message = CADFaceMaterialResolver.displayRangeUnavailableMessage
+                errorMessage = message
+                targetError = message
+                return
+            }
             faceBody = body
             faceKey = key
         } else {

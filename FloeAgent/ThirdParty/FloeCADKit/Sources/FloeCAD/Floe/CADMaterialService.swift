@@ -383,9 +383,10 @@ public final class CADMaterialService {
                              "Body '\(body.name)' has no face \(missing.map(String.init).joined(separator: ", ")). "
                                 + "Re-query kind=faces for current indices.")
         }
-        let candidates = CADFaceMaterialResolver.candidates(for: body,
-            table: document.session.faceRangeTable(for: body, preparingForAssignment: true))
+        let table = document.session.faceRangeTable(for: body, preparingForAssignment: true)
+        let candidates = CADFaceMaterialResolver.candidates(for: body, table: table)
         var bindings: [CADFaceMaterialBinding] = []
+        var newKeys: [CADFaceKey] = []
         var used: Set<Int> = []
         for existing in body.materialFaceBindings {
             if case .resolved(let index, _) = CADFaceMaterialResolver.match(
@@ -415,6 +416,10 @@ public final class CADMaterialService {
             }
             guard used.insert(index).inserted else { continue }
             bindings.append(CADFaceMaterialBinding(key: key, material: spec))
+            newKeys.append(key)
+        }
+        guard CADFaceMaterialResolver.hasDisplayRanges(for: newKeys, in: body, table: table) else {
+            return Self.fail("face_range_unavailable", CADFaceMaterialResolver.displayRangeUnavailableMessage)
         }
         let snapshot = SetMaterialAppearanceCommand.Snapshot(
             material: body.material, faceBindings: bindings)
@@ -459,9 +464,10 @@ public final class CADMaterialService {
         case .success(let value):
             material = value
         }
-        let candidates = CADFaceMaterialResolver.candidates(for: body,
-            table: document.session.faceRangeTable(for: body, preparingForAssignment: true))
+        let table = document.session.faceRangeTable(for: body, preparingForAssignment: true)
+        let candidates = CADFaceMaterialResolver.candidates(for: body, table: table)
         var bindings: [CADFaceMaterialBinding] = []
+        var newKeys: [CADFaceKey] = []
         for existing in body.materialFaceBindings {
             switch CADFaceMaterialResolver.match(
                 existing.key, candidates: candidates) {
@@ -493,6 +499,10 @@ public final class CADMaterialService {
                     return Self.fail("unstable_face", reason)
                 }
                 bindings.append(CADFaceMaterialBinding(key: key, material: spec))
+                newKeys.append(key)
+            }
+            guard CADFaceMaterialResolver.hasDisplayRanges(for: newKeys, in: body, table: table) else {
+                return Self.fail("face_range_unavailable", CADFaceMaterialResolver.displayRangeUnavailableMessage)
             }
         }
         document.session.perform(SetMaterialAppearanceCommand(

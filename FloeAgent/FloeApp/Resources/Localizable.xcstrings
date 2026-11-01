@@ -14212,6 +14212,23 @@
         }
       }
     },
+    "cad.material.error.faceRangeUnavailable": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Can't apply a material to this face. Rebuild the model or select the whole body."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "无法为此面应用材质。请重建模型，或选择整个实体。"
+          }
+        }
+      }
+    },
     "cad.material.error.faceRebuilt": {
       "extractionState": "manual",
       "localizations": {

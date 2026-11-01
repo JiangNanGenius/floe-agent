@@ -716,6 +716,76 @@ final class CADMaterialCoreTests: XCTestCase {
         XCTAssertNil(scene.bodies.first?.faceMaterials.first?.triangleNumbers)
     }
 
+    func testNewFaceAssignmentsWithoutDisplayRangesAreRefusedBeforeAnyMutation() async throws {
+        let url = workDir.appendingPathComponent("new-missing-range.floecad")
+        let document = try await FloeCADDocument.create(at: url, name: "Missing assignment range")
+        defer { document.close() }
+        let (bodyID, _) = try makeBox(document)
+        let service = CADMaterialService(document: document)
+        let materialID = try XCTUnwrap(service.handle(action: "create", args: [
+            "name": "New red", "color": [0.9, 0.15, 0.12, 1.0]])["id"] as? String)
+        let picked = try topFace(of: bodyID, in: document)
+        let body = try documentBody(bodyID, in: document)
+        let table = try XCTUnwrap(document.session.faceRangeTable(for: body, preparingForAssignment: true))
+        let face = try XCTUnwrap(CADFaceMaterialResolver.candidates(for: body, table: table)
+            .first { $0.index == picked.index })
+        let painted = Set(try XCTUnwrap(CADFaceMaterialResolver.triangles(for: face.index, in: body, table: table)))
+        var checkpoint = document.captureEditCheckpoint()
+        var incomplete = try XCTUnwrap(checkpoint.lastFaceTables[body.id])
+        incomplete.entries.removeAll { !painted.isDisjoint(with: $0.triangles) }
+        checkpoint.lastFaceTables[body.id] = incomplete
+        document.restoreEditCheckpoint(checkpoint)
+        let changeBefore = document.session.changeCount
+        let undoBefore = document.session.undoStack.undoCommands.count
+        let libraryBefore = document.session.document.materialLibraryData
+        let token = CADGeometryQueryGeneration(scope: "faces", bodyID: body.id.raw,
+            documentRevision: document.revision, changeCount: changeBefore,
+            meshRevision: body.meshRevision).token
+        for action in ["applyFaces", "reassignFaces"] {
+            let reply = service.handle(action: action, args: ["bodyID": bodyID,
+                "material_id": materialID, "faces": [face.index], "query_token": token])
+            XCTAssertEqual(reply["ok"] as? Bool, false, "\(reply)")
+            XCTAssertEqual(reply["error"] as? String, "face_range_unavailable", "\(reply)")
+            XCTAssertEqual(document.session.changeCount, changeBefore)
+            XCTAssertEqual(document.session.undoStack.undoCommands.count, undoBefore)
+            XCTAssertEqual(document.session.document.materialLibraryData, libraryBefore)
+            XCTAssertTrue(try documentBody(bodyID, in: document).materialFaceBindings.isEmpty)
+        }
+        #if canImport(UIKit)
+        let target = CADMaterialTarget(bodyIDs: [body.id.raw], faceBodyID: body.id.raw,
+            faceIndex: face.index, bodyNames: [body.name], isFaceTarget: true, note: nil,
+            faceIdentity: CADMaterialFaceIdentity(signature: face.signature,
+                meshRevision: body.meshRevision, triangles: painted.sorted(), elementName: face.elementName),
+            bodyMeshRevisions: [body.id.raw: body.meshRevision])
+        let model = CADMaterialDraftModel(document: document, target: target,
+            personalStore: CADPersonalMaterialLibraryStore(fileURL: workDir.appendingPathComponent("new-range-library.json")))
+        defer { model.stopObserving() }
+        model.apply()
+        XCTAssertNotNil(model.errorMessage)
+        XCTAssertEqual(document.session.changeCount, changeBefore)
+        XCTAssertEqual(document.session.undoStack.undoCommands.count, undoBefore)
+        XCTAssertEqual(document.session.document.materialLibraryData, libraryBefore)
+        XCTAssertTrue(try documentBody(bodyID, in: document).materialFaceBindings.isEmpty)
+        #endif
+    }
+
+    func testAnEmptyRenderDoesNotReportSavedFaceMaterialsAsComplete() async throws {
+        let document = try await FloeCADDocument.create(at: workDir.appendingPathComponent("empty-range.floecad"), name: "Empty range")
+        defer { document.close() }
+        let (bodyID, _) = try makeBox(document)
+        var body = try documentBody(bodyID, in: document)
+        let face = try XCTUnwrap(CADFaceMaterialResolver.candidates(for: body).first)
+        let key = CADFaceKey(signature: face.signature, capturedIndex: face.index)
+        body.materialFaceBindings = [CADFaceMaterialBinding(key: key, material: .default)]
+        body.render.indices = []
+        let result = CADFaceMaterialResolver.assessGroups(in: body, table: nil, tableRevision: nil)
+        XCTAssertFalse(result.isLossless)
+        XCTAssertTrue(result.groups.isEmpty)
+        XCTAssertEqual(result.issues.map(\.kind), [.tableUnavailable])
+        XCTAssertEqual(result.issues.first?.bindingIndex, 0)
+        XCTAssertFalse(CADFaceMaterialResolver.hasDisplayRanges(for: [key], in: body, table: nil))
+    }
+
     func testNativeFaceBoundaryProofIgnoresOrderingAndDiagonalsButNotChangedBoundaries() throws {
         let positions: [SIMD3<Float>] = [SIMD3(0, 0, 0), SIMD3(2, 0, 0), SIMD3(2, 2, 0), SIMD3(0, 2, 0),
             SIMD3(3, 0, 0), SIMD3(5, 0, 0), SIMD3(5, 2, 0), SIMD3(3, 2, 0)]
