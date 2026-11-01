@@ -310,6 +310,80 @@ final class CADAnimationExportOptionsFlowUITests: XCTestCase {
         XCTAssertFalse(app.descendants(matching: .any)["CADAnimationExportProgress"].exists,
                        "Cancelling the options must not start an export job")
     }
+
+    /// X29-R2: the output type is explicit in the shipped sheet. Choosing
+    /// `PNG frames (ZIP)` must show the real frame options (opaque-background
+    /// note, no video codec/quality), and the legacy MP4 route must keep the
+    /// video-only choices. Source-only selector evidence; Root runs it on the
+    /// canonical iPad.
+    func testFrameSequenceSelectionShowsOnlyFrameOptions() throws {
+        continueAfterFailure = false
+        XCUIDevice.shared.orientation = .landscapeLeft
+        let app = XCUIApplication()
+        app.launchArguments = ["-AppleLanguages", "(en)", "-AppleLocale", "en_US",
+                               "-ui-testing", "-ui-testing-ipad", "--ui-test-cad-fixture",
+                               "--ui-test-cad-animation"]
+        app.launch()
+        defer { app.terminate() }
+        XCTAssertTrue(app.otherElements["CADFixtureHarness"].waitForExistence(timeout: 30))
+        app.segmentedControls["CADWorkbenchMode"].buttons["Present"].tap()
+        let export = app.buttons["CADPresentExport"]
+        XCTAssertTrue(export.waitForExistence(timeout: 20))
+        export.tap()
+        let frames = app.buttons["PNG frames (ZIP)"]
+        XCTAssertTrue(frames.waitForExistence(timeout: 10))
+        frames.tap()
+        let cancel = app.buttons["CADAnimationExportOptionsCancel"]
+        XCTAssertTrue(cancel.waitForExistence(timeout: 10),
+                      "PNG frames must open the shipped native options sheet")
+        let format = app.buttons["CADAnimationExportFormat"]
+        XCTAssertTrue(format.waitForExistence(timeout: 10),
+                      "the output type must be explicit in the sheet")
+        XCTAssertTrue(waitForExportOptionValue(format, "PNG frames (ZIP)"),
+                      "the sheet must show the selected PNG output; label=\(format.label) "
+                        + "value=\(String(describing: format.value))")
+        XCTAssertTrue(app.descendants(matching: .any)
+            .matching(identifier: "CADAnimationExportAlphaNote").firstMatch.exists,
+                      "the opaque-background rule must stay visible")
+        XCTAssertFalse(app.buttons["CADAnimationExportCodec"].exists,
+                       "video codec must be hidden for PNG frames")
+        XCTAssertFalse(app.buttons["CADAnimationExportQuality"].exists,
+                       "video quality must be hidden for PNG frames")
+        XCTAssertTrue(app.buttons["CADAnimationExportOptionsConfirm"].isEnabled)
+        XCTAssertFalse(app.descendants(matching: .any)
+            .matching(identifier: "CADAnimationExportProgress").firstMatch.exists,
+                       "choosing a format must not start the exporter")
+        cancel.tap()
+        XCTAssertTrue(export.waitForExistence(timeout: 10))
+
+        // The historical MP4 route keeps the video-only choices.
+        export.tap()
+        let video = app.buttons["MP4 video"]
+        XCTAssertTrue(video.waitForExistence(timeout: 10))
+        video.tap()
+        XCTAssertTrue(cancel.waitForExistence(timeout: 10))
+        XCTAssertTrue(app.buttons["CADAnimationExportCodec"].waitForExistence(timeout: 10),
+                      "MP4 must keep its native codec choice")
+        XCTAssertTrue(app.buttons["CADAnimationExportQuality"].waitForExistence(timeout: 10),
+                      "MP4 must keep its native quality choice")
+        cancel.tap()
+    }
+
+    private func waitForExportOptionValue(_ element: XCUIElement, _ expected: String,
+                                          timeout: TimeInterval = 20) -> Bool {
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            let value = (element.value as? String) ?? ""
+            if value == expected || value.contains(expected)
+                || element.label.contains(expected) {
+                return true
+            }
+            RunLoop.current.run(until: Date().addingTimeInterval(0.1))
+        }
+        let value = (element.value as? String) ?? ""
+        return value == expected || value.contains(expected)
+            || element.label.contains(expected)
+    }
 }
 
 @MainActor

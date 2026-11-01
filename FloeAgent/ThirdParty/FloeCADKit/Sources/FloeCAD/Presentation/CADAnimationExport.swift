@@ -38,6 +38,11 @@ public nonisolated struct CADAnimationExportSettings: Sendable, Equatable {
     public var bitrate: Int?
     public var overwrite: Bool
     public var posterEnabled: Bool
+    /// Exact output kind selected before the frame loop starts (X29).
+    public var format: CADAnimationExportOutputFormat
+    /// Explicit alpha request. `transparent` is validated and refused; no
+    /// output path silently ignores it.
+    public var alpha: CADAnimationExportAlpha
 
     public init(width: Int = 1920,
                 height: Int = 1080,
@@ -45,7 +50,9 @@ public nonisolated struct CADAnimationExportSettings: Sendable, Equatable {
                 codec: CADAnimationVideoCodec = .h264,
                 bitrate: Int? = nil,
                 overwrite: Bool = false,
-                posterEnabled: Bool = true) {
+                posterEnabled: Bool = true,
+                format: CADAnimationExportOutputFormat = .mp4,
+                alpha: CADAnimationExportAlpha = .opaque) {
         self.width = width
         self.height = height
         self.frameRate = frameRate
@@ -53,6 +60,8 @@ public nonisolated struct CADAnimationExportSettings: Sendable, Equatable {
         self.bitrate = bitrate
         self.overwrite = overwrite
         self.posterEnabled = posterEnabled
+        self.format = format
+        self.alpha = alpha
     }
 
     public static let `default` = CADAnimationExportSettings()
@@ -77,6 +86,22 @@ public nonisolated struct CADAnimationExportSettings: Sendable, Equatable {
         guard frameRate >= 1, frameRate <= 60 else {
             return "Frame rate must be between 1 and 60 fps."
         }
+        // X29: transparent output is not silently ignored and not faked with
+        // a metadata flag. The native Present composites the scene's opaque
+        // appearance background, and MP4 H.264/HEVC has no alpha channel.
+        guard alpha == .opaque else {
+            let reason = format == .mp4
+                ? "MP4 H.264/HEVC has no alpha channel."
+                : "PNG frames are composited over the scene's opaque background."
+            return "Transparent animation output is not supported: \(reason)"
+        }
+        if format == .pngSequence {
+            // PNG frames are lossless and have no video bitrate. Refuse a
+            // meaningless request instead of quietly dropping it.
+            guard bitrate == nil else {
+                return "PNG frame sequences do not use a video bitrate."
+            }
+        }
         if let bitrate, bitrate < 250_000 || bitrate > 80_000_000 {
             return "Video bitrate must be between 250 kbps and 80 Mbps."
         }
@@ -94,6 +119,12 @@ public nonisolated struct CADAnimationExportSettings: Sendable, Equatable {
 public nonisolated enum CADAnimationExportPhase: String, Sendable {
     case preparing
     case rendering
+    /// PNG frame bundle only: every staged frame is being streamed, hashed,
+    /// CRC-checked and decoded off the main actor.
+    case verifying
+    /// PNG frame bundle only: the verified frames are being streamed into the
+    /// ZIP and its central directory is being read back off the main actor.
+    case assembling
     case finalizing
     case finished
     case failed
@@ -140,10 +171,23 @@ public nonisolated struct CADAnimationExportResult: Sendable, Equatable {
     /// saved view frames the export, this is that saved shot (the content
     /// placed inside the user's video container), not the letterboxed canvas.
     public var posterPNG: Data?
+    /// Exact output kind that produced this receipt.
+    public var format: CADAnimationExportOutputFormat
+    /// Declared alpha behavior. Only `opaque` can be produced today.
+    public var alpha: CADAnimationExportAlpha
+    /// Per-frame presentation times for a PNG frame bundle, in bundle order.
+    /// Nil for MP4 (its track carries the timing).
+    public var frameTimes: [Double]?
+    /// SHA-256 of the exact `manifest.json` embedded in the bundle.
+    public var manifestSHA256: String?
 
     public init(url: URL, width: Int, height: Int, frameRate: Double,
                 durationSeconds: Double, frameCount: Int, codec: String,
-                hasAudio: Bool, byteCount: Int64, posterPNG: Data? = nil) {
+                hasAudio: Bool, byteCount: Int64, posterPNG: Data? = nil,
+                format: CADAnimationExportOutputFormat = .mp4,
+                alpha: CADAnimationExportAlpha = .opaque,
+                frameTimes: [Double]? = nil,
+                manifestSHA256: String? = nil) {
         self.url = url
         self.width = width
         self.height = height
@@ -154,7 +198,26 @@ public nonisolated struct CADAnimationExportResult: Sendable, Equatable {
         self.hasAudio = hasAudio
         self.byteCount = byteCount
         self.posterPNG = posterPNG
+        self.format = format
+        self.alpha = alpha
+        self.frameTimes = frameTimes
+        self.manifestSHA256 = manifestSHA256
     }
+}
+
+/// Exact verified receipt shape shared by the MP4 read-back and the PNG frame
+/// bundle read-back. Private to this file; the public result carries only the
+/// values a caller may rely on.
+private nonisolated struct CADAnimationExportVerification {
+    var width: Int
+    var height: Int
+    var frameRate: Double
+    var duration: Double
+    var frameCount: Int
+    var hasAudio: Bool
+    var codec: String
+    var frameTimes: [Double]?
+    var manifestSHA256: String?
 }
 
 public nonisolated struct CADAnimationExportStatus: Sendable, Equatable {
@@ -434,13 +497,18 @@ private struct CADAnimationRenderSession {
 
 @MainActor
 public extension FloeCADDocument {
-    /// Start a service-owned MP4 export. The frame loop renders the ACTUAL
-    /// live Present when visible, otherwise a service-owned native RealityKit
-    /// host (same controller/stage, no fake frames); the returned id can be polled with
-    /// `animationExportStatus`, cancelled with `cancelAnimationExport`, and
-    /// awaited with `waitForAnimationExport`.
+    /// Start a service-owned animation export. The frame loop renders the
+    /// ACTUAL live Present when visible, otherwise a service-owned native
+    /// RealityKit host (same controller/stage, no fake frames); the returned
+    /// id can be polled with `animationExportStatus`, cancelled with
+    /// `cancelAnimationExport`, and awaited with `waitForAnimationExport`.
+    ///
+    /// `settings.format` selects the exact executable output BEFORE any
+    /// renderer or staging artifact exists: opaque MP4, or an ordered lossless
+    /// PNG frame bundle (ZIP). A transparent request is refused here with no
+    /// output.
     @discardableResult
-    func startAnimationExportMP4(
+    func startAnimationExport(
         clipID: UUID? = nil,
         to destination: URL,
         settings: CADAnimationExportSettings = .default,
@@ -482,6 +550,25 @@ public extension FloeCADDocument {
         return CADAnimationExportHandle(id: id)
     }
 
+    /// Historical MP4 entry point. It accepts only `.mp4` settings; callers
+    /// that want the frame bundle use `startAnimationExport` with
+    /// `.pngSequence`.
+    @discardableResult
+    func startAnimationExportMP4(
+        clipID: UUID? = nil,
+        to destination: URL,
+        settings: CADAnimationExportSettings = .default,
+        progress: (@MainActor (CADAnimationExportProgress) -> Void)? = nil
+    ) throws -> CADAnimationExportHandle {
+        guard settings.format == .mp4 else {
+            throw CADAnimationExportError.invalidSettings(
+                "The MP4 export entry point accepts only .mp4 output.")
+        }
+        return try startAnimationExport(
+            clipID: clipID, to: destination, settings: settings,
+            progress: progress)
+    }
+
     func animationExportStatus(_ id: UUID) -> CADAnimationExportStatus? {
         CADAnimationExportCenter.shared.status(id)
     }
@@ -497,13 +584,13 @@ public extension FloeCADDocument {
     /// Awaitable convenience. Cancelling the caller cancels the service job
     /// and its staging directory.
     @discardableResult
-    func exportAnimationMP4(
+    func exportAnimation(
         clipID: UUID? = nil,
         to destination: URL,
         settings: CADAnimationExportSettings = .default,
         progress: (@MainActor (CADAnimationExportProgress) -> Void)? = nil
     ) async throws -> CADAnimationExportResult {
-        let handle = try startAnimationExportMP4(
+        let handle = try startAnimationExport(
             clipID: clipID, to: destination, settings: settings,
             progress: progress)
         let status = await withTaskCancellationHandler {
@@ -516,7 +603,24 @@ public extension FloeCADDocument {
         if let result = status.result { return result }
         if status.isCancelled { throw CADAnimationExportError.cancelled }
         throw CADAnimationExportError.verification(
-            status.error ?? "Video export did not produce a file.")
+            status.error ?? "The export did not produce a file.")
+    }
+
+    /// Historical MP4 convenience. See `startAnimationExportMP4`.
+    @discardableResult
+    func exportAnimationMP4(
+        clipID: UUID? = nil,
+        to destination: URL,
+        settings: CADAnimationExportSettings = .default,
+        progress: (@MainActor (CADAnimationExportProgress) -> Void)? = nil
+    ) async throws -> CADAnimationExportResult {
+        guard settings.format == .mp4 else {
+            throw CADAnimationExportError.invalidSettings(
+                "The MP4 export entry point accepts only .mp4 output.")
+        }
+        return try await exportAnimation(
+            clipID: clipID, to: destination, settings: settings,
+            progress: progress)
     }
 
     // MARK: Single frame
@@ -920,6 +1024,9 @@ public extension FloeCADDocument {
         let documentKey = url.standardizedFileURL.path
         var posterPNG: Data?
         var writer: AVAssetWriter?
+        var input: AVAssetWriterInput?
+        var adaptor: AVAssetWriterInputPixelBufferAdaptor?
+        var frameSequence: CADAnimationFrameSequenceBuilder?
         var stagingDirectory: URL?
         var renderSession: CADAnimationRenderSession?
         defer { renderSession?.release() }
@@ -1039,19 +1146,6 @@ public extension FloeCADDocument {
                 isDirectory: true)
             stagingDirectory = staging
             try fileManager.createDirectory(at: staging, withIntermediateDirectories: true)
-            let stagedURL = staging.appendingPathComponent("movie.mp4")
-            let output = try Self.makeAnimationWriter(
-                url: stagedURL, settings: settings)
-            writer = output.writer
-            let input = output.input
-            let adaptor = output.adaptor
-            guard output.writer.startWriting() else {
-                throw CADAnimationExportError.writer(
-                    output.writer.error?.localizedDescription ?? "The video encoder could not start.")
-            }
-            output.writer.startSession(atSourceTime: .zero)
-            report(.rendering, completed: 0, time: 0)
-
             let environment = CADPresentationSceneBuilder.environment(
                 from: viewAppearance)
             let background = CIColor(
@@ -1059,6 +1153,35 @@ public extension FloeCADDocument {
                 green: CGFloat(environment.backgroundColor.y),
                 blue: CGFloat(environment.backgroundColor.z),
                 alpha: 1)
+            let frameBackground = UIColor(
+                red: CGFloat(environment.backgroundColor.x),
+                green: CGFloat(environment.backgroundColor.y),
+                blue: CGFloat(environment.backgroundColor.z),
+                alpha: 1)
+            let stagedURL: URL
+            if settings.format == .mp4 {
+                stagedURL = staging.appendingPathComponent("movie.mp4")
+                let output = try Self.makeAnimationWriter(
+                    url: stagedURL, settings: settings)
+                writer = output.writer
+                input = output.input
+                adaptor = output.adaptor
+                guard output.writer.startWriting() else {
+                    throw CADAnimationExportError.writer(
+                        output.writer.error?.localizedDescription ?? "The video encoder could not start.")
+                }
+                output.writer.startSession(atSourceTime: .zero)
+            } else {
+                stagedURL = staging.appendingPathComponent("frames.zip")
+                frameSequence = try CADAnimationFrameSequenceBuilder(
+                    directory: staging.appendingPathComponent("frames", isDirectory: true),
+                    width: settings.width, height: settings.height,
+                    frameRate: settings.frameRate,
+                    clipID: clip.id, duration: clip.duration,
+                    background: frameBackground)
+            }
+            report(.rendering, completed: 0, time: 0)
+
             let ciContext = CIContext()
             let pixelAttributes: [String: Any] = [
                 kCVPixelBufferCGImageCompatibilityKey as String: true,
@@ -1158,56 +1281,94 @@ public extension FloeCADDocument {
                     image = rawImage
                 }
                 try checkLifecycle()
-                if completed == 0, settings.posterEnabled {
-                    posterPNG = image.pngData()
-                }
-                guard let buffer = Self.makePixelBuffer(
-                    image: image, width: settings.width, height: settings.height,
-                    adaptor: adaptor, attributes: pixelAttributes,
-                    background: background, context: ciContext) else {
-                    throw CADAnimationExportError.encoding(
-                        "The rendered frame could not be converted to video pixels.")
-                }
-                try await Self.waitUntilReady(input)
-                try checkLifecycle()
-                let presentationTime = CMTime(
-                    value: Int64(completed), timescale: CMTimeScale(settings.frameRate))
-                guard adaptor.append(buffer, withPresentationTime: presentationTime) else {
-                    throw CADAnimationExportError.writer(
-                        output.writer.error?.localizedDescription
-                            ?? "The video encoder rejected frame \(completed + 1).")
+                if let frameSequence {
+                    // X29 frame sequence: the SAME settled native capture and
+                    // evaluator, composited over the same opaque appearance
+                    // background as the MP4 path, then written as lossless PNG
+                    // with deterministic order/names/times.
+                    try frameSequence.append(image: image, index: completed,
+                                             time: time)
+                    if completed == 0, settings.posterEnabled {
+                        posterPNG = frameSequence.firstFramePNG
+                    }
+                } else {
+                    guard let adaptor, let input, let writer else {
+                        throw CADAnimationExportError.writer(
+                            "The video encoder is unavailable.")
+                    }
+                    if completed == 0, settings.posterEnabled {
+                        posterPNG = image.pngData()
+                    }
+                    guard let buffer = Self.makePixelBuffer(
+                        image: image, width: settings.width, height: settings.height,
+                        adaptor: adaptor, attributes: pixelAttributes,
+                        background: background, context: ciContext) else {
+                        throw CADAnimationExportError.encoding(
+                            "The rendered frame could not be converted to video pixels.")
+                    }
+                    try await Self.waitUntilReady(input)
+                    try checkLifecycle()
+                    let presentationTime = CMTime(
+                        value: Int64(completed), timescale: CMTimeScale(settings.frameRate))
+                    guard adaptor.append(buffer, withPresentationTime: presentationTime) else {
+                        throw CADAnimationExportError.writer(
+                            writer.error?.localizedDescription
+                                ?? "The video encoder rejected frame \(completed + 1).")
+                    }
                 }
                 completed += 1
                 report(.rendering, completed: completed, time: time)
                 await Task.yield()
             }
 
-            report(.finalizing, completed: totalFrames, time: clip.duration)
-            input.markAsFinished()
-            await Self.finishWriting(output.writer)
-            guard output.writer.status == .completed else {
-                throw CADAnimationExportError.writer(
-                    output.writer.error?.localizedDescription
-                        ?? "The video encoder did not finish.")
+            let verified: CADAnimationExportVerification
+            if let frameSequence {
+                // No generic "finalizing" report here: the frame bundle reports
+                // its actual phases (verifying → assembling) and each await
+                // yields the main actor so Cancel/Close/background stay live
+                // while the joined worker packages the bundle.
+                verified = try await frameSequence.finish(
+                    zipURL: stagedURL
+                ) { phase in
+                    report(phase, completed: totalFrames, time: clip.duration)
+                }
+            } else {
+                report(.finalizing, completed: totalFrames, time: clip.duration)
+                guard let writer, let input else {
+                    throw CADAnimationExportError.writer(
+                        "The video encoder is unavailable.")
+                }
+                input.markAsFinished()
+                await Self.finishWriting(writer)
+                guard writer.status == .completed else {
+                    throw CADAnimationExportError.writer(
+                        writer.error?.localizedDescription
+                            ?? "The video encoder did not finish.")
+                }
+                // Verify the staged file before any promotion.
+                let stagedAttributes = try FileManager.default.attributesOfItem(
+                    atPath: stagedURL.path)
+                guard let stagedSize = (stagedAttributes[.size] as? NSNumber)?.int64Value,
+                      stagedSize > 1024,
+                      stagedSize <= CADAnimationExportSettings.maximumOutputBytes else {
+                    throw CADAnimationExportError.verification(
+                        "The encoded video is empty or exceeds the 512 MiB output bound.")
+                }
+                let video = try await Self.verifyAnimationVideo(
+                    stagedURL, expectedWidth: settings.width,
+                    expectedHeight: settings.height,
+                    expectedFrameRate: settings.frameRate,
+                    expectedDuration: clip.duration,
+                    expectedFrameCount: totalFrames,
+                    codec: settings.codec)
+                verified = CADAnimationExportVerification(
+                    width: video.width, height: video.height,
+                    frameRate: video.frameRate, duration: video.duration,
+                    frameCount: video.frameCount, hasAudio: video.hasAudio,
+                    codec: settings.codec.rawValue, frameTimes: nil,
+                    manifestSHA256: nil)
             }
             writer = nil
-
-            // Verify the staged file before any promotion.
-            let stagedAttributes = try FileManager.default.attributesOfItem(
-                atPath: stagedURL.path)
-            guard let stagedSize = (stagedAttributes[.size] as? NSNumber)?.int64Value,
-                  stagedSize > 1024,
-                  stagedSize <= CADAnimationExportSettings.maximumOutputBytes else {
-                throw CADAnimationExportError.verification(
-                    "The encoded video is empty or exceeds the 512 MiB output bound.")
-            }
-            let verified = try await Self.verifyAnimationVideo(
-                stagedURL, expectedWidth: settings.width,
-                expectedHeight: settings.height,
-                expectedFrameRate: settings.frameRate,
-                expectedDuration: clip.duration,
-                expectedFrameCount: totalFrames,
-                codec: settings.codec)
             try checkLifecycle()
             let promotionLeaseHeld = controller.holdsAnimationLease(exportLease)
             let promotionGeneration = controller.renderGeneration
@@ -1260,10 +1421,14 @@ public extension FloeCADDocument {
                 frameRate: verified.frameRate,
                 durationSeconds: verified.duration,
                 frameCount: verified.frameCount,
-                codec: settings.codec.rawValue,
+                codec: verified.codec,
                 hasAudio: verified.hasAudio,
                 byteCount: bytes,
-                posterPNG: posterPNG)
+                posterPNG: posterPNG,
+                format: settings.format,
+                alpha: settings.alpha,
+                frameTimes: verified.frameTimes,
+                manifestSHA256: verified.manifestSHA256)
             report(.finished, completed: totalFrames, time: clip.duration)
             return CADAnimationExportStatus(
                 id: id,
@@ -1275,9 +1440,13 @@ public extension FloeCADDocument {
             writer?.cancelWriting()
             let cleanupFailure = await Self.removeAnimationStaging(stagingDirectory)
             stagingDirectory = nil
+            let cancelledMessage = settings.format == .pngSequence
+                ? FloeCADStrings.text("cad.animation.export.frames.cancelMessage",
+                                      "Frame export was cancelled.")
+                : CADAnimationExportError.cancelled.localizedDescription
             let message = cleanupFailure.map {
-                "\(CADAnimationExportError.cancelled.localizedDescription) \($0)"
-            } ?? CADAnimationExportError.cancelled.localizedDescription
+                "\(cancelledMessage) \($0)"
+            } ?? cancelledMessage
             let progress = CADAnimationExportProgress(
                 phase: .cancelled, completedFrames: 0,
                 totalFrames: totalFrames, timeSeconds: 0)
@@ -1298,7 +1467,10 @@ public extension FloeCADDocument {
             } else {
                 wasCancelled = false
             }
-            var message = error.localizedDescription
+            var message = wasCancelled && settings.format == .pngSequence
+                ? FloeCADStrings.text("cad.animation.export.frames.cancelMessage",
+                                      "Frame export was cancelled.")
+                : error.localizedDescription
             if let cleanupFailure { message += " \(cleanupFailure)" }
             let progress = CADAnimationExportProgress(
                 phase: wasCancelled ? .cancelled : .failed,
@@ -1455,15 +1627,6 @@ public extension FloeCADDocument {
 
     // MARK: Verification / destination
 
-    private struct VerifiedVideo {
-        var width: Int
-        var height: Int
-        var frameRate: Double
-        var duration: Double
-        var frameCount: Int
-        var hasAudio: Bool
-    }
-
     private static func verifyAnimationVideo(
         _ url: URL,
         expectedWidth: Int,
@@ -1472,7 +1635,7 @@ public extension FloeCADDocument {
         expectedDuration: Double,
         expectedFrameCount: Int,
         codec: CADAnimationVideoCodec
-    ) async throws -> VerifiedVideo {
+    ) async throws -> CADAnimationExportVerification {
         let asset = AVURLAsset(url: url)
         do {
             let playable = try await asset.load(.isPlayable)
@@ -1531,10 +1694,12 @@ public extension FloeCADDocument {
                 throw CADAnimationExportError.verification(
                     "The exported video is empty.")
             }
-            return VerifiedVideo(width: expectedWidth, height: expectedHeight,
-                                 frameRate: Double(expectedFrameRate),
-                                 duration: duration, frameCount: expectedFrameCount,
-                                 hasAudio: !audios.isEmpty)
+            return CADAnimationExportVerification(
+                width: expectedWidth, height: expectedHeight,
+                frameRate: Double(expectedFrameRate),
+                duration: duration, frameCount: expectedFrameCount,
+                hasAudio: !audios.isEmpty, codec: codec.rawValue,
+                frameTimes: nil, manifestSHA256: nil)
         } catch let error as CADAnimationExportError {
             throw error
         } catch {
@@ -1549,7 +1714,10 @@ public extension FloeCADDocument {
         return String(bytes: bytes, encoding: .ascii) ?? "----"
     }
 
-    private static func validateAnimationExportDestination(
+    /// Exact destination contract for the selected output. MP4 and PNG frame
+    /// bundles are separate portable files, so the extension must match the
+    /// declared kind before anything is registered or staged.
+    nonisolated static func validateAnimationExportDestination(
         _ destination: URL,
         settings: CADAnimationExportSettings
     ) throws {
@@ -1558,9 +1726,10 @@ public extension FloeCADDocument {
                 "The export destination must be a file URL.")
         }
         let standardized = destination.standardizedFileURL
-        guard standardized.pathExtension.lowercased() == "mp4" else {
+        let expectedExtension = settings.format.pathExtension
+        guard standardized.pathExtension.lowercased() == expectedExtension else {
             throw CADAnimationExportError.invalidDestination(
-                "The export destination must end in .mp4.")
+                "The export destination must end in .\(expectedExtension).")
         }
         var isDirectory: ObjCBool = false
         if FileManager.default.fileExists(atPath: standardized.path,
@@ -1585,6 +1754,141 @@ public extension FloeCADDocument {
            !settings.overwrite {
             throw CADAnimationExportError.destinationExists
         }
+    }
+}
+
+// MARK: - X29 PNG frame-sequence bundle
+
+/// Builds the real PNG frame bundle from the SAME settled native captures the
+/// MP4 loop uses. Frames are composited over the scene's opaque appearance
+/// background (the exact MP4 canvas rule) and written as lossless PNG in frame
+/// order. Verification, manifest encoding, ZIP assembly and the ZIP read-back
+/// are handed to `CADAnimationFrameFinalizer` on a worker off the main actor
+/// (X29-R2); the caller awaits that worker, so a long bundle never monopolizes
+/// the UI and cancellation is joined before staging cleanup or promotion.
+@MainActor
+private final class CADAnimationFrameSequenceBuilder {
+    let directory: URL
+    let width: Int
+    let height: Int
+    let frameRate: Int
+    let clipID: UUID
+    let duration: Double
+    let background: UIColor
+
+    private(set) var entries: [CADAnimationFrameBundleEntry] = []
+    private(set) var firstFramePNG: Data?
+    private var totalFrameBytes = 0
+
+    init(directory: URL, width: Int, height: Int, frameRate: Int,
+         clipID: UUID, duration: Double, background: UIColor) throws {
+        self.directory = directory
+        self.width = width
+        self.height = height
+        self.frameRate = frameRate
+        self.clipID = clipID
+        self.duration = duration
+        self.background = background
+        try FileManager.default.createDirectory(
+            at: directory, withIntermediateDirectories: true)
+    }
+
+    func append(image: UIImage, index: Int, time: Double) throws {
+        guard index == entries.count else {
+            throw CADAnimationExportError.verification(
+                "The PNG frame sequence arrived out of order at frame \(index).")
+        }
+        guard index < CADAnimationExportSettings.maximumFrames else {
+            throw CADAnimationExportError.verification(
+                "The PNG frame sequence exceeds the frame bound.")
+        }
+        guard let png = Self.composedPNG(
+            image: image, width: width, height: height,
+            background: background) else {
+            throw CADAnimationExportError.encoding(
+                "The rendered frame could not be encoded as an opaque PNG.")
+        }
+        let projectedBytes = totalFrameBytes + png.count
+        guard projectedBytes <= Int(CADAnimationExportSettings.maximumOutputBytes) else {
+            throw CADAnimationExportError.verification(
+                "The PNG frame sequence exceeds the 512 MiB output bound.")
+        }
+        let fileName = String(format: "frame_%06d.png", index)
+        let fileURL = directory.appendingPathComponent(fileName)
+        try png.write(to: fileURL, options: .atomic)
+        let digest = SHA256.hash(data: png).map {
+            String(format: "%02x", $0)
+        }.joined()
+        entries.append(CADAnimationFrameBundleEntry(
+            index: index,
+            file: "frames/\(fileName)",
+            timeSeconds: time,
+            presentationValue: index,
+            timescale: frameRate,
+            byteCount: png.count,
+            sha256: digest,
+            crc32: MinimalZipCRC32.checksum(of: png)))
+        totalFrameBytes = projectedBytes
+        if index == 0 { firstFramePNG = png }
+    }
+
+    /// Freeze this job's staged bundle and hand the resource-heavy pass to the
+    /// off-main finalizer: every frame is streamed/verified, the manifest is
+    /// encoded, the ZIP is assembled and its central directory is read back
+    /// there. This method awaits the joined worker, so the main actor can
+    /// process Cancel/Close/background and no worker outlives the staging tree
+    /// it reads. Nothing is promoted here; the export lifecycle still applies
+    /// its stale/lease fence before touching the destination.
+    func finish(
+        zipURL: URL,
+        phase: @MainActor (CADAnimationExportPhase) -> Void
+    ) async throws -> CADAnimationExportVerification {
+        let snapshot = CADAnimationFrameFinalizationSnapshot(
+            directory: directory, zipURL: zipURL,
+            width: width, height: height, frameRate: frameRate,
+            clipID: clipID, duration: duration, entries: entries,
+            maximumOutputBytes: CADAnimationExportSettings.maximumOutputBytes)
+        let cancellation = CADAnimationFrameFinalizationCancellation()
+        phase(.verifying)
+        let verification = try await CADAnimationFrameFinalizer.verify(
+            snapshot, cancellation: cancellation)
+        // Join completed above. A cancel arriving between the two stages must
+        // not start a new ZIP write; the caller will clean staging after the
+        // awaited worker has already exited.
+        try Task.checkCancellation()
+        phase(.assembling)
+        let outcome = try await CADAnimationFrameFinalizer.assemble(
+            snapshot, verification: verification, cancellation: cancellation)
+        return CADAnimationExportVerification(
+            width: width, height: height,
+            frameRate: Double(frameRate), duration: duration,
+            frameCount: entries.count, hasAudio: false,
+            codec: "png", frameTimes: outcome.frameTimes,
+            manifestSHA256: outcome.manifestSHA256)
+    }
+
+    // MARK: Exact opaque canvas (same rule as the MP4 composer)
+
+    private static func composedPNG(image: UIImage, width: Int, height: Int,
+                                    background: UIColor) -> Data? {
+        guard image.imageOrientation == .up, let cgImage = image.cgImage else {
+            return nil
+        }
+        let canvas = CGSize(width: width, height: height)
+        let content = CGSize(width: cgImage.width, height: cgImage.height)
+        let rect = CADExportFrame.fittedRect(content: content, canvas: canvas)
+        let format = UIGraphicsImageRendererFormat.default()
+        format.scale = 1
+        // Opaque by construction: the declared alpha is real, not a flag.
+        format.opaque = true
+        let source = UIImage(cgImage: cgImage, scale: 1, orientation: .up)
+        let rendered = UIGraphicsImageRenderer(size: canvas, format: format)
+            .image { context in
+                background.setFill()
+                context.fill(CGRect(origin: .zero, size: canvas))
+                source.draw(in: rect)
+            }
+        return rendered.pngData()
     }
 }
 

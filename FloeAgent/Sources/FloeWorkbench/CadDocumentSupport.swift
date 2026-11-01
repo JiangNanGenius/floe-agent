@@ -174,21 +174,28 @@ public struct CadAnimationCapture: Sendable, Equatable {
     }
 }
 
-/// MP4 export options accepted by the tool. Values are validated again by the
-/// engine; the tool only keeps the public contract small and explicit.
+/// Animation export options accepted by the tool. Values are validated again
+/// by the engine; the tool only keeps the public contract small and explicit.
+/// `format` is `mp4` (historical default) or `png_zip` (ordered lossless PNG
+/// frames + manifest in one ZIP). `alpha` is `opaque` by default; the engine
+/// refuses `transparent` before any output because the renderer composites an
+/// opaque background.
 public struct CadAnimationExportOptions: Codable, Sendable, Equatable {
     public var width: Int
     public var height: Int
     public var frameRate: Int
-    /// `h264` (default) or `hevc`.
+    /// `h264` (video default), `hevc`, or `png` for `png_zip`.
     public var codec: String
     public var bitrate: Int?
     public var overwrite: Bool
     public var posterEnabled: Bool
+    public var format: String
+    public var alpha: String
 
     public init(width: Int = 1920, height: Int = 1080, frameRate: Int = 30,
                 codec: String = "h264", bitrate: Int? = nil,
-                overwrite: Bool = false, posterEnabled: Bool = true) {
+                overwrite: Bool = false, posterEnabled: Bool = true,
+                format: String = "mp4", alpha: String = "opaque") {
         self.width = width
         self.height = height
         self.frameRate = frameRate
@@ -196,6 +203,29 @@ public struct CadAnimationExportOptions: Codable, Sendable, Equatable {
         self.bitrate = bitrate
         self.overwrite = overwrite
         self.posterEnabled = posterEnabled
+        self.format = format
+        self.alpha = alpha
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case width, height, frameRate, codec, bitrate, overwrite
+        case posterEnabled, format, alpha
+    }
+
+    /// Old durable task records have no X29 fields: they remain exactly the
+    /// historical opaque MP4 request instead of failing to decode.
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        width = try container.decodeIfPresent(Int.self, forKey: .width) ?? 1920
+        height = try container.decodeIfPresent(Int.self, forKey: .height) ?? 1080
+        frameRate = try container.decodeIfPresent(Int.self, forKey: .frameRate) ?? 30
+        codec = try container.decodeIfPresent(String.self, forKey: .codec) ?? "h264"
+        bitrate = try container.decodeIfPresent(Int.self, forKey: .bitrate)
+        overwrite = try container.decodeIfPresent(Bool.self, forKey: .overwrite) ?? false
+        posterEnabled = try container.decodeIfPresent(
+            Bool.self, forKey: .posterEnabled) ?? true
+        format = try container.decodeIfPresent(String.self, forKey: .format) ?? "mp4"
+        alpha = try container.decodeIfPresent(String.self, forKey: .alpha) ?? "opaque"
     }
 }
 
@@ -213,11 +243,18 @@ public struct CadAnimationExportReceipt: Sendable, Equatable {
     public var posterPNG: Data?
     public var taskID: UUID
     public var note: String
+    /// Exact output kind (`mp4` or `png_zip`) and declared alpha.
+    public var format: String
+    public var alpha: String
+    public var frameTimes: [Double]?
+    public var manifestSHA256: String?
 
     public init(relativePath: String, width: Int, height: Int,
                 frameRate: Double, durationSeconds: Double, frameCount: Int,
                 codec: String, hasAudio: Bool, byteCount: Int64, sha256: String,
-                posterPNG: Data?, taskID: UUID, note: String) {
+                posterPNG: Data?, taskID: UUID, note: String,
+                format: String = "mp4", alpha: String = "opaque",
+                frameTimes: [Double]? = nil, manifestSHA256: String? = nil) {
         self.relativePath = relativePath
         self.width = width
         self.height = height
@@ -231,6 +268,10 @@ public struct CadAnimationExportReceipt: Sendable, Equatable {
         self.posterPNG = posterPNG
         self.taskID = taskID
         self.note = note
+        self.format = format
+        self.alpha = alpha
+        self.frameTimes = frameTimes
+        self.manifestSHA256 = manifestSHA256
     }
 }
 

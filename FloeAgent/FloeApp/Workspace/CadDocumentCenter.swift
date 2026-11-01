@@ -280,9 +280,9 @@ actor CadDocumentCenter: CadDocumentHost {
 
     // MARK: - Native animation capture / MP4 export
 
-    /// Upper bound for one verified animation video written by the tool path.
-    /// The engine also verifies the encoded file before promotion; this is the
-    /// host's external-output size boundary.
+    /// Upper bound for one verified animation output (MP4 or PNG frame ZIP)
+    /// written by the tool path. The engine also verifies the produced file
+    /// before promotion; this is the host's external-output size boundary.
     private var maximumAnimationExportBytes: Int64 { 512 * 1024 * 1024 }
 
     /// One real animation frame. A durable task record makes the operation
@@ -346,15 +346,26 @@ actor CadDocumentCenter: CadDocumentHost {
     func exportAnimation(documentID: String, relativeOutput: String,
                          options: CadAnimationExportOptions,
                          access: CadDocumentAccess) async throws -> CadAnimationExportReceipt {
+        // Refuse an unsupported output/alpha before creating a durable task
+        // record or staging anything. The tool validates the same contract;
+        // this keeps a direct host caller honest too.
+        guard ["mp4", "png_zip"].contains(options.format.lowercased()) else {
+            throw FloeError.validationFailed(
+                "animation export format must be mp4 or png_zip")
+        }
+        guard options.alpha.lowercased() == "opaque" else {
+            throw FloeError.validationFailed(
+                "transparent animation output is not supported: the native renderer keeps the scene's opaque background, and MP4 H.264/HEVC has no alpha channel")
+        }
         let resolved = try await resolveNativeAware(documentID: documentID, access: access)
         let documentURL = try resolved.service.guardResolver.resolve(resolved.id)
         let output = try animationOutput(resolved: resolved, raw: relativeOutput,
-                                         overwrite: options.overwrite)
+                                         options: options)
         let ownership = NativeCADTaskRegistry.Ownership(access: access,
                                                        documentPath: resolved.id)
         // The tool export owns this record and renders through
-        // `FloeCAD3DBridge.exportAnimation` -> `exportAnimationMP4`, which never
-        // consults the document's direct-Present recovery sink. One tool
+        // `FloeCAD3DBridge.exportAnimation`, which never consults the
+        // document's direct-Present recovery sink. One tool
         // operation therefore has exactly one durable record even when the App
         // adapter is installed on the shared document instance.
         let taskID = try await NativeCADTaskRegistry.shared.beginAnimationExport(
@@ -397,18 +408,18 @@ actor CadDocumentCenter: CadDocumentHost {
                 try? FileManager.default.removeItem(at: output.url)
                 await NativeCADTaskRegistry.shared.finish(
                     id: taskID, state: .failed,
-                    detail: "animation video is empty or exceeds the 512 MiB bound")
+                    detail: "animation output is empty or exceeds the 512 MiB bound")
                 throw FloeError.validationFailed(
-                    "The animation video is empty or exceeds the 512 MiB output bound.")
+                    "The animation output is empty or exceeds the 512 MiB output bound.")
             }
             let byteCount = number.int64Value
             guard byteCount == result.byteCount else {
                 try? FileManager.default.removeItem(at: output.url)
                 await NativeCADTaskRegistry.shared.finish(
                     id: taskID, state: .failed,
-                    detail: "animation video size did not match the engine receipt")
+                    detail: "animation output size did not match the engine receipt")
                 throw FloeError.storageCorrupted(
-                    "The animation video size did not match the verified receipt; it was removed.")
+                    "The animation output size did not match the verified receipt; it was removed.")
             }
             let digest = try FloeDigest.sha256Hex(
                 ofFileAt: output.url, isCancelled: { Task.isCancelled })
@@ -418,9 +429,10 @@ actor CadDocumentCenter: CadDocumentHost {
                     id: taskID, state: .cancelled, detail: nil)
                 throw FloeError.cancelled
             }
+            let kind = result.format == .pngSequence ? "png frames zip" : "mp4"
             await NativeCADTaskRegistry.shared.finish(
                 id: taskID, state: .completed,
-                detail: "mp4 \(result.width)x\(result.height) "
+                detail: "\(kind) \(result.width)x\(result.height) "
                     + "\(Int(result.frameRate.rounded()))fps "
                     + "\(result.frameCount) frames, \(byteCount) bytes")
             return CadAnimationExportReceipt(
@@ -435,8 +447,16 @@ actor CadDocumentCenter: CadDocumentHost {
                 sha256: digest,
                 posterPNG: result.posterPNG,
                 taskID: taskID,
-                note: "Actual native RealityKit animation frames encoded as verified MP4; "
-                    + "the .floecad source document was not modified.")
+                note: result.format == .pngSequence
+                    ? "Actual native RealityKit animation frames written as ordered "
+                        + "lossless PNG files plus manifest.json in one verified ZIP; "
+                        + "the .floecad source document was not modified."
+                    : "Actual native RealityKit animation frames encoded as verified MP4; "
+                        + "the .floecad source document was not modified.",
+                format: result.format.rawValue,
+                alpha: result.alpha.rawValue,
+                frameTimes: result.frameTimes,
+                manifestSHA256: result.manifestSHA256)
         } catch let error as CADDocumentError {
             await NativeCADTaskRegistry.shared.finish(
                 id: taskID, state: .failed, detail: error.message)
@@ -451,13 +471,14 @@ actor CadDocumentCenter: CadDocumentHost {
     }
 
     private func animationOutput(resolved: Resolved, raw: String,
-                                 overwrite: Bool) throws -> (relative: String, url: URL) {
+                                 options: CadAnimationExportOptions)
+    throws -> (relative: String, url: URL) {
         var relative = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !relative.isEmpty, relative.utf8.count <= 1024,
               !relative.contains("\0"),
               !relative.split(separator: "/").contains("..") else {
             throw FloeError.validationFailed(
-                "animation export requires a workspace-contained .mp4 output path")
+                "animation export requires a workspace-contained output path")
         }
         if relative.hasPrefix("/") {
             let rootPath = resolved.root.standardizedFileURL.resolvingSymlinksInPath().path
@@ -467,17 +488,20 @@ actor CadDocumentCenter: CadDocumentHost {
             }
             relative = String(relative.dropFirst(rootPath.count + 1))
         }
-        guard (relative as NSString).pathExtension.lowercased() == "mp4" else {
+        let expectedExtension = options.format.lowercased()
+            == CADAnimationExportOutputFormat.pngSequence.rawValue ? "zip" : "mp4"
+        guard (relative as NSString).pathExtension.lowercased()
+                == expectedExtension else {
             throw FloeError.validationFailed(
-                "animation export output must end in .mp4")
+                "animation export output must end in .\(expectedExtension)")
         }
         let url = try resolved.service.guardResolver.resolve(relative)
         try resolved.service.guardResolver.assertWritable(url)
         try FileManager.default.createDirectory(
             at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
-        if FileManager.default.fileExists(atPath: url.path), !overwrite {
+        if FileManager.default.fileExists(atPath: url.path), !options.overwrite {
             throw FloeError.validationFailed(
-                "The animation video already exists; pass overwrite to replace it.")
+                "The animation output already exists; pass overwrite to replace it.")
         }
         return (relative, url)
     }
@@ -609,6 +633,8 @@ actor CadDocumentCenter: CadDocumentHost {
                 "frame_rate": options.frameRate, "codec": options.codec,
                 "overwrite": options.overwrite,
                 "poster_enabled": options.posterEnabled,
+                "format": options.format,
+                "alpha": options.alpha,
             ]
             if let bitrate = options.bitrate { saved["bitrate"] = bitrate }
             // X30: the direct Present export records a display name and the

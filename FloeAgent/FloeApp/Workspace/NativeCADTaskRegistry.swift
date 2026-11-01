@@ -334,13 +334,16 @@ final class NativeCADEditorAnimationExportRecovery: CADAnimationExportRecoverySi
             documentPath: canonicalDocumentPath)
     }
 
-    private static func displayName(_ raw: String) -> String {
+    private static func displayName(
+        _ raw: String, format: CADAnimationExportOutputFormat
+    ) -> String {
         let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-        var name = (trimmed.isEmpty ? "CAD animation.mp4" : trimmed)
+        let ext = format.pathExtension
+        var name = (trimmed.isEmpty ? "CAD animation.\(ext)" : trimmed)
             .replacingOccurrences(of: "/", with: "-")
             .replacingOccurrences(of: "\\", with: "-")
         name = String(name.prefix(200))
-        if !name.lowercased().hasSuffix(".mp4") { name += ".mp4" }
+        if !name.lowercased().hasSuffix(".\(ext)") { name += ".\(ext)" }
         return name
     }
 
@@ -350,8 +353,10 @@ final class NativeCADEditorAnimationExportRecovery: CADAnimationExportRecoverySi
         guard isCurrentDocument(request.documentURL) else {
             throw CADAnimationExportRecoveryError.documentMismatch
         }
-        let name = Self.displayName(request.suggestedFilename)
         let options = request.options
+        let format = CADAnimationExportOutputFormat(
+            rawValue: options.format.lowercased()) ?? .mp4
+        let name = Self.displayName(request.suggestedFilename, format: format)
         // The exact production settings travel with the UI choices; this
         // mirrors `CADAnimationExportOptions.exportSettings()` without
         // importing the SwiftUI sheet into the registry.
@@ -359,10 +364,12 @@ final class NativeCADEditorAnimationExportRecovery: CADAnimationExportRecoverySi
             width: options.width,
             height: options.height,
             frameRate: options.frameRate,
-            codec: options.codec,
+            codec: format == .pngSequence ? "png" : options.codec,
             bitrate: options.bitrate,
             overwrite: options.overwrite,
-            posterEnabled: options.posterEnabled)
+            posterEnabled: options.posterEnabled,
+            format: options.format,
+            alpha: options.alpha)
         let record = NativeCADTaskRegistry.AnimationExportRequest(
             relativeOutput: name,
             options: toolOptions,

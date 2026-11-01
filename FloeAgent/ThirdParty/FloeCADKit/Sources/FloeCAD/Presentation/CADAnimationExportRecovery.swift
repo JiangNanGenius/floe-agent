@@ -2,7 +2,7 @@
 //  CADAnimationExportRecovery.swift
 //  FloeCADKit
 //
-//  Narrow host sink for the DIRECT Present MP4 export (X30).
+//  Narrow host sink for the DIRECT Present animation export (X30).
 //
 //  The tool/assistant export already owns a durable NativeCADTaskRegistry
 //  record in the Floe App host. The Present pane used to call
@@ -43,6 +43,11 @@ public nonisolated struct CADAnimationExportRecoveryOptions: Codable, Sendable, 
     public var bitrate: Int?
     public var overwrite: Bool
     public var posterEnabled: Bool
+    /// Exact output kind (X29). Old records decode as historical MP4.
+    public var format: String
+    /// Explicit alpha intent; only opaque is executable and old records are
+    /// opaque.
+    public var alpha: String
 
     public init(orientation: String,
                 resolution: Int,
@@ -53,7 +58,9 @@ public nonisolated struct CADAnimationExportRecoveryOptions: Codable, Sendable, 
                 height: Int,
                 bitrate: Int?,
                 overwrite: Bool,
-                posterEnabled: Bool) {
+                posterEnabled: Bool,
+                format: String = CADAnimationExportOutputFormat.mp4.rawValue,
+                alpha: String = CADAnimationExportAlpha.opaque.rawValue) {
         self.orientation = orientation
         self.resolution = resolution
         self.frameRate = frameRate
@@ -64,6 +71,8 @@ public nonisolated struct CADAnimationExportRecoveryOptions: Codable, Sendable, 
         self.bitrate = bitrate
         self.overwrite = overwrite
         self.posterEnabled = posterEnabled
+        self.format = format
+        self.alpha = alpha
     }
 
     // A record written by a newer build must not make the whole native-task
@@ -72,6 +81,7 @@ public nonisolated struct CADAnimationExportRecoveryOptions: Codable, Sendable, 
     private enum CodingKeys: String, CodingKey {
         case orientation, resolution, frameRate, codec, quality
         case width, height, bitrate, overwrite, posterEnabled
+        case format, alpha
     }
 
     public init(from decoder: Decoder) throws {
@@ -92,6 +102,14 @@ public nonisolated struct CADAnimationExportRecoveryOptions: Codable, Sendable, 
                                                   forKey: .overwrite) ?? false
         posterEnabled = try container.decodeIfPresent(Bool.self,
                                                       forKey: .posterEnabled) ?? true
+        // Additive X29 fields: a record written before the frame bundle was
+        // offered is exactly the historical opaque MP4 export.
+        format = try container.decodeIfPresent(String.self,
+                                               forKey: .format)
+            ?? CADAnimationExportOutputFormat.mp4.rawValue
+        alpha = try container.decodeIfPresent(String.self,
+                                              forKey: .alpha)
+            ?? CADAnimationExportAlpha.opaque.rawValue
     }
 }
 

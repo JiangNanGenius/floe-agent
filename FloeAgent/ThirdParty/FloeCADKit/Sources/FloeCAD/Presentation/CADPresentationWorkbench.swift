@@ -654,7 +654,10 @@ struct CADPresentationWorkbenchContent: View {
     @State private var showTimeline = false
     @State private var movieExport: MovieFileDocument?
     @State private var showMovieExporter = false
+    @State private var framesExport: ZipFileDocument?
+    @State private var showFramesExporter = false
     @State private var exportProgress: CADAnimationExportProgress?
+    @State private var exportFormat: CADAnimationExportOutputFormat = .mp4
     @State private var exportHandle: CADAnimationExportHandle?
     @State private var exportStarting = false
     @State private var interruptedExport: CADAnimationExportRecoverySummary?
@@ -764,6 +767,11 @@ struct CADPresentationWorkbenchContent: View {
                       defaultFilename: "\(document.name) animation") { _ in
             movieExport = nil
         }
+        .fileExporter(isPresented: $showFramesExporter, document: framesExport,
+                      contentType: .zip,
+                      defaultFilename: "\(document.name) animation frames") { _ in
+            framesExport = nil
+        }
         .alert(FloeCADStrings.text("cad.present.export.failed", "Couldn't export"),
                isPresented: Binding(
                 get: { exportError != nil },
@@ -814,8 +822,16 @@ struct CADPresentationWorkbenchContent: View {
 
     private func exportProgressCard(_ progress: CADAnimationExportProgress) -> some View {
         VStack(spacing: 10) {
-            ProgressView(value: progress.fraction)
-                .frame(width: 240)
+            if progress.phase == .verifying || progress.phase == .assembling {
+                // Rendering is complete; the bundle is being streamed off the
+                // main actor. There is no honest frame percentage for this pass,
+                // so show an indeterminate indicator instead of a 100% bar.
+                ProgressView()
+                    .frame(width: 240)
+            } else {
+                ProgressView(value: progress.fraction)
+                    .frame(width: 240)
+            }
             Text(exportStatusText(progress))
                 .font(.callout)
                 .multilineTextAlignment(.center)
@@ -834,27 +850,62 @@ struct CADPresentationWorkbenchContent: View {
     }
 
     private func exportStatusText(_ progress: CADAnimationExportProgress) -> String {
+        let isFrames = exportFormat == .pngSequence
         switch progress.phase {
         case .preparing:
-            return FloeCADStrings.text("cad.animation.export.preparing",
-                                       "Preparing video…")
+            return isFrames
+                ? FloeCADStrings.text("cad.animation.export.frames.preparing",
+                                      "Preparing frames…")
+                : FloeCADStrings.text("cad.animation.export.preparing",
+                                      "Preparing video…")
         case .rendering:
             return FloeCADStrings.format(
                 "cad.animation.export.progress",
                 "Rendering %d of %d frames",
                 progress.completedFrames, progress.totalFrames)
+        case .verifying:
+            return isFrames
+                ? FloeCADStrings.text("cad.animation.export.frames.verifying",
+                                      "Verifying PNG frames…")
+                : FloeCADStrings.text("cad.animation.export.finalizing",
+                                      "Finishing video…")
+        case .assembling:
+            return isFrames
+                ? FloeCADStrings.text("cad.animation.export.frames.assembling",
+                                      "Writing frame bundle…")
+                : FloeCADStrings.text("cad.animation.export.finalizing",
+                                      "Finishing video…")
         case .finalizing:
-            return FloeCADStrings.text("cad.animation.export.finalizing",
-                                       "Finishing video…")
+            return isFrames
+                ? FloeCADStrings.text("cad.animation.export.frames.finalizing",
+                                      "Building frame bundle…")
+                : FloeCADStrings.text("cad.animation.export.finalizing",
+                                      "Finishing video…")
         case .finished:
-            return FloeCADStrings.text("cad.animation.export.finished", "Video exported")
+            return isFrames
+                ? FloeCADStrings.text("cad.animation.export.frames.finished",
+                                      "PNG frames exported")
+                : FloeCADStrings.text("cad.animation.export.finished", "Video exported")
         case .failed:
-            return FloeCADStrings.text("cad.animation.export.failed",
-                                       "Couldn't export the video.")
+            return isFrames
+                ? FloeCADStrings.text("cad.animation.export.frames.failed",
+                                      "Couldn't export the frames.")
+                : FloeCADStrings.text("cad.animation.export.failed",
+                                      "Couldn't export the video.")
         case .cancelled:
-            return FloeCADStrings.text("cad.animation.export.cancelled",
-                                       "Video export cancelled.")
+            return isFrames
+                ? FloeCADStrings.text("cad.animation.export.frames.cancelled",
+                                      "Frame export cancelled.")
+                : FloeCADStrings.text("cad.animation.export.cancelled",
+                                      "Video export cancelled.")
         }
+    }
+
+    private func openExportOptions(format: CADAnimationExportOutputFormat) {
+        videoExportOptions.format = format
+        // The sheet only offers the executable opaque output.
+        videoExportOptions.alpha = .opaque
+        showVideoExportOptions = true
     }
 
     private func exportVideo(options: CADAnimationExportOptions) {
@@ -874,9 +925,11 @@ struct CADPresentationWorkbenchContent: View {
             return
         }
         playback.pause()
+        exportFormat = options.format
         let temporary = FileManager.default.temporaryDirectory
             .appendingPathComponent(
-                "\(document.name)-animation-\(UUID().uuidString).mp4")
+                "\(document.name)-animation-\(UUID().uuidString)."
+                    + options.format.pathExtension)
         let request = CADAnimationExportRecoveryRequest(
             documentURL: document.url,
             options: options.recoveryOptions,
@@ -885,7 +938,8 @@ struct CADPresentationWorkbenchContent: View {
             sourceChangeCount: document.liveChangeCount,
             clipID: clip.id,
             clipDuration: clip.duration,
-            suggestedFilename: Self.suggestedExportFilename(document.name))
+            suggestedFilename: Self.suggestedExportFilename(
+                document.name, format: options.format))
         exportStarting = true
         interruptedExport = nil
         Task { @MainActor in
@@ -935,7 +989,7 @@ struct CADPresentationWorkbenchContent: View {
             }
             let handle: CADAnimationExportHandle
             do {
-                handle = try document.startAnimationExportMP4(
+                handle = try document.startAnimationExport(
                     to: temporary, settings: options.exportSettings()) { progress in
                         exportProgress = progress
                     }
@@ -965,7 +1019,8 @@ struct CADPresentationWorkbenchContent: View {
             switch outcome {
             case .completed:
                 if let result {
-                    detail = "mp4 \(result.width)x\(result.height) "
+                    let kind = result.format == .mp4 ? "mp4" : "png frames zip"
+                    detail = "\(kind) \(result.width)x\(result.height) "
                         + "\(Int(result.frameRate.rounded()))fps "
                         + "\(result.frameCount) frames, \(result.byteCount) bytes; "
                         + "rendered for the export picker"
@@ -975,8 +1030,12 @@ struct CADPresentationWorkbenchContent: View {
             case .failed:
                 detail = status.error ?? (result != nil
                     ? FloeCADStrings.text(
-                        "cad.animation.export.readFailed",
-                        "The exported video could not be read.")
+                        exportFormat == .mp4
+                            ? "cad.animation.export.readFailed"
+                            : "cad.animation.export.frames.readFailed",
+                        exportFormat == .mp4
+                            ? "The exported video could not be read."
+                            : "The exported frame bundle could not be read.")
                     : nil)
             case .cancelled:
                 detail = status.error
@@ -1012,15 +1071,24 @@ struct CADPresentationWorkbenchContent: View {
                     exportError = status.error
                         ?? (result != nil
                             ? FloeCADStrings.text(
-                                "cad.animation.export.readFailed",
-                                "The exported video could not be read.")
+                                exportFormat == .mp4
+                                    ? "cad.animation.export.readFailed"
+                                    : "cad.animation.export.frames.readFailed",
+                                exportFormat == .mp4
+                                    ? "The exported video could not be read."
+                                    : "The exported frame bundle could not be read.")
                             : FloeCADStrings.text(
                                 "cad.present.export.failed", "Couldn't export"))
                 }
                 return
             }
-            movieExport = MovieFileDocument(data: data)
-            showMovieExporter = true
+            if result.format == .pngSequence {
+                framesExport = ZipFileDocument(data: data)
+                showFramesExporter = true
+            } else {
+                movieExport = MovieFileDocument(data: data)
+                showMovieExporter = true
+            }
         }
     }
 
@@ -1038,12 +1106,15 @@ struct CADPresentationWorkbenchContent: View {
     /// A display label, never a path. The Present pane renders into the system
     /// temporary directory and then asks the user where to save; recovery must
     /// not pretend that temporary URL is a permanent destination.
-    private static func suggestedExportFilename(_ name: String) -> String {
+    private static func suggestedExportFilename(
+        _ name: String, format: CADAnimationExportOutputFormat
+    ) -> String {
         let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
         let base = (trimmed.isEmpty ? "CAD" : trimmed)
             .replacingOccurrences(of: "/", with: "-")
             .replacingOccurrences(of: "\\", with: "-")
-        return String(base.prefix(180)) + " animation.mp4"
+        let suffix = format == .mp4 ? " animation.mp4" : " animation frames.zip"
+        return String(base.prefix(180)) + suffix
     }
 
     private func loadInterruptedExport() async {
@@ -1127,11 +1198,23 @@ struct CADPresentationWorkbenchContent: View {
     }
 
     private func recoveryDescription(_ summary: CADAnimationExportRecoverySummary) -> String {
-        let codec = summary.options.codec.lowercased()
-        let codecLabel = codec == "hevc" ? "HEVC"
-            : (codec == "h264" ? "H.264" : summary.options.codec.uppercased())
-        return "\(summary.suggestedFilename) · \(summary.options.width)×"
-            + "\(summary.options.height) · \(summary.options.frameRate) fps · \(codecLabel)"
+        let format = CADAnimationExportOutputFormat(rawValue: summary.options.format)
+        let kind: String
+        if format == .pngSequence {
+            kind = FloeCADStrings.text("cad.animation.export.options.format.png",
+                                       "PNG frames (ZIP)")
+        } else {
+            let codec = summary.options.codec.lowercased()
+            kind = codec == "hevc"
+                ? FloeCADStrings.text("cad.animation.export.options.codec.hevc",
+                                      "HEVC (smaller)")
+                : (codec == "h264"
+                    ? FloeCADStrings.text("cad.animation.export.options.codec.h264",
+                                          "H.264")
+                    : summary.options.codec.uppercased())
+        }
+        return "\(summary.suggestedFilename) · \(kind) · \(summary.options.width)×"
+            + "\(summary.options.height) · \(summary.options.frameRate) fps"
     }
 
     // MARK: Chrome
@@ -1208,13 +1291,24 @@ struct CADPresentationWorkbenchContent: View {
                           systemImage: "photo")
                 }
                 Button {
-                    showVideoExportOptions = true
+                    openExportOptions(format: .mp4)
                 } label: {
                     Label(FloeCADStrings.text("cad.animation.export.video", "MP4 video"),
                           systemImage: "film")
                 }
                 .disabled(animationState.activeClip == nil
                           || exportHandle != nil || exportStarting)
+
+                Button {
+                    openExportOptions(format: .pngSequence)
+                } label: {
+                    Label(FloeCADStrings.text("cad.animation.export.frames",
+                                               "PNG frames (ZIP)"),
+                          systemImage: "square.stack.3d.up")
+                }
+                .disabled(animationState.activeClip == nil
+                          || exportHandle != nil || exportStarting)
+                .accessibilityIdentifier("CADAnimationExportFrames")
 
                 Button {
                     exportGLB()
@@ -1545,6 +1639,21 @@ struct PNGFileDocument: FileDocument {
 
 struct MovieFileDocument: FileDocument {
     static var readableContentTypes: [UTType] { [.mpeg4Movie] }
+    var data: Data
+
+    init(data: Data) { self.data = data }
+
+    init(configuration: ReadConfiguration) throws {
+        data = configuration.file.regularFileContents ?? Data()
+    }
+
+    func fileWrapper(configuration: WriteConfiguration) throws -> FileWrapper {
+        FileWrapper(regularFileWithContents: data)
+    }
+}
+
+struct ZipFileDocument: FileDocument {
+    static var readableContentTypes: [UTType] { [.zip] }
     var data: Data
 
     init(data: Data) { self.data = data }

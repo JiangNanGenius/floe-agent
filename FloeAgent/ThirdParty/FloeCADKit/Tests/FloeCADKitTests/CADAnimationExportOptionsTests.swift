@@ -20,6 +20,7 @@
 //     SKIP — nothing is fabricated.
 //
 
+import Dispatch
 import Foundation
 import XCTest
 
@@ -28,6 +29,7 @@ import SwiftUI
 import RealityKit
 import UIKit
 import AVFoundation
+import CryptoKit
 import simd
 
 @testable import FloeCAD
@@ -106,6 +108,91 @@ final class CADAnimationExportOptionsMappingTests: XCTestCase {
         }
     }
 
+    func testFrameSequenceMapsToPngSettingsWithoutVideoOnlyOptions() {
+        var options = CADAnimationExportOptions.default
+        options.orientation = .portrait
+        options.resolution = .p720
+        options.frameRate = .fps24
+        options.codec = .hevc
+        options.quality = .higher
+        options.format = .pngSequence
+        let settings = options.exportSettings()
+        XCTAssertEqual(settings.format, .pngSequence)
+        XCTAssertEqual(settings.width, 720)
+        XCTAssertEqual(settings.height, 1280)
+        XCTAssertEqual(settings.frameRate, 24)
+        XCTAssertNil(settings.bitrate, "PNG frames are lossless and have no video bitrate")
+        XCTAssertEqual(settings.alpha, .opaque)
+        XCTAssertNil(settings.validationError)
+
+        // The historical video selection still carries its exact settings.
+        options.format = .mp4
+        let video = options.exportSettings()
+        XCTAssertEqual(video.format, .mp4)
+        XCTAssertEqual(video.codec, .hevc)
+        XCTAssertNotNil(video.bitrate)
+    }
+
+    func testTransparentAlphaAndFrameDestinationAreValidatedBeforeOutput() throws {
+        var settings = CADAnimationExportOptions.default.exportSettings()
+        settings.alpha = .transparent
+        XCTAssertNotNil(settings.validationError)
+        XCTAssertThrowsError(try settings.validated()) { error in
+            guard let exportError = error as? CADAnimationExportError,
+                  case .invalidSettings(let message) = exportError else {
+                return XCTFail("expected invalidSettings, got \(error)")
+            }
+            XCTAssertTrue(message.contains("Transparent"))
+        }
+
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("X29Destination-\(UUID().uuidString)",
+                                    isDirectory: true)
+        try FileManager.default.createDirectory(at: directory,
+                                                withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        var frames = CADAnimationExportOptions.default.exportSettings()
+        frames.alpha = .opaque
+        frames.format = .pngSequence
+        frames.bitrate = nil
+        XCTAssertNoThrow(try FloeCADDocument.validateAnimationExportDestination(
+            directory.appendingPathComponent("frames.zip"), settings: frames))
+        XCTAssertThrowsError(try FloeCADDocument.validateAnimationExportDestination(
+            directory.appendingPathComponent("frames.mp4"), settings: frames))
+
+        var video = CADAnimationExportOptions.default.exportSettings()
+        video.format = .mp4
+        XCTAssertNoThrow(try FloeCADDocument.validateAnimationExportDestination(
+            directory.appendingPathComponent("video.mp4"), settings: video))
+        XCTAssertThrowsError(try FloeCADDocument.validateAnimationExportDestination(
+            directory.appendingPathComponent("video.zip"), settings: video))
+    }
+
+    func testRecoveryOptionsDecodeLegacyRecordsAndPreserveFrameIntent() throws {
+        let legacy = Data("""
+            {"orientation":"portrait","resolution":720,"frameRate":24,
+             "codec":"hevc","quality":"higher","width":720,"height":1280,
+             "bitrate":8000000,"overwrite":false,"posterEnabled":true}
+            """.utf8)
+        let decoded = try JSONDecoder().decode(
+            CADAnimationExportRecoveryOptions.self, from: legacy)
+        XCTAssertEqual(decoded.format, "mp4")
+        XCTAssertEqual(decoded.alpha, "opaque")
+        let restored = try XCTUnwrap(
+            CADAnimationExportOptions(recoveryOptions: decoded))
+        XCTAssertEqual(restored.format, .mp4)
+        XCTAssertEqual(restored.alpha, .opaque)
+
+        var frames = CADAnimationExportOptions.default
+        frames.format = .pngSequence
+        frames.frameRate = .fps24
+        let roundTrip = try XCTUnwrap(CADAnimationExportOptions(
+            recoveryOptions: frames.recoveryOptions))
+        XCTAssertEqual(roundTrip, frames)
+        XCTAssertEqual(roundTrip.recoveryOptions.format, "png_zip")
+        XCTAssertEqual(roundTrip.recoveryOptions.alpha, "opaque")
+    }
+
     func testPersistenceRoundTripsAndFallsBackGracefully() throws {
         let suite = "floe.cad.animationExportOptions.tests.\(UUID().uuidString)"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
@@ -140,6 +227,72 @@ final class CADAnimationExportOptionsMappingTests: XCTestCase {
         XCTAssertEqual(loaded.frameRate, .fps30)
         XCTAssertEqual(loaded.resolution, .p1080)
         XCTAssertEqual(loaded.quality, .automatic)
+    }
+
+    func testFrameOutputPreferenceRoundTripsAdditively() throws {
+        let suite = "floe.cad.animationExportOptions.frames.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+
+        var frames = CADAnimationExportOptions.default
+        frames.format = .pngSequence
+        frames.frameRate = .fps24
+        frames.save(to: defaults)
+        XCTAssertEqual(CADAnimationExportOptions.load(from: defaults), frames)
+
+        // A payload written before X29 has no output fields and stays the
+        // historical opaque MP4 instead of failing or inventing a format.
+        let legacy = Data("""
+            {"orientation":"portrait","codec":"hevc","frameRate":24}
+            """.utf8)
+        defaults.set(legacy, forKey: "floe.cad.animationExportOptions")
+        let loaded = CADAnimationExportOptions.load(from: defaults)
+        XCTAssertEqual(loaded.format, .mp4)
+        XCTAssertEqual(loaded.alpha, .opaque)
+    }
+}
+
+// MARK: - Streaming ZIP primitive (X29-R2 finalizer)
+
+/// The off-main finalizer streams entries instead of buffering them. Its
+/// incremental CRC must produce exactly the canonical directory value,
+/// including across non-chunk-aligned sizes.
+@MainActor
+final class CADAnimationFrameFinalizerUnitTests: XCTestCase {
+    func testStreamingZipCRCMatchesCanonicalCRC() {
+        var seed: UInt32 = 0x1234_5678
+        for size in [0, 1, 7, 65_535, 65_536, 65_537, 200_001] {
+            var data = Data(count: size)
+            for index in data.indices {
+                seed = seed &* 1_664_525 &+ 1_013_904_223
+                data[index] = UInt8(truncatingIfNeeded: seed >> 24)
+            }
+            var crc = MinimalZipCRC32()
+            crc.update(data.prefix(size / 3))
+            crc.update(data.dropFirst(size / 3).prefix(size / 3))
+            crc.update(data.dropFirst((size / 3) * 2))
+            XCTAssertEqual(crc.checksum, MinimalZipWriter.crc32(data),
+                           "chunked CRC32 diverged at size \(size)")
+        }
+    }
+
+    func testFinalizationCancellationTokenIsThreadSafeAndObservable() {
+        let cancellation = CADAnimationFrameFinalizationCancellation()
+        XCTAssertFalse(cancellation.isCancelled)
+        let group = DispatchGroup()
+        for _ in 0..<8 {
+            group.enter()
+            DispatchQueue.global().async {
+                cancellation.cancel()
+                _ = cancellation.isCancelled
+                group.leave()
+            }
+        }
+        XCTAssertEqual(group.wait(timeout: .now() + 10), .success)
+        XCTAssertTrue(cancellation.isCancelled)
+        XCTAssertThrowsError(try cancellation.check()) { error in
+            XCTAssertTrue(error is CancellationError)
+        }
     }
 }
 
@@ -493,6 +646,403 @@ final class CADAnimationExportReadbackTests: XCTestCase {
         try assertNoStagingRemains(in: fixture.directory, status: status)
     }
 
+    /// Real native frame-sequence witness for X29. It uses the production
+    /// Present host and the SAME evaluator/frame-settle path as MP4, then reads
+    /// the produced ZIP back: ordered lossless PNGs, exact dimensions, real
+    /// opaque alpha, manifest times matching the frozen frame plan, and a
+    /// moving model. Root still performs the independent App/media read-back.
+    func testFrameSequenceProducesOrderedOpaquePNGsAndManifest() async throws {
+        let fixture = try await hostedFixture(clipDuration: 0.5)
+        let settings = Self.frameSequenceSettings()
+        let destination = fixture.directory.appendingPathComponent("frames.zip")
+        let expectedFrames = fixture.clip.frameCount(at: settings.frameRate)
+
+        let result = try await fixture.document.exportAnimation(
+            clipID: fixture.clip.id, to: destination, settings: settings)
+
+        XCTAssertEqual(result.format, .pngSequence)
+        XCTAssertEqual(result.alpha, .opaque)
+        XCTAssertEqual(result.codec, "png")
+        XCTAssertEqual(result.width, settings.width)
+        XCTAssertEqual(result.height, settings.height)
+        XCTAssertEqual(result.frameRate, Double(settings.frameRate),
+                       accuracy: 0.001)
+        XCTAssertEqual(result.frameCount, expectedFrames)
+        XCTAssertFalse(result.hasAudio)
+        XCTAssertEqual(result.url.standardizedFileURL,
+                       destination.standardizedFileURL)
+        XCTAssertNotNil(result.posterPNG)
+        XCTAssertEqual(try XCTUnwrap(result.frameTimes).count, expectedFrames)
+        let manifestSHA = try XCTUnwrap(result.manifestSHA256)
+
+        let zipData = try Data(contentsOf: destination)
+        XCTAssertEqual(result.byteCount, Int64(zipData.count))
+        let entries = try ZipReader.entries(in: zipData)
+        XCTAssertEqual(entries.count, expectedFrames + 1,
+                       "manifest + one real PNG per frame, never a renamed video")
+        let manifestData = try XCTUnwrap(entries["manifest.json"])
+        XCTAssertEqual(Self.sha256(manifestData), manifestSHA)
+        let manifest = try JSONDecoder().decode(
+            FrameManifestProbe.self, from: manifestData)
+        XCTAssertEqual(manifest.format, "png_zip")
+        XCTAssertEqual(manifest.schema, "floe.cad.animation.frames.v1")
+        XCTAssertEqual(manifest.version, 1)
+        XCTAssertEqual(manifest.clipID, fixture.clip.id.uuidString)
+        XCTAssertEqual(manifest.width, settings.width)
+        XCTAssertEqual(manifest.height, settings.height)
+        XCTAssertEqual(manifest.frameRate, settings.frameRate)
+        XCTAssertEqual(manifest.frameCount, expectedFrames)
+        XCTAssertEqual(manifest.durationSeconds, fixture.clip.duration,
+                       accuracy: 1e-9)
+        XCTAssertEqual(manifest.alpha, "opaque")
+        XCTAssertEqual(manifest.timescale, settings.frameRate)
+        XCTAssertEqual(manifest.frames.count, expectedFrames)
+
+        var frames: [[UInt8]] = []
+        for entry in manifest.frames {
+            XCTAssertEqual(entry.file,
+                           String(format: "frames/frame_%06d.png", entry.index))
+            XCTAssertEqual(entry.presentationValue, entry.index)
+            XCTAssertEqual(entry.timescale, settings.frameRate)
+            let expectedTime = FloeCADDocument.animationFrameTime(
+                frame: entry.index, fps: settings.frameRate,
+                duration: fixture.clip.duration)
+            XCTAssertEqual(entry.timeSeconds, expectedTime, accuracy: 1e-9)
+            let png = try XCTUnwrap(entries[entry.file])
+            XCTAssertEqual(png.count, entry.byteCount)
+            XCTAssertEqual(Self.sha256(png), entry.sha256)
+            let decoded = try Self.rgbaPixels(png)
+            XCTAssertEqual(decoded.width, settings.width)
+            XCTAssertEqual(decoded.height, settings.height)
+            XCTAssertEqual(Self.minimumAlpha(decoded.rgba), 255,
+                           "frame \(entry.index) declares opaque and must be opaque")
+            frames.append(decoded.rgba)
+        }
+        let resultTimes = try XCTUnwrap(result.frameTimes)
+        XCTAssertEqual(resultTimes.count, manifest.frames.count)
+        for (time, entry) in zip(resultTimes, manifest.frames) {
+            XCTAssertEqual(time, entry.timeSeconds, accuracy: 1e-12)
+        }
+        XCTAssertEqual(try XCTUnwrap(result.posterPNG),
+                       try XCTUnwrap(entries["frames/frame_000000.png"]))
+
+        let first = try XCTUnwrap(frames.first)
+        let last = try XCTUnwrap(frames.last)
+        XCTAssertGreaterThan(Self.redFraction(first), 0.01,
+                             "the first actual frame must contain the red fixture")
+        XCTAssertGreaterThan(Self.redFraction(last), 0.01,
+                             "the last actual frame must contain the red fixture")
+        let changed = zip(first, last).filter { abs(Int($0) - Int($1)) > 20 }.count
+        XCTAssertGreaterThan(Double(changed) / Double(first.count), 0.001,
+                             "the camera animation must move the real model pixels")
+        try assertNoStagingRemains(in: fixture.directory)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: destination.path))
+    }
+
+    /// Part-motion witness: one real assembly instance moves while its source
+    /// body stays fixed. Root can compare first/last decoded PNGs against this
+    /// known 60 mm -> 140 mm translation through the same native settle path.
+    func testFrameSequenceCapturesAnimatedPartGeometry() async throws {
+        let fixture = try await hostedFixture(
+            clipDuration: 0.5, animatedPart: true)
+        let settings = Self.frameSequenceSettings()
+        let destination = fixture.directory
+            .appendingPathComponent("animated-part-frames.zip")
+        let expectedFrames = fixture.clip.frameCount(at: settings.frameRate)
+
+        let result = try await fixture.document.exportAnimation(
+            clipID: fixture.clip.id, to: destination, settings: settings)
+        XCTAssertEqual(result.format, .pngSequence)
+        XCTAssertEqual(result.frameCount, expectedFrames)
+
+        let entries = try ZipReader.entries(in: try Data(contentsOf: destination))
+        let manifestData = try XCTUnwrap(entries["manifest.json"])
+        let manifest = try JSONDecoder().decode(
+            FrameManifestProbe.self, from: manifestData)
+        XCTAssertEqual(manifest.frameCount, expectedFrames)
+        XCTAssertEqual(try XCTUnwrap(manifest.frames.first).presentationValue, 0)
+        XCTAssertEqual(try XCTUnwrap(manifest.frames.last).presentationValue,
+                       expectedFrames - 1)
+
+        let firstPNG = try XCTUnwrap(entries[try XCTUnwrap(
+            manifest.frames.first?.file)])
+        let lastPNG = try XCTUnwrap(entries[try XCTUnwrap(
+            manifest.frames.last?.file)])
+        let first = try Self.rgbaPixels(firstPNG)
+        let last = try Self.rgbaPixels(lastPNG)
+        XCTAssertEqual(first.width, settings.width)
+        XCTAssertEqual(first.height, settings.height)
+        XCTAssertEqual(last.width, settings.width)
+        XCTAssertEqual(last.height, settings.height)
+        XCTAssertEqual(Self.minimumAlpha(first.rgba), 255)
+        XCTAssertEqual(Self.minimumAlpha(last.rgba), 255)
+        XCTAssertGreaterThan(Self.redFraction(first.rgba), 0.005)
+        XCTAssertGreaterThan(Self.redFraction(last.rgba), 0.005)
+        let changed = zip(first.rgba, last.rgba)
+            .filter { abs(Int($0) - Int($1)) > 20 }.count
+        XCTAssertGreaterThan(Double(changed) / Double(first.rgba.count), 0.001,
+                             "the placed instance must actually move")
+        try assertNoStagingRemains(in: fixture.directory)
+    }
+
+    func testFrameSequenceCancelRemovesStagingAndPromotesNothing() async throws {
+        let fixture = try await hostedFixture(clipDuration: 2.0)
+        let settings = Self.frameSequenceSettings()
+        let destination = fixture.directory
+            .appendingPathComponent("cancelled-frames.zip")
+
+        let handle = try fixture.document.startAnimationExport(
+            clipID: fixture.clip.id, to: destination, settings: settings)
+        try await waitUntilExportRenders(fixture.document, handle: handle)
+
+        fixture.document.cancelAnimationExport(handle.id)
+        let status = await fixture.document.waitForAnimationExport(handle.id)
+        XCTAssertTrue(status.isCancelled)
+        XCTAssertEqual(status.progress.phase, .cancelled)
+        XCTAssertNil(status.result)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: destination.path))
+        try assertNoStagingRemains(in: fixture.directory, status: status)
+    }
+
+#if DEBUG
+    /// X29-R2: cancel while the REAL finalizer is packaging an already-rendered
+    /// frame bundle. The DEBUG checkpoint holds the actual worker thread (never
+    /// the main actor) at a real ZIP write boundary; the main actor cancels
+    /// through the service, then releases the worker. The terminal status must
+    /// arrive only after that worker exits and staging is removed, and a
+    /// pre-existing destination must survive untouched.
+    func testFrameSequenceCancelDuringFinalizationJoinsWorkerAndKeepsDestination() async throws {
+        let fixture = try await hostedFixture(clipDuration: 0.5)
+        var settings = Self.frameSequenceSettings()
+        settings.overwrite = true
+        let destination = fixture.directory
+            .appendingPathComponent("cancelled-finalizing-frames.zip")
+        let sentinel = Data("existing destination must survive".utf8)
+        try sentinel.write(to: destination)
+        let expectedFrames = fixture.clip.frameCount(at: settings.frameRate)
+        XCTAssertGreaterThanOrEqual(expectedFrames, 4,
+                                    "the witness needs a real multi-frame bundle")
+
+        let gate = AnimationFinalizationGate(
+            blockAt: .writingFrame, frameIndex: 1)
+        CADAnimationFrameFinalizationProbe.shared.setObserver { visit in
+            gate.record(visit)
+        }
+        defer {
+            CADAnimationFrameFinalizationProbe.shared.setObserver(nil)
+            gate.release()
+        }
+
+        let handle = try fixture.document.startAnimationExport(
+            clipID: fixture.clip.id, to: destination, settings: settings)
+        let blocked = try await gate.waitUntilBlocked(timeout: 90)
+        XCTAssertTrue(blocked, "the real finalizer never reached the ZIP write checkpoints")
+        let beforeRelease = gate.visits()
+        XCTAssertFalse(beforeRelease.isEmpty)
+        XCTAssertFalse(beforeRelease.contains { $0.isMainThread },
+                       "frame finalization must run off the main actor")
+        XCTAssertGreaterThanOrEqual(
+            beforeRelease.filter { $0.point == .verifyingFrame }.count,
+            expectedFrames,
+            "every real staged frame must be verified off-main before packaging")
+        XCTAssertEqual(beforeRelease.last?.point, .writingFrame)
+        XCTAssertEqual(try Data(contentsOf: destination), sentinel,
+                       "finalization must not touch the destination before promotion")
+        // The real stage-2 worker has already written the manifest and frame 0
+        // into this job's staged ZIP. Cancellation is therefore requested while
+        // a real partial archive is on disk, not before packaging starts.
+        let stagingNames = try FileManager.default.contentsOfDirectory(
+            atPath: fixture.directory.path)
+        let stagingName = try XCTUnwrap(
+            stagingNames.first {
+                $0.hasPrefix(".cancelled-finalizing-frames.zip.export-")
+            },
+            "the finalizer must stage beside the destination")
+        let stagedZIP = fixture.directory
+            .appendingPathComponent(stagingName)
+            .appendingPathComponent("frames.zip")
+        let stagedBytes = (try FileManager.default.attributesOfItem(
+            atPath: stagedZIP.path)[.size] as? NSNumber)?.int64Value ?? 0
+        XCTAssertGreaterThan(stagedBytes, 0,
+                             "the finalizer must be writing a real partial ZIP")
+
+        fixture.document.cancelAnimationExport(handle.id)
+        // Wait until the export task's cancellation handler has actually set
+        // the finalizer token. The worker is still held at the write
+        // checkpoint, so releasing it now must abort on the very next chunk
+        // check instead of racing the cancellation delivery.
+        let observedCancel = try await gate.waitFor(.cancelled, timeout: 15)
+        XCTAssertTrue(observedCancel,
+                      "the finalizer never observed the service cancellation")
+        gate.release()
+
+        let status = await fixture.document.waitForAnimationExport(handle.id)
+        XCTAssertTrue(status.isCancelled)
+        XCTAssertEqual(status.progress.phase, .cancelled)
+        XCTAssertNil(status.result)
+        let visitsAtStatus = gate.visits()
+        XCTAssertEqual(visitsAtStatus.last?.point, .exited,
+                       "the finalizer worker must have exited before the terminal status")
+        XCTAssertEqual(try Data(contentsOf: destination), sentinel,
+                       "cancellation during finalization must not replace an existing destination")
+        try assertNoStagingRemains(in: fixture.directory, status: status)
+
+        // A detached/orphan writer would keep reporting checkpoints after the
+        // status. Give it a bounded window in which it must stay silent.
+        try await Task.sleep(for: .milliseconds(300))
+        XCTAssertEqual(gate.visits().count, visitsAtStatus.count,
+                       "no orphan worker may keep writing after cancellation")
+    }
+
+    /// The same real finalizer must succeed completely off-main: every frame is
+    /// verified and written from the worker, and the bundle still reads back as
+    /// the ordered PNG manifest R1 established.
+    func testFrameSequenceFinalizationSucceedsOffMain() async throws {
+        let fixture = try await hostedFixture(clipDuration: 0.5)
+        let settings = Self.frameSequenceSettings()
+        let destination = fixture.directory
+            .appendingPathComponent("offmain-frames.zip")
+        let expectedFrames = fixture.clip.frameCount(at: settings.frameRate)
+        let gate = AnimationFinalizationGate(blockAt: nil, frameIndex: nil)
+        CADAnimationFrameFinalizationProbe.shared.setObserver { visit in
+            gate.record(visit)
+        }
+        defer { CADAnimationFrameFinalizationProbe.shared.setObserver(nil) }
+
+        let result = try await fixture.document.exportAnimation(
+            clipID: fixture.clip.id, to: destination, settings: settings)
+
+        XCTAssertEqual(result.frameCount, expectedFrames)
+        XCTAssertEqual(result.format, .pngSequence)
+        XCTAssertNotNil(result.manifestSHA256)
+        let visits = gate.visits()
+        XCTAssertFalse(visits.isEmpty)
+        XCTAssertFalse(visits.contains { $0.isMainThread },
+                       "frame finalization must run off the main actor")
+        XCTAssertEqual(visits.filter { $0.point == .verifyingFrame }.count,
+                       expectedFrames)
+        XCTAssertEqual(visits.filter { $0.point == .writingFrame }.count,
+                       expectedFrames)
+        XCTAssertEqual(visits.last?.point, .exited)
+        let entries = try ZipReader.entries(in: try Data(contentsOf: destination))
+        XCTAssertEqual(entries.count, expectedFrames + 1)
+        let manifest = try XCTUnwrap(entries["manifest.json"])
+        XCTAssertEqual(Self.sha256(manifest), try XCTUnwrap(result.manifestSHA256))
+        try assertNoStagingRemains(in: fixture.directory)
+    }
+#endif
+
+    func testFrameSequenceAbortsWithStaleWhenDocumentEditedDuringRender() async throws {
+        let fixture = try await hostedFixture(clipDuration: 2.0)
+        let settings = Self.frameSequenceSettings()
+        let destination = fixture.directory
+            .appendingPathComponent("edited-frames.zip")
+
+        let handle = try fixture.document.startAnimationExport(
+            clipID: fixture.clip.id, to: destination, settings: settings)
+        try await waitUntilExportRenders(fixture.document, handle: handle)
+
+        fixture.document.session.perform(
+            AddBodyCommand(body: Self.fixtureBox(), title: "Edit during frame export"))
+
+        let status = await fixture.document.waitForAnimationExport(handle.id)
+        XCTAssertEqual(status.progress.phase, .failed)
+        XCTAssertEqual(status.error,
+                       CADAnimationExportError.stale.localizedDescription)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: destination.path))
+        try assertNoStagingRemains(in: fixture.directory, status: status)
+    }
+
+    func testTransparentFrameRequestIsRefusedBeforeAnyOutput() async throws {
+        let fixture = try await hostedFixture(clipDuration: 0.5)
+        var settings = Self.frameSequenceSettings()
+        settings.alpha = .transparent
+        let destination = fixture.directory
+            .appendingPathComponent("transparent-frames.zip")
+
+        XCTAssertThrowsError(try fixture.document.startAnimationExport(
+            clipID: fixture.clip.id, to: destination, settings: settings)
+        ) { error in
+            guard let exportError = error as? CADAnimationExportError,
+                  case .invalidSettings(let message) = exportError else {
+                return XCTFail("expected a truthful invalidSettings refusal, got \(error)")
+            }
+            XCTAssertTrue(message.contains("Transparent"))
+        }
+        XCTAssertFalse(FileManager.default.fileExists(atPath: destination.path))
+        try assertNoStagingRemains(in: fixture.directory)
+        XCTAssertFalse(CADAnimationExportCenter.shared.hasActiveJob(
+            documentKey: fixture.document.url.standardizedFileURL.path),
+            "a refused transparent request must not leave an owned export job")
+    }
+
+    // MARK: X29 frame helpers / probes
+
+    private static func frameSequenceSettings(
+        width: Int = 720, height: Int = 1280, fps: Int = 24
+    ) -> CADAnimationExportSettings {
+        CADAnimationExportSettings(
+            width: width, height: height, frameRate: fps,
+            bitrate: nil, overwrite: false, posterEnabled: true,
+            format: .pngSequence, alpha: .opaque)
+    }
+
+    private static func sha256(_ data: Data) -> String {
+        SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+    }
+
+    private static func rgbaPixels(_ data: Data) throws
+    -> (rgba: [UInt8], width: Int, height: Int) {
+        let image = try XCTUnwrap(UIImage(data: data))
+        let cgImage = try XCTUnwrap(image.cgImage)
+        var rgba = [UInt8](repeating: 0,
+                           count: cgImage.width * cgImage.height * 4)
+        let context = try XCTUnwrap(CGContext(
+            data: &rgba, width: cgImage.width, height: cgImage.height,
+            bitsPerComponent: 8, bytesPerRow: cgImage.width * 4,
+            space: CGColorSpaceCreateDeviceRGB(),
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue))
+        context.draw(cgImage, in: CGRect(x: 0, y: 0,
+                                         width: cgImage.width,
+                                         height: cgImage.height))
+        return (rgba, cgImage.width, cgImage.height)
+    }
+
+    private static func minimumAlpha(_ rgba: [UInt8]) -> Int {
+        var minimum = 255
+        for offset in stride(from: 3, to: rgba.count, by: 4) {
+            minimum = min(minimum, Int(rgba[offset]))
+        }
+        return minimum
+    }
+
+    private struct FrameManifestProbe: Decodable {
+        var format: String
+        var schema: String
+        var version: Int
+        var clipID: String
+        var width: Int
+        var height: Int
+        var frameRate: Int
+        var frameCount: Int
+        var durationSeconds: Double
+        var alpha: String
+        var background: String
+        var timescale: Int
+        var frames: [FrameEntryProbe]
+    }
+
+    private struct FrameEntryProbe: Decodable {
+        var index: Int
+        var file: String
+        var timeSeconds: Double
+        var presentationValue: Int
+        var timescale: Int
+        var byteCount: Int
+        var sha256: String
+        var crc32: UInt32
+    }
+
     // MARK: Mid-render helpers
 
     /// Wait until the export job has rendered at least one frame — its
@@ -557,7 +1107,8 @@ final class CADAnimationExportReadbackTests: XCTestCase {
     ///   caller's export start (the run-11 precondition).
     private func hostedFixture(
         clipDuration: Double,
-        rescheduleAutosaveBeforeExport: Bool = false
+        rescheduleAutosaveBeforeExport: Bool = false,
+        animatedPart: Bool = false
     ) async throws -> HostedFixture {
         let scenes = UIApplication.shared.connectedScenes
             .compactMap { $0 as? UIWindowScene }
@@ -578,21 +1129,61 @@ final class CADAnimationExportReadbackTests: XCTestCase {
             at: directory.appendingPathComponent("export-\(UUID().uuidString).floecad"),
             name: "X28 export read-back")
         documents.append(document)
-        document.session.perform(AddBodyCommand(body: Self.fixtureBox(),
+        let body = Self.fixtureBox()
+        document.session.perform(AddBodyCommand(body: body,
                                                 title: "Add fixture box"))
 
         let clip = try document.createAnimationClip(name: "Orbit", duration: clipDuration)
-        let track = try document.addAnimationTrack(clipID: clip.id, target: .camera)
-        _ = try document.setAnimationKeyframe(
-            clipID: clip.id, trackID: track.id, time: 0,
-            camera: CADAnimationCameraValue(target: SIMD3(0, 0, 0), distance: 0.08,
-                                            azimuthRadians: 0, elevationRadians: 0.3,
-                                            fovYDegrees: 60))
-        _ = try document.setAnimationKeyframe(
-            clipID: clip.id, trackID: track.id, time: clipDuration,
-            camera: CADAnimationCameraValue(target: SIMD3(0, 0, 0), distance: 0.12,
-                                            azimuthRadians: 1.2, elevationRadians: 0.4,
-                                            fovYDegrees: 60))
+        var rescheduleCameraTrack: CADAnimationTrack?
+        if animatedPart {
+            // Real placed geometry: one assembly instance moves 80 mm while the
+            // source body stays put. This is the X29 part-motion witness, not a
+            // synthetic frame producer.
+            let instance = CADAssemblyInstance(
+                name: "Animated fixture",
+                bodyID: body.id.raw,
+                transform: CADTransform(position: SIMD3(60, 0, 0)))
+            let assembly = CADAssembly(instances: [instance])
+            document.session.perform(SetAssemblyDataCommand(
+                before: document.session.document.assemblyData,
+                after: try assembly.encoded()))
+            let track = try document.addAnimationTrack(
+                clipID: clip.id,
+                target: .instance(instance.id, sourceBodyID: body.id.raw))
+            _ = try document.setAnimationKeyframe(
+                clipID: clip.id, trackID: track.id, time: 0,
+                instance: CADAnimationInstanceValue(
+                    translationMM: SIMD3(60, 0, 0)))
+            _ = try document.setAnimationKeyframe(
+                clipID: clip.id, trackID: track.id, time: clipDuration,
+                instance: CADAnimationInstanceValue(
+                    translationMM: SIMD3(140, 0, 0)))
+            // A fixed wide camera keeps both the source body (0...25 mm) and
+            // the instance (60...165 mm) inside the exported frame.
+            let cameraTrack = try document.addAnimationTrack(
+                clipID: clip.id, target: .camera)
+            for time in [0.0, clipDuration] {
+                _ = try document.setAnimationKeyframe(
+                    clipID: clip.id, trackID: cameraTrack.id, time: time,
+                    camera: CADAnimationCameraValue(
+                        target: SIMD3(0.07, 0, 0), distance: 0.28,
+                        azimuthRadians: 0, elevationRadians: 0.3,
+                        fovYDegrees: 60))
+            }
+        } else {
+            let track = try document.addAnimationTrack(clipID: clip.id, target: .camera)
+            rescheduleCameraTrack = track
+            _ = try document.setAnimationKeyframe(
+                clipID: clip.id, trackID: track.id, time: 0,
+                camera: CADAnimationCameraValue(target: SIMD3(0, 0, 0), distance: 0.08,
+                                                azimuthRadians: 0, elevationRadians: 0.3,
+                                                fovYDegrees: 60))
+            _ = try document.setAnimationKeyframe(
+                clipID: clip.id, trackID: track.id, time: clipDuration,
+                camera: CADAnimationCameraValue(target: SIMD3(0, 0, 0), distance: 0.12,
+                                                azimuthRadians: 1.2, elevationRadians: 0.4,
+                                                fovYDegrees: 60))
+        }
 
         let store = CADPresentationSceneStore(document: document)
         let handle = CADPresentationHandle()
@@ -635,7 +1226,7 @@ final class CADAnimationExportReadbackTests: XCTestCase {
             throw NSError(domain: "X28", code: 1)
         }
         try await Task.sleep(for: .milliseconds(800))
-        if rescheduleAutosaveBeforeExport {
+        if rescheduleAutosaveBeforeExport, let track = rescheduleCameraTrack {
             // A trailing clip edit reschedules the 2s debounce without
             // awaiting it, so the caller starts the export while a real
             // autosave of the just-edited content is still pending.
@@ -1384,5 +1975,82 @@ private final class AnimationSaveGate {
         waiters.forEach { $0.resume() }
     }
 }
+
+#if DEBUG
+/// Deterministic, BOUNDED gate for the REAL off-main finalizer. The exporter
+/// calls the DEBUG probe from its worker; `record` can hold that worker at one
+/// exact checkpoint until the test cancels and releases. The wait has its own
+/// 120 s bound and `release()` is idempotent, so a failed test can never leave
+/// the worker or the export job suspended forever.
+private nonisolated final class AnimationFinalizationGate: @unchecked Sendable {
+    private let lock = NSLock()
+    private let semaphore = DispatchSemaphore(value: 0)
+    private let blockAt: CADAnimationFrameFinalizationPoint?
+    private let blockFrame: Int?
+    private var recorded: [CADAnimationFrameFinalizationProbe.Visit] = []
+    private var blocked = false
+    private var released = false
+
+    init(blockAt: CADAnimationFrameFinalizationPoint?, frameIndex: Int?) {
+        self.blockAt = blockAt
+        self.blockFrame = frameIndex
+    }
+
+    func record(_ visit: CADAnimationFrameFinalizationProbe.Visit) {
+        lock.lock()
+        recorded.append(visit)
+        let shouldBlock = !blocked && blockAt == visit.point
+            && (blockFrame == nil || blockFrame == visit.frameIndex)
+        if shouldBlock { blocked = true }
+        lock.unlock()
+        guard shouldBlock else { return }
+        _ = semaphore.wait(timeout: .now() + 120)
+    }
+
+    var isBlocked: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return blocked
+    }
+
+    func waitUntilBlocked(timeout: TimeInterval) async throws -> Bool {
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            if isBlocked { return true }
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        return isBlocked
+    }
+
+    func waitFor(
+        _ point: CADAnimationFrameFinalizationPoint,
+        timeout: TimeInterval
+    ) async throws -> Bool {
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            if visits().contains(where: { $0.point == point }) { return true }
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        return visits().contains(where: { $0.point == point })
+    }
+
+    func release() {
+        lock.lock()
+        guard !released else {
+            lock.unlock()
+            return
+        }
+        released = true
+        lock.unlock()
+        semaphore.signal()
+    }
+
+    func visits() -> [CADAnimationFrameFinalizationProbe.Visit] {
+        lock.lock()
+        defer { lock.unlock() }
+        return recorded
+    }
+}
+#endif
 
 #endif

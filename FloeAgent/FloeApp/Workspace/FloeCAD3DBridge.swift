@@ -1490,24 +1490,50 @@ final class FloeCAD3DBridge {
             renderer: capture.renderer, note: capture.note)
     }
 
-    /// Verified MP4 export. The service writes a staged file and promotes only
-    /// after verification; the host owns the workspace-guarded destination and
-    /// durable task record around this call.
+    /// Verified animation export. The service renders the real native frames,
+    /// writes a staged output and promotes only after read-back verification;
+    /// the host owns the workspace-guarded destination and durable task record
+    /// around this call.
     func exportAnimation(at url: URL, to output: URL,
                          options: CadAnimationExportOptions) async throws
     -> CADAnimationExportResult {
         let document = try await document(at: url)
-        guard let codec = CADAnimationVideoCodec(rawValue: options.codec.lowercased()) else {
+        guard let format = CADAnimationExportOutputFormat(
+                rawValue: options.format.lowercased()) else {
             throw CADDocumentError(
-                code: "bad_animation_codec",
-                message: "Video codec must be h264 or hevc.")
+                code: "bad_animation_format",
+                message: "Animation output format must be mp4 or png_zip.")
+        }
+        guard let alpha = CADAnimationExportAlpha(
+                rawValue: options.alpha.lowercased()) else {
+            throw CADDocumentError(
+                code: "bad_animation_alpha",
+                message: "Animation alpha must be opaque or transparent.")
+        }
+        let codec: CADAnimationVideoCodec
+        if format == .mp4 {
+            guard let parsed = CADAnimationVideoCodec(
+                    rawValue: options.codec.lowercased()) else {
+                throw CADDocumentError(
+                    code: "bad_animation_codec",
+                    message: "Video codec must be h264 or hevc.")
+            }
+            codec = parsed
+        } else {
+            guard options.codec.lowercased() == "png" else {
+                throw CADDocumentError(
+                    code: "bad_animation_codec",
+                    message: "PNG frame sequences use codec png.")
+            }
+            codec = .h264
         }
         let settings = CADAnimationExportSettings(
             width: options.width, height: options.height,
             frameRate: options.frameRate, codec: codec,
             bitrate: options.bitrate, overwrite: options.overwrite,
-            posterEnabled: options.posterEnabled)
-        return try await document.exportAnimationMP4(
+            posterEnabled: options.posterEnabled,
+            format: format, alpha: alpha)
+        return try await document.exportAnimation(
             to: output, settings: settings)
     }
 

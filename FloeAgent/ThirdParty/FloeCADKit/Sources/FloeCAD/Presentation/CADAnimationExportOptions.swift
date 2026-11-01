@@ -2,13 +2,16 @@
 //  CADAnimationExportOptions.swift
 //  FloeCADKit
 //
-//  User-facing export options for the Present MP4 export (original X28).
-//  The options sheet works in the units a person picks — orientation,
-//  resolution class, frame rate, codec and quality — and converts them
-//  EXACTLY once into the production `CADAnimationExportSettings` consumed by
-//  `FloeCADDocument.startAnimationExportMP4`. Nothing is silently reset to
-//  defaults: every selected value reaches the real exporter, and the media
-//  read-back path in the exporter verifies what was actually encoded.
+//  User-facing export options for the Present animation export (X28/X29).
+//  The options sheet works in the units a person picks — output kind,
+//  orientation, resolution class, frame rate, codec and quality — and
+//  converts them EXACTLY once into the production
+//  `CADAnimationExportSettings` consumed by `startAnimationExport`. The
+//  historical MP4 selection remains the default; PNG frame bundles hide
+//  video-only choices. Nothing is silently reset to defaults: every selected
+//  value reaches the real exporter, and the read-back path verifies what was
+//  actually written. Transparent output is not offered because the native
+//  renderer composes the scene's opaque background.
 //
 //  The default selection reproduces the historical export behavior
 //  (1920x1080 @ 30 fps, H.264, automatic bitrate) so existing flows are
@@ -64,17 +67,26 @@ public nonisolated struct CADAnimationExportOptions: Sendable, Equatable, Codabl
     public var frameRate: CADAnimationExportFrameRate
     public var codec: CADAnimationVideoCodec
     public var quality: CADAnimationExportQuality
+    /// Exact executable output kind. The historical default stays MP4.
+    public var format: CADAnimationExportOutputFormat
+    /// The UI only offers executable opaque output; the field is kept so a
+    /// recovery/direct value never silently changes an explicit request.
+    public var alpha: CADAnimationExportAlpha
 
     public init(orientation: CADAnimationExportOrientation = .landscape,
                 resolution: CADAnimationExportResolution = .p1080,
                 frameRate: CADAnimationExportFrameRate = .fps30,
                 codec: CADAnimationVideoCodec = .h264,
-                quality: CADAnimationExportQuality = .automatic) {
+                quality: CADAnimationExportQuality = .automatic,
+                format: CADAnimationExportOutputFormat = .mp4,
+                alpha: CADAnimationExportAlpha = .opaque) {
         self.orientation = orientation
         self.resolution = resolution
         self.frameRate = frameRate
         self.codec = codec
         self.quality = quality
+        self.format = format
+        self.alpha = alpha
     }
 
     /// The historical behavior, option for option.
@@ -100,6 +112,9 @@ public nonisolated struct CADAnimationExportOptions: Sendable, Equatable, Codabl
     }
 
     public var bitrate: Int? {
+        // A PNG frame bundle is lossless and has no video bitrate; never send
+        // a meaningless quality budget to that output.
+        guard format == .mp4 else { return nil }
         switch quality {
         case .automatic: return nil
         case .smaller: return max(250_000, automaticBitrate / 2)
@@ -117,7 +132,9 @@ public nonisolated struct CADAnimationExportOptions: Sendable, Equatable, Codabl
             codec: codec,
             bitrate: bitrate,
             overwrite: false,
-            posterEnabled: true)
+            posterEnabled: true,
+            format: format,
+            alpha: alpha)
     }
 
     // MARK: X30 durable recovery snapshot
@@ -138,7 +155,9 @@ public nonisolated struct CADAnimationExportOptions: Sendable, Equatable, Codabl
             height: settings.height,
             bitrate: settings.bitrate,
             overwrite: settings.overwrite,
-            posterEnabled: settings.posterEnabled)
+            posterEnabled: settings.posterEnabled,
+            format: settings.format.rawValue,
+            alpha: settings.alpha.rawValue)
     }
 
     /// Reconstruct the sheet selection only when every saved raw value is
@@ -152,10 +171,15 @@ public nonisolated struct CADAnimationExportOptions: Sendable, Equatable, Codabl
               let frameRate = CADAnimationExportFrameRate(
                 rawValue: recoveryOptions.frameRate),
               let codec = CADAnimationVideoCodec(rawValue: recoveryOptions.codec),
-              let quality = CADAnimationExportQuality(rawValue: recoveryOptions.quality)
+              let quality = CADAnimationExportQuality(rawValue: recoveryOptions.quality),
+              let format = CADAnimationExportOutputFormat(
+                rawValue: recoveryOptions.format),
+              let alpha = CADAnimationExportAlpha(rawValue: recoveryOptions.alpha),
+              alpha == .opaque
         else { return nil }
         self.init(orientation: orientation, resolution: resolution,
-                  frameRate: frameRate, codec: codec, quality: quality)
+                  frameRate: frameRate, codec: codec, quality: quality,
+                  format: format, alpha: alpha)
     }
 
     // MARK: Persistence (additive preference, no document schema change)
@@ -178,6 +202,7 @@ public nonisolated struct CADAnimationExportOptions: Sendable, Equatable, Codabl
     // falls back to its historical default instead of failing the load.
     private enum CodingKeys: String, CodingKey {
         case orientation, resolution, frameRate, codec, quality
+        case format, alpha
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -187,6 +212,8 @@ public nonisolated struct CADAnimationExportOptions: Sendable, Equatable, Codabl
         try container.encode(frameRate.rawValue, forKey: .frameRate)
         try container.encode(codec.rawValue, forKey: .codec)
         try container.encode(quality.rawValue, forKey: .quality)
+        try container.encode(format.rawValue, forKey: .format)
+        try container.encode(alpha.rawValue, forKey: .alpha)
     }
 
     public init(from decoder: Decoder) throws {
@@ -206,6 +233,13 @@ public nonisolated struct CADAnimationExportOptions: Sendable, Equatable, Codabl
         quality = CADAnimationExportQuality(
             rawValue: try container.decodeIfPresent(String.self, forKey: .quality) ?? "")
             ?? .automatic
+        // Old preferences have no output fields: historical MP4/opaque.
+        format = CADAnimationExportOutputFormat(
+            rawValue: try container.decodeIfPresent(String.self, forKey: .format) ?? "")
+            ?? .mp4
+        alpha = CADAnimationExportAlpha(
+            rawValue: try container.decodeIfPresent(String.self, forKey: .alpha) ?? "")
+            ?? .opaque
     }
 }
 
@@ -235,12 +269,31 @@ struct CADAnimationExportOptionsSheet: View {
     var body: some View {
         NavigationStack {
             Form {
-                Text(FloeCADStrings.text(
-                    "cad.animation.export.foregroundNotice",
-                    "Keep Floe open until the video is ready. If interrupted, start the export again."))
+                Text(draft.format == .mp4
+                    ? FloeCADStrings.text(
+                        "cad.animation.export.foregroundNotice",
+                        "Keep Floe open until the video is ready. If interrupted, start the export again.")
+                    : FloeCADStrings.text(
+                        "cad.animation.export.frames.foregroundNotice",
+                        "Keep Floe open until the frames are ready. If interrupted, start the export again."))
                     .font(.footnote)
                     .foregroundStyle(.secondary)
                     .accessibilityIdentifier("CADAnimationExportForegroundNotice")
+                Picker(FloeCADStrings.text("cad.animation.export.options.format",
+                                           "Output"),
+                       selection: $draft.format) {
+                    ForEach(CADAnimationExportOutputFormat.allCases, id: \.self) { value in
+                        Text(title(for: value)).tag(value)
+                    }
+                }
+                .pickerStyle(.menu)
+                .accessibilityIdentifier("CADAnimationExportFormat")
+                Text(FloeCADStrings.text(
+                    "cad.animation.export.options.alphaNote",
+                    "Exports keep the scene's opaque background."))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .accessibilityIdentifier("CADAnimationExportAlphaNote")
                 Picker(FloeCADStrings.text("cad.animation.export.options.orientation",
                                            "Orientation"),
                        selection: $draft.orientation) {
@@ -271,25 +324,27 @@ struct CADAnimationExportOptionsSheet: View {
                 .pickerStyle(.menu)
                 .accessibilityIdentifier("CADAnimationExportFrameRate")
 
-                Picker(FloeCADStrings.text("cad.animation.export.options.codec",
-                                           "Format"),
-                       selection: $draft.codec) {
-                    ForEach(CADAnimationVideoCodec.allCases, id: \.self) { value in
-                        Text(title(for: value)).tag(value)
+                if draft.format == .mp4 {
+                    Picker(FloeCADStrings.text("cad.animation.export.options.codec",
+                                               "Format"),
+                           selection: $draft.codec) {
+                        ForEach(CADAnimationVideoCodec.allCases, id: \.self) { value in
+                            Text(title(for: value)).tag(value)
+                        }
                     }
-                }
-                .pickerStyle(.menu)
-                .accessibilityIdentifier("CADAnimationExportCodec")
+                    .pickerStyle(.menu)
+                    .accessibilityIdentifier("CADAnimationExportCodec")
 
-                Picker(FloeCADStrings.text("cad.animation.export.options.quality",
-                                           "Quality"),
-                       selection: $draft.quality) {
-                    ForEach(CADAnimationExportQuality.allCases, id: \.self) { value in
-                        Text(title(for: value)).tag(value)
+                    Picker(FloeCADStrings.text("cad.animation.export.options.quality",
+                                               "Quality"),
+                           selection: $draft.quality) {
+                        ForEach(CADAnimationExportQuality.allCases, id: \.self) { value in
+                            Text(title(for: value)).tag(value)
+                        }
                     }
+                    .pickerStyle(.menu)
+                    .accessibilityIdentifier("CADAnimationExportQuality")
                 }
-                .pickerStyle(.menu)
-                .accessibilityIdentifier("CADAnimationExportQuality")
 
                 if clipDuration.isFinite, clipDuration > 0 {
                     let frames = max(1, Int((clipDuration * Double(draft.frameRate.rawValue))
@@ -301,8 +356,11 @@ struct CADAnimationExportOptionsSheet: View {
                         .accessibilityIdentifier("CADAnimationExportFrameEstimate")
                 }
             }
-            .navigationTitle(FloeCADStrings.text("cad.animation.export.options.title",
-                                                 "Video export"))
+            .navigationTitle(draft.format == .mp4
+                ? FloeCADStrings.text("cad.animation.export.options.title",
+                                      "Video export")
+                : FloeCADStrings.text("cad.animation.export.options.framesTitle",
+                                      "Frame export"))
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button(FloeCADStrings.text("cad.ui.common.cancel", "Cancel")) {
@@ -333,6 +391,17 @@ struct CADAnimationExportOptionsSheet: View {
         case .portrait:
             return FloeCADStrings.text("cad.animation.export.options.orientation.portrait",
                                        "Portrait")
+        }
+    }
+
+    private func title(for format: CADAnimationExportOutputFormat) -> String {
+        switch format {
+        case .mp4:
+            return FloeCADStrings.text("cad.animation.export.options.format.mp4",
+                                       "MP4 video")
+        case .pngSequence:
+            return FloeCADStrings.text("cad.animation.export.options.format.png",
+                                       "PNG frames (ZIP)")
         }
     }
 

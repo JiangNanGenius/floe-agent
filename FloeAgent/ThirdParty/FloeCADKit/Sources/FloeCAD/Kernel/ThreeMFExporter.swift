@@ -160,3 +160,246 @@ nonisolated struct MinimalZipWriter {
         return ~crc
     }
 }
+
+/// Streaming counterpart to `MinimalZipWriter` for a produced file that must
+/// not be accumulated in memory (a real PNG frame-sequence bundle). It emits
+/// the SAME STORED entries and central directory, reuses the canonical CRC-32,
+/// and keeps only one file's bytes resident at a time. The caller still owns
+/// the output byte bound and verification.
+nonisolated final class MinimalZipFileWriter {
+    private struct Entry {
+        let name: [UInt8]
+        let crc: UInt32
+        let size: UInt32
+        let offset: UInt32
+    }
+
+    private let handle: FileHandle
+    private var entries: [Entry] = []
+    private var offset: UInt64 = 0
+    private var isClosed = false
+
+    init(url: URL) throws {
+        guard FileManager.default.createFile(atPath: url.path, contents: nil) else {
+            throw CocoaError(.fileWriteUnknown)
+        }
+        handle = try FileHandle(forWritingTo: url)
+    }
+
+    deinit {
+        if !isClosed { try? handle.close() }
+    }
+
+    /// Add one STORED entry from bytes the caller already holds.
+    func addFile(path: String, data fileData: Data) throws {
+        guard entries.count < Int(UInt16.max) else {
+            throw CocoaError(.fileWriteUnknown)
+        }
+        guard offset <= UInt64(UInt32.max),
+              UInt64(fileData.count) <= UInt64(UInt32.max) else {
+            throw CocoaError(.fileWriteUnknown)
+        }
+        let name = Array(path.utf8)
+        guard name.count <= Int(UInt16.max) else {
+            throw CocoaError(.fileWriteUnknown)
+        }
+        let crc = MinimalZipWriter.crc32(fileData)
+        let size = UInt32(fileData.count)
+        let entry = Entry(name: name, crc: crc, size: size,
+                          offset: UInt32(offset))
+        var header = Data()
+        appendU32(0x0403_4B50, to: &header)  // local file header signature
+        appendU16(20, to: &header)           // version needed
+        appendU16(0, to: &header)            // flags
+        appendU16(0, to: &header)            // method: STORED
+        appendU16(0, to: &header)            // mod time
+        appendU16(0x21, to: &header)         // mod date (1980-01-01)
+        appendU32(crc, to: &header)
+        appendU32(size, to: &header)         // compressed size
+        appendU32(size, to: &header)         // uncompressed size
+        appendU16(UInt16(name.count), to: &header)
+        appendU16(0, to: &header)            // extra length
+        header.append(contentsOf: name)
+        try write(header)
+        try write(fileData)
+        entries.append(entry)
+    }
+
+    /// Add one entry directly from a staged file. Only this one file is read
+    /// into memory at a time.
+    func addFile(path: String, contentsOf url: URL) throws {
+        try addFile(path: path, data: try Data(contentsOf: url))
+    }
+
+    /// Add one entry directly from a staged file in BOUNDED chunks, verifying
+    /// the declared size/CRC against the exact bytes written. The caller's
+    /// `onChunk` runs before each write, which is where an off-main finalizer
+    /// checks cancellation and, when needed, re-computes the file digest. A
+    /// throw abandons the archive (the caller removes staging); this method is
+    /// never used to publish a partial entry.
+    func addFile(
+        path: String,
+        expectedSize: UInt32,
+        expectedCRC: UInt32,
+        contentsOf url: URL,
+        chunkSize: Int = 64 * 1024,
+        onChunk: (Data) throws -> Void = { _ in }
+    ) throws {
+        guard chunkSize > 0 else { throw CocoaError(.fileReadUnknown) }
+        guard entries.count < Int(UInt16.max) else {
+            throw CocoaError(.fileWriteUnknown)
+        }
+        let name = Array(path.utf8)
+        guard name.count <= Int(UInt16.max) else {
+            throw CocoaError(.fileWriteUnknown)
+        }
+        // The central directory stores 32-bit offsets: refuse to begin an entry
+        // that could overflow the format instead of trapping in finish().
+        guard offset <= UInt64(UInt32.max),
+              UInt64(expectedSize) <= UInt64(UInt32.max),
+              offset + UInt64(expectedSize) <= UInt64(UInt32.max) else {
+            throw CocoaError(.fileWriteUnknown)
+        }
+        let entry = Entry(name: name, crc: expectedCRC, size: expectedSize,
+                          offset: UInt32(offset))
+        var header = Data()
+        appendU32(0x0403_4B50, to: &header)  // local file header signature
+        appendU16(20, to: &header)           // version needed
+        appendU16(0, to: &header)            // flags
+        appendU16(0, to: &header)            // method: STORED
+        appendU16(0, to: &header)            // mod time
+        appendU16(0x21, to: &header)         // mod date (1980-01-01)
+        appendU32(expectedCRC, to: &header)
+        appendU32(expectedSize, to: &header) // compressed size
+        appendU32(expectedSize, to: &header) // uncompressed size
+        appendU16(UInt16(name.count), to: &header)
+        appendU16(0, to: &header)            // extra length
+        header.append(contentsOf: name)
+        try write(header)
+        let handle = try FileHandle(forReadingFrom: url)
+        defer { try? handle.close() }
+        var crc = MinimalZipCRC32()
+        var written: UInt64 = 0
+        while true {
+            let chunk = try handle.read(upToCount: chunkSize) ?? Data()
+            if chunk.isEmpty { break }
+            written += UInt64(chunk.count)
+            guard written <= UInt64(expectedSize) else {
+                throw CocoaError(.fileReadCorruptFile)
+            }
+            try onChunk(chunk)
+            crc.update(chunk)
+            try write(chunk)
+        }
+        guard written == UInt64(expectedSize),
+              crc.checksum == expectedCRC else {
+            throw CocoaError(.fileReadCorruptFile)
+        }
+        entries.append(entry)
+    }
+
+    /// Close the underlying file WITHOUT writing a directory. Used when an
+    /// off-main finalizer abandons a partially written bundle; the caller then
+    /// removes staging. Safe after `finish()` (idempotent).
+    func close() {
+        guard !isClosed else { return }
+        isClosed = true
+        try? handle.close()
+    }
+
+    /// Write the central directory + EOCD, close the file and return its exact
+    /// byte count. The archive is usable only after this returns.
+    @discardableResult
+    func finish() throws -> Int64 {
+        let centralOffset = UInt32(offset)
+        var central = Data()
+        for entry in entries {
+            appendU32(0x0201_4B50, to: &central) // central header signature
+            appendU16(20, to: &central)          // version made by
+            appendU16(20, to: &central)          // version needed
+            appendU16(0, to: &central)           // flags
+            appendU16(0, to: &central)           // method
+            appendU16(0, to: &central)           // mod time
+            appendU16(0x21, to: &central)        // mod date
+            appendU32(entry.crc, to: &central)
+            appendU32(entry.size, to: &central)
+            appendU32(entry.size, to: &central)
+            appendU16(UInt16(entry.name.count), to: &central)
+            appendU16(0, to: &central)           // extra length
+            appendU16(0, to: &central)           // comment length
+            appendU16(0, to: &central)           // disk number
+            appendU16(0, to: &central)           // internal attributes
+            appendU32(0, to: &central)           // external attributes
+            appendU32(entry.offset, to: &central)
+            central.append(contentsOf: entry.name)
+        }
+        let centralSize = UInt32(central.count)
+        try write(central)
+        var eocd = Data()
+        appendU32(0x0605_4B50, to: &eocd)       // end of central directory
+        appendU16(0, to: &eocd)                 // disk number
+        appendU16(0, to: &eocd)                 // central directory disk
+        appendU16(UInt16(entries.count), to: &eocd)
+        appendU16(UInt16(entries.count), to: &eocd)
+        appendU32(centralSize, to: &eocd)
+        appendU32(centralOffset, to: &eocd)
+        appendU16(0, to: &eocd)                 // comment length
+        try write(eocd)
+        try handle.close()
+        isClosed = true
+        return Int64(offset)
+    }
+
+    private func write(_ data: Data) throws {
+        try handle.write(contentsOf: data)
+        offset += UInt64(data.count)
+    }
+
+    private func appendU16(_ value: UInt16, to data: inout Data) {
+        withUnsafeBytes(of: value.littleEndian) { data.append(contentsOf: $0) }
+    }
+
+    private func appendU32(_ value: UInt32, to data: inout Data) {
+        withUnsafeBytes(of: value.littleEndian) { data.append(contentsOf: $0) }
+    }
+}
+
+/// Incremental CRC-32 for streamed ZIP entries. It uses the SAME reflected
+/// polynomial and final inversion as `MinimalZipWriter.crc32`, so a chunked
+/// entry and a buffered entry produce the identical directory value; the state
+/// starts at the canonical 0xFFFF_FFFF seed. The 256-entry table is just a
+/// faster form of the same bytewise recurrence (identical results), which
+/// matters because the frame bundle is CRC-checked again while it is written.
+nonisolated struct MinimalZipCRC32 {
+    private static let table: [UInt32] = {
+        var table = [UInt32](repeating: 0, count: 256)
+        for index in 0..<256 {
+            var crc = UInt32(index)
+            for _ in 0..<8 {
+                crc = (crc >> 1) ^ (0xEDB8_8320 & (0 &- (crc & 1)))
+            }
+            table[index] = crc
+        }
+        return table
+    }()
+
+    private var value: UInt32 = 0xFFFF_FFFF
+
+    mutating func update(_ data: Data) {
+        var crc = value
+        let table = Self.table
+        for byte in data {
+            crc = (crc >> 8) ^ table[Int((crc ^ UInt32(byte)) & 0xFF)]
+        }
+        value = crc
+    }
+
+    var checksum: UInt32 { ~value }
+
+    /// Canonical value for one buffer; equals `MinimalZipWriter.crc32(_:)`.
+    static func checksum(of data: Data) -> UInt32 {
+        var crc = MinimalZipCRC32()
+        crc.update(data)
+        return crc.checksum
+    }
+}

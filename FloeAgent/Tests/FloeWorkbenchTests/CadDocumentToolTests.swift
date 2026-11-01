@@ -2213,6 +2213,48 @@ struct CadNativeEditToolTests {
         #expect(requests[0].1.height == 360)
     }
 
+    @Test("legacy animation export records decode as the historical opaque MP4")
+    func legacyAnimationExportOptions() throws {
+        let legacy = Data("""
+            {"width":640,"height":360,"frameRate":30,"codec":"h264",
+             "bitrate":null,"overwrite":false,"posterEnabled":true}
+            """.utf8)
+        let options = try JSONDecoder().decode(
+            CadAnimationExportOptions.self, from: legacy)
+        #expect(options.width == 640)
+        #expect(options.format == "mp4")
+        #expect(options.alpha == "opaque")
+    }
+
+    @Test("animation png_zip export selects the frame bundle and refuses transparent alpha before the host")
+    func animationFrameExport() async throws {
+        let host = FakeCadHost()
+        let tool = CadDocumentTool(host: host)
+        let output = try await execute(
+            tool,
+            #"{"action":"animation","path":"part.floecad","output":"part.frames.zip","payload":"{\"action\":\"export\",\"format\":\"png_zip\",\"width\":640,\"height\":360,\"fps\":30}"}"#,
+            context: makeLegacyContext())
+        #expect(output.summary.contains("animation.export"))
+        let requests = await host.animationExportRequests
+        #expect(requests.count == 1)
+        #expect(requests[0].0 == "part.frames.zip")
+        #expect(requests[0].1.format == "png_zip")
+        #expect(requests[0].1.codec == "png")
+        #expect(requests[0].1.bitrate == nil)
+
+        let transparent = try decode(
+            #"{"action":"animation","path":"part.floecad","output":"part.frames.zip","payload":"{\"action\":\"export\",\"format\":\"png_zip\",\"alpha\":\"transparent\"}"}"#)
+        do {
+            try tool.validate(transparent)
+            Issue.record("transparent frame export must be refused before the host")
+        } catch {
+            // Expected: the user-facing refusal happens before any task/output.
+        }
+        let after = await host.animationExportRequests
+        #expect(after.count == 1,
+                "a refused transparent request must not reach the host")
+    }
+
     @Test("temporary chat refuses animation edits and export but allows a timeline read")
     func animationTemporaryPolicy() async throws {
         let host = FakeCadHost()
