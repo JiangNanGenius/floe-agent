@@ -715,7 +715,7 @@ private enum CADDatumFormUI {
     /// removes them anyway.
     static func cleanupFixtures() {
         let app = XCUIApplication()
-        app.launchArguments = base + ["--ui-test-cad-datum-cleanup"]
+        app.launchArguments = CADDatumFormLaunch.base + ["--ui-test-cad-datum-cleanup"]
         app.launch()
         _ = any(app, "CADDatumFixtureCleanup").waitForExistence(timeout: 20)
         app.terminate()
