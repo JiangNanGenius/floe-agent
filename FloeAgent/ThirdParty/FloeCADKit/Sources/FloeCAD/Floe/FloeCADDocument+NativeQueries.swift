@@ -840,7 +840,37 @@ public extension FloeCADDocument {
             guard let data = OBJExporter.obj(bodies: bodies).data(using: .utf8) else {
                 return failure("encode_failed", "The OBJ writer produced no bytes.")
             }
-            return .success((data, "Wavefront OBJ tessellation (mesh representation)"))
+            return .success((data, "Wavefront OBJ tessellation with UVs (mesh representation); "
+                + OBJExporter.materialLimitationNote))
+        case "obj_bundle":
+            // A true self-contained OBJ appearance: model.obj + model.mtl +
+            // relative texture resources in one ZIP. Face-material ranges use
+            // the live session's authoritative face tables/revisions exactly
+            // like GLB, so a stale table falls back and is reported instead of
+            // painting a guessed range. The host still owns atomic promotion.
+            let report = OBJBundleExporter.export(
+                bodies: bodies,
+                faceTables: session.lastFaceTables,
+                faceTableRevisions: session.lastNamingRevisions)
+            if let data = report.data, report.diagnostics.isEmpty {
+                return .success((data, report.receipt?.noteText
+                    ?? "OBJ bundle (ZIP) with materials and relative textures"))
+            }
+            guard let first = report.diagnostics.first else {
+                return failure("obj_bundle_export_failed",
+                               "The OBJ bundle writer produced no bytes; nothing was written.")
+            }
+            let details = report.diagnostics.prefix(4).map { diagnostic -> String in
+                var text = "\(diagnostic.code): \(diagnostic.message)"
+                if let bodyID = diagnostic.bodyID {
+                    text += " (body \(bodyID.uuidString))"
+                }
+                if let slot = diagnostic.textureSlot {
+                    text += " [texture \(slot.rawValue)]"
+                }
+                return text
+            }.joined(separator: "; ")
+            return failure(first.code, details)
         case "3mf":
             return .success((ThreeMFExporter.threeMF(bodies: bodies),
                              "3MF tessellation (mesh representation)"))
@@ -933,7 +963,8 @@ public extension FloeCADDocument {
             }
         default:
             return failure("unsupported_format",
-                           "Native export supports step, stl, obj, 3mf, glb, usdz and drawing pdf/svg/dxf/csv/png.")
+                           "Native export supports step, stl, obj, obj_bundle, 3mf, glb, usdz "
+                           + "and drawing pdf/svg/dxf/csv/png.")
         }
     }
 

@@ -678,9 +678,14 @@ final class FloeCAD3DBridge {
                 "scopes": ["part", "assembly"],
                 "coverage": true,
                 "dry_run": true,
+                "part_formats": ["step", "stl", "obj", "obj_bundle", "3mf",
+                                 "glb", "usdz", "pdf", "svg", "dxf", "csv"],
                 "assembly_formats": ["step", "glb", "usdz"],
+                "bundle_formats": ["obj_bundle"],
                 "selection": ["body_ids", "instance_ids"],
                 "partial": "requires accept_partial=true; the receipt is never reported complete",
+                "obj_bundle": "one .zip with model.obj + model.mtl + relative texture resources; "
+                    + "plain obj remains a single .obj with UVs and no materials",
             ],
             "viewport_capture": ["formats": ["png"], "min_size": 64, "max_size": 4096],
             "animation_actions": CadNativeEditActions.animation.sorted(),
@@ -1098,7 +1103,7 @@ final class FloeCAD3DBridge {
     func exportNativeData(at url: URL, format: String, pageID: UUID?) async throws -> NativeExportResult {
         let document = try await document(at: url)
         let normalized = format.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        let receiptFormats: Set<String> = ["step", "stl", "obj", "3mf", "glb", "usdz"]
+        let receiptFormats: Set<String> = ["step", "stl", "obj", "obj_bundle", "3mf", "glb", "usdz"]
         if receiptFormats.contains(normalized) {
             switch document.nativePartExport(format: normalized, pageID: pageID) {
             case let .success(data, note, coverage):

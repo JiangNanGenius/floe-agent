@@ -256,6 +256,12 @@ final class EditorViewModel {
     /// User-facing error surfaced as an alert.
     var errorMessage: String?
 
+    /// Exact OBJ bundle built by the export options sheet's preflight. The
+    /// confirm reuses this when the live change count is unchanged, so the
+    /// report the user reviewed and the bytes that are saved are one result.
+    /// Cleared after staging; a document edit invalidates it via changeCount.
+    private var objBundlePlanCache: (changeCount: Int, perBody: Bool, acceptPartial: Bool, plan: OBJBundlePlan)?
+
     /// Short, non-blocking explanation shown as a pill — e.g. why a tool is
     /// unavailable for the current selection. An alert would be too heavy for
     /// something the user can simply retry differently. Clears itself.
@@ -361,13 +367,155 @@ final class EditorViewModel {
         partMeshExport(format: "stl")
     }
 
-    /// OBJ of the whole document, or nil when empty.
+    /// OBJ of the whole document, or nil when empty. This is the TRUE
+    /// single-file OBJ: geometry and UVs, never MTL/materials/textures.
     func exportOBJ() -> Data? {
-        exportableBodies().map { Data(OBJExporter.obj(bodies: $0).utf8) }
+        partMeshExport(format: "obj")
     }
 
-    /// 3MF of the whole document, or nil when empty or when a selected body's
-    /// mesh cannot be written.
+    /// The complete OBJ-with-materials bundle plan (model.obj + model.mtl +
+    /// relative textures in one ZIP). `perBody` produces one self-contained
+    /// ZIP per body; nothing here mutates the document or material library.
+    ///
+    /// The exporter validates every image, digest, UV set and face range before
+    /// returning bytes. The options sheet uses this same plan for its preflight
+    /// report; the confirm reuses the cached plan when `changeCount` is
+    /// unchanged, so there is no second detached export.
+    func objBundlePlan(perBody: Bool, acceptPartial: Bool = false,
+                       expectedChangeCount: Int? = nil) -> OBJBundlePlan? {
+        guard let bodies = coveredMeshBodies(format: "obj_bundle",
+                                             acceptPartial: acceptPartial,
+                                             expectedChangeCount: expectedChangeCount) else { return nil }
+        if let cache = objBundlePlanCache,
+           cache.changeCount == session.changeCount,
+           cache.perBody == perBody,
+           cache.acceptPartial == acceptPartial {
+            return cache.plan
+        }
+        let tables = exportFaceTables(for: bodies)
+        let plan: OBJBundlePlan
+        if perBody {
+            // An empty body has no geometry to write. The single bundle
+            // reports it as skipped; per-body simply has no file to produce.
+            let drawable = bodies.filter {
+                !$0.render.positions.isEmpty && !$0.render.indices.isEmpty
+            }
+            let items = drawable.map { body -> OBJBundlePlanItem in
+                let bodyTables = tables.tables[body.id].map { [body.id: $0] } ?? [:]
+                let bodyRevisions = tables.revisions[body.id].map { [body.id: $0] } ?? [:]
+                return OBJBundlePlanItem(
+                    name: body.name,
+                    result: OBJBundleExporter.export(
+                        bodies: [body],
+                        faceTables: bodyTables,
+                        faceTableRevisions: bodyRevisions))
+            }
+            plan = OBJBundlePlan(perBody: true, single: nil, items: items)
+        } else {
+            plan = OBJBundlePlan(
+                perBody: false,
+                single: OBJBundleExporter.export(
+                    bodies: bodies,
+                    faceTables: tables.tables,
+                    faceTableRevisions: tables.revisions),
+                items: [])
+        }
+        objBundlePlanCache = (session.changeCount, perBody, acceptPartial, plan)
+        return plan
+    }
+
+    /// Release the potentially large preflight bytes after staging/dismissal.
+    func clearOBJBundlePlan() {
+        objBundlePlanCache = nil
+    }
+
+    /// User-facing, localized message for one bundle diagnostic. The detailed
+    /// English diagnostic stays available to logs/tests; ordinary screens show
+    /// a concise, actionable sentence.
+    func objBundleMessage(for diagnostic: OBJBundleDiagnostic) -> String {
+        switch diagnostic.code {
+        case "obj_bundle_missing_texture":
+            return FloeCADStrings.text(
+                "cad.error.objBundle.missingTexture",
+                "A material image is missing. Reapply it and try again.")
+        case "obj_bundle_texture_identity_mismatch":
+            return FloeCADStrings.text(
+                "cad.error.objBundle.identityMismatch",
+                "A material image no longer matches its saved version. Reapply it and try again.")
+        case "obj_bundle_invalid_texture", "obj_bundle_texture_encoding_failed":
+            return FloeCADStrings.text(
+                "cad.error.objBundle.invalidTexture",
+                "A material image can't be read. Replace it and try again.")
+        case "obj_bundle_texture_too_large":
+            return FloeCADStrings.text(
+                "cad.error.objBundle.tooLarge",
+                "A material image is too large. Reduce it and try again.")
+        case "obj_bundle_unsupported_image_orientation":
+            return FloeCADStrings.text(
+                "cad.error.objBundle.imageOrientation",
+                "A material image has camera rotation that OBJ can't preserve. Remove the rotation and try again.")
+        case "obj_bundle_unsupported_normal_color_space":
+            return FloeCADStrings.text(
+                "cad.error.objBundle.normalColorSpace",
+                "The normal map must use linear color values.")
+        case "obj_bundle_unsupported_emissive_strength":
+            return FloeCADStrings.text(
+                "cad.error.objBundle.emissionStrength",
+                "Emission strength above 1 can't be written to OBJ. Lower it to 1 or less, or export GLB.")
+        case "obj_bundle_unsupported_mesh_uv_transform":
+            return FloeCADStrings.text(
+                "cad.error.objBundle.meshUVTransform",
+                "A mesh UV transform can't be written to OBJ. Choose a planar or box projection and try again.")
+        case "obj_bundle_missing_uvs", "obj_bundle_invalid_uvs":
+            return FloeCADStrings.text(
+                "cad.error.objBundle.missingUVs",
+                "A textured material has no usable UV mapping. Choose a projection in Material and try again.")
+        case "obj_bundle_ambiguous_texture_metadata":
+            return FloeCADStrings.text(
+                "cad.error.objBundle.ambiguousMetadata",
+                "A material has conflicting image records. Reapply its images and try again.")
+        case "obj_bundle_invalid_material":
+            return FloeCADStrings.text(
+                "cad.error.objBundle.invalidMaterial",
+                "A material has settings outside the supported range. Check it and try again.")
+        case "obj_bundle_too_large", "obj_bundle_too_many_materials", "obj_bundle_too_many_bodies":
+            return FloeCADStrings.text(
+                "cad.error.objBundle.tooLargeBundle",
+                "The bundle is too large to export. Reduce the texture sizes or the number of bodies and try again.")
+        case "obj_bundle_invalid_mesh":
+            return FloeCADStrings.text(
+                "cad.error.objBundle.invalidMesh",
+                "A body couldn't be exported. Check it in Edit and try again.")
+        case "obj_bundle_empty_model":
+            return FloeCADStrings.text(
+                "cad.error.objBundle.empty",
+                "Nothing to export — the design has no solid bodies.")
+        case "obj_bundle_cancelled":
+            return FloeCADStrings.text(
+                "cad.error.objBundle.cancelled",
+                "Export cancelled.")
+        case "obj_bundle_unsafe_resource_name":
+            return FloeCADStrings.text(
+                "cad.error.objBundle.generic",
+                "Couldn't prepare the OBJ bundle. Try again.")
+        default:
+            return FloeCADStrings.text(
+                "cad.error.objBundle.generic",
+                "Couldn't export the OBJ bundle. Try again.")
+        }
+    }
+
+    /// The first refusal from a plan, localized for the options sheet.
+    func objBundleFailureMessage(_ plan: OBJBundlePlan) -> String {
+        guard let diagnostic = plan.firstDiagnostic else {
+            return FloeCADStrings.text(
+                "cad.error.objBundle.generic",
+                "Couldn't export the OBJ bundle. Try again.")
+        }
+        return objBundleMessage(for: diagnostic)
+    }
+
+    /// 3MF of the whole document, or nil when empty.
     func exportThreeMF() -> Data? {
         partMeshExport(format: "3mf")
     }
@@ -376,8 +524,12 @@ final class EditorViewModel {
     /// GLB options sheet reads it before Export, so the warning the user sees
     /// cannot disagree with the bytes that are actually written.
     func glbExportCoverage() -> CADExchangeCoverage? {
+        meshExportCoverage(format: "glb")
+    }
+
+    func meshExportCoverage(format: String) -> CADExchangeCoverage? {
         guard let exchangeCoverageHandler else { return nil }
-        switch exchangeCoverageHandler("glb", CADExchangeSelection(scope: .part)) {
+        switch exchangeCoverageHandler(format, CADExchangeSelection(scope: .part)) {
         case .success(let coverage):
             return coverage
         case .failure:
@@ -394,14 +546,16 @@ final class EditorViewModel {
     /// The exact bodies the shared part receipt allows for a GLB write. Nil
     /// means no bytes may be produced: either the plan failed, the receipt
     /// needs an explicit partial choice, or nothing is includable.
-    private func glbCoveredBodies(acceptPartial: Bool) -> [Body]? {
+    private func coveredMeshBodies(format: String, acceptPartial: Bool,
+                                    expectedChangeCount: Int? = nil) -> [Body]? {
         guard let bodies = exportableBodies() else { return nil }
         guard let exchangeCoverageHandler else {
             errorMessage = exportOwnerUnavailableMessage
             return nil
         }
         switch exchangeCoverageHandler(
-            "glb", CADExchangeSelection(scope: .part, acceptPartial: acceptPartial)) {
+            format, CADExchangeSelection(scope: .part, acceptPartial: acceptPartial,
+                                         expectedChangeCount: expectedChangeCount)) {
         case .failure(let error):
             errorMessage = error.message
             return nil
@@ -427,8 +581,9 @@ final class EditorViewModel {
     /// Bytes are produced only when that receipt is complete, or after the
     /// caller explicitly accepted the actual loss. A partial export is never
     /// inferred from a successful write.
-    func exportGLB(acceptPartial: Bool = false) -> Data? {
-        guard let bodies = glbCoveredBodies(acceptPartial: acceptPartial) else { return nil }
+    func exportGLB(acceptPartial: Bool = false, expectedChangeCount: Int? = nil) -> Data? {
+        guard let bodies = coveredMeshBodies(format: "glb", acceptPartial: acceptPartial,
+                                             expectedChangeCount: expectedChangeCount) else { return nil }
         let faceTables = exportFaceTables(for: bodies)
         return GLBExporter.glb(bodies: bodies,
                                faceTables: faceTables.tables,
@@ -475,10 +630,11 @@ final class EditorViewModel {
         }
     }
 
-    /// Per-body OBJ payloads for the "Separate File per Body" export option
-    /// (plan §B14); nil (with a user-facing error) when the design is empty.
+    /// Per-body OBJ payloads for "Separate File per Body" (plan §B14). These
+    /// single-file OBJs contain geometry and UVs only; `objBundlePlan(perBody:
+    /// true)` produces the complete per-body appearance bundles.
     func exportOBJPerBody() -> [(name: String, data: Data)]? {
-        exportableBodies().map { bodies in
+        coveredMeshBodies(format: "obj", acceptPartial: false).map { bodies in
             bodies.map { ($0.name, Data(OBJExporter.obj(bodies: [$0]).utf8)) }
         }
     }
@@ -491,8 +647,10 @@ final class EditorViewModel {
     /// mesh or a material-image loss refuses the whole split unless
     /// `acceptPartial` is explicit, and then only the included bodies produce
     /// files. Every file is still checked against its own body identity.
-    func exportGLBPerBody(acceptPartial: Bool = false) -> [(name: String, data: Data)]? {
-        guard let bodies = glbCoveredBodies(acceptPartial: acceptPartial) else { return nil }
+    func exportGLBPerBody(acceptPartial: Bool = false,
+                          expectedChangeCount: Int? = nil) -> [(name: String, data: Data)]? {
+        guard let bodies = coveredMeshBodies(format: "glb", acceptPartial: acceptPartial,
+                                             expectedChangeCount: expectedChangeCount) else { return nil }
         return bodies.map { body in
             let faceTables = exportFaceTables(for: [body])
             return (body.name, GLBExporter.glb(bodies: [body],

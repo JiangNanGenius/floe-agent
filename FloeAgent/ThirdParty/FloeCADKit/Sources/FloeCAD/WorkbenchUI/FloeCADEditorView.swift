@@ -37,6 +37,7 @@ struct ExportDocument: FileDocument {
     static let threeMFType = UTType("org.3mf.model")
         ?? UTType(filenameExtension: "3mf") ?? .data
     static let glbType = UTType(filenameExtension: "glb") ?? .data
+    static let zipType = UTType.zip
     static let dxfType = UTType(filenameExtension: "dxf") ?? .data
     /// STEP AP214. iOS declares no UTI for STEP, so this resolves to a
     /// DYNAMIC type (`dyn.…`) unless something on the device has declared
@@ -91,23 +92,37 @@ struct ExportFileItem: Transferable {
 }
 
 /// Export options for the mesh formats where a per-body split is supported
-/// (plan §B14): OBJ and GLB can emit one file per body.
-///
-/// GLB shows the SAME part receipt as `cad.document` and Export Model… before
-/// writing. An incomplete receipt ("Export Included") is the only way to
-/// accept excluded objects/material images; nothing is inferred from a
-/// successful write. OBJ keeps the plain geometry-only options.
+/// (plan §B14): OBJ and GLB can emit one file per body. OBJ also offers the
+/// complete materials/textures ZIP; the geometry-only choice stays a real
+/// single-file OBJ with UVs and an explicit "no materials" note.
 struct MeshExportOptionsSheet: View {
     /// User-facing format name ("OBJ" / "GLB") for the title.
     let formatName: String
-    /// GLB part receipt, nil for the geometry-only OBJ writer.
-    let coverage: CADExchangeCoverage?
-    /// Called with the per-body choice and whether the user explicitly accepted
-    /// an incomplete receipt ("Export Included").
-    let onExport: (_ perBody: Bool, _ acceptPartial: Bool) -> Void
+    /// OBJ exposes the materials choice; GLB keeps its existing single format.
+    let supportsMaterials: Bool
+    /// Exact bundle preflight for (perBody, includeMaterials). Nil when the
+    /// caller has nothing to validate (GLB / geometry-only OBJ / empty doc).
+    let preflight: (Bool, Bool, Int) -> OBJBundlePreflight?
+    let currentChangeCount: () -> Int
+    let coverageForFormat: (String) -> CADExchangeCoverage?
+    /// Localized refusal message for a preflight diagnostic.
+    let message: (OBJBundleDiagnostic) -> String
+    /// Called with the per-body and materials choices when Export is confirmed.
+    let onExport: (Bool, Bool, Bool, Int) -> Void
 
     @State private var perBodyFiles = false
+    @State private var includeMaterials = true
+    @State private var report: OBJBundlePreflight?
+    @State private var prepared = false
+    @State private var coverage: CADExchangeCoverage?
+    @State private var reviewedChangeCount: Int?
     @Environment(\.dismiss) private var dismiss
+
+    private var exportUnavailable: Bool {
+        guard reviewedChangeCount != nil,
+              let coverage, coverage.includedCount > 0 else { return true }
+        return supportsMaterials && includeMaterials && !(report?.isReady ?? false)
+    }
 
     private var requiresPartialChoice: Bool {
         coverage?.requiresConfirmation == true
@@ -121,18 +136,79 @@ struct MeshExportOptionsSheet: View {
     var body: some View {
         NavigationStack {
             Form {
-                Toggle(FloeCADStrings.label("cad.ui.export.separateFiles", "Separate File per Body"),
-                       isOn: $perBodyFiles)
-                    .accessibilityIdentifier("ExportPerBodyToggle")
-
+                if supportsMaterials {
+                    Section {
+                        Toggle(FloeCADStrings.label(
+                            "cad.ui.export.obj.materials", "Materials & Textures"),
+                               isOn: $includeMaterials)
+                            .accessibilityIdentifier("ExportIncludeMaterialsToggle")
+                    } footer: {
+                        Text(includeMaterials
+                            ? FloeCADStrings.text(
+                                "cad.ui.export.obj.materials.footer",
+                                "Creates a .zip with model.obj, model.mtl and the texture images.")
+                            : FloeCADStrings.text(
+                                "cad.ui.export.obj.geometryOnly.footer",
+                                "Writes one .obj with UVs. Materials and textures are not included."))
+                            .font(.footnote)
+                    }
+                }
+                Section {
+                    Toggle(FloeCADStrings.label("cad.ui.export.separateFiles",
+                                               "Separate File per Body"),
+                           isOn: $perBodyFiles)
+                        .accessibilityIdentifier("ExportPerBodyToggle")
+                }
                 if let coverage, !coverage.complete {
                     CADExportCoverageSummary(coverage: coverage)
+                }
+                if supportsMaterials, includeMaterials, prepared, report == nil {
                     Section {
                         Text(FloeCADStrings.text(
-                            "cad.ui.export.coverage.incompleteDetail",
-                            "Some objects or material images cannot be kept in this export. Review the list before exporting."))
+                            "cad.error.exportNoBodies",
+                            "Nothing to export — the design has no solid bodies."))
                             .font(.footnote)
                             .foregroundStyle(.secondary)
+                            .accessibilityIdentifier("ExportBundleEmpty")
+                    }
+                }
+                if supportsMaterials, includeMaterials, let report {
+                    Section {
+                        if let refusal = report.refusal {
+                            Text(message(refusal))
+                                .font(.footnote)
+                                .foregroundStyle(.red)
+                                .accessibilityIdentifier("ExportBundleRefusal")
+                        } else if report.isEmpty {
+                            Text(FloeCADStrings.text(
+                                "cad.error.exportNoBodies",
+                                "Nothing to export — the design has no solid bodies."))
+                                .font(.footnote)
+                                .foregroundStyle(.secondary)
+                                .accessibilityIdentifier("ExportBundleEmpty")
+                        } else if report.isReady {
+                            Text(summary(report))
+                                .accessibilityIdentifier("ExportBundleSummary")
+                            let warnings = report.warnings.compactMap(warningText)
+                            if !warnings.isEmpty {
+                                ForEach(Array(warnings.prefix(4).enumerated()),
+                                        id: \.offset) { _, warning in
+                                    Text(warning)
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                }
+                            }
+                        }
+                    } header: {
+                        Text(FloeCADStrings.text("cad.ui.export.obj.preflight",
+                                                 "Export Contents"))
+                    } footer: {
+                        if report.refusal == nil, report.isReady {
+                            Text(FloeCADStrings.text(
+                                "cad.ui.export.obj.preflight.mtl",
+                                "Some viewers show only base color and opacity; metallic, roughness, normal and emissive maps use the extended MTL format."))
+                                .font(.footnote)
+                        }
                     }
                 }
             }
@@ -140,6 +216,9 @@ struct MeshExportOptionsSheet: View {
                 format: FloeCADStrings.text("cad.ui.export.meshTitle", "%@ Export"),
                 formatName
             ))
+            .onAppear { refresh() }
+            .onChange(of: perBodyFiles) { _, _ in refresh() }
+            .onChange(of: includeMaterials) { _, _ in refresh() }
             .onDisappear { MacWindowTitle.restore() }
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -148,26 +227,89 @@ struct MeshExportOptionsSheet: View {
                         .accessibilityIdentifier("MeshExportCancel")
                 }
                 ToolbarItem(placement: .confirmationAction) {
-                    if requiresPartialChoice {
-                        Button(FloeCADStrings.label("cad.ui.export.coverage.confirmPartial",
-                                                    "Export Included")) {
-                            onExport(perBodyFiles, true)
-                            dismiss()
+                    Button {
+                        guard let reviewedChangeCount else { return }
+                        onExport(perBodyFiles, supportsMaterials && includeMaterials,
+                                 coverage?.requiresConfirmation == true, reviewedChangeCount)
+                        dismiss()
+                    } label: {
+                        if coverage?.requiresConfirmation == true {
+                            FloeCADStrings.label("cad.ui.export.coverage.confirmPartial", "Export Included")
+                        } else {
+                            FloeCADStrings.label("cad.ui.common.export", "Export")
                         }
-                        .disabled(exportUnavailable)
-                        .accessibilityIdentifier("MeshExportConfirm")
-                    } else {
-                        Button(FloeCADStrings.label("cad.ui.common.export", "Export")) {
-                            onExport(perBodyFiles, false)
-                            dismiss()
-                        }
-                        .disabled(exportUnavailable)
-                        .accessibilityIdentifier("MeshExportConfirm")
                     }
+                    .disabled(exportUnavailable)
+                    .accessibilityIdentifier("MeshExportConfirm")
                 }
             }
         }
-        .presentationDetents([.medium])
+        .presentationDetents([.medium, .large])
+    }
+
+    private func refresh() {
+        let count = currentChangeCount()
+        let format = supportsMaterials && includeMaterials ? "obj_bundle" : formatName.lowercased()
+        coverage = coverageForFormat(format)
+        reviewedChangeCount = count
+        guard supportsMaterials, includeMaterials else {
+            report = nil
+            prepared = false
+            return
+        }
+        report = preflight(perBodyFiles, includeMaterials, count)
+        prepared = true
+    }
+
+    private func summary(_ report: OBJBundlePreflight) -> String {
+        let files = FloeCADStrings.format(
+            "cad.ui.export.obj.preflight.summary",
+            "%d materials · %d textures · %d files",
+            report.materialCount, report.textureCount, report.fileCount)
+        let bytes = String(format: "%.1f", Double(report.byteCount) / 1_048_576)
+        let size = FloeCADStrings.format(
+            "cad.ui.export.obj.preflight.bytes", "%@ MB", bytes)
+        return "\(files) · \(size)"
+    }
+
+    /// Internal warning codes stay in the receipt/tests; ordinary screens show
+    /// concise, actionable sentences and hide informational notices already
+    /// covered by the footer.
+    private func warningText(_ code: String) -> String? {
+        switch code {
+        case "face_material_fallback":
+            return FloeCADStrings.text(
+                "cad.ui.export.obj.warning.faceFallback",
+                "Some face materials couldn't be resolved and use the body material instead.")
+        case "texture_uv_generated":
+            return FloeCADStrings.text(
+                "cad.ui.export.obj.warning.uvGenerated",
+                "Some textures use an automatic projection because the body has no UVs.")
+        case "base_alpha_baked_to_map_d":
+            return FloeCADStrings.text(
+                "cad.ui.export.obj.warning.alphaBaked",
+                "Base transparency is stored in the opacity map so MTL viewers apply it once.")
+        case "scalar_map_normalized", "texture_rows_or_color_normalized":
+            return FloeCADStrings.text(
+                "cad.ui.export.obj.warning.normalized",
+                "Some images were normalized to match OBJ color and row conventions.")
+        case "opacity_map_semantics":
+            return FloeCADStrings.text(
+                "cad.ui.export.obj.warning.opacitySemantics",
+                "Viewers differ on whether the opacity map uses luminance or alpha; this bundle writes grayscale luminance.")
+        case "emissive_map_unused_zero_factor":
+            return FloeCADStrings.text(
+                "cad.ui.export.obj.warning.emissiveUnused",
+                "An emissive image is ignored because the material has no emission.")
+        case "empty_body_skipped":
+            return FloeCADStrings.text(
+                "cad.ui.export.obj.warning.emptyBody",
+                "Empty bodies are skipped.")
+        case "mtl_pbr_extension", "obj_uv_bottom_left":
+            return nil
+        default:
+            return nil
+        }
     }
 }
 
@@ -911,36 +1053,78 @@ struct FloeCADEditorView: View {
         }
     }
 
-    /// Mesh options sheet confirm (plan §B14): stages the chosen OBJ/GLB
-    /// payload for the exporter that presents once the sheet dismisses. The
-    /// GLB calls carry the explicit partial choice made in that sheet; the
-    /// receipt gate is re-checked against the live document before bytes exist.
+    /// Mesh options sheet confirm (plan §B14). OBJ with materials stages the
+    /// exact ZIP preflight the sheet showed; geometry-only OBJ remains a true
+    /// .obj with UVs and no MTL. GLB keeps its existing single format.
     private func stageMeshExport(
-        _ format: MeshExportFormat, perBody: Bool, acceptPartial: Bool,
+        _ format: MeshExportFormat, perBody: Bool, includeMaterials: Bool,
+        acceptPartial: Bool, reviewedChangeCount: Int,
         viewModel: EditorViewModel
     ) {
-        switch (format, perBody) {
-        case (.obj, false):
-            if let data = viewModel.exportOBJ() {
+        guard reviewedChangeCount == viewModel.session.changeCount else {
+            viewModel.errorMessage = FloeCADStrings.text(
+                "cad.error.exportChanged", "The document changed. Review the export again.")
+            viewModel.clearOBJBundlePlan()
+            return
+        }
+        switch format {
+        case .obj where includeMaterials:
+            guard let plan = viewModel.objBundlePlan(
+                perBody: perBody, acceptPartial: acceptPartial,
+                expectedChangeCount: reviewedChangeCount) else { return }
+            guard !plan.hasRefusal else {
+                viewModel.errorMessage = viewModel.objBundleFailureMessage(plan)
+                viewModel.clearOBJBundlePlan()
+                return
+            }
+            if perBody {
+                guard !plan.items.isEmpty else {
+                    viewModel.errorMessage = viewModel.objBundleFailureMessage(plan)
+                    viewModel.clearOBJBundlePlan()
+                    return
+                }
+                let payloads = plan.items.compactMap { item -> (name: String, data: Data)? in
+                    guard let data = item.result.data else { return nil }
+                    return (item.name, data)
+                }
+                guard payloads.count == plan.items.count else {
+                    viewModel.errorMessage = viewModel.objBundleFailureMessage(plan)
+                    viewModel.clearOBJBundlePlan()
+                    return
+                }
+                pendingExportItems = perBodyExportItems(
+                    payloads, fileExtension: "zip", viewModel: viewModel
+                )
+            } else if let data = plan.single?.data {
+                pendingExport = ExportDocument(
+                    data: data, contentType: ExportDocument.zipType, fileExtension: "zip"
+                )
+            }
+            viewModel.clearOBJBundlePlan()
+        case .obj:
+            viewModel.clearOBJBundlePlan()
+            if perBody {
+                pendingExportItems = perBodyExportItems(
+                    viewModel.exportOBJPerBody(), fileExtension: "obj", viewModel: viewModel
+                )
+            } else if let data = viewModel.exportOBJ() {
                 pendingExport = ExportDocument(
                     data: data, contentType: ExportDocument.objType, fileExtension: "obj"
                 )
             }
-        case (.obj, true):
-            pendingExportItems = perBodyExportItems(
-                viewModel.exportOBJPerBody(), fileExtension: "obj", viewModel: viewModel
-            )
-        case (.glb, false):
-            if let data = viewModel.exportGLB(acceptPartial: acceptPartial) {
+        case .glb:
+            if perBody {
+                pendingExportItems = perBodyExportItems(
+                    viewModel.exportGLBPerBody(acceptPartial: acceptPartial,
+                                               expectedChangeCount: reviewedChangeCount),
+                    fileExtension: "glb", viewModel: viewModel
+                )
+            } else if let data = viewModel.exportGLB(acceptPartial: acceptPartial,
+                                                    expectedChangeCount: reviewedChangeCount) {
                 pendingExport = ExportDocument(
                     data: data, contentType: ExportDocument.glbType, fileExtension: "glb"
                 )
             }
-        case (.glb, true):
-            pendingExportItems = perBodyExportItems(
-                viewModel.exportGLBPerBody(acceptPartial: acceptPartial),
-                fileExtension: "glb", viewModel: viewModel
-            )
         }
     }
 
@@ -2238,6 +2422,7 @@ struct FloeCADEditorView: View {
             .sheet(
                 item: $meshExportFormat,
                 onDismiss: {
+                    viewModel.clearOBJBundlePlan()
                     // Promote whichever payload the sheet staged; the
                     // exporter can only present after the sheet is gone.
                     if let staged = pendingExport {
@@ -2251,11 +2436,25 @@ struct FloeCADEditorView: View {
             ) { format in
                 MeshExportOptionsSheet(
                     formatName: format.rawValue,
-                    coverage: format == .glb ? viewModel.glbExportCoverage() : nil
-                ) { perBody, acceptPartial in
-                    stageMeshExport(format, perBody: perBody,
-                                    acceptPartial: acceptPartial, viewModel: viewModel)
-                }
+                    supportsMaterials: format == .obj,
+                    preflight: { perBody, includeMaterials, count in
+                        guard includeMaterials else { return nil }
+                        return viewModel.objBundlePlan(
+                            perBody: perBody, acceptPartial: true,
+                            expectedChangeCount: count)?.preflight
+                    },
+                    currentChangeCount: { viewModel.session.changeCount },
+                    coverageForFormat: { viewModel.meshExportCoverage(format: $0) },
+                    message: { diagnostic in
+                        viewModel.objBundleMessage(for: diagnostic)
+                    },
+                    onExport: { perBody, includeMaterials, acceptPartial, count in
+                        stageMeshExport(format, perBody: perBody,
+                                        includeMaterials: includeMaterials,
+                                        acceptPartial: acceptPartial,
+                                        reviewedChangeCount: count,
+                                        viewModel: viewModel)
+                    })
             }
             .fileExporter(
                 isPresented: Binding(

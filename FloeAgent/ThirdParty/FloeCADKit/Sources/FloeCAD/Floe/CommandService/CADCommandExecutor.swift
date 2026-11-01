@@ -765,6 +765,11 @@ final class CADCommandExecutor {
     /// included, as in the menu). `zUp` turns the app's Y-up world a quarter
     /// turn about X, (x, y, z) → (x, −z, y), so a part modelled standing on
     /// the ground plane also stands on a slicer's bed.
+    ///
+    /// `format=obj` here is the legacy TRUE single-file OBJ: geometry and UVs,
+    /// never MTL/materials/textures (the response says so). The complete
+    /// appearance is the native `obj_bundle` export, not a ZIP disguised as
+    /// this response's OBJ body.
     private func export(_ format: AgentExportFormat, bodyIDs: [String], zUp: Bool,
                         from viewModel: EditorViewModel) -> AgentResponse {
         var bodies = viewModel.session.document.bodies
@@ -822,6 +827,13 @@ final class CADCommandExecutor {
             response.info["Size-MM"] = [size.x, size.y, size.z].map { String(format: "%.2f", $0) }.joined(separator: " x ")
         }
         response.info["Bodies"] = String(bodies.count)
+        if format == .obj {
+            // The legacy single-file OBJ deliberately carries geometry + UVs
+            // only. Say so instead of implying the applied appearance is there;
+            // the native obj_bundle export is the complete MTL/texture path.
+            response.info["Materials"] = "not included (single-file OBJ: geometry and UVs only)"
+            response.info["MaterialBundle"] = "use the native obj_bundle export for model.mtl and textures"
+        }
         return response
     }
 

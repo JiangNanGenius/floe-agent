@@ -204,4 +204,23 @@ struct WorkspacePathGuardTests {
         #expect(summary.contains(#""expected":"a""#))
         #expect(WorkspaceToolError.tooLarge(limit: 42).structuredSummary.contains(#""limit":"42""#))
     }
+
+    @Test("An export write budget retains mounts and all path exclusions")
+    func exportWriteBudgetKeepsContainment() throws {
+        let (root, _) = try makeFixture()
+        defer { cleanup(root) }
+        let mounted = root.appendingPathComponent("chosen-folder", isDirectory: true)
+        try FileManager.default.createDirectory(at: mounted, withIntermediateDirectories: true)
+        let original = WorkspacePathGuard(rootURL: root, maxReadBytes: 16,
+                                          maxWriteBytes: 8, mounts: ["chosen": mounted])
+        let export = original.withWriteLimit(32)
+        #expect(export.maxReadBytes == 16)
+        #expect(original.maxWriteBytes == 8)
+        try export.assertWritableSize(bytes: 32)
+        #expect(throws: WorkspaceToolError.self) { try export.assertWritableSize(bytes: 33) }
+        #expect(throws: WorkspaceToolError.self) { try original.assertWritableSize(bytes: 9) }
+        #expect(try export.resolve("Mounts/chosen/model.zip") == original.resolve("Mounts/chosen/model.zip"))
+        #expect(throws: WorkspaceToolError.self) { try export.resolve("../outside.zip") }
+        #expect(throws: WorkspaceToolError.self) { try export.resolve(".env") }
+    }
 }

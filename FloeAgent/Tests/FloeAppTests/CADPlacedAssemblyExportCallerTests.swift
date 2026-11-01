@@ -637,6 +637,53 @@ final class CADPlacedAssemblyExportCallerTests: XCTestCase {
         XCTAssertNil(model.exportGLBPerBody())
         XCTAssertNil(model.exportSTL())
         XCTAssertNil(model.exportThreeMF())
+        XCTAssertNil(model.exportOBJ())
+        XCTAssertNil(model.exportOBJPerBody())
+        XCTAssertNil(model.objBundlePlan(perBody: false))
+    }
+
+    func testReviewedExportCannotAuthorizeAChangedDocument() async throws {
+        let url = workspace.appendingPathComponent("ReviewedExport.floecad")
+        let document = try await FloeCADDocument.create(at: url, name: "Reviewed Export")
+        defer { document.close() }
+        _ = addMeshBody(document, name: "First")
+        let model = document.viewModel()
+        let review = try XCTUnwrap(model.glbExportCoverage())
+        let bundle = try XCTUnwrap(model.objBundlePlan(
+            perBody: false, expectedChangeCount: review.changeCount))
+        XCTAssertNotNil(bundle.single?.data)
+        _ = addMeshBody(document, name: "Added after review")
+        XCTAssertNotEqual(document.exchangeChangeCount, review.changeCount)
+        XCTAssertNil(model.exportGLB(acceptPartial: true,
+                                     expectedChangeCount: review.changeCount))
+        XCTAssertNil(model.exportGLBPerBody(acceptPartial: true,
+                                            expectedChangeCount: review.changeCount))
+        XCTAssertNil(model.objBundlePlan(perBody: false, acceptPartial: true,
+                                         expectedChangeCount: review.changeCount))
+        let refreshed = try XCTUnwrap(model.glbExportCoverage())
+        XCTAssertEqual(refreshed.includedCount, 2)
+        XCTAssertNotNil(model.exportGLB(expectedChangeCount: refreshed.changeCount))
+    }
+
+    func testOBJBundleAndPlainOBJUseTheSameBodyCompletenessGate() async throws {
+        let url = workspace.appendingPathComponent("OBJCompleteness.floecad")
+        let document = try await FloeCADDocument.create(at: url, name: "OBJ Completeness")
+        defer { document.close() }
+        _ = addMeshBody(document, name: "Valid")
+        _ = addEmptyMeshBody(document, name: "Excluded empty mesh")
+        let model = document.viewModel()
+        XCTAssertNil(model.exportOBJ())
+        XCTAssertNil(model.exportOBJPerBody())
+        XCTAssertNil(model.objBundlePlan(perBody: false))
+        guard case let .coverageRequired(coverage) = document.nativePartExport(
+            format: "obj_bundle", pageID: nil) else {
+            return XCTFail("legacy material bundles must return a truthful incomplete receipt")
+        }
+        XCTAssertFalse(coverage.complete)
+        XCTAssertEqual(coverage.includedCount, 1)
+        XCTAssertEqual(coverage.excludedCount, 1)
+        XCTAssertNotNil(model.objBundlePlan(perBody: false, acceptPartial: true,
+                                            expectedChangeCount: coverage.changeCount)?.single?.data)
     }
 
     /// The GLB options sheet must show the shared receipt and the explicit
@@ -649,12 +696,12 @@ final class CADPlacedAssemblyExportCallerTests: XCTestCase {
                       "the GLB options sheet must render the shared receipt")
         XCTAssertTrue(editor.contains("cad.ui.export.coverage.confirmPartial"),
                       "an incomplete receipt must offer the explicit partial action")
-        XCTAssertTrue(editor.contains("onExport(perBodyFiles, true)"),
+        XCTAssertTrue(editor.contains("coverage?.requiresConfirmation == true, reviewedChangeCount"),
                       "the partial choice must reach the caller explicitly")
-        XCTAssertTrue(editor.contains("glbExportCoverage()"),
+        XCTAssertTrue(editor.contains("viewModel.meshExportCoverage(format: $0)"),
                       "the sheet must read the same plan as cad.document")
-        XCTAssertTrue(editor.contains("exportGLB(acceptPartial: acceptPartial)"))
-        XCTAssertTrue(editor.contains("exportGLBPerBody(acceptPartial: acceptPartial)"))
+        XCTAssertTrue(editor.contains("exportGLB(acceptPartial: acceptPartial,"))
+        XCTAssertTrue(editor.contains("exportGLBPerBody(acceptPartial: acceptPartial,"))
         XCTAssertTrue(editor.contains("exportSTL()"),
                       "STL must stay on the gated view-model entry point")
         XCTAssertTrue(editor.contains("exportThreeMF()"),

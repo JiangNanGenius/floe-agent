@@ -458,8 +458,11 @@ public enum NativeCADPolicy: Sendable {
     /// output extension; IGES export is not available in this build). PDF,
     /// SVG, DXF and the complete BOM CSV are page-scoped drawing exports and
     /// need `page_id`; CSV is a table, not a body-geometry exchange.
+    /// `obj_bundle` is the single-file ZIP container (output extension .zip);
+    /// plain `obj` remains a real OBJ with UVs and no materials.
     public static let exportExtensions: Set<String> =
-        ["step", "stp", "stl", "obj", "3mf", "glb", "usdz", "pdf", "svg", "dxf", "csv"]
+        ["step", "stp", "stl", "obj", "obj_bundle", "3mf", "glb", "usdz",
+         "pdf", "svg", "dxf", "csv"]
 }
 
 /// Per-format capability matrix advertised by the native `.floecad` surface.
@@ -499,33 +502,37 @@ public enum NativeCADCapabilityMatrix: Sendable {
     public static let rows: [FormatRow] = [
         FormatRow(format: "floecad", aliases: [], geometryClass: "native",
                   create: true, import: false, view: true, edit: true,
-                  export: ["step", "stl", "obj", "3mf", "glb", "usdz", "pdf", "svg", "dxf"],
+                  export: ["step", "stl", "obj", "obj_bundle", "3mf", "glb",
+                           "usdz", "pdf", "svg", "dxf"],
                   note: "Native parametric package created with the create action; "
-                    + "never build the package by hand."),
+                    + "never build the package by hand. obj_bundle writes one .zip "
+                    + "containing model.obj, model.mtl and relative textures; plain obj "
+                    + "remains a single .obj with UVs and no materials."),
         FormatRow(format: "step", aliases: ["stp"], geometryClass: "brep",
                   create: false, import: true, view: true, edit: true,
-                  export: ["step", "stl", "obj", "3mf", "glb", "usdz"],
+                  export: ["step", "stl", "obj", "obj_bundle", "3mf", "glb", "usdz"],
                   note: "Exact OCCT B-rep solids (AP214). Imported solids are editable; "
                     + "no parametric feature history is synthesized."),
         FormatRow(format: "iges", aliases: ["igs"], geometryClass: "brep",
                   create: false, import: true, view: true, edit: true,
-                  export: ["step", "stl", "obj", "3mf", "glb", "usdz"],
+                  export: ["step", "stl", "obj", "obj_bundle", "3mf", "glb", "usdz"],
                   note: "Surface exchange: closed solids import as exact B-rep bodies; "
                     + "shells/faces import as render-only bodies that cannot take boolean/fillet/shell. "
                     + "IGES export is not available in this build."),
         FormatRow(format: "stl", aliases: [], geometryClass: "mesh",
                   create: false, import: true, view: true, edit: false,
-                  export: ["stl", "obj", "3mf", "glb", "usdz"],
+                  export: ["stl", "obj", "obj_bundle", "3mf", "glb", "usdz"],
                   note: "Triangle mesh imported as a render body; no parametric history "
                     + "and no boolean/fillet/shell on the imported body."),
         FormatRow(format: "obj", aliases: [], geometryClass: "mesh",
                   create: false, import: true, view: true, edit: false,
-                  export: ["stl", "obj", "3mf", "glb", "usdz"],
+                  export: ["stl", "obj", "obj_bundle", "3mf", "glb", "usdz"],
                   note: "Wavefront mesh imported as render body(ies); loose .obj keeps "
-                    + "its .mtl/texture siblings. No parametric history."),
+                    + "its .mtl/texture siblings. No parametric history. obj_bundle "
+                    + "re-exports the applied appearance as a self-contained .zip."),
         FormatRow(format: "glb", aliases: ["gltf"], geometryClass: "mesh",
                   create: false, import: true, view: true, edit: false,
-                  export: ["glb", "stl", "obj", "3mf", "usdz"],
+                  export: ["glb", "stl", "obj", "obj_bundle", "3mf", "usdz"],
                   note: "Binary .glb mesh(es) import as render bodies with materials, "
                     + "no parametric history. A JSON .gltf imports ONLY when every "
                     + "buffer/image is an embedded data: URI (self-contained); a .gltf "

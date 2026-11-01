@@ -766,6 +766,10 @@ public struct CadDocumentArguments: Decodable, Sendable {
     public var sourceBodyID: String?
     /// `import`: explicit source format; defaults to the source path
     /// extension. One of step/stp/iges/igs/stl/obj/glb/gltf.
+    /// `export` (native): optional explicit container format. `obj_bundle`
+    /// writes one self-contained .zip (model.obj + model.mtl + textures);
+    /// plain `obj` remains a single .obj with UVs and no materials. Other
+    /// export formats keep their extension-derived behaviour.
     public var format: String?
     /// `import`: optional mm-per-file-unit scale for unitless mesh formats
     /// (STL/OBJ); ignored for exact B-rep formats and declared-unit glTF.
@@ -1017,7 +1021,7 @@ public struct CadDocumentTool: AgentTool {
         "expected_source_sha256": { "type": "string", "description": "reference update CAS: the currently pinned source content SHA-256 (from references query)." },
         "expected_staged_sha256": { "type": "string", "description": "reference update CAS: the currently pinned staged geometry SHA-256." },
         "source_body_id": { "type": "string", "format": "uuid", "description": "reference attach: stable source body UUID for a multi-body source; inspect returns the body ids. Omitted only when the source has exactly one body." },
-        "format": { "type": "string", "enum": ["step", "stp", "iges", "igs", "stl", "obj", "glb", "gltf"], "description": "import only: explicit source format; defaults to the source_path extension. A JSON .gltf imports only when its buffers/images are embedded data URIs; external .bin/texture references are reported unsupported by the tool. A self-contained .glb always works." },
+        "format": { "type": "string", "enum": ["step", "stp", "iges", "igs", "stl", "obj", "obj_bundle", "glb", "gltf"], "description": "import or native export: explicit format. Import: defaults to the source_path extension; a JSON .gltf imports only when its buffers/images are embedded data URIs, external .bin/texture references are reported unsupported, and a self-contained .glb always works. Native export: optional explicit container format; obj_bundle writes one .zip containing model.obj, model.mtl and relative texture resources, while plain obj remains a single .obj with UVs and no materials. With obj_bundle the output path must end in .zip; a .obj path is refused rather than receiving ZIP bytes." },
         "unit_scale": { "type": "number", "exclusiveMinimum": 0, "description": "import only: optional millimetres-per-file-unit scale for unitless meshes (STL/OBJ). Ignored for STEP/IGES and declared-unit glTF." },
         "summary": { "type": "string", "maxLength": 2000, "description": "Concise summary of the proposed document change (propose/import)." },
         "operations": {
@@ -1040,7 +1044,7 @@ public struct CadDocumentTool: AgentTool {
         "text": { "type": "string", "description": "2D query filter: text content contains." },
         "offset": { "type": "integer", "minimum": 0, "description": "query pagination offset." },
         "limit": { "type": "integer", "minimum": 1, "maximum": 500, "description": "query pagination size." },
-        "output": { "type": "string", "description": "export relative path. 2D defaults to <name>.export.dxf. Native defaults to <name>.export.step; accepted native formats: step, stl, obj, 3mf, glb, usdz, pdf, svg, dxf, csv; the path must stay inside the workspace. A pdf/svg/dxf export is a DRAWING-page export and also needs page_id (from query kind=drawings). A csv export writes the COMPLETE BOM table for that drawing page (all rows and columns, UTF-8 RFC 4180) and also needs page_id and a .csv output path. With scope=assembly use .step, .glb or .usdz: placed occurrences are resolved from the saved assembly, not flattened document bodies." },
+        "output": { "type": "string", "description": "export relative path. 2D defaults to <name>.export.dxf. Native defaults to <name>.export.step; accepted native formats: step, stl, obj, obj_bundle, 3mf, glb, usdz, pdf, svg, dxf, csv; the path must stay inside the workspace. obj_bundle writes a .zip (model.obj + model.mtl + relative textures) and requires a .zip output path; plain obj writes a single .obj with UVs and no materials. A pdf/svg/dxf export is a DRAWING-page export and also needs page_id (from query kind=drawings). A csv export writes the COMPLETE BOM table for that drawing page (all rows and columns, UTF-8 RFC 4180) and also needs page_id and a .csv output path. With scope=assembly use .step, .glb or .usdz (part-scope obj_bundle is also available): placed occurrences are resolved from the saved assembly, not flattened document bodies." },
         "page_id": { "type": "string", "format": "uuid", "description": "export: the native drawing page id for pdf/svg/dxf drawing exports and the complete BOM CSV table export, exactly as query with kind=drawings returned it." },
         "body_ids": { "type": "array", "maxItems": 512, "items": { "type": "string", "format": "uuid" }, "description": "export scope=part: exact document body ids. Omit/empty to export every body (historical default)." },
         "instance_ids": { "type": "array", "maxItems": 512, "items": { "type": "string", "format": "uuid" }, "description": "export scope=assembly: exact placed occurrence ids from query kind=assembly/report. Omit/empty for every visible placed part. A subassembly id includes its visible descendant parts." },
@@ -2796,9 +2800,72 @@ public struct CadDocumentTool: AgentTool {
 
         case .export:
             if native {
-                let output = args.output ?? Self.defaultNativeExportPath(for: args.path!)
-                var payload: [String: Any] = ["output": output,
-                                              "format": (output as NSString).pathExtension.lowercased()]
+                let explicitFormat = args.format?
+                    .trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+                var output = args.output
+                if let explicitFormat, !explicitFormat.isEmpty {
+                    let allowed: Set<String> = ["step", "stp", "stl", "obj", "obj_bundle",
+                                                "3mf", "glb", "gltf", "usdz", "pdf",
+                                                "svg", "dxf", "csv"]
+                    guard allowed.contains(explicitFormat) else {
+                        throw FloeError.validationFailed(
+                            "export format '\(explicitFormat)' is not supported "
+                            + "(step, stp, stl, obj, obj_bundle, 3mf, glb, usdz, pdf, svg, dxf, csv).")
+                    }
+                    let normalized = explicitFormat == "stp"
+                        ? "step" : (explicitFormat == "gltf" ? "glb" : explicitFormat)
+                    if output == nil {
+                        output = Self.defaultNativeExportPath(for: args.path!, format: normalized)
+                    }
+                    let ext = (output! as NSString).pathExtension.lowercased()
+                    switch normalized {
+                    case "obj_bundle":
+                        guard ext == "zip" else {
+                            throw FloeError.validationFailed(
+                                "obj_bundle writes a .zip archive (model.obj + model.mtl + textures). "
+                                + "Use a .zip output path; for a single geometry OBJ use format=obj with a .obj path.")
+                        }
+                    case "step":
+                        guard ext == "step" || ext == "stp" else {
+                            let actual = ext.isEmpty ? "(no extension)" : ".\(ext)"
+                            throw FloeError.validationFailed(
+                                "format=step requires a .step or .stp output path; got '\(actual)'.")
+                        }
+                    default:
+                        if normalized == "obj", ext == "zip" {
+                            throw FloeError.validationFailed(
+                                "format=obj writes a single .obj file without materials. "
+                                + "Use a .obj output path, or format=obj_bundle for a .zip with model.mtl and textures.")
+                        }
+                        guard ext == normalized else {
+                            let actual = ext.isEmpty ? "(no extension)" : ".\(ext)"
+                            throw FloeError.validationFailed(
+                                "format=\(normalized) requires a .\(normalized) output path; got '\(actual)'.")
+                        }
+                    }
+                } else {
+                    let derived = args.output ?? Self.defaultNativeExportPath(for: args.path!)
+                    let ext = (derived as NSString).pathExtension.lowercased()
+                    if ext == "zip" {
+                        throw FloeError.validationFailed(
+                            "A .zip output requires format=obj_bundle. "
+                            + "Plain format=obj writes a single .obj file without materials.")
+                    }
+                    if ext.isEmpty {
+                        throw FloeError.validationFailed(
+                            "export needs an output path with a format extension, or an explicit format.")
+                    }
+                }
+                let resolvedOutput = output ?? Self.defaultNativeExportPath(for: args.path!)
+                let effectiveFormat: String
+                if let explicitFormat, !explicitFormat.isEmpty {
+                    effectiveFormat = explicitFormat == "stp"
+                        ? "step" : (explicitFormat == "gltf" ? "glb" : explicitFormat)
+                } else {
+                    effectiveFormat = (resolvedOutput as NSString).pathExtension.lowercased()
+                }
+                var payload: [String: Any] = ["output": resolvedOutput,
+                                              "format": effectiveFormat]
                 // PDF/SVG/DXF exports are DRAWING-page exports: the page id the
                 // model read from `query` kind=drawings selects the page (the
                 // engine refuses `page_required` without one).
@@ -3323,10 +3390,17 @@ public struct CadDocumentTool: AgentTool {
     /// host validates the format against the output extension and refuses a
     /// mesh-only downgrade unless the caller names a mesh format.
     static func defaultNativeExportPath(for path: String) -> String {
+        defaultNativeExportPath(for: path, format: "step")
+    }
+
+    /// Default output for an explicitly named export format. `obj_bundle` is a
+    /// ZIP container; every other format uses its own extension.
+    static func defaultNativeExportPath(for path: String, format: String) -> String {
         let name = (path as NSString).lastPathComponent
         let base = (name as NSString).deletingPathExtension
         let directory = (path as NSString).deletingLastPathComponent
-        let file = "\(base.isEmpty ? "part" : base).export.step"
+        let ext = format == "obj_bundle" ? "zip" : (format == "stp" ? "step" : format)
+        let file = "\(base.isEmpty ? "part" : base).export.\(ext)"
         return directory.isEmpty ? file : "\(directory)/\(file)"
     }
 

@@ -713,12 +713,48 @@ actor CadDocumentCenter: CadDocumentHost {
         guard let output = payload["output"] as? String, !output.isEmpty else {
             throw FloeError.validationFailed("native export requires payload.output (a workspace path).")
         }
-        var format = ((payload["format"] as? String) ?? (output as NSString).pathExtension).lowercased()
+        let outputExtension = (output as NSString).pathExtension.lowercased()
+        let explicitFormat = (payload["format"] as? String)?
+            .trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        var format = (explicitFormat?.isEmpty == false ? explicitFormat! : outputExtension)
         if format == "stp" { format = "step" }
-        let supported: Set<String> = ["step", "stl", "obj", "3mf", "glb", "usdz", "pdf", "svg", "dxf", "csv"]
+        let supported: Set<String> = ["step", "stl", "obj", "obj_bundle", "3mf",
+                                      "glb", "usdz", "pdf", "svg", "dxf", "csv"]
         guard supported.contains(format) else {
+            if format == "zip" {
+                throw FloeError.validationFailed(
+                    "A .zip output requires payload.format = obj_bundle. "
+                    + "Plain format=obj writes a single .obj file without materials.")
+            }
             throw FloeError.validationFailed(
-                "native export format '\(format)' is not supported (step, stl, obj, 3mf, glb, usdz, pdf, svg, dxf, csv).")
+                "native export format '\(format)' is not supported "
+                + "(step, stl, obj, obj_bundle, 3mf, glb, usdz, pdf, svg, dxf, csv).")
+        }
+        // An explicitly named format owns its extension. This is what prevents
+        // a caller from receiving ZIP bytes under a .obj name (or OBJ bytes
+        // under .zip) instead of a stale, misleading file.
+        if let explicitFormat, !explicitFormat.isEmpty {
+            let expected: Set<String>
+            switch format {
+            case "step": expected = ["step", "stp"]
+            case "obj_bundle": expected = ["zip"]
+            default: expected = [format]
+            }
+            guard expected.contains(outputExtension) else {
+                if format == "obj_bundle" {
+                    throw FloeError.validationFailed(
+                        "obj_bundle writes a .zip archive (model.obj + model.mtl + textures). "
+                        + "Use a .zip output path; for a single geometry OBJ use format=obj with a .obj path.")
+                }
+                let required = expected.sorted().map { ".\($0)" }.joined(separator: " or ")
+                let actual = outputExtension.isEmpty ? "(no extension)" : ".\(outputExtension)"
+                throw FloeError.validationFailed(
+                    "format '\(format)' requires a \(required) output path; got '\(actual)'.")
+            }
+        } else if outputExtension == "zip" {
+            throw FloeError.validationFailed(
+                "A .zip output requires payload.format = obj_bundle. "
+                + "Plain format=obj writes a single .obj file without materials.")
         }
         guard format != "iges" && format != "igs" else {
             throw FloeError.validationFailed("IGES export is not available in this build.")
@@ -897,9 +933,16 @@ actor CadDocumentCenter: CadDocumentHost {
                 }
                 relative = String(relative.dropFirst(resolved.root.path.count + 1))
             }
-            try resolved.service.guardResolver.assertWritableSize(bytes: bytes.count)
-            let receipt = try resolved.service.createBinaryFile(relative, data: bytes)
-            let written = try Data(contentsOf: resolved.service.guardResolver.resolve(relative))
+            // The native material archive has its own bounded 96 MiB writer.
+            // Reuse the exact path guard; no other file operation gains this
+            // budget and the original document's read/write limits stay put.
+            let exportService = format == "obj_bundle"
+                ? WorkspaceFileService(guard: resolved.service.guardResolver
+                    .withWriteLimit(96 * 1024 * 1024))
+                : resolved.service
+            try exportService.guardResolver.assertWritableSize(bytes: bytes.count)
+            let receipt = try exportService.createBinaryFile(relative, data: bytes)
+            let written = try Data(contentsOf: exportService.guardResolver.resolve(relative))
             let digest = FloeDigest.sha256Hex(written)
             guard digest == receipt.sha256, digest == FloeDigest.sha256Hex(bytes) else {
                 await NativeCADTaskRegistry.shared.finish(id: taskID, state: .failed,

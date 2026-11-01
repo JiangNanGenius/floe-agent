@@ -1093,6 +1093,7 @@ targets:
       # G2 integration of the O reader patch: the reader-core suite runs
       # in the App host (the package test path is registered here too).
       - path: Tests/FloeWorkspaceTests/TextReaderTests.swift
+      - path: Tests/FloeWorkspaceTests/WorkspacePathGuardTests.swift
       - path: Tests/FloeWorkspaceTests/WorkspaceUserImportTests.swift
       # O2 encoding override/recovery + the G2 rapid-switch supersession
       # regression (reader-core follow-up).
@@ -1296,6 +1297,7 @@ targets:
       # X32 render-side draft projection preview: real MeshResource UV/instance
       # witnesses for body/face/first-face drafts and cancellation fences.
       - path: ThirdParty/FloeCADKit/Tests/FloeCADKitTests/CADPresentationDraftPreviewTests.swift
+      - path: ThirdParty/FloeCADKit/Tests/FloeCADKitTests/CADOBJMaterialBundleTests.swift
       - path: ThirdParty/FloeCADKit/Tests/FloeCADKitTests/CADMechanicalHoleKernelProbeTests.swift
       - path: ThirdParty/FloeCADKit/Tests/FloeCADKitTests/CADVolumeIntegrationTests.swift
       - path: ThirdParty/FloeCADKit/Tests/FloeCADKitTests/CADSavedIdentityObservationTests.swift

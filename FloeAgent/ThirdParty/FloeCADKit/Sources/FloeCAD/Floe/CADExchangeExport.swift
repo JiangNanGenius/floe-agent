@@ -406,11 +406,47 @@ public extension FloeCADDocument {
                         ? "The USDZ writer produced no bytes; nothing was written."
                         : details))
 
+            case "obj_bundle":
+                let report = OBJBundleExporter.export(
+                    bodies: plan.placedBodies,
+                    faceTables: plan.faceTables,
+                    faceTableRevisions: plan.faceTableRevisions)
+                if let data = report.data, report.diagnostics.isEmpty {
+                    let note = report.receipt?.noteText
+                        ?? "OBJ bundle (ZIP) with materials and relative textures"
+                    return .success(data: data, note: note, coverage: plan.coverage)
+                }
+                let details = report.diagnostics.prefix(4).map { diagnostic -> String in
+                    var text = "\(diagnostic.code): \(diagnostic.message)"
+                    if let bodyID = diagnostic.bodyID {
+                        text += " (body \(bodyID.uuidString))"
+                    }
+                    if let slot = diagnostic.textureSlot {
+                        text += " [texture \(slot.rawValue)]"
+                    }
+                    return text
+                }.joined(separator: "; ")
+                let code = report.diagnostics.first?.code ?? "obj_bundle_export_failed"
+                return .failure(CADDocumentError(
+                    code: code,
+                    message: details.isEmpty
+                        ? "The OBJ bundle writer produced no bytes; nothing was written."
+                        : details))
+
+            case "stl", "obj", "3mf":
+                switch nativeExportData(format: plan.format, pageID: pageID,
+                                        bodies: plan.placedBodies) {
+                case let .success(data, note):
+                    return .success(data: data, note: note, coverage: plan.coverage)
+                case let .failure(error):
+                    return .failure(error)
+                }
+
             default:
                 return .failure(CADDocumentError(
                     code: "unsupported_format",
-                    message: "Placed-assembly exchange supports step, glb and usdz only; "
-                        + "use the existing part export for \(format)."))
+                    message: "Placed-assembly exchange supports step, glb, usdz and part-scope "
+                        + "obj_bundle only; use the existing part export for \(format)."))
             }
         } catch let error as CADDocumentError {
             return .failure(error)
@@ -436,7 +472,7 @@ public extension FloeCADDocument {
         let format = rawFormat.lowercased()
         let selection = CADExchangeSelection(scope: .part, acceptPartial: acceptPartial)
         switch format {
-        case "step", "glb", "usdz":
+        case "step", "glb", "usdz", "obj_bundle":
             return nativeExchangeExport(format: format, pageID: pageID,
                                         selection: selection, dryRun: false)
 
@@ -482,11 +518,17 @@ private extension FloeCADDocument {
     func makeExchangePlan(format rawFormat: String,
                           selection: CADExchangeSelection) throws -> CADExchangePlan {
         let format = rawFormat.lowercased()
-        guard ["step", "glb", "usdz"].contains(format) else {
+        guard ["step", "glb", "usdz", "obj_bundle", "stl", "obj", "3mf"].contains(format) else {
             throw CADDocumentError(
                 code: "unsupported_format",
-                message: "Placed-assembly exchange supports step, glb and usdz; "
-                    + "use the existing part export for \(rawFormat).")
+                message: "Placed-assembly exchange supports step, glb, usdz and part-scope "
+                    + "obj_bundle; use the existing part export for \(rawFormat).")
+        }
+        if !["step", "glb", "usdz"].contains(format), selection.scope == .assembly {
+            throw CADDocumentError(
+                code: "unsupported_format",
+                message: "\(format) supports part export only; assembly placement "
+                    + "export is available as step, glb or usdz.")
         }
         try validateExchangeSelection(selection)
         try checkExchangeFence(selection)
@@ -957,6 +999,8 @@ private extension FloeCADDocument {
             return ["history", "pmi", "brep"]
         case "usdz":
             return ["history", "pmi", "brep", "assembly_hierarchy"]
+        case "obj_bundle":
+            return ["history", "pmi", "brep"]
         default:
             return ["history", "pmi"]
         }
@@ -966,7 +1010,7 @@ private extension FloeCADDocument {
     /// exporter may still write the mesh with the scalar factors/UV fallback;
     /// the receipt says exactly what was not carried.
     func materialWarnings(for body: Body, format: String) -> [String] {
-        guard format == "glb" || format == "usdz" else { return [] }
+        guard format == "glb" || format == "usdz" || format == "obj_bundle" else { return [] }
         var warnings = Set<String>()
         func inspect(_ spec: BodyMaterialSpec?) {
             guard let spec else { return }
@@ -986,6 +1030,9 @@ private extension FloeCADDocument {
                     if item.verifiedDigest(for: data) == nil {
                         warnings.insert("texture_\(item.slot.rawValue)_identity_mismatch")
                     }
+                    if data.count > CADMaterialLimits.maximumTextureBytes {
+                        warnings.insert("texture_\(item.slot.rawValue)_too_large")
+                    }
                 }
             }
             for slot in MaterialTextureSlot.allCases {
@@ -1003,18 +1050,32 @@ private extension FloeCADDocument {
                    normals: body.render.normals,
                    indices: body.render.indices,
                    mapping: spec.uvMapping) == nil {
-                warnings.insert("texture_uv_unmapped")
+                warnings.insert(format == "obj_bundle"
+                    ? "texture_uv_projection_fallback" : "texture_uv_unmapped")
             }
-            if format == "usdz", let strength = spec.emissiveStrength, strength > 1,
+            if (format == "usdz" || format == "obj_bundle"),
+               let strength = spec.emissiveStrength, strength > 1,
                spec.emissive != nil {
                 warnings.insert("unsupported_hdr_emission")
+            }
+            if format == "obj_bundle" {
+                if spec.normalTexture != nil,
+                   spec.textureColorSpace(for: .normal) == .srgb {
+                    warnings.insert("unsupported_normal_color_space")
+                }
+                if let mapping = spec.uvMapping,
+                   mapping.source == .mesh,
+                   mapping.rotationDegrees != 0 || mapping.offset != .zero
+                       || mapping.flipU || mapping.flipV {
+                    warnings.insert("unsupported_mesh_uv_transform")
+                }
             }
         }
         inspect(body.material)
         for binding in body.materialFaceBindings {
             inspect(binding.material)
         }
-        if format == "glb", !body.materialFaceBindings.isEmpty {
+        if (format == "glb" || format == "obj_bundle"), !body.materialFaceBindings.isEmpty {
             let table = session.lastFaceTables[body.id]
             let fresh = table != nil
                 && session.lastNamingRevisions[body.id] == body.meshRevision

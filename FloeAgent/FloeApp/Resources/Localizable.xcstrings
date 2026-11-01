@@ -122281,6 +122281,533 @@
           }
         }
       }
+    },
+    "cad.ui.export.obj.materials": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Materials & Textures"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "材质与贴图"
+          }
+        }
+      }
+    },
+    "cad.ui.export.obj.materials.footer": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Creates a .zip with model.obj, model.mtl and the texture images."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "生成包含 model.obj、model.mtl 和贴图图片的 .zip 文件。"
+          }
+        }
+      }
+    },
+    "cad.ui.export.obj.geometryOnly.footer": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Writes one .obj with UVs. Materials and textures are not included."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "写入一个包含 UV 的 .obj 文件，不包含材质和贴图。"
+          }
+        }
+      }
+    },
+    "cad.ui.export.obj.preflight": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Export Contents"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "导出内容"
+          }
+        }
+      }
+    },
+    "cad.ui.export.obj.preflight.summary": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%d materials · %d textures · %d files"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%d 个材质 · %d 张贴图 · %d 个文件"
+          }
+        }
+      }
+    },
+    "cad.ui.export.obj.preflight.bytes": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ MB"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ MB"
+          }
+        }
+      }
+    },
+    "cad.ui.export.obj.preflight.mtl": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Some viewers show only base color and opacity; metallic, roughness, normal and emissive maps use the extended MTL format."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "部分查看器只显示基础颜色和透明度；金属度、粗糙度、法线和自发光贴图使用扩展 MTL 格式。"
+          }
+        }
+      }
+    },
+    "cad.ui.export.obj.warning.faceFallback": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Some face materials couldn't be resolved and use the body material instead."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "部分面材质无法解析，已改用实体材质。"
+          }
+        }
+      }
+    },
+    "cad.ui.export.obj.warning.uvGenerated": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Some textures use an automatic projection because the body has no UVs."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "部分贴图使用了自动投影，因为实体没有 UV。"
+          }
+        }
+      }
+    },
+    "cad.ui.export.obj.warning.alphaBaked": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Base transparency is stored in the opacity map so MTL viewers apply it once."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "基础透明度已写入不透明度贴图，避免 MTL 查看器重复应用。"
+          }
+        }
+      }
+    },
+    "cad.ui.export.obj.warning.normalized": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Some images were normalized to match OBJ color and row conventions."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "部分图片已按 OBJ 的颜色和行方向约定转换。"
+          }
+        }
+      }
+    },
+    "cad.ui.export.obj.warning.opacitySemantics": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Viewers differ on whether the opacity map uses luminance or alpha; this bundle writes grayscale luminance."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "不同查看器对不透明度贴图使用亮度还是 Alpha 的处理不同；此包写入灰度亮度。"
+          }
+        }
+      }
+    },
+    "cad.ui.export.obj.warning.emissiveUnused": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "An emissive image is ignored because the material has no emission."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "材质没有自发光，因此忽略自发光贴图。"
+          }
+        }
+      }
+    },
+    "cad.error.objBundle.missingTexture": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "A material image is missing. Reapply it and try again."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "材质图片缺失。请重新应用图片后重试。"
+          }
+        }
+      }
+    },
+    "cad.error.objBundle.identityMismatch": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "A material image no longer matches its saved version. Reapply it and try again."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "材质图片与已保存版本不一致。请重新应用图片后重试。"
+          }
+        }
+      }
+    },
+    "cad.error.objBundle.invalidTexture": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "A material image can't be read. Replace it and try again."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "无法读取材质图片。请更换图片后重试。"
+          }
+        }
+      }
+    },
+    "cad.error.objBundle.tooLarge": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "A material image is too large. Reduce it and try again."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "材质图片过大。请缩小图片后重试。"
+          }
+        }
+      }
+    },
+    "cad.error.objBundle.imageOrientation": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "A material image has camera rotation that OBJ can't preserve. Remove the rotation and try again."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "材质图片带有 OBJ 无法保留的相机旋转信息。请移除旋转后重试。"
+          }
+        }
+      }
+    },
+    "cad.error.objBundle.normalColorSpace": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The normal map must use linear color values."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "法线贴图必须使用线性颜色值。"
+          }
+        }
+      }
+    },
+    "cad.error.objBundle.emissionStrength": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Emission strength above 1 can't be written to OBJ. Lower it to 1 or less, or export GLB."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "无法将大于 1 的自发光强度写入 OBJ。请将其降到 1 或以下，或导出 GLB。"
+          }
+        }
+      }
+    },
+    "cad.error.objBundle.meshUVTransform": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "A mesh UV transform can't be written to OBJ. Choose a planar or box projection and try again."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "OBJ 无法写入网格 UV 变换。请选择平面或盒式投影后重试。"
+          }
+        }
+      }
+    },
+    "cad.error.objBundle.missingUVs": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "A textured material has no usable UV mapping. Choose a projection in Material and try again."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "带贴图的材质没有可用的 UV 映射。请在材质中选择投影后重试。"
+          }
+        }
+      }
+    },
+    "cad.error.objBundle.ambiguousMetadata": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "A material has conflicting image records. Reapply its images and try again."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "材质的图片记录冲突。请重新应用图片后重试。"
+          }
+        }
+      }
+    },
+    "cad.error.objBundle.invalidMaterial": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "A material has settings outside the supported range. Check it and try again."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "材质设置超出支持范围。请检查后重试。"
+          }
+        }
+      }
+    },
+    "cad.error.objBundle.tooLargeBundle": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The bundle is too large to export. Reduce the texture sizes or the number of bodies and try again."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "材质包过大，无法导出。请缩小贴图或减少实体数量后重试。"
+          }
+        }
+      }
+    },
+    "cad.error.objBundle.invalidMesh": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "A body couldn't be exported. Check it in Edit and try again."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "无法导出某个实体。请在编辑中检查后重试。"
+          }
+        }
+      }
+    },
+    "cad.error.objBundle.empty": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Nothing to export — the design has no solid bodies."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "没有可导出的内容 — 设计中没有实体。"
+          }
+        }
+      }
+    },
+    "cad.error.objBundle.cancelled": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Export cancelled."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "导出已取消。"
+          }
+        }
+      }
+    },
+    "cad.error.objBundle.generic": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Couldn't export the OBJ bundle. Try again."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "无法导出 OBJ 材质包。请重试。"
+          }
+        }
+      }
+    },
+    "cad.ui.export.obj.warning.emptyBody": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Empty bodies are skipped."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "空实体已跳过。"
+          }
+        }
+      }
+    },
+    "cad.error.exportChanged": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The document changed. Review the export again."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "文档已更改，请重新检查导出内容。"
+          }
+        }
+      }
     }
   },
   "version": "1.0"
