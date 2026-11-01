@@ -235,6 +235,148 @@ final class NativeCADLiveLLMTests: XCTestCase {
     }
 }
 
+/// Receipt pairing and an optional replay of actual retained tool events.
+/// This class never starts a run, resolves a credential or requests a model.
+@MainActor
+final class NativeCADLiveCaptureEvidenceTests: XCTestCase {
+    private func event(_ sequence: Int, _ kind: RunEventRecord.Kind,
+                       _ payload: [String: Any]) throws -> RunEventRecord {
+        RunEventRecord(runID: UUID(), sequence: sequence, kind: kind,
+                       payloadJSON: String(decoding: try JSONSerialization.data(
+                        withJSONObject: payload, options: [.sortedKeys]), as: UTF8.self))
+    }
+
+    private func captureRequest(_ sequence: Int, _ id: String) throws -> RunEventRecord {
+        try event(sequence, .toolRequest, ["tool": CadDocumentTool.name, "id": id,
+                                          "input": #"{"action":"capture"}"#])
+    }
+
+    private func captureResult(_ sequence: Int, _ id: String,
+                               status: String = "ok") throws -> RunEventRecord {
+        try event(sequence, .toolResult, ["tool": CadDocumentTool.name, "id": id,
+                                         "status": status, "summary": "capture receipt"])
+    }
+
+    func testRejectedCaptureRetrySelectsTheSuccessfulReceiptRequest() throws {
+        let events = try [captureRequest(1, "rejected"),
+                          captureResult(3, "rejected", status: "failed"),
+                          captureRequest(6, "captured"), captureResult(9, "captured")]
+        let request = try XCTUnwrap(NativeCADLiveEvidence.successfulCaptureRequest(
+            events, resultSequence: 9))
+        XCTAssertEqual(request.callID, "captured")
+        XCTAssertEqual(request.sequence, 6)
+    }
+
+    func testFailedOrUnpairedCaptureCannotSatisfyTheReceipt() throws {
+        let rejected = try [captureRequest(1, "rejected"),
+                            captureResult(3, "rejected", status: "failed")]
+        XCTAssertNil(NativeCADLiveEvidence.successfulCaptureRequest(rejected, resultSequence: 3))
+        let unpaired = try [captureRequest(1, "requested"), captureResult(3, "different")]
+        XCTAssertNil(NativeCADLiveEvidence.successfulCaptureRequest(unpaired, resultSequence: 3))
+        let reversed = try [captureResult(1, "reversed"), captureRequest(3, "reversed")]
+        XCTAssertNil(NativeCADLiveEvidence.successfulCaptureRequest(reversed, resultSequence: 1))
+    }
+
+    func testLaterSuccessfulCaptureCannotReplaceTheVerifiedResultSequence() throws {
+        let events = try [captureRequest(1, "verified"), captureResult(3, "verified"),
+                          captureRequest(6, "later"), captureResult(9, "later")]
+        XCTAssertEqual(NativeCADLiveEvidence.successfulCaptureRequest(
+            events, resultSequence: 3)?.callID, "verified")
+        XCTAssertNil(NativeCADLiveEvidence.successfulCaptureRequest(events, resultSequence: 8))
+    }
+
+    func testObservedLiveCaptureRetryPassesTheFullOriginalVisualTurnChecks() throws {
+        let caches = try FileManager.default.url(for: .cachesDirectory, in: .userDomainMask,
+                                                 appropriateFor: nil, create: false)
+            .appendingPathComponent(NativeCADLiveOptIn.directoryName, isDirectory: true)
+        let recordURL = caches.appendingPathComponent("observed-replay.json")
+        let imageURL = caches.appendingPathComponent("observed-capture.png")
+        guard FileManager.default.fileExists(atPath: recordURL.path),
+              FileManager.default.fileExists(atPath: imageURL.path) else {
+            throw XCTSkip("No retained live tool-event replay was supplied; not live acceptance evidence.")
+        }
+        let data = try Data(contentsOf: recordURL)
+        let record = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        let runs = try XCTUnwrap(record["runs"] as? [String: [String: Any]])
+        let observed = try runs.map { runID, run -> [RunEventRecord] in
+            let id = try XCTUnwrap(UUID(uuidString: runID))
+            return try XCTUnwrap(run["events"] as? [[String: Any]]).map { raw in
+                RunEventRecord(runID: id,
+                    sequence: try XCTUnwrap(raw["sequence"] as? Int),
+                    kind: try XCTUnwrap(RunEventRecord.Kind(
+                        rawValue: try XCTUnwrap(raw["kind"] as? String))),
+                    payloadJSON: try XCTUnwrap(raw["payloadJSON"] as? String))
+            }
+        }
+        let visualTurns = observed.filter { events in
+            events.contains { event in
+                guard event.kind == .toolResult,
+                      let payload = NativeCADLiveJSON.object(event.payloadJSON) else { return false }
+                return payload["status"] as? String == "ok"
+                    && (payload["summary"] as? String ?? "").contains("cad.document capture:")
+            } && events.contains { event in
+                event.kind == .toolResult
+                    && NativeCADLiveJSON.object(event.payloadJSON)?["status"] as? String == "failed"
+            }
+        }
+        XCTAssertEqual(visualTurns.count, 1)
+        let events = try XCTUnwrap(visualTurns.first)
+        let captured = try XCTUnwrap(events.first { event in
+            guard event.kind == .toolResult,
+                  let payload = NativeCADLiveJSON.object(event.payloadJSON) else { return false }
+            return payload["status"] as? String == "ok"
+                && (payload["summary"] as? String ?? "").contains("cad.document capture:")
+        })
+        let result = try XCTUnwrap(NativeCADLiveJSON.object(captured.payloadJSON))
+        let receipt = try XCTUnwrap(NativeCADLiveJSON.objects(
+            in: try XCTUnwrap(result["summary"] as? String)).last)
+        let png = try Data(contentsOf: imageURL)
+        let capture = NativeCADLiveCapture(png: png,
+            imageSHA256: try XCTUnwrap(receipt["image_sha256"] as? String),
+            contentSHA256: try XCTUnwrap(receipt["content_sha256"] as? String),
+            revision: try XCTUnwrap(NativeCADLiveJSON.int(receipt["revision"])),
+            width: try XCTUnwrap(NativeCADLiveJSON.int(receipt["width"])),
+            height: try XCTUnwrap(NativeCADLiveJSON.int(receipt["height"])),
+            byteCount: try XCTUnwrap(NativeCADLiveJSON.int(receipt["byte_count"])),
+            renderer: try XCTUnwrap(receipt["renderer"] as? String),
+            relativePath: try XCTUnwrap(receipt["artifact"] as? String),
+            callID: try XCTUnwrap(result["id"] as? String), resultSequence: captured.sequence)
+        XCTAssertEqual(FloeDigest.sha256Hex(png), capture.imageSHA256)
+        XCTAssertEqual(png.count, capture.byteCount)
+        var originalCircle: NativeCADLiveCircle?
+        for event in events where event.kind == .toolResult {
+            guard let payload = NativeCADLiveJSON.object(event.payloadJSON),
+                  payload["status"] as? String == "ok",
+                  let summary = payload["summary"] as? String,
+                  let object = NativeCADLiveJSON.objects(in: summary).last,
+                  let result = object["result"] as? [String: Any],
+                  let rows = result["rows"] as? [[String: Any]] else { continue }
+            for sketch in rows {
+                guard let id = sketch["id"] as? String,
+                      let entities = sketch["entityRows"] as? [[String: Any]] else { continue }
+                for entity in entities where entity["kind"] as? String == "circle" {
+                    guard let entityID = entity["id"] as? String,
+                          let radius = NativeCADLiveJSON.number(entity["radius"]), radius == 3,
+                          let diameter = NativeCADLiveJSON.number(entity["diameterMM"]) else { continue }
+                    originalCircle = NativeCADLiveCircle(sketchID: id, entityID: entityID,
+                                                         radius: radius, diameter: diameter)
+                }
+            }
+        }
+        let calls = try NativeCADLiveEvidence.assertTurnTwoEvidence(
+            events, capture: capture, initialCircle: XCTUnwrap(originalCircle))
+        XCTAssertFalse(calls.correctionCallID.isEmpty)
+        XCTAssertFalse(calls.filletCallID.isEmpty)
+        let attachment = XCTAttachment(string:
+            "Observed events sha256=\(FloeDigest.sha256Hex(data)); PNG sha256=\(capture.imageSHA256); "
+                + "captureCall=\(capture.callID); resultSequence=\(capture.resultSequence). "
+                + "Full original visual-turn assertions replayed; no new model request.")
+        attachment.name = "observed-live-capture-replay-provenance.txt"
+        attachment.lifetime = .keepAlways
+        add(attachment)
+    }
+}
+
 /// Non-paid accounting tests for the one aggregate CAD budget. They exercise
 /// the same ledger the live acceptance uses, but never touch the App graph, a
 /// provider, a credential, an opt-in file, the network or a model request.
@@ -3184,12 +3326,21 @@ private enum NativeCADLiveEvidence {
         capture: NativeCADLiveCapture,
         initial: NativeCADLiveDocumentState
     ) throws -> (correctionCallID: String, filletCallID: String) {
+        try assertTurnTwoEvidence(
+            events, capture: capture,
+            initialCircle: XCTUnwrap(initial.circles.first))
+    }
+
+    static func assertTurnTwoEvidence(
+        _ events: [RunEventRecord],
+        capture: NativeCADLiveCapture,
+        initialCircle: NativeCADLiveCircle
+    ) throws -> (correctionCallID: String, filletCallID: String) {
         let all = requestRecords(events)
         let responses = responseRecords(events)
-        let initialCircle = try XCTUnwrap(initial.circles.first)
         let captureRequest = try XCTUnwrap(
-            all.first { ($0.arguments["action"] as? String) == "capture" },
-            "The visual turn did not call cad.document capture."
+            successfulCaptureRequest(events, resultSequence: capture.resultSequence),
+            "The visual turn has no request paired with the verified successful capture result."
         )
         XCTAssertEqual(captureRequest.callID, capture.callID)
 
@@ -3338,6 +3489,23 @@ private enum NativeCADLiveEvidence {
             "The visual turn used unexpected CAD actions: \(unexpectedActions)"
         )
         return (correctionCallID: corrections[0].0.callID, filletCallID: firstFillet.callID)
+    }
+
+    /// A rejected request may precede a successful capture retry. Keep the
+    /// receipt's exact sequence and call binding instead of taking the first
+    /// attempted capture; the caller still checks the independently verified
+    /// image's call id against the selected request.
+    static func successfulCaptureRequest(
+        _ events: [RunEventRecord], resultSequence: Int
+    ) -> Request? {
+        let responses = responseRecords(events)
+        return requestRecords(events).first { request in
+            guard request.arguments["action"] as? String == "capture",
+                  let response = responses[request.callID] else { return false }
+            return response.status == "ok"
+                && response.sequence == resultSequence
+                && request.sequence < response.sequence
+        }
     }
 
     /// The undo turn must issue exactly two real `parameters` undo commands,
