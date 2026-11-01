@@ -253,6 +253,42 @@ final class CADAnimationExportReadbackTests: XCTestCase {
         }
     }
 
+    /// A brief background transition cannot disappear between render turns.
+    func testBriefBackgroundIsRememberedEvenAfterForegroundReturns() async throws {
+        let fixture = try await hostedFixture(clipDuration: 0.5)
+        let destination = fixture.directory.appendingPathComponent("background-fenced.mp4")
+        var backgroundDelivered = false
+        let handle = try fixture.document.startAnimationExportMP4(
+            clipID: fixture.clip.id, to: destination,
+            settings: CADAnimationExportOptions(
+                orientation: .portrait, resolution: .p720, frameRate: .fps24,
+                codec: .hevc, quality: .smaller).exportSettings()
+        ) { progress in
+            guard progress.phase == .rendering, progress.completedFrames == 1,
+                  !backgroundDelivered else { return }
+            backgroundDelivered = true
+            // Deterministic brief-background delivery while the real native
+            // encoder is running. UIKit is foreground again when the next
+            // frame runs; an applicationState-only guard misses this. The
+            // separate UI flow uses an actual Home/activate transition.
+            NotificationCenter.default.post(
+                name: UIApplication.didEnterBackgroundNotification,
+                object: UIApplication.shared)
+        }
+        let status = await fixture.document.waitForAnimationExport(handle.id)
+        XCTAssertTrue(backgroundDelivered, "the real first frame must be encoded before delivery")
+        XCTAssertEqual(status.progress.phase, .failed)
+        XCTAssertFalse(status.isCancelled, "the actual foreground-only refusal must be reported")
+        XCTAssertEqual(status.error, CADAnimationExportError.presentationNotActive.localizedDescription)
+        XCTAssertNil(status.result)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: destination.path))
+        XCTAssertFalse(fixture.handle.controller?.isAnimationLeased ?? true,
+                       "terminal status must follow renderer ownership release")
+        let leftovers = try FileManager.default.contentsOfDirectory(atPath: fixture.directory.path)
+            .filter { $0.hasPrefix(".background-fenced.mp4.export-") }
+        XCTAssertTrue(leftovers.isEmpty, "a backgrounded export cannot leave owned staging")
+    }
+
     /// The untouched default path still produces the historical 1920x1080
     /// @30 H.264 video.
     func testDefaultSelectionStillProducesHistoricalOutput() async throws {

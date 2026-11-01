@@ -263,8 +263,23 @@ public final class CADAnimationExportCenter {
 
     private var jobs: [UUID: Job] = [:]
     private let maximumRetainedJobs = 16
+    /// A suspended task may not run while UIApplication is backgrounded.
+    /// Remember the transition so returning to the foreground cannot make an
+    /// old render look continuously active. This belongs to the service,
+    /// including its offscreen exports, rather than a particular view.
+    private(set) var backgroundGeneration: UInt64 = 0
+    private var backgroundObserver: NSObjectProtocol?
 
-    private init() {}
+    private init() {
+        backgroundObserver = NotificationCenter.default.addObserver(
+            forName: UIApplication.didEnterBackgroundNotification,
+            object: nil, queue: .main
+        ) { [weak self] _ in
+            // OperationQueue.main delivers on the main thread. Record the
+            // fence synchronously, before the process can be suspended.
+            MainActor.assumeIsolated { self?.backgroundGeneration &+= 1 }
+        }
+    }
 
     public func status(_ id: UUID) -> CADAnimationExportStatus? { jobs[id]?.status }
 
@@ -425,12 +440,14 @@ public extension FloeCADDocument {
                                                      settings: cleanSettings)
         let totalFrames = clip.frameCount(at: cleanSettings.frameRate)
         let center = CADAnimationExportCenter.shared
+        let backgroundGeneration = center.backgroundGeneration
         let id = center.register(documentKey: documentKey,
                                  totalFrames: totalFrames,
                                  progress: progress)
         let task = Task { @MainActor in
             let status = await self.runAnimationExport(
                 id: id, clip: clip, sourceChangeCount: sourceChangeCount,
+                backgroundGeneration: backgroundGeneration,
                 destination: destination, settings: cleanSettings)
             center.finish(id, status: status)
         }
@@ -819,6 +836,7 @@ public extension FloeCADDocument {
         id: UUID,
         clip: CADAnimationClip,
         sourceChangeCount: Int,
+        backgroundGeneration: UInt64,
         destination: URL,
         settings: CADAnimationExportSettings
     ) async -> CADAnimationExportStatus {
@@ -839,6 +857,14 @@ public extension FloeCADDocument {
         var renderSession: CADAnimationRenderSession?
         defer { renderSession?.release() }
 
+        func checkLifecycle() throws {
+            try Task.checkCancellation()
+            guard center.backgroundGeneration == backgroundGeneration,
+                  UIApplication.shared.applicationState != .background else {
+                throw CADAnimationExportError.presentationNotActive
+            }
+        }
+
         func report(_ phase: CADAnimationExportPhase,
                     completed: Int, time: Double) {
             center.update(id, CADAnimationExportProgress(
@@ -848,6 +874,7 @@ public extension FloeCADDocument {
 
         do {
             guard !isClosed else { throw CADAnimationExportError.cancelled }
+            try checkLifecycle()
             // Settle routine persistence BEFORE pinning identity or taking the
             // render lease: a pending debounced autosave (or a save already in
             // flight) would otherwise advance the committed revision/SHA
@@ -856,7 +883,7 @@ public extension FloeCADDocument {
             // settle is the async canonical writer, never a synchronous save.
             try await prepareAnimationIdentity(
                 sourceChangeCount: sourceChangeCount)
-            try Task.checkCancellation()
+            try checkLifecycle()
             // Re-verify the frozen source across the settle await. The exact
             // clip VALUE must be unchanged — the playback model looks the clip
             // up by id, so an edited clip with the same id would otherwise
@@ -871,7 +898,7 @@ public extension FloeCADDocument {
             renderSession = session
             // The lease acquisition awaits too: an edit/close there must abort
             // before any frame or staging artifact is produced.
-            try Task.checkCancellation()
+            try checkLifecycle()
             try requireUnchangedAnimationClip(
                 clip, sourceChangeCount: sourceChangeCount)
             guard liveChangeCount == documentChangeCount else {
@@ -933,7 +960,7 @@ public extension FloeCADDocument {
 
             var completed = 0
             while completed < totalFrames {
-                try Task.checkCancellation()
+                try checkLifecycle()
                 guard UIApplication.shared.applicationState != .background else {
                     throw CADAnimationExportError.presentationNotActive
                 }
@@ -984,7 +1011,7 @@ public extension FloeCADDocument {
                     throw CADAnimationExportError.stale
                 }
                 let image = try await controller.snapshotImage(targetWidth: settings.width)
-                try Task.checkCancellation()
+                try checkLifecycle()
                 if completed == 0, settings.posterEnabled {
                     posterPNG = image.pngData()
                 }
@@ -996,7 +1023,7 @@ public extension FloeCADDocument {
                         "The rendered frame could not be converted to video pixels.")
                 }
                 try await Self.waitUntilReady(input)
-                try Task.checkCancellation()
+                try checkLifecycle()
                 let presentationTime = CMTime(
                     value: Int64(completed), timescale: CMTimeScale(settings.frameRate))
                 guard adaptor.append(buffer, withPresentationTime: presentationTime) else {
@@ -1035,7 +1062,7 @@ public extension FloeCADDocument {
                 expectedDuration: clip.duration,
                 expectedFrameCount: totalFrames,
                 codec: settings.codec)
-            try Task.checkCancellation()
+            try checkLifecycle()
             let promotionLeaseHeld = controller.holdsAnimationLease(exportLease)
             let promotionGeneration = controller.renderGeneration
             let promotionChangeCount = liveChangeCount
@@ -1060,7 +1087,7 @@ public extension FloeCADDocument {
                     isClosed: isClosed)
                 throw CADAnimationExportError.stale
             }
-            try Task.checkCancellation()
+            try checkLifecycle()
             if FileManager.default.fileExists(atPath: destination.path),
                !settings.overwrite {
                 throw CADAnimationExportError.destinationExists
