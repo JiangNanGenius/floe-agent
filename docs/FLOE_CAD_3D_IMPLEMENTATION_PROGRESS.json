@@ -2473,10 +2473,12 @@
       "package": "mechanical",
       "implementation": {
         "stage": "B",
-        "status": "partially_verified",
+        "status": "partial",
         "source_changes": [
           "FloeAgent/ThirdParty/FloeCADKit/Sources/FloeCAD/Floe/CADParameterService.swift",
-          "FloeAgent/ThirdParty/FloeCADKit/Tests/FloeCADKitTests/CADParameterCorrectnessTests.swift"
+          "FloeAgent/ThirdParty/FloeCADKit/Tests/FloeCADKitTests/CADParameterCorrectnessTests.swift",
+          "c8140f9c6f56eca73d01a5929256bf036879705e",
+          "0ecb73e9c61de2f60779dd4b8cd2ea3d93ff6875"
         ],
         "verification": [
           {
@@ -2489,6 +2491,15 @@
             "target": "canonical existing iPad mini A17 Pro, iOS Simulator 27.0",
             "source_snapshot": "Local/Private/cad-3d-implementation-20261030/verification/source-attempt3.json",
             "evidence": "Local/Private/cad-3d-implementation-20261030/verification/stage-a-tests-attempt3.xcresult"
+          },
+          {
+            "kind": "actual_App_named_delete_face_history_recovery",
+            "source": "0ecb73e9c61de2f60779dd4b8cd2ea3d93ff6875",
+            "passed": 5,
+            "failed": 0,
+            "skipped": 0,
+            "original_failed_test_retained": true,
+            "observed": "删除面历史复原同一原始面／引用与高亮；未改确认不产生空撤销，真实孔体积、同ID、摘要、重开及拒绝错误引用通过。"
           }
         ],
         "limitations": [
@@ -2498,7 +2509,7 @@
       "alignment_review": {
         "disposition": "qualified_slice",
         "existing": "基线已有：稳定FeatureID/BodyID、按顺序重放、抑制/删除/排序有依赖检查；原子参数编辑有checkpoint回滚；拓扑命名有内核history+几何签名后备及歧义门控。不是从零缺失历史。",
-        "remaining": "依赖检查和偏移面有限命名切片已验证；仍需任意曲面、相似重复面、分裂合并/消失面及旧包升级的稳定拓扑矩阵。",
+        "remaining": "更广的拆分／旧引用和剩余选边历史范围仍待。",
         "evidence": [
           {
             "path": "docs/FLOE_CAD_3D_IMPLEMENTATION_PROGRESS.json",
@@ -2533,7 +2544,7 @@
         ],
         "notes": [],
         "evidence_level": "baseline_plus_verified_delta",
-        "verified_delta": "生产者/依赖顺序修复、offset datum命名与有限重建/事务/合并矩阵已验证；不保证任意拓扑。",
+        "verified_delta": "已有严格命名引用与原子选边证据，补齐删除面历史的原始面身份／引用／高亮及无改动确认；真实模型摘要、撤销体积和重开通过。",
         "acceptance_pending": "变更上游尺寸/分裂/删面后下游只能命中原意图或明确失效；绝不绑定相似面；撤销/重开恢复同ID。"
       }
     },
@@ -8395,7 +8406,7 @@
     "license_delta": "GLTFKit2 ownMIT/cgltfMIT do notclear precompiled libktx4.2.1 etcdec exception; prefer existing O3DV+same-r176 localGLTFLoader qualification"
   },
   "current_integration_verification": {
-    "source": "9df3e771dffa46f1b9441221f159a9bdb7baf433",
+    "source": "0ecb73e9c61de2f60779dd4b8cd2ea3d93ff6875",
     "all_106_retained": true,
     "all_106_accepted": false,
     "release_ready": false,
@@ -8499,6 +8510,18 @@
         "failed": 6,
         "skipped": 0
       }
+    },
+    "latest_named_face_history_batch": {
+      "source": "0ecb73e9c61de2f60779dd4b8cd2ea3d93ff6875",
+      "passed": 5,
+      "failed": 0,
+      "skipped": 0,
+      "original": {
+        "passed": 14,
+        "failed": 1,
+        "skipped": 0
+      },
+      "scope": "Delete-face history and interior samples; wholeM26 remains open."
     }
   }
 }
