@@ -222,6 +222,35 @@ final class CADAnimationExportReadbackTests: XCTestCase {
                       "expected HEVC, got \(probe.codecFourCC)")
         XCTAssertFalse(probe.hasAudio)
         XCTAssertGreaterThan(probe.byteCount, 1_024)
+
+        // Metadata alone accepted a video containing only the background
+        // (native UI run113). Independently decode the real encoded frames:
+        // the red fixture must be visible and the camera must actually move.
+        let frames = try await Self.readPixels(destination)
+        XCTAssertEqual(frames.count, expectedFrames)
+        let first = try XCTUnwrap(frames.first)
+        let last = try XCTUnwrap(frames.last)
+        XCTAssertGreaterThan(Self.redFraction(first), 0.01,
+                             "the first encoded frame must contain the actual model")
+        XCTAssertGreaterThan(Self.redFraction(last), 0.01,
+                             "the last encoded frame must contain the actual model")
+        let changed = zip(first, last).filter { abs(Int($0) - Int($1)) > 20 }.count
+        XCTAssertGreaterThan(Double(changed) / Double(first.count), 0.001,
+                             "camera animation must change the encoded model pixels")
+        for (name, bytes) in [("HEVC first actual frame", first),
+                              ("HEVC last actual frame", last)] {
+            var rgba = bytes
+            let context = try XCTUnwrap(CGContext(
+                data: &rgba, width: 720, height: 1280,
+                bitsPerComponent: 8, bytesPerRow: 720 * 4,
+                space: CGColorSpaceCreateDeviceRGB(),
+                bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue))
+            let image = try XCTUnwrap(context.makeImage())
+            let attachment = XCTAttachment(image: UIImage(cgImage: image))
+            attachment.name = name
+            attachment.lifetime = .keepAlways
+            add(attachment)
+        }
     }
 
     /// The untouched default path still produces the historical 1920x1080
@@ -520,12 +549,12 @@ final class CADAnimationExportReadbackTests: XCTestCase {
         let track = try document.addAnimationTrack(clipID: clip.id, target: .camera)
         _ = try document.setAnimationKeyframe(
             clipID: clip.id, trackID: track.id, time: 0,
-            camera: CADAnimationCameraValue(target: SIMD3(0, 0, 0), distance: 80,
+            camera: CADAnimationCameraValue(target: SIMD3(0, 0, 0), distance: 0.08,
                                             azimuthRadians: 0, elevationRadians: 0.3,
                                             fovYDegrees: 60))
         _ = try document.setAnimationKeyframe(
             clipID: clip.id, trackID: track.id, time: clipDuration,
-            camera: CADAnimationCameraValue(target: SIMD3(0, 0, 0), distance: 120,
+            camera: CADAnimationCameraValue(target: SIMD3(0, 0, 0), distance: 0.12,
                                             azimuthRadians: 1.2, elevationRadians: 0.4,
                                             fovYDegrees: 60))
 
@@ -576,7 +605,7 @@ final class CADAnimationExportReadbackTests: XCTestCase {
             // autosave of the just-edited content is still pending.
             _ = try document.setAnimationKeyframe(
                 clipID: clip.id, trackID: track.id, time: clipDuration / 2,
-                camera: CADAnimationCameraValue(target: SIMD3(0, 0, 0), distance: 100,
+                camera: CADAnimationCameraValue(target: SIMD3(0, 0, 0), distance: 0.1,
                                                 azimuthRadians: 0.6,
                                                 elevationRadians: 0.35,
                                                 fovYDegrees: 60))
@@ -620,12 +649,65 @@ final class CADAnimationExportReadbackTests: XCTestCase {
                         render: RenderMesh(positions: positions, normals: normals,
                                            indices: indices),
                         revision: 1)
-        body.material = BodyMaterialSpec(baseColor: SIMD4(0.75, 0.78, 0.85, 1),
-                                         metallic: 0, roughness: 0.6)
+        body.material = BodyMaterialSpec(baseColor: SIMD4(0.85, 0.05, 0.02, 1),
+                                         metallic: 0, roughness: 0.6,
+                                         emissive: SIMD3(0.9, 0.03, 0.01),
+                                         emissiveStrength: 0.5)
         return body
     }
 
     // MARK: Independent media probe (AVFoundation, public API only)
+
+    private static func readPixels(_ url: URL) async throws -> [[UInt8]] {
+        let asset = AVURLAsset(url: url)
+        let tracks = try await asset.loadTracks(withMediaType: .video)
+        let track = try XCTUnwrap(tracks.first)
+        let reader = try AVAssetReader(asset: asset)
+        let output = AVAssetReaderTrackOutput(track: track, outputSettings: [
+            kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA,
+        ])
+        reader.add(output)
+        XCTAssertTrue(reader.startReading())
+        var frames: [[UInt8]] = []
+        while let sample = output.copyNextSampleBuffer() {
+            let pixel = try XCTUnwrap(CMSampleBufferGetImageBuffer(sample))
+            XCTAssertEqual(CVPixelBufferGetWidth(pixel), 720)
+            XCTAssertEqual(CVPixelBufferGetHeight(pixel), 1280)
+            CVPixelBufferLockBaseAddress(pixel, .readOnly)
+            defer { CVPixelBufferUnlockBaseAddress(pixel, .readOnly) }
+            let source = try XCTUnwrap(CVPixelBufferGetBaseAddress(pixel))
+                .assumingMemoryBound(to: UInt8.self)
+            let stride = CVPixelBufferGetBytesPerRow(pixel)
+            var rgba = [UInt8](repeating: 0, count: 720 * 1280 * 4)
+            for y in 0..<1280 {
+                for x in 0..<720 {
+                    let from = y * stride + x * 4
+                    let to = (y * 720 + x) * 4
+                    rgba[to] = source[from + 2]
+                    rgba[to + 1] = source[from + 1]
+                    rgba[to + 2] = source[from]
+                    rgba[to + 3] = 255
+                }
+            }
+            frames.append(rgba)
+            guard frames.count <= 12 else {
+                reader.cancelReading()
+                XCTFail("the half-second 24fps witness contains unexpected extra frames")
+                return frames
+            }
+        }
+        XCTAssertEqual(reader.status, .completed, reader.error?.localizedDescription ?? "decode failed")
+        return frames
+    }
+
+    private static func redFraction(_ rgba: [UInt8]) -> Double {
+        var red = 0
+        for offset in stride(from: 0, to: rgba.count, by: 4) {
+            let r = Int(rgba[offset]), g = Int(rgba[offset + 1]), b = Int(rgba[offset + 2])
+            if r > 80, r > g * 2, r > b * 2 { red += 1 }
+        }
+        return Double(red) / Double(rgba.count / 4)
+    }
 
     private struct VideoProbe {
         var width: Int

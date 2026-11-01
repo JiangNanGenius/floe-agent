@@ -119,12 +119,14 @@ enum CADQualificationFixture {
                 let track = try document.addAnimationTrack(clipID: clip.id, target: .camera)
                 _ = try document.setAnimationKeyframe(
                     clipID: clip.id, trackID: track.id, time: 0,
-                    camera: CADAnimationCameraValue(target: SIMD3(100, 0, 30), distance: 400,
+                    // Animation cameras use presentation metres; geometry
+                    // and assembly placement above use model millimetres.
+                    camera: CADAnimationCameraValue(target: SIMD3(0.1, 0, 0.03), distance: 0.4,
                                                     azimuthRadians: 0.5, elevationRadians: 0.4,
                                                     fovYDegrees: 60))
                 _ = try document.setAnimationKeyframe(
                     clipID: clip.id, trackID: track.id, time: 0.5,
-                    camera: CADAnimationCameraValue(target: SIMD3(100, 0, 30), distance: 400,
+                    camera: CADAnimationCameraValue(target: SIMD3(0.1, 0, 0.03), distance: 0.4,
                                                     azimuthRadians: 0.7, elevationRadians: 0.4,
                                                     fovYDegrees: 60))
             }
