@@ -596,11 +596,6 @@ public actor FloeAgentRuntime {
     /// consumer tickets for in-flight calls and an exclusive, active-consumer
     /// aware ticket for genuinely unsafe environment lifecycle operations.
     private let environmentCoordinator = SharedEnvironmentCoordinator()
-    /// Frozen identity of the descriptors this run actually offers, computed
-    /// once on first use. Permission/catalog identity is frozen separately
-    /// from per-turn schemas: delegated children discover against exactly the
-    /// parent's real ceiling, never a wider raw registry.
-    private var cachedRuntimeCatalogNames: Set<String>?
     /// Serializes human approval escalations. The parent resolves calls
     /// serially, but concurrent children can reach the policy at the same
     /// time; an approval card must never be re-targeted by a second
@@ -1593,14 +1588,26 @@ public actor FloeAgentRuntime {
         return descriptors
     }
 
-    /// Frozen name identity of the run's real catalog, computed once.
+    /// Live name identity of the run's real catalog.
     ///
     /// Child-only collaboration tools (`delegate.peers`, `delegate.message`)
     /// are part of the identity even though the main-run catalog never shows
     /// them: they are offered exclusively to delegated children, and the
     /// child dispatcher still enforces the boundary and the parent ceiling.
-    private func runtimeVisibleCatalogNameSet() -> Set<String> {
-        if let cachedRuntimeCatalogNames { return cachedRuntimeCatalogNames }
+    ///
+    /// This is re-derived on every dispatch. The App platform host publishes
+    /// a SAME-generation availability mask whenever a layer becomes usable
+    /// (task arm, screen scope, Accessibility/service state, selected roots),
+    /// so a name can enter or leave the real catalog without a new run or
+    /// runtime generation. Caching the first result made the frozen identity
+    /// disagree with the per-turn provider offer: a tool the App really
+    /// offered was refused as "not part of the task's offered catalog" before
+    /// the host ever saw it. Delegated children still receive the snapshot
+    /// carried by the parent context at delegation time, so a child can never
+    /// widen beyond the parent's live catalog.
+    /// `internal` so the focused same-generation availability regression can
+    /// prove this identity follows the live catalog; it is never a public API.
+    internal func runtimeVisibleCatalogNameSet() -> Set<String> {
         var names = Set(runtimeVisibleCatalogDescriptors().map(\.name))
         for descriptor in executor.allDescriptors
         where descriptor.executionBoundary == .childOnly {
@@ -1610,7 +1617,6 @@ public actor FloeAgentRuntime {
                TemporaryChatToolPolicy.readOnlyDescriptor(descriptor) == nil { continue }
             names.insert(descriptor.name)
         }
-        cachedRuntimeCatalogNames = names
         return names
     }
 

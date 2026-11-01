@@ -95,7 +95,7 @@ def valid_manifest_facts():
         "debuggable": False,
         "testOnly": False,
         "split": None,
-        "extractNativeLibs": False,
+        "extractNativeLibs": True,
         "hasInstrumentation": False,
         "applicationLabel": "@0x7f090004",
     }
@@ -140,9 +140,9 @@ def valid_native_facts():
                 "name": "lib/arm64-v8a/libFloeAndroidCore.so",
                 "bytes": 1234,
                 "sha256": "11" * 32,
-                "stored": True,
-                "zipDataOffset": 16384,
-                "zipAligned": True,
+                "stored": False,
+                "zipDataOffset": 16385,
+                "zipAligned": False,
                 "minLoadAlignment": 16384,
                 "loadAlignments": [16384, 16384],
                 "buildId": "22" * 20,
@@ -157,9 +157,9 @@ def valid_native_facts():
                 "name": "lib/arm64-v8a/libfloe_jni.so",
                 "bytes": 5678,
                 "sha256": "33" * 32,
-                "stored": True,
-                "zipDataOffset": 32768,
-                "zipAligned": True,
+                "stored": False,
+                "zipDataOffset": 32769,
+                "zipAligned": False,
                 "minLoadAlignment": 16384,
                 "loadAlignments": [16384],
                 "buildId": "44" * 20,
@@ -172,6 +172,8 @@ def valid_native_facts():
             },
         ],
         "problems": [],
+        "extractNativeLibs": True,
+        "extractionLayout": "package-manager",
         "debugSectionBytes": 0,
         "maxDebugSectionBytes": 0,
         "testOnlyLibraries": [],
@@ -630,6 +632,99 @@ class ZipSafetyTests(BaseTempTest):
         self.assertGreater(offset, 0)
 
 
+def minimal_aarch64_elf(load_align=None):
+    """Return a minimal AArch64 ELF with one PT_LOAD at ``load_align``."""
+    align = tool.PAGE_16K if load_align is None else load_align
+    ident = b"\x7fELF\x02\x01\x01\x00" + b"\x00" * 8
+    header = ident + struct.pack(
+        "<HHIQQQIHHHHHH",
+        3,      # ET_DYN
+        tool.ELF_EM_AARCH64,
+        1,
+        0,
+        64,     # e_phoff
+        0,      # e_shoff
+        0,      # e_flags
+        64,     # e_ehsize
+        56,     # e_phentsize
+        1,      # e_phnum
+        64,     # e_shentsize
+        0,      # e_shnum
+        0,      # e_shstrndx
+    )
+    phdr = struct.pack("<IIQQQQQQ", 1, 5, 0, 0, 0, 0, 0, align)
+    return header + phdr + b"\x00" * 0x100
+
+
+class NativePackagingFactsTests(BaseTempTest):
+    """The outer ZIP policy is channel-specific; ELF 16 KiB is not waivable."""
+
+    NATIVE_ENTRIES = (
+        "lib/arm64-v8a/libFloeAndroidCore.so",
+        "lib/arm64-v8a/libfloe_jni.so",
+    )
+
+    def write_native_zip(self, compression, filler=0, load_align=None):
+        path = self.tmp / "native.apk"
+        blob = minimal_aarch64_elf(load_align)
+        with zipfile.ZipFile(str(path), "w") as archive:
+            if filler:
+                archive.writestr(
+                    "assets/pad.bin", b"\x00" * filler,
+                    compress_type=zipfile.ZIP_STORED,
+                )
+            for name in self.NATIVE_ENTRIES:
+                archive.writestr(name, blob, compress_type=compression)
+        return path
+
+    def problem_ids(self, facts):
+        return {problem["id"] for problem in facts["problems"]}
+
+    def test_full_extraction_allows_deflated_entries(self):
+        path = self.write_native_zip(zipfile.ZIP_DEFLATED)
+        facts = tool.native_facts(path, extract_native_libs=True)
+        ids = self.problem_ids(facts)
+        self.assertNotIn("native.compression", ids)
+        self.assertNotIn("native.zip-alignment", ids)
+        self.assertEqual(facts["extractionLayout"], "package-manager")
+        self.assertTrue(facts["extractNativeLibs"])
+
+    def test_mapped_layout_still_requires_stored_entries(self):
+        path = self.write_native_zip(zipfile.ZIP_DEFLATED)
+        facts = tool.native_facts(path, extract_native_libs=False)
+        ids = self.problem_ids(facts)
+        self.assertIn("native.compression", ids)
+        self.assertIn("native.zip-alignment", ids)
+        self.assertEqual(facts["extractionLayout"], "zip-mapped")
+
+    def test_full_extraction_still_requires_stored_zip_alignment(self):
+        path = None
+        for filler in range(0, 256):
+            candidate = self.write_native_zip(
+                zipfile.ZIP_STORED, filler=filler
+            )
+            with zipfile.ZipFile(str(candidate), "r") as archive:
+                info = archive.getinfo(self.NATIVE_ENTRIES[0])
+                if tool.zip_data_offset(archive, info) % tool.PAGE_16K:
+                    path = candidate
+                    break
+        self.assertIsNotNone(path, "could not build an unaligned stored fixture")
+        ids = self.problem_ids(
+            tool.native_facts(path, extract_native_libs=True)
+        )
+        self.assertIn("native.zip-alignment", ids)
+        self.assertNotIn("native.compression", ids)
+
+    def test_elf_16k_is_never_waived_by_extraction(self):
+        path = self.write_native_zip(
+            zipfile.ZIP_DEFLATED, load_align=4096
+        )
+        ids = self.problem_ids(
+            tool.native_facts(path, extract_native_libs=True)
+        )
+        self.assertIn("native.elf-alignment", ids)
+
+
 class ManifestParserTests(unittest.TestCase):
     def test_debug_manifest_fixture(self):
         facts = tool.manifest_tree_facts(
@@ -807,10 +902,27 @@ class EvaluationTests(BaseTempTest):
         facts["manifest"]["hasInstrumentation"] = True
         self.assert_failure(self.evaluate(facts), "manifest.instrumentation")
 
-    def test_extract_native_libs_true_is_rejected(self):
+    def test_extract_native_libs_false_is_rejected(self):
+        # The Full embedded starter executes from nativeLibraryDir; a mapped
+        # layout would leave libfloe_starter.so unextracted and unusable.
         facts = valid_facts()
-        facts["manifest"]["extractNativeLibs"] = True
+        facts["manifest"]["extractNativeLibs"] = False
         self.assert_failure(self.evaluate(facts), "manifest.extract-native-libs")
+
+    def test_absent_extract_native_libs_is_rejected(self):
+        facts = valid_facts()
+        facts["manifest"]["extractNativeLibs"] = None
+        self.assert_failure(self.evaluate(facts), "manifest.extract-native-libs")
+
+    def test_full_deflated_native_layout_is_accepted(self):
+        facts = valid_facts()
+        self.assertTrue(all(not item["stored"] for item in facts["native"]["libraries"]))
+        self.assertFalse(any(
+            problem["id"] in ("native.compression", "native.zip-alignment")
+            for problem in facts["native"]["problems"]
+        ))
+        self.assertTrue(self.evaluate(facts)["ok"])
+
 
     def test_zip_problem_is_propagated(self):
         facts = valid_facts()

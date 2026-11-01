@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  User-granted phone automation. It is not declared as an assistive
+  accessibility tool (isAccessibilityTool=false), and it does not request
+  touch exploration, key filtering, fingerprint gestures or overlays. Window
+  content is read only inside an explicit, host-authorized operation.
+-->
+<accessibility-service xmlns:android="http://schemas.android.com/apk/res/android"
+    android:description="@string/phonecontrol_service_description"
+    android:accessibilityEventTypes="typeWindowStateChanged|typeWindowsChanged|typeWindowContentChanged|typeViewScrolled|typeViewClicked|typeTouchInteractionStart|typeTouchInteractionEnd"
+    android:accessibilityFeedbackType="feedbackGeneric"
+    android:notificationTimeout="100"
+    android:accessibilityFlags="flagReportViewIds|flagRetrieveInteractiveWindows|flagIncludeNotImportantViews"
+    android:canRetrieveWindowContent="true"
+    android:canPerformGestures="true"
+    android:canTakeScreenshot="true"
+    android:isAccessibilityTool="false" />

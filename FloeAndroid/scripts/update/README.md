@@ -83,7 +83,7 @@ magic          11 B   "FLOEPATCH1\n"
 header length   u32 LE
 header          UTF-8 JSON: format/formatVersion, base{sha256,sizeBytes},
                 target{sha256,sizeBytes}, ops{copies,copyBytes,inserts,insertBytes},
-                matcher{name,window,stride}, producer
+                matcher{name,window,filter,minMatch}, producer
 ops (streamed):
   0x01 COPY     u64 LE baseOffset, u32 LE length
   0x02 INSERT   u32 LE length, <length raw bytes>
@@ -107,3 +107,25 @@ round-trip SHA-256 == target SHA-256
 This measurement is evidence for the pipeline only; it is **not** a published
 Alpha17 asset (the Alpha17 release and its three assets are immutable, and no
 installed client can consume a delta yet).
+
+## ZIP-aware matching
+
+The producer matches identical raw ZIP entry payloads by SHA-256, regardless of
+their absolute offsets. Large changed entries using the same storage method
+use content-defined CRC32 anchors with byte comparison before every COPY.
+Recompressed entries may require literal INSERT data; a smaller full APK does
+not guarantee a smaller patch. The configured maximum patch ratio and exact
+round-trip check remain mandatory.
+
+This changes the producer, while the FloePatch v1 wire format, manifest schema
+and installed Android consumer stay compatible. The matcher header records
+`zip-anchor-crc32`, `window`, `filter` and `minMatch`. Legacy `--window`,
+`--stride` and `--max-candidates` arguments remain accepted for CLI
+compatibility; they do not tune the ZIP-aware matcher.
+
+Run the existing format tests and the ZIP offset/compression regressions with:
+
+```sh
+python3 scripts/update/test_produce_update_delta.py
+python3 scripts/update/test_produce_update_delta_zip.py
+```

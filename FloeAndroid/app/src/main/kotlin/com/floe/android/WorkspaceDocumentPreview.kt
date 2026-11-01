@@ -74,6 +74,7 @@ internal fun WorkspaceDocumentPreview(
     owner: Owner,
     onBackToFiles: () -> Unit,
     onCloseTask: () -> Unit,
+    onEdit: (() -> Unit)? = null,
 ) {
     val state by controller.state.collectAsState()
     LaunchedEffect(request.token, request.path, owner.nativeEpoch, owner.hostGeneration) {
@@ -92,6 +93,7 @@ internal fun WorkspaceDocumentPreview(
             fileName = request.fileName,
             onBackToFiles = onBackToFiles,
             onCloseTask = onCloseTask,
+            onEdit = onEdit,
         )
         com.floe.android.design.FloeDivider()
         Box(Modifier.fillMaxSize()) {

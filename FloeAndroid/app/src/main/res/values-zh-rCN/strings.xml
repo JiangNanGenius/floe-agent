@@ -479,4 +479,5 @@
     <string name="workspace_terminal_closed_hint">会话已关闭。重新打开终端可开始新会话。</string>
     <string name="workspace_terminal_empty_title">暂无终端标签页</string>
     <string name="workspace_terminal_empty_hint">新建标签页以在此任务中启动终端。</string>
+    <string name="terminal_open_runtime_setup">设置本地运行环境</string>
 </resources>

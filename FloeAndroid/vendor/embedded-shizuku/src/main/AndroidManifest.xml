@@ -1,0 +1,5 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- No components. The Floe system provider, service declarations and
+         permissions live in :feature:rootsystem so that Floe-specific identity
+         and caller checks stay in one reviewed place. -->
+</manifest>

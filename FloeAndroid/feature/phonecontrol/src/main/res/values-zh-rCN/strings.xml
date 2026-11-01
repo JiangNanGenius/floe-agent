@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="phonecontrol_service_label">Floe 手机操作</string>
+    <string name="phonecontrol_service_description">允许你启动的任务查看并操作应用界面。当你触摸或操作屏幕、锁定设备或关闭此服务时会停止。</string>
+</resources>

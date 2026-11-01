@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Wi-Fi 覆盖限制的界面文案。核心模块仍为工具/导出输出英文原句；App 只把已知模板
+     映射为当前界面语言，未知文本原样保留，缓存扫描时间与“非校准”语义不变。 -->
+<resources>
+    <string name="coverage_limitation_sampled">覆盖范围由你在指定位置手动采样，不是连续射频测量。</string>
+    <string name="coverage_limitation_strongest">信号强度来自真实扫描中的最强接入点，不是校准过的热力图。</string>
+    <string name="coverage_limitation_no_telemetry">不使用 GPS、RTT 测距、后台扫描或合成接入点。</string>
+    <string name="coverage_limitation_no_floorplan">未附加平面图，因此显示网格视图。</string>
+    <string name="coverage_limitation_stale">%1$d 个采样点超过 10 分钟。</string>
+    <string name="coverage_limitation_cached">%1$d 个采样点使用缓存扫描，界面会显示其缓存时间。</string>
+    <string name="coverage_limitation_permission">%1$d 个采样缺少 Wi-Fi 扫描权限或定位服务。</string>
+    <string name="coverage_limitation_no_signal">%1$d 个采样未发现接入点。</string>
+    <string name="coverage_limitation_unsampled">%1$d 个网格单元没有采样。</string>
+</resources>

@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- G09-R1 media workbench presentation module. No permissions, providers,
+     activities or services are declared here: the App host owns the runtime,
+     storage and SAF effects. This module contains Compose UI and retained
+     presentation controllers only. -->
+<manifest />

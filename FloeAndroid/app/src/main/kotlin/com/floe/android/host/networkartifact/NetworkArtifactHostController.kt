@@ -722,7 +722,16 @@ class NetworkArtifactHostController(
         val image = coverage.floorplan(session.sessionID)
         val projection = NetworkArtifactProjection.coverage(
             session, System.currentTimeMillis(), image,
-        )
+        ).let { base ->
+            // UI copy, not wire data: the core sentence set is protocol-facing
+            // English (also used by exports), so the coverage screen maps its
+            // KNOWN templates to the current UI language here. Counts and the
+            // non-calibrated/cached-scan caveats are preserved; unknown text
+            // stays verbatim.
+            base.copy(
+                limitations = base.limitations.map { CoverageLimitationCopy.localize(appContext, it) },
+            )
+        }
         mutableState.update { state ->
             state.copy(coverage = state.coverage.copy(
                 selectedID = session.sessionID,

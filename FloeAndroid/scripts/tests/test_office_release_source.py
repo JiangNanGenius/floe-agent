@@ -318,7 +318,7 @@ class OfficeFixture:
         put("asset-overlays.json", self.overlays_bytes)
         put("producer-manifest.json", self.manifest_bytes)
         put("payload-pins.json", (json.dumps(self.pins_obj, indent=2, ensure_ascii=False) + "\n").encode("utf-8"))
-        put("README.md", b"# module notes\nrun with -Pfloe.office.payloadDir=\"/Volumes/TECLAST-512/IOS AI AGENT/Local/Private/x\"\n")
+        put("README.md", b"# module notes\nrun with -Pfloe.office.payloadDir=\"/Volumes/FLOE_TEST_VOLUME/example/Local/Private/x\"\n")
         put("tools/README.md",
             (b"# Office engine payload producer inputs\nsee "
              + ofc.README_REDACTIONS[0][0].encode()
@@ -1114,7 +1114,7 @@ def minimal_stage_facts():
         "manifest": {"package": "com.floe.agent.full", "versionCode": 14,
                      "versionName": "0.1.0-alpha.12", "minSdk": 28, "targetSdk": 37,
                      "debuggable": False, "testOnly": False, "split": None,
-                     "extractNativeLibs": False, "hasInstrumentation": False,
+                     "extractNativeLibs": True, "hasInstrumentation": False,
                      "applicationLabel": "@0x1"},
         "badging": {"package": "com.floe.agent.full", "versionCode": "14",
                     "versionName": "0.1.0-alpha.12", "abis": ["arm64-v8a"]},

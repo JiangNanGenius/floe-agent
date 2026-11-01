@@ -1,1 +1,18 @@
-<manifest />
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <!--
+      Full-only module. The provider is the single publication channel for the
+      Floe-owned shell/root service binder. It is exported only so the process
+      launched as shell (UID 2000) or root (UID 0) can publish; the caller must
+      hold android.permission.INTERACT_ACROSS_USERS_FULL, the hub checks the
+      exact UID for the advertised mode, and binders are returned only to this
+      App's own UID. Play variants must not include this module.
+    -->
+    <application>
+        <provider
+            android:name="com.floe.android.rootsystem.ipc.FloeSystemProvider"
+            android:authorities="${applicationId}.floe.system"
+            android:exported="true"
+            android:multiprocess="false"
+            android:permission="android.permission.INTERACT_ACROSS_USERS_FULL" />
+    </application>
+</manifest>

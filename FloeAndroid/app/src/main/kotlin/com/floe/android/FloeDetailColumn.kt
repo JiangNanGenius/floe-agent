@@ -108,7 +108,12 @@ fun FloeDetailColumn(
                     onNavigate = { if (compact) onOpenDrawer() else onExpandSidebar() },
                 )
                 MoreDestination.NOTES -> NotesDestination(showSidebarToggle, onExpandSidebar, onOpenDrawer, compact, onOpenSettingsSection)
-                MoreDestination.CREATIVE -> FloePlaceholderPage(stringResource(R.string.creative), FloeIcons.Creative, stringResource(R.string.workspace_later_update), showSidebarToggle, onExpandSidebar, onOpenDrawer, compact)
+                MoreDestination.CREATIVE -> CreativeDestination(
+                    showSidebarToggle = showSidebarToggle,
+                    onExpandSidebar = onExpandSidebar,
+                    onOpenDrawer = onOpenDrawer,
+                    compact = compact,
+                )
                 // Skills opens the Settings sheet at the Skills section
                 // (handled in the shell's select); a direct route here shows
                 // the same honest pending surface as other later goals.

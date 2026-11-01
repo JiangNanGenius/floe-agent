@@ -3,7 +3,6 @@
 
 package com.floe.android
 
-import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -28,6 +27,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -114,6 +114,13 @@ fun SettingsSheet(
      * keeps the G01 provider summary placeholder.
      */
     providerContent: (@Composable (FloeSettingsHostGeometry, Modifier) -> Unit)? = null,
+    /**
+     * Flavour-provided categories (the FULL channel today). PLAY and an
+     * unwired process pass an empty list, so this shared host never carries a
+     * channel-specific identifier. A category appears only when the flavour
+     * supplies a real presentation, never as a fabricated default.
+     */
+    externalSections: List<FloeSettingsExternalSection> = emptyList(),
 ) {
     var section by rememberSaveable { mutableStateOf(initialSection.ifEmpty { FloeSettingsSection.GENERAL.name }) }
     // Wide mode only: the sheet's own column toggle hid the category list
@@ -137,10 +144,13 @@ fun SettingsSheet(
         if (visible) {
             val entrySection = FloeSettingsSection.entries
                 .firstOrNull { it.name == initialSection }
-            if (entrySection != null) {
-                // Explicit deep link: select the target; compact opens its
-                // detail directly, wide shows both panes with it selected.
-                section = entrySection.name
+            val externalEntry = externalSections
+                .firstOrNull { it.key == initialSection }
+            if (entrySection != null || externalEntry != null) {
+                // Explicit deep link (enum or channel category): select the
+                // target; compact opens its detail directly, wide shows both
+                // panes with it selected.
+                section = initialSection
                 wideListCollapsed = false
                 compactDetailOpen = true
             } else {
@@ -187,6 +197,20 @@ fun SettingsSheet(
             val wide = maxWidth >= FloeLayout.PersistentTwoColumnMinWidth &&
                 !FloeLayout.usesCompactNavigation(maxWidth.value, smallestWidth)
             val active = runCatching { FloeSettingsSection.valueOf(section) }.getOrDefault(FloeSettingsSection.GENERAL)
+            val activeExternal = externalSections.firstOrNull { it.key == section }
+            val activeTitle = activeExternal?.let { stringResource(it.titleRes) }
+                ?: settingsTitle(active)
+            // A channel category can disappear (detached presentation, channel
+            // hand-over). Never keep the stale external key selected: fall back
+            // to General, the same default a fresh presentation uses.
+            val externalKeys = externalSections.map { it.key }
+            LaunchedEffect(section, externalKeys) {
+                if (section !in externalKeys &&
+                    FloeSettingsSection.entries.none { it.name == section }
+                ) {
+                    section = FloeSettingsSection.GENERAL.name
+                }
+            }
             val categoryVisible = wide && !wideListCollapsed
             val hostGeometry = FloeSettingsHostGeometry(
                 windowBoundsPx = Rect(0f, 0f, windowWidth.toFloat(), windowHeight.toFloat()),
@@ -236,13 +260,37 @@ fun SettingsSheet(
                                         FloeSidebarRow(
                                             icon = settingsIcon(entry),
                                             label = settingsTitle(entry),
-                                            selected = entry == active,
+                                            selected = activeExternal == null && entry == active,
                                             onClick = { section = entry.name },
                                             selectionStyle = FloeSelectionStyle.GRAY,
                                             modifier = Modifier
                                                 .padding(horizontal = 12.dp)
                                                 .then(
-                                                    if (entry == active) {
+                                                    if (activeExternal == null && entry == active) {
+                                                        Modifier.onGloballyPositioned { coordinates ->
+                                                            val bounds = coordinates.boundsInWindow()
+                                                            if (selectedCategoryRowBounds != bounds) {
+                                                                selectedCategoryRowBounds = bounds
+                                                            }
+                                                        }
+                                                    } else {
+                                                        Modifier
+                                                    },
+                                                ),
+                                        )
+                                    }
+                                    externalSections.forEach { entry ->
+                                        val externalSelected = activeExternal?.key == entry.key
+                                        FloeSidebarRow(
+                                            icon = entry.icon,
+                                            label = stringResource(entry.titleRes),
+                                            selected = externalSelected,
+                                            onClick = { section = entry.key },
+                                            selectionStyle = FloeSelectionStyle.GRAY,
+                                            modifier = Modifier
+                                                .padding(horizontal = 12.dp)
+                                                .then(
+                                                    if (externalSelected) {
                                                         Modifier.onGloballyPositioned { coordinates ->
                                                             val bounds = coordinates.boundsInWindow()
                                                             if (selectedCategoryRowBounds != bounds) {
@@ -270,13 +318,24 @@ fun SettingsSheet(
                                 },
                         ) {
                             SettingsDetailHeader(
-                                title = settingsTitle(active),
+                                title = activeTitle,
                                 topPadding = 68.dp,
                                 showColumnToggle = wideListCollapsed,
                                 onToggleColumns = { wideListCollapsed = false },
                             )
                             val slot = providerContent
-                            if (active == FloeSettingsSection.PROVIDERS && slot != null) {
+                            if (activeExternal != null) {
+                                // The external page owns its own bounded
+                                // content; host exactly one scroll container.
+                                Column(
+                                    Modifier
+                                        .fillMaxWidth()
+                                        .weight(1f)
+                                        .verticalScroll(rememberScrollState()),
+                                ) {
+                                    activeExternal.content()
+                                }
+                            } else if (active == FloeSettingsSection.PROVIDERS && slot != null) {
                                 // The provider destination owns its list
                                 // scroll; the host supplies a finite slot with
                                 // no outer scrolling parent.
@@ -311,7 +370,7 @@ fun SettingsSheet(
                     Column(Modifier.fillMaxSize()) {
                         SheetToolbar(
                             title = if (compactDetailOpen) {
-                                settingsTitle(active)
+                                activeTitle
                             } else {
                                 stringResource(R.string.settings)
                             },
@@ -321,7 +380,26 @@ fun SettingsSheet(
                         )
                         if (compactDetailOpen) {
                             val slot = providerContent
-                            if (active == FloeSettingsSection.PROVIDERS && slot != null) {
+                            if (activeExternal != null) {
+                                // Same one-scroll-owner contract as the wide
+                                // pane: the external page supplies plain
+                                // content and the host owns the scroll.
+                                Column(
+                                    Modifier
+                                        .fillMaxSize()
+                                        .background(Floe.colors.groupedSurface),
+                                ) {
+                                    Spacer(Modifier.height(8.dp))
+                                    Column(
+                                        Modifier
+                                            .fillMaxWidth()
+                                            .weight(1f)
+                                            .verticalScroll(rememberScrollState()),
+                                    ) {
+                                        activeExternal.content()
+                                    }
+                                }
+                            } else if (active == FloeSettingsSection.PROVIDERS && slot != null) {
                                 Column(
                                     Modifier
                                         .fillMaxSize()
@@ -363,7 +441,10 @@ fun SettingsSheet(
                                     }
                                 }
                             }
-                            BackHandler { compactDetailOpen = false }
+                            // Settings hosts real text fields (pairing code,
+                            // provider forms). Back hides the keyboard first
+                            // instead of popping the page underneath it.
+                            ImeFirstBackHandler { compactDetailOpen = false }
                         } else {
                             Column(
                                 Modifier
@@ -377,6 +458,17 @@ fun SettingsSheet(
                                         label = settingsTitle(entry),
                                         selected = false,
                                         onClick = { section = entry.name; compactDetailOpen = true },
+                                        selectionStyle = FloeSelectionStyle.NONE,
+                                        modifier = Modifier.padding(horizontal = 12.dp),
+                                        trailing = { IconGlyph(FloeIcons.ChevronForward, Floe.colors.tertiaryLabel, 14.dp) },
+                                    )
+                                }
+                                externalSections.forEach { entry ->
+                                    FloeSidebarRow(
+                                        icon = entry.icon,
+                                        label = stringResource(entry.titleRes),
+                                        selected = false,
+                                        onClick = { section = entry.key; compactDetailOpen = true },
                                         selectionStyle = FloeSelectionStyle.NONE,
                                         modifier = Modifier.padding(horizontal = 12.dp),
                                         trailing = { IconGlyph(FloeIcons.ChevronForward, Floe.colors.tertiaryLabel, 14.dp) },

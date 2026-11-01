@@ -285,6 +285,8 @@ class RuntimeBootstrapCoordinator internal constructor(
     /** Proof captured only from a successful trusted start (RB1-R5). */
     @Volatile private var acceptedEpoch: Long? = null
     @Volatile private var acceptedToken: String? = null
+    /** Exact root string passed to the ACCEPTED owner start (G09 read-only). */
+    @Volatile private var acceptedRootPath: String? = null
     @Volatile private var bootstrapJob: Job? = null
     @Volatile private var bootstrapReceipt: String? = null
     @Volatile private var shutdownReceipt: String? = null
@@ -409,6 +411,7 @@ class RuntimeBootstrapCoordinator internal constructor(
                         // that owner instead of leaking it.
                         acceptedEpoch = epoch
                         acceptedToken = token
+                        acceptedRootPath = root
                         if (stopRequested || transitionToken.get() != transition) {
                             aborted = true
                         }
@@ -596,8 +599,21 @@ class RuntimeBootstrapCoordinator internal constructor(
         synchronized(stateLock) {
             acceptedEpoch = null
             acceptedToken = null
+            acceptedRootPath = null
         }
     }
+
+    /**
+     * G09 read-only accepted storage root + epoch. It is the EXACT root the
+     * accepted owner start used; there is no filesDir re-derivation here.
+     * Null before acceptance and after the real stop clears the proof.
+     */
+    fun acceptedStorageRoot(): com.floe.android.host.creative.CreativeAcceptedRoot? =
+        synchronized(stateLock) {
+            val epoch = acceptedEpoch ?: return null
+            val path = acceptedRootPath ?: return null
+            com.floe.android.host.creative.CreativeAcceptedRoot(path, epoch)
+        }
 
     // MARK: Effect polling (bounded, prompt-returning, typed JSON)
 

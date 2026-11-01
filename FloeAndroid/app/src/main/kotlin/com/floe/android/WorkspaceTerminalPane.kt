@@ -86,6 +86,11 @@ internal fun WorkspaceTerminalPane(
     val colors = Floe.colors
     val scope = rememberCoroutineScope()
     val clipboard = LocalClipboardManager.current
+    // The PTY surface owns a real IME connection while this pane is the
+    // visible one. Leaving the pane (inspector tab switch, close, conversation
+    // change) must release that keyboard; the detached proxy cannot keep it
+    // above the drawer or the next surface (Samsung G07.3B evidence).
+    val dismissIme = rememberImeDismissal()
 
     var snapshot by remember(conversationID) { mutableStateOf<TerminalSessionSnapshot?>(null) }
     // G07.3A tab strip: the pane renders the Application-owned tab registry;
@@ -141,6 +146,13 @@ internal fun WorkspaceTerminalPane(
         previousLivePhase = phase
     }
     val application = LocalContext.current.applicationContext as? FloeApplication
+
+    // Explicit keyboard ownership: dismissal happens exactly when this pane
+    // stops being the visible owner (tab switch, close, conversation change),
+    // never on ordinary recomposition or a late controller rebind.
+    DisposableEffect(conversationID) {
+        onDispose { dismissIme() }
+    }
 
     // Pane-scoped observation ONLY (detaching never stops the session).
     DisposableEffect(controller, conversationID) {
@@ -634,6 +646,16 @@ internal fun WorkspaceTerminalPane(
                                 color = colors.secondaryLabel,
                             )
                         }
+                        if (onOpenEnvironment != null && (controller == null || !terminalReady)) {
+                            // The not-ready answer keeps ONE actionable path to
+                            // the SAME Local Runtime setup surface the settings
+                            // card opens; the pane never claims an install and
+                            // never starts a second installer here.
+                            FloeCapsuleButton(
+                                stringResource(R.string.terminal_open_runtime_setup),
+                                onClick = { onOpenEnvironment?.invoke() },
+                            )
+                        }
                     }
                 }
             } else if (pendingSelected) {
@@ -760,6 +782,17 @@ internal fun WorkspaceTerminalPane(
                                         snapshot = host.currentSnapshot(conversationID) ?: snapshot
                                     }
                                 },
+                            )
+                        }
+                        if (onOpenEnvironment != null && (controller == null || !qualified)) {
+                            // Terminal not ready: route the user to the EXISTING
+                            // local runtime setup/prompt flow owned by the
+                            // inspector (the same LocalRuntimeSettingsCard the
+                            // settings card opens). No parallel installer, no
+                            // fake start.
+                            FloeCapsuleButton(
+                                stringResource(R.string.terminal_open_runtime_setup),
+                                onClick = { onOpenEnvironment?.invoke() },
                             )
                         }
                         if (controller != null && qualified) {

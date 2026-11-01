@@ -15,6 +15,109 @@ import java.util.Locale
 
 object ProviderFormLogic {
 
+    /** Capability bits the model editor exposes as user decisions
+     * (⇄ iPad `userEditable`: vision/tools/image/video). TEXT and APPROVAL are
+     * role-forced and can never be toggled here. */
+    val editableCapabilityBits: Int = listOf(
+        ModelCapabilityUi.VISION,
+        ModelCapabilityUi.TOOLS,
+        ModelCapabilityUi.IMAGE_GENERATION,
+        ModelCapabilityUi.IMAGE_EDITING,
+        ModelCapabilityUi.VIDEO_GENERATION,
+    ).fold(0) { bits, item -> bits or item.swiftBit }
+
+    /** Every capability bit this pinned presentation knows about. Bits
+     * outside this mask are future/unknown and must be preserved verbatim. */
+    val knownCapabilityBits: Int =
+        ModelCapabilityUi.entries.fold(0) { bits, item -> bits or item.swiftBit }
+
+    /** The required text role bit (⇄ ModelCapabilities.text). */
+    const val TEXT_CAPABILITY_BIT: Int = 1
+
+    /** The legacy approval role bit (⇄ ModelCapabilities.approval). */
+    const val APPROVAL_CAPABILITY_BIT: Int = 32
+
+    /**
+     * The OLD Android producer encoded `explicitCapabilities` as an
+     * OWNERSHIP/changed mask, not as selected values: it recorded every
+     * user-editable bit that had ever been toggled, regardless of whether the
+     * resulting value was ON or OFF.
+     *
+     * This is only the bit SHAPE of that mask (non-zero, no non-editable or
+     * unknown bit). It is never sufficient on its own: a complete media
+     * override may legitimately be editable-only too (e.g. explicit 8 on
+     * base 24 = image generation on, image editing off). Legacy inference
+     * must also require a conversational base row — see
+     * [isLegacyConversationCapabilityOverride].
+     */
+    fun isLegacyPartialCapabilityOverride(explicit: Int?): Boolean =
+        explicit != null && explicit != 0 &&
+            (explicit and editableCapabilityBits.inv()) == 0
+
+    /**
+     * The ONLY provable legacy conversational row: the complete base row owns
+     * the required text role AND the persisted explicit is exactly a non-zero
+     * editable-only ownership signature.
+     *
+     * Reviewed values stay authoritative: an empty explicit (reviewed all
+     * off), approval-only/no-text 32, a valid text override (35 with Tools
+     * off), every media override (8 on base 24) and any unknown
+     * non-editable/unknown mask are NOT this shape and are never inferred or
+     * repaired. Only known ownership deltas (2/4/6/8… of the editable mask
+     * 94) can be the old Android encoder's output.
+     */
+    fun isLegacyConversationCapabilityOverride(
+        baseCapabilities: Int?,
+        explicitCapabilities: Int?,
+    ): Boolean {
+        val base = baseCapabilities ?: return false
+        return (base and TEXT_CAPABILITY_BIT) != 0 &&
+            isLegacyPartialCapabilityOverride(explicitCapabilities)
+    }
+
+    /**
+     * The selected editable state a row really has before any new edit.
+     * A proven legacy ownership mask carries no selected-value authority, so
+     * its values are derived FROM the complete base row. Every other
+     * persisted explicit — reviewed 0, approval-only 32, media 8, valid 35 —
+     * is a complete authoritative override and is returned unchanged.
+     */
+    fun effectiveSelectedCapabilities(
+        baseCapabilities: Int?,
+        explicitCapabilities: Int?,
+    ): Int? {
+        val selected = explicitCapabilities ?: return baseCapabilities
+        if (isLegacyConversationCapabilityOverride(baseCapabilities, selected)) {
+            return baseCapabilities
+        }
+        return selected
+    }
+
+    /**
+     * Strongly targeted repair for one proven legacy conversational row:
+     * derive the full selected value FROM the complete base mask (never from
+     * the ownership mask) and preserve only non-editable/unknown bits. It
+     * never ORs an owned mutable bit back on, so a Tools/Vision OFF that is
+     * absent from base stays OFF. Rows outside the narrow predicate return
+     * null and are left untouched.
+     *
+     * Main cases: base37/owned2 -> 37; base39/owned2 -> 39;
+     * base35/owned6 -> 35; base33/owned4 -> 33.
+     */
+    fun repairedLegacyExplicitCapabilities(
+        baseCapabilities: Int?,
+        explicitCapabilities: Int?,
+    ): Int? {
+        if (!isLegacyConversationCapabilityOverride(
+                baseCapabilities, explicitCapabilities,
+            )
+        ) return null
+        val base = baseCapabilities ?: return null
+        val explicit = explicitCapabilities ?: return null
+        val repaired = base or (explicit and editableCapabilityBits.inv())
+        return repaired.takeIf { it != explicit }
+    }
+
     /** ⇄ ProviderCatalogIndex.normalized (lowercase + trim): the view-search
      * mirror on the immutable projection. Typing never performs network I/O. */
     fun normalizeQuery(query: String): String =
@@ -141,9 +244,9 @@ object ProviderFormLogic {
         }
     }
 
-    /** ⇄ updateModel presentation mirror: role-forced bits are host-side on
-     * save; the view keeps exactly what the user edited. Hiding a model that
-     * is the default clears the default (⇄ setModelHiddenFromPrimaryPicker). */
+    /** ⇄ updateModel presentation mirror: the view keeps exactly what the
+     * user edited. Hiding a model that is the default clears the default
+     * (⇄ setModelHiddenFromPrimaryPicker). */
     fun applyModelEdit(
         models: List<ModelDraftRowUi>,
         edited: ModelDraftRowUi,
@@ -152,21 +255,47 @@ object ProviderFormLogic {
         val index = models.indexOfFirst { it.draftModelId == edited.draftModelId }
         if (index < 0) return models to defaultModelDraftId
         val previous = models[index]
-        val editable = listOf(ModelCapabilityUi.VISION, ModelCapabilityUi.TOOLS,
-            ModelCapabilityUi.IMAGE_GENERATION, ModelCapabilityUi.IMAGE_EDITING,
-            ModelCapabilityUi.VIDEO_GENERATION).fold(0) { bits, item -> bits or item.swiftBit }
         fun bits(row: ModelDraftRowUi) = row.capabilities.fold(0) { value, item -> value or item.swiftBit }
-        val changed = (bits(previous) xor bits(edited)) and editable
+        val changed = (bits(previous) xor bits(edited)) and editableCapabilityBits
         val old = previous.savedMetadata
         val metadata = if (old != null || changed != 0) {
             val base = old ?: ModelSavedMetadataUi(reasoningEffortRaw = previous.reasoningEffort.swiftRaw)
-            val represented = ModelCapabilityUi.entries.fold(0) { value, item -> value or item.swiftBit }
-            val owned = (base.explicitCapabilitiesRaw ?: 0) or changed
-            base.copy(
-                capabilitiesRaw = bits(edited) or ((base.capabilitiesRaw ?: 0) and represented.inv()),
-                explicitCapabilitiesRaw = if (changed != 0) owned else base.explicitCapabilitiesRaw,
-                explicitCapabilitiesJSON = if (changed != 0) owned.toString() else base.explicitCapabilitiesJSON,
+            val baseBits = base.capabilitiesRaw ?: bits(previous)
+            // A proven legacy ownership mask is re-encoded from the complete
+            // base row even on a no-capability-change Save (rename/metadata),
+            // so an existing row heals without losing its role bits.
+            val repaired = repairedLegacyExplicitCapabilities(
+                baseCapabilities = baseBits,
+                explicitCapabilities = base.explicitCapabilitiesRaw,
             )
+            when {
+                // `explicitCapabilities` is a COMPLETE authoritative override
+                // downstream (RunModelAssembly.effectiveCapabilities =
+                // explicit ?? capabilities). Only this Save's actual selected
+                // editable decisions are written — never a delta, and never
+                // stale catalog TEXT/APPROVAL forced back into a row the user
+                // deliberately reviewed as empty. Unknown future bits the
+                // pinned presentation does not represent are retained.
+                changed != 0 -> {
+                    val unknownBits = (baseBits or (base.explicitCapabilitiesRaw ?: 0)) and
+                        knownCapabilityBits.inv()
+                    val complete = bits(edited) or unknownBits
+                    base.copy(
+                        capabilitiesRaw = complete,
+                        explicitCapabilitiesRaw = complete,
+                        explicitCapabilitiesJSON = complete.toString(),
+                    )
+                }
+                // No capability decision in this Save: a proven legacy mask
+                // heals to the complete base; any other persisted override
+                // (reviewed 0, 32, media 8, valid 35, nil) is retained as is.
+                repaired != null -> base.copy(
+                    capabilitiesRaw = repaired,
+                    explicitCapabilitiesRaw = repaired,
+                    explicitCapabilitiesJSON = repaired.toString(),
+                )
+                else -> base
+            }
         } else null
         val next = models.toMutableList()
         // Noneditable metadata belongs to the exact original row, even if

@@ -406,6 +406,11 @@ android {
     buildFeatures { compose = true; buildConfig = true }
     compileOptions { sourceCompatibility = JavaVersion.VERSION_17; targetCompatibility = JavaVersion.VERSION_17 }
     packaging {
+        // Channel policy is set per variant from the real "distribution"
+        // flavor below. This mapped baseline (extractNativeLibs=false, stored
+        // and 16 KiB-aligned ZIP entries for direct mmap) belongs to Play;
+        // Full overrides it because its embedded starter is executed from
+        // nativeLibraryDir and must be package-manager extracted.
         jniLibs.useLegacyPackaging = false
         // Preserve the verified upstream Office bytes. Their own immutable
         // payload pins are checked independently from Floe's Swift core;
@@ -429,6 +434,22 @@ android {
             "**/lib_TestingInterop.so",
             "**/lib_Testing_Foundation.so",
         )
+    }
+}
+
+// The Full channel is the only one that embeds the executable ADB starter.
+// StarterCommand executes "$nativeLibraryDir/libfloe_starter.so", so AGP must
+// extract native libraries for Full/fullDev. Play/playDev keep the mapped
+// baseline. Select the actual distribution-flavor identity and fail on an
+// unknown channel instead of matching a filename or accepting both values.
+androidComponents.onVariants { variant ->
+    val distribution = variant.productFlavors
+        .singleOrNull { it.first == "distribution" }?.second
+        ?: error("app variant ${variant.name} has no distribution flavor")
+    when (distribution) {
+        "full" -> variant.packaging.jniLibs.useLegacyPackaging.set(true)
+        "play" -> variant.packaging.jniLibs.useLegacyPackaging.set(false)
+        else -> error("unexpected app distribution flavor: $distribution")
     }
 }
 
@@ -486,6 +507,13 @@ dependencies {
     implementation(project(":feature:providers"))
     implementation(project(":feature:settings"))
     implementation(project(":feature:notescontracts"))
+    // G09-R1 creative Canvas/media typed contracts (host-only bridge v5).
+    implementation(project(":feature:canvascontracts"))
+    implementation(project(":feature:workbenchcontracts"))
+    // G09-R1 Canvas/media presentation modules consumed by the existing
+    // Creative destination and the workspace MEDIA/IMAGE document route.
+    implementation(project(":feature:canvas"))
+    implementation(project(":feature:workbench"))
     implementation(project(":core:notesmedia"))
     implementation(project(":feature:notes"))
     // G04 service/presentation modules; owner-bound host adapters gate use.

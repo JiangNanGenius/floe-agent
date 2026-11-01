@@ -94,7 +94,15 @@ private enum class WorkspaceToolbarMenu { NEW, MORE }
  * targets; no second mostly-empty strip is ever added.
  */
 @Composable
-internal fun WorkspaceFilesPane(host: RuntimeHost?, taskID: String?, title: String, onDismiss: () -> Unit) {
+internal fun WorkspaceFilesPane(
+    host: RuntimeHost?,
+    taskID: String?,
+    title: String,
+    onDismiss: () -> Unit,
+    /** Opens the inspector's EXISTING local runtime setup surface for a
+     * not-ready embedded terminal. Null keeps the pane inert (previews). */
+    onOpenEnvironment: (() -> Unit)? = null,
+) {
     val uiContext = LocalContext.current
     val context = uiContext.applicationContext
     val entry = taskID?.let { host?.conversations?.entryFor(it) }
@@ -377,6 +385,7 @@ internal fun WorkspaceFilesPane(host: RuntimeHost?, taskID: String?, title: Stri
             WorkspaceTerminalPane(
                 host.workspaceTerminal,
                 bound.client.taskID,
+                onOpenEnvironment = onOpenEnvironment,
                 onSessionSettled = {
                     if (bound.isCurrent()) presenter.refreshTreeKeepingExpansion()
                 },

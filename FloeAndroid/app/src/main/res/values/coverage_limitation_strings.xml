@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- User-facing Wi-Fi coverage limitation copy. The network core produces the
+     same sentences for tool/export output (protocol-facing English); the app
+     maps ONLY these known templates to the current UI language and leaves any
+     unknown text untouched. Values preserve the original caveats verbatim,
+     including cached-scan age and the not-calibrated strength meaning. -->
+<resources>
+    <string name="coverage_limitation_sampled">Coverage is user-sampled at explicit points; it is not a continuous RF survey.</string>
+    <string name="coverage_limitation_strongest">Signal level is the strongest access point seen by a real scan; it is not a calibrated heatmap.</string>
+    <string name="coverage_limitation_no_telemetry">No GPS, RTT ranging, background scanning or synthetic access points are used.</string>
+    <string name="coverage_limitation_no_floorplan">No floorplan is attached; the grid view is shown.</string>
+    <string name="coverage_limitation_stale">%1$d points are older than 10 minutes.</string>
+    <string name="coverage_limitation_cached">%1$d points use a cached scan; its age is shown.</string>
+    <string name="coverage_limitation_permission">%1$d samples lack Wi-Fi scan permission/location services.</string>
+    <string name="coverage_limitation_no_signal">%1$d samples returned no access point.</string>
+    <string name="coverage_limitation_unsampled">%1$d grid cells have no sample.</string>
+</resources>
