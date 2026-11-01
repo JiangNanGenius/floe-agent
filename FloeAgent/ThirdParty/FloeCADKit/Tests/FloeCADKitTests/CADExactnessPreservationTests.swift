@@ -1,6 +1,7 @@
 import XCTest
 import Foundation
 import Dispatch
+import Darwin
 import simd
 import Euclid
 @testable import FloeCAD
@@ -680,11 +681,13 @@ private final class M28ReplyBox {
     var value: [String: Any]?
 }
 
-/// Deterministic CSG checkpoint used by the cancellation test. It counts ONLY
-/// observations made from Euclid's Dispatch CSG worker threads (the service
-/// boundary checks run on MainActor and are ignored); at the threshold it
-/// blocks the worker until the detached canceller has requested task
-/// cancellation, so no wall-clock timing decides the test.
+/// Deterministic CSG checkpoint used by the cancellation test. Production
+/// invokes this ONLY through `CADMeshCancellation.kernelIsCancelled`, the
+/// callback handed to Euclid CSG; preparation and pre-commit guards use the
+/// side-effect-free getter, so the non-main predicate is a real kernel witness
+/// rather than service bookkeeping. At the threshold it blocks the worker until
+/// the detached canceller has requested task cancellation, so no wall-clock
+/// timing decides the test.
 nonisolated private final class M28CancellationGate: @unchecked Sendable {
     let entered = DispatchSemaphore(value: 0)
     let release = DispatchSemaphore(value: 0)
@@ -728,6 +731,1235 @@ nonisolated private final class M28CancellationGate: @unchecked Sendable {
     var count: Int {
         lock.lock()
         defer { lock.unlock() }
+        return observations
+    }
+}
+
+// MARK: - X08: off-main heavy mesh work and source-fenced commit
+
+/// App-hosted source tests for the original X08 boundary. They drive the REAL
+/// `CADMeshService` over real documents and real Euclid CSG/welding, hold a
+/// deterministic scheduling gate around that real compute, and measure the
+/// MainActor heartbeat while the worker is genuinely in flight. A fault gate
+/// makes timing deterministic; it never stubs result geometry.
+@MainActor
+final class CADMeshBackgroundX08Tests: XCTestCase {
+    private var workDir: URL!
+
+    override func setUpWithError() throws {
+        workDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("FloeCADMeshX08-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: workDir, withIntermediateDirectories: true)
+    }
+
+    override func tearDownWithError() throws {
+        CADMeshService.testHeavyComputeProbe = nil
+        CADMeshService.testBeforeCommitProbe = nil
+        CADMeshService.testComputeObservation = nil
+        if let workDir { try? FileManager.default.removeItem(at: workDir) }
+    }
+
+    private func makeDocument(_ name: String) async throws -> FloeCADDocument {
+        try await FloeCADDocument.create(at: workDir.appendingPathComponent("\(name).floecad"),
+                                         name: name)
+    }
+
+    private func cube(center: Vector = Vector(0, 0, 0), size: Double = 10) -> Euclid.Mesh {
+        .cube(center: center, size: Vector(size, size, size))
+    }
+
+    @discardableResult
+    private func addMeshBody(_ document: FloeCADDocument,
+                             name: String,
+                             mesh: Euclid.Mesh,
+                             transform: Transform3D = .identity) -> Body {
+        let body = Body(name: name, transform: transform, primitive: nil,
+                        euclidMesh: mesh, revision: 1)
+        document.session.perform(AddBodyCommand(body: body, title: "Test \(name)"))
+        return body
+    }
+
+    @discardableResult
+    private func addRenderBody(_ document: FloeCADDocument,
+                               name: String,
+                               render: RenderMesh,
+                               transform: Transform3D = .identity) -> Body {
+        // The edges payload is intentionally empty: FeatureEdgeExtractor would
+        // itself subscript a malformed index buffer before the service sees it.
+        let body = Body(id: BodyID(), name: name, transform: transform,
+                        render: render, edges: FeatureEdgeSet(segments: []), revision: 1)
+        document.session.perform(AddBodyCommand(body: body, title: "Test \(name)"))
+        return body
+    }
+
+    private func booleanArgs(op: String, target: Body, tools: [Body]) -> [String: Any] {
+        ["op": op,
+         "target": target.id.raw.uuidString,
+         "tools": tools.map { $0.id.raw.uuidString }]
+    }
+
+    private func nearLimitBooleanDocument() async throws -> (FloeCADDocument, [Body], Int) {
+        let document = try await makeDocument("X08NearLimitBoolean")
+        var bodies: [Body] = []
+        // 16 x ~29.7k triangles is just under the real 500k / 16-body caps.
+        for index in 0..<16 {
+            let mesh = Euclid.Mesh.sphere(radius: 6, slices: 150, stacks: 100)
+            var transform = Transform3D.identity
+            transform.translation = SIMD3(Double(index % 4) * 2, Double(index / 4) * 2, 0)
+            bodies.append(addMeshBody(document, name: "Near \(index + 1)",
+                                      mesh: mesh, transform: transform))
+        }
+        let total = bodies.reduce(0) { $0 + $1.render.triangleCount }
+        print("X08 near-limit boolean input triangles: \(total) across \(bodies.count) bodies")
+        XCTAssertLessThanOrEqual(total, CADMeshService.maxInputTriangles)
+        XCTAssertGreaterThanOrEqual(total, 450_000,
+                                    "the near-limit fixture must exercise the real upper bound")
+        XCTAssertEqual(bodies.count, CADMeshService.maxInputBodies)
+        guard total <= CADMeshService.maxInputTriangles else {
+            XCTFail("near-limit fixture produced \(total) triangles, above the service cap")
+            throw NSError(domain: "X08Fixture", code: 1)
+        }
+        return (document, bodies, total)
+    }
+
+    private func nearLimitGridMesh(nx: Int, ny: Int) -> RenderMesh {
+        var positions = [SIMD3<Float>]()
+        positions.reserveCapacity((nx + 1) * (ny + 1))
+        for y in 0...ny {
+            for x in 0...nx {
+                positions.append(SIMD3(Float(x), Float(y), 0))
+            }
+        }
+        var normals = [SIMD3<Float>]()
+        normals.reserveCapacity(positions.count)
+        for _ in positions { normals.append(SIMD3(0, 0, 1)) }
+        var indices = [UInt32]()
+        indices.reserveCapacity(nx * ny * 6)
+        let row = UInt32(nx + 1)
+        for y in 0..<ny {
+            for x in 0..<nx {
+                let i = UInt32(y) * row + UInt32(x)
+                indices.append(contentsOf: [i, i + 1, i + row,
+                                            i + 1, i + row + 1, i + row])
+            }
+        }
+        return RenderMesh(positions: positions, normals: normals, indices: indices)
+    }
+
+    // MARK: Actual Euclid boolean, heartbeat, undo/save/reopen
+
+    func testX08BooleanRunsOffMainAndKeepsMainActorResponsive() async throws {
+        let document = try await makeDocument("X08Boolean")
+        defer { if !document.isClosed { document.close() } }
+        let service = CADMeshService(document: document)
+        let first = addMeshBody(document, name: "Target", mesh: cube())
+        let second = addMeshBody(document, name: "Dense tool",
+                                 mesh: .sphere(radius: 6, slices: 48, stacks: 32))
+        let bodiesBefore = document.session.document.bodies.map(\.id.raw)
+        let changeCountBefore = document.session.changeCount
+        let undoCountBefore = document.session.undoStack.undoCommands.count
+
+        let probe = X08ComputeProbe(hold: 0.8)
+        CADMeshService.testHeavyComputeProbe = { probe.checkpoint(action: $0, triangles: $1) }
+        let observations = X08ComputeObservationBox()
+        CADMeshService.testComputeObservation = { observations.record($0) }
+        let memory = X08ProcessFootprintSampler()
+        memory.start()
+        let heartbeat = X08Heartbeat()
+        heartbeat.start()
+        let box = M28ReplyBox()
+        let requestStart = ContinuousClock.now
+        let task = Task { @MainActor in
+            box.value = await service.handleAsync(
+                action: "boolean",
+                args: booleanArgs(op: "union", target: first, tools: [second]))
+        }
+        await probe.waitEntered()
+        let gateStart = ContinuousClock.now
+        try await Task.sleep(nanoseconds: 800_000_000)
+        probe.releaseGate()
+        let gateObservedSeconds = seconds(gateStart.duration(to: .now))
+        await task.value
+        let requestSeconds = seconds(requestStart.duration(to: .now))
+        heartbeat.stop()
+        let memorySnapshot = memory.stop()
+
+        let reply = try XCTUnwrap(box.value)
+        let observation = observations.all.first
+        var metrics: [String: Any] = [
+            "inputTriangles": observation?.inputTriangles ?? probe.triangles,
+            "inputBodies": observation?.inputBodies ?? 2,
+            "computeRanOnMain": observation?.ranOnMainThread ?? probe.ranOnMain,
+            "probeRanOnMain": probe.ranOnMain,
+            "mainActorMaxGapSeconds": heartbeat.maxGap,
+            "mainActorTicks": heartbeat.ticks,
+            "computeSeconds": observation?.computeSeconds ?? -1,
+            "computeOutcome": observation?.outcome ?? "unobserved",
+            "requestSeconds": requestSeconds,
+            "probeGateConfiguredSeconds": probe.configuredHoldSeconds,
+            "probeGateObservedSeconds": gateObservedSeconds,
+            "memory": memoryMetrics(memorySnapshot),
+            "changeCountDelta": document.session.changeCount - changeCountBefore,
+            "undoDelta": document.session.undoStack.undoCommands.count - undoCountBefore,
+        ]
+        metrics.merge(replyMetrics(reply)) { _, new in new }
+        attachX08Metrics("boolean-responsive", fields: metrics)
+
+        XCTAssertEqual(reply["ok"] as? Bool, true, reply["message"] as? String ?? "")
+        XCTAssertFalse(probe.ranOnMain, "the real Euclid boolean must run off the MainActor")
+        XCTAssertEqual(probe.action, "boolean")
+        XCTAssertGreaterThan(probe.triangles, 1_000)
+        print("X08 boolean input triangles: \(probe.triangles)")
+        XCTAssertGreaterThanOrEqual(heartbeat.ticks, 20,
+                                    "the MainActor heartbeat must actually run during compute")
+        XCTAssertLessThan(heartbeat.maxGap, 0.5,
+                          "the MainActor was blocked for \(heartbeat.maxGap)s during off-main compute")
+        XCTAssertEqual(document.session.document.bodies.count, 1)
+        XCTAssertNotEqual(document.session.document.bodies.map(\.id.raw), bodiesBefore)
+
+        document.session.undo()
+        XCTAssertEqual(document.session.document.bodies.map(\.id.raw), bodiesBefore)
+        document.session.redo()
+        XCTAssertEqual(document.session.document.bodies.count, 1)
+
+        let committedVolume = MeasureKit.volume(of: try XCTUnwrap(
+            document.session.document.bodies.first))
+        let saved = await document.save()
+        XCTAssertTrue(saved.succeeded, saved.error ?? "")
+        let url = document.url
+        document.close()
+        let reopened = try await FloeCADDocument.open(at: url)
+        defer { reopened.close() }
+        XCTAssertEqual(reopened.session.document.bodies.count, 1,
+                       "the single committed boolean survives save/reopen")
+        XCTAssertEqual(MeasureKit.volume(of: try XCTUnwrap(
+            reopened.session.document.bodies.first)), committedVolume, accuracy: 1e-2)
+    }
+
+    // MARK: Near the real triangle/body cap
+
+    func testX08NearLimitBooleanEitherCommitsOnceOrRefusesAtDeadlineWithoutBlockingMain() async throws {
+        let (document, bodies, totalTriangles) = try await nearLimitBooleanDocument()
+        defer { if !document.isClosed { document.close() } }
+        let service = CADMeshService(document: document)
+        let target = bodies[0]
+        let tools = Array(bodies.dropFirst())
+        let changeCountBefore = document.session.changeCount
+        let idsBefore = document.session.document.bodies.map(\.id.raw)
+        let undoCountBefore = document.session.undoStack.undoCommands.count
+
+        let probe = X08ComputeProbe(hold: 0.2)
+        CADMeshService.testHeavyComputeProbe = { probe.checkpoint(action: $0, triangles: $1) }
+        let observations = X08ComputeObservationBox()
+        CADMeshService.testComputeObservation = { observations.record($0) }
+        let memory = X08ProcessFootprintSampler()
+        memory.start()
+        let heartbeat = X08Heartbeat()
+        heartbeat.start()
+        let box = M28ReplyBox()
+        let requestStart = ContinuousClock.now
+        let task = Task { @MainActor in
+            box.value = await service.handleAsync(
+                action: "boolean",
+                args: booleanArgs(op: "union", target: target, tools: tools))
+        }
+        await probe.waitEntered()
+        let gateStart = ContinuousClock.now
+        try await Task.sleep(nanoseconds: 200_000_000)
+        probe.releaseGate()
+        let gateObservedSeconds = seconds(gateStart.duration(to: .now))
+        await task.value
+        let requestSeconds = seconds(requestStart.duration(to: .now))
+        heartbeat.stop()
+        let memorySnapshot = memory.stop()
+
+        let reply = try XCTUnwrap(box.value)
+        let observation = observations.all.first
+        var metrics: [String: Any] = [
+            "inputTriangles": observation?.inputTriangles ?? probe.triangles,
+            "inputBodies": bodies.count,
+            "fixtureTriangles": totalTriangles,
+            "computeRanOnMain": observation?.ranOnMainThread ?? probe.ranOnMain,
+            "probeRanOnMain": probe.ranOnMain,
+            "mainActorMaxGapSeconds": heartbeat.maxGap,
+            "mainActorTicks": heartbeat.ticks,
+            "computeSeconds": observation?.computeSeconds ?? -1,
+            "computeOutcome": observation?.outcome ?? "unobserved",
+            "requestSeconds": requestSeconds,
+            "probeGateConfiguredSeconds": probe.configuredHoldSeconds,
+            "probeGateObservedSeconds": gateObservedSeconds,
+            "memory": memoryMetrics(memorySnapshot),
+            "changeCountDelta": document.session.changeCount - changeCountBefore,
+            "undoDelta": document.session.undoStack.undoCommands.count - undoCountBefore,
+        ]
+        metrics.merge(replyMetrics(reply)) { _, new in new }
+        attachX08Metrics("near-cap-boolean", fields: metrics)
+
+        XCTAssertFalse(probe.ranOnMain)
+        XCTAssertEqual(probe.triangles, totalTriangles)
+        XCTAssertLessThan(heartbeat.maxGap, 0.5,
+                          "near-limit boolean blocked the MainActor for \(heartbeat.maxGap)s")
+        if reply["ok"] as? Bool == true {
+            XCTAssertEqual(document.session.document.bodies.count, 1)
+            XCTAssertEqual(document.session.changeCount, changeCountBefore + 1)
+            document.session.undo()
+            XCTAssertEqual(document.session.document.bodies.map(\.id.raw), idsBefore)
+            document.session.redo()
+            XCTAssertEqual(document.session.document.bodies.count, 1)
+        } else {
+            XCTAssertEqual(reply["error"] as? String, "limit_time", "\(reply)")
+            XCTAssertEqual(document.session.document.bodies.map(\.id.raw), idsBefore)
+            XCTAssertEqual(document.session.changeCount, changeCountBefore,
+                           "a deadline refusal must not add an undo entry")
+        }
+    }
+
+    func testX08NearLimitSimplificationRunsOffMainAndKeepsMainActorResponsive() async throws {
+        let document = try await makeDocument("X08NearLimitSimplify")
+        defer { if !document.isClosed { document.close() } }
+        let service = CADMeshService(document: document)
+        let render = nearLimitGridMesh(nx: 400, ny: 600)
+        print("X08 simplification input triangles: \(render.triangleCount)")
+        XCTAssertEqual(render.triangleCount, 480_000)
+        let body = addRenderBody(document, name: "Grid", render: render)
+        let idsBefore = document.session.document.bodies.map(\.id.raw)
+        let changeCountBefore = document.session.changeCount
+        let undoCountBefore = document.session.undoStack.undoCommands.count
+
+        let probe = X08ComputeProbe(hold: 0.8)
+        CADMeshService.testHeavyComputeProbe = { probe.checkpoint(action: $0, triangles: $1) }
+        let observations = X08ComputeObservationBox()
+        CADMeshService.testComputeObservation = { observations.record($0) }
+        let memory = X08ProcessFootprintSampler()
+        memory.start()
+        let heartbeat = X08Heartbeat()
+        heartbeat.start()
+        let box = M28ReplyBox()
+        let requestStart = ContinuousClock.now
+        let task = Task { @MainActor in
+            box.value = await service.handleAsync(
+                action: "simplify",
+                args: ["bodyID": body.id.raw.uuidString, "tolerance": 1.5])
+        }
+        await probe.waitEntered()
+        let gateStart = ContinuousClock.now
+        try await Task.sleep(nanoseconds: 800_000_000)
+        probe.releaseGate()
+        let gateObservedSeconds = seconds(gateStart.duration(to: .now))
+        await task.value
+        let requestSeconds = seconds(requestStart.duration(to: .now))
+        heartbeat.stop()
+        let memorySnapshot = memory.stop()
+
+        let reply = try XCTUnwrap(box.value)
+        let observation = observations.all.first
+        var metrics: [String: Any] = [
+            "inputTriangles": observation?.inputTriangles ?? probe.triangles,
+            "inputBodies": observation?.inputBodies ?? 1,
+            "computeRanOnMain": observation?.ranOnMainThread ?? probe.ranOnMain,
+            "probeRanOnMain": probe.ranOnMain,
+            "mainActorMaxGapSeconds": heartbeat.maxGap,
+            "mainActorTicks": heartbeat.ticks,
+            "computeSeconds": observation?.computeSeconds ?? -1,
+            "computeOutcome": observation?.outcome ?? "unobserved",
+            "requestSeconds": requestSeconds,
+            "probeGateConfiguredSeconds": probe.configuredHoldSeconds,
+            "probeGateObservedSeconds": gateObservedSeconds,
+            "memory": memoryMetrics(memorySnapshot),
+            "changeCountDelta": document.session.changeCount - changeCountBefore,
+            "undoDelta": document.session.undoStack.undoCommands.count - undoCountBefore,
+        ]
+        metrics.merge(replyMetrics(reply)) { _, new in new }
+        attachX08Metrics("near-cap-simplify", fields: metrics)
+
+        XCTAssertEqual(reply["ok"] as? Bool, true, reply["message"] as? String ?? "")
+        XCTAssertFalse(probe.ranOnMain)
+        XCTAssertEqual(probe.action, "simplify")
+        XCTAssertEqual(probe.triangles, 480_000)
+        XCTAssertLessThan(heartbeat.maxGap, 0.5,
+                          "near-limit simplification blocked the MainActor for \(heartbeat.maxGap)s")
+        let entries = try XCTUnwrap(reply["bodies"] as? [[String: Any]])
+        XCTAssertEqual(entries.first?["beforeTriangles"] as? Int, 480_000)
+        let after = try XCTUnwrap(entries.first?["afterTriangles"] as? Int)
+        XCTAssertGreaterThanOrEqual(after, 4)
+        XCTAssertLessThan(after, 480_000)
+        XCTAssertEqual(document.session.document.bodies.count, 1)
+        XCTAssertEqual(document.session.document.bodies.first?.render.triangleCount, after)
+
+        document.session.undo()
+        XCTAssertEqual(document.session.document.bodies.map(\.id.raw), idsBefore)
+        XCTAssertEqual(document.session.document.bodies.first?.render.triangleCount, 480_000)
+    }
+
+    // MARK: Cancellation / source fence
+
+    func testX08OwnerCancelDuringRealEuclidCSGDiscardsThePartialResult() async throws {
+        let document = try await makeDocument("X08OwnerCancel")
+        defer { if !document.isClosed { document.close() } }
+        let service = CADMeshService(document: document)
+        let first = addMeshBody(document, name: "Run A", mesh: cube())
+        let second = addMeshBody(document, name: "Run B", mesh: cube(center: Vector(5, 0, 0)))
+        let tool = addMeshBody(document, name: "Run tool",
+                               mesh: .sphere(radius: 6, slices: 64, stacks: 48))
+
+        let successful = service.handle(action: "boolean",
+                                        args: booleanArgs(op: "union", target: first,
+                                                          tools: [second]))
+        XCTAssertEqual(successful["ok"] as? Bool, true, successful["message"] as? String ?? "")
+        let unionID = try XCTUnwrap(successful["outputBodyID"] as? String)
+        let unionBody = try XCTUnwrap(document.session.document.bodies.first {
+            $0.id.raw.uuidString == unionID
+        })
+        let bodies = document.session.document.bodies.map(\.id.raw)
+        let changeCount = document.session.changeCount
+        let undoCount = document.session.undoStack.undoCommands.count
+        let gate = M28CancellationGate(cancelAt: 4)
+        let token = CADMeshCancellation(checkpoint: { gate.checkpoint() })
+        let observations = X08ComputeObservationBox()
+        CADMeshService.testComputeObservation = { observations.record($0) }
+        let memory = X08ProcessFootprintSampler()
+        memory.start()
+        let box = M28ReplyBox()
+        let heartbeat = X08Heartbeat()
+        heartbeat.start()
+        let requestStart = ContinuousClock.now
+        let task = Task { @MainActor in
+            box.value = await service.handleAsync(
+                action: "boolean",
+                args: booleanArgs(op: "union", target: unionBody, tools: [tool]),
+                cancellation: token)
+        }
+        await Task.detached { gate.waitForEntered() }.value
+        let checkpointEnteredAt = ContinuousClock.now
+        try await Task.sleep(nanoseconds: 300_000_000)
+        let cancelAt = ContinuousClock.now
+        let cancelRequestedAfterSeconds = seconds(requestStart.duration(to: cancelAt))
+        XCTAssertTrue(CADMeshService.cancelActiveOperation(for: document))
+        XCTAssertTrue(token.isCancelled,
+                      "the owner cancel must flip the shared token before the caller returns")
+        gate.release.signal()
+        let releaseAt = ContinuousClock.now
+        let cancelToReleaseSeconds = seconds(cancelAt.duration(to: releaseAt))
+        await task.value
+        let joinAfterCancelSeconds = seconds(cancelAt.duration(to: .now))
+        let releaseToJoinSeconds = seconds(releaseAt.duration(to: .now))
+        let requestSeconds = seconds(requestStart.duration(to: .now))
+        heartbeat.stop()
+        let memorySnapshot = memory.stop()
+
+        let reply = try XCTUnwrap(box.value)
+        let observation = observations.all.first
+        var metrics: [String: Any] = [
+            "inputTriangles": observation?.inputTriangles ?? 0,
+            "inputBodies": observation?.inputBodies ?? 2,
+            "computeRanOnMain": observation?.ranOnMainThread ?? false,
+            "mainActorMaxGapSeconds": heartbeat.maxGap,
+            "mainActorTicks": heartbeat.ticks,
+            "computeSeconds": observation?.computeSeconds ?? -1,
+            "computeOutcome": observation?.outcome ?? "unobserved",
+            "requestSeconds": requestSeconds,
+            "computeScope": "detached input validation + real Euclid CSG; computeSeconds includes the deterministic M28 checkpoint hold, recorded separately below",
+            "checkpointCount": gate.count,
+            "checkpointEnteredAfterSeconds": seconds(requestStart.duration(to: checkpointEnteredAt)),
+            "cancelRequestedAfterSeconds": cancelRequestedAfterSeconds,
+            "cancelToReleaseSeconds": cancelToReleaseSeconds,
+            "joinAfterCancelSeconds": joinAfterCancelSeconds,
+            "releaseToJoinSeconds": releaseToJoinSeconds,
+            "gateHeldSeconds": seconds(checkpointEnteredAt.duration(to: cancelAt)),
+            "memory": memoryMetrics(memorySnapshot),
+            "changeCountDelta": document.session.changeCount - changeCount,
+            "undoDelta": document.session.undoStack.undoCommands.count - undoCount,
+        ]
+        metrics.merge(replyMetrics(reply)) { _, new in new }
+        attachX08Metrics("owner-cancel", fields: metrics)
+
+        XCTAssertGreaterThanOrEqual(gate.count, 4,
+                                    "cancellation must be observed inside real Euclid CSG")
+        XCTAssertEqual(reply["ok"] as? Bool, false)
+        XCTAssertEqual(reply["error"] as? String, "cancelled")
+        XCTAssertEqual(reply["mutated"] as? Bool, false)
+        XCTAssertLessThan(heartbeat.maxGap, 0.5)
+        XCTAssertEqual(document.session.document.bodies.map(\.id.raw), bodies)
+        XCTAssertEqual(document.session.changeCount, changeCount)
+        XCTAssertEqual(document.session.undoStack.undoCommands.count, undoCount,
+                       "a cancelled CSG must not add an undo entry")
+    }
+
+    func testX08NewerRunReplacesCancelledOwnerWithoutLosingItsRecordOrCommittingLate() async throws {
+        let document = try await makeDocument("X08OwnerReplace")
+        defer { if !document.isClosed { document.close() } }
+        let service = CADMeshService(document: document)
+        let firstA = addMeshBody(document, name: "Replace A1", mesh: cube())
+        let firstB = addMeshBody(document, name: "Replace A2",
+                                 mesh: cube(center: Vector(5, 0, 0)))
+        let secondA = addMeshBody(document, name: "Replace B1",
+                                  mesh: cube(center: Vector(0, 5, 0)))
+        let secondB = addMeshBody(document, name: "Replace B2",
+                                  mesh: cube(center: Vector(5, 5, 0)))
+        let idsBefore = document.session.document.bodies.map(\.id.raw)
+        let changeBefore = document.session.changeCount
+        let undoBefore = document.session.undoStack.undoCommands.count
+
+        let gate = X08SequencedComputeGate()
+        CADMeshService.testHeavyComputeProbe = { gate.checkpoint(action: $0, triangles: $1) }
+        let observations = X08ComputeObservationBox()
+        CADMeshService.testComputeObservation = { observations.record($0) }
+        let memory = X08ProcessFootprintSampler()
+        memory.start()
+        let heartbeat = X08Heartbeat()
+        heartbeat.start()
+        let firstBox = M28ReplyBox()
+        let secondBox = M28ReplyBox()
+        let requestStart = ContinuousClock.now
+        let firstTask = Task { @MainActor in
+            firstBox.value = await service.handleAsync(
+                action: "boolean",
+                args: booleanArgs(op: "union", target: firstA, tools: [firstB]))
+        }
+        await gate.waitFirstEntered()
+        let firstEnteredAt = ContinuousClock.now
+        let secondTask = Task { @MainActor in
+            secondBox.value = await service.handleAsync(
+                action: "boolean",
+                args: booleanArgs(op: "union", target: secondA, tools: [secondB]))
+        }
+        await gate.waitSecondEntered()
+        let secondEnteredAt = ContinuousClock.now
+        let active = try XCTUnwrap(service.activeOperationStatus())
+        XCTAssertEqual(active["action"] as? String, "boolean")
+        XCTAssertEqual(active["cancelRequested"] as? Bool, false,
+                       "the newer operation must own the record after replacing the old one")
+
+        gate.releaseFirst()
+        await firstTask.value
+        let firstReply = try XCTUnwrap(firstBox.value)
+        let oldJoinAt = ContinuousClock.now
+        XCTAssertEqual(firstReply["ok"] as? Bool, false)
+        XCTAssertEqual(firstReply["error"] as? String, "cancelled")
+        let activeAfterOldJoin = try XCTUnwrap(
+            service.activeOperationStatus(),
+            "the old run's finish must not remove the newer operation record")
+        XCTAssertEqual(activeAfterOldJoin["action"] as? String, "boolean")
+        XCTAssertEqual(document.session.changeCount, changeBefore,
+                       "the still-gated newer run must not have committed")
+        XCTAssertEqual(document.session.document.bodies.count, 4)
+
+        gate.releaseSecond()
+        await secondTask.value
+        let secondReply = try XCTUnwrap(secondBox.value)
+        let doneAt = ContinuousClock.now
+        heartbeat.stop()
+        let memorySnapshot = memory.stop()
+
+        let firstObservation = observations.all.first
+        let secondObservation = observations.all.dropFirst().first
+        var metrics: [String: Any] = [
+            "inputTriangles": gate.firstInputTriangles + gate.secondInputTriangles,
+            "firstInputTriangles": gate.firstInputTriangles,
+            "secondInputTriangles": gate.secondInputTriangles,
+            "inputBodies": 4,
+            "computeRanOnMain": (firstObservation?.ranOnMainThread ?? gate.firstRanOnMain)
+                || (secondObservation?.ranOnMainThread ?? gate.secondRanOnMain),
+            "firstComputeRanOnMain": firstObservation?.ranOnMainThread ?? gate.firstRanOnMain,
+            "secondComputeRanOnMain": secondObservation?.ranOnMainThread ?? gate.secondRanOnMain,
+            "probeFirstRanOnMain": gate.firstRanOnMain,
+            "probeSecondRanOnMain": gate.secondRanOnMain,
+            "mainActorMaxGapSeconds": heartbeat.maxGap,
+            "mainActorTicks": heartbeat.ticks,
+            "firstComputeSeconds": firstObservation?.computeSeconds ?? -1,
+            "firstComputeOutcome": firstObservation?.outcome ?? "unobserved",
+            "secondComputeSeconds": secondObservation?.computeSeconds ?? -1,
+            "secondComputeOutcome": secondObservation?.outcome ?? "unobserved",
+            "requestSeconds": seconds(requestStart.duration(to: doneAt)),
+            "firstEnteredAfterSeconds": seconds(requestStart.duration(to: firstEnteredAt)),
+            "secondEnteredAfterSeconds": seconds(requestStart.duration(to: secondEnteredAt)),
+            "oldJoinedAfterSecondEnteredSeconds": seconds(secondEnteredAt.duration(to: oldJoinAt)),
+            "secondCommittedAfterOldJoinSeconds": seconds(oldJoinAt.duration(to: doneAt)),
+            "memory": memoryMetrics(memorySnapshot),
+            "changeCountDelta": document.session.changeCount - changeBefore,
+            "undoDelta": document.session.undoStack.undoCommands.count - undoBefore,
+        ]
+        metrics.merge(replyMetrics(secondReply)) { _, new in new }
+        metrics["firstResultOk"] = firstReply["ok"] as? Bool ?? false
+        metrics["firstResultError"] = firstReply["error"] as? String ?? ""
+        attachX08Metrics("owner-replacement", fields: metrics)
+
+        XCTAssertEqual(firstReply["ok"] as? Bool, false)
+        XCTAssertEqual(firstReply["error"] as? String, "cancelled")
+        XCTAssertEqual(secondReply["ok"] as? Bool, true, secondReply["message"] as? String ?? "")
+        XCTAssertEqual(document.session.changeCount, changeBefore + 1,
+                       "exactly the newer operation commits")
+        XCTAssertEqual(document.session.undoStack.undoCommands.count, undoBefore + 1,
+                       "exactly one new undo entry")
+        XCTAssertEqual(document.session.document.bodies.count, 3)
+        XCTAssertNotNil(document.session.document.body(with: firstA.id))
+        XCTAssertNotNil(document.session.document.body(with: firstB.id))
+        XCTAssertNil(document.session.document.body(with: secondA.id))
+        XCTAssertNil(document.session.document.body(with: secondB.id))
+        XCTAssertNil(service.activeOperationStatus())
+        document.session.undo()
+        XCTAssertEqual(Set(document.session.document.bodies.map(\.id.raw)), Set(idsBefore))
+    }
+
+    func testX08EditedSourceDuringComputeIsRefusedWithoutTouchingGeometryOrHistory() async throws {
+        let document = try await makeDocument("X08EditedSource")
+        defer { if !document.isClosed { document.close() } }
+        let service = CADMeshService(document: document)
+        let first = addMeshBody(document, name: "Edit A", mesh: cube())
+        let second = addMeshBody(document, name: "Edit B", mesh: cube(center: Vector(5, 0, 0)))
+        let idsBefore = document.session.document.bodies.map(\.id.raw)
+        let gate = X08CommitGate()
+        CADMeshService.testBeforeCommitProbe = { gate.checkpoint() }
+
+        let box = M28ReplyBox()
+        let task = Task { @MainActor in
+            box.value = await service.handleAsync(
+                action: "boolean",
+                args: booleanArgs(op: "union", target: first, tools: [second]))
+        }
+        await gate.waitEntered()
+        var moved = first.transform
+        moved.translation += SIMD3(2, 0, 0)
+        document.session.perform(TransformBodiesCommand(
+            title: "Edit source", before: [first.id: first.transform], after: [first.id: moved]))
+        let changeCountAfterEdit = document.session.changeCount
+        let undoCountAfterEdit = document.session.undoStack.undoCommands.count
+        gate.releaseGate()
+        await task.value
+
+        let reply = try XCTUnwrap(box.value)
+        XCTAssertEqual(reply["ok"] as? Bool, false)
+        XCTAssertEqual(reply["error"] as? String, "source_changed", "\(reply)")
+        XCTAssertEqual(reply["mutated"] as? Bool, false)
+        XCTAssertEqual(document.session.document.bodies.map(\.id.raw), idsBefore)
+        XCTAssertEqual(document.session.changeCount, changeCountAfterEdit,
+                       "a stale result must not add a second undo entry")
+        XCTAssertEqual(document.session.undoStack.undoCommands.count, undoCountAfterEdit)
+        XCTAssertNotNil(document.session.document.body(with: first.id))
+    }
+
+    func testX08ClosedSourceDuringComputeIsRefused() async throws {
+        let document = try await makeDocument("X08ClosedSource")
+        let service = CADMeshService(document: document)
+        let first = addMeshBody(document, name: "Close A", mesh: cube())
+        let second = addMeshBody(document, name: "Close B", mesh: cube(center: Vector(5, 0, 0)))
+        let idsBefore = document.session.document.bodies.map(\.id.raw)
+        let changeCount = document.session.changeCount
+        let gate = X08CommitGate()
+        CADMeshService.testBeforeCommitProbe = { gate.checkpoint() }
+
+        let box = M28ReplyBox()
+        let task = Task { @MainActor in
+            box.value = await service.handleAsync(
+                action: "boolean",
+                args: booleanArgs(op: "union", target: first, tools: [second]))
+        }
+        await gate.waitEntered()
+        document.close()
+        gate.releaseGate()
+        await task.value
+
+        let reply = try XCTUnwrap(box.value)
+        XCTAssertEqual(reply["ok"] as? Bool, false)
+        XCTAssertEqual(reply["error"] as? String, "closed", "\(reply)")
+        XCTAssertEqual(reply["mutated"] as? Bool, false)
+        XCTAssertEqual(document.session.document.bodies.map(\.id.raw), idsBefore)
+        XCTAssertEqual(document.session.changeCount, changeCount)
+    }
+
+    func testX08ReadOnlyDocumentRefusesBeforeDispatch() async throws {
+        let url = workDir.appendingPathComponent("X08ReadOnly.floecad")
+        try await CADAssociativeFormatFixture.basicPackage(at: url)
+        try CADAssociativeFormatFixture.makeOpaque(url, kind: .definitionKind)
+        let document = try await FloeCADDocument.open(at: url)
+        defer { document.close() }
+        XCTAssertTrue(document.isReadOnly)
+        let body = try XCTUnwrap(document.session.document.bodies.first)
+        let probe = X08ObserveProbe()
+        CADMeshService.testHeavyComputeProbe = { probe.record(action: $0, triangles: $1) }
+        let reply = await CADMeshService(document: document).handleAsync(
+            action: "boolean",
+            args: ["op": "union",
+                   "target": body.id.raw.uuidString,
+                   "tools": [UUID().uuidString]])
+        XCTAssertEqual(reply["ok"] as? Bool, false)
+        XCTAssertEqual(reply["error"] as? String, "read_only", "\(reply)")
+        XCTAssertFalse(probe.seen, "a read-only document must refuse before dispatching a worker")
+    }
+
+    // MARK: The proposal/tool path uses the same off-main owner
+
+    func testX08ProposalPreviewRunsTheBooleanOffMain() async throws {
+        let document = try await makeDocument("X08Proposal")
+        defer { if !document.isClosed { document.close() } }
+        let first = addMeshBody(document, name: "Proposal A", mesh: cube())
+        let second = addMeshBody(document, name: "Proposal B",
+                                 mesh: cube(center: Vector(5, 0, 0)))
+        let saved = await document.save()
+        XCTAssertTrue(saved.succeeded, saved.error ?? "")
+        let probe = X08ObserveProbe()
+        CADMeshService.testHeavyComputeProbe = { probe.record(action: $0, triangles: $1) }
+        let operation: [String: Any] = [
+            "op": "mesh.boolean",
+            "args": booleanArgs(op: "union", target: first, tools: [second]),
+        ]
+        let data = try JSONSerialization.data(withJSONObject: operation)
+        let json = try XCTUnwrap(String(data: data, encoding: .utf8))
+        let proposal = try await CADProposalService().propose(
+            document: document, operationJSON: json, summary: "X08 off-main preview")
+        XCTAssertFalse(proposal.preview.failed, proposal.preview.serviceMessage ?? "")
+        XCTAssertEqual(proposal.preview.serviceOperation, "mesh.boolean")
+        XCTAssertEqual(proposal.preview.serviceExactness, "mesh")
+        XCTAssertEqual(proposal.preview.bodyCountBefore, 2)
+        XCTAssertEqual(proposal.preview.bodyCountAfter, 1)
+        XCTAssertEqual(document.session.document.bodies.count, 2,
+                       "a proposal preview must not mutate the live document")
+        XCTAssertTrue(probe.seen, "the proposal executor must reach the detached mesh worker")
+        XCTAssertFalse(probe.ranOnMain)
+        XCTAssertEqual(probe.action, "boolean")
+        XCTAssertGreaterThan(probe.triangles, 0)
+    }
+
+    // MARK: Malformed frozen input
+
+    /// One focused real-input test over the corrupt buffers a reopened
+    /// MeshBlob can carry. Each case is a real document body driven through
+    /// the real service; the expected refusal must arrive before Euclid
+    /// conversion, and valid work on the same document must still succeed.
+    func testX08MalformedFrozenInputIsRefusedBeforeEuclidAndValidWorkStillCommits() async throws {
+        for (label, render, transform) in malformedRenderInputs() {
+            try await assertMalformedInputRefused(label, render: render, transform: transform)
+        }
+    }
+
+    private func assertMalformedInputRefused(_ label: String,
+                                             render: RenderMesh,
+                                             transform: Transform3D) async throws {
+        let document = try await makeDocument("X08Malformed-\(label)")
+        defer { if !document.isClosed { document.close() } }
+        let service = CADMeshService(document: document)
+        let validTarget = addMeshBody(document, name: "Safe target", mesh: cube())
+        let validTool = addMeshBody(document, name: "Safe tool",
+                                    mesh: cube(center: Vector(5, 0, 0)))
+        let malformed = addRenderBody(document, name: "Malformed \(label)",
+                                      render: render, transform: transform)
+        let idsBefore = document.session.document.bodies.map(\.id.raw)
+        let changeBefore = document.session.changeCount
+        let undoBefore = document.session.undoStack.undoCommands.count
+        let renderBefore = malformed.render
+        let transformBefore = malformed.transform
+
+        let refusalProbe = X08ObserveProbe()
+        CADMeshService.testHeavyComputeProbe = {
+            refusalProbe.record(action: $0, triangles: $1)
+        }
+        let started = ContinuousClock.now
+        let reply = await service.handleAsync(
+            action: "boolean",
+            args: booleanArgs(op: "union", target: malformed, tools: [validTool]))
+        let requestSeconds = seconds(started.duration(to: .now))
+
+        XCTAssertFalse(reply["ok"] as? Bool ?? true, "\(label): \(reply)")
+        XCTAssertEqual(reply["error"] as? String, "invalid_mesh", "\(label): \(reply)")
+        XCTAssertFalse(reply["mutated"] as? Bool ?? false, "\(label)")
+        XCTAssertTrue(refusalProbe.seen,
+                      "\(label): validation must run in the detached worker")
+        XCTAssertFalse(refusalProbe.ranOnMain, "\(label): validation must not run on MainActor")
+        XCTAssertEqual(document.session.document.bodies.map(\.id.raw), idsBefore, "\(label)")
+        XCTAssertEqual(document.session.changeCount, changeBefore, "\(label)")
+        XCTAssertEqual(document.session.undoStack.undoCommands.count, undoBefore, "\(label)")
+        let stored = try XCTUnwrap(document.session.document.body(with: malformed.id))
+        XCTAssertEqual(stored.meshRevision, malformed.meshRevision, "\(label)")
+        XCTAssertEqual(stored.render.indices, renderBefore.indices, "\(label)")
+        XCTAssertEqual(stored.render.positions.count, renderBefore.positions.count, "\(label)")
+        XCTAssertEqual(stored.render.normals.count, renderBefore.normals.count, "\(label)")
+        XCTAssertEqual(stored.render.texcoords?.count, renderBefore.texcoords?.count,
+                       "\(label)")
+        // Bit patterns rather than Float equality: NaN fixtures must compare
+        // as unchanged bytes even though NaN != NaN.
+        XCTAssertEqual(stored.render.positions.flatMap { [$0.x.bitPattern, $0.y.bitPattern, $0.z.bitPattern] },
+                       renderBefore.positions.flatMap { [$0.x.bitPattern, $0.y.bitPattern, $0.z.bitPattern] }, label)
+        XCTAssertEqual(stored.render.normals.flatMap { [$0.x.bitPattern, $0.y.bitPattern, $0.z.bitPattern] },
+                       renderBefore.normals.flatMap { [$0.x.bitPattern, $0.y.bitPattern, $0.z.bitPattern] }, label)
+        XCTAssertEqual(stored.render.texcoords?.flatMap { [$0.x.bitPattern, $0.y.bitPattern] },
+                       renderBefore.texcoords?.flatMap { [$0.x.bitPattern, $0.y.bitPattern] }, label)
+        XCTAssertEqual(stored.transform.translation.x.bitPattern,
+                       transformBefore.translation.x.bitPattern, "\(label)")
+        XCTAssertEqual(stored.transform.translation.y.bitPattern,
+                       transformBefore.translation.y.bitPattern, "\(label)")
+        XCTAssertEqual(stored.transform.translation.z.bitPattern,
+                       transformBefore.translation.z.bitPattern, "\(label)")
+        XCTAssertEqual(stored.transform.scale.bitPattern,
+                       transformBefore.scale.bitPattern, "\(label)")
+        XCTAssertEqual(stored.transform.rotation.real.bitPattern,
+                       transformBefore.rotation.real.bitPattern, "\(label)")
+        XCTAssertEqual(stored.transform.rotation.imag.x.bitPattern,
+                       transformBefore.rotation.imag.x.bitPattern, "\(label)")
+        XCTAssertEqual(stored.transform.rotation.imag.y.bitPattern,
+                       transformBefore.rotation.imag.y.bitPattern, "\(label)")
+        XCTAssertEqual(stored.transform.rotation.imag.z.bitPattern,
+                       transformBefore.rotation.imag.z.bitPattern, "\(label)")
+
+        let validProbe = X08ObserveProbe()
+        CADMeshService.testHeavyComputeProbe = {
+            validProbe.record(action: $0, triangles: $1)
+        }
+        let good = await service.handleAsync(
+            action: "boolean",
+            args: booleanArgs(op: "union", target: validTarget, tools: [validTool]))
+        XCTAssertEqual(good["ok"] as? Bool, true, "\(label): \(good["message"] as? String ?? "")")
+        XCTAssertTrue(validProbe.seen, "\(label): valid work after refusal must run")
+        XCTAssertFalse(validProbe.ranOnMain, "\(label)")
+        XCTAssertEqual(document.session.changeCount, changeBefore + 1, "\(label)")
+        XCTAssertEqual(document.session.undoStack.undoCommands.count, undoBefore + 1, "\(label)")
+        XCTAssertEqual(document.session.document.bodies.count, 2,
+                       "\(label): malformed body plus the one valid result")
+        let validChangeCountDelta = document.session.changeCount - changeBefore
+        let validUndoDelta = document.session.undoStack.undoCommands.count - undoBefore
+        document.session.undo()
+        XCTAssertEqual(document.session.document.bodies.map(\.id.raw), idsBefore, "\(label)")
+
+        attachX08Metrics("refusal-\(label)", fields: [
+            "inputTriangles": refusalProbe.triangles,
+            "inputBodies": 2,
+            "computeRanOnMain": refusalProbe.ranOnMain,
+            "probeRanOnMain": refusalProbe.ranOnMain,
+            "requestSeconds": requestSeconds,
+            "resultOk": reply["ok"] as? Bool ?? false,
+            "resultError": reply["error"] as? String ?? "",
+            "validWorkAfterRefusalOk": good["ok"] as? Bool ?? false,
+            "changeCountDelta": validChangeCountDelta,
+            "undoDelta": validUndoDelta,
+        ])
+    }
+
+    /// Corrupt-but-decodable inputs. MeshBlob already bounds-checks indices; it
+    /// does not reject non-finite floats or a UV/normal buffer mismatch, which
+    /// are the persistence-adjacent defects this service must refuse.
+    private func malformedRenderInputs() -> [(String, RenderMesh, Transform3D)] {
+        let positions = [SIMD3<Float>(0, 0, 0), SIMD3(1, 0, 0), SIMD3(0, 1, 0)]
+        let normals = [SIMD3<Float>(0, 0, 1), SIMD3(0, 0, 1), SIMD3(0, 0, 1)]
+        let indices: [UInt32] = [0, 1, 2]
+        var nanTransform = Transform3D.identity
+        nanTransform.translation = SIMD3(.nan, 0, 0)
+        var zeroScale = Transform3D.identity
+        zeroScale.scale = 0
+        var zeroRotation = Transform3D.identity
+        zeroRotation.rotation = simd_quatd(ix: 0, iy: 0, iz: 0, r: 0)
+        return [
+            ("out-of-range-index",
+             RenderMesh(positions: positions, normals: normals, indices: [0, 1, 3]),
+             .identity),
+            ("truncated-indices",
+             RenderMesh(positions: positions, normals: normals, indices: [0, 1, 2, 0]),
+             .identity),
+            ("nan-position",
+             RenderMesh(positions: [positions[0], positions[1], SIMD3(.nan, 1, 0)],
+                        normals: normals, indices: indices),
+             .identity),
+            ("nan-normal",
+             RenderMesh(positions: positions,
+                        normals: [normals[0], SIMD3(.nan, 0, 1), normals[2]],
+                        indices: indices),
+             .identity),
+            ("normals-count-mismatch",
+             RenderMesh(positions: positions + [SIMD3(1, 1, 0)],
+                        normals: normals, indices: indices),
+             .identity),
+            ("nan-texcoord",
+             RenderMesh(positions: positions, normals: normals, indices: indices,
+                        texcoords: [SIMD2(0, 0), SIMD2(.nan, 0), SIMD2(0, 1)]),
+             .identity),
+            ("texcoord-count-mismatch",
+             RenderMesh(positions: positions, normals: normals, indices: indices,
+                        texcoords: [SIMD2(0, 0), SIMD2(1, 0), SIMD2(0, 1), SIMD2(1, 1)]),
+             .identity),
+            ("nan-transform",
+             RenderMesh(positions: positions, normals: normals, indices: indices),
+             nanTransform),
+            ("zero-scale",
+             RenderMesh(positions: positions, normals: normals, indices: indices),
+             zeroScale),
+            ("zero-rotation",
+             RenderMesh(positions: positions, normals: normals, indices: indices),
+             zeroRotation),
+        ]
+    }
+
+    // MARK: Measurement helpers
+
+    private func seconds(_ duration: Duration) -> Double {
+        let parts = duration.components
+        return Double(parts.seconds)
+            + Double(parts.attoseconds) / 1_000_000_000_000_000_000
+    }
+
+    /// Small .keepAlways attachment carrying exact measured values. No build
+    /// result, threshold name or synthesized peak is attached; Root reads the
+    /// real numbers from the xcresult or the printed line.
+    private func attachX08Metrics(_ name: String,
+                                  fields: [String: Any],
+                                  file: StaticString = #filePath,
+                                  line: UInt = #line) {
+        var payload: [String: Any] = [
+            "case": name,
+            "computeScope": "detached input validation + real Euclid/render/weld work; the explicit scheduling gate runs before this measurement",
+            "memoryScope": "task_vm_info phys_footprint of this XCTest process, sampled every 50 ms from before the request until it returns; includes XCTest/Euclid caches, not device memory pressure",
+        ]
+        payload.merge(fields) { _, new in new }
+        guard JSONSerialization.isValidJSONObject(payload),
+              let data = try? JSONSerialization.data(withJSONObject: payload,
+                                                     options: [.sortedKeys]),
+              let text = String(data: data, encoding: .utf8) else {
+            XCTFail("X08 metrics must be a valid JSON object", file: file, line: line)
+            return
+        }
+        let attachment = XCTAttachment(string: text)
+        attachment.name = "X08_METRICS_\(name)"
+        attachment.lifetime = .keepAlways
+        add(attachment)
+        print("X08_METRICS \(name) \(text)")
+    }
+
+    private func replyMetrics(_ reply: [String: Any]) -> [String: Any] {
+        var fields: [String: Any] = ["resultOk": reply["ok"] as? Bool ?? false]
+        if let error = reply["error"] as? String { fields["resultError"] = error }
+        if let mutated = reply["mutated"] as? Bool { fields["resultMutated"] = mutated }
+        if let triangles = reply["triangleCount"] as? Int {
+            fields["resultTriangles"] = triangles
+        }
+        return fields
+    }
+
+    private func memoryMetrics(_ snapshot: X08ProcessFootprintSampler.Snapshot)
+        -> [String: Any] {
+        ["baselineBytes": snapshot.baselineBytes,
+         "peakBytes": snapshot.peakBytes,
+         "endBytes": snapshot.endBytes,
+         "samples": snapshot.sampleCount,
+         "samplingAvailable": snapshot.baselineBytes > 0,
+         "accounting": "task_vm_info.phys_footprint",
+         "samplingIntervalMilliseconds": 50]
+    }
+}
+
+// MARK: - X08 test harness
+
+@MainActor
+private final class X08Heartbeat {
+    private(set) var maxGap: TimeInterval = 0
+    private(set) var ticks = 0
+    private var task: Task<Void, Never>?
+    private var last = Date()
+
+    func start() {
+        task?.cancel()
+        last = Date()
+        task = Task { @MainActor in
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 5_000_000)
+                guard !Task.isCancelled else { break }
+                let now = Date()
+                let gap = now.timeIntervalSince(last)
+                if gap > maxGap { maxGap = gap }
+                last = now
+                ticks += 1
+            }
+        }
+    }
+
+    func stop() {
+        task?.cancel()
+        task = nil
+    }
+}
+
+nonisolated private final class X08ComputeProbe: @unchecked Sendable {
+    let entered = DispatchSemaphore(value: 0)
+    let release = DispatchSemaphore(value: 0)
+    private let lock = NSLock()
+    private let hold: TimeInterval
+    private var seen = false
+    private var ranOnMainThread = true
+    private var actionName = ""
+    private var triangleCount = 0
+
+    init(hold: TimeInterval) {
+        self.hold = hold
+    }
+
+    func checkpoint(action: String, triangles: Int) {
+        lock.lock()
+        seen = true
+        ranOnMainThread = Thread.isMainThread
+        actionName = action
+        triangleCount = triangles
+        lock.unlock()
+        entered.signal()
+        if hold > 0 {
+            _ = release.wait(timeout: .now() + hold + 10)
+        }
+    }
+
+    func waitEntered() async {
+        await withCheckedContinuation { continuation in
+            DispatchQueue.global().async {
+                _ = self.entered.wait(timeout: .now() + 15)
+                continuation.resume()
+            }
+        }
+    }
+
+    func releaseGate() {
+        release.signal()
+    }
+
+    var ranOnMain: Bool {
+        lock.lock(); defer { lock.unlock() }
+        return ranOnMainThread
+    }
+
+    var action: String {
+        lock.lock(); defer { lock.unlock() }
+        return actionName
+    }
+
+    var triangles: Int {
+        lock.lock(); defer { lock.unlock() }
+        return triangleCount
+    }
+
+    var configuredHoldSeconds: TimeInterval { hold }
+}
+
+nonisolated private final class X08ObserveProbe: @unchecked Sendable {
+    private let lock = NSLock()
+    private var seenFlag = false
+    private var ranOnMainThread = true
+    private var actionName = ""
+    private var triangleCount = 0
+
+    func record(action: String, triangles: Int) {
+        lock.lock()
+        seenFlag = true
+        ranOnMainThread = Thread.isMainThread
+        actionName = action
+        triangleCount = triangles
+        lock.unlock()
+    }
+
+    var seen: Bool {
+        lock.lock(); defer { lock.unlock() }
+        return seenFlag
+    }
+
+    var ranOnMain: Bool {
+        lock.lock(); defer { lock.unlock() }
+        return ranOnMainThread
+    }
+
+    var action: String {
+        lock.lock(); defer { lock.unlock() }
+        return actionName
+    }
+
+    var triangles: Int {
+        lock.lock(); defer { lock.unlock() }
+        return triangleCount
+    }
+}
+
+nonisolated private final class X08CommitGate: @unchecked Sendable {
+    let entered = DispatchSemaphore(value: 0)
+    let release = DispatchSemaphore(value: 0)
+
+    func checkpoint() {
+        entered.signal()
+        _ = release.wait(timeout: .now() + 10)
+    }
+
+    func waitEntered() async {
+        await withCheckedContinuation { continuation in
+            DispatchQueue.global().async {
+                _ = self.entered.wait(timeout: .now() + 15)
+                continuation.resume()
+            }
+        }
+    }
+
+    func releaseGate() {
+        release.signal()
+    }
+}
+
+/// Process-footprint sampler used only for X08 evidence. It uses the same
+/// `TASK_VM_INFO`/`phys_footprint` accounting as the app's ThreadLoadMetrics
+/// and the Qualification host sampler (those samplers are private to their
+/// targets, so this test carries the identical kernel read). It samples every
+/// 50 ms for the request window and reports baseline/peak/end with the count;
+/// it never treats `ProcessInfo.physicalMemory` as process usage.
+nonisolated private final class X08ProcessFootprintSampler: @unchecked Sendable {
+    struct Snapshot: Sendable {
+        let baselineBytes: Int
+        let peakBytes: Int
+        let endBytes: Int
+        let sampleCount: Int
+    }
+
+    private let lock = NSLock()
+    private var baseline = 0
+    private var peak = 0
+    private var last = 0
+    private var samples = 0
+    private var task: Task<Void, Never>?
+
+    func start() {
+        lock.lock()
+        baseline = Self.readFootprint()
+        peak = baseline
+        last = baseline
+        samples = 1
+        lock.unlock()
+        task = Task.detached(priority: .utility) { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 50_000_000)
+                guard !Task.isCancelled else { break }
+                self?.sample()
+            }
+        }
+    }
+
+    func stop() -> Snapshot {
+        task?.cancel()
+        task = nil
+        sample()
+        lock.lock()
+        defer { lock.unlock() }
+        return Snapshot(baselineBytes: baseline,
+                        peakBytes: peak,
+                        endBytes: last,
+                        sampleCount: samples)
+    }
+
+    private func sample() {
+        let value = Self.readFootprint()
+        lock.lock()
+        last = value
+        if value > peak { peak = value }
+        samples += 1
+        lock.unlock()
+    }
+
+    private static func readFootprint() -> Int {
+        var info = task_vm_info_data_t()
+        var count = mach_msg_type_number_t(
+            MemoryLayout<task_vm_info_data_t>.size / MemoryLayout<integer_t>.size
+        )
+        let capacity = Int(count)
+        let status = withUnsafeMutablePointer(to: &info) {
+            $0.withMemoryRebound(to: integer_t.self, capacity: capacity) {
+                task_info(mach_task_self_, task_flavor_t(TASK_VM_INFO), $0, &count)
+            }
+        }
+        return status == KERN_SUCCESS ? Int(info.phys_footprint) : 0
+    }
+}
+
+/// Two-run deterministic gate: the first real compute is held until the test
+/// starts the replacement, the second until the test has observed the old
+/// run's join. Only the pre-compute probe is gated; both results are real.
+nonisolated private final class X08SequencedComputeGate: @unchecked Sendable {
+    let firstEntered = DispatchSemaphore(value: 0)
+    let secondEntered = DispatchSemaphore(value: 0)
+    private let firstRelease = DispatchSemaphore(value: 0)
+    private let secondRelease = DispatchSemaphore(value: 0)
+    private let lock = NSLock()
+    private var count = 0
+    private var firstMain = true
+    private var secondMain = true
+    private var firstTriangles = 0
+    private var secondTriangles = 0
+
+    func checkpoint(action: String, triangles: Int) {
+        _ = action
+        lock.lock()
+        count += 1
+        let ordinal = count
+        if ordinal == 1 {
+            firstMain = Thread.isMainThread
+            firstTriangles = triangles
+        } else if ordinal == 2 {
+            secondMain = Thread.isMainThread
+            secondTriangles = triangles
+        }
+        lock.unlock()
+        switch ordinal {
+        case 1:
+            firstEntered.signal()
+            _ = firstRelease.wait(timeout: .now() + 15)
+        case 2:
+            secondEntered.signal()
+            _ = secondRelease.wait(timeout: .now() + 15)
+        default:
+            break
+        }
+    }
+
+    func waitFirstEntered() async {
+        await withCheckedContinuation { continuation in
+            DispatchQueue.global().async {
+                _ = self.firstEntered.wait(timeout: .now() + 15)
+                continuation.resume()
+            }
+        }
+    }
+
+    func waitSecondEntered() async {
+        await withCheckedContinuation { continuation in
+            DispatchQueue.global().async {
+                _ = self.secondEntered.wait(timeout: .now() + 15)
+                continuation.resume()
+            }
+        }
+    }
+
+    func releaseFirst() { firstRelease.signal() }
+    func releaseSecond() { secondRelease.signal() }
+
+    var firstRanOnMain: Bool {
+        lock.lock(); defer { lock.unlock() }
+        return firstMain
+    }
+
+    var secondRanOnMain: Bool {
+        lock.lock(); defer { lock.unlock() }
+        return secondMain
+    }
+
+    var firstInputTriangles: Int {
+        lock.lock(); defer { lock.unlock() }
+        return firstTriangles
+    }
+
+    var secondInputTriangles: Int {
+        lock.lock(); defer { lock.unlock() }
+        return secondTriangles
+    }
+}
+
+/// Collects the real compute observations emitted by `CADMeshService`.
+nonisolated private final class X08ComputeObservationBox: @unchecked Sendable {
+    private let lock = NSLock()
+    private var observations: [CADMeshComputeObservation] = []
+
+    func record(_ observation: CADMeshComputeObservation) {
+        lock.lock()
+        observations.append(observation)
+        lock.unlock()
+    }
+
+    var all: [CADMeshComputeObservation] {
+        lock.lock(); defer { lock.unlock() }
         return observations
     }
 }

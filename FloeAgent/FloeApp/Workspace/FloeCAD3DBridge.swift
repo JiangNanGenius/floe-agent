@@ -542,7 +542,10 @@ final class FloeCAD3DBridge {
             let action = payload["action"] as? String ?? "combine"
             var args = payload
             args["action"] = nil
-            let reply = native.mesh.handle(action: action, args: args)
+            // Heavy mesh work (boolean/simplify/combine/repair) snapshots the
+            // inputs on the main actor and joins a service-owned detached
+            // worker; the caller's Task cancellation fences the late commit.
+            let reply = await native.mesh.handleAsync(action: action, args: args)
             return try jsonString(reply)
 
         case "propose":

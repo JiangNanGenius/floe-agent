@@ -37,6 +37,13 @@ struct CADMeshPanelView: View {
     @State private var imageID: UUID?
     @State private var allowMeshDowngrade = false
     @State private var pending: PendingMeshOperation?
+    /// The in-flight operation's owner task. It is unstructured (`Task {}`),
+    /// not a structured child: the view only subscribes to and cancels this
+    /// handle, while the service owns the detached worker and the document
+    /// close path fences it too. `operationID` is the identity fence that
+    /// prevents a late continuation from publishing into a newer operation.
+    @State private var operationTask: Task<Void, Never>?
+    @State private var operationID: UUID?
 
     private struct PendingMeshOperation: Identifiable {
         let id = UUID()
@@ -257,8 +264,27 @@ struct CADMeshPanelView: View {
                     .accessibilityIdentifier("CADMeshPending")
                 }
             }
-            if busy { ProgressView().controlSize(.small) }
+            if busy {
+                HStack(spacing: 10) {
+                    ProgressView().controlSize(.small)
+                    PanelActionButton(title: FloeCADStrings.label("cad.ui.common.cancel", "Cancel"),
+                                      systemImage: "xmark.circle") {
+                        cancelOperation()
+                    }
+                    .accessibilityIdentifier("CADMeshCancelOperation")
+                }
+            }
             PanelOutcome(reply: outcome)
+        }
+        .onDisappear {
+            // A panel switch can hide this view without discarding its @State.
+            // Cancel the owned operation, then drop the local busy/identity so
+            // returning shows enabled actions instead of a permanent spinner.
+            // The service/document still own and fence the detached worker.
+            cancelOperation()
+            operationTask = nil
+            operationID = nil
+            busy = false
         }
     }
 
@@ -331,25 +357,38 @@ struct CADMeshPanelView: View {
         perform(["action": "boundary", "bodyIDs": selectedIDs.map(\.uuidString)])
     }
 
-    /// Transient preview before apply: the service computes the actual result
-    /// geometry on its own copies (no document mutation) and returns a bounded
-    /// mesh snapshot + content hash. Apply passes those exact values back so
-    /// the committed result is provably the one the user inspected.
+    /// Transient preview before apply: the service snapshots the inputs on
+    /// the main actor, computes the actual result geometry off the UI and
+    /// returns a bounded mesh snapshot + content hash. Apply passes those exact
+    /// values back so the committed result is provably the one inspected.
     private func preview(args: [String: Any], title: String, destructive: Bool) {
+        operationTask?.cancel()
+        let id = UUID()
+        operationID = id
+        // An older Apply preview must not stay actionable while a new
+        // computation is in flight.
+        pending = nil
         busy = true
-        Task { @MainActor in
+        operationTask = Task { @MainActor in
+            // Identity-scoped cleanup: only this operation may clear busy or
+            // the task handle, never a newer operation that replaced it.
+            defer { finishOperation(id) }
             let service = CADMeshService(document: document)
             var previewArgs = args
             previewArgs["preview"] = true
-            let reply = service.handle(action: args["action"] as? String ?? "boundary",
-                                       args: previewArgs)
+            let reply = await service.handleAsync(
+                action: args["action"] as? String ?? "boundary",
+                args: previewArgs)
+            // A cancel between the service returning and this continuation
+            // must not publish a preview; the owner task and its service
+            // worker have already been joined by handleAsync.
+            guard operationID == id, !Task.isCancelled else { return }
             guard reply["ok"] as? Bool == true,
                   let mesh = reply["mesh"] as? [String: Any],
                   let hash = reply["previewHash"] as? String else {
                 // A refusal (e.g. brep_body_refused / empty result) is shown
                 // as-is; nothing is applied.
                 outcome = reply
-                busy = false
                 return
             }
             var lines: [String] = []
@@ -368,7 +407,6 @@ struct CADMeshPanelView: View {
                                            previewHash: hash,
                                            previewRevision: reply["previewRevision"] as? Int,
                                            previewChangeCount: reply["previewChangeCount"] as? Int)
-            busy = false
         }
     }
 
@@ -383,16 +421,59 @@ struct CADMeshPanelView: View {
     }
 
     private func perform(_ args: [String: Any]) {
+        operationTask?.cancel()
+        let id = UUID()
+        operationID = id
+        // A pending preview from an earlier computation is stale by definition
+        // once a new edit starts; never leave its Apply button actionable.
+        pending = nil
         busy = true
-        Task { @MainActor in
-            let reply = CADMeshService(document: document).handle(
+        operationTask = Task { @MainActor in
+            defer { finishOperation(id) }
+            let reply = await CADMeshService(document: document).handleAsync(
                 action: args["action"] as? String ?? "boundary", args: args)
             if reply["mutated"] as? Bool == true {
-                _ = await document.save()
+                // The service already committed this edit atomically. Saving it
+                // is a consequence owned by the document, not by the panel's
+                // presentation state, so it runs before the cancellation fence
+                // and is not skipped when the user cancels after the commit.
+                await persistAdmittedEdit()
             }
+            // Never publish a cancelled/stale completion. An admitted edit was
+            // already saved above even when the guard returns.
+            guard operationID == id, !Task.isCancelled else { return }
             outcome = reply
-            busy = false
         }
+    }
+
+    /// Persist a geometry edit the service already admitted. The independent
+    /// MainActor owner task keeps the save from being cancelled with the panel
+    /// operation; a later save by a newer operation still wins by revision.
+    private func persistAdmittedEdit() async {
+        let document = self.document
+        await Task { @MainActor in
+            _ = await document.save()
+        }.value
+    }
+
+    /// User cancel: cancel the owned operation task. `handleAsync`'s
+    /// cancellation handler flips the service token, cancels its detached
+    /// worker and joins it before this owner task returns; the identity fence
+    /// above then discards any late preview/outcome. `busy` drops immediately
+    /// so the panel is usable, while the scoped `finishOperation` cleanup runs
+    /// only if this operation still owns the panel.
+    private func cancelOperation() {
+        operationTask?.cancel()
+        busy = false
+    }
+
+    /// Clear operation state only when `id` still owns the panel. A replaced
+    /// operation can never clear the newer operation's task or busy spinner.
+    private func finishOperation(_ id: UUID) {
+        guard operationID == id else { return }
+        operationID = nil
+        operationTask = nil
+        busy = false
     }
 
     private func name(of id: UUID) -> String {

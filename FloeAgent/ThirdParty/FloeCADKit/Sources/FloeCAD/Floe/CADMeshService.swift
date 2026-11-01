@@ -21,13 +21,24 @@
 //
 //  Bounds: at most 16 input bodies and 500k input triangles per operation, a
 //  10-second wall-clock deadline, and cancellation checks inside every loop
-//  (Euclid CSG receives the same `isCancelled` closure). Caller cancellation
+//  (Euclid CSG receives the same `isCancelled` closure). Frozen heavy inputs
+//  are validated on the compute thread before Euclid conversion/CSG: finite
+//  positions/normals/UVs, matching buffer counts, whole triangles, in-range
+//  indices and a finite positive transform. A malformed snapshot is refused
+//  with `invalid_mesh` and changes nothing. Caller cancellation
 //  is a separate signal from the deadline: a lock-guarded token is flipped by
 //  the caller Task's cancellation handler and read by Euclid's CSG from its
 //  Dispatch worker threads, where `Task.isCancelled` is not meaningful. Every
 //  pre-commit boundary refuses a cancelled operation, so a partial Euclid
 //  result is never published as success. No file paths are accepted anywhere;
 //  image bytes arrive base64-encoded or via an existing document image.
+//
+//  X08 execution boundary: combine / boolean / repair / simplify snapshot the
+//  exact input VALUES on the MainActor, run the heavy render/Euclid work in a
+//  service-owned detached task, re-check the document identity + input
+//  ownership on the MainActor, and only then make the one undoable commit.
+//  `Task.detached` is joined before the caller returns; a cancelled or stale
+//  operation discards its worker result instead of publishing partial geometry.
 //
 //  Actions / args (all share `bodyID` or `bodyIDs`):
 //   * combine          bodyIDs, name? -> new body (world transforms baked).
@@ -62,17 +73,19 @@ import Euclid
 /// Euclid runs its CSG halves through `DispatchQueue.concurrentPerform`; on
 /// those worker threads `Task.isCancelled` is not the caller task's flag, so a
 /// plain `Task.isCancelled` check in the `isCancelled` closure cannot stop a
-/// long BSP. The service wraps the synchronous operation in the caller's
+/// long BSP. The service wraps the operation in the caller's
 /// `withTaskCancellationHandler`; `cancel()` runs immediately on whatever
 /// thread requests cancellation and this lock-guarded flag is the one signal
-/// every CSG worker can read. The flag is also consulted at each service
-/// boundary and immediately before the single document commit.
+/// every CSG worker can read. Service phase guards and the single document
+/// commit read the same flag, but through the side-effect-free getter.
 ///
-/// `nonisolated` because CSG worker threads call `isCancelled` outside the
-/// MainActor. The internal `checkpoint` initializer lets the focused source
-/// tests cancel at a deterministic CSG checkpoint (no wall-clock sleep); it
-/// has no effect in production, where cancellation comes from the caller's
-/// task cancellation handler.
+/// `nonisolated` because CSG worker threads call `kernelIsCancelled` outside
+/// the MainActor. The internal `checkpoint` initializer lets the focused source
+/// tests cancel at a deterministic Euclid checkpoint (no wall-clock sleep);
+/// only the kernel callback runs it, so preparation/pre-commit guards can never
+/// be mistaken for real CSG progress. It has no effect in production, where
+/// cancellation comes from the caller's task cancellation handler or the
+/// service-owned `cancelActiveOperation`.
 nonisolated final class CADMeshCancellation: @unchecked Sendable {
     private let lock = NSLock()
     private let checkpoint: (@Sendable () -> Void)?
@@ -92,20 +105,214 @@ nonisolated final class CADMeshCancellation: @unchecked Sendable {
         lock.unlock()
     }
 
+    /// Side-effect-free token read for service phase guards and the commit
+    /// fence. Never invokes the test checkpoint.
     var isCancelled: Bool {
-        // Run before taking the lock so a checkpoint may call `cancel()`
-        // (the deterministic test path) without a self-deadlock.
-        checkpoint?()
         lock.lock()
         defer { lock.unlock() }
         return cancelled
+    }
+
+    /// The ONE callback handed to Euclid's `isCancelled` closure. The focused
+    /// checkpoint runs before the lock so a checkpoint may call `cancel()`
+    /// without a self-deadlock; production has no checkpoint.
+    func kernelIsCancelled() -> Bool {
+        checkpoint?()
+        return isCancelled
+    }
+}
+
+/// The detached computational values for one body. A `Body` with a live B-rep
+/// handle, undo closure, document/session reference or UIKit state never enters
+/// this boundary. `render` and `transform` are value copies; `euclid` is the
+/// body's `Euclid.Mesh` value (declared Sendable by pinned Euclid 0.9.6, whose
+/// Storage caches are lock-guarded), or nil so the worker rebuilds it from the
+/// frozen render buffers with the existing `EuclidBridge.euclidMesh` path.
+nonisolated struct CADMeshInputSnapshot: Sendable {
+    let id: BodyID
+    let name: String
+    let meshRevision: UInt64
+    let transform: Transform3D
+    let render: RenderMesh
+    let euclid: Euclid.Mesh?
+
+    var triangleCount: Int { render.triangleCount }
+
+    func euclidMesh() -> Euclid.Mesh {
+        euclid ?? EuclidBridge.euclidMesh(from: render)
+    }
+}
+
+nonisolated enum CADMeshBooleanKind: String, Sendable {
+    case union, subtract, intersect
+}
+
+/// The exact in-memory geometry identity a commit is allowed to touch.
+/// `changeCount` covers every command/undo/redo/preview epoch, and each input
+/// body's `meshRevision` covers a direct geometry swap. Persistence revisions
+/// are deliberately NOT part of this fence: an autosave of an unchanged model
+/// must not discard a valid in-flight result. The commit re-reads both on the
+/// MainActor and refuses a stale result.
+nonisolated struct CADMeshSourceToken: Equatable, Sendable {
+    struct BodyState: Equatable, Sendable {
+        let id: BodyID
+        let meshRevision: UInt64
+    }
+
+    let changeCount: Int
+    let bodies: [BodyState]
+}
+
+nonisolated enum CADMeshPlan: Sendable {
+    case combine(inputs: [CADMeshInputSnapshot], name: String)
+    case boolean(kind: CADMeshBooleanKind,
+                 inputs: [CADMeshInputSnapshot],
+                 inputExactness: String,
+                 brepBodyCount: Int)
+    case repair(inputs: [CADMeshInputSnapshot], tolerance: Double)
+    case simplify(inputs: [CADMeshInputSnapshot], ratio: Double?, tolerance: Double?)
+
+    var action: String {
+        switch self {
+        case .combine: return "combine"
+        case .boolean: return "boolean"
+        case .repair: return "repair"
+        case .simplify: return "simplify"
+        }
+    }
+
+    var inputs: [CADMeshInputSnapshot] {
+        switch self {
+        case .combine(let inputs, _): return inputs
+        case .boolean(_, let inputs, _, _): return inputs
+        case .repair(let inputs, _): return inputs
+        case .simplify(let inputs, _, _): return inputs
+        }
+    }
+
+    var inputTriangleCount: Int {
+        inputs.reduce(0) { $0 + $1.triangleCount }
+    }
+}
+
+nonisolated struct CADMeshRepairEntry: Sendable {
+    let bodyID: BodyID
+    let beforeTriangles: Int
+    let afterTriangles: Int
+    let weldedVertices: Int
+    let removedTriangles: Int
+
+    var payload: [String: Any] {
+        ["bodyID": bodyID.raw.uuidString,
+         "beforeTriangles": beforeTriangles,
+         "afterTriangles": afterTriangles,
+         "weldedVertices": weldedVertices,
+         "removedTriangles": removedTriangles]
+    }
+}
+
+nonisolated struct CADMeshSimplifyEntry: Sendable {
+    let bodyID: BodyID
+    let beforeTriangles: Int
+    let afterTriangles: Int
+    let targetTriangles: Int?
+    let cellSize: Double?
+    let tolerance: Double?
+
+    var payload: [String: Any] {
+        var entry: [String: Any] = ["bodyID": bodyID.raw.uuidString,
+                                    "beforeTriangles": beforeTriangles,
+                                    "afterTriangles": afterTriangles]
+        if let tolerance { entry["tolerance"] = tolerance }
+        if let targetTriangles { entry["targetTriangles"] = targetTriangles }
+        if let cellSize { entry["cellSize"] = cellSize }
+        return entry
+    }
+}
+
+nonisolated struct CADMeshReplacement: Sendable {
+    let id: BodyID
+    let render: RenderMesh
+    let edges: FeatureEdgeSet
+}
+
+/// Worker result. Only Sendable values cross the boundary; every JSON reply is
+/// built after the MainActor re-check, never on the compute thread.
+nonisolated enum CADMeshComputation: Sendable {
+    case cancelled
+    case timedOut
+    case refused(code: String, message: String)
+    case combine(mesh: Euclid.Mesh,
+                 render: RenderMesh,
+                 edges: FeatureEdgeSet,
+                 previewHash: String,
+                 previewSnapshot: CADTransientMeshPreview.Snapshot?)
+    case boolean(mesh: Euclid.Mesh,
+                 render: RenderMesh,
+                 edges: FeatureEdgeSet,
+                 previewHash: String,
+                 previewSnapshot: CADTransientMeshPreview.Snapshot?)
+    case replacements(_ replacements: [CADMeshReplacement],
+                      repairEntries: [CADMeshRepairEntry],
+                      simplifyEntries: [CADMeshSimplifyEntry],
+                      previewHash: String,
+                      previewSnapshot: CADTransientMeshPreview.Snapshot?,
+                      previewTriangleCount: Int)
+}
+
+/// Test-only observation of one REAL detached compute. It is emitted only
+/// when `CADMeshService.testComputeObservation` is installed by a test, so the
+/// production path pays no clock read. `computeSeconds` covers off-main input
+/// validation plus the actual Euclid/render/weld work and deliberately excludes
+/// the scheduling probe, which runs before this measurement starts.
+nonisolated struct CADMeshComputeObservation: Sendable {
+    let action: String
+    let inputBodies: Int
+    let inputTriangles: Int
+    let computeSeconds: Double
+    let ranOnMainThread: Bool
+    let outcome: String
+}
+
+/// Result of the off-main frozen-input validation. A refusal carries the same
+/// error code/message shape the service returns to callers.
+private nonisolated enum CADMeshInputValidation: Sendable {
+    case valid
+    case interrupted
+    case refused(code: String, message: String)
+}
+
+@MainActor
+final class CADMeshOperationRun {
+    let id = UUID()
+    let documentKey: ObjectIdentifier
+    let action: String
+    let cancellation: CADMeshCancellation
+    private var worker: Task<CADMeshComputation, Never>?
+
+    init(documentKey: ObjectIdentifier,
+         action: String,
+         cancellation: CADMeshCancellation) {
+        self.documentKey = documentKey
+        self.action = action
+        self.cancellation = cancellation
+    }
+
+    func attach(_ task: Task<CADMeshComputation, Never>) {
+        worker = task
+        if cancellation.isCancelled { task.cancel() }
+    }
+
+    func cancel() {
+        cancellation.cancel()
+        worker?.cancel()
     }
 }
 
 @MainActor
 public final class CADMeshService {
-    public static let maxInputBodies = 16
-    public static let maxInputTriangles = 500_000
+    public nonisolated static let maxInputBodies = 16
+    public nonisolated static let maxInputTriangles = 500_000
     public static let wallClockLimitSeconds: Double = 10
     public static let maxImageBytes = 8 * 1024 * 1024
 
@@ -126,21 +333,41 @@ public final class CADMeshService {
 
     // MARK: Action router
 
-    /// Synchronous entry point kept for the visible mesh panel and existing
-    /// callers. An already-cancelled caller is refused before any geometry
-    /// work; a cancellation that arrives during this synchronous call is still
-    /// seen at every `boolean` boundary and before its commit, but the CSG
-    /// worker threads cannot observe the caller flag without the handler below.
+    /// Test-only seam called at the START of the real detached heavy worker,
+    /// before any vector/Euclid work. A suite can prove the compute thread and
+    /// hold it at a deterministic scheduling gate; result geometry is still the
+    /// real kernel output. Never set in production.
+    nonisolated(unsafe) static var testHeavyComputeProbe: (@Sendable (String, Int) -> Void)?
+
+    /// Test-only seam called inside the detached worker after the real result
+    /// is computed but before it returns to the MainActor. Used to edit/close
+    /// the source while a stale result is in flight. Never set in production.
+    nonisolated(unsafe) static var testBeforeCommitProbe: (@Sendable () -> Void)?
+
+    /// Test-only measurement sink fed by the real compute wrapper. It records
+    /// only measured values (no synthesized peak or timer); production leaves
+    /// it nil and then takes no clock or observation sample.
+    nonisolated(unsafe) static var testComputeObservation:
+        (@Sendable (CADMeshComputeObservation) -> Void)?
+
+    private static var activeRuns: [ObjectIdentifier: CADMeshOperationRun] = [:]
+
+    /// Synchronous entry point kept for direct unit tests and existing callers.
+    /// Production UI/tool/proposal paths use `handleAsync`; heavy actions here
+    /// run through the same prepare/compute/commit boundary, with compute on
+    /// the caller's actor. A caller cancellation is still observed at every
+    /// service boundary and before the one commit.
     public func handle(action: String, args: [String: Any]) -> [String: Any] {
         let cancellation = CADMeshCancellation()
         if Task.isCancelled { cancellation.cancel() }
         return handle(action: action, args: args, cancellation: cancellation)
     }
 
-    /// Async entry point for the agent/tool/apply paths. The cancellation
-    /// handler flips the thread-safe token immediately on the cancelling
-    /// thread, so a long Euclid CSG is interrupted even though the operation
-    /// itself runs synchronously on the MainActor.
+    /// Async entry point for the visible panel, agent tools and proposal
+    /// apply. Heavy mesh actions snapshot their inputs on the MainActor and
+    /// run the actual Euclid/render work in a service-owned detached worker.
+    /// The caller's task cancellation flips the thread-safe token immediately
+    /// and cancels the joined worker; a late result is discarded before commit.
     public func handleAsync(action: String, args: [String: Any]) async -> [String: Any] {
         await handleAsync(action: action, args: args, cancellation: CADMeshCancellation())
     }
@@ -148,25 +375,46 @@ public final class CADMeshService {
     func handleAsync(action: String, args: [String: Any],
                      cancellation: CADMeshCancellation) async -> [String: Any] {
         if Task.isCancelled { cancellation.cancel() }
-        return await withTaskCancellationHandler {
-            self.handle(action: action, args: args, cancellation: cancellation)
-        } onCancel: {
-            cancellation.cancel()
+        guard !document.isClosed else { return Self.closedReply() }
+        if let refusal = CADServiceOperations.readOnlyRefusal(document: document, kind: "mesh", action: action) { return refusal }
+        switch action {
+        case "combine", "boolean", "repair", "simplify":
+            switch prepare(action: action, args: args) {
+            case .refusal(let reply):
+                return reply
+            case .heavy(let plan):
+                return await runHeavyOffMain(plan, args: args, cancellation: cancellation)
+            case .light:
+                break
+            }
+        default:
+            break
         }
+        return handle(action: action, args: args, cancellation: cancellation)
     }
 
     func handle(action: String, args: [String: Any],
                 cancellation: CADMeshCancellation) -> [String: Any] {
         if cancellation.isCancelled || Task.isCancelled { return Self.cancelledReply() }
+        guard !document.isClosed else { return Self.closedReply() }
         if let refusal = CADServiceOperations.readOnlyRefusal(document: document, kind: "mesh", action: action) { return refusal }
         switch action {
-        case "combine": return combine(args)
-        case "boolean": return boolean(args, cancellation: cancellation)
+        case "combine", "boolean", "repair", "simplify":
+            switch prepare(action: action, args: args) {
+            case .refusal(let reply):
+                return reply
+            case .heavy(let plan):
+                return runHeavySynchronously(plan, args: args, cancellation: cancellation)
+            case .light:
+                break
+            }
+        default:
+            break
+        }
+        switch action {
         case "transform": return transform(args)
         case "recomputeNormals": return recomputeNormals(args)
         case "boundary": return boundary(args)
-        case "repair": return repair(args)
-        case "simplify": return simplify(args)
         case "material": return material(args)
         case "text": return text(args)
         case "image": return image(args)
@@ -177,133 +425,270 @@ public final class CADMeshService {
         }
     }
 
-    // MARK: combine
+    /// Request cancellation of the one active heavy mesh operation for this
+    /// document. The awaiting caller is released only after the detached
+    /// worker observes the flag and returns; no partial result is accepted.
+    /// The visible panel and document close use this owner-level path.
+    @discardableResult
+    static func cancelActiveOperation(for document: FloeCADDocument) -> Bool {
+        guard let run = activeRuns[ObjectIdentifier(document)] else { return false }
+        run.cancel()
+        return true
+    }
 
-    private func combine(_ args: [String: Any]) -> [String: Any] {
-        let clock = EvaluationDeadlineClock(seconds: wallClockLimit)
+    /// Current progress identity for the one active operation, or nil. The
+    /// service (not a view) owns this state.
+    func activeOperationStatus() -> [String: Any]? {
+        guard let run = Self.activeRuns[ObjectIdentifier(document)] else { return nil }
+        return ["ok": true,
+                "active": true,
+                "action": run.action,
+                "cancelRequested": run.cancellation.isCancelled,
+                "mutated": false]
+    }
+
+    private func beginRun(action: String,
+                          cancellation: CADMeshCancellation) -> CADMeshOperationRun {
+        let key = ObjectIdentifier(document)
+        Self.activeRuns[key]?.cancel()
+        let run = CADMeshOperationRun(documentKey: key,
+                                      action: action,
+                                      cancellation: cancellation)
+        Self.activeRuns[key] = run
+        return run
+    }
+
+    private static func finishRun(_ run: CADMeshOperationRun) {
+        if activeRuns[run.documentKey]?.id == run.id {
+            activeRuns[run.documentKey] = nil
+        }
+    }
+
+    private enum CADMeshPreparation {
+        case heavy(CADMeshPlan)
+        case light
+        case refusal([String: Any])
+    }
+
+    private func prepare(action: String, args: [String: Any]) -> CADMeshPreparation {
+        switch action {
+        case "combine": return prepareCombine(args)
+        case "boolean": return prepareBoolean(args)
+        case "repair": return prepareRepair(args)
+        case "simplify": return prepareSimplify(args)
+        default: return .light
+        }
+    }
+
+    private func snapshot(_ bodies: [Body]) -> [CADMeshInputSnapshot] {
+        bodies.map {
+            CADMeshInputSnapshot(id: $0.id,
+                                 name: $0.name,
+                                 meshRevision: $0.meshRevision,
+                                 transform: $0.transform,
+                                 render: $0.render,
+                                 euclid: $0.euclid)
+        }
+    }
+
+    private func sourceToken(for inputs: [CADMeshInputSnapshot]) -> CADMeshSourceToken {
+        CADMeshSourceToken(changeCount: document.session.changeCount,
+                           bodies: inputs.map {
+                               CADMeshSourceToken.BodyState(id: $0.id,
+                                                            meshRevision: $0.meshRevision)
+                           })
+    }
+
+    /// Re-reads the live source identity. Used after the worker returns and
+    /// again immediately before the commit.
+    private func currentSourceToken(for inputs: [CADMeshInputSnapshot]) -> CADMeshSourceToken {
+        let live = document.session.document
+        return CADMeshSourceToken(
+            changeCount: document.session.changeCount,
+            bodies: inputs.map { input in
+                CADMeshSourceToken.BodyState(
+                    id: input.id,
+                    meshRevision: live.bodies.first(where: { $0.id == input.id })?.meshRevision
+                        ?? UInt64.max)
+            })
+    }
+
+    private func commitFence(_ plan: CADMeshPlan,
+                             source: CADMeshSourceToken,
+                             cancellation: CADMeshCancellation) -> [String: Any]? {
+        if cancellation.isCancelled || Task.isCancelled { return Self.cancelledReply() }
+        guard !document.isClosed else { return Self.closedReply() }
+        if let refusal = CADServiceOperations.readOnlyRefusal(document: document,
+                                                              kind: "mesh",
+                                                              action: plan.action) {
+            return refusal
+        }
+        guard currentSourceToken(for: plan.inputs) == source else {
+            return Self.sourceChangedReply()
+        }
+        return nil
+    }
+
+    /// Compatibility/test-only synchronous path. It runs the same prepare and
+    /// compute (including frozen-input validation) on the caller's actor;
+    /// production UI, Bridge and proposal routes use `handleAsync`, whose
+    /// compute and validation run in the detached worker.
+    private func runHeavySynchronously(_ plan: CADMeshPlan,
+                                       args: [String: Any],
+                                       cancellation: CADMeshCancellation) -> [String: Any] {
+        let source = sourceToken(for: plan.inputs)
+        let computation = Self.compute(plan: plan,
+                                       wallClockLimit: wallClockLimit,
+                                       cancellation: cancellation,
+                                       previewRequested: Self.boolean(args["preview"]))
+        return finishHeavy(plan, computation: computation, args: args,
+                           cancellation: cancellation, source: source)
+    }
+
+    private func runHeavyOffMain(_ plan: CADMeshPlan,
+                                 args: [String: Any],
+                                 cancellation: CADMeshCancellation) async -> [String: Any] {
+        if cancellation.isCancelled || Task.isCancelled { return Self.cancelledReply() }
+        let source = sourceToken(for: plan.inputs)
+        let limit = wallClockLimit
+        let previewRequested = Self.boolean(args["preview"])
+        let run = beginRun(action: plan.action, cancellation: cancellation)
+        let probe = Self.testHeavyComputeProbe
+        let beforeCommitProbe = Self.testBeforeCommitProbe
+        let worker = Task.detached(priority: .userInitiated) {
+            probe?(plan.action, plan.inputTriangleCount)
+            let computation = CADMeshService.compute(plan: plan,
+                                                     wallClockLimit: limit,
+                                                     cancellation: cancellation,
+                                                     previewRequested: previewRequested)
+            beforeCommitProbe?()
+            return computation
+        }
+        run.attach(worker)
+        let computation = await withTaskCancellationHandler {
+            await worker.value
+        } onCancel: {
+            cancellation.cancel()
+            worker.cancel()
+        }
+        Self.finishRun(run)
+
+        guard !document.isClosed else { return Self.closedReply() }
+        if let refusal = CADServiceOperations.readOnlyRefusal(document: document,
+                                                              kind: "mesh",
+                                                              action: plan.action) {
+            return refusal
+        }
+        if cancellation.isCancelled || Task.isCancelled || run.cancellation.isCancelled {
+            return Self.cancelledReply()
+        }
+        guard currentSourceToken(for: plan.inputs) == source else {
+            return Self.sourceChangedReply()
+        }
+        return finishHeavy(plan, computation: computation, args: args,
+                           cancellation: cancellation, source: source)
+    }
+
+    private func finishHeavy(_ plan: CADMeshPlan,
+                             computation: CADMeshComputation,
+                             args: [String: Any],
+                             cancellation: CADMeshCancellation,
+                             source: CADMeshSourceToken) -> [String: Any] {
+        if cancellation.isCancelled || Task.isCancelled { return Self.cancelledReply() }
+        guard !document.isClosed else { return Self.closedReply() }
+        if let refusal = CADServiceOperations.readOnlyRefusal(document: document,
+                                                              kind: "mesh",
+                                                              action: plan.action) {
+            return refusal
+        }
+        guard currentSourceToken(for: plan.inputs) == source else {
+            return Self.sourceChangedReply()
+        }
+        switch computation {
+        case .cancelled:
+            return Self.cancelledReply()
+        case .timedOut:
+            return limitTime()
+        case .refused(let code, let message):
+            return Self.fail(code, message)
+        case .combine(let mesh, let render, let edges, let hash, let snapshot):
+            return commitResult(plan: plan, args: args, source: source,
+                                cancellation: cancellation,
+                                mesh: mesh, render: render, edges: edges,
+                                hash: hash, snapshot: snapshot,
+                                repairEntries: [], simplifyEntries: [])
+        case .boolean(let mesh, let render, let edges, let hash, let snapshot):
+            return commitResult(plan: plan, args: args, source: source,
+                                cancellation: cancellation,
+                                mesh: mesh, render: render, edges: edges,
+                                hash: hash, snapshot: snapshot,
+                                repairEntries: [], simplifyEntries: [])
+        case .replacements(let replacements, let repairEntries,
+                           let simplifyEntries, let hash, let snapshot,
+                           let previewTriangleCount):
+            return commitReplacements(plan: plan, args: args, source: source,
+                                      cancellation: cancellation,
+                                      replacements: replacements,
+                                      repairEntries: repairEntries,
+                                      simplifyEntries: simplifyEntries,
+                                      hash: hash, snapshot: snapshot,
+                                      previewTriangleCount: previewTriangleCount)
+        }
+    }
+
+    // MARK: Preparation (MainActor, value-only)
+
+    private func prepareCombine(_ args: [String: Any]) -> CADMeshPreparation {
         guard case let .ok(bodies) = resolveBodies(args) else {
-            return resolutionFailure(args)
+            return .refusal(resolutionFailure(args))
         }
-        if let refusal = verifyMeshOnly(bodies, args: args, action: "combine") { return refusal }
+        if let refusal = verifyMeshOnly(bodies, args: args, action: "combine") {
+            return .refusal(refusal)
+        }
         let name = sanitizeName(args["name"]) ?? "Combined"
-
-        var result = Euclid.Mesh.empty
-        for body in bodies {
-            guard !clock.expired else { return limitTime() }
-            result = result.merge(Self.worldMesh(body))
-        }
-        guard !clock.expired else { return limitTime() }
-        guard !result.polygons.isEmpty else {
-            return Self.fail("empty_geometry", "The combined mesh is empty; nothing changed.")
-        }
-        let renderResult = EuclidBridge.renderMesh(from: result)
-        let gate = previewGate(action: "combine", args: args, meshes: [renderResult])
-        if let refusal = gate.refusal { return refusal }
-        if let reply = gate.reply { return reply }
-
-        let body = makeResultBody(name: name, mesh: result)
-        commit(body, consuming: bodies, title: "Combine")
-        return Self.mutationResult(action: "combine",
-                                   body: body,
-                                   extra: ["sourceBodyCount": bodies.count])
+        return .heavy(.combine(inputs: snapshot(bodies), name: name))
     }
 
-    // MARK: boolean
-
-    private enum BooleanOp: String {
-        case union, subtract, intersect
-    }
-
-    private func boolean(_ args: [String: Any],
-                         cancellation: CADMeshCancellation) -> [String: Any] {
-        guard !cancellation.isCancelled, !Task.isCancelled else { return Self.cancelledReply() }
-        guard let opString = args["op"] as? String, let op = BooleanOp(rawValue: opString) else {
-            return Self.fail("bad_request", "'op' must be union, subtract or intersect.")
+    private func prepareBoolean(_ args: [String: Any]) -> CADMeshPreparation {
+        guard let opString = args["op"] as? String,
+              let op = CADMeshBooleanKind(rawValue: opString) else {
+            return .refusal(Self.fail("bad_request", "'op' must be union, subtract or intersect."))
         }
         guard let targetID = args["target"] as? String else {
-            return Self.fail("bad_request", "'target' is required.")
+            return .refusal(Self.fail("bad_request", "'target' is required."))
         }
         let toolIDs = stringList(args["tools"])
         guard !toolIDs.isEmpty else {
-            return Self.fail("bad_request", "'tools' must list at least one body.")
+            return .refusal(Self.fail("bad_request", "'tools' must list at least one body."))
         }
         guard case let .ok(target) = resolveBodies(ids: [targetID]) else {
-            return resolutionFailure(ids: [targetID])
+            return .refusal(resolutionFailure(ids: [targetID]))
         }
         guard case let .ok(tools) = resolveBodies(ids: toolIDs) else {
-            return resolutionFailure(ids: toolIDs)
+            return .refusal(resolutionFailure(ids: toolIDs))
         }
         let inputs = target + tools
         guard Set([targetID] + toolIDs).count == inputs.count else {
-            return Self.fail("bad_request", "'tools' must not repeat the target or each other.")
+            return .refusal(Self.fail("bad_request",
+                                      "'tools' must not repeat the target or each other."))
         }
         guard inputs.count <= Self.maxInputBodies else {
-            return Self.fail("too_many_bodies",
-                             "At most \(Self.maxInputBodies) bodies per operation; got \(inputs.count).")
+            return .refusal(Self.fail("too_many_bodies",
+                                      "At most \(Self.maxInputBodies) bodies per operation; got \(inputs.count)."))
         }
         let totalTriangles = inputs.reduce(0) { $0 + $1.render.triangleCount }
         guard totalTriangles <= Self.maxInputTriangles else {
-            return Self.fail("too_many_triangles",
-                             "Input exceeds \(Self.maxInputTriangles) triangles.")
+            return .refusal(Self.fail("too_many_triangles",
+                                      "Input exceeds \(Self.maxInputTriangles) triangles."))
         }
-        if let refusal = verifyMeshOnly(inputs, args: args, action: "boolean") { return refusal }
-        let exactnessKeys = Self.exactnessFields(Self.inputExactness(inputs))
-
-        let clock = EvaluationDeadlineClock(seconds: wallClockLimit)
-        // All three signals are cheap; the token and deadline are safe from
-        // Euclid's CSG workers (Task.isCancelled is false there by design).
-        // Do not short-circuit: the caller token must be consulted on every
-        // CSG checkpoint, and the synchronous compatibility path must still
-        // observe Task.isCancelled at every post-CSG/pre-commit boundary.
-        let cancel: @Sendable () -> Bool = {
-            let callerCancelled = cancellation.isCancelled
-            let taskCancelled = Task.isCancelled
-            let deadlineExpired = clock.isExpired()
-            return callerCancelled || taskCancelled || deadlineExpired
+        if let refusal = verifyMeshOnly(inputs, args: args, action: "boolean") {
+            return .refusal(refusal)
         }
-        guard !cancel() else { return interrupted(cancellation) }
-        var result = Self.worldMesh(target[0])
-        for tool in tools {
-            guard !cancel() else { return interrupted(cancellation) }
-            let toolMesh = Self.worldMesh(tool)
-            switch op {
-            case .union:
-                result = result.union(toolMesh, isCancelled: cancel)
-            case .subtract:
-                result = result.subtracting(toolMesh, isCancelled: cancel)
-            case .intersect:
-                result = result.intersection(toolMesh, isCancelled: cancel)
-            }
-            // Euclid may return its partially clipped mesh when the closure
-            // reports cancellation. Never treat that as a result: drop it
-            // before the watertight pass, preview, body construction or commit.
-            guard !cancel() else { return interrupted(cancellation) }
-        }
-        result = result.makeWatertight(isCancelled: cancel)
-        guard !cancel() else { return interrupted(cancellation) }
-        guard !result.polygons.isEmpty else {
-            return Self.fail("empty_geometry",
-                             "The \(opString) result is empty; nothing changed.")
-        }
-        let renderResult = EuclidBridge.renderMesh(from: result)
-        guard !cancel() else { return interrupted(cancellation) }
-        let gate = previewGate(action: "boolean", args: args, meshes: [renderResult],
-                               extra: exactnessKeys)
-        if let refusal = gate.refusal { return refusal }
-        if let reply = gate.reply { return reply }
-
-        let name = sanitizeName(args["name"]) ?? "Boolean"
-        let body = makeResultBody(name: name, mesh: result)
-        // The one document commit is the only mutation. A cancellation that
-        // arrived after the CSG but before this point must not publish it.
-        guard !cancel() else { return interrupted(cancellation) }
-        commit(body, consuming: inputs, title: opString.capitalized)
-        var extra = exactnessKeys
-        extra["op"] = opString
-        extra["sourceBodyCount"] = inputs.count
-        return Self.mutationResult(action: "boolean",
-                                   body: body,
-                                   extra: extra)
+        let exactness = Self.inputExactness(inputs)
+        return .heavy(.boolean(kind: op,
+                               inputs: snapshot(inputs),
+                               inputExactness: exactness.label,
+                               brepBodyCount: exactness.brepBodyCount))
     }
 
     // MARK: transform (non-destructive)
@@ -440,163 +825,47 @@ public final class CADMeshService {
                 "bodies": entries]
     }
 
-    // MARK: repair
-
-    private func repair(_ args: [String: Any]) -> [String: Any] {
+    private func prepareRepair(_ args: [String: Any]) -> CADMeshPreparation {
         guard case let .ok(bodies) = resolveBodies(args) else {
-            return resolutionFailure(args)
+            return .refusal(resolutionFailure(args))
         }
-        if let refusal = verifyMeshOnly(bodies, args: args, action: "repair") { return refusal }
+        if let refusal = verifyMeshOnly(bodies, args: args, action: "repair") {
+            return .refusal(refusal)
+        }
         let tolerance: Double
         if let raw = args["tolerance"] {
             guard let value = Self.number(raw), value > 0 else {
-                return Self.fail("bad_request", "'tolerance' must be a positive distance in mm.")
+                return .refusal(Self.fail("bad_request",
+                                          "'tolerance' must be a positive distance in mm."))
             }
             tolerance = value
         } else {
             tolerance = 1e-3
         }
-
-        let clock = EvaluationDeadlineClock(seconds: wallClockLimit)
-        var replacements: [(before: Body, after: Body)] = []
-        var entries: [[String: Any]] = []
-        var previewMeshes: [RenderMesh] = []
-        for body in bodies {
-            guard let welded = Self.weldAndClean(body.render, tolerance: tolerance, clock: clock) else {
-                if clock.expired { return limitTime() }
-                return Self.fail("invalid_mesh",
-                                 "Body '\(body.name)' has non-finite coordinates; nothing changed.")
-            }
-            guard !welded.mesh.indices.isEmpty else {
-                return Self.fail("empty_geometry",
-                                 "Repairing '\(body.name)' would remove every triangle; nothing changed.")
-            }
-            previewMeshes.append(welded.mesh)
-            entries.append(["bodyID": body.id.raw.uuidString,
-                            "beforeTriangles": body.render.triangleCount,
-                            "afterTriangles": welded.mesh.triangleCount,
-                            "weldedVertices": welded.weldedVertices,
-                            "removedTriangles": welded.removedTriangles])
-            guard welded.weldedVertices > 0 || welded.removedTriangles > 0 else { continue }
-            var after = body
-            after.render = welded.mesh
-            after.edges = FeatureEdgeExtractor.edges(from: welded.mesh)
-            after.euclid = nil
-            after.brep = nil
-            after.primitive = nil
-            replacements.append((before: body, after: after))
-        }
-        let gate = previewGate(action: "repair", args: args, meshes: previewMeshes)
-        if let refusal = gate.refusal { return refusal }
-        if let reply = gate.reply { return reply }
-        performReplacements(replacements, title: "Repair Mesh")
-        return ["ok": true,
-                "action": "repair",
-                "mutated": !replacements.isEmpty,
-                "exactness": "mesh",
-                "tolerance": tolerance,
-                "bodies": entries]
+        return .heavy(.repair(inputs: snapshot(bodies), tolerance: tolerance))
     }
 
-    // MARK: simplify
-
-    private func simplify(_ args: [String: Any]) -> [String: Any] {
+    private func prepareSimplify(_ args: [String: Any]) -> CADMeshPreparation {
         guard case let .ok(bodies) = resolveBodies(args) else {
-            return resolutionFailure(args)
+            return .refusal(resolutionFailure(args))
         }
-        if let refusal = verifyMeshOnly(bodies, args: args, action: "simplify") { return refusal }
+        if let refusal = verifyMeshOnly(bodies, args: args, action: "simplify") {
+            return .refusal(refusal)
+        }
         let ratio = args["ratio"].flatMap { Self.number($0) }
         let tolerance = args["tolerance"].flatMap { Self.number($0) }
         if tolerance == nil {
             guard let ratio, ratio > 0, ratio < 1 else {
-                return Self.fail("bad_request",
-                                 "Provide 'ratio' in (0, 1) or a positive 'tolerance' in mm.")
+                return .refusal(Self.fail("bad_request",
+                                          "Provide 'ratio' in (0, 1) or a positive 'tolerance' in mm."))
             }
         } else if let tolerance, tolerance <= 0 {
-            return Self.fail("bad_request", "'tolerance' must be a positive distance in mm.")
+            return .refusal(Self.fail("bad_request",
+                                      "'tolerance' must be a positive distance in mm."))
         }
-
-        let clock = EvaluationDeadlineClock(seconds: wallClockLimit)
-        var replacements: [(before: Body, after: Body)] = []
-        var entries: [[String: Any]] = []
-        var previewMeshes: [RenderMesh] = []
-        for body in bodies {
-            let before = body.render.triangleCount
-            guard before >= 4 else {
-                return Self.fail("too_few_triangles",
-                                 "Body '\(body.name)' has \(before) triangles; simplification "
-                                 + "never goes below 4.")
-            }
-            let simplified: RenderMesh
-            if let tolerance {
-                // Tolerance takes precedence when both are given.
-                guard let welded = Self.weldAndClean(body.render, tolerance: tolerance,
-                                                     clock: clock) else {
-                    if clock.expired { return limitTime() }
-                    return Self.fail("invalid_mesh",
-                                     "Body '\(body.name)' has non-finite coordinates; nothing changed.")
-                }
-                guard welded.mesh.triangleCount >= 4 else {
-                    return Self.fail("simplify_too_aggressive",
-                                     "That tolerance would leave fewer than 4 triangles; "
-                                     + "nothing changed.")
-                }
-                simplified = welded.mesh
-                entries.append(["bodyID": body.id.raw.uuidString,
-                                "beforeTriangles": before,
-                                "afterTriangles": welded.mesh.triangleCount,
-                                "tolerance": tolerance])
-            } else {
-                guard let ratio else {
-                    return Self.fail("bad_request", "Provide 'ratio' in (0, 1) or 'tolerance'.")
-                }
-                let target = max(4, Int((Double(before) * ratio).rounded()))
-                var cell = max(Self.diagonal(body.render) * 0.01, 1e-9)
-                var best: RenderMesh?
-                var bestCell = cell
-                for _ in 0..<28 {
-                    guard let welded = Self.weldAndClean(body.render, tolerance: cell,
-                                                         clock: clock) else {
-                        if clock.expired { return limitTime() }
-                        return Self.fail("invalid_mesh",
-                                         "Body '\(body.name)' has non-finite coordinates; nothing changed.")
-                    }
-                    let candidate = welded.mesh
-                    guard candidate.triangleCount >= 4 else { break }
-                    best = candidate
-                    bestCell = cell
-                    if candidate.triangleCount <= target { break }
-                    cell *= 1.6
-                }
-                guard let simplifiedMesh = best else {
-                    return Self.fail("simplify_too_aggressive",
-                                     "No cluster size kept at least 4 triangles; nothing changed.")
-                }
-                simplified = simplifiedMesh
-                entries.append(["bodyID": body.id.raw.uuidString,
-                                "beforeTriangles": before,
-                                "afterTriangles": simplifiedMesh.triangleCount,
-                                "targetTriangles": target,
-                                "cellSize": bestCell])
-            }
-            var after = body
-            after.render = simplified
-            after.edges = FeatureEdgeExtractor.edges(from: simplified)
-            after.euclid = nil
-            after.brep = nil
-            after.primitive = nil
-            previewMeshes.append(simplified)
-            replacements.append((before: body, after: after))
-        }
-        let gate = previewGate(action: "simplify", args: args, meshes: previewMeshes)
-        if let refusal = gate.refusal { return refusal }
-        if let reply = gate.reply { return reply }
-        performReplacements(replacements, title: "Simplify Mesh")
-        return ["ok": true,
-                "action": "simplify",
-                "mutated": true,
-                "exactness": "mesh",
-                "bodies": entries]
+        return .heavy(.simplify(inputs: snapshot(bodies),
+                                ratio: ratio,
+                                tolerance: tolerance))
     }
 
     // MARK: material (non-destructive)
@@ -841,21 +1110,19 @@ public final class CADMeshService {
     ///
     /// `preview:true` returns the transient result geometry (a bounded mesh
     /// snapshot a UI can draw) plus an order-independent content hash and the
-    /// document revision/change-count it was computed against — WITHOUT
+    /// source revision/change-count the worker was dispatched against — WITHOUT
     /// touching the document. A subsequent apply may pass those values as
     /// `expectedPreviewHash` / `expectedRevision` / `expectedChangeCount`; a
     /// mismatch refuses with `preview_stale` instead of committing geometry
-    /// the user never saw.
+    /// the user never saw. The hash/snapshot were computed in the worker.
     private func previewGate(action: String, args: [String: Any],
-                             meshes: [RenderMesh],
-                             extra: [String: Any] = [:]) -> (reply: [String: Any]?,
-                                                             refusal: [String: Any]?) {
-        guard let hash = CADTransientMeshPreview.hash(of: meshes) else {
-            return (nil, Self.fail("invalid_mesh",
-                                   "The '\(action)' result has non-finite geometry; nothing changed."))
-        }
-        let revision = document.store.revision
-        let changeCount = document.session.changeCount
+                             hash: String,
+                             snapshot: CADTransientMeshPreview.Snapshot?,
+                             triangleCount: Int,
+                             revision: Int,
+                             changeCount: Int,
+                             extra: [String: Any]) -> (reply: [String: Any]?,
+                                                       refusal: [String: Any]?) {
         if let expected = args["expectedPreviewHash"] as? String, !expected.isEmpty {
             guard expected == hash else {
                 return (nil, Self.fail("preview_stale",
@@ -873,7 +1140,7 @@ public final class CADMeshService {
             }
         }
         if Self.boolean(args["preview"]) {
-            guard let snapshot = CADTransientMeshPreview.snapshot(of: meshes) else {
+            guard let snapshot else {
                 return (nil, Self.fail("invalid_mesh", "The '\(action)' preview is empty."))
             }
             var reply: [String: Any] = ["ok": true,
@@ -884,7 +1151,7 @@ public final class CADMeshService {
                                         "previewHash": hash,
                                         "previewRevision": revision,
                                         "previewChangeCount": changeCount,
-                                        "triangleCount": meshes.reduce(0) { $0 + $1.triangleCount },
+                                        "triangleCount": triangleCount,
                                         "mesh": CADTransientMeshPreview.payload(snapshot)]
             for (key, value) in extra { reply[key] = value }
             return (reply, nil)
@@ -900,20 +1167,26 @@ public final class CADMeshService {
 
     // MARK: Session commit helpers
 
-    private func makeResultBody(name: String, mesh: Euclid.Mesh) -> Body {
+    private func makeResultBody(name: String,
+                                mesh: Euclid.Mesh,
+                                render: RenderMesh,
+                                edges: FeatureEdgeSet) -> Body {
         var localDocument = document.session.document
-        return Body(name: localDocument.uniqueBodyName(base: name),
-                    transform: .identity,
-                    primitive: nil,
-                    euclidMesh: mesh,
-                    revision: localDocument.nextRevision())
+        var body = Body(id: BodyID(),
+                        name: localDocument.uniqueBodyName(base: name),
+                        transform: .identity,
+                        render: render,
+                        edges: edges,
+                        revision: localDocument.nextRevision())
+        body.euclid = mesh
+        return body
     }
 
     /// Adds the result body and consumes the inputs in ONE undo step.
-    private func commit(_ body: Body, consuming inputs: [Body], title: String) {
+    private func commit(_ body: Body, consumingIDs: [BodyID], title: String) {
         var commands: [DocumentCommand] = [AddBodyCommand(body: body, title: title)]
-        if !inputs.isEmpty {
-            commands.append(DeleteBodiesCommand(ids: Set(inputs.map(\.id)),
+        if !consumingIDs.isEmpty {
+            commands.append(DeleteBodiesCommand(ids: Set(consumingIDs),
                                                 document: document.session.document))
         }
         performCommands(commands, title: title)
@@ -950,13 +1223,525 @@ public final class CADMeshService {
         return response
     }
 
-    // MARK: Geometry helpers
-
-    private static func worldMesh(_ body: Body) -> Euclid.Mesh {
-        body.euclidMesh().transformed(by: body.transform.euclid)
+    private func commitResult(plan: CADMeshPlan,
+                              args: [String: Any],
+                              source: CADMeshSourceToken,
+                              cancellation: CADMeshCancellation,
+                              mesh: Euclid.Mesh,
+                              render: RenderMesh,
+                              edges: FeatureEdgeSet,
+                              hash: String,
+                              snapshot: CADTransientMeshPreview.Snapshot?,
+                              repairEntries: [CADMeshRepairEntry],
+                              simplifyEntries: [CADMeshSimplifyEntry]) -> [String: Any] {
+        _ = repairEntries
+        _ = simplifyEntries
+        let gateExtra: [String: Any]
+        var mutationExtra: [String: Any]
+        let name: String
+        let title: String
+        switch plan {
+        case .combine(let inputs, let baseName):
+            gateExtra = [:]
+            mutationExtra = ["sourceBodyCount": inputs.count]
+            name = baseName
+            title = "Combine"
+        case .boolean(let kind, let inputs, let inputExactness, let brepBodyCount):
+            let exactness: [String: Any] = ["inputExactness": inputExactness,
+                                            "brepDropped": brepBodyCount > 0,
+                                            "droppedBRepBodyCount": brepBodyCount]
+            gateExtra = exactness
+            mutationExtra = exactness
+            mutationExtra["op"] = kind.rawValue
+            mutationExtra["sourceBodyCount"] = inputs.count
+            name = sanitizeName(args["name"]) ?? "Boolean"
+            title = kind.rawValue.capitalized
+        case .repair, .simplify:
+            return Self.fail("bad_request", "Unexpected mesh result.")
+        }
+        let gate = previewGate(action: plan.action, args: args, hash: hash,
+                               snapshot: snapshot,
+                               triangleCount: render.triangleCount,
+                               revision: document.store.revision,
+                               changeCount: document.session.changeCount,
+                               extra: gateExtra)
+        if let refusal = gate.refusal { return refusal }
+        if let reply = gate.reply { return reply }
+        if let fence = commitFence(plan, source: source, cancellation: cancellation) {
+            return fence
+        }
+        let body = makeResultBody(name: name, mesh: mesh, render: render, edges: edges)
+        commit(body, consumingIDs: plan.inputs.map(\.id), title: title)
+        return Self.mutationResult(action: plan.action, body: body, extra: mutationExtra)
     }
 
-    private static func diagonal(_ mesh: RenderMesh) -> Double {
+    private func commitReplacements(plan: CADMeshPlan,
+                                    args: [String: Any],
+                                    source: CADMeshSourceToken,
+                                    cancellation: CADMeshCancellation,
+                                    replacements: [CADMeshReplacement],
+                                    repairEntries: [CADMeshRepairEntry],
+                                    simplifyEntries: [CADMeshSimplifyEntry],
+                                    hash: String,
+                                    snapshot: CADTransientMeshPreview.Snapshot?,
+                                    previewTriangleCount: Int) -> [String: Any] {
+        let gate = previewGate(action: plan.action, args: args, hash: hash,
+                               snapshot: snapshot,
+                               triangleCount: previewTriangleCount,
+                               revision: document.store.revision,
+                               changeCount: document.session.changeCount,
+                               extra: [:])
+        if let refusal = gate.refusal { return refusal }
+        if let reply = gate.reply { return reply }
+        if let fence = commitFence(plan, source: source, cancellation: cancellation) {
+            return fence
+        }
+
+        var pairs: [(before: Body, after: Body)] = []
+        for replacement in replacements {
+            guard let before = document.session.document.body(with: replacement.id) else {
+                return Self.sourceChangedReply()
+            }
+            var after = before
+            after.render = replacement.render
+            after.edges = replacement.edges
+            after.euclid = nil
+            after.brep = nil
+            after.primitive = nil
+            pairs.append((before: before, after: after))
+        }
+        let title: String
+        let mutated: Bool
+        let entries: [[String: Any]]
+        switch plan {
+        case .repair(_, let tolerance):
+            title = "Repair Mesh"
+            mutated = !pairs.isEmpty
+            entries = repairEntries.map(\.payload)
+            performReplacements(pairs, title: title)
+            return ["ok": true,
+                    "action": "repair",
+                    "mutated": mutated,
+                    "exactness": "mesh",
+                    "tolerance": tolerance,
+                    "bodies": entries]
+        case .simplify:
+            title = "Simplify Mesh"
+            mutated = true
+            entries = simplifyEntries.map(\.payload)
+            performReplacements(pairs, title: title)
+            return ["ok": true,
+                    "action": "simplify",
+                    "mutated": mutated,
+                    "exactness": "mesh",
+                    "bodies": entries]
+        case .combine, .boolean:
+            return Self.fail("bad_request", "Unexpected mesh result.")
+        }
+    }
+
+    // MARK: Off-main compute
+
+    /// Validates the frozen heavy inputs before any Euclid conversion/CSG or
+    /// welding. The scan is chunk-bounded by cancellation/deadline checks so a
+    /// huge or corrupt buffer cannot monopolize the worker past the operation
+    /// limit; it introduces no smaller size cap. Every refusal names the body
+    /// and leaves geometry, history and files untouched.
+    private nonisolated static func validateInputs(
+        _ inputs: [CADMeshInputSnapshot],
+        clock: EvaluationDeadlineClock,
+        isCancelled: @Sendable () -> Bool
+    ) -> CADMeshInputValidation {
+        guard inputs.count <= maxInputBodies else {
+            return .refused(
+                code: "too_many_bodies",
+                message: "At most \(maxInputBodies) bodies per operation; got \(inputs.count).")
+        }
+        var totalTriangles = 0
+        for input in inputs {
+            if isCancelled() || clock.isExpired() { return .interrupted }
+
+            let transform = input.transform
+            guard transform.translation.x.isFinite,
+                  transform.translation.y.isFinite,
+                  transform.translation.z.isFinite,
+                  transform.scale.isFinite,
+                  transform.scale > 0,
+                  transform.rotation.imag.x.isFinite,
+                  transform.rotation.imag.y.isFinite,
+                  transform.rotation.imag.z.isFinite,
+                  transform.rotation.real.isFinite else {
+                return invalid(input, "has a non-finite or non-positive transform")
+            }
+            let rotation = transform.rotation
+            let rotationLength = (rotation.imag.x * rotation.imag.x
+                + rotation.imag.y * rotation.imag.y
+                + rotation.imag.z * rotation.imag.z
+                + rotation.real * rotation.real).squareRoot()
+            guard rotationLength.isFinite, rotationLength > 1e-12 else {
+                return invalid(input, "has a zero or non-finite rotation")
+            }
+
+            let render = input.render
+            guard !render.indices.isEmpty, !render.positions.isEmpty else {
+                return invalid(input, "has no triangles to operate on")
+            }
+            guard render.indices.count % 3 == 0 else {
+                return invalid(input, "has a truncated triangle index buffer")
+            }
+            guard render.normals.count == render.positions.count else {
+                return invalid(input, "has a normals buffer that does not match its vertices")
+            }
+            if let texcoords = render.texcoords,
+               texcoords.count != render.positions.count {
+                return invalid(input, "has a texture-coordinate buffer that does not match its vertices")
+            }
+
+            totalTriangles += render.triangleCount
+            guard totalTriangles <= maxInputTriangles else {
+                return .refused(
+                    code: "too_many_triangles",
+                    message: "Input exceeds \(maxInputTriangles) triangles.")
+            }
+
+            let vertexCount = render.positions.count
+            for (offset, position) in render.positions.enumerated() {
+                if offset % 4096 == 0, isCancelled() || clock.isExpired() {
+                    return .interrupted
+                }
+                guard position.x.isFinite, position.y.isFinite, position.z.isFinite else {
+                    return invalid(input, "has a non-finite position")
+                }
+            }
+            for (offset, normal) in render.normals.enumerated() {
+                if offset % 4096 == 0, isCancelled() || clock.isExpired() {
+                    return .interrupted
+                }
+                guard normal.x.isFinite, normal.y.isFinite, normal.z.isFinite else {
+                    return invalid(input, "has a non-finite normal")
+                }
+            }
+            if let texcoords = render.texcoords {
+                for (offset, uv) in texcoords.enumerated() {
+                    if offset % 4096 == 0, isCancelled() || clock.isExpired() {
+                        return .interrupted
+                    }
+                    guard uv.x.isFinite, uv.y.isFinite else {
+                        return invalid(input, "has a non-finite texture coordinate")
+                    }
+                }
+            }
+            for (offset, index) in render.indices.enumerated() {
+                if offset % 4096 == 0, isCancelled() || clock.isExpired() {
+                    return .interrupted
+                }
+                guard Int(index) < vertexCount else {
+                    return invalid(input, "has an out-of-range triangle index")
+                }
+            }
+        }
+        return .valid
+    }
+
+    private nonisolated static func invalid(_ input: CADMeshInputSnapshot,
+                                            _ detail: String) -> CADMeshInputValidation {
+        .refused(code: "invalid_mesh",
+                 message: "Body '\(input.name)' \(detail); nothing changed.")
+    }
+
+    /// Test-visible timing wrapper around the real compute. Production has no
+    /// observation installed and calls straight through without a clock read.
+    private nonisolated static func compute(plan: CADMeshPlan,
+                                            wallClockLimit: Double,
+                                            cancellation: CADMeshCancellation,
+                                            previewRequested: Bool) -> CADMeshComputation {
+        guard let observation = testComputeObservation else {
+            return computeBody(plan: plan,
+                               wallClockLimit: wallClockLimit,
+                               cancellation: cancellation,
+                               previewRequested: previewRequested)
+        }
+        let started = ContinuousClock.now
+        let computation = computeBody(plan: plan,
+                                      wallClockLimit: wallClockLimit,
+                                      cancellation: cancellation,
+                                      previewRequested: previewRequested)
+        let duration = started.duration(to: .now)
+        let parts = duration.components
+        observation(CADMeshComputeObservation(
+            action: plan.action,
+            inputBodies: plan.inputs.count,
+            inputTriangles: plan.inputTriangleCount,
+            computeSeconds: Double(parts.seconds)
+                + Double(parts.attoseconds) / 1_000_000_000_000_000_000,
+            ranOnMainThread: Thread.isMainThread,
+            outcome: computeOutcomeLabel(computation)))
+        return computation
+    }
+
+    private nonisolated static func computeOutcomeLabel(_ computation: CADMeshComputation) -> String {
+        switch computation {
+        case .cancelled: return "cancelled"
+        case .timedOut: return "limit_time"
+        case .refused(let code, _): return "refused:\(code)"
+        case .combine: return "combine"
+        case .boolean: return "boolean"
+        case .replacements: return "replacements"
+        }
+    }
+
+    private nonisolated static func computeBody(plan: CADMeshPlan,
+                                                wallClockLimit: Double,
+                                                cancellation: CADMeshCancellation,
+                                                previewRequested: Bool) -> CADMeshComputation {
+        let clock = EvaluationDeadlineClock(seconds: wallClockLimit)
+        let kernelCancel: @Sendable () -> Bool = {
+            cancellation.kernelIsCancelled() || Task.isCancelled || clock.isExpired()
+        }
+        let serviceCancel: @Sendable () -> Bool = {
+            cancellation.isCancelled || Task.isCancelled || clock.isExpired()
+        }
+        func interrupted() -> CADMeshComputation {
+            if cancellation.isCancelled || Task.isCancelled { return .cancelled }
+            return .timedOut
+        }
+
+        // Frozen value inputs are persistence-adjacent bytes: a reopened
+        // MeshBlob guards index bounds but deliberately accepts non-finite
+        // floats. Validate the whole snapshot HERE, on the compute thread,
+        // before Euclid conversion/CSG or welding can subscript a bad index,
+        // convert a NaN into a trap, or commit a malformed body. This mirrors
+        // the existing `DocumentSession.faceRangeTable` render checks and adds
+        // the UV/transform invariants this service consumes; it is a scanned
+        // pass, not an artificial size limit.
+        switch validateInputs(plan.inputs, clock: clock, isCancelled: serviceCancel) {
+        case .valid:
+            break
+        case .interrupted:
+            return interrupted()
+        case .refused(let code, let message):
+            return .refused(code: code, message: message)
+        }
+
+        switch plan {
+        case .combine(let inputs, _):
+            guard !serviceCancel() else { return interrupted() }
+            var result = Euclid.Mesh.empty
+            for input in inputs {
+                guard !serviceCancel() else { return interrupted() }
+                result = result.merge(worldMesh(input))
+            }
+            guard !serviceCancel() else { return interrupted() }
+            guard !result.polygons.isEmpty else {
+                return .refused(code: "empty_geometry",
+                                message: "The combined mesh is empty; nothing changed.")
+            }
+            let render = EuclidBridge.renderMesh(from: result)
+            guard !serviceCancel() else { return interrupted() }
+            guard let hash = CADTransientMeshPreview.hash(of: [render]) else {
+                return .refused(code: "invalid_mesh",
+                                message: "The 'combine' result has non-finite geometry; nothing changed.")
+            }
+            let snapshot = previewRequested
+                ? CADTransientMeshPreview.snapshot(of: [render]) : nil
+            return .combine(mesh: result, render: render,
+                            edges: FeatureEdgeExtractor.edges(from: render),
+                            previewHash: hash, previewSnapshot: snapshot)
+
+        case .boolean(let kind, let inputs, _, _):
+            guard !serviceCancel() else { return interrupted() }
+            var result = worldMesh(inputs[0])
+            for input in inputs.dropFirst() {
+                guard !serviceCancel() else { return interrupted() }
+                let toolMesh = worldMesh(input)
+                switch kind {
+                case .union:
+                    result = result.union(toolMesh, isCancelled: kernelCancel)
+                case .subtract:
+                    result = result.subtracting(toolMesh, isCancelled: kernelCancel)
+                case .intersect:
+                    result = result.intersection(toolMesh, isCancelled: kernelCancel)
+                }
+                // Euclid may return its partially clipped mesh when the
+                // closure reports cancellation. Never treat that as a
+                // result: drop it before the watertight pass, preview, body
+                // construction or commit.
+                guard !serviceCancel() else { return interrupted() }
+            }
+            result = result.makeWatertight(isCancelled: kernelCancel)
+            guard !serviceCancel() else { return interrupted() }
+            guard !result.polygons.isEmpty else {
+                return .refused(code: "empty_geometry",
+                                message: "The \(kind.rawValue) result is empty; nothing changed.")
+            }
+            let render = EuclidBridge.renderMesh(from: result)
+            guard !serviceCancel() else { return interrupted() }
+            guard let hash = CADTransientMeshPreview.hash(of: [render]) else {
+                return .refused(code: "invalid_mesh",
+                                message: "The 'boolean' result has non-finite geometry; nothing changed.")
+            }
+            let snapshot = previewRequested
+                ? CADTransientMeshPreview.snapshot(of: [render]) : nil
+            return .boolean(mesh: result, render: render,
+                            edges: FeatureEdgeExtractor.edges(from: render),
+                            previewHash: hash, previewSnapshot: snapshot)
+
+        case .repair(let inputs, let tolerance):
+            guard !serviceCancel() else { return interrupted() }
+            var replacements: [CADMeshReplacement] = []
+            var entries: [CADMeshRepairEntry] = []
+            var previewMeshes: [RenderMesh] = []
+            for input in inputs {
+                guard !serviceCancel() else { return interrupted() }
+                guard let welded = weldAndClean(input.render,
+                                                tolerance: tolerance,
+                                                clock: clock,
+                                                isCancelled: serviceCancel) else {
+                    if serviceCancel() { return interrupted() }
+                    return .refused(code: "invalid_mesh",
+                                    message: "Body '\(input.name)' has non-finite coordinates; nothing changed.")
+                }
+                guard !welded.mesh.indices.isEmpty else {
+                    return .refused(code: "empty_geometry",
+                                    message: "Repairing '\(input.name)' would remove every triangle; nothing changed.")
+                }
+                previewMeshes.append(welded.mesh)
+                entries.append(CADMeshRepairEntry(bodyID: input.id,
+                                                  beforeTriangles: input.render.triangleCount,
+                                                  afterTriangles: welded.mesh.triangleCount,
+                                                  weldedVertices: welded.weldedVertices,
+                                                  removedTriangles: welded.removedTriangles))
+                guard welded.weldedVertices > 0 || welded.removedTriangles > 0 else {
+                    continue
+                }
+                replacements.append(CADMeshReplacement(
+                    id: input.id,
+                    render: welded.mesh,
+                    edges: FeatureEdgeExtractor.edges(from: welded.mesh)))
+                guard !serviceCancel() else { return interrupted() }
+            }
+            guard !serviceCancel() else { return interrupted() }
+            guard let hash = CADTransientMeshPreview.hash(of: previewMeshes) else {
+                return .refused(code: "invalid_mesh",
+                                message: "The 'repair' result has non-finite geometry; nothing changed.")
+            }
+            let snapshot = previewRequested
+                ? CADTransientMeshPreview.snapshot(of: previewMeshes) : nil
+            return .replacements(replacements,
+                                 repairEntries: entries,
+                                 simplifyEntries: [],
+                                 previewHash: hash,
+                                 previewSnapshot: snapshot,
+                                 previewTriangleCount: previewMeshes.reduce(0) {
+                                     $0 + $1.triangleCount
+                                 })
+
+        case .simplify(let inputs, let ratio, let tolerance):
+            guard !serviceCancel() else { return interrupted() }
+            var replacements: [CADMeshReplacement] = []
+            var entries: [CADMeshSimplifyEntry] = []
+            var previewMeshes: [RenderMesh] = []
+            for input in inputs {
+                guard !serviceCancel() else { return interrupted() }
+                let before = input.render.triangleCount
+                guard before >= 4 else {
+                    return .refused(code: "too_few_triangles",
+                                    message: "Body '\(input.name)' has \(before) triangles; simplification "
+                                           + "never goes below 4.")
+                }
+                let simplified: RenderMesh
+                if let tolerance {
+                    // Tolerance takes precedence when both are given.
+                    guard let welded = weldAndClean(input.render,
+                                                    tolerance: tolerance,
+                                                    clock: clock,
+                                                    isCancelled: serviceCancel) else {
+                        if serviceCancel() { return interrupted() }
+                        return .refused(code: "invalid_mesh",
+                                        message: "Body '\(input.name)' has non-finite coordinates; nothing changed.")
+                    }
+                    guard welded.mesh.triangleCount >= 4 else {
+                        return .refused(code: "simplify_too_aggressive",
+                                        message: "That tolerance would leave fewer than 4 triangles; "
+                                               + "nothing changed.")
+                    }
+                    simplified = welded.mesh
+                    entries.append(CADMeshSimplifyEntry(bodyID: input.id,
+                                                        beforeTriangles: before,
+                                                        afterTriangles: welded.mesh.triangleCount,
+                                                        targetTriangles: nil,
+                                                        cellSize: nil,
+                                                        tolerance: tolerance))
+                } else {
+                    guard let ratio else {
+                        return .refused(code: "bad_request",
+                                        message: "Provide 'ratio' in (0, 1) or 'tolerance'.")
+                    }
+                    let target = max(4, Int((Double(before) * ratio).rounded()))
+                    var cell = max(diagonal(input.render) * 0.01, 1e-9)
+                    var best: RenderMesh?
+                    var bestCell = cell
+                    for _ in 0..<28 {
+                        guard !serviceCancel() else { return interrupted() }
+                        guard let welded = weldAndClean(input.render,
+                                                        tolerance: cell,
+                                                        clock: clock,
+                                                        isCancelled: serviceCancel) else {
+                            if serviceCancel() { return interrupted() }
+                            return .refused(code: "invalid_mesh",
+                                            message: "Body '\(input.name)' has non-finite coordinates; nothing changed.")
+                        }
+                        let candidate = welded.mesh
+                        guard candidate.triangleCount >= 4 else { break }
+                        best = candidate
+                        bestCell = cell
+                        if candidate.triangleCount <= target { break }
+                        cell *= 1.6
+                    }
+                    guard let simplifiedMesh = best else {
+                        return .refused(code: "simplify_too_aggressive",
+                                        message: "No cluster size kept at least 4 triangles; nothing changed.")
+                    }
+                    simplified = simplifiedMesh
+                    entries.append(CADMeshSimplifyEntry(bodyID: input.id,
+                                                        beforeTriangles: before,
+                                                        afterTriangles: simplifiedMesh.triangleCount,
+                                                        targetTriangles: target,
+                                                        cellSize: bestCell,
+                                                        tolerance: nil))
+                }
+                previewMeshes.append(simplified)
+                replacements.append(CADMeshReplacement(
+                    id: input.id,
+                    render: simplified,
+                    edges: FeatureEdgeExtractor.edges(from: simplified)))
+                guard !serviceCancel() else { return interrupted() }
+            }
+            guard !serviceCancel() else { return interrupted() }
+            guard let hash = CADTransientMeshPreview.hash(of: previewMeshes) else {
+                return .refused(code: "invalid_mesh",
+                                message: "The 'simplify' result has non-finite geometry; nothing changed.")
+            }
+            let snapshot = previewRequested
+                ? CADTransientMeshPreview.snapshot(of: previewMeshes) : nil
+            return .replacements(replacements,
+                                 repairEntries: [],
+                                 simplifyEntries: entries,
+                                 previewHash: hash,
+                                 previewSnapshot: snapshot,
+                                 previewTriangleCount: previewMeshes.reduce(0) {
+                                     $0 + $1.triangleCount
+                                 })
+        }
+    }
+
+    // MARK: Geometry helpers
+
+    private nonisolated static func worldMesh(_ input: CADMeshInputSnapshot) -> Euclid.Mesh {
+        input.euclidMesh().transformed(by: input.transform.euclid)
+    }
+
+    private nonisolated static func diagonal(_ mesh: RenderMesh) -> Double {
         let aabb = mesh.localAABB
         return simd_length(SIMD3(Double(aabb.max.x - aabb.min.x),
                                  Double(aabb.max.y - aabb.min.y),
@@ -964,12 +1749,15 @@ public final class CADMeshService {
     }
 
     /// Grid-quantized vertex welding; triangles that collapse to a repeated
-    /// index or zero area are dropped. Returns nil for non-finite input or
-    /// deadline expiry (the caller distinguishes with `clock.expired`).
-    private static func weldAndClean(_ mesh: RenderMesh,
-                                     tolerance: Double,
-                                     clock: EvaluationDeadlineClock)
-        -> (mesh: RenderMesh, weldedVertices: Int, removedTriangles: Int)? {
+    /// index or zero area are dropped. Returns nil for non-finite input,
+    /// cancellation or deadline expiry (the caller distinguishes the latter two
+    /// with the shared cancellation closure and `clock.isExpired()`).
+    private nonisolated static func weldAndClean(
+        _ mesh: RenderMesh,
+        tolerance: Double,
+        clock: EvaluationDeadlineClock,
+        isCancelled: @escaping @Sendable () -> Bool
+    ) -> (mesh: RenderMesh, weldedVertices: Int, removedTriangles: Int)? {
         for position in mesh.positions
         where !position.x.isFinite || !position.y.isFinite || !position.z.isFinite {
             return nil
@@ -982,7 +1770,7 @@ public final class CADMeshService {
         var counts = [Int]()
         var remap = [UInt32](repeating: 0, count: mesh.positions.count)
         for (index, position) in mesh.positions.enumerated() {
-            if clock.isExpired() { return nil }
+            if clock.isExpired() || isCancelled() { return nil }
             let key = ClusterKey(position, cell: tolerance)
             let cluster: Int
             if let existing = lookup[key] {
@@ -1023,7 +1811,7 @@ public final class CADMeshService {
         var removed = 0
         var triangle = 0
         while triangle < mesh.triangleCount {
-            if clock.isExpired() { return nil }
+            if clock.isExpired() || isCancelled() { return nil }
             let base = triangle * 3
             triangle += 1
             let a = remap[Int(mesh.indices[base])]
@@ -1043,7 +1831,7 @@ public final class CADMeshService {
                 removed)
     }
 
-    private struct ClusterKey: Hashable {
+    private nonisolated struct ClusterKey: Hashable {
         let x, y, z: Int64
         init(_ position: SIMD3<Float>, cell: Double) {
             x = MeshQuantize.key64(Double(position.x), quantum: cell)
@@ -1235,6 +2023,24 @@ public final class CADMeshService {
          "error": "cancelled",
          "mutated": false,
          "message": "The mesh operation was cancelled; nothing changed."]
+    }
+
+    private static func closedReply() -> [String: Any] {
+        ["ok": false,
+         "error": "closed",
+         "mutated": false,
+         "message": FloeCADStrings.text(
+            "cad.mesh.error.closed",
+            "The document closed while the mesh operation ran; nothing was applied.")]
+    }
+
+    private static func sourceChangedReply() -> [String: Any] {
+        ["ok": false,
+         "error": "source_changed",
+         "mutated": false,
+         "message": FloeCADStrings.text(
+            "cad.mesh.error.sourceChanged",
+            "The document changed while the mesh operation ran; nothing was applied. Run it again on the current bodies.")]
     }
 
     static func fail(_ code: String, _ message: String) -> [String: Any] {

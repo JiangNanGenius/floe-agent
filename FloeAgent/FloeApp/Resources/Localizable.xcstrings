@@ -15263,6 +15263,40 @@
         }
       }
     },
+    "cad.mesh.error.closed": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The document closed while the mesh operation ran; nothing was applied."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "网格操作进行时文档已关闭；没有应用任何更改。"
+          }
+        }
+      }
+    },
+    "cad.mesh.error.sourceChanged": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The document changed while the mesh operation ran; nothing was applied. Run it again on the current bodies."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "网格操作进行时文档已发生变化；没有应用任何更改。请在当前实体上重新运行。"
+          }
+        }
+      }
+    },
     "cad.panel.invalidNumber": {
       "extractionState": "manual",
       "localizations": {
