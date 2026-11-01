@@ -1560,5 +1560,713 @@ final class CADMaterialPresentRenderWitnessTests: XCTestCase {
         footprintAttachment.lifetime = .keepAlways
         add(footprintAttachment)
     }
+
+    // MARK: - X14: one body, two independently mapped faces
+
+    /// Original X14 clause: 同体两面设置不同投影/尺度，已有 mesh UV 和无 UV 两组
+    /// 均验证 Edit/Present/GLB 一致.
+    ///
+    /// This Present witness mounts the SAME real kernel box (120 mm X, 80 mm Z, 60 mm Y)
+    /// used by the Edit/GLB X14 witnesses and gives two faces different
+    /// explicit planar projections:
+    ///   * +Z front — the pinned 64x64 four-quadrant map over the whole face
+    ///     (axis z, scale 160 x 80 mm, offset 0.1 / 0.1);
+    ///   * +Y top   — a solid bottom-right yellow sample
+    ///     (axis x, scale 200 x 200 mm, offset 0.55 / 0.9).
+    /// The authored-UV variant adds a constant mesh UV set (0.25, 0.25): if the
+    /// explicit per-face projection were ignored, both faces would sample red.
+    /// The swapped variant exchanges the two face materials, so the front must
+    /// become solid yellow and the first top landmark blue.
+    private enum FaceWitnessConfig {
+        static let mappingFront = CADMaterialUVMapping(
+            source: .planarProjection, axis: .z,
+            scaleMM: SIMD2(160, 80), offset: SIMD2(0.1, 0.1))
+        static let mappingTop = CADMaterialUVMapping(
+            source: .planarProjection, axis: .x,
+            scaleMM: SIMD2(200, 200), offset: SIMD2(0.55, 0.9))
+        static let authoredUV = SIMD2<Float>(0.25, 0.25)
+
+        static func expectedUV(_ point: SIMD3<Float>,
+                               mapping: CADMaterialUVMapping) -> SIMD2<Float> {
+            let (u, v): (Float, Float)
+            switch mapping.axis {
+            case .x: (u, v) = (point.y, point.z)
+            case .y: (u, v) = (point.x, point.z)
+            case .z: (u, v) = (point.x, point.y)
+            }
+            return SIMD2(Float(Double(u) / mapping.scaleMM.x + mapping.offset.x),
+                         Float(Double(v) / mapping.scaleMM.y + mapping.offset.y))
+        }
+    }
+
+    private struct FaceLandmark {
+        var name: String
+        var worldMM: SIMD3<Float>
+        var expected: ColorQuadrant
+    }
+
+    private struct FaceWitnessBox {
+        var boundsMin: SIMD3<Float>
+        var boundsMax: SIMD3<Float>
+        var frontIndex: Int
+        var topIndex: Int
+
+        var frontQuadrants: [FaceLandmark] {
+            let rows: [(String, SIMD2<Float>, ColorQuadrant)] = [
+                ("front-topLeft", SIMD2(0.25, 0.25), .topLeft),
+                ("front-topRight", SIMD2(0.75, 0.25), .topRight),
+                ("front-bottomLeft", SIMD2(0.25, 0.75), .bottomLeft),
+                ("front-bottomRight", SIMD2(0.75, 0.75), .bottomRight),
+            ]
+            return rows.map { name, uv, quadrant in
+                let x = (Double(uv.x) - FaceWitnessConfig.mappingFront.offset.x)
+                    * FaceWitnessConfig.mappingFront.scaleMM.x
+                let y = (Double(uv.y) - FaceWitnessConfig.mappingFront.offset.y)
+                    * FaceWitnessConfig.mappingFront.scaleMM.y
+                return FaceLandmark(name: name,
+                                    worldMM: SIMD3(Float(x), Float(y), boundsMax.z),
+                                    expected: quadrant)
+            }
+        }
+
+        var topLandmarks: [FaceLandmark] {
+            let fractions: [(Float, Float)] = [(0.2, 0.2), (0.5, 0.5), (0.8, 0.8)]
+            return fractions.enumerated().map { index, fraction in
+                let x = boundsMin.x + (boundsMax.x - boundsMin.x) * fraction.0
+                let z = boundsMin.z + (boundsMax.z - boundsMin.z) * fraction.1
+                return FaceLandmark(name: "top-\(index)",
+                                    worldMM: SIMD3(x, boundsMax.y, z),
+                                    expected: .bottomRight)
+            }
+        }
+
+        var frontFaceCornersMM: [SIMD3<Float>] {
+            [SIMD3(boundsMin.x, boundsMin.y, boundsMax.z),
+             SIMD3(boundsMax.x, boundsMin.y, boundsMax.z),
+             SIMD3(boundsMax.x, boundsMax.y, boundsMax.z),
+             SIMD3(boundsMin.x, boundsMax.y, boundsMax.z)]
+        }
+
+        var topFaceCornersMM: [SIMD3<Float>] {
+            [SIMD3(boundsMin.x, boundsMax.y, boundsMin.z),
+             SIMD3(boundsMax.x, boundsMax.y, boundsMin.z),
+             SIMD3(boundsMax.x, boundsMax.y, boundsMax.z),
+             SIMD3(boundsMin.x, boundsMax.y, boundsMax.z)]
+        }
+    }
+
+    private struct FaceCaptured {
+        var capture: Captured
+        var box: FaceWitnessBox
+        var hasAuthoredMeshUVs: Bool
+        var swapped: Bool
+        var textureSHA256: String
+        var faceBindings: [[String: Any]]
+    }
+
+    private func runX14JSON(_ document: FloeCADDocument,
+                            _ json: String) throws -> [String: Any] {
+        let outcome = document.executeJSON(Data(json.utf8))
+        XCTAssertTrue(outcome.isOK,
+                      "X14 command failed (\(outcome.status)) "
+                        + "\(outcome.errorCode ?? ""): \(outcome.message ?? "") — \(json)")
+        return (try? JSONSerialization.jsonObject(with: outcome.payload))
+            as? [String: Any] ?? [:]
+    }
+
+    private func makeX14Box(_ document: FloeCADDocument) throws -> Body {
+        let sketch = try runX14JSON(
+            document, #"{"op":"sketch.create","args":{"name":"X14 face box"}}"#)
+        let sketchID = try XCTUnwrap(sketch["sketchID"] as? String)
+        _ = try runX14JSON(document, """
+        {"op":"sketch.addEntities","args":{"sketchID":"\(sketchID)",
+         "entities":[{"kind":"rect","min":[0,0],"max":[120,80]}]}}
+        """)
+        _ = try runX14JSON(document, """
+        {"op":"feature.extrude","args":{"sketchID":"\(sketchID)",
+         "seedPoint":[60,40],"distance":60}}
+        """)
+        return try XCTUnwrap(document.session.document.bodies.first,
+                             "the X14 extrusion must produce one body")
+    }
+
+    private func largestPlanarFace(
+        _ table: FaceTable,
+        normalComponent: (SIMD3<Double>) -> Double,
+        label: String
+    ) throws -> (index: Int, entry: FaceTable.Entry) {
+        var candidates: [(index: Int, entry: FaceTable.Entry)] = []
+        for (index, entry) in table.entries.enumerated() {
+            guard case .planar = entry.signature.kind,
+                  !entry.triangles.isEmpty,
+                  normalComponent(entry.signature.normal) > 0.99 else { continue }
+            candidates.append((index, entry))
+        }
+        return try XCTUnwrap(
+            candidates.max { $0.entry.signature.area < $1.entry.signature.area },
+            "the X14 face table has no planar \(label) face")
+    }
+
+    /// Mount the production Present pane for a document the X14 fixture has
+    /// already prepared. This is the same real mount/wait/capture/unmount
+    /// sequence as the X13 helper above, kept separate so the X13 path is
+    /// byte-for-byte unchanged.
+    private func mountAndCaptureFacePresent(
+        document: FloeCADDocument,
+        variantName: String,
+        sourcePNG: Data
+    ) async throws -> Captured {
+        let scenes = UIApplication.shared.connectedScenes
+            .compactMap { $0 as? UIWindowScene }
+        guard let scene = scenes.first(where: {
+            $0.activationState == .foregroundActive
+        }) else {
+            throw XCTSkip("Present render witness requires the App-hosted "
+                          + "UIKit target with a foreground window scene; "
+                          + "hostless xctest has none and no render is faked.")
+        }
+        let store = CADPresentationSceneStore(document: document)
+        let handle = CADPresentationHandle()
+        stores.append(store)
+        handles.append(handle)
+        if previousKeyWindow == nil {
+            previousKeyWindow = scene.windows.first { $0.isKeyWindow }
+        }
+        let testWindow = UIWindow(windowScene: scene)
+        testWindow.frame = CGRect(x: 0, y: 0, width: 512, height: 512)
+        let hosting = UIHostingController(rootView: AnyView(
+            CADPresentationPresentationPane(document: document, handle: handle,
+                                            store: store, onEdit: {})
+                .frame(width: 512, height: 512)
+                .id(ObjectIdentifier(document))))
+        testWindow.rootViewController = hosting
+        windows.append(testWindow)
+        hostings.append(hosting)
+        testWindow.makeKeyAndVisible()
+        hosting.view.setNeedsLayout()
+        hosting.view.layoutIfNeeded()
+
+        let deadline = Date().addingTimeInterval(90)
+        var ready = false
+        while Date() < deadline {
+            if CADPresentationCaptureRegistry.shared.isActive(for: document),
+               let active = CADPresentationCaptureRegistry.shared
+                .activeHandle(for: document),
+               active.controller?.isStageReady == true {
+                ready = true
+                break
+            }
+            try await Task.sleep(for: .milliseconds(100))
+        }
+        guard ready else {
+            XCTFail("Present never became active with a built stage for "
+                    + "\(variantName); no image was fabricated.")
+            await unmount(hosting: hosting, window: testWindow, store: store,
+                          handle: handle, document: document)
+            throw CapturedError.presentNeverActive
+        }
+        try await Task.sleep(for: .milliseconds(800))
+
+        let camera = handle.currentCamera
+        let result = try await document.capturePresentedPNG()
+        let capture = try XCTUnwrap(result,
+            "Present is active, so capturePresentedPNG must return the actual "
+            + "RealityKit render; nil here would mean the registry disagreed.")
+        XCTAssertFalse(capture.pngData.isEmpty)
+        XCTAssertEqual(capture.pngData.prefix(2), Data([0x89, 0x50]))
+        let pixels = try WitnessPixels.decode(capture.pngData)
+        XCTAssertGreaterThan(pixels.width, 0)
+        XCTAssertGreaterThan(pixels.height, 0)
+
+        await unmount(hosting: hosting, window: testWindow, store: store,
+                      handle: handle, document: document)
+
+        return Captured(
+            variantName: variantName, png: capture.pngData, pixels: pixels,
+            sourceSHA256: CADMaterialTexture.digest(sourcePNG),
+            orientation: .topLeft,
+            revision: capture.revision, changeCount: capture.changeCount,
+            contentSHA256: capture.contentSHA256,
+            imageSHA256: capture.imageSHA256,
+            documentKey: capture.documentKey, camera: camera)
+    }
+
+    private func captureFaceBox(hasAuthoredUVs: Bool,
+                                swapped: Bool) async throws -> FaceCaptured {
+        let scenes = UIApplication.shared.connectedScenes
+            .compactMap { $0 as? UIWindowScene }
+        guard scenes.contains(where: { $0.activationState == .foregroundActive })
+        else {
+            throw XCTSkip("Present render witness requires the App-hosted "
+                          + "UIKit target with a foreground window scene; "
+                          + "hostless xctest has none and no render is faked.")
+        }
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("X14FaceUVPresent-\(UUID().uuidString)",
+                                    isDirectory: true)
+        try FileManager.default.createDirectory(at: directory,
+                                                withIntermediateDirectories: true)
+        directories.append(directory)
+        let variantName = "\(hasAuthoredUVs ? "authoredUV" : "noUV")"
+            + "-\(swapped ? "swapped" : "declared")"
+        let document = try await FloeCADDocument.create(
+            at: directory.appendingPathComponent("face-\(variantName).floecad"),
+            name: "X14 Present \(variantName)")
+        documents.append(document)
+
+        let body = try makeX14Box(document)
+        XCTAssertEqual(body.transform, .identity,
+                       "the X14 witness projects body-local faces, so the body "
+                       + "must stay at identity")
+        let bounds = body.render.localAABB
+        XCTAssertEqual(bounds.max.x - bounds.min.x, 120, accuracy: 1e-3)
+        XCTAssertEqual(bounds.max.y - bounds.min.y, 60, accuracy: 1e-3)
+        XCTAssertEqual(bounds.max.z - bounds.min.z, 80, accuracy: 1e-3)
+        XCTAssertEqual(bounds.min.y, 0, accuracy: 1e-3)
+        XCTAssertEqual(bounds.max.y, 60, accuracy: 1e-3)
+        XCTAssertEqual(bounds.max.z, 0, accuracy: 1e-3)
+        let table = try XCTUnwrap(document.session.lastFaceTables[body.id],
+                                  "the X14 extrusion must retain a face table")
+        XCTAssertEqual(document.session.lastNamingRevisions[body.id],
+                       body.meshRevision,
+                       "the retained face table must describe the current mesh")
+        let front = try largestPlanarFace(table, normalComponent: { $0.z },
+                                          label: "+Z front")
+        let top = try largestPlanarFace(table, normalComponent: { $0.y },
+                                        label: "+Y top")
+        XCTAssertTrue(Set(front.entry.triangles).isDisjoint(
+                        with: Set(top.entry.triangles)),
+                      "the two X14 faces must own disjoint triangle ranges")
+        let box = FaceWitnessBox(boundsMin: bounds.min, boundsMax: bounds.max,
+                                 frontIndex: front.index, topIndex: top.index)
+
+        let colorPNG = try Fixture.colorPNG(.a)
+        let metadata = CADMaterialTextureMetadata(
+            assetID: UUID(), slot: .baseColor, mimeType: "image/png",
+            colorSpace: .srgb, orientation: .topLeft,
+            sha256: CADMaterialTexture.digest(colorPNG),
+            byteCount: colorPNG.count)
+        func material(_ name: String,
+                      mapping: CADMaterialUVMapping) -> BodyMaterialSpec {
+            BodyMaterialSpec(
+                baseColor: SIMD4(1, 1, 1, 1), metallic: 0, roughness: 1.0,
+                baseColorTexture: colorPNG, materialName: name,
+                uvMapping: mapping, textureMetadata: [metadata])
+        }
+        let frontMaterial = material("X14 Front +Z",
+                                     mapping: FaceWitnessConfig.mappingFront)
+        let topMaterial = material("X14 Top +Y",
+                                   mapping: FaceWitnessConfig.mappingTop)
+        let bindings = [
+            CADFaceMaterialBinding(
+                key: CADFaceKey(signature: front.entry.signature,
+                                capturedIndex: front.index + 1),
+                material: swapped ? topMaterial : frontMaterial),
+            CADFaceMaterialBinding(
+                key: CADFaceKey(signature: top.entry.signature,
+                                capturedIndex: top.index + 1),
+                material: swapped ? frontMaterial : topMaterial),
+        ]
+        document.session.perform(SetMaterialAppearanceCommand(
+            title: "X14 two-face projections", bodyIDs: [body.id],
+            after: [body.id: SetMaterialAppearanceCommand.Snapshot(
+                material: nil, faceBindings: bindings)],
+            document: document.session.document))
+        if hasAuthoredUVs {
+            document.session.preview { design in
+                guard let index = design.bodies.firstIndex(where: { $0.id == body.id })
+                else { return }
+                design.bodies[index].render.texcoords = Array(
+                    repeating: FaceWitnessConfig.authoredUV,
+                    count: design.bodies[index].render.positions.count)
+            }
+        }
+        let updated = try XCTUnwrap(
+            document.session.document.bodies.first(where: { $0.id == body.id }))
+        if hasAuthoredUVs {
+            let uvs = try XCTUnwrap(updated.render.texcoords,
+                                    "the authored-UV variant must carry mesh UVs")
+            XCTAssertEqual(uvs.count, updated.render.positions.count)
+            XCTAssertTrue(uvs.allSatisfy { $0 == FaceWitnessConfig.authoredUV })
+        } else {
+            XCTAssertNil(updated.render.texcoords,
+                         "the no-UV variant must not carry authored mesh UVs")
+        }
+        XCTAssertEqual(document.session.lastNamingRevisions[body.id],
+                       updated.meshRevision,
+                       "the authored/noUV fixture setup must not stale the "
+                       + "face table")
+        XCTAssertNotNil(document.session.lastFaceTables[body.id])
+        let resolved = CADFaceMaterialResolver.resolve(
+            updated.materialFaceBindings, in: updated)
+        XCTAssertEqual(resolved.count, 2)
+        XCTAssertEqual(Set(resolved.compactMap(\.resolvedIndex)).count, 2,
+                       "both X14 face bindings must resolve to distinct faces")
+
+        // The same authored studio key as the X13 Present witnesses; the
+        // engineering viewport keeps its own headlight rig.
+        Fixture.applyWitnessLight(to: document)
+        let saved = await document.save()
+        XCTAssertTrue(saved.succeeded, saved.error ?? "the X14 Present document must commit before capture")
+
+        let capture = try await mountAndCaptureFacePresent(
+            document: document, variantName: variantName, sourcePNG: colorPNG)
+        let faceBindings: [[String: Any]] = bindings.map { binding -> [String: Any] in
+            let mapping = binding.material.uvMapping
+            return [
+                "material": binding.material.materialName ?? "",
+                "capturedFaceIndex": binding.key.capturedIndex ?? -1,
+                "uvSource": mapping?.source.rawValue ?? "mesh",
+                "axis": mapping?.axis.rawValue ?? "mesh",
+                "scaleMM": [mapping?.scaleMM.x ?? 0, mapping?.scaleMM.y ?? 0],
+                "offset": [mapping?.offset.x ?? 0, mapping?.offset.y ?? 0],
+                "baseColorMapSHA256": binding.material.baseColorTexture.map {
+                    CADMaterialTexture.digest($0)
+                } ?? "",
+            ]
+        }
+        return FaceCaptured(
+            capture: capture, box: box, hasAuthoredMeshUVs: hasAuthoredUVs,
+            swapped: swapped, textureSHA256: CADMaterialTexture.digest(colorPNG),
+            faceBindings: faceBindings)
+    }
+
+    private func faceFootprint(_ projection: ColorProjection,
+                               cornersMM: [SIMD3<Float>],
+                               label: String) throws -> WitnessFootprint {
+        var points: [CGPoint] = []
+        for corner in cornersMM {
+            points.append(try XCTUnwrap(
+                projection.point(corner),
+                "\(label) corner \(corner) did not project into the capture"))
+        }
+        return WitnessFootprint(corners: points)
+    }
+
+    private func projectedLandmark(_ landmark: FaceLandmark,
+                                   projection: ColorProjection,
+                                   footprint: WitnessFootprint,
+                                   radius: Int,
+                                   label: String) throws -> CGPoint {
+        let point = try XCTUnwrap(
+            projection.point(landmark.worldMM),
+            "\(label) \(landmark.name) did not project into the capture")
+        XCTAssertTrue(
+            footprint.contains(point, inset: CGFloat(radius) * 2),
+            "\(label) \(landmark.name) at \(landmark.worldMM) is not inside "
+                + "the projected face")
+        return point
+    }
+
+    private func sampleFaceLandmark(_ pixels: WitnessPixels,
+                                    at point: CGPoint,
+                                    radius: Int,
+                                    footprint: WitnessFootprint,
+                                    label: String) throws -> ColorMean {
+        let mean = try XCTUnwrap(
+            colorMean(in: pixels, at: point, radius: radius,
+                      footprint: footprint),
+            "\(label): no pixels sampled")
+        let expectedPixels = (2 * radius + 1) * (2 * radius + 1)
+        XCTAssertGreaterThanOrEqual(
+            mean.count, expectedPixels * 3 / 4,
+            "\(label): ROI escaped the projected face (sampled \(mean.count) "
+                + "of \(expectedPixels))")
+        return mean
+    }
+
+    private func landmarkRow(_ landmark: FaceLandmark, mean: ColorMean,
+                             point: CGPoint) -> [String: Any] {
+        return [
+            "name": landmark.name,
+            "worldMM": [Double(landmark.worldMM.x), Double(landmark.worldMM.y),
+                        Double(landmark.worldMM.z)],
+            "expectedHue": landmark.expected.expectedHue,
+            "pixel": [Double(point.x), Double(point.y)],
+            "meanRGB": [mean.red, mean.green, mean.blue],
+            "sampleCount": mean.count,
+        ]
+    }
+
+    private func assertFaceLandmarks(_ pixels: WitnessPixels,
+                                     projection: ColorProjection,
+                                     frontFootprint: WitnessFootprint,
+                                     topFootprint: WitnessFootprint,
+                                     box: FaceWitnessBox,
+                                     label: String) throws -> [[String: Any]] {
+        let radius = max(3, Int(Double(min(pixels.width, pixels.height)) * 0.008))
+        var rows: [[String: Any]] = []
+        for landmark in box.frontQuadrants {
+            let uv = FaceWitnessConfig.expectedUV(
+                landmark.worldMM, mapping: FaceWitnessConfig.mappingFront)
+            XCTAssertEqual(uv.x, landmark.expected.uv.x, accuracy: 1e-4)
+            XCTAssertEqual(uv.y, landmark.expected.uv.y, accuracy: 1e-4)
+            let point = try projectedLandmark(
+                landmark, projection: projection, footprint: frontFootprint,
+                radius: radius, label: label)
+            let mean = try sampleFaceLandmark(
+                pixels, at: point, radius: radius, footprint: frontFootprint,
+                label: "\(label) \(landmark.name)")
+            XCTAssertTrue(
+                landmark.expected.matches(red: mean.red, green: mean.green,
+                                          blue: mean.blue),
+                "\(label) \(landmark.name) expected "
+                    + "\(landmark.expected.expectedHue): \(mean.description)")
+            rows.append(landmarkRow(landmark, mean: mean, point: point))
+        }
+        for landmark in box.topLandmarks {
+            let uv = FaceWitnessConfig.expectedUV(
+                landmark.worldMM, mapping: FaceWitnessConfig.mappingTop)
+            XCTAssertGreaterThan(uv.x, 0.5)
+            XCTAssertGreaterThan(uv.y, 0.5)
+            XCTAssertLessThan(uv.x, 1.0)
+            XCTAssertLessThan(uv.y, 1.0)
+            let point = try projectedLandmark(
+                landmark, projection: projection, footprint: topFootprint,
+                radius: radius, label: label)
+            let mean = try sampleFaceLandmark(
+                pixels, at: point, radius: radius, footprint: topFootprint,
+                label: "\(label) \(landmark.name)")
+            XCTAssertTrue(
+                landmark.expected.matches(red: mean.red, green: mean.green,
+                                          blue: mean.blue),
+                "\(label) \(landmark.name) expected "
+                    + "\(landmark.expected.expectedHue): \(mean.description)")
+            rows.append(landmarkRow(landmark, mean: mean, point: point))
+        }
+        return rows
+    }
+
+    private func assertSwappedFaceLandmarks(
+        _ pixels: WitnessPixels,
+        projection: ColorProjection,
+        frontFootprint: WitnessFootprint,
+        topFootprint: WitnessFootprint,
+        box: FaceWitnessBox,
+        label: String
+    ) throws -> [[String: Any]] {
+        let radius = max(3, Int(Double(min(pixels.width, pixels.height)) * 0.008))
+        var rows: [[String: Any]] = []
+        let front = box.frontQuadrants[0]
+        let frontPoint = try projectedLandmark(
+            front, projection: projection, footprint: frontFootprint,
+            radius: radius, label: label)
+        let frontMean = try sampleFaceLandmark(
+            pixels, at: frontPoint, radius: radius, footprint: frontFootprint,
+            label: "\(label) \(front.name)")
+        XCTAssertFalse(
+            ColorQuadrant.topLeft.matches(red: frontMean.red,
+                                          green: frontMean.green,
+                                          blue: frontMean.blue),
+            "\(label) front must NOT show the declared top-left red: "
+                + frontMean.description)
+        XCTAssertTrue(
+            ColorQuadrant.bottomRight.matches(red: frontMean.red,
+                                              green: frontMean.green,
+                                              blue: frontMean.blue),
+            "\(label) front must show the swapped +Y mapping's yellow: "
+                + frontMean.description)
+        var frontRow = landmarkRow(front, mean: frontMean, point: frontPoint)
+        frontRow["declaredHue"] = front.expected.expectedHue
+        frontRow["assertedHue"] = ColorQuadrant.bottomRight.expectedHue
+        frontRow["negativeControl"] = true
+        rows.append(frontRow)
+
+        let top = box.topLandmarks[0]
+        let topPoint = try projectedLandmark(
+            top, projection: projection, footprint: topFootprint,
+            radius: radius, label: label)
+        let topMean = try sampleFaceLandmark(
+            pixels, at: topPoint, radius: radius, footprint: topFootprint,
+            label: "\(label) \(top.name)")
+        XCTAssertFalse(
+            ColorQuadrant.bottomRight.matches(red: topMean.red,
+                                              green: topMean.green,
+                                              blue: topMean.blue),
+            "\(label) top must NOT show the declared yellow: "
+                + topMean.description)
+        XCTAssertTrue(
+            ColorQuadrant.bottomLeft.matches(red: topMean.red,
+                                             green: topMean.green,
+                                             blue: topMean.blue),
+            "\(label) top must show the swapped +Z mapping's blue: "
+                + topMean.description)
+        var topRow = landmarkRow(top, mean: topMean, point: topPoint)
+        topRow["declaredHue"] = top.expected.expectedHue
+        topRow["assertedHue"] = ColorQuadrant.bottomLeft.expectedHue
+        topRow["negativeControl"] = true
+        rows.append(topRow)
+        return rows
+    }
+
+    private func attachX14JSON(_ name: String, _ object: [String: Any]) {
+        let data = (try? JSONSerialization.data(withJSONObject: object,
+                                                options: [.sortedKeys])) ?? Data()
+        let attachment = XCTAttachment(data: data,
+                                       uniformTypeIdentifier: UTType.json.identifier)
+        attachment.name = name
+        attachment.lifetime = .keepAlways
+        add(attachment)
+    }
+
+    private func attachFace(_ captured: FaceCaptured) {
+        let png = XCTAttachment(data: captured.capture.png,
+                                uniformTypeIdentifier: UTType.png.identifier)
+        png.name = "x14-present-\(captured.capture.variantName)"
+            + "-rev\(captured.capture.revision)"
+        png.lifetime = .keepAlways
+        add(png)
+        var cameraJSON: [String: Any] = ["available": false]
+        if let camera = captured.capture.camera {
+            cameraJSON = [
+                "available": true,
+                "fovYDegrees": Double(camera.fovYDegrees),
+                "distanceM": Double(camera.distance),
+                "azimuthRadians": Double(camera.azimuthRadians),
+                "elevationRadians": Double(camera.elevationRadians),
+                "targetM": [Double(camera.target.x), Double(camera.target.y),
+                            Double(camera.target.z)],
+            ]
+        }
+        let manifest: [String: Any] = [
+            "witness": "X14 same-body two-face explicit projections — "
+                + "RealityKit Present",
+            "variant": captured.capture.variantName,
+            "renderer": "presentation",
+            "hasAuthoredMeshUVs": captured.hasAuthoredMeshUVs,
+            "swappedFaceMaterials": captured.swapped,
+            "authoredMeshUVSample": captured.hasAuthoredMeshUVs
+                ? [Double(FaceWitnessConfig.authoredUV.x),
+                   Double(FaceWitnessConfig.authoredUV.y)]
+                : "absent",
+            "frontFaceTableIndex": captured.box.frontIndex + 1,
+            "topFaceTableIndex": captured.box.topIndex + 1,
+            "faceBindings": captured.faceBindings,
+            "authoredColorMapBytesSHA256": captured.textureSHA256,
+            "documentRevision": captured.capture.revision,
+            "documentChangeCount": captured.capture.changeCount,
+            "documentContentSHA256": captured.capture.contentSHA256,
+            "renderedImageSHA256": captured.capture.imageSHA256,
+            "captureEntryPoint": "FloeCADDocument.capturePresentedPNG",
+            "documentKey": captured.capture.documentKey,
+            "cameraReceipt": cameraJSON,
+        ]
+        attachX14JSON("x14-present-\(captured.capture.variantName)-manifest.json",
+                      manifest)
+    }
+
+    func testSameBodyTwoFacesUseIndependentProjectionsWithAndWithoutAuthoredUVs()
+        async throws {
+        let noUV = try await captureFaceBox(hasAuthoredUVs: false, swapped: false)
+        let authored = try await captureFaceBox(hasAuthoredUVs: true, swapped: false)
+        let swapped = try await captureFaceBox(hasAuthoredUVs: false, swapped: true)
+        attachFace(noUV); attachFace(authored); attachFace(swapped)
+
+        XCTAssertEqual(noUV.box.boundsMin, authored.box.boundsMin)
+        XCTAssertEqual(noUV.box.boundsMax, authored.box.boundsMax)
+        XCTAssertEqual(noUV.box.boundsMin, swapped.box.boundsMin)
+        XCTAssertEqual(noUV.box.boundsMax, swapped.box.boundsMax)
+        XCTAssertEqual(noUV.box.frontIndex, authored.box.frontIndex)
+        XCTAssertEqual(noUV.box.topIndex, authored.box.topIndex)
+        XCTAssertNotEqual(noUV.capture.contentSHA256,
+                          authored.capture.contentSHA256)
+        XCTAssertNotEqual(noUV.capture.contentSHA256,
+                          swapped.capture.contentSHA256)
+        for captured in [noUV, authored, swapped] {
+            XCTAssertEqual(captured.capture.sourceSHA256,
+                           captured.textureSHA256)
+            XCTAssertEqual(captured.capture.imageSHA256,
+                           CADMaterialTexture.digest(captured.capture.png))
+        }
+
+        XCTAssertEqual(noUV.capture.camera, authored.capture.camera,
+                       "Present camera drifted between X14 variants")
+        XCTAssertEqual(noUV.capture.camera, swapped.capture.camera,
+                       "Present camera drifted between the X14 negative control")
+        let camera = try XCTUnwrap(noUV.capture.camera,
+            "Present did not expose its live camera; X14 landmarks cannot be "
+            + "projected and the witness must fail rather than skip.")
+        let projection = ColorProjection.present(
+            camera: camera, width: noUV.capture.pixels.width,
+            height: noUV.capture.pixels.height)
+        let frontFootprint = try faceFootprint(
+            projection, cornersMM: noUV.box.frontFaceCornersMM,
+            label: "X14 front")
+        let topFootprint = try faceFootprint(
+            projection, cornersMM: noUV.box.topFaceCornersMM,
+            label: "X14 top")
+
+        // The constant authored mesh UV set is red. The explicit per-face
+        // projections must override it, so the authored-UV and no-UV Present
+        // renders describe the same physical result.
+        let equivalence = try WitnessPixels.diff(noUV.capture.pixels,
+                                                 authored.capture.pixels)
+        XCTAssertLessThanOrEqual(equivalence.mean, 2.0,
+                                 "X14 Present authored/noUV mean "
+                                    + "\(equivalence.mean) exceeds the "
+                                    + "existing Present A/B tolerance")
+        XCTAssertGreaterThanOrEqual(equivalence.exactFraction, 0.95,
+                                    "X14 Present authored/noUV exact fraction "
+                                        + "\(equivalence.exactFraction)")
+        XCTAssertLessThanOrEqual(equivalence.max, 24,
+                                 "X14 Present authored/noUV max \(equivalence.max)")
+        let erosion = CGFloat(max(6, Int(Double(min(noUV.capture.pixels.width,
+                                                       noUV.capture.pixels.height)) * 0.02)))
+        let frontEquivalence = footprintDiff(
+            noUV.capture.pixels, authored.capture.pixels,
+            footprint: frontFootprint, inset: erosion)
+        let topEquivalence = footprintDiff(
+            noUV.capture.pixels, authored.capture.pixels,
+            footprint: topFootprint, inset: erosion)
+        XCTAssertGreaterThanOrEqual(frontEquivalence.pixelCount, 1_000)
+        XCTAssertGreaterThanOrEqual(topEquivalence.pixelCount, 1_000)
+        XCTAssertLessThanOrEqual(frontEquivalence.mean, 2.0,
+                                 "X14 Present front authored/noUV "
+                                    + "fixed-footprint mean "
+                                    + "\(frontEquivalence.mean)")
+        XCTAssertLessThanOrEqual(topEquivalence.mean, 2.0,
+                                 "X14 Present top authored/noUV "
+                                    + "fixed-footprint mean "
+                                    + "\(topEquivalence.mean)")
+
+        let noUVLandmarks = try assertFaceLandmarks(
+            noUV.capture.pixels, projection: projection,
+            frontFootprint: frontFootprint, topFootprint: topFootprint,
+            box: noUV.box, label: "noUV")
+        let authoredLandmarks = try assertFaceLandmarks(
+            authored.capture.pixels, projection: projection,
+            frontFootprint: frontFootprint, topFootprint: topFootprint,
+            box: authored.box, label: "authoredUV")
+        let swappedLandmarks = try assertSwappedFaceLandmarks(
+            swapped.capture.pixels, projection: projection,
+            frontFootprint: frontFootprint, topFootprint: topFootprint,
+            box: swapped.box, label: "swapped")
+
+        let metrics: [String: Any] = [
+            "witness": "X14 same-body two-face explicit projections — "
+                + "RealityKit Present",
+            "variants": [noUV.capture.variantName,
+                         authored.capture.variantName,
+                         swapped.capture.variantName],
+            "crossVariantEquivalent": [
+                "mean": equivalence.mean,
+                "exactFraction": equivalence.exactFraction,
+                "max": equivalence.max,
+                "frontFootprintMean": frontEquivalence.mean,
+                "topFootprintMean": topEquivalence.mean,
+                "frontFootprintPixels": frontEquivalence.pixelCount,
+                "topFootprintPixels": topEquivalence.pixelCount,
+            ],
+            "noUVLandmarks": noUVLandmarks,
+            "authoredUVLandmarks": authoredLandmarks,
+            "swappedNegativeControl": swappedLandmarks,
+            "authoredMeshUVSample": [Double(FaceWitnessConfig.authoredUV.x),
+                                     Double(FaceWitnessConfig.authoredUV.y)],
+            "note": "The explicit per-face projections must override the "
+                + "constant authored mesh UV set; the swapped variant proves "
+                + "the live Present landmarks discriminate the face assignment.",
+        ]
+        attachX14JSON("x14-present-metrics.json", metrics)
+    }
 }
 #endif
