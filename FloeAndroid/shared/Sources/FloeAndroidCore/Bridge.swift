@@ -36,6 +36,7 @@ public enum AndroidBridge {
                 || requestVersion == BridgeV8.version
                 || requestVersion == BridgeV9.version
                 || requestVersion == BridgeV10.version
+                || requestVersion == BridgeV11.version
                 || requestVersion == BridgeV12.version else {
             return response(["ok": false, "error": "unsupportedVersion"])
         }
@@ -152,6 +153,22 @@ public enum AndroidBridge {
                                 stampVersion: BridgeV10.version)
             }
             return response(object, stampVersion: BridgeV10.version)
+        }
+        if requestVersion == BridgeV11.version {
+            // Additive C05 VNC host-only channel: profile/credential namespaced
+            // VNC endpoints, real RFB sessions and metadata/input. Pixels use
+            // the separate trusted frame JNI lane. No model tool, no V3
+            // command, no guest/local permission.
+            let object = C05VNCBridge.handle(requestData: data,
+                                             fallbackRequestID: requestID)
+            let encoded = (try? JSONSerialization.data(withJSONObject: object,
+                                                       options: [.sortedKeys]))
+                ?? Data(#"{"ok":false,"error":"encoding"}"#.utf8)
+            guard encoded.count <= C05VNCWire.maximumResponseBytes else {
+                return response(["ok": false, "error": "responseTooLarge"],
+                                stampVersion: BridgeV11.version)
+            }
+            return response(object, stampVersion: BridgeV11.version)
         }
         if requestVersion == BridgeV12.version {
             // Additive C06 host-only generic mail channel: IMAP/POP3 + SMTP

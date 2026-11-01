@@ -11,6 +11,7 @@ import com.floe.android.host.officeai.OfficeAiOoxmlVerifier
 import com.floe.android.host.cad.C04CadViewerController
 import com.floe.android.host.mail.C06BrokerMailLanGate
 import com.floe.android.host.mail.C06MailHostController
+import com.floe.android.host.remote.C05BrokerLocalNetworkGate
 import com.floe.android.host.remote.C05RemoteHostController
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
@@ -135,6 +136,7 @@ class RuntimeHost internal constructor(
             scope = scope,
             ioDispatcher = ioDispatcher,
             currentNativeEpoch = ::nativeRootEpoch,
+            localNetwork = C05BrokerLocalNetworkGate(integrations.localNetwork),
         )
     }
     internal val c05Remote: C05RemoteHostController

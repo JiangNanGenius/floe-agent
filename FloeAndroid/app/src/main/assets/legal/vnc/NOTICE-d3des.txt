@@ -1,0 +1,10 @@
+D3DES (V5.09) by Richard Outerbridge, with the double/triple-length
+support removed for VNC and the bytebit[] array reversed. These changes are
+Copyright (C) 1998 Olivetti & Oracle Research Laboratory.
+
+D3DES is a portable, public domain version of the Data Encryption Standard.
+Copyright (c) 1988,1989,1990,1991,1992 by Richard Outerbridge.
+This software is distributed in the hope that it will be useful, but
+WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
+or FITNESS FOR A PARTICULAR PURPOSE. The full notice is retained in
+shared/Vendor/Remote/RoyalVNCKit/Sources/d3des/d3des.c.

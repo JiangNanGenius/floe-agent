@@ -80,7 +80,7 @@ class RemoteDraftValidationTest {
             auxiliaryConnectionCount = 0,
         )
         val draft = RemoteHostDraft.from(
-            RemoteHostDetailUi(summary, listOf("jump1", "jump2"), 0, 0)
+            RemoteHostDetailUi(summary, listOf("jump1", "jump2"), emptyList(), 0)
         )
         assertEquals("server.example", draft.address)
         assertEquals("2222", draft.port)

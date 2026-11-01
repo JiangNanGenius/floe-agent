@@ -17,6 +17,7 @@ import androidx.compose.ui.res.stringResource
 import com.floe.android.design.FloeIcons
 import com.floe.android.design.FloeUnavailableView
 import com.floe.android.feature.remote.RemoteDestinationUi
+import com.floe.android.feature.remote.RemoteVncActions
 import com.floe.android.feature.remote.R
 import com.floe.android.host.RuntimeHost
 
@@ -59,5 +60,19 @@ internal fun C05RemoteDestination(
         onCancelExec = controller::cancelExec,
         onReleaseExec = controller::releaseExec,
         onTerminalVisible = controller::setTerminalVisible,
+        vncActions = RemoteVncActions(
+            onConnect = { profileID, endpointID -> controller.connectVNC(profileID, endpointID) },
+            onClose = controller::disconnectVNC,
+            onVisible = controller::setVncVisible,
+            onPointerMove = controller::vncPointerMove,
+            onPointerButton = controller::vncPointerButton,
+            onWheel = controller::vncWheel,
+            onKey = controller::vncKey,
+            onText = controller::vncText,
+            onReleaseAll = controller::vncReleaseAll,
+            onSaveHost = controller::saveVNCOnlyHost,
+            onSaveEndpoint = controller::saveVncEndpoint,
+            onDeleteEndpoint = controller::deleteVncEndpoint,
+        ),
     )
 }

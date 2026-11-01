@@ -50,6 +50,26 @@ internal fun remoteMessage(code: String?): String = when (code) {
     "tunnelLimit" -> stringResource(R.string.remote_error_tunnelLimit)
     "gatewayUnavailable" -> stringResource(R.string.remote_error_gatewayUnavailable)
     "staleEpoch", "runtimeNotInstalled", "coreUnavailable" -> stringResource(R.string.remote_error_staleEpoch)
+    "vncHostRequired" -> stringResource(R.string.remote_error_vnc_host_required)
+    "vncHostTooLong" -> stringResource(R.string.remote_error_vnc_host_too_long)
+    "vncHostInvalid" -> stringResource(R.string.remote_error_vnc_host_invalid)
+    "vncPortInvalid" -> stringResource(R.string.remote_error_vnc_port_invalid)
+    "vncTransportInvalid" -> stringResource(R.string.remote_error_vnc_transport_invalid)
+    "vncTransportRequiresSSH" -> stringResource(R.string.remote_error_vnc_transport_requires_ssh)
+    "vncPasswordTooLong" -> stringResource(R.string.remote_error_vnc_password_too_long)
+    "vncSessionLimit" -> stringResource(R.string.remote_error_vnc_session_limit)
+    "vncEndpointMissing", "vncEndpointNotFound" -> stringResource(R.string.remote_error_vnc_endpoint_missing)
+    "sshCredentialsRequired" -> stringResource(R.string.remote_error_vnc_ssh_required)
+    "vncPasswordMissing" -> stringResource(R.string.remote_error_vnc_password_missing)
+    "vncPasswordInvalid" -> stringResource(R.string.remote_error_vnc_password_invalid)
+    "vncSessionNotFound" -> stringResource(R.string.remote_error_vnc_session_missing)
+    "vncTextTooLarge", "vncInputBatchTooLarge", "vncInputFailed" ->
+        stringResource(R.string.remote_error_vnc_input_invalid)
+    "vncTunnelNotReady", "vncSessionCreateFailed" -> stringResource(R.string.remote_error_vnc_transport)
+    "vncConnectCancelled" -> stringResource(R.string.remote_error_cancelled)
+    "frameUnavailable" -> stringResource(R.string.remote_error_vnc_frame_unavailable)
+    "local_network_permission_denied" -> stringResource(R.string.remote_error_vnc_lan_denied)
+    "local_network_needs_settings" -> stringResource(R.string.remote_error_vnc_lan_settings)
     else -> stringResource(R.string.remote_error_unknown)
 }
 
@@ -87,6 +107,16 @@ internal fun remoteTunnelStateLabel(code: String): String = when (code) {
     "closed" -> stringResource(R.string.remote_closed)
     "unknown" -> stringResource(R.string.remote_unknown)
     else -> code
+}
+
+@Composable
+internal fun remoteVncStateLabel(state: String): String = when (state) {
+    "connected" -> stringResource(R.string.remote_connected)
+    "connecting" -> stringResource(R.string.remote_connecting)
+    "closing" -> stringResource(R.string.remote_closing)
+    "failed" -> stringResource(R.string.remote_vnc_failed)
+    "closed" -> stringResource(R.string.remote_closed)
+    else -> stringResource(R.string.remote_unknown)
 }
 
 @Composable

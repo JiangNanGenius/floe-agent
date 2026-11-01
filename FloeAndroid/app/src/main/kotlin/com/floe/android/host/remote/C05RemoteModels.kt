@@ -318,9 +318,10 @@ internal fun parseSummary(object: JsonObject): C05HostSummary {
     return C05HostSummary(
         id = object.requiredString("id"),
         displayName = object.requiredString("displayName"),
-        address = object.requiredString("address"),
-        port = object.intValue("port") ?: 22,
-        user = object.requiredString("user"),
+        // VNC-only profiles deliberately have no SSH address/user/port.
+        address = object.string("address") ?: "",
+        port = object.intValue("port") ?: 0,
+        user = object.string("user") ?: "",
         auth = parseAuth(authObject),
         deviceKind = object.string("deviceKind") ?: "unspecified",
         isRemoteExecutionEnvironment = object.boolValue("isRemoteExecutionEnvironment"),

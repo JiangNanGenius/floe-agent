@@ -127,3 +127,7 @@ The Full-only root capture helper is **not** distributed by this App and is
 never downloaded by it. The App accepts only a pinned helper at a fixed
 root-owned path and records the source binding in the C06 private handoff for
 Main's later build/install qualification. Play contains no root adapter.
+
+## C05 VNC
+
+RoyalVNCKit is pinned to 92d4427c73817d8f849bb289ff190aa4b40c44ea, with the documented Android socket and lifetime port. CryptoSwift is pinned to a59b4d91ebb22011656c830f874fe7152e183a57. MIT, d3des public-domain and platform zlib notices are retained under licenses/vnc and packaged under assets/legal/vnc. The vendored source and local port notes are under shared/Vendor/Remote/RoyalVNCKit.

@@ -1216,6 +1216,10 @@ enum C05RemoteProfileCodec {
     private static func decodeVncCredential(_ value: Any?) throws -> SecretReference {
         guard let object = value as? [String: Any],
               let account = trimmedString(object["keychainAccount"], 80),
+              // C05 VNC package: a profile reference must never be able to
+              // name an SSH/provider credential. VNC reads enforce the same
+              // namespace again in C05VNCDomain; this closes the save path.
+              account.hasPrefix("floe.vnc."),
               let synchronizable = boolean(object["synchronizable"]) else {
             throw C05RemoteError(.credentialInvalid, "invalidVNCReference")
         }

@@ -43,6 +43,12 @@ let package = Package(
         .package(url: "https://github.com/apple/swift-atomics.git", exact: "1.3.1"),
         .package(url: "https://github.com/apple/swift-collections.git", exact: "1.6.0"),
         .package(url: "https://github.com/apple/swift-system.git", exact: "1.8.0"),
+        // C05 VNC: the fixed RoyalVNCKit RFB slice and its exact CryptoSwift
+        // pin. Vendored under shared/Vendor/Remote/RoyalVNCKit; licence and
+        // Android-port patch lineage are in licenses/vnc and FLOE_PATCHES.md.
+        .package(name: "RoyalVNCKit", path: "Vendor/Remote/RoyalVNCKit"),
+        .package(url: "https://github.com/royalapplications/CryptoSwift.git",
+                 revision: "a59b4d91ebb22011656c830f874fe7152e183a57"),
     ],
     targets: [
         // Original value layer (69 of 75 files are links; the 6 patched
@@ -668,13 +674,19 @@ let package = Package(
         .target(name: "FloeAndroidMail", dependencies: [
             "FloeCore",
         ], swiftSettings: strictSettings),
+        // C05 VNC: real RFB via the fixed RoyalVNCKit slice. No UIKit,
+        // CoreGraphics, Metal, SwiftTerm or screenshot-refresh fallback.
+        .target(name: "FloeVNC", dependencies: [
+            .product(name: "RoyalVNCKit", package: "RoyalVNCKit"),
+        ], swiftSettings: strictSettings),
         // Product bridge: v1 frozen operations + append-only v2 envelope
         // seam + fail-closed credential backend + real dependency anchors.
         .target(name: "FloeAndroidCore", dependencies: [
             "FloeCore", "FloeModels", "FloeProviders", "FloeSecurity",
             "FloeTools", "FloeSkills", "FloePersistence", "FloeAgentRuntime",
-            // C05 SSH transport/domain dependency (same native .so).
+            // C05 SSH/VNC transport/domain dependencies (same native .so).
             "FloeSSH",
+            "FloeVNC",
             // C06 mail protocol/domain transport.
             "FloeAndroidMail",
             // D1 web closure: included in the actual native .so so the
@@ -715,6 +727,9 @@ let package = Package(
         ], swiftSettings: strictSettings),
         .testTarget(name: "FloeSSHTests", dependencies: [
             "FloeSSH", "FloeCore", "FloePersistence",
+        ], swiftSettings: strictSettings),
+        .testTarget(name: "FloeVNCTests", dependencies: [
+            "FloeVNC",
         ], swiftSettings: strictSettings),
         .testTarget(name: "FloeAndroidMailTests", dependencies: [
             "FloeAndroidMail", "FloeCore",
@@ -765,7 +780,7 @@ let package = Package(
             "FloeAndroidWorkbench", "FloeCore",
         ], swiftSettings: strictSettings),
         .testTarget(name: "FloeAndroidCoreTests", dependencies: [
-            "FloeBrowser", "FloeAndroidCore", "FloeSSH", "FloeAndroidMail",
+            "FloeBrowser", "FloeAndroidCore", "FloeSSH", "FloeVNC", "FloeAndroidMail",
             "FloeCore", "FloeModels", "FloePersistence", "GRDB",
             "FloeAndroidNetwork",
             "FloeWorkspace",

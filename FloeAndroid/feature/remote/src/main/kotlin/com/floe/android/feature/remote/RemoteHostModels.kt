@@ -7,6 +7,7 @@
 
 package com.floe.android.feature.remote
 
+import android.graphics.Bitmap
 import com.floe.android.feature.terminal.G04TerminalEngine
 import com.floe.android.feature.terminal.TerminalTransport
 
@@ -30,16 +31,59 @@ data class RemoteHostSummaryUi(
     val vncEndpointCount: Int,
     val auxiliaryConnectionCount: Int,
 ) {
-    val endpoint: String get() = "$user@$address:$port"
+    val endpoint: String get() = if (address.isBlank()) displayName else "$user@$address:$port"
     val usesKey: Boolean get() = auth.kind == "importedKey" || auth.kind == "deviceGeneratedKey"
+    val hasSSH: Boolean get() = auth.kind != "none"
 }
+
+data class RemoteVncEndpointUi(
+    val id: String,
+    val displayName: String,
+    val transport: String,
+    val host: String,
+    val port: Int,
+    val hasPassword: Boolean,
+) {
+    val target: String get() = "$host:$port"
+}
+
+data class RemoteVncFailureUi(
+    val code: String,
+    val message: String,
+    val retryable: Boolean,
+    val category: String,
+    val stage: String,
+)
+
+data class RemoteVncUi(
+    val sessionID: String,
+    val profileID: String,
+    val endpointID: String,
+    val displayName: String,
+    val host: String,
+    val port: Int,
+    val transport: String,
+    val state: String,
+    val width: Int,
+    val height: Int,
+    val revision: Long,
+    val byteCount: Int,
+    val bitmap: Bitmap?,
+    val failure: RemoteVncFailureUi?,
+    val inputIssue: String?,
+    val measuredFps: Double,
+    val sshSessionID: String?,
+    val tunnelID: String?,
+)
 
 data class RemoteHostDetailUi(
     val summary: RemoteHostSummaryUi,
     val jumpHops: List<String>,
-    val vncEndpointCount: Int,
+    val vncEndpoints: List<RemoteVncEndpointUi>,
     val auxiliaryConnectionCount: Int,
-)
+) {
+    val vncEndpointCount: Int get() = vncEndpoints.size
+}
 
 data class RemoteSessionUi(
     val id: String,
@@ -124,6 +168,7 @@ data class RemoteHostUiState(
     val terminal: RemoteTerminalUi? = null,
     val tunnels: List<RemoteTunnelUi> = emptyList(),
     val exec: RemoteExecUi? = null,
+    val vnc: RemoteVncUi? = null,
 )
 
 /**
@@ -173,6 +218,93 @@ data class RemoteHostDraft(
             )
         }
     }
+}
+
+/** VNC-only host draft. No SSH identity is fabricated or required. */
+data class RemoteVncHostDraft(
+    val displayName: String = "",
+    val host: String = "",
+    val port: String = "5900",
+    val password: String = "",
+) {
+    fun toProfileDraft(): RemoteVncProfileDraft = RemoteVncProfileDraft(
+        displayName = displayName.trim(),
+        host = host.trim(),
+        port = port.trim().toIntOrNull() ?: 0,
+        password = password,
+    )
+}
+
+/** Endpoint editor draft for an existing profile (SSH or VNC-only). */
+data class RemoteVncEndpointDraft(
+    val id: String? = null,
+    val displayName: String = "VNC",
+    val transport: String = "direct",
+    val host: String = "",
+    val port: String = "5900",
+    val password: String = "",
+    val keepPassword: Boolean = true,
+) {
+    companion object {
+        const val TRANSPORT_DIRECT = "direct"
+        const val TRANSPORT_SSH = "sshTunnel"
+    }
+}
+
+/** Local value used by the App controller; no secret is retained after save. */
+data class RemoteVncProfileDraft(
+    val displayName: String,
+    val host: String,
+    val port: Int,
+    val password: String,
+)
+
+fun validateRemoteVncHostDraft(draft: RemoteVncHostDraft): String? {
+    if (draft.displayName.trim().isEmpty()) return "displayNameRequired"
+    if (draft.displayName.trim().length > 128) return "displayNameTooLong"
+    if (draft.host.trim().isEmpty()) return "vncHostRequired"
+    if (draft.host.trim().length > 255) return "vncHostTooLong"
+    if (draft.host.any { it.isWhitespace() || it.code < 0x20 || it.code == 0x7F }) {
+        return "vncHostInvalid"
+    }
+    val port = draft.port.trim().toIntOrNull() ?: return "vncPortInvalid"
+    if (port !in 1..65535) return "vncPortInvalid"
+    if (draft.password.toByteArray(Charsets.UTF_8).size > 1024) return "vncPasswordTooLong"
+    return null
+}
+
+fun validateRemoteVncEndpointDraft(
+    draft: RemoteVncEndpointDraft,
+    allowTunnel: Boolean,
+): String? {
+    if (draft.displayName.trim().isEmpty()) return "displayNameRequired"
+    if (draft.displayName.trim().length > 64) return "displayNameTooLong"
+    if (draft.transport != RemoteVncEndpointDraft.TRANSPORT_DIRECT &&
+        draft.transport != RemoteVncEndpointDraft.TRANSPORT_SSH
+    ) {
+        return "vncTransportInvalid"
+    }
+    if (draft.transport == RemoteVncEndpointDraft.TRANSPORT_SSH && !allowTunnel) {
+        return "vncTransportRequiresSSH"
+    }
+    if (draft.host.trim().isEmpty()) return "vncHostRequired"
+    if (draft.host.trim().length > 255) return "vncHostTooLong"
+    if (draft.host.any { it.isWhitespace() || it.code < 0x20 || it.code == 0x7F }) {
+        return "vncHostInvalid"
+    }
+    val port = draft.port.trim().toIntOrNull() ?: return "vncPortInvalid"
+    if (port !in 1..65535) return "vncPortInvalid"
+    if (draft.password.toByteArray(Charsets.UTF_8).size > 1024) return "vncPasswordTooLong"
+    return null
+}
+
+fun vncStatusLabel(state: String): String = when (state) {
+    "connected" -> "connected"
+    "connecting" -> "connecting"
+    "closing" -> "closing"
+    "failed" -> "failed"
+    "closed" -> "closed"
+    else -> "unknown"
 }
 
 /**

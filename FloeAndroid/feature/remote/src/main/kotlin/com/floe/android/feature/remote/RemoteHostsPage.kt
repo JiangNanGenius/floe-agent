@@ -81,12 +81,28 @@ fun RemoteDestinationUi(
     onCancelExec: () -> Unit,
     onReleaseExec: () -> Unit,
     onTerminalVisible: (Boolean) -> Unit,
+    vncActions: RemoteVncActions,
 ) {
-    val session = state.session
-    if (session != null) {
+    val vnc = state.vnc
+    if (vnc != null) {
+        RemoteVncViewerPage(
+            vnc = vnc,
+            error = state.error,
+            compact = compact,
+            onClose = vncActions.onClose,
+            onVisible = vncActions.onVisible,
+            onPointerMove = vncActions.onPointerMove,
+            onPointerButton = vncActions.onPointerButton,
+            onWheel = vncActions.onWheel,
+            onKey = vncActions.onKey,
+            onText = vncActions.onText,
+            onReleaseAll = vncActions.onReleaseAll,
+            onDismissError = onDismissError,
+        )
+    } else if (state.session != null) {
         RemoteSessionPage(
             state = state,
-            session = session,
+            session = state.session!!,
             compact = compact,
             onCloseSession = onCloseSession,
             onOpenTunnel = onOpenTunnel,
@@ -110,6 +126,7 @@ fun RemoteDestinationUi(
             onConnect = onConnect,
             onApproveChallenge = onApproveChallenge,
             onDismissError = onDismissError,
+            vncActions = vncActions,
         )
     }
 }
@@ -127,8 +144,15 @@ private fun RemoteHostsPage(
     onConnect: (String) -> Unit,
     onApproveChallenge: (accept: Boolean, replaceChanged: Boolean) -> Unit,
     onDismissError: () -> Unit,
+    vncActions: RemoteVncActions,
 ) {
     var editorVisible by rememberSaveable { mutableStateOf(false) }
+    var vncHostVisible by remember { mutableStateOf(false) }
+    var vncHostDraft by remember { mutableStateOf(RemoteVncHostDraft()) }
+    var vncPicker by remember { mutableStateOf<RemoteHostDetailUi?>(null) }
+    var vncEndpointEditorVisible by remember { mutableStateOf(false) }
+    var vncEndpointProfileID by remember { mutableStateOf<String?>(null) }
+    var vncEndpointDraft by remember { mutableStateOf(RemoteVncEndpointDraft()) }
     var editingId by rememberSaveable { mutableStateOf<String?>(null) }
     var draft by remember { mutableStateOf(RemoteHostDraft()) }
     var secret by remember { mutableStateOf("") }
@@ -161,6 +185,14 @@ private fun RemoteHostsPage(
                         secret = ""
                         secretRevealed = false
                         editorVisible = true
+                    },
+                )
+                com.floe.android.design.FloeCircleButton(
+                    icon = FloeIcons.DeviceLocal,
+                    contentDescription = stringResource(R.string.remote_vnc_hosts_add),
+                    onClick = {
+                        vncHostDraft = RemoteVncHostDraft()
+                        vncHostVisible = true
                     },
                 )
                 com.floe.android.design.FloeCircleButton(
@@ -202,19 +234,31 @@ private fun RemoteHostsPage(
                         host = host,
                         busy = state.busy,
                         onConnect = { onConnect(host.id) },
+                        onVnc = {
+                            val detail = state.details[host.id]
+                            if (detail == null) {
+                                onRefresh()
+                            } else {
+                                vncPicker = detail
+                            }
+                        },
                         onEdit = {
-                            editingId = host.id
-                            draft = RemoteHostDraft.from(
-                                state.details[host.id] ?: RemoteHostDetailUi(
-                                    summary = host,
-                                    jumpHops = emptyList(),
-                                    vncEndpointCount = host.vncEndpointCount,
-                                    auxiliaryConnectionCount = host.auxiliaryConnectionCount,
+                            if (!host.hasSSH) {
+                                state.details[host.id]?.let { detail -> vncPicker = detail } ?: onRefresh()
+                            } else {
+                                editingId = host.id
+                                draft = RemoteHostDraft.from(
+                                    state.details[host.id] ?: RemoteHostDetailUi(
+                                        summary = host,
+                                        jumpHops = emptyList(),
+                                        vncEndpoints = emptyList(),
+                                        auxiliaryConnectionCount = host.auxiliaryConnectionCount,
+                                    )
                                 )
-                            )
-                            secret = ""
-                            secretRevealed = false
-                            editorVisible = true
+                                secret = ""
+                                secretRevealed = false
+                                editorVisible = true
+                            }
                         },
                         onDelete = { pendingDelete = host },
                     )
@@ -240,6 +284,74 @@ private fun RemoteHostsPage(
                 onSave(draft, secret.takeIf { it.isNotBlank() })
                 secret = ""
             },
+        )
+    }
+
+    if (vncHostVisible) {
+        RemoteVncHostSheet(
+            draft = vncHostDraft,
+            onDraftChange = { vncHostDraft = it },
+            onSave = {
+                vncHostVisible = false
+                vncActions.onSaveHost(vncHostDraft)
+                vncHostDraft = RemoteVncHostDraft()
+            },
+            onDismiss = { vncHostVisible = false },
+        )
+    }
+
+    vncPicker?.let { detail ->
+        RemoteVncEndpointPickerSheet(
+            hostName = detail.summary.displayName,
+            endpoints = detail.vncEndpoints,
+            onConnect = { endpoint ->
+                vncPicker = null
+                vncActions.onConnect(detail.summary.id, endpoint.id)
+            },
+            onAdd = {
+                vncEndpointProfileID = detail.summary.id
+                vncEndpointDraft = RemoteVncEndpointDraft(
+                    transport = RemoteVncEndpointDraft.TRANSPORT_DIRECT,
+                )
+                vncPicker = null
+                vncEndpointEditorVisible = true
+            },
+            onEdit = { endpoint ->
+                vncEndpointProfileID = detail.summary.id
+                vncEndpointDraft = RemoteVncEndpointDraft(
+                    id = endpoint.id,
+                    displayName = endpoint.displayName,
+                    transport = endpoint.transport,
+                    host = endpoint.host,
+                    port = endpoint.port.toString(),
+                    keepPassword = endpoint.hasPassword,
+                )
+                vncPicker = null
+                vncEndpointEditorVisible = true
+            },
+            onDelete = { endpoint ->
+                vncPicker = null
+                vncActions.onDeleteEndpoint(detail.summary.id, endpoint.id)
+            },
+            onDismiss = { vncPicker = null },
+        )
+    }
+
+    if (vncEndpointEditorVisible) {
+        val profileID = vncEndpointProfileID
+        val detail = profileID?.let { state.details[it] }
+        RemoteVncEndpointSheet(
+            draft = vncEndpointDraft,
+            allowTunnel = detail?.summary?.hasSSH == true,
+            onDraftChange = { vncEndpointDraft = it },
+            onSave = {
+                if (profileID != null) {
+                    vncEndpointEditorVisible = false
+                    vncActions.onSaveEndpoint(profileID, vncEndpointDraft)
+                    vncEndpointDraft = RemoteVncEndpointDraft()
+                }
+            },
+            onDismiss = { vncEndpointEditorVisible = false },
         )
     }
 
@@ -296,6 +408,7 @@ private fun RemoteHostRow(
     host: RemoteHostSummaryUi,
     busy: String?,
     onConnect: () -> Unit,
+    onVnc: () -> Unit,
     onEdit: () -> Unit,
     onDelete: () -> Unit,
 ) {
@@ -341,8 +454,15 @@ private fun RemoteHostRow(
             FloeCapsuleAction(
                 label = stringResource(R.string.remote_connect),
                 onClick = onConnect,
-                enabled = busy == null,
+                enabled = busy == null && host.hasSSH,
             )
+            if (host.vncEndpointCount > 0) {
+                FloeCapsuleAction(
+                    label = stringResource(R.string.remote_vnc_open),
+                    onClick = onVnc,
+                    enabled = busy == null,
+                )
+            }
             FloeCapsuleAction(
                 label = stringResource(R.string.remote_edit),
                 onClick = onEdit,
@@ -565,7 +685,7 @@ private fun RemoteEditorSheet(
 }
 
 @Composable
-private fun SecureSecretField(
+internal fun SecureSecretField(
     label: String,
     value: String,
     onValueChange: (String) -> Unit,
@@ -626,7 +746,7 @@ private fun SecureSecretField(
 }
 
 @Composable
-private fun FieldLabel(text: String) {
+internal fun FieldLabel(text: String) {
     FloeText(
         text,
         style = Floe.typography.metadata,
