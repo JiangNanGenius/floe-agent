@@ -706,6 +706,7 @@ targets:
       - path: Tests/FloeAppTests/TaskRemoteEnvironmentLiveTests.swift
       - path: Tests/FloeAppTests/NativeCADLiveLLMTests.swift
       - path: Tests/FloeAppTests/LocalModelCanonicalCADAdmissionTests.swift
+      - path: Tests/FloeAppTests/LocalMLXRealCADQualificationTests.swift
       - path: Tests/FloeAppTests/TaskWorkspaceMirrorTests.swift
       - path: Tests/FloePersistenceTests/TaskExecutionBindingStoreTests.swift
       - path: Tests/FloeExecutionTests/RemoteEnvironmentShellBackendTests.swift
