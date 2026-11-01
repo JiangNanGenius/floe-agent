@@ -1,0 +1,268 @@
+{
+  "sourceCommit": "a59b4d4005f616c611df67fab7620e9853c525b9",
+  "sourceRoot": "FloeAgent/FloeApp/Resources/EngineeringViewers",
+  "files": [
+    {
+      "name": "dxf.js",
+      "role": "Pinned DXF renderer bundle (dxf-viewer 1.0.48)",
+      "bundledBytes": 1232640,
+      "bundledSha256": "7aad4c4119eb487d6100d023f418b9fc524e3665df6737ec2d45233270d6386e",
+      "sourcePath": "FloeAgent/FloeApp/Resources/EngineeringViewers/dxf.js",
+      "donorGitBlob": "895d32f1a6f43f44144f2f0740413cdc530ab9b8",
+      "donorBytes": 1232640,
+      "donorSha256": "7aad4c4119eb487d6100d023f418b9fc524e3665df6737ec2d45233270d6386e",
+      "modified": false
+    },
+    {
+      "name": "dxf-worker.js",
+      "role": "Pinned DXF worker bootstrap",
+      "bundledBytes": 97,
+      "bundledSha256": "eafd29924ac974ff307ae47ef95e827521b90c25d80d6e10f6cd276e59e7bbce",
+      "sourcePath": "FloeAgent/FloeApp/Resources/EngineeringViewers/dxf-worker.js",
+      "donorGitBlob": "654b7a0c0084a28a91ec9c5bc030ddef4cdd59e0",
+      "donorBytes": 97,
+      "donorSha256": "eafd29924ac974ff307ae47ef95e827521b90c25d80d6e10f6cd276e59e7bbce",
+      "modified": false
+    },
+    {
+      "name": "dxf.js.LEGAL.txt",
+      "role": "dxf.js bundled license notice",
+      "bundledBytes": 255,
+      "bundledSha256": "c45cd04eba4a946eda2325041fe74d9dad5249835d308f2e7b58768bd36e52f9",
+      "sourcePath": "FloeAgent/FloeApp/Resources/EngineeringViewers/dxf.js.LEGAL.txt",
+      "donorGitBlob": "81fd856b88e8354b6f05e9211c5e5d5144f2e31d",
+      "donorBytes": 255,
+      "donorSha256": "c45cd04eba4a946eda2325041fe74d9dad5249835d308f2e7b58768bd36e52f9",
+      "modified": false
+    },
+    {
+      "name": "mesh.js",
+      "role": "Pinned general mesh renderer bundle (online-3d-viewer 0.18.0)",
+      "bundledBytes": 1056535,
+      "bundledSha256": "fe07c0a7c84d394a6c38ec688aea58ac3b0640d0e758a06519f5d759a89ba8f9",
+      "sourcePath": "FloeAgent/FloeApp/Resources/EngineeringViewers/mesh.js",
+      "donorGitBlob": "b231d2e386b6ec96cfe8272f5a8128047d0d842c",
+      "donorBytes": 1056535,
+      "donorSha256": "fe07c0a7c84d394a6c38ec688aea58ac3b0640d0e758a06519f5d759a89ba8f9",
+      "modified": false
+    },
+    {
+      "name": "mesh.js.LEGAL.txt",
+      "role": "mesh.js bundled license notice",
+      "bundledBytes": 508,
+      "bundledSha256": "46932ad3a815be80035378068fafa8e515ab6cd6d184e405ff22383f0e6bab93",
+      "sourcePath": "FloeAgent/FloeApp/Resources/EngineeringViewers/mesh.js.LEGAL.txt",
+      "donorGitBlob": "9eb0e82aa4b46c824a96685ae246b3e49c682043",
+      "donorBytes": 508,
+      "donorSha256": "46932ad3a815be80035378068fafa8e515ab6cd6d184e405ff22383f0e6bab93",
+      "modified": false
+    },
+    {
+      "name": "occt-import-js.js",
+      "role": "Pinned OCCT WASM binding loader 0.0.23",
+      "bundledBytes": 96871,
+      "bundledSha256": "3fb44ce11d00611f9b3f3c5775d520ebab48930c1f08279b7b1316f05f0d3379",
+      "sourcePath": "FloeAgent/FloeApp/Resources/EngineeringViewers/occt-import-js.js",
+      "donorGitBlob": "b12d5ac983fd5f0b9dab7fdb915400170d54faab",
+      "donorBytes": 96871,
+      "donorSha256": "3fb44ce11d00611f9b3f3c5775d520ebab48930c1f08279b7b1316f05f0d3379",
+      "modified": false
+    },
+    {
+      "name": "occt-import-js.wasm",
+      "role": "Pinned OCCT WASM (384 MiB memory cap)",
+      "bundledBytes": 7604030,
+      "bundledSha256": "ebf53ff1364f1ad0c82c6efc745fbb94677dd88ecd5588622c37ac3a9ba711da",
+      "sourcePath": "FloeAgent/FloeApp/Resources/EngineeringViewers/occt-import-js.wasm",
+      "donorGitBlob": "6403211c6fe17fba61595a098eba0967b0d2eacf",
+      "donorBytes": 7604030,
+      "donorSha256": "ebf53ff1364f1ad0c82c6efc745fbb94677dd88ecd5588622c37ac3a9ba711da",
+      "modified": false
+    },
+    {
+      "name": "occt-worker.js",
+      "role": "C04A read-only STEP/IGES/BREP worker (derived from donor occt-worker.js; local-only imports)",
+      "bundledBytes": 3327,
+      "bundledSha256": "33a584eb71bbdc601b8908773a738215a237a911543ef14d60531a676cfaf7bb",
+      "source": "C04A authored/derived",
+      "sourcePath": "FloeAgent/FloeApp/Resources/EngineeringViewers/occt-worker.js",
+      "donorGitBlob": "265d42338e8fe768eb7677577d21803438ba447c",
+      "donorBytes": 2422,
+      "donorSha256": "d22a4038c70df590947577c1d7d8682d36a84957871bbdff9e8c4acbf56169da",
+      "modified": true
+    },
+    {
+      "name": "floe_cad_engine.js",
+      "role": "Floe/acadrust 0.5.5 WASM binding glue",
+      "bundledBytes": 14178,
+      "bundledSha256": "313d9879c0a46abda1edf70f5ec27b9298f4dbd092d2a9f2f5860a13cd51701a",
+      "sourcePath": "FloeAgent/FloeApp/Resources/EngineeringViewers/floe_cad_engine.js",
+      "donorGitBlob": "81eb1b18b392ef57e7262b4fd57d517a85005f72",
+      "donorBytes": 14178,
+      "donorSha256": "313d9879c0a46abda1edf70f5ec27b9298f4dbd092d2a9f2f5860a13cd51701a",
+      "modified": false,
+      "androidDerivation": "ANDROID_DERIVATION.json",
+      "androidSourceRoot": "FloeAgent/ThirdParty/CADEngine"
+    },
+    {
+      "name": "floe_cad_engine_bg.wasm",
+      "role": "Floe/acadrust 0.5.5 DXF/DWG engine",
+      "bundledBytes": 6395115,
+      "bundledSha256": "06c58d31057654887821f015ada1cdfc53fdaf9a5251beabea502d6e161d54d9",
+      "sourcePath": "FloeAgent/FloeApp/Resources/EngineeringViewers/floe_cad_engine_bg.wasm",
+      "donorGitBlob": "bc29cf563a4d99174109e1545b98676a72906dbe",
+      "donorBytes": 6396395,
+      "donorSha256": "25aa1f3a395b26629bdf0e46994ec6fddc60a84508aacf749c872596d33ba92d",
+      "modified": true,
+      "androidDerivation": "ANDROID_DERIVATION.json",
+      "androidSourceRoot": "FloeAgent/ThirdParty/CADEngine"
+    },
+    {
+      "name": "MiSans-Regular.ttf",
+      "role": "Pinned DXF text font",
+      "bundledBytes": 7924400,
+      "bundledSha256": "7172aa1b5c703780ee12df3fe4c50481dde01f3b125a045a398000a88d032ae5",
+      "sourcePath": "FloeAgent/FloeApp/Resources/EngineeringViewers/MiSans-Regular.ttf",
+      "donorGitBlob": "9cbfff50be680a0baaf8b08a66f0da132c57df42",
+      "donorBytes": 7924400,
+      "donorSha256": "7172aa1b5c703780ee12df3fe4c50481dde01f3b125a045a398000a88d032ae5",
+      "modified": false
+    },
+    {
+      "name": "CAD_SOURCES.json",
+      "role": "Rust crate source pin set",
+      "bundledBytes": 13884,
+      "bundledSha256": "d364248f45624f1b2500851b85ffbf1251fc22182745e0933f73dcd88959e659",
+      "sourcePath": "FloeAgent/FloeApp/Resources/EngineeringViewers/CAD_SOURCES.json",
+      "donorGitBlob": "ac296d235112b4b1f45fa0bb143e4e69e71d2c3f",
+      "donorBytes": 13884,
+      "donorSha256": "d364248f45624f1b2500851b85ffbf1251fc22182745e0933f73dcd88959e659",
+      "modified": false
+    },
+    {
+      "name": "CAD_NOTICES.txt",
+      "role": "Rust crate license notices (includes MPL-2.0)",
+      "bundledBytes": 553969,
+      "bundledSha256": "38414e9de5245c8753aadd81a4de803c884146f6381df864e4f9c1082d91dbff",
+      "sourcePath": "FloeAgent/FloeApp/Resources/EngineeringViewers/CAD_NOTICES.txt",
+      "donorGitBlob": "22739b79db5678a77c0f50d980f7f136512a6867",
+      "donorBytes": 553969,
+      "donorSha256": "38414e9de5245c8753aadd81a4de803c884146f6381df864e4f9c1082d91dbff",
+      "modified": false
+    },
+    {
+      "name": "OCCT_SOURCES.json",
+      "role": "OCCT/occt-import-js source pins",
+      "bundledBytes": 815,
+      "bundledSha256": "64f01d0a00483d030b82ad89d3854ec0d9b372d383566bda999dc8ad6728b238",
+      "sourcePath": "FloeAgent/FloeApp/Resources/EngineeringViewers/OCCT_SOURCES.json",
+      "donorGitBlob": "6254975f7174b4a941208fde0e6c7ad5b6f0b429",
+      "donorBytes": 815,
+      "donorSha256": "64f01d0a00483d030b82ad89d3854ec0d9b372d383566bda999dc8ad6728b238",
+      "modified": false
+    },
+    {
+      "name": "OCCT_LGPL_EXCEPTION.txt",
+      "role": "OCCT LGPL exception",
+      "bundledBytes": 663,
+      "bundledSha256": "04580a884ea6cea294402649ff7b5cbb167d47462d1340a4ed33e550db10a81b",
+      "sourcePath": "FloeAgent/FloeApp/Resources/EngineeringViewers/OCCT_LGPL_EXCEPTION.txt",
+      "donorGitBlob": "263d14ef75d9172e59213d880605729eed3041fc",
+      "donorBytes": 663,
+      "donorSha256": "04580a884ea6cea294402649ff7b5cbb167d47462d1340a4ed33e550db10a81b",
+      "modified": false
+    },
+    {
+      "name": "license.occt-import-js.txt",
+      "role": "occt-import-js LGPL-2.1 text",
+      "bundledBytes": 27030,
+      "bundledSha256": "7ffe1954587c77dfba1cf8eb9b2ea743671fa6e63f9e7a2f258119d42e14eefe",
+      "sourcePath": "FloeAgent/FloeApp/Resources/EngineeringViewers/license.occt-import-js.txt",
+      "donorGitBlob": "bc0390e98c98f2ad3ab7decdb82b4d57d7f850d4",
+      "donorBytes": 27030,
+      "donorSha256": "7ffe1954587c77dfba1cf8eb9b2ea743671fa6e63f9e7a2f258119d42e14eefe",
+      "modified": false
+    },
+    {
+      "name": "license.occt.txt",
+      "role": "OpenCASCADE LGPL-2.1 text",
+      "bundledBytes": 26936,
+      "bundledSha256": "090f8eb6ba63e72887c1f89b009fb1656cfda02d83b6e9805b20468520a5d77f",
+      "sourcePath": "FloeAgent/FloeApp/Resources/EngineeringViewers/license.occt.txt",
+      "donorGitBlob": "6280c04d63f0e066d9faef40b1efb5b90bade073",
+      "donorBytes": 26936,
+      "donorSha256": "090f8eb6ba63e72887c1f89b009fb1656cfda02d83b6e9805b20468520a5d77f",
+      "modified": false
+    },
+    {
+      "name": "THIRD_PARTY_NOTICES.txt",
+      "role": "JS bundle third-party notices",
+      "bundledBytes": 54592,
+      "bundledSha256": "354d4591562ee7d854507cd4a79a9a9e37b83c1179213201a0c30f294af9f4cc",
+      "sourcePath": "FloeAgent/FloeApp/Resources/EngineeringViewers/THIRD_PARTY_NOTICES.txt",
+      "donorGitBlob": "043770541ecec191af8ed8574dedd48f34f3bfb4",
+      "donorBytes": 54592,
+      "donorSha256": "354d4591562ee7d854507cd4a79a9a9e37b83c1179213201a0c30f294af9f4cc",
+      "modified": false
+    },
+    {
+      "name": "asset-hashes.json",
+      "role": "Donor viewer asset SHA-256 map",
+      "bundledBytes": 2969,
+      "bundledSha256": "136bf51908f61ad30fa6871f5586e196b4fdadfc49bcd639c2dc17b43eaf5a99",
+      "sourcePath": "FloeAgent/FloeApp/Resources/EngineeringViewers/asset-hashes.json",
+      "donorGitBlob": "a61847a78dff74c01e5b8f45b6dbce1c3328fbea",
+      "donorBytes": 2969,
+      "donorSha256": "136bf51908f61ad30fa6871f5586e196b4fdadfc49bcd639c2dc17b43eaf5a99",
+      "modified": false
+    },
+    {
+      "name": "index.html",
+      "role": "C04A local-only viewer shell",
+      "bundledBytes": 944,
+      "bundledSha256": "6e3c014545a52d091a99ac019ec74d4636926dd21934c6b8755d43a76178af60",
+      "source": "C04A authored/derived",
+      "previousAndroidSha256": "e6dc5b9c2b9433eb969bff57ff9700c2ab73afcd5642eeb1e128f45717ccb225",
+      "sourcePath": "Floe Android authored loader for C04 package preview",
+      "revision": "C04C"
+    },
+    {
+      "name": "viewer.css",
+      "role": "C04A viewer surface styles",
+      "bundledBytes": 1596,
+      "bundledSha256": "9266a9de401aea9e441ad40bb827001f29928c43cb04c1222ebf5f90687ac667",
+      "source": "C04A authored/derived"
+    },
+    {
+      "name": "viewer.js",
+      "role": "C04A read-only viewer (derived from donor viewer.js; read-only paths only)",
+      "bundledBytes": 18883,
+      "bundledSha256": "45caed5425b189e1115119c49688da52e02611fd2d92aa89805434a9ec1f722c",
+      "source": "C04A authored/derived"
+    },
+    {
+      "name": "cad-worker.js",
+      "role": "C04A read-only DWG -> DXF projection worker",
+      "bundledBytes": 1091,
+      "bundledSha256": "057abcac07c0460313b1536274653b0c12f76764c311c7497c6c5dbafca8f214",
+      "source": "C04A authored/derived"
+    },
+    {
+      "name": "loader.js",
+      "role": "Floe-owned native package preview adapter",
+      "revision": "C04C",
+      "bundledBytes": 610,
+      "bundledSha256": "e0b21903626cc75a4e5c940e71268f96462f4100c063c721607faf0c29022f10",
+      "sourcePath": "Floe Android authored native package adapter"
+    },
+    {
+      "name": "floecad.js",
+      "role": "Floe-owned native package preview adapter",
+      "revision": "C04C",
+      "bundledBytes": 14377,
+      "bundledSha256": "3e56f427ff2a8345597b6e2f8b5c87fa7fe142945d6dae8a1081bb8e89bf114c",
+      "sourcePath": "Floe Android authored native package adapter"
+    }
+  ],
+  "note": "donorSha256 identifies the immutable a59 object; bundledSha256 identifies the C04A APK asset."
+}

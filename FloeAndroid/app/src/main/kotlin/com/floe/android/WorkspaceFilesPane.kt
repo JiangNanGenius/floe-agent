@@ -257,6 +257,22 @@ internal fun WorkspaceFilesPane(
         documentPath = path
         documentSurfaceName = surface.name
     }
+    /**
+     * Safe escape for a malformed/directory package: close the typed viewer
+     * and reveal its OWN containing folder in the present file tree. This is
+     * a read-only tree expansion, never a second file authority, path
+     * resolution or workspace write.
+     */
+    fun openEnclosingFolder(path: String) {
+        val separator = path.lastIndexOf('/')
+        val parent = if (separator > 0) path.substring(0, separator) else ""
+        closeDocument()
+        if (parent.isEmpty()) return
+        val alreadyExpanded = presenter.state.value.tree.rows.any {
+            it.file.relativePath == parent && it.expanded
+        }
+        if (!alreadyExpanded) presenter.toggleTreeExpansion(parent)
+    }
     // Phone list-first is a property of the actual window, not of this pane's
     // measured width: the 430dp inspector column on a tablet window keeps its
     // existing compact editor root. The configuration width is the live
@@ -495,6 +511,7 @@ internal fun WorkspaceFilesPane(
                 closeDocument()
                 onDismiss()
             },
+            onOpenFolder = ::openEnclosingFolder,
         )
     }
     val newAnchor = newTriggerBounds

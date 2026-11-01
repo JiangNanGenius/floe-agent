@@ -155,8 +155,18 @@ internal fun IdeFileTreePanel(
                         expanded = row.expanded,
                         loading = row.childrenLoading,
                         onClick = {
-                            if (row.file.isDirectory) onToggle(row.file.relativePath)
-                            else onOpenFile(row.file.relativePath)
+                            // A native .floecad DIRECTORY is one document
+                            // package, not a tree folder: the App's package
+                            // viewer opens it. The malformed-package surface
+                            // offers the safe "Open folder" escape, so the
+                            // tree still remains the only file authority.
+                            if (row.file.isDirectory &&
+                                !row.file.name.endsWith(".floecad", ignoreCase = true)
+                            ) {
+                                onToggle(row.file.relativePath)
+                            } else {
+                                onOpenFile(row.file.relativePath)
+                            }
                         },
                     )
                 }

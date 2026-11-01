@@ -32,7 +32,8 @@ public enum AndroidBridge {
                 || requestVersion == BridgeV4.version
                 || requestVersion == BridgeV5.version
                 || requestVersion == BridgeV6.version
-                || requestVersion == BridgeV7.version else {
+                || requestVersion == BridgeV7.version
+                || requestVersion == BridgeV8.version else {
             return response(["ok": false, "error": "unsupportedVersion"])
         }
         if requestVersion == BridgeV2.version {
@@ -101,6 +102,22 @@ public enum AndroidBridge {
                                 stampVersion: BridgeV7.version)
             }
             return response(object, stampVersion: BridgeV7.version)
+        }
+        if requestVersion == BridgeV8.version {
+            // Additive C04A host-only CAD/3D viewer contract: session/resource
+            // grants, rendered-frame readiness, PNG capture receipts and the
+            // C04B .floecad package validator. No model tool, no file bytes.
+            // v1-v7 bytes above remain unchanged.
+            let object = C04CadBridge.handle(requestData: data,
+                                             fallbackRequestID: requestID)
+            let encoded = (try? JSONSerialization.data(withJSONObject: object,
+                                                       options: [.sortedKeys]))
+                ?? Data(#"{"ok":false,"error":"encoding"}"#.utf8)
+            guard encoded.count <= C04CadWire.maximumResponseBytes else {
+                return response(["ok": false, "error": "responseTooLarge"],
+                                stampVersion: BridgeV8.version)
+            }
+            return response(object, stampVersion: BridgeV8.version)
         }
         switch request["operation"] as? String {
         case "handshake":

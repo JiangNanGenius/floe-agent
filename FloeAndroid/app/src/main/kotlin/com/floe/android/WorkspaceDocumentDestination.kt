@@ -56,6 +56,8 @@ import com.floe.android.feature.ide.IdeWorkspacePresentation
 import com.floe.android.feature.workbench.ui.R as WorkbenchR
 import com.floe.android.host.Owner
 import com.floe.android.host.RuntimeHost
+import com.floe.android.host.cad.C04CadFormat
+import com.floe.android.host.cad.C04CadViewerDestination
 import com.floe.android.host.WorkspaceDocumentPreviewPolicy
 import java.util.Locale
 
@@ -138,7 +140,8 @@ internal object WorkspaceDocumentRouter {
         "ppt", "odt", "ods", "odp", "rtf",
     )
     private val cadExtensions = setOf(
-        "dxf", "dwg", "step", "stp", "iges", "igs", "stl", "obj", "floecad",
+        "dxf", "dwg", "step", "stp", "iges", "igs", "brep",
+        "stl", "obj", "glb", "gltf", "3mf", "floecad",
     )
     private val imageExtensions = setOf(
         "png", "jpg", "jpeg", "gif", "heic", "heif", "webp", "tiff", "tif",
@@ -291,6 +294,7 @@ internal fun WorkspaceDocumentDestination(
     temporary: Boolean,
     onBackToFiles: () -> Unit,
     onCloseTask: () -> Unit,
+    onOpenFolder: ((String) -> Unit)? = null,
 ) {
     val current = WorkspaceDocumentPresentation.requestIsCurrent(
         request = request,
@@ -522,9 +526,39 @@ internal fun WorkspaceDocumentDestination(
                         )
                     }
                 }
+                WorkspaceDocumentSurface.CAD -> {
+                    // C04A/C04B: real offline read-only DXF/DWG/STEP/IGES/BREP
+                    // and GLB/glTF/OBJ/STL/3MF viewing over the pinned bundled
+                    // readers, plus native `.floecad` directory packages read
+                    // by the App adapter. A malformed package is a typed
+                    // failure inside the viewer, never a ZIP guess or a text
+                    // document; its failure surface offers the safe folder
+                    // escape below.
+                    val cadFormat = C04CadFormat.fromPath(request.path)
+                    when {
+                        cadFormat != null && previewOwner != null ->
+                            C04CadViewerDestination(
+                                controller = host.cadViewer,
+                                request = request,
+                                owner = previewOwner,
+                                onBackToFiles = backToFiles,
+                                onCloseTask = closeTask,
+                                onOpenFolder = onOpenFolder?.let { open ->
+                                    { open(request.path) }
+                                },
+                            )
+                        previewOwner == null ->
+                            LaunchedEffect(request.token) { onBackToFiles() }
+                        else -> WorkspaceTypedDocumentSurface(
+                            request = request,
+                            onBackToFiles = backToFiles,
+                            onCloseTask = closeTask,
+                        )
+                    }
+                }
                 // Office is handled by its owned viewer Activity before this
                 // destination is raised; reaching here means the engine is
-                // unavailable. CAD/archive/binary keep their honest typed cover.
+                // unavailable. Archive/binary keep their honest typed cover.
                 else -> WorkspaceTypedDocumentSurface(
                     request = request,
                     onBackToFiles = backToFiles,

@@ -522,6 +522,11 @@ class FloeApplication : Application() {
                 // native-root snapshot plus an isolated renderer lease. Its
                 // real quiescent closure must precede Root retirement.
                 (runtimeHost?.prepareWorkspaceDocumentPreviewForRootStop() != false) &&
+                // C04A: the offline CAD/3D viewer owns a local WebView and
+                // immutable native-workspace snapshots; destroy the surface,
+                // delete those snapshots and release the Swift session before
+                // Root retirement.
+                (runtimeHost?.prepareCadViewerForRootStop() != false) &&
                 // G08: the Full platform-tool pump/phone/ADB/Root extension
                 // fences and joins its own work before the root retires.
                 (runtimeHost?.preparePlatformForRootStop() != false) &&

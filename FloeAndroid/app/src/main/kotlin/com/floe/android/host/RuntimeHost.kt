@@ -8,6 +8,7 @@ import com.floe.android.host.officeai.AppOfficeAiDocumentPorts
 import com.floe.android.host.officeai.NativeOfficeAiTransport
 import com.floe.android.host.officeai.OfficeAiHostPump
 import com.floe.android.host.officeai.OfficeAiOoxmlVerifier
+import com.floe.android.host.cad.C04CadViewerController
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -102,6 +103,24 @@ class RuntimeHost internal constructor(
     }
     internal val workspaceDocumentPreview: WorkspaceDocumentPreviewController
         get() = workspaceDocumentPreviewDelegate.value
+    /**
+     * C04A Application-owned read-only CAD/3D viewer. The native snapshots,
+     * local-only WebView session and capture artifacts outlive Activity /
+     * composition so rotation does not re-stage the source. Created lazily on
+     * the first explicit CAD open; the root-stop drain below is the real gate.
+     */
+    private val cadViewerDelegate = lazy {
+        C04CadViewerController(
+            context = appContext,
+            scope = scope,
+            ioDispatcher = ioDispatcher,
+            currentNativeEpoch = ::nativeRootEpoch,
+            currentHostGeneration = { commandClient.generation() },
+            isTemporaryTask = { id -> conversations.entryFor(id)?.isTemporary == true },
+        )
+    }
+    internal val cadViewer: C04CadViewerController
+        get() = cadViewerDelegate.value
     internal var workspaceGitTrust: G04GitTrustController? = null
     internal var workspaceTerminal: G04TerminalHostController? = null
 
@@ -328,6 +347,19 @@ class RuntimeHost internal constructor(
     internal suspend fun prepareWorkspaceDocumentPreviewForRootStop(): Boolean =
         if (workspaceDocumentPreviewDelegate.isInitialized()) {
             workspaceDocumentPreview.prepareForRootStop(WORKSPACE_PREVIEW_STOP_WAIT_MS)
+        } else {
+            true
+        }
+
+    /**
+     * Root-stop gate for the C04A viewer: cancel a still-staging read, destroy
+     * the local WebView surface, delete only this session's immutable
+     * snapshots and release the Swift session before the native root retires.
+     * An unproven drain keeps the old generation pending.
+     */
+    internal suspend fun prepareCadViewerForRootStop(): Boolean =
+        if (cadViewerDelegate.isInitialized()) {
+            cadViewer.prepareForRootStop(CAD_VIEWER_STOP_WAIT_MS)
         } else {
             true
         }
@@ -637,6 +669,9 @@ class RuntimeHost internal constructor(
                 if (workspaceDocumentPreviewDelegate.isInitialized()) {
                     workspaceDocumentPreview.onOwnedStoreReady()
                 }
+                if (cadViewerDelegate.isInitialized()) {
+                    cadViewer.onOwnedStoreReady()
+                }
                 // Office AI host lane follows the ACTUAL accepted root epoch
                 // with bounded attempts (same doctrine as the browser lane).
                 startOfficeAiLane()
@@ -661,6 +696,7 @@ class RuntimeHost internal constructor(
                     )
                 }
                 g02ReadinessAdapter.reset()
+                if (cadViewerDelegate.isInitialized()) cadViewer.onRootStopped()
                 stopOfficeAiLane()
                 // Fence the flavour extension on the real retirement. The
                 // main pre-stop drain already ran prepareForRootStop(); this
@@ -976,6 +1012,9 @@ class RuntimeHost internal constructor(
         /** Bounded join for the owned document-preview renderer/snapshot
          * drain, matching the other lane stop waits. */
         internal const val WORKSPACE_PREVIEW_STOP_WAIT_MS = 8_000L
+
+        /** Bounded join for the C04A viewer WebView/snapshot drain. */
+        internal const val CAD_VIEWER_STOP_WAIT_MS = 8_000L
 
         /** Bounded join for the exact active monitoring session on root stop. */
         internal const val NETWORK_MONITOR_STOP_WAIT_MS = 5_000L

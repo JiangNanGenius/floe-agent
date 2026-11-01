@@ -1,0 +1,46 @@
+{
+  "schemaVersion": 1,
+  "sourceCommit": "a59b4d4005f616c611df67fab7620e9853c525b9",
+  "sourceRoot": "FloeAgent/ThirdParty/CADEngine",
+  "rustToolchain": "1.98.1",
+  "wasmBindgen": "0.2.126",
+  "cargoLockSHA256": "ee78430775a78d72d76402eae2c6e819a4b146b974b893eed04232cc8ffb4044",
+  "acadrust": "0.5.5",
+  "reason": "Rebuild the fixed Rust source with remapped build paths; the original donor asset contains source-machine absolute paths. No binary string patching or upstream version change.",
+  "command": "cargo +1.98.1 build --release --locked --offline --target wasm32-unknown-unknown --jobs 6; wasm-bindgen --target web --out-dir OUT TARGET/floe_cad_engine.wasm",
+  "flagsTransport": "CARGO_ENCODED_RUSTFLAGS (U+001F-separated arguments preserves spaces in source path)",
+  "rustFlags": [
+    "--remap-path-prefix=SOURCE_DIR=/src/floe-cad-engine",
+    "--remap-path-prefix=BUILD_USER_DIRECTORY=/build",
+    "-C",
+    "link-arg=--max-memory=402653184"
+  ],
+  "memoryLimits": [
+    {
+      "initialPages": 21,
+      "maximumPages": 6144
+    }
+  ],
+  "artifacts": [
+    {
+      "name": "floe_cad_engine.js",
+      "originalDonorAssetSHA256": "313d9879c0a46abda1edf70f5ec27b9298f4dbd092d2a9f2f5860a13cd51701a",
+      "sha256": "313d9879c0a46abda1edf70f5ec27b9298f4dbd092d2a9f2f5860a13cd51701a",
+      "bytes": 14178
+    },
+    {
+      "name": "floe_cad_engine_bg.wasm",
+      "originalDonorAssetSHA256": "25aa1f3a395b26629bdf0e46994ec6fddc60a84508aacf749c872596d33ba92d",
+      "sha256": "06c58d31057654887821f015ada1cdfc53fdaf9a5251beabea502d6e161d54d9",
+      "bytes": 6395115
+    }
+  ],
+  "qualification": {
+    "componentOnly": true,
+    "nodeDWGRead": true,
+    "fixedFixture": "FloeAgent/FloeApp/Resources/EngineeringViewers/sample-editable.dwg",
+    "dxfBytes": 47337,
+    "dxfSHA256": "3f3cdb0daca8fc9f92c09e4a61a19dbb0ef85ffb71d3f814c8c5dcba26fdcac4",
+    "androidWebViewAppOrDeviceTested": false
+  }
+}
