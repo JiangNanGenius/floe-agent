@@ -308,8 +308,18 @@ public final class CADParameterService {
                 edited = kind
             }
         }
-        guard edited != node.kind else {
-            return Self.fail("no_change", "The feature already has those values.")
+        // FeatureKind deliberately is not Equatable. Compare its persisted
+        // value with stable object-key order before creating an undo entry.
+        let kindEncoder = JSONEncoder()
+        kindEncoder.outputFormatting = [.sortedKeys]
+        do {
+            let beforeData = try kindEncoder.encode(node.kind)
+            let editedData = try kindEncoder.encode(edited)
+            guard editedData != beforeData else {
+                return Self.fail("no_change", "The feature already has those values.")
+            }
+        } catch {
+            return Self.fail("bad_parameter", "The feature values could not be saved.")
         }
         let beforeErrors = document.session.lastEvalErrors
         let beforeChangeCount = document.session.changeCount
