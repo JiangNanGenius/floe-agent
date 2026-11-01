@@ -113,6 +113,7 @@ struct CADPresentationPresentationPane: View {
     let store: CADPresentationSceneStore
     let onEdit: () -> Void
     @Environment(\.scenePhase) private var scenePhase
+    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     @State private var showIssues = false
 
     var body: some View {
@@ -142,7 +143,10 @@ struct CADPresentationPresentationPane: View {
                     .padding(.horizontal, 12)
                     .padding(.vertical, 8)
                     .background(.regularMaterial, in: Capsule())
-                    .padding(.top, 58)
+                    // Compact width stacks the selection-mode control under
+                    // the Mode switch; keep the live selection label below
+                    // both controls instead of letting them overlap.
+                    .padding(.top, horizontalSizeClass == .compact ? 104 : 58)
                     .padding(.horizontal, 16)
                     .frame(maxHeight: .infinity, alignment: .top)
                     .allowsHitTesting(false)
@@ -516,7 +520,7 @@ struct CADPresentationWorkbenchContent: View {
     // MARK: Chrome
 
     private var modeChrome: some View {
-        HStack(spacing: 8) {
+        VStack(alignment: .trailing, spacing: 6) {
             Picker(FloeCADStrings.text("cad.workbench.mode", "Mode"), selection: $mode) {
                 ForEach(CADWorkbenchMode.allCases) { item in
                     Text(item.title).tag(item)
@@ -525,9 +529,26 @@ struct CADPresentationWorkbenchContent: View {
             .pickerStyle(.segmented)
             .frame(width: 168)
             .accessibilityIdentifier("CADWorkbenchMode")
+            if mode == .present {
+                Picker(FloeCADStrings.text("cad.present.selection.mode", "Selection"),
+                       selection: Binding(
+                        get: { handle.selectionMode },
+                        set: { handle.setSelectionMode($0) })) {
+                    ForEach(CADPresentationSelectionMode.allCases) { item in
+                        Text(item.title)
+                            .tag(item)
+                            .accessibilityIdentifier(item == .body
+                                ? "CADPresentSelectionBody"
+                                : "CADPresentSelectionFace")
+                    }
+                }
+                .pickerStyle(.segmented)
+                .frame(width: 168)
+                .accessibilityIdentifier("CADPresentSelectionMode")
+            }
         }
         .padding(6)
-        .background(.regularMaterial, in: Capsule())
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 14))
         .padding(.top, 8)
         .padding(.trailing, 12)
         .animation(.default, value: mode)

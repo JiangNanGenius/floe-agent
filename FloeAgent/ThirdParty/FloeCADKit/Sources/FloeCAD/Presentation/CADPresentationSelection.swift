@@ -4,6 +4,7 @@
 import Foundation
 import RealityKit
 import UIKit
+import simd
 
 nonisolated struct CADPresentationPick: Equatable, Sendable {
     var entityID: UUID
@@ -60,6 +61,41 @@ enum CADPresentationSelection {
         let inputs = document.viewModel().assistantSelectionInputs
         return CADPresentationSelectionState(bodyIDs: Set(inputs.bodyIDs.map(\.raw)),
                                              instanceIDs: inputs.instanceIDs, faces: inputs.facePicks)
+    }
+
+    /// The label the Present overlay and accessibility tree expose. It is the
+    /// same live title the material inspector resolves from the current
+    /// editor mode, so a body, a face and a placed instance stay distinct
+    /// without a second selection cache.
+    static func title(document: FloeCADDocument) -> String? {
+        let model = document.viewModel()
+        let inputs = model.assistantSelectionInputs
+        if !inputs.instanceIDs.isEmpty,
+           let assembly = try? CADAssembly.decode(from: document.session.document.assemblyData) {
+            let names = inputs.instanceIDs
+                .sorted { $0.uuidString < $1.uuidString }
+                .compactMap { assembly.instance($0)?.name }
+            if !names.isEmpty {
+                return names.prefix(3).joined(separator: ", ")
+            }
+        }
+        let target = CADMaterialTargetResolver.resolve(viewModel: model)
+        return target.isEmpty ? nil : target.title
+    }
+
+    /// Body-local point in the live `RenderMesh` millimetre space for a
+    /// RealityKit world-space collision. The stage carries the camera view
+    /// transform; the body transform carries the entity's own placement and
+    /// scale. This is the same conversion the scene builder used in reverse.
+    nonisolated static func localPointMillimetres(
+        worldPoint: SIMD3<Float>,
+        bodyTransform: simd_float4x4,
+        stageTransform: simd_float4x4
+    ) -> SIMD3<Float> {
+        let local = simd_inverse(stageTransform * bodyTransform)
+            * SIMD4<Float>(worldPoint, 1)
+        return SIMD3<Float>(local.x, local.y, local.z)
+            * CADPresentationAxes.millimetresPerMeter
     }
 
     /// Correlate the snapshot's exact ordered index triples with the live
@@ -144,6 +180,81 @@ enum CADPresentationSelection {
                 instanceID: pick.instanceID, faceTriangles: pick.triangles)
         }
         return document.viewModel().selectPresentation(bodyID: nil)
+    }
+
+    /// Refine a real collision hit on an unpainted body entity into the live
+    /// face triangles. The heavy buffer/topology scan runs as one cancellable
+    /// detached value task; the document is only read before and revalidated
+    /// after it, never mutated. Nil is a truthful "select the body" fallback:
+    /// placed occurrences, stale generations, empty hits and exact ambiguous
+    /// edges do not invent a face or a numerical face index.
+    static func refinedFacePick(
+        _ pick: CADPresentationPick,
+        localPointMillimetres: SIMD3<Float>,
+        presentationBody: CADPresentationBody,
+        scene: CADPresentationScene,
+        document: FloeCADDocument
+    ) async -> CADPresentationPick? {
+        guard pick.instanceID == nil,
+              presentationBody.id == pick.entityID,
+              presentationBody.id == pick.bodyID,
+              presentationBody.sourceBodyID == nil,
+              localPointMillimetres.x.isFinite,
+              localPointMillimetres.y.isFinite,
+              localPointMillimetres.z.isFinite else { return nil }
+
+        let documentKey = document.url.standardizedFileURL.path
+        let revision = document.revision
+        let changeCount = document.liveChangeCount
+        guard documentKey == scene.documentKey,
+              revision == scene.documentRevision,
+              changeCount == scene.changeCount,
+              scene.bodies.contains(where: {
+                  $0.id == pick.entityID && $0.sourceBodyID == nil
+              }),
+              let liveBody = document.session.document.body(with: BodyID(raw: pick.bodyID)),
+              liveBody.meshRevision == pick.meshRevision,
+              presentationBody.mesh.meshRevision == pick.meshRevision else {
+            return nil
+        }
+
+        let liveMesh = liveBody.render
+        let meshRevision = liveBody.meshRevision
+        let faceTable = document.session.lastFaceTables[liveBody.id]
+        let faceTableRevision = document.session.lastNamingRevisions[liveBody.id]
+        let diagonalMM = simd_length(
+            presentationBody.mesh.boundsMax - presentationBody.mesh.boundsMin)
+            * CADPresentationAxes.millimetresPerMeter
+        let tolerance = CADPresentationFaceHit.tolerance(diagonalMM: diagonalMM)
+
+        let work = Task.detached(priority: .userInitiated) {
+            CADPresentationFaceHit.resolve(
+                mesh: liveMesh, meshRevision: meshRevision,
+                point: localPointMillimetres, tolerance: tolerance,
+                faceTable: faceTable, faceTableRevision: faceTableRevision)
+        }
+        let region = await withTaskCancellationHandler {
+            await work.value
+        } onCancel: {
+            work.cancel()
+        }
+        guard !Task.isCancelled, let region, !region.triangles.isEmpty else { return nil }
+
+        // A late hit may not publish against an edit, save identity or mesh
+        // generation that moved while the detached scan was running. The
+        // caller additionally checks its tap stamp before applying.
+        guard document.url.standardizedFileURL.path == documentKey,
+              document.revision == revision,
+              document.liveChangeCount == changeCount,
+              let current = document.session.document.body(with: BodyID(raw: pick.bodyID)),
+              current.meshRevision == pick.meshRevision,
+              region.triangles.allSatisfy({
+                  $0 >= 0 && $0 < current.render.triangleCount
+              }) else { return nil }
+
+        var refined = pick
+        refined.triangles = region.triangles
+        return refined
     }
 
     /// The instance remains selected as an instance. A material edits its

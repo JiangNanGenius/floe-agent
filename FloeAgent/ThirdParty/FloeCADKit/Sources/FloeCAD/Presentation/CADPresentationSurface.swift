@@ -94,6 +94,11 @@ final class CADPresentationHandle {
     /// Camera pose remembered across a Present/Edit switch. GPU resources are
     /// still released on exit; only the value camera survives.
     var savedCamera: CADPresentationCamera?
+    /// Present tap granularity. `.body` keeps the existing whole-body
+    /// selection; `.face` refines a genuine hit on an unpainted body to the
+    /// live face triangles. Runtime-only: changing it never edits the document
+    /// or clears the current target.
+    var selectionMode: CADPresentationSelectionMode = .body
 
     var bounds: CADPresentationBounds? { controller?.currentBounds }
     /// Current live camera; used by the timeline to capture a keyframe from
@@ -102,6 +107,14 @@ final class CADPresentationHandle {
 
     func fit() {
         controller?.fit()
+    }
+
+    /// The host control routes through here so a pending tap that began under
+    /// the old granularity cannot finish under the new one.
+    func setSelectionMode(_ mode: CADPresentationSelectionMode) {
+        guard selectionMode != mode else { return }
+        selectionMode = mode
+        controller?.selectionModeDidChange()
     }
 
     func setIssues(_ issues: [CADPresentationIssue]) {
@@ -148,6 +161,40 @@ final class CADPresentationRenderController: NSObject, UIGestureRecognizerDelega
     private var lastSelectionState: CADPresentationSelectionState?
     private var interactionGeneration: UInt64 = 0
     private var pendingTapStamp: CADPresentationSelectionStamp?
+    private var pendingTapMode: CADPresentationSelectionMode?
+    private var selectionRefinementTask: Task<Void, Never>?
+    /// One render-only selection patch for the exact face selected on an
+    /// unpainted body. It is never part of the document, has no collision, and
+    /// lives under the body's existing transform.
+    @MainActor
+    private final class SelectionFacePatch {
+        let target: SelectionFaceTarget
+        let entity: ModelEntity
+        let highlightMaterial: PhysicallyBasedMaterial
+        var isPreviewing = false
+
+        init(target: SelectionFaceTarget, entity: ModelEntity,
+             highlightMaterial: PhysicallyBasedMaterial) {
+            self.target = target
+            self.entity = entity
+            self.highlightMaterial = highlightMaterial
+        }
+
+        func restoreHighlight() {
+            guard isPreviewing else { return }
+            entity.model?.materials = [highlightMaterial]
+            isPreviewing = false
+        }
+    }
+
+    private struct SelectionFaceTarget: Equatable {
+        var bodyID: UUID
+        var triangles: [Int]
+    }
+
+    private var selectionFacePatch: SelectionFacePatch?
+    private var selectionPatchTask: Task<Void, Never>?
+    private var selectionPatchTarget: SelectionFaceTarget?
     private var originalMaterials: [ObjectIdentifier: [any RealityFoundation.Material]] = [:]
     private var buildKey: String?
     private var buildTask: Task<Void, Never>?
@@ -188,6 +235,10 @@ final class CADPresentationRenderController: NSObject, UIGestureRecognizerDelega
             hasher.combine(state.bodyIDs.sorted { $0.uuidString < $1.uuidString })
             hasher.combine(state.instanceIDs.sorted { $0.uuidString < $1.uuidString })
             for face in state.faces { hasher.combine(face.bodyID); hasher.combine(face.triangles) }
+            // The unpainted-face highlight patch is built after selection
+            // resolves. A capture taken before/after it appears must not share
+            // a cache key or it could return a highlight-less frame.
+            hasher.combine(selectionFacePatch != nil)
         }
         hasher.combine(arView.bounds.width)
         hasher.combine(arView.bounds.height)
@@ -265,6 +316,9 @@ final class CADPresentationRenderController: NSObject, UIGestureRecognizerDelega
         #endif
         buildTask?.cancel()
         pendingTapStamp = nil
+        pendingTapMode = nil
+        selectionRefinementTask?.cancel()
+        selectionRefinementTask = nil
         // The old visible stage cannot accept hits while its replacement
         // builds. The live document fence also rejects the polling interval.
         handle?.markReady(false)
@@ -288,6 +342,12 @@ final class CADPresentationRenderController: NSObject, UIGestureRecognizerDelega
             pickTargets = result.pickTargets
             floorBounds = scene.bounds
             selectionDecorations.removeAll()
+            selectionRefinementTask?.cancel()
+            selectionRefinementTask = nil
+            selectionPatchTask?.cancel()
+            selectionPatchTask = nil
+            selectionFacePatch = nil
+            selectionPatchTarget = nil
             lastSelectionState = nil
             originalMaterials.removeAll()
             // A replaced stage always starts from its document baseline; any
@@ -345,9 +405,16 @@ final class CADPresentationRenderController: NSObject, UIGestureRecognizerDelega
         bodyEntities.removeAll()
         pickTargets.removeAll()
         selectionDecorations.removeAll()
+        selectionRefinementTask?.cancel()
+        selectionRefinementTask = nil
+        selectionPatchTask?.cancel()
+        selectionPatchTask = nil
+        selectionFacePatch = nil
+        selectionPatchTarget = nil
         selectionDocument = nil
         lastSelectionState = nil
         pendingTapStamp = nil
+        pendingTapMode = nil
         originalMaterials.removeAll()
         animationToken = "static"
         animationRestoreCamera = nil
@@ -417,40 +484,78 @@ final class CADPresentationRenderController: NSObject, UIGestureRecognizerDelega
         // source ID is only the selection key.
         for body in scene.bodies where body.matchesMaterialTarget(ids) {
             guard let nodes = bodyEntities[body.id] else { continue }
-            let faceGroup: CADPresentationFaceGroup?
-            var targets: [ModelEntity]
             if target.isFaceTarget {
                 // A face preview must never fall back to repainting the whole
-                // body. If the current scene has no entity for this face, the
-                // mapping is stale and the preview is skipped.
-                guard let faceIndex = target.faceIndex,
-                      let group = body.faceGroups.first(where: {
-                          $0.faceIndex == faceIndex
-                      }),
-                      let faceEntity = nodes.faceEntities[faceIndex] else { continue }
-                faceGroup = group
-                targets = [faceEntity]
-            } else {
-                faceGroup = nil
-                targets = nodes.entities
-            }
-            let hasUVs = faceGroup?.uvs != nil || body.mesh.uvs != nil
-            let material = await builder.previewMaterial(
-                spec: spec,
-                bodyID: body.id,
-                bodyName: body.name,
-                hasUVs: hasUVs)
-            for entity in targets {
-                let key = ObjectIdentifier(entity)
-                if originalMaterials[key] == nil {
-                    originalMaterials[key] = entity.model?.materials ?? []
+                // body. An already painted face reuses its existing face
+                // entity; the first material on an unpainted face paints only
+                // the render-side selection patch for the exact live range.
+                guard let faceIndex = target.faceIndex else { continue }
+                if let group = body.faceGroups.first(where: {
+                    $0.faceIndex == faceIndex
+                }), let faceEntity = nodes.faceEntities[faceIndex] {
+                    let material = await builder.previewMaterial(
+                        spec: spec,
+                        bodyID: body.id,
+                        bodyName: body.name,
+                        hasUVs: group.uvs != nil || body.mesh.uvs != nil)
+                    guard !Task.isCancelled else { return }
+                    let key = ObjectIdentifier(faceEntity)
+                    if originalMaterials[key] == nil {
+                        originalMaterials[key] = faceEntity.model?.materials ?? []
+                    }
+                    faceEntity.model?.materials = [material]
+                } else {
+                    // The inspector target is frozen at presentation time.
+                    // Paint only the CURRENT selection patch when it names the
+                    // same face; a later viewport selection must keep its own
+                    // truthful highlight instead of being replaced by a stale
+                    // inspector target.
+                    guard let identity = target.faceIdentity,
+                          let selected = lastSelectionState?.faces.first(where: {
+                              $0.bodyID == body.id
+                          }) else { continue }
+                    let selectedSet = Set(selected.triangles.sorted())
+                    let identitySet = Set(identity.triangles.sorted())
+                    guard selectedSet == identitySet
+                            || selectedSet.isSubset(of: identitySet)
+                            || identitySet.isSubset(of: selectedSet) else { continue }
+                    let faceTarget = SelectionFaceTarget(
+                        bodyID: body.id,
+                        triangles: selected.triangles.sorted())
+                    guard let patch = await ensureSelectionFacePatch(
+                        for: faceTarget, body: body, nodes: nodes, scene: scene),
+                          let material = await previewMaterial(
+                            spec: spec, body: body,
+                            hasUVs: body.mesh.uvs != nil) else { continue }
+                    patch.entity.model?.materials = [material]
+                    patch.isPreviewing = true
                 }
-                entity.model?.materials = [material]
+            } else {
+                let material = await builder.previewMaterial(
+                    spec: spec,
+                    bodyID: body.id,
+                    bodyName: body.name,
+                    hasUVs: body.mesh.uvs != nil)
+                for entity in nodes.entities {
+                    let key = ObjectIdentifier(entity)
+                    if originalMaterials[key] == nil {
+                        originalMaterials[key] = entity.model?.materials ?? []
+                    }
+                    entity.model?.materials = [material]
+                }
             }
         }
     }
 
+    private func previewMaterial(spec: BodyMaterialSpec, body: CADPresentationBody,
+                                 hasUVs: Bool) async -> PhysicallyBasedMaterial? {
+        let material = await builder.previewMaterial(
+            spec: spec, bodyID: body.id, bodyName: body.name, hasUVs: hasUVs)
+        return Task.isCancelled ? nil : material
+    }
+
     func endMaterialPreview() {
+        selectionFacePatch?.restoreHighlight()
         let nodes = bodyEntities
         for (identifier, materials) in originalMaterials {
             guard !materials.isEmpty else { continue }
@@ -582,9 +687,20 @@ final class CADPresentationRenderController: NSObject, UIGestureRecognizerDelega
     func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldReceive touch: UITouch) -> Bool {
         if gestureRecognizer === singleTap {
             pendingTapStamp = activeSelectionStamp
+            pendingTapMode = handle?.selectionMode ?? .body
             return pendingTapStamp != nil
         }
         return true
+    }
+
+    /// A mode switch invalidates a tap that began under the old granularity.
+    /// It never changes the document, the current selection or the material.
+    func selectionModeDidChange() {
+        interactionGeneration &+= 1
+        pendingTapStamp = nil
+        pendingTapMode = nil
+        selectionRefinementTask?.cancel()
+        selectionRefinementTask = nil
     }
 
     private var activeSelectionStamp: CADPresentationSelectionStamp? {
@@ -601,56 +717,219 @@ final class CADPresentationRenderController: NSObject, UIGestureRecognizerDelega
         guard recognizer.state == .ended, let stamp = pendingTapStamp,
               let scene = currentScene, let document = selectionDocument,
               stamp == activeSelectionStamp else { return }
+        let mode = pendingTapMode ?? handle?.selectionMode ?? .body
         pendingTapStamp = nil
-        let hits = arView.hitTest(recognizer.location(in: arView), query: .all)
-        let pick = hits.sorted { $0.distance < $1.distance }.compactMap {
-            pickTargets[ObjectIdentifier($0.entity)]
-        }.first
-        if CADPresentationSelection.apply(pick, stamp: stamp, currentStamp: activeSelectionStamp,
-                                           scene: scene, document: document) {
-            refreshSelection()
+        pendingTapMode = nil
+        selectionRefinementTask?.cancel()
+        selectionRefinementTask = nil
+
+        let location = recognizer.location(in: arView)
+        let hits = arView.hitTest(location, query: .all)
+            .sorted { $0.distance < $1.distance }
+        guard let routed = hits.first(where: {
+            pickTargets[ObjectIdentifier($0.entity)] != nil
+        }), var pick = pickTargets[ObjectIdentifier(routed.entity)] else {
+            // A genuinely blank tap still clears the live selection, exactly
+            // as before. Refinement only changes what a real body/face hit
+            // resolves to.
+            if CADPresentationSelection.apply(nil, stamp: stamp,
+                                              currentStamp: activeSelectionStamp,
+                                              scene: scene, document: document) {
+                refreshSelection()
+            }
+            return
+        }
+
+        if mode == .body || pick.instanceID != nil || !pick.triangles.isEmpty {
+            // Whole-body mode, a placed occurrence, or an already painted face
+            // keeps the existing precise identity. Body mode intentionally
+            // selects the whole body even when the hit surface carries a face
+            // material group.
+            if mode == .body { pick.triangles = [] }
+            if CADPresentationSelection.apply(pick, stamp: stamp,
+                                              currentStamp: activeSelectionStamp,
+                                              scene: scene, document: document) {
+                refreshSelection()
+            }
+            return
+        }
+
+        guard let drawn = scene.bodies.first(where: { $0.id == pick.entityID }) else { return }
+        // A genuine collision on an unpainted regular body: correlate its
+        // actual position with the live mesh under the hit entity. Placed
+        // occurrences were handled above and never promote a source face.
+        let localPoint = CADPresentationSelection.localPointMillimetres(
+            worldPoint: routed.position,
+            bodyTransform: drawn.transform,
+            stageTransform: camera.stageTransform)
+        // A later external selection (assistant/host or a rebuild) must win
+        // over this still-running hit. Capture the live pre-tap target and
+        // re-read it after the detached scan.
+        let priorSelection = CADPresentationSelection.state(document: document)
+        selectionRefinementTask = Task { [weak self] in
+            guard let self else { return }
+            let refined = await CADPresentationSelection.refinedFacePick(
+                pick, localPointMillimetres: localPoint,
+                presentationBody: drawn, scene: scene, document: document)
+            guard !Task.isCancelled, stamp == self.activeSelectionStamp,
+                  CADPresentationSelection.state(document: document) == priorSelection
+            else { return }
+            // Empty hits, exact ambiguous edges, stale generations and bodies
+            // without a measurable face stay a whole-body selection; they
+            // never receive an invented triangle range.
+            var chosen = refined ?? pick
+            if refined == nil { chosen.triangles = [] }
+            if CADPresentationSelection.apply(chosen, stamp: stamp,
+                                              currentStamp: self.activeSelectionStamp,
+                                              scene: scene, document: document) {
+                self.refreshSelection()
+            }
         }
     }
 
     /// A small render-only overlay uses the selected entity's existing mesh.
-    /// It has no collision shape and cannot intercept the next tap.
+    /// A selected face with no existing face entity gets one measured patch
+    /// built from the exact live triangles, so the first material on an
+    /// unpainted face is visible before any document edit. Neither overlay has
+    /// a collision shape, so neither can intercept the next tap.
     func refreshSelection() {
         guard let document = selectionDocument, let scene = currentScene,
               buildKey == scene.buildKey else { return }
         let state = CADPresentationSelection.state(document: document)
         guard state != lastSelectionState else { return }
         lastSelectionState = state
+        // A selection change is a newer interaction than any hit still being
+        // measured; the late hit must not publish over it.
+        selectionRefinementTask?.cancel()
+        selectionRefinementTask = nil
         selectionDecorations.forEach { $0.removeFromParent() }
         selectionDecorations.removeAll()
+        selectionPatchTask?.cancel()
+        selectionPatchTask = nil
+        selectionPatchTarget = nil
+        selectionFacePatch = nil
+
         for body in scene.bodies {
             guard let nodes = bodyEntities[body.id] else { continue }
             let isInstance = body.sourceBodyID != nil
-            guard isInstance ? state.instanceIDs.contains(body.id) : state.bodyIDs.contains(body.id) else { continue }
-            var selected = nodes.entities
+            guard isInstance ? state.instanceIDs.contains(body.id)
+                              : state.bodyIDs.contains(body.id) else { continue }
             if !isInstance, let face = state.faces.first(where: { $0.bodyID == body.id }) {
-                selected = selected.filter { pickTargets[ObjectIdentifier($0)]?.triangles == face.triangles.sorted() }
-            }
-            for entity in selected {
-                guard let model = entity.model else { continue }
-                var material = PhysicallyBasedMaterial()
-                material.baseColor = .init(tint: .systemOrange)
-                material.emissiveColor = .init(color: .systemOrange)
-                material.emissiveIntensity = 0.5
-                material.blending = .transparent(opacity: .init(scale: 0.25))
-                let highlight = ModelEntity(mesh: model.mesh, materials: [material])
-                highlight.scale = SIMD3(repeating: 1.001)
-                entity.addChild(highlight)
-                selectionDecorations.append(highlight)
+                let triangles = face.triangles.sorted()
+                if let entity = nodes.entities.first(where: {
+                    pickTargets[ObjectIdentifier($0)]?.triangles == triangles
+                }) {
+                    addSelectionHighlight(to: entity)
+                } else {
+                    let target = SelectionFaceTarget(bodyID: body.id,
+                                                     triangles: triangles)
+                    startSelectionFacePatch(target: target, body: body,
+                                            nodes: nodes, scene: scene)
+                }
+            } else {
+                for entity in nodes.entities {
+                    addSelectionHighlight(to: entity)
+                }
             }
         }
-        if !state.instanceIDs.isEmpty,
-           let assembly = try? CADAssembly.decode(from: document.session.document.assemblyData) {
-            let names = state.instanceIDs.compactMap { assembly.instance($0)?.name }
-            handle?.markSelection(names.prefix(3).joined(separator: ", "))
-        } else {
-            let target = CADMaterialTargetResolver.resolve(document: document)
-            handle?.markSelection(target.isEmpty ? nil : target.title)
+        handle?.markSelection(CADPresentationSelection.title(document: document))
+    }
+
+    private func addSelectionHighlight(to entity: ModelEntity) {
+        guard let model = entity.model else { return }
+        var material = PhysicallyBasedMaterial()
+        material.baseColor = .init(tint: .systemOrange)
+        material.emissiveColor = .init(color: .systemOrange)
+        material.emissiveIntensity = 0.5
+        material.blending = .transparent(opacity: .init(scale: 0.25))
+        let highlight = ModelEntity(mesh: model.mesh, materials: [material])
+        highlight.scale = SIMD3(repeating: 1.001)
+        entity.addChild(highlight)
+        selectionDecorations.append(highlight)
+    }
+
+    /// Build the exact face patch for an unpainted selection. The mesh is the
+    /// same measured triangle range the selection was resolved from; it is
+    /// fenced by the current stage generation, build key and selection state.
+    private func startSelectionFacePatch(target: SelectionFaceTarget,
+                                         body: CADPresentationBody,
+                                         nodes: CADPresentationBodyNodes,
+                                         scene: CADPresentationScene) {
+        selectionPatchTask?.cancel()
+        if let existing = selectionFacePatch {
+            // A draft target may name the authoritative range while the
+            // selection was resolved from measured topology. Replace the
+            // overlay instead of leaving two coincident patches.
+            existing.entity.removeFromParent()
+            selectionDecorations.removeAll { $0 === existing.entity }
+            selectionFacePatch = nil
         }
+        selectionPatchTarget = target
+        let generation = renderGeneration
+        let expectedBuildKey = scene.buildKey
+        selectionPatchTask = Task { [weak self] in
+            guard let self else { return }
+            guard let mesh = try? await CADPresentationEntityBuilder.makeMesh(
+                body.mesh, triangles: target.triangles, uvs: body.mesh.uvs)
+            else { return }
+            guard !Task.isCancelled,
+                  self.renderGeneration == generation,
+                  self.buildKey == expectedBuildKey,
+                  self.currentScene?.buildKey == expectedBuildKey,
+                  self.lastSelectionState?.faces.contains(where: {
+                      $0.bodyID == target.bodyID
+                          && $0.triangles.sorted() == target.triangles
+                  }) == true else { return }
+            let patch = self.makeSelectionFacePatch(target: target,
+                                                    body: body, mesh: mesh)
+            nodes.parent.addChild(patch.entity)
+            self.selectionFacePatch = patch
+            self.selectionDecorations.append(patch.entity)
+            self.selectionPatchTask = nil
+        }
+    }
+
+    private func makeSelectionFacePatch(target: SelectionFaceTarget,
+                                        body: CADPresentationBody,
+                                        mesh: MeshResource) -> SelectionFacePatch {
+        var material = PhysicallyBasedMaterial()
+        material.baseColor = .init(tint: .systemOrange)
+        material.emissiveColor = .init(color: .systemOrange)
+        material.emissiveIntensity = 0.35
+        material.blending = .transparent(opacity: .init(scale: 0.32))
+        let entity = ModelEntity(mesh: mesh, materials: [material])
+        entity.name = "CADPresentationSelectionFace"
+        // Lift the coincident patch by a fraction of the model size so it is
+        // visible over the body without a second depth or render pass.
+        let normal = CADPresentationFaceHit.averageNormal(
+            in: body.mesh, triangles: target.triangles)
+        let diagonal = simd_length(body.mesh.boundsMax - body.mesh.boundsMin)
+        let offset = max(2e-6, min(0.002, diagonal * 0.001))
+        entity.position = normal * offset
+        return SelectionFacePatch(target: target, entity: entity,
+                                  highlightMaterial: material)
+    }
+
+    /// A material draft opened from a face selection may preview before the
+    /// asynchronous highlight task has installed its patch. Await that single
+    /// in-flight build rather than creating a competing overlay.
+    private func ensureSelectionFacePatch(for target: SelectionFaceTarget,
+                                          body: CADPresentationBody,
+                                          nodes: CADPresentationBodyNodes,
+                                          scene: CADPresentationScene) async -> SelectionFacePatch? {
+        guard !Task.isCancelled else { return nil }
+        if let patch = selectionFacePatch, patch.target == target { return patch }
+        if selectionPatchTarget == target, let task = selectionPatchTask {
+            await task.value
+            if let patch = selectionFacePatch, patch.target == target { return patch }
+        }
+        guard !Task.isCancelled else { return nil }
+        startSelectionFacePatch(target: target, body: body,
+                                nodes: nodes, scene: scene)
+        if let task = selectionPatchTask { await task.value }
+        guard !Task.isCancelled else { return nil }
+        guard let patch = selectionFacePatch, patch.target == target else { return nil }
+        return patch
     }
 
     // MARK: Transient animation frame

@@ -67,6 +67,49 @@ final class CADPresentationSelectionTests: XCTestCase {
         return CADPresentationSelection.apply(pick, stamp: identity, currentStamp: identity, scene: scene, document: document)
     }
 
+    private func buildScene(_ scene: CADPresentationScene) async throws
+        -> (result: CADPresentationBuildResult, view: ARView, anchor: AnchorEntity) {
+        let result = try await CADPresentationEntityBuilder(
+            cache: CADPresentationResourceCache()).build(scene: scene)
+        let view = ARView(frame: CGRect(x: 0, y: 0, width: 400, height: 400),
+                          cameraMode: .nonAR, automaticallyConfigureSession: false)
+        let anchor = AnchorEntity(world: .zero)
+        anchor.addChild(result.stage)
+        view.scene.addAnchor(anchor)
+        return (result, view, anchor)
+    }
+
+    /// Real RealityKit collision query against the production collision shape.
+    /// Waiting is bounded and yields, exactly like the existing hole witness.
+    private func nearestHit(_ view: ARView, origin: SIMD3<Float>,
+                            direction: SIMD3<Float>, length: Float = 1,
+                            targets: [ObjectIdentifier: CADPresentationPick])
+        async -> (CollisionCastHit, CADPresentationPick)? {
+        for _ in 0..<50 {
+            let hits = view.scene.raycast(origin: origin, direction: direction,
+                                          length: length, query: .all)
+            if let hit = hits.sorted(by: { $0.distance < $1.distance })
+                .first(where: { targets[ObjectIdentifier($0.entity)] != nil }),
+               let pick = targets[ObjectIdentifier(hit.entity)] {
+                return (hit, pick)
+            }
+            try? await Task.sleep(for: .milliseconds(20))
+        }
+        return nil
+    }
+
+    private func refine(_ hit: (CollisionCastHit, CADPresentationPick),
+                        drawn: CADPresentationBody,
+                        scene: CADPresentationScene) async -> CADPresentationPick? {
+        let local = CADPresentationSelection.localPointMillimetres(
+            worldPoint: hit.0.position,
+            bodyTransform: drawn.transform,
+            stageTransform: matrix_identity_float4x4)
+        return await CADPresentationSelection.refinedFacePick(
+            hit.1, localPointMillimetres: local,
+            presentationBody: drawn, scene: scene, document: document)
+    }
+
     /// A routine save advances the committed receipt (`revision`/`contentSHA256`)
     /// of unchanged live content, and an animation-only edit advances the
     /// document generation; neither changes a static-scene pixel. Both must
@@ -281,6 +324,320 @@ final class CADPresentationSelectionTests: XCTestCase {
         XCTAssertEqual(occluded.bodyID, front.id.raw, "the front solid must occlude the rear solid")
         XCTAssertTrue(apply(throughBore, scene: scene))
         XCTAssertEqual(document.assistantSelectionContext().bodies.map(\.id), [behind.id.raw.uuidString])
+    }
+
+    func testSelectionModeDefaultsToBodyAndKeepsNativeTitles() {
+        let handle = CADPresentationHandle()
+        XCTAssertEqual(handle.selectionMode, .body,
+                       "Present must preserve whole-body selection by default")
+        XCTAssertEqual(CADPresentationSelectionMode.allCases, [.body, .face])
+        XCTAssertFalse(CADPresentationSelectionMode.body.title.isEmpty)
+        XCTAssertFalse(CADPresentationSelectionMode.face.title.isEmpty)
+        handle.setSelectionMode(.face)
+        XCTAssertEqual(handle.selectionMode, .face)
+        handle.setSelectionMode(.body)
+        XCTAssertEqual(handle.selectionMode, .body)
+    }
+
+    /// The primary X20 gap: a genuine collision on an UNPAINTED regular body
+    /// must refine to the live authoritative face range without any face
+    /// material group, and must not advance the document/undo generation.
+    func testUnpaintedBodyHitRefinesToAuthoritativeLiveFaceAndPublishesExactIdentity() async throws {
+        let body = try box()
+        let presentation = scene()
+        let built = try await buildScene(presentation)
+        defer { built.anchor.removeFromParent() }
+        let drawn = try XCTUnwrap(presentation.bodies.first { $0.id == body.id.raw })
+        XCTAssertTrue(try XCTUnwrap(built.result.bodyEntities[drawn.id]).faceEntities.isEmpty,
+                      "the primary proof must be an unpainted body, not a pre-painted group")
+        let hitResult = await nearestHit(
+            built.view, origin: SIMD3(0.02, 0.08, -0.01),
+            direction: SIMD3(0, -1, 0), targets: built.result.pickTargets)
+        let hit = try XCTUnwrap(hitResult)
+        XCTAssertTrue(hit.1.triangles.isEmpty, "an unpainted body starts as a whole-body pick")
+        let localPoint = CADPresentationSelection.localPointMillimetres(
+            worldPoint: hit.0.position,
+            bodyTransform: drawn.transform,
+            stageTransform: matrix_identity_float4x4)
+        let authoritativeRegion = CADPresentationFaceHit.resolve(
+            mesh: body.render, meshRevision: body.meshRevision,
+            point: localPoint,
+            tolerance: CADPresentationFaceHit.tolerance(
+                diagonalMM: simd_length(drawn.mesh.boundsMax - drawn.mesh.boundsMin)
+                    * CADPresentationAxes.millimetresPerMeter),
+            faceTable: document.session.lastFaceTables[body.id],
+            faceTableRevision: document.session.lastNamingRevisions[body.id])
+        XCTAssertTrue(authoritativeRegion?.authoritative ?? false,
+                      "a normal modeled body must resolve from the live face table")
+
+        let revision = document.revision
+        let generation = document.liveChangeCount
+        let undo = document.session.undoStack.undoCommands.count
+        let refinedResult = await refine(hit, drawn: drawn, scene: presentation)
+        let refined = try XCTUnwrap(refinedResult)
+        XCTAssertEqual(refined.entityID, body.id.raw)
+        XCTAssertEqual(refined.bodyID, body.id.raw)
+        XCTAssertNil(refined.instanceID)
+        XCTAssertFalse(refined.triangles.isEmpty)
+        XCTAssertTrue(refined.triangles.allSatisfy {
+            $0 >= 0 && $0 < body.render.triangleCount
+        })
+        XCTAssertEqual(refined.meshRevision, body.meshRevision)
+
+        XCTAssertTrue(apply(refined, scene: presentation))
+        let context = document.assistantSelectionContext()
+        XCTAssertEqual(context.bodies.map(\.id), [body.id.raw.uuidString])
+        XCTAssertEqual(context.faces.count, 1)
+        XCTAssertEqual(context.faces.first?.bodyID, body.id.raw.uuidString)
+        XCTAssertEqual(context.faces.first?.triangleCount, refined.triangles.count)
+
+        let target = CADPresentationSelection.materialTarget(document: document)
+        XCTAssertTrue(target.isFaceTarget)
+        XCTAssertEqual(target.faceBodyID, Optional(body.id.raw))
+        XCTAssertNotNil(target.faceIndex, "the live inspector must name the exact kernel face")
+        XCTAssertNotNil(target.faceIdentity)
+        XCTAssertEqual(Set(target.faceIdentity?.triangles ?? [Int]()),
+                       Set(refined.triangles))
+        XCTAssertEqual(CADPresentationSelection.title(document: document) ?? "", target.title)
+        XCTAssertFalse(CADPresentationSelection.title(document: document)?.isEmpty ?? true)
+
+        XCTAssertEqual(document.revision, revision)
+        XCTAssertEqual(document.liveChangeCount, generation)
+        XCTAssertEqual(document.session.undoStack.undoCommands.count, undo)
+
+        // A same-document presentation rebuild and the host observation key
+        // keep the exact body + triangles target; no second selection cache.
+        let rebuiltScene = scene()
+        XCTAssertEqual(rebuiltScene.buildKey, presentation.buildKey)
+        XCTAssertEqual(CADPresentationSelection.state(document: document)
+            .faces.first?.triangles ?? [], refined.triangles)
+        XCTAssertEqual(CADPresentationSelection.observationKey(document: document)
+            .facePicks.first?.triangles ?? [], refined.triangles)
+    }
+
+    func testTwoUnpaintedFacesWithEqualTriangleCountsRemainDistinct() async throws {
+        let body = try box()
+        let presentation = scene()
+        let built = try await buildScene(presentation)
+        defer { built.anchor.removeFromParent() }
+        let drawn = try XCTUnwrap(presentation.bodies.first { $0.id == body.id.raw })
+        guard let topHit = await nearestHit(
+            built.view, origin: SIMD3(0.02, 0.08, -0.01),
+            direction: SIMD3(0, -1, 0), targets: built.result.pickTargets),
+              let sideHit = await nearestHit(
+                built.view, origin: SIMD3(0.2, 0.005, -0.01),
+                direction: SIMD3(-1, 0, 0), targets: built.result.pickTargets) else {
+            return XCTFail("the real top and side collision shapes must be queryable")
+        }
+        let topResult = await refine(topHit, drawn: drawn, scene: presentation)
+        let top = try XCTUnwrap(topResult)
+        let sideResult = await refine(sideHit, drawn: drawn, scene: presentation)
+        let side = try XCTUnwrap(sideResult)
+        XCTAssertEqual(top.triangles.count, side.triangles.count,
+                       "this witness needs two faces with the same triangle count")
+        XCTAssertNotEqual(Set(top.triangles), Set(side.triangles),
+                          "face identity is actual triangles, not a count or a name")
+
+        XCTAssertTrue(apply(top, scene: presentation))
+        let firstContext = document.assistantSelectionContext().faces
+        let firstIndex = CADPresentationSelection.materialTarget(document: document).faceIndex
+        XCTAssertTrue(apply(side, scene: presentation))
+        let secondContext = document.assistantSelectionContext().faces
+        let secondIndex = CADPresentationSelection.materialTarget(document: document).faceIndex
+        XCTAssertNotEqual(firstContext, secondContext)
+        XCTAssertEqual(firstContext.first?.triangleCount, secondContext.first?.triangleCount)
+        XCTAssertEqual(firstContext.first?.bodyID, secondContext.first?.bodyID)
+        XCTAssertNotNil(firstIndex)
+        XCTAssertNotNil(secondIndex)
+        XCTAssertNotEqual(firstIndex, secondIndex)
+    }
+
+    func testFaceHitThroughBoreRefinesBehindSolidNotFrontPlate() async throws {
+        let front = try box(hole: true)
+        let spec = PrimitiveSpec.box(width: 40, depth: 20, height: 10)
+        var behind = Body(name: "Behind", euclidMesh: .primitive(spec), revision: 0)
+        XCTAssertTrue(behind.adoptBRep(try XCTUnwrap(
+            OCCTKernel.primitiveShape(spec, placement: .identity))))
+        behind.transform.translation = SIMD3(20, -20, -10)
+        document.session.perform(AddBodyCommand(body: behind, title: "Behind"))
+        let scene = scene()
+        let built = try await buildScene(scene)
+        defer { built.anchor.removeFromParent() }
+        let drawn = try XCTUnwrap(scene.bodies.first { $0.id == behind.id.raw })
+        let hitResult = await nearestHit(
+            built.view, origin: SIMD3(0.02, 0.08, -0.01),
+            direction: SIMD3(0, -1, 0), targets: built.result.pickTargets)
+        let hit = try XCTUnwrap(hitResult)
+        XCTAssertEqual(hit.1.bodyID, behind.id.raw,
+                       "the exact collision shape must see through the empty bore")
+        XCTAssertTrue(hit.1.triangles.isEmpty)
+
+        let refinedResult = await refine(hit, drawn: drawn, scene: scene)
+        let refined = try XCTUnwrap(refinedResult)
+        XCTAssertEqual(refined.bodyID, behind.id.raw)
+        XCTAssertFalse(refined.triangles.isEmpty)
+        XCTAssertTrue(apply(refined, scene: scene))
+        let context = document.assistantSelectionContext()
+        XCTAssertEqual(context.bodies.map(\.id), [behind.id.raw.uuidString])
+        XCTAssertEqual(context.faces.first?.bodyID, behind.id.raw.uuidString)
+        XCTAssertFalse(context.faces.contains { $0.bodyID == front.id.raw.uuidString },
+                       "the front plate's empty bore must not be selected")
+    }
+
+    func testRefinedFacePickRefusesStaleSceneAndPlacedOccurrence() async throws {
+        let body = try box()
+        let presentation = scene()
+        let built = try await buildScene(presentation)
+        defer { built.anchor.removeFromParent() }
+        let drawn = try XCTUnwrap(presentation.bodies.first { $0.id == body.id.raw })
+        let hitResult = await nearestHit(
+            built.view, origin: SIMD3(0.02, 0.08, -0.01),
+            direction: SIMD3(0, -1, 0), targets: built.result.pickTargets)
+        let hit = try XCTUnwrap(hitResult)
+
+        let service = CADAssemblyService(document: document)
+        let reply = service.handle(action: "addInstance", args: [
+            "bodyID": body.id.raw.uuidString,
+            "name": "Placed",
+            "transform": ["position": [60.0, 0.0, 0.0]],
+        ])
+        XCTAssertEqual(reply["ok"] as? Bool, true, "\(reply)")
+        let instanceID = try XCTUnwrap(UUID(uuidString: reply["id"] as? String ?? ""))
+        let placedScene = scene()
+        let placedDrawn = try XCTUnwrap(placedScene.bodies.first { $0.id == instanceID })
+        let placedPick = CADPresentationSelection.pick(for: placedDrawn)
+        XCTAssertEqual(placedPick.instanceID, Optional(instanceID))
+        let placedRefinement = await CADPresentationSelection.refinedFacePick(
+            placedPick, localPointMillimetres: .zero,
+            presentationBody: placedDrawn, scene: placedScene, document: document)
+        XCTAssertNil(placedRefinement,
+                     "a placed occurrence face must not be promoted to a source-local face")
+
+        var changed = body
+        changed.transform.translation.x += 5
+        document.session.perform(ReplaceBodyCommand(title: "Move",
+                                                    before: body, after: changed))
+        let staleRefinement = await refine(hit, drawn: drawn, scene: presentation)
+        XCTAssertNil(staleRefinement, "a hit from a superseded document generation must not publish")
+    }
+
+    /// Two perpendicular triangles share one edge exactly. The measured hit
+    /// point is genuinely ambiguous there; an interior point still resolves
+    /// to one triangle. No AABB or material group participates.
+    func testExactAmbiguousEdgeDoesNotInventAFace() {
+        let mesh = RenderMesh(
+            positions: [SIMD3(0, 0, 0), SIMD3(1, 0, 0),
+                        SIMD3(0, 0, 1), SIMD3(0, 1, 0)],
+            normals: Array(repeating: SIMD3(0, 1, 0), count: 4),
+            indices: [0, 1, 2, 0, 2, 3])
+        let edge = CADPresentationFaceHit.resolve(
+            mesh: mesh, meshRevision: 1,
+            point: SIMD3(0, 0, 0.5), tolerance: 0.01,
+            faceTable: nil, faceTableRevision: nil)
+        XCTAssertNil(edge, "two distinct faces meet exactly at this hit")
+        let interior = CADPresentationFaceHit.resolve(
+            mesh: mesh, meshRevision: 1,
+            point: SIMD3(0.1, 0, 0.3), tolerance: 0.01,
+            faceTable: nil, faceTableRevision: nil)
+        XCTAssertEqual(interior?.triangles ?? [], [0])
+        XCTAssertFalse(interior?.authoritative ?? true)
+    }
+
+    func testRefinedFaceTargetPreviewsAppliesCancelsAndKeepsSelectionIdentity() async throws {
+        let body = try box()
+        let scene = scene()
+        let built = try await buildScene(scene)
+        defer { built.anchor.removeFromParent() }
+        let drawn = try XCTUnwrap(scene.bodies.first { $0.id == body.id.raw })
+        let hitResult = await nearestHit(
+            built.view, origin: SIMD3(0.02, 0.08, -0.01),
+            direction: SIMD3(0, -1, 0), targets: built.result.pickTargets)
+        let hit = try XCTUnwrap(hitResult)
+        let refinedResult = await refine(hit, drawn: drawn, scene: scene)
+        let refined = try XCTUnwrap(refinedResult)
+        XCTAssertTrue(apply(refined, scene: scene))
+
+        let target = CADPresentationSelection.materialTarget(document: document)
+        XCTAssertTrue(target.isFaceTarget)
+        let faceIndex = try XCTUnwrap(target.faceIndex)
+        let faceIdentity = try XCTUnwrap(target.faceIdentity)
+        XCTAssertEqual(Set(faceIdentity.triangles), Set(refined.triangles))
+
+        let store = CADPersonalMaterialLibraryStore(
+            fileURL: directory.appendingPathComponent("personal-materials.json"))
+        let sink = RecordingPreviewSink()
+        let model = CADMaterialDraftModel(document: document, target: target,
+                                          personalStore: store)
+        model.previewSink = sink
+        defer { model.stopObserving() }
+        let undoBefore = document.session.undoStack.undoCommands.count
+        let generationBefore = document.liveChangeCount
+        let revisionBefore = document.revision
+        let preview = expectation(description: "uncommitted face preview reaches the live sink")
+        sink.previewExpectation = preview
+        model.update { definition in
+            definition.name = "Face witness"
+            definition.baseColor = SIMD4(0.8, 0.2, 0.1, 1)
+        }
+        await fulfillment(of: [preview], timeout: 10)
+        XCTAssertEqual(sink.targets.last?.faceIndex, faceIndex)
+        XCTAssertEqual(sink.targets.last?.faceBodyID, Optional(body.id.raw))
+        XCTAssertEqual(sink.targets.last?.faceIdentity?.triangles ?? [Int](),
+                       faceIdentity.triangles)
+        XCTAssertEqual(document.liveChangeCount, generationBefore)
+        XCTAssertEqual(document.revision, revisionBefore)
+        XCTAssertEqual(document.session.undoStack.undoCommands.count, undoBefore)
+
+        model.apply()
+        XCTAssertEqual(document.session.undoStack.undoCommands.count, undoBefore + 1,
+                       "Apply must be exactly one undoable composite")
+        XCTAssertGreaterThan(document.liveChangeCount, generationBefore)
+        XCTAssertEqual(document.assistantSelectionContext().faces.first?.triangleCount,
+                       refined.triangles.count)
+        XCTAssertEqual(document.assistantSelectionContext().faces.first?.bodyID,
+                       body.id.raw.uuidString)
+
+        document.session.undo()
+        XCTAssertEqual(document.session.undoStack.undoCommands.count, undoBefore)
+        XCTAssertTrue(document.session.undoStack.canRedo)
+        XCTAssertEqual(document.assistantSelectionContext().faces.first?.triangleCount,
+                       refined.triangles.count)
+        XCTAssertEqual(CADMaterialTargetResolver.resolve(document: document).faceIndex,
+                       faceIndex)
+
+        let cancelGeneration = document.liveChangeCount
+        let cancelUndo = document.session.undoStack.undoCommands.count
+        let cancelModel = CADMaterialDraftModel(
+            document: document,
+            target: CADPresentationSelection.materialTarget(document: document),
+            personalStore: store)
+        let cancelSink = RecordingPreviewSink()
+        cancelModel.previewSink = cancelSink
+        defer { cancelModel.stopObserving() }
+        cancelModel.update { $0.roughness = 0.12 }
+        cancelModel.cancel()
+        XCTAssertEqual(document.liveChangeCount, cancelGeneration)
+        XCTAssertEqual(document.session.undoStack.undoCommands.count, cancelUndo)
+        XCTAssertGreaterThanOrEqual(cancelSink.endCount, 1)
+    }
+}
+
+@MainActor
+private final class RecordingPreviewSink: CADMaterialPreviewSink {
+    var targets: [CADMaterialTarget] = []
+    var endCount = 0
+    var previewExpectation: XCTestExpectation?
+    private var fulfilled = false
+
+    func previewMaterial(_ spec: BodyMaterialSpec, for target: CADMaterialTarget) {
+        targets.append(target)
+        guard !fulfilled else { return }
+        fulfilled = true
+        previewExpectation?.fulfill()
+    }
+
+    func endMaterialPreview() {
+        endCount += 1
     }
 }
 #endif

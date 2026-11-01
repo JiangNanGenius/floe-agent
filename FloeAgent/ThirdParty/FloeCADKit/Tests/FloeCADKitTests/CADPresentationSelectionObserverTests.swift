@@ -282,6 +282,42 @@ final class CADPresentationSelectionObserverTests: XCTestCase {
         }
     }
 
+    /// The hosted production pane must expose the same live face target the
+    /// material inspector resolves. This is the observable label root drives
+    /// in the actual UI; the tap/collision refinement itself is covered by the
+    /// component suite.
+    func testHostedFaceSelectionExposesLiveSelectionLabel() async throws {
+        let fixture = try await fixture()
+        let recorder = Recorder()
+        try await mount(fixture, recorder: recorder)
+        for _ in 0..<200 {
+            if fixture.handle.isReady { break }
+            try? await Task.sleep(for: .milliseconds(50))
+        }
+        guard fixture.handle.isReady else {
+            return XCTFail("the hosted Present stage did not become ready")
+        }
+        let body = try XCTUnwrap(fixture.document.session.document.body(with: fixture.bodyID))
+        let face = try XCTUnwrap(FaceTopology.enumerateFaces(in: body.render).planar.first)
+        let expected = CADSelectionContext.capture(
+            document: fixture.document, bodyIDs: [fixture.bodyID],
+            facePicks: [.init(bodyID: fixture.bodyID.raw,
+                              triangles: face.triangles, curved: false)]).faces
+        let selected = recorder.next("hosted face callback") { $0.context.faces == expected }
+        XCTAssertTrue(fixture.document.viewModel().selectPresentation(
+            bodyID: fixture.bodyID, faceTriangles: face.triangles))
+        await fulfillment(of: [selected], timeout: 10)
+        var title: String?
+        for _ in 0..<200 {
+            title = fixture.handle.selectionTitle
+            if title?.isEmpty == false { break }
+            try? await Task.sleep(for: .milliseconds(50))
+        }
+        XCTAssertEqual(title ?? "",
+                       CADMaterialTargetResolver.resolve(document: fixture.document).title)
+        XCTAssertFalse(title?.isEmpty ?? true)
+    }
+
     func testHostedEditToPresentHasOnePublisherForLiveSelection() async throws {
         let fixture = try await fixture()
         let recorder = Recorder(), state = ModeState()

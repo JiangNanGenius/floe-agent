@@ -76,7 +76,11 @@ enum CADQualificationFixture {
             let assembly = CADAssemblyService(document: document)
             let interferenceFixture = ProcessInfo.processInfo.arguments
                 .contains("--ui-test-cad-assembly-interference")
-            if interferenceFixture {
+            if ProcessInfo.processInfo.arguments.contains("--ui-test-cad-uninstanced") {
+                // X20 exercises the genuine first face pick on an unpainted
+                // source body. Keep the real holed B-rep but add no occurrence
+                // or face material, so the UI cannot pass via a painted group.
+            } else if interferenceFixture {
                 let placements: [(name: String, x: Double)] = [
                     ("Plate A", 0.0),
                     ("Plate B", 50.0),
