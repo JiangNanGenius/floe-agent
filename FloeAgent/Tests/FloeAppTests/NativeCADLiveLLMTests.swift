@@ -233,6 +233,32 @@ final class NativeCADLiveLLMTests: XCTestCase {
         }
         try await installed?.remove(environment: environment)
     }
+
+    func testRealModelBindsVariablesRebuildsAndUndoesNativeFormulas() async throws {
+        let optIn = try NativeCADLiveOptIn.load()
+        executionTimeAllowance = optIn.executionTimeAllowance
+        continueAfterFailure = true
+        let environment = try await appQualificationEnvironment()
+        let center = environment.conversationCenter
+        let installed = try await NativeCADLiveOwnedRoute.installIfRequested(environment: environment)
+        do {
+            let route = try NativeCADLiveRoute.select(optIn: optIn, center: center)
+            try NativeCADLivePreflight.requireNativeCADCapabilities()
+            let session = NativeCADLiveSession(
+                environment: environment, center: center, route: route, optIn: optIn)
+            do { try await session.runVariableFormulaLoop() }
+            catch {
+                session.recordFailure(error)
+                await session.cleanup()
+                throw error
+            }
+            await session.cleanup()
+        } catch {
+            try await installed?.remove(environment: environment)
+            throw error
+        }
+        try await installed?.remove(environment: environment)
+    }
 }
 
 /// Receipt pairing and an optional replay of actual retained tool events.
@@ -1756,6 +1782,138 @@ private final class NativeCADLiveSession {
             )
         }
         attachUsage(totals)
+    }
+
+    /// M11 uses the same App, model route, CAD-only authority, usage watchdog,
+    /// durable events and cleanup as the visual loop, without paying to replay
+    /// that unchanged four-turn scenario. Only the model authors the edits.
+    func runVariableFormulaLoop() async throws {
+        sessionStartedAt = Date()
+        try ensureAggregateTimeRemaining()
+        let goal = """
+        Native CAD formula acceptance. Create \(documentName) in this task workspace
+        through cad.document. Use its help/query and ordinary propose/apply/parameters
+        commands, not scripts, package JSON editing or replacement geometry.
+        Create one 80 by 50 mm rectangular plate, extruded along +Y. Add a native
+        throughAll hole at the rectangle's center using one placement circle.
+        Create a CAD variable named width with expression "10". The rectangle's
+        80 by 50 mm footprint stays fixed: bind the plate extrusion distance to
+        expression "width" using feature.setExpression. Bind the placement
+        circle's diameter to "width / 2" using setSketchDimension, kind diameter,
+        expression rather than a fixed numeric value. Thus initially the plate
+        is 10 mm thick and its through hole is 5 mm diameter. Query the actual
+        IDs, variables, feature parameters and driving dimension, then save.
+        Do not use undo/redo in this first turn. Do not supply a grant_id.
+        """
+        let first = try await prepare(goal: goal, firstTurn: true)
+        let firstEvents = try await runTurn(prepared: first, goal: goal, observeVision: false)
+        try NativeCADLiveEvidence.assertFormulaTurn(
+            firstEvents, required: ["variable.create", "feature.setExpression", "setSketchDimension"],
+            allowed: ["list", "variable.create", "feature.setExpression", "setSketchDimension"],
+            allowGeometryEdits: true, undoCount: 0)
+        let url = try XCTUnwrap(documentURL)
+        let initial = try await inspectFormulaState(at: url, width: 10)
+
+        let change = """
+        Continue the SAME saved \(documentName). Query its existing width variable,
+        then use cad.document parameters variable.update to change only its
+        expression from "10" to "20". Its existing formulas must drive the SAME
+        extrusion to 20 mm and the SAME hole to 10 mm diameter. Do not edit the
+        feature or circle numerically, replace any model, add features, rewrite
+        formulas, or undo/redo. Read back actual dimensions and volume, then save.
+        """
+        let second = try await prepare(goal: change, firstTurn: false)
+        let secondEvents = try await runTurn(prepared: second, goal: change, observeVision: false)
+        try NativeCADLiveEvidence.assertFormulaTurn(
+            secondEvents, required: ["variable.update"], allowed: ["list", "variable.update"],
+            allowGeometryEdits: false, undoCount: 0)
+        let changed = try await inspectFormulaState(at: url, width: 20, ids: initial.ids)
+        XCTAssertNotEqual(changed.state.modelSHA256, initial.state.modelSHA256)
+
+        let undo = """
+        Continue the SAME \(documentName). Use the ordinary cad.document parameters
+        undo action exactly once to undo the last width-variable change and all
+        its dependent geometry together. Do not set the variable back manually,
+        edit features, restore a version, recreate the model or use redo. Query
+        the restored width, extrusion and hole, and save. Expected width 10,
+        thickness 10 mm, hole diameter 5 mm, with every existing ID unchanged.
+        """
+        let third = try await prepare(goal: undo, firstTurn: false)
+        let thirdEvents = try await runTurn(prepared: third, goal: undo, observeVision: false)
+        try NativeCADLiveEvidence.assertFormulaTurn(
+            thirdEvents, required: ["undo"], allowed: ["list", "undo"],
+            allowGeometryEdits: false, undoCount: 1)
+        let restored = try await inspectFormulaState(at: url, width: 10, ids: initial.ids)
+        XCTAssertEqual(restored.state.modelSHA256, initial.state.modelSHA256,
+                       "One model-issued undo must restore the complete original canonical model")
+
+        let live = try await FloeCAD3DBridge.shared.openDocument(at: url)
+        let oldInstance = ObjectIdentifier(live)
+        await FloeCAD3DBridge.shared.releaseDocument(at: url)
+        let reopened = try await FloeCAD3DBridge.shared.openDocument(at: url)
+        XCTAssertNotEqual(ObjectIdentifier(reopened), oldInstance)
+        let retained = try await inspectFormulaState(at: url, width: 10, ids: initial.ids)
+        XCTAssertEqual(retained.state.modelSHA256, initial.state.modelSHA256)
+        XCTAssertEqual(runIDs.count, 3)
+        let totals = await ledger.totals()
+        XCTAssertTrue(totals.hasUsage)
+        XCTAssertFalse(totals.exceeds, totals.description)
+        XCTAssertLessThanOrEqual(totals.cost, optIn.maxCost)
+        if let ceiling = optIn.maxTotalTokens {
+            XCTAssertLessThanOrEqual(totals.reportedTotalTokens, ceiling)
+        }
+        attachUsage(totals)
+    }
+
+    private func inspectFormulaState(
+        at url: URL, width: Double, ids expectedIDs: [String: String]? = nil
+    ) async throws -> (state: NativeCADLiveDocumentState, ids: [String: String]) {
+        let state = try await inspectDocument(at: url)
+        let expectedVolume = 80 * 50 * width - Double.pi * pow(width / 4, 2) * width
+        guard state.bodyCount == 1, state.bodyIsAnalytic, state.circles.count == 1,
+              abs(state.circles[0].diameter - width / 2) < 1e-5,
+              abs(state.bodyVolumeMM3 - expectedVolume) < 0.01,
+              state.cylindricalRadii.contains(where: { abs($0 - width / 4) < 1e-5 }),
+              let modelSHA = state.modelSHA256, !modelSHA.isEmpty else {
+            throw NativeCADLiveError.invalidDocument("Formula fan-out did not produce the actual expected analytic plate and hole.")
+        }
+        let document = try await FloeCADDocument.open(at: url)
+        defer { document.close() }
+        let variables = try nativeRows(document, scope: "variables")
+        let variable = try XCTUnwrap(variables.first { $0["name"] as? String == "width" })
+        guard let actualWidth = NativeCADLiveJSON.number(variable["value"]),
+              abs(actualWidth - width) < 1e-9, variable["status"] as? String == "ok" else {
+            throw NativeCADLiveError.invalidDocument("The saved width variable did not retain its expected resolved value.")
+        }
+        let features = try nativeRows(document, scope: "features")
+        let extrusion = try XCTUnwrap(features.first { $0["kind"] as? String == "extrude" })
+        let hole = try XCTUnwrap(features.first { $0["kind"] as? String == "hole" })
+        let parameters = try XCTUnwrap(extrusion["parameters"] as? [[String: Any]])
+        let distance = try XCTUnwrap(parameters.first { $0["name"] as? String == "distance" })
+        guard let actualDistance = NativeCADLiveJSON.number(distance["value"]),
+              abs(actualDistance - width) < 1e-9,
+              (distance["formula"] as? String)?.contains("width") == true else {
+            throw NativeCADLiveError.invalidDocument("The actual extrusion lost its width expression or rebuilt distance.")
+        }
+        let dimensions = try nativeRows(document, scope: "constraints")
+        let driving = try XCTUnwrap(dimensions.first {
+            $0["row_kind"] as? String == "dimension"
+                && $0["sketchID"] as? String == state.circles[0].sketchID
+                && ($0["formula_reference_names"] as? [String]) == ["width"]
+        })
+        let ids = [
+            "body": state.bodyID,
+            "variable": try XCTUnwrap(variable["id"] as? String),
+            "extrusion": try XCTUnwrap(extrusion["id"] as? String),
+            "hole": try XCTUnwrap(hole["id"] as? String),
+            "sketch": state.circles[0].sketchID,
+            "circle": state.circles[0].entityID,
+            "dimension": try XCTUnwrap(driving["id"] as? String),
+        ]
+        if let expectedIDs, ids != expectedIDs {
+            throw NativeCADLiveError.invalidDocument("The formula edit replaced an existing feature, variable, circle or dimension identity.")
+        }
+        return (state, ids)
     }
 
     // MARK: Prepare (durable, task-owned)
@@ -3290,6 +3448,46 @@ private enum NativeCADLiveEvidence {
         }
         XCTAssertGreaterThan(requests, 0, "Turn \(turn) did not call the native CAD tool.")
         XCTAssertGreaterThan(successfulResults, 0, "Turn \(turn) had no successful native CAD tool result.")
+    }
+
+    static func assertFormulaTurn(
+        _ events: [RunEventRecord], required: Set<String>, allowed: Set<String>,
+        allowGeometryEdits: Bool, undoCount: Int
+    ) throws {
+        let all = requestRecords(events)
+        let responses = responseRecords(events)
+        let edits = all.compactMap { request -> (Request, String)? in
+            guard let action = parameterPayload(request.arguments)?["action"] as? String else { return nil }
+            return (request, action)
+        }
+        guard edits.allSatisfy({ allowed.contains($0.1) }),
+              edits.filter({ $0.1 == "undo" }).count == undoCount else {
+            throw NativeCADLiveError.invalidDocument("Formula turn used an unexpected parameter mutation or undo count.")
+        }
+        for action in required {
+            guard edits.contains(where: { request, name in
+                guard name == action, let response = responses[request.callID],
+                      response.status == "ok", let object = receipt(response),
+                      object["ok"] as? Bool != false else { return false }
+                return true
+            }) else {
+                throw NativeCADLiveError.invalidDocument("Missing successful native formula action: \(action).")
+            }
+        }
+        if !allowGeometryEdits {
+            let readActions: Set<String> = [
+                "query", "read", "three_d_snapshot", "three_d_measure", "measure", "help", "capture",
+            ]
+            guard all.allSatisfy({ request in
+                let action = request.arguments["action"] as? String ?? ""
+                return readActions.contains(action) || ["parameters", "save"].contains(action)
+            }) else {
+                throw NativeCADLiveError.invalidDocument("A variable-only turn bypassed formula fan-out with another geometry mutation.")
+            }
+        }
+        guard successfulSaveRevision(events) != nil else {
+            throw NativeCADLiveError.invalidDocument("The model did not successfully save its formula turn.")
+        }
     }
 
     static func assertTurnOneEvidence(_ events: [RunEventRecord]) throws {
