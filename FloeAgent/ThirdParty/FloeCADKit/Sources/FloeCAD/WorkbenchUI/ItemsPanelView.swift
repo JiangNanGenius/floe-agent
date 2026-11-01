@@ -362,7 +362,8 @@ struct ItemsPanelView: View {
                 onToggleVisibility: { viewModel.setItemHidden(.plane(id), hidden: !plane.isHidden) },
                 onRename: { _ in },
                 onZoom: { viewModel.zoomToItem(.plane(id)) },
-                onDelete: { viewModel.deleteItem(.plane(id)) })
+                onDelete: { viewModel.deleteItem(.plane(id)) },
+                stableIdentifier: "ItemPlane-\(id.raw.uuidString)")
         case .axis(let id):
             guard let axis = document.axes.first(where: { $0.id == id }) else { return nil }
             return ItemRowView(
@@ -686,6 +687,9 @@ private struct ItemRowView: View {
     let onRename: (String) -> Void
     let onZoom: () -> Void
     let onDelete: () -> Void
+    /// Stable identity for a row whose display name is a localized/positional
+    /// label (associative planes). Nil keeps the historical name-based id.
+    var stableIdentifier: String? = nil
 
     @State private var draft = ""
     @State private var isRenaming = false
@@ -709,7 +713,7 @@ private struct ItemRowView: View {
             .contextMenu { menuItems }
             .accessibilityElement(children: .contain)
             .accessibilityAddTraits(isSelected ? .isSelected : [])
-            .accessibilityIdentifier("ItemRow-\(name)")
+            .accessibilityIdentifier(stableIdentifier ?? "ItemRow-\(name)")
             .onAppear { draft = name }
             .onChange(of: name) { _, updated in draft = updated }
     }
@@ -773,6 +777,7 @@ private struct ItemRowView: View {
                 Label(FloeCADStrings.text("cad.datum.editPlane", "Edit Plane"),
                       systemImage: "slider.horizontal.3")
             }
+            .accessibilityIdentifier("ItemEditPlane")
         }
             if renameable && nameTapSelects {
                 Button {

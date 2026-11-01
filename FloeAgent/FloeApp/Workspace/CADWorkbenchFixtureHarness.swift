@@ -648,6 +648,13 @@ struct CADWorkbenchFixtureHarness: View {
     /// preview (banner); rejected/cancelled present the fixture's read-back
     /// diagnostic because the product refusal/cancel has no banner.
     @State private var importLimits: CADImportLimitsUIFixture.Prepared?
+    /// M07 r3: the real native angle / three-point datum form. The readback
+    /// panel is shown only for these DEBUG launch choices and never on an
+    /// ordinary product/CUA screen.
+    @State private var datumMode: CADDatumPlaneFormFixture.Mode?
+    /// Set only by `--ui-test-cad-datum-cleanup`; removes the fixture-owned
+    /// datum packages and then presents a tiny status surface.
+    @State private var datumCleanupStatus: String?
 
     /// The App fixture cannot reach FloeCAD's internal `testHeavyComputeProbe`.
     /// This DEBUG-only launch choice installs the one existing scheduling seam
@@ -668,7 +675,15 @@ struct CADWorkbenchFixtureHarness: View {
 
     var body: some View {
         Group {
-            if let importLimits {
+            if let datumCleanupStatus {
+                VStack(spacing: 12) {
+                    Text("Datum fixture cleanup")
+                        .font(.headline)
+                    Text(datumCleanupStatus)
+                        .font(.footnote)
+                        .accessibilityIdentifier("CADDatumFixtureCleanup")
+                }
+            } else if let importLimits {
                 if importLimits.presentWorkbench {
                     if let document {
                         NavigationStack {
@@ -714,16 +729,17 @@ struct CADWorkbenchFixtureHarness: View {
                 // chrome or CUA accepts a workbench that does not exist in
                 // the product. The editor sets its own inline navigation
                 // title (the document name), exactly as it does in-product.
-                NavigationStack {
-                    // No identifier on this container: an accessibility id
-                    // on a view with children merges the whole workbench into
-                    // one element and hides the tool palette from tests.
-                    // The SAME Floe-level chrome modifier the production
-                    // FilePreview host applies (save status + fullscreen) is
-                    // present here, so CUA always reviews the product
-                    // surface, not a reduced copy.
-                    FloeCADWorkbenchView(document: document)
-                        .modifier(FloeCADHostChrome(document: document))
+                if let datumMode,
+                   !ProcessInfo.processInfo.arguments.contains("--ui-test-cad-compact") {
+                    ZStack(alignment: .topLeading) {
+                        workbench(document)
+                        CADDatumPlaneFormReadbackPanel(document: document,
+                                                       focus: datumMode.focus)
+                            .padding(.top, 6)
+                            .padding(.leading, 6)
+                    }
+                } else {
+                    workbench(document)
                 }
             } else if let error {
                 VStack(spacing: 12) {
@@ -753,11 +769,24 @@ struct CADWorkbenchFixtureHarness: View {
         }
         .accessibilityIdentifier("CADFixtureHarness")
         .task {
-            guard document == nil, igesPreview == nil, importLimits == nil, error == nil else { return }
+            guard document == nil, igesPreview == nil, importLimits == nil,
+                  error == nil, datumMode == nil, datumCleanupStatus == nil else { return }
             Self.installMeshPanelFlowProbeIfRequested()
             do {
                 let arguments = ProcessInfo.processInfo.arguments
-                if let mode = CADImportLimitsUIFixture.Mode.selected(from: arguments) {
+                if arguments.contains(CADDatumPlaneFormFixture.Mode.cleanupArgument) {
+                    let removed = CADDatumPlaneFormFixture.removeAllFixtures()
+                    datumCleanupStatus = removed ? "removed" : "removal_failed"
+                } else if let mode = CADDatumPlaneFormFixture.Mode.selected(from: arguments) {
+                    // M07 r3: the real native angle / three-point form. The
+                    // package is built through the production command path;
+                    // the UI test drives the shipped bar/sheets/Items/History.
+                    datumMode = mode
+                    document = try await CADDatumPlaneFormFixture.open(
+                        mode: mode,
+                        reset: arguments.contains(CADDatumPlaneFormFixture.Mode.resetArgument),
+                        reopen: arguments.contains(CADDatumPlaneFormFixture.Mode.reopenArgument))
+                } else if let mode = CADImportLimitsUIFixture.Mode.selected(from: arguments) {
                     let prepared = try await CADImportLimitsUIFixture.prepare(
                         mode: mode, in: environment)
                     importLimits = prepared
@@ -810,6 +839,21 @@ struct CADWorkbenchFixtureHarness: View {
             } catch {
                 self.error = error.localizedDescription
             }
+        }
+    }
+
+    /// The product workbench chrome shared by every fixture branch. No
+    /// identifier on this container: an accessibility id on a view with
+    /// children merges the whole workbench into one element and hides the
+    /// tool palette from tests. The SAME Floe-level chrome modifier the
+    /// production FilePreview host applies (save status + fullscreen) is
+    /// present here, so CUA always reviews the product surface, not a
+    /// reduced copy.
+    @ViewBuilder
+    private func workbench(_ document: FloeCADDocument) -> some View {
+        NavigationStack {
+            FloeCADWorkbenchView(document: document)
+                .modifier(FloeCADHostChrome(document: document))
         }
     }
 }

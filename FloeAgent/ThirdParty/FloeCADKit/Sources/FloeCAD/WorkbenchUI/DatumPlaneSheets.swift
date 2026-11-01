@@ -132,6 +132,7 @@ struct DatumPlaneEditSheet: View {
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button(FloeCADStrings.text("cad.ui.common.cancel", "Cancel")) { dismiss() }
+                        .accessibilityIdentifier(kind == .offset ? "DatumOffsetCancel" : "DatumEditCancel")
                 }
                 ToolbarItem(placement: .confirmationAction) {
                     Button(FloeCADStrings.text("cad.ui.common.done", "Done"), action: apply)
@@ -280,6 +281,7 @@ struct ThreePointPlaneSheet: View {
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button(FloeCADStrings.text("cad.ui.common.cancel", "Cancel")) { dismiss() }
+                        .accessibilityIdentifier("ThreePointPlaneCancel")
                 }
                 ToolbarItem(placement: .confirmationAction) {
                     Button(FloeCADStrings.text("cad.datum.create", "Create"), action: create)

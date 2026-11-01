@@ -868,6 +868,7 @@ struct NumericInputBar: View {
             Button(FloeCADStrings.label("cad.ui.common.cancel", "Cancel")) {
                 viewModel.cancelTool()
             }
+            .accessibilityIdentifier("AnglePlaneCancel")
             Button(FloeCADStrings.label("cad.ui.tool.offsetPlane", "Offset Plane")) {
                 viewModel.beginOffsetPlane()
             }

@@ -1423,6 +1423,10 @@ struct FloeCADEditorView: View {
         ViewportView(viewModel: viewModel,
                      paletteFrame: horizontalSizeClass == .compact ? paletteFrame : nil,
                      paletteOnRight: settings.paletteOnRight)
+            // Stable surface identity for the native face-picker route. This
+            // is an identifier only; the Metal view and its gestures are
+            // unchanged.
+            .accessibilityIdentifier("CADEditorViewport")
             .ignoresSafeArea()
             .overlay {
                 marqueeOverlay(viewModel)

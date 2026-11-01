@@ -674,6 +674,10 @@ targets:
           - OfficeBridgeStateTests.swift
           - ShellCoreUtilityTests.swift
           - RARFixtures.generated.swift
+      # M07 r3 native datum-plane form acceptance. The directory source above
+      # already includes this file; the explicit entry keeps the new selector
+      # an unambiguous target member (XcodeGen de-duplicates the same path).
+      - path: Tests/FloeAgentUITests/CADDatumPlaneFormAcceptanceUITests.swift
       # Owned glTF/GLB scene + decoder fixtures shared with FloeAppTests.
       - path: Tests/Fixtures/EngineeringScene
         type: folder
