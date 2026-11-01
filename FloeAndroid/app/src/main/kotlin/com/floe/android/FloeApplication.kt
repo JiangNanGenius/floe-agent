@@ -72,6 +72,14 @@ class FloeApplication : Application() {
     /** Application-owned, lazy Notes authority adapter; ordinary chat never opens the library. */
     internal lateinit var notesHost: com.floe.android.host.notes.NotesHostController
         private set
+    /**
+     * G09-R1 Application-owned creative Canvas/media host. Construction is
+     * data-only; binding waits for the accepted runtime epoch. On an installed
+     * core without BridgeV5 it reports a typed `needsCoreUpdate` state and
+     * never creates a detached Kotlin/temp project store.
+     */
+    internal lateinit var creativeHost: com.floe.android.host.creative.CreativeHostController
+        private set
     internal val notesPdfPasswords = com.floe.android.notesplatform.NotesPdfPasswordPromptBroker {
         (runtimeHost?.nativeRootEpoch() ?: 0L) > 0L && isActivityInForeground()
     }
@@ -210,6 +218,38 @@ class FloeApplication : Application() {
         }
     }
 
+    /**
+     * Bind the creative lane on the accepted epoch. A core without v5 is
+     * expected during R1 source qualification (retained G08 binary); it is
+     * handled as a typed availability, never as a local-store fallback.
+     */
+    private suspend fun bindCreativeLane(epoch: Long) {
+        if (!this::creativeHost.isInitialized) return
+        if (runtimeHost?.nativeRootEpoch() != epoch) return
+        try {
+            creativeHost.bindCurrent()
+        } catch (cancelled: kotlinx.coroutines.CancellationException) {
+            throw cancelled
+        } catch (error: com.floe.android.feature.canvas.CreativeException) {
+            // Typed code only; never a path or content.
+            android.util.Log.i("FloeCreative", "creative_bind_${error.code}")
+        } catch (_: Throwable) {
+            android.util.Log.i("FloeCreative", "creative_bind_unavailable")
+        }
+    }
+
+    private suspend fun prepareCreativeForRootStop(): Boolean {
+        if (!this::creativeHost.isInitialized) return true
+        return try {
+            creativeHost.stop()
+            true
+        } catch (cancelled: kotlinx.coroutines.CancellationException) {
+            throw cancelled
+        } catch (_: Throwable) {
+            false
+        }
+    }
+
     private suspend fun resumeNotesAfterRootChange(epoch: Long) = notesLifecycleMutex.withLock {
         if (notesAcceptedEpoch == epoch && !notesStopping) return@withLock
         if (runtimeHost?.nativeRootEpoch() != epoch) return@withLock
@@ -331,6 +371,11 @@ class FloeApplication : Application() {
         notesHost = com.floe.android.host.notes.NotesHostController(
             epochProvider = { runtimeHost?.nativeRootEpoch()?.takeIf { it > 0L } },
         )
+        creativeHost = com.floe.android.host.creative.CreativeHostController(
+            this,
+            epochProvider = { runtimeHost?.nativeRootEpoch()?.takeIf { it > 0L } },
+            acceptedRootProvider = { runtimeCoordinator.acceptedStorageRoot() },
+        )
         linuxCleanup = com.floe.android.host.linux.LinuxRuntimeCleanupPump(this, hostScope)
         // The controller receives the APPLICATION-owned scope only to run
         // BOUNDED, cancellable re-ingress attempts triggered by REAL
@@ -373,6 +418,7 @@ class FloeApplication : Application() {
                 linuxShell.stopAndDrain(linuxShell.boundNativeEpoch) &&
                 (linuxCleanup.boundNativeEpoch == 0L ||
                     linuxCleanup.drainAndStop(linuxCleanup.boundNativeEpoch)) &&
+                prepareCreativeForRootStop() &&
                 prepareNotesForRootStop() &&
                 // G07.1: the full-window PDF/image preview holds a verified
                 // native-root snapshot plus an isolated renderer lease. Its
@@ -399,6 +445,7 @@ class FloeApplication : Application() {
             host.networkWorkspaceHost = networkWorkspaceHost
             host.workspaceGitTrust = workspaceGitTrust
             host.workspaceTerminal = workspaceTerminal
+            host.creativeHost = creativeHost
             host.runOutputs = runOutputs
             host.runForeground = com.floe.android.host.RunForegroundBinding(
                 controller = com.floe.android.runlifecycle.RunForegroundController.forApplication(this),
@@ -490,6 +537,7 @@ class FloeApplication : Application() {
                         runtimeHost?.workspaceActions?.scene(activityForeground)
                         startLinuxLanes(epoch)
                         resumeNotesAfterRootChange(epoch)
+                        bindCreativeLane(epoch)
                     }
                 }
                 if (!firstStart) {

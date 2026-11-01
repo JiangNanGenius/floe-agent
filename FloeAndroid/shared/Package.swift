@@ -624,6 +624,14 @@ let package = Package(
         // AgentRuntime, HarnessEvent/Channel, DelegateTool registry,
         // ChildRunStore, goals/plans/checkpoints) — compiled shared layer,
         // no fake alternate loop and no legacy exec aliases.
+        // G09-R1 media project store: the seven portable FloeWorkbench files
+        // copied byte-identically from public main b192 (MediaProjectModel/
+        // Store/Transactions/EditCommands/TimelineMath/LayerLayout/
+        // MigrationSupport). No renderer, AVFoundation, Media3, CAD or app UI
+        // is vendored; see PROVENANCE.md.
+        .target(name: "FloeAndroidWorkbench", dependencies: [
+            "FloeCore",
+        ], swiftSettings: strictSettings),
         .target(name: "FloeAgentRuntime", dependencies: [
             "FloeCore", "FloeModels", "FloeProviders", "FloeTools",
             "FloePersistence", "FloeSecurity", "GRDB",
@@ -646,6 +654,10 @@ let package = Package(
             // G06 independent Notes authority (one NotesStore per runtime
             // generation; no chat database dependency or incidental open).
             "FloeNotes",
+            // G09-R1 creative media project store (seven portable original
+            // FloeWorkbench files). Canvas files/asset references reuse the
+            // already-linked FloeCore/FloePersistence authorities.
+            "FloeAndroidWorkbench",
             // G03-R1 environment authority: links the original registry/
             // coordinator/lease authority into the product .so (dependency
             // only; NO ToolEnvironmentRouting registration, NO backend
@@ -706,6 +718,11 @@ let package = Package(
         .testTarget(name: "FloeAndroidNetworkTests", dependencies: [
             "FloeAndroidNetwork", "FloeCore", "FloeTools",
         ], swiftSettings: strictSettings),
+        // G09-R1: the REAL ported MediaProjectStore/transactions run on the
+        // host against temporary roots (no device/bootstrap dependency).
+        .testTarget(name: "FloeAndroidWorkbenchTests", dependencies: [
+            "FloeAndroidWorkbench", "FloeCore",
+        ], swiftSettings: strictSettings),
         .testTarget(name: "FloeAndroidCoreTests", dependencies: [
             "FloeBrowser", "FloeAndroidCore", "FloeCore", "FloeModels", "FloePersistence", "GRDB",
             "FloeAndroidNetwork",
@@ -724,6 +741,7 @@ let package = Package(
             // G06 notes suites run the REAL NotesStore + NotesEngine against
             // temporary roots on the host (no bootstrap/device dependency).
             "FloeNotes",
+            "FloeAndroidWorkbench",
             // G07.3A user-question contract tests exercise the real
             // UserAskTool/UserQuestionCoordinator in the runtime target.
             "FloeAgentRuntime",

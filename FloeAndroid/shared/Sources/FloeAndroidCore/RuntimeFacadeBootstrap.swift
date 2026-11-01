@@ -1286,6 +1286,22 @@ public enum AndroidRuntimeBootstrap {
             return live.identity.root
         }
     }
+
+    /// G09 creative storage binding (additive, host-only). Returns the SAME
+    /// accepted owned cluster (root + original DatabaseManager + workspace
+    /// store) after the owner actor re-validates the exact identity, ready
+    /// phase and lifecycle token. It never opens a second store and never
+    /// accepts a caller path.
+    static func creativeCluster(epoch: UInt64) async -> G02OwnedStoreCluster? {
+        let live: (owner: AndroidRuntimeStoreOwner, identity: RuntimeOwnerIdentity)? =
+            withStateLock {
+                guard let live = generation, live.epoch == epoch,
+                      phase == .starting, !live.retiring else { return nil }
+                return (live.owner, live.identity)
+            }
+        guard let live else { return nil }
+        return await live.owner.g02OwnedCluster(expected: live.identity)
+    }
 }
 
 // Owner-actor accessors the lifecycle needs without exposing mutable stores.

@@ -29,7 +29,8 @@ public enum AndroidBridge {
         let requestVersion = request["version"] as? Int
         guard requestVersion == version || requestVersion == BridgeV2.version
                 || requestVersion == BridgeV3.version
-                || requestVersion == BridgeV4.version else {
+                || requestVersion == BridgeV4.version
+                || requestVersion == BridgeV5.version else {
             return response(["ok": false, "error": "unsupportedVersion"])
         }
         if requestVersion == BridgeV2.version {
@@ -53,6 +54,20 @@ public enum AndroidBridge {
                                 stampVersion: BridgeV4.version)
             }
             return response(object, stampVersion: BridgeV4.version)
+        }
+        if requestVersion == BridgeV5.version {
+            // Additive G09 creative channel: Canvas/media project storage.
+            // Same C ABI, host-only closed actions, no task/run/provider
+            // authority. v1-v4 bytes above remain unchanged.
+            let object = BridgeV5.handle(requestData: data, fallbackRequestID: requestID)
+            let encoded = (try? JSONSerialization.data(withJSONObject: object,
+                                                       options: [.sortedKeys]))
+                ?? Data(#"{"ok":false,"error":"encoding"}"#.utf8)
+            guard encoded.count <= BridgeV5.maximumResponseBytes else {
+                return response(["ok": false, "error": "responseTooLarge"],
+                                stampVersion: BridgeV5.version)
+            }
+            return response(object, stampVersion: BridgeV5.version)
         }
         switch request["operation"] as? String {
         case "handshake":

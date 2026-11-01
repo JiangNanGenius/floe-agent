@@ -507,6 +507,13 @@ dependencies {
     implementation(project(":feature:providers"))
     implementation(project(":feature:settings"))
     implementation(project(":feature:notescontracts"))
+    // G09-R1 creative Canvas/media typed contracts (host-only bridge v5).
+    implementation(project(":feature:canvascontracts"))
+    implementation(project(":feature:workbenchcontracts"))
+    // G09-R1 Canvas/media presentation modules consumed by the existing
+    // Creative destination and the workspace MEDIA/IMAGE document route.
+    implementation(project(":feature:canvas"))
+    implementation(project(":feature:workbench"))
     implementation(project(":core:notesmedia"))
     implementation(project(":feature:notes"))
     // G04 service/presentation modules; owner-bound host adapters gate use.

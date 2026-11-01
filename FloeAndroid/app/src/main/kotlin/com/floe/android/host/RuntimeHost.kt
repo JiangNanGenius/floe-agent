@@ -111,6 +111,11 @@ class RuntimeHost internal constructor(
      */
     internal var platformExtension: RuntimePlatformExtension? = null
 
+    /** G09-R1 creative Canvas/media lane; bound by the Application owner. */
+    internal var creativeHost: com.floe.android.host.creative.CreativeHostController? = null
+    /** Typed accessor for the later Canvas/media UI routes (same instance). */
+    internal fun creativeServices(): com.floe.android.feature.workbench.CreativeHostApi? =
+        creativeHost?.services
     /** Application-owned provider transport; null in fixtures/unbound hosts. */
     internal var workspaceSources: WorkspaceSourcePump? = null
     /** Same Application owner and native epoch as the provider transport. */

@@ -20,7 +20,10 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
@@ -31,6 +34,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import com.floe.android.design.Floe
+import com.floe.android.design.FloeCapsuleAction
 import com.floe.android.design.FloeCircleButton
 import com.floe.android.design.FloeDivider
 import com.floe.android.design.FloeIcons
@@ -41,6 +45,7 @@ import com.floe.android.feature.ide.FloeIdeDocumentWindow
 import com.floe.android.feature.ide.IdeBottomAccessory
 import com.floe.android.feature.ide.IdePresenter
 import com.floe.android.feature.ide.IdeWorkspacePresentation
+import com.floe.android.feature.workbench.ui.R as WorkbenchR
 import com.floe.android.host.Owner
 import com.floe.android.host.RuntimeHost
 import com.floe.android.host.WorkspaceDocumentPreviewPolicy
@@ -302,6 +307,10 @@ internal fun WorkspaceDocumentDestination(
             else -> null
         }
     }
+    // IMAGE keeps its default preview and adds an explicit Edit entry that
+    // opens the media workbench for this exact file. Opening Edit is local to
+    // this document request, never a second outer route.
+    var imageEditOpen by rememberSaveable(request.token) { mutableStateOf(false) }
     // Read the accepted native root once per explicit request (never on
     // every preview recomposition); a replaced generation is retired by the
     // root-stop drain, and the next explicit open reads the new one.
@@ -383,6 +392,15 @@ internal fun WorkspaceDocumentDestination(
                 WorkspaceDocumentSurface.IMAGE,
                 -> {
                     when {
+                        request.surface == WorkspaceDocumentSurface.IMAGE &&
+                            imageEditOpen && previewOwner != null ->
+                            CreativeDocumentMediaDestination(
+                                request = request,
+                                host = host,
+                                owner = previewOwner,
+                                kind = "image",
+                                onBackToFiles = { imageEditOpen = false },
+                            )
                         previewKind != null && previewOwner != null -> WorkspaceDocumentPreview(
                             controller = host.workspaceDocumentPreview,
                             request = request,
@@ -390,6 +408,14 @@ internal fun WorkspaceDocumentDestination(
                             owner = previewOwner,
                             onBackToFiles = backToFiles,
                             onCloseTask = closeTask,
+                            onEdit = if (
+                                request.surface == WorkspaceDocumentSurface.IMAGE &&
+                                mediaImageEditSupported(request.path)
+                            ) {
+                                { imageEditOpen = true }
+                            } else {
+                                null
+                            },
                         )
                         // SVG/TIFF routed to IMAGE but has no claimed decoder:
                         // keep the honest typed cover instead of failing late.
@@ -404,10 +430,30 @@ internal fun WorkspaceDocumentDestination(
                         else -> LaunchedEffect(request.token) { onBackToFiles() }
                     }
                 }
+                WorkspaceDocumentSurface.MEDIA -> {
+                    // R1 media editing is ISO-BMFF (MP4/MOV/M4V) only. An
+                    // unsupported media container keeps the honest typed cover
+                    // instead of opening a fake timeline.
+                    val mediaKind = mediaWorkbenchKind(request.path)
+                    if (mediaKind != null && previewOwner != null) {
+                        CreativeDocumentMediaDestination(
+                            request = request,
+                            host = host,
+                            owner = previewOwner,
+                            kind = mediaKind,
+                            onBackToFiles = backToFiles,
+                        )
+                    } else {
+                        WorkspaceTypedDocumentSurface(
+                            request = request,
+                            onBackToFiles = backToFiles,
+                            onCloseTask = closeTask,
+                        )
+                    }
+                }
                 // Office is handled by its owned viewer Activity before this
                 // destination is raised; reaching here means the engine is
-                // unavailable. Media/CAD/archive/binary keep their honest
-                // typed cover.
+                // unavailable. CAD/archive/binary keep their honest typed cover.
                 else -> WorkspaceTypedDocumentSurface(
                     request = request,
                     onBackToFiles = backToFiles,
@@ -426,6 +472,7 @@ internal fun WorkspaceDocumentHeader(
     fileName: String,
     onBackToFiles: () -> Unit,
     onCloseTask: () -> Unit,
+    onEdit: (() -> Unit)? = null,
 ) {
     Row(
         modifier = Modifier
@@ -451,6 +498,12 @@ internal fun WorkspaceDocumentHeader(
             overflow = TextOverflow.Ellipsis,
             modifier = Modifier.weight(1f),
         )
+        if (onEdit != null) {
+            FloeCapsuleAction(
+                label = stringResource(WorkbenchR.string.creative_edit_image),
+                onClick = onEdit,
+            )
+        }
         FloeCircleButton(
             icon = FloeIcons.Xmark,
             contentDescription = stringResource(R.string.close),

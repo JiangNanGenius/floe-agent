@@ -1,7 +1,7 @@
 # FloeAndroid G02 shared-core overlay provenance
 
 Promoted 2026-10-18 from the completed adaptation audit
-(`Local/Private/android-g02-20261018/adaptation-audit/`, job
+(retained private qualification record (`adaptation-audit`), job
 `job-dee5658543974844`) into this production package. Audit probe artifacts
 are retained there; this overlay is the REAL shared core (not a probe).
 
@@ -202,8 +202,7 @@ branch byte-equal to the original:
 1. `ContainerRecord.swift` — ONE additive enum case
    `EnvironmentExecutionBackend.linuxPRoot`: the Android/Linux
    resolved-execution candidate consumed by the backend launch transport.
-   Per Main decision (`Local/Private/android-g03-20261022/r1/
-   ARCHITECTURE_DECISIONS.json` `proot-isolation`) it is a COMPATIBILITY
+   Per Main decision (retained private qualification record (`ARCHITECTURE_DECISIONS.json`) `proot-isolation`) it is a COMPATIBILITY
    CANDIDATE, NOT a security boundary (same-UID PRoot is not an app sandbox);
    it is never a default and never advertised as an executable capability
    merely because a record exists. The additive case keeps every persisted
@@ -300,7 +299,7 @@ published by the serialized host qualifier:
   caller byte-for-byte).
 - Host qualification repaired compiler/concurrency/test defects (delta vs the
   reviewed candidate is exactly
-  `Local/Private/android-g02-20261018/runtime-model-configuration-qualification/evidence/QUALIFIER_REPAIR_DELTA.patch`):
+  retained private qualification record (`QUALIFIER_REPAIR_DELTA.patch`)):
   GRDB `changesCount` spelling; explicit `ProviderBundleCommitting` /
   `OwnedWorkRegistryPort` conformances; `Error` conformances for the
   `Result<…>` carriers; `SecretDispositionClassifier` `.internal` case;
@@ -362,12 +361,12 @@ foundation (`runtime-bootstrap-qualification/MAIN_ACCEPTANCE.json`):
   (job-f677…) and the composed all-domain App remain honest gates — no fake
   ready flags, no global-B wait in these sources.
 - Host qualification evidence:
-  `Local/Private/android-g02-20261018/runtime-conversation-history-qualification/`.
+  retained private qualification record (`runtime-conversation-history-qualification`).
   Build-cohort policy (G02_BUILD_COHORT_POLICY_20261019.json): hostQualified
   only; nativeQualified=false / productQualified=false until Main's one
   composed native/App batch.
 - Host-qualification repairs (delta vs the reviewed candidate is exactly
-  `Local/Private/android-g02-20261018/runtime-conversation-history-qualification/QUALIFIER_REPAIR_DELTA.patch`):
+  retained private qualification record (`QUALIFIER_REPAIR_DELTA.patch`)):
   (a) cursor tokens: `ConversationCursorCodec.wrap` now base64url-ENCODES the
   JSON keyset payload so it matches the existing `unwrap` decoder (previously
   every minted `nextCursor` was rejected as `invalidCursor` on the next page);
@@ -475,7 +474,7 @@ this note.
 atomically replaced (link itself; upstream never written) with a byte-identical
 regular mirror of upstream `currentSchemaVersion = 46` at SHA-256
 `5ab9f989…`-verified freeze (full hash recorded in
-`Local/Private/android-g02-20261018/runtime-temporary-session-qualification/databasemanager-v46-freeze.txt`).
+retained private qualification record (`databasemanager-v46-freeze.txt`)).
 This freezes the Android binding at the existing v46 chain while tracked iOS
 main moves to v47 (`V47ShortcutInbox`, NOT included on Android); no Swift
 logic, schema or migration changed. A later coordinated portable migration is
@@ -569,7 +568,7 @@ integration owner, never silently bypassed.
 ### goal-core code batch — additive rounds 2/3 (2026-10-21, SAME job-7efd60bb51d14f02 — SOURCE ONLY, NOT compiled/tested)
 
 Review-accepted follow-up rounds on the SAME candidate files above, per the
-Main steers recorded under `Local/Private/android-g02-20261018/goal-core-code-batch-20261021/`
+Main steers recorded under retained private qualification record (`goal-core-code-batch-20261021`)
 (MAIN_UTF8_BOUND_CORRECTION_STEER / MAIN_APP_API_ADMISSION_AND_DETAIL_READ_DECISION /
 MAIN_POSTRUN_STOP_SOURCE_REVIEW / MAIN_ACTIVATION_SUPERSESSION_STEER).
 The three action-command wire contracts (`plan.accept` / `goal.confirm` /
@@ -942,7 +941,7 @@ behavior and device acceptance remain separate delivery gates.
   `Sources/FloeNotes`. The iOS source, `FloeAgent/Package.swift` and the rest of
   the frozen mirror were not refreshed.
 - Android adaptations (both documented in the mirror and
-  `Local/Private/android-g06-20261029/notes-foundation01/SOURCE_BINDING.json`):
+  retained private qualification record (`SOURCE_BINDING.json`)):
   1. `NoteLocalization.swift` replaces Apple-only
      `String(localized:defaultValue:)` with the product `FloeL10n` lookup plus
      the exact English fallback; the iOS target keeps the original.
@@ -992,3 +991,32 @@ output pages skip the prior 50 ms sleep only while bytes and output capacity
 remain; cancellation, timeout, process/lease release and workspace export
 proofs are retained. Host compilation/tests do not establish Android device
 latency or an installable release; those results are recorded separately.
+
+## G09-R1 creative Canvas/media project store (2026-11-01)
+
+`Sources/FloeAndroidWorkbench` is a new target containing the SEVEN portable
+`FloeWorkbench` files identified by discovery, copied byte-for-byte from public
+main `b192df7e6ea36dd3bd5a0ca50446cb91df017fdb` (the frozen App source baseline
+`bb2afce0f238d84625240da87a1d4ce618ba74af` shares the same Android subtree):
+
+| File | SHA-256 (b192 source == Android copy) |
+| --- | --- |
+| `MediaProjectModel.swift` | `0b7dbcdd1abc98b2dfd9511f07c44521ed9f89ff6b7e7caa6523714e79e56cab` |
+| `MediaProjectStore.swift` | `21736b273b36dfafbbf4a8f9f6145780ba0431b007eb9565d88ef2013e236cb3` |
+| `MediaTransactions.swift` | `86da795685f7a6e29e4013bfb7e37577fa2566e1ea9a5117ae8aad757be57be8` |
+| `MediaEditCommands.swift` | `c0aec0953856e5e3c4c7fe4438264b8af6b2676ef1eab5f7e858f4f1f3680ac7` |
+| `MediaTimelineMath.swift` | `4d8929d37075a62cbcaa92519c20597ad87ac4181ebacfa0e3e120985a669c9d` |
+| `LayerLayout.swift` | `9086fc6ad2a604d0aa7eb711812ee30d4a180409aeb7cca5025643fca96b6552` |
+| `MigrationSupport.swift` | `a3d938e8fe84339253cf91d6a2aefc84fb3205a97fc8a393266e477738c999c2` |
+
+No platform patch was needed: all seven files import only Foundation and (where
+required) `FloeCore`; no AVFoundation, Media3, CoreGraphics, CAD, renderer,
+tool, proposal, UI or app file is vendored. The target compiles under the
+package's Swift 6 strict-concurrency settings. Canvas project/asset/revision
+authority reuses the already-linked original `FloeCore/CanvasProjectModels.swift`,
+`CanvasOperations.swift`, `CanvasDrawingRevisionHistory.swift` and
+`FloePersistence/CreativeAssetStore.swift`; no second Canvas or media store was
+added. The new G09 files under `FloeAndroidCore` are Android-owned MPL-2.0
+host/wire code; Android-only storage rules (accepted-root derivation,
+durable receipts/journal, explicit workspace resolution) are documented in
+the lane handoff.
