@@ -1,4 +1,5 @@
 // swift-tools-version: 6.4
+import Foundation
 import PackageDescription
 
 // Production G02 shared-core overlay (audit job-dee5658543974844 recipes
@@ -8,6 +9,10 @@ import PackageDescription
 // Android mirror patches exist as narrow copied overlays (see PROVENANCE.md).
 // KeychainStore.swift is EXCLUDED entirely: its non-Security branch is a
 // process-wide RAM store, forbidden on Android (fail-closed directive).
+let floePackageRoot = URL(fileURLWithPath: #filePath).deletingLastPathComponent().path
+let floeRDPPrefix = ProcessInfo.processInfo.environment["FLOE_FREERDP_PREFIX"]
+    ?? floePackageRoot + "/Vendor/Remote/FreeRDP/android-arm64"
+
 let strictSettings: [SwiftSetting] = [
     .swiftLanguageMode(.v6),
     .enableExperimentalFeature("StrictConcurrency"),
@@ -682,6 +687,37 @@ let package = Package(
         .target(name: "FloeAndroidMail", dependencies: [
             "FloeCore",
         ], swiftSettings: strictSettings),
+        // C05 RDP: the small Floe C bridge over the pinned upstream FreeRDP
+        // 3.31.1 core. The Android ARM64 static prefix (FreeRDP + WinPR +
+        // OpenSSL) is built by scripts/rdp and supplied through
+        // FLOE_FREERDP_PREFIX; a missing prefix is a build error, never a
+        // fallback to Apple binaries or a placeholder protocol.
+        .target(
+            name: "FloeRDPNative",
+            path: "Sources/FloeRDPNative",
+            publicHeadersPath: "include",
+            cSettings: [
+                .define("_GNU_SOURCE", to: "1", .when(platforms: [.android])),
+                .unsafeFlags(["-I", floeRDPPrefix + "/include"], .when(platforms: [.android])),
+            ],
+            linkerSettings: [
+                .unsafeFlags(["-L", floeRDPPrefix + "/lib"], .when(platforms: [.android])),
+                .linkedLibrary("freerdp3", .when(platforms: [.android])),
+                .linkedLibrary("winpr3", .when(platforms: [.android])),
+                .linkedLibrary("ssl", .when(platforms: [.android])),
+                .linkedLibrary("crypto", .when(platforms: [.android])),
+                .linkedLibrary("z", .when(platforms: [.android])),
+                .linkedLibrary("log", .when(platforms: [.android])),
+                .linkedLibrary("dl", .when(platforms: [.android])),
+                .linkedLibrary("m", .when(platforms: [.android])),
+            ]
+        ),
+        // C05 RDP lifetime/trust/frame module. Protocol bytes, TLS and input
+        // are owned by FreeRDP/FloeRDPNative; no CoreGraphics, UIKit, Metal or
+        // screenshot-refresh substitute is linked.
+        .target(name: "FloeRDP", dependencies: [
+            "FloeCore", "FloeRDPNative",
+        ], swiftSettings: strictSettings),
         // C05 VNC: real RFB via the fixed RoyalVNCKit slice. No UIKit,
         // CoreGraphics, Metal, SwiftTerm or screenshot-refresh fallback.
         .target(name: "FloeVNC", dependencies: [
@@ -692,9 +728,13 @@ let package = Package(
         .target(name: "FloeAndroidCore", dependencies: [
             "FloeCore", "FloeModels", "FloeProviders", "FloeSecurity",
             "FloeTools", "FloeSkills", "FloePersistence", "FloeAgentRuntime",
-            // C05 SSH/VNC transport/domain dependencies (same native .so).
+            // C05 SSH/VNC/RDP transport/domain dependencies (same native .so).
             "FloeSSH",
             "FloeVNC",
+            "FloeRDP",
+            // C05 screenshots: the vendored zlib already linked through
+            // FloeWorkspace is used directly for real PNG artifacts.
+            "CZLib",
             // C06 mail protocol/domain transport.
             "FloeAndroidMail",
             // D1 web closure: included in the actual native .so so the
@@ -740,6 +780,9 @@ let package = Package(
         ], swiftSettings: strictSettings),
         .testTarget(name: "FloeVNCTests", dependencies: [
             "FloeVNC",
+        ], swiftSettings: strictSettings),
+        .testTarget(name: "FloeRDPTests", dependencies: [
+            "FloeRDP", "FloeCore",
         ], swiftSettings: strictSettings),
         .testTarget(name: "FloeAndroidMailTests", dependencies: [
             "FloeAndroidMail", "FloeCore",
@@ -795,7 +838,7 @@ let package = Package(
             .product(name: "Crypto", package: "swift-crypto"),
         ], swiftSettings: strictSettings),
         .testTarget(name: "FloeAndroidCoreTests", dependencies: [
-            "FloeBrowser", "FloeAndroidCore", "FloeSSH", "FloeVNC", "FloeAndroidMail",
+            "FloeBrowser", "FloeAndroidCore", "FloeSSH", "FloeVNC", "FloeRDP", "FloeAndroidMail",
             "FloeAndroidDataExchange",
             .product(name: "Crypto", package: "swift-crypto"),
             "FloeCore", "FloeModels", "FloePersistence", "GRDB",

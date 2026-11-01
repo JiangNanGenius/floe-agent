@@ -141,7 +141,13 @@ The helper is packaged only in the Full APK as
 `lib/arm64-v8a/libfloecapture_helper.so` with
 `assets/root-capture/helper.json`; the root server verifies those bytes from
 the installed package before execution. It is never downloaded at runtime.
-Play contains no root adapter, helper asset or native helper library.
+The same PIE contains the Floe-authored MPL-2.0 capture guard
+(`scripts/root-capture/guard/` and
+`scripts/root-capture/patches/0001-tcpdump-install-guard.patch`), which
+independently enforces parent-pipe liveness, a monotonic deadline and the
+output byte budget. Its source/header/patch hashes are embedded in the ELF and
+bound by `helper.json`; unguarded bytes are rejected. Play contains no root
+adapter, helper asset or native helper library.
 
 ## C05 VNC
 
@@ -154,3 +160,7 @@ USB serial uses usb-serial-for-android3.11.0, fixed upstream8e694372dee4531d1407
 ## C06 system services
 
 Read-only Android Health Connect uses the pinned AndroidX connect-client 1.1.0 under Apache-2.0. Exact direct artifact digests and provenance are recorded in FloeAndroid/licenses/systemservices/; the license and provenance are bundled in application legal assets. Location, contacts and foreground NDEF reading use Android platform APIs.
+
+## C05 RDP
+
+The Android RDP bridge uses pinned FreeRDP 3.31.1/WinPR and OpenSSL 4.0.1 under Apache-2.0. Immutable source hashes and the Android static-build recipe are recorded in FloeAndroid/licenses/rdp/ and scripts/rdp/. Their exact license texts and runtime source lock are bundled in the application legal assets. No Apple binary is included.

@@ -6,19 +6,24 @@
     <string name="dataexchange_retry">重新检查</string>
 
     <string name="dataexchange_scope_title">包含内容</string>
-    <string name="dataexchange_scope_body">Floe 仅在本机导出文档和可移植手记，不上传，也不需要账户。</string>
+    <string name="dataexchange_scope_body">Floe 将一个经过校验的本机数据包保存在本机，包含项目、手记、对话/任务、画布与媒体、附件、安全偏好，以及恢复后保持禁用的计划任务定义。不会上传，也不需要账户。</string>
     <string name="dataexchange_included">包含</string>
     <string name="dataexchange_included_projects">项目文件</string>
     <string name="dataexchange_included_retained">保留的项目文件夹（项目删除后仍保留的资料）</string>
     <string name="dataexchange_included_notes">手记文档、手记本及其资源</string>
     <string name="dataexchange_note_export_hint">要将单篇手记导出为 .floenote 包，请使用手记自身菜单中的导出。</string>
     <string name="dataexchange_floecad_note">CAD .floecad 文件夹保持为目录并逐文件携带；预览仍独立处理。</string>
+    <string name="dataexchange_included_tasks">对话、任务、消息、运行记录与操作回执</string>
+    <string name="dataexchange_included_canvas">画布与媒体文档及其资源文件</string>
+    <string name="dataexchange_included_config">清理后的服务商与模型条目（恢复后禁用，不含凭据）</string>
+    <string name="dataexchange_included_schedules">已保存的计划任务（恢复后保持禁用，不重新设置提醒）</string>
+    <string name="dataexchange_included_receipts">只读的操作与邮件回执</string>
     <string name="dataexchange_included_settings">安全的显示/编辑偏好</string>
     <string name="dataexchange_excluded">从不包含</string>
     <string name="dataexchange_excluded_body">以下内容为明确排除项，不是静默遗漏：</string>
     <string name="dataexchange_no_database">格式 %1$d（.%2$s）。不会复制正在使用的应用或手记数据库。</string>
 
-    <string name="dataexchange_excluded_database">正在使用的应用数据库与会话状态</string>
+    <string name="dataexchange_excluded_database">原始数据库/WAL 文件与临时会话状态（结构化行会单独导出）</string>
     <string name="dataexchange_excluded_notes_database">手记编辑历史、回收站与助手线程（文档使用可移植格式）</string>
     <string name="dataexchange_excluded_credentials">API 密钥与凭据内容</string>
     <string name="dataexchange_excluded_device_keys">设备绑定密钥</string>
@@ -100,4 +105,37 @@
     <string name="dataexchange_notice_recovered">恢复清理完成。未完成的新建内容已移除，原有数据保留。</string>
     <string name="dataexchange_notice_cancelled">已取消。原有数据未改动。</string>
     <string name="dataexchange_notice_partial">该文件提供方无法删除失败文件，目标位置可能留下部分文件。应用内备份仍可用于重试。</string>
+
+    <string name="dataexchange_package_title">文档包</string>
+    <string name="dataexchange_package_body">可导入 .floenote、.flocanvas、.docx 或 .pdf 包。所有包都会在创建新副本前完整校验，原有文件不受影响。</string>
+    <string name="dataexchange_package_canvas_import">导入画布…</string>
+    <string name="dataexchange_package_document_import">导入文档…</string>
+    <string name="dataexchange_package_canvas_export">将画布导出为 .flocanvas 包：</string>
+    <string name="dataexchange_plan_tasks">对话/任务：%1$d 个（%2$d 条消息，%3$d 次运行）</string>
+    <string name="dataexchange_plan_canvas">画布：%1$d 个 · 媒体：%2$d 个项目（%3$d 个资源）</string>
+    <string name="dataexchange_plan_schedules">恢复后保持禁用的计划任务：%1$d 个</string>
+    <string name="dataexchange_plan_receipts">只读回执：%1$d 条操作 / %2$d 条邮件</string>
+    <string name="dataexchange_plan_evidence">只读保留的执行历史（不构成当前授权）：%1$d 条</string>
+    <string name="dataexchange_result_tasks">对话/任务 %1$d · 消息 %2$d · 运行 %3$d</string>
+    <string name="dataexchange_result_canvas">画布 %1$d · 媒体项目 %2$d</string>
+    <string name="dataexchange_error_package">文档包无效或包含暂不支持的功能。未导入任何内容。</string>
+    <string name="dataexchange_error_reference">包内标识缺失或冲突。未提交任何部分恢复。</string>
+    <string name="dataexchange_notice_canvas_exported">画布包已保存并校验。</string>
+    <string name="dataexchange_notice_canvas_imported">画布已作为新副本导入。</string>
+    <string name="dataexchange_notice_document_imported">文档已导入到新项目。</string>
+    <string name="dataexchange_excluded_execution_auth">执行目标授权、运行固定记录与远程命令回执仅作为只读证据保留，不会授予当前信任或重放命令。</string>
+    <string name="dataexchange_excluded_remote_trust">已保存的远程主机与 known-host 信任记录</string>
+    <string name="dataexchange_excluded_task_policies">任务权限与审批授权</string>
+    <string name="dataexchange_excluded_external_tokens">外部工作区/根目录书签与令牌（需重新授权）</string>
+    <string name="dataexchange_excluded_browser">浏览器会话、标签页与 Cookie</string>
+    <string name="dataexchange_excluded_mail_credentials">邮件凭据、草稿与传输中的内容</string>
+    <string name="dataexchange_excluded_run_state">运行检查点、待处理输入与可恢复作业状态</string>
+    <string name="dataexchange_excluded_media_jobs">云端媒体生成作业与待处理的云端释放</string>
+    <string name="dataexchange_excluded_derived_index">派生的媒体资源索引（项目文件与资源字节仍会携带）</string>
+    <string name="dataexchange_excluded_media_candidates">尚未采用的媒体生成候选（由 C03 生成模块负责）</string>
+    <string name="dataexchange_excluded_cloud_keys">云端账户密钥与部署凭据</string>
+    <string name="dataexchange_excluded_environment_images">Linux 客户机镜像（需要 C01 检查点端口）</string>
+    <string name="dataexchange_excluded_canvas_cad">可编辑画布 CAD 草稿/原生包（安卓画布 CAD 为只读；.floecad 项目文件仍会携带）</string>
+    <string name="dataexchange_excluded_canvas_run">画布运行恢复状态</string>
+    <string name="dataexchange_excluded_realtime">实时跨设备同步（仅提供显式数据包交换）</string>
 </resources>

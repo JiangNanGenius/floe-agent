@@ -6,19 +6,24 @@
     <string name="dataexchange_retry">Check again</string>
 
     <string name="dataexchange_scope_title">What is included</string>
-    <string name="dataexchange_scope_body">Floe exports your documents and portable notes locally. Nothing is uploaded and no account is required.</string>
+    <string name="dataexchange_scope_body">Floe exports your App-owned data locally in one verified package: projects, Notes, chats/tasks, Canvas and media, attachments, Safe preferences and disabled schedule definitions. Nothing is uploaded and no account is required.</string>
     <string name="dataexchange_included">Included</string>
     <string name="dataexchange_included_projects">Project files</string>
     <string name="dataexchange_included_retained">Retained project folders (kept after project deletion)</string>
     <string name="dataexchange_included_notes">Notes documents, notebooks and their resources</string>
     <string name="dataexchange_note_export_hint">To export one note as a .floenote package, use Export in the note\'s own menu.</string>
     <string name="dataexchange_floecad_note">CAD .floecad folders stay directories and are carried file-by-file; preview stays separate.</string>
+    <string name="dataexchange_included_tasks">Chats, tasks, messages, runs and action receipts</string>
+    <string name="dataexchange_included_canvas">Canvas and media documents with their resource files</string>
+    <string name="dataexchange_included_config">Sanitized provider and model entries (restored disabled, no credential)</string>
+    <string name="dataexchange_included_schedules">Saved schedules (restored disabled; no alarm is armed)</string>
+    <string name="dataexchange_included_receipts">Read-only action and mail receipts</string>
     <string name="dataexchange_included_settings">Safe display/editor preferences</string>
     <string name="dataexchange_excluded">Never included</string>
     <string name="dataexchange_excluded_body">The following are deliberately excluded, not silently omitted:</string>
     <string name="dataexchange_no_database">Format %1$d (.%2$s). A live app or notes database is never copied.</string>
 
-    <string name="dataexchange_excluded_database">Live app database and session state</string>
+    <string name="dataexchange_excluded_database">Raw live database/WAL files and ephemeral session state (typed rows are exported separately)</string>
     <string name="dataexchange_excluded_notes_database">Notes edit history, trash and assistant threads (documents use the portable format)</string>
     <string name="dataexchange_excluded_credentials">API keys and credential values</string>
     <string name="dataexchange_excluded_device_keys">Device-bound keys</string>
@@ -100,4 +105,37 @@
     <string name="dataexchange_notice_recovered">Recovery finished. Unfinished new items were removed; existing data is kept.</string>
     <string name="dataexchange_notice_cancelled">Cancelled. No original data was changed.</string>
     <string name="dataexchange_notice_partial">The destination may contain a partial file because this provider cannot delete it. Your in-App backup remains available for retry.</string>
+
+    <string name="dataexchange_package_title">Document packages</string>
+    <string name="dataexchange_package_body">Import a .floenote, .flocanvas, .docx or .pdf package. Every package is fully validated before a new copy is created; originals stay untouched.</string>
+    <string name="dataexchange_package_canvas_import">Import canvas…</string>
+    <string name="dataexchange_package_document_import">Import document…</string>
+    <string name="dataexchange_package_canvas_export">Export a canvas as a .flocanvas package:</string>
+    <string name="dataexchange_plan_tasks">Chats/tasks: %1$d (%2$d messages, %3$d runs)</string>
+    <string name="dataexchange_plan_canvas">Canvas: %1$d projects · Media: %2$d projects (%3$d assets)</string>
+    <string name="dataexchange_plan_schedules">Saved schedules restored disabled: %1$d</string>
+    <string name="dataexchange_plan_receipts">Read-only receipts: %1$d action / %2$d mail</string>
+    <string name="dataexchange_plan_evidence">Execution history retained read-only (never live authorization): %1$d</string>
+    <string name="dataexchange_result_tasks">Chats/tasks %1$d · Messages %2$d · Runs %3$d</string>
+    <string name="dataexchange_result_canvas">Canvas %1$d · Media projects %2$d</string>
+    <string name="dataexchange_error_package">The document package is invalid or uses an unsupported feature. Nothing was imported.</string>
+    <string name="dataexchange_error_reference">The package contains a missing or conflicting identity. No partial restore was committed.</string>
+    <string name="dataexchange_notice_canvas_exported">Canvas package saved and verified.</string>
+    <string name="dataexchange_notice_canvas_imported">Canvas imported as a new copy.</string>
+    <string name="dataexchange_notice_document_imported">Document imported into a new project.</string>
+    <string name="dataexchange_excluded_execution_auth">Execution-target authorization, run pins and remote-command receipts are retained as read-only evidence only; they never grant current trust or replay a command.</string>
+    <string name="dataexchange_excluded_remote_trust">Saved remote hosts and known-host trust records</string>
+    <string name="dataexchange_excluded_task_policies">Per-task permissions and approval grants</string>
+    <string name="dataexchange_excluded_external_tokens">External workspace/root bookmarks and tokens (must be re-granted)</string>
+    <string name="dataexchange_excluded_browser">Browser sessions, tabs and cookies</string>
+    <string name="dataexchange_excluded_mail_credentials">Mail credentials, drafts and in-flight transfers</string>
+    <string name="dataexchange_excluded_run_state">Run checkpoints, pending inputs and resumable job state</string>
+    <string name="dataexchange_excluded_media_jobs">Cloud media-generation jobs and pending cloud releases</string>
+    <string name="dataexchange_excluded_derived_index">Derived media asset index (project files and asset bytes are carried)</string>
+    <string name="dataexchange_excluded_media_candidates">Unadopted media generation candidates (C03 generation owner)</string>
+    <string name="dataexchange_excluded_cloud_keys">Cloud account keys and deployment credentials</string>
+    <string name="dataexchange_excluded_environment_images">Linux guest images (require the C01 checkpoint port)</string>
+    <string name="dataexchange_excluded_canvas_cad">Editable Canvas CAD drafts/native packages (Android Canvas is read-only for CAD; .floecad project files are carried)</string>
+    <string name="dataexchange_excluded_canvas_run">Canvas run-resume state</string>
+    <string name="dataexchange_excluded_realtime">Real-time cross-device sync (only explicit package exchange is provided)</string>
 </resources>

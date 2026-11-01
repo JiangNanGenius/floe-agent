@@ -10,6 +10,7 @@ public enum ArtifactNamespace: String, CaseIterable, Sendable {
     case generatedImages = "GeneratedImages"
     case browser = "BrowserArtifacts"
     case vnc = "VNCArtifacts"
+    case rdp = "RDPArtifacts"
     case presentation = "PresentationArtifacts"
     case change = "ChangeArtifacts"
     case jobDownloads = "JobDownloads"

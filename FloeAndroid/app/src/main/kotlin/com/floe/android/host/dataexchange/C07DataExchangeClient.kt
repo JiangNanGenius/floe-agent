@@ -40,6 +40,8 @@ internal data class C07CapabilitiesUi(
     val formatVersion: Int,
     val backupExtension: String,
     val notesExtension: String,
+    val canvasExtension: String,
+    val documentExtensions: List<String>,
     val chunkBytes: Int,
     val included: List<String>,
     val excluded: List<Pair<String, String>>,
@@ -56,6 +58,19 @@ internal data class C07Plan(
     val providerAdvisories: Int,
     val trashedNotesExcluded: Int,
     val skippedProjects: Int,
+    val conversations: Int,
+    val messages: Int,
+    val runs: Int,
+    val toolCalls: Int,
+    val workspaces: Int,
+    val canvasProjects: Int,
+    val mediaProjects: Int,
+    val mediaAssets: Int,
+    val schedules: Int,
+    val actionReceipts: Int,
+    val mailReceipts: Int,
+    val providerConfigs: Int,
+    val executionEvidence: Int,
     val warnings: List<String>,
 )
 
@@ -65,6 +80,16 @@ internal data class C07Receipt(
     val notebooks: Int,
     val settings: Int,
     val skippedProjects: Int,
+    val conversations: Int,
+    val messages: Int,
+    val runs: Int,
+    val toolCalls: Int,
+    val workspaces: Int,
+    val schedules: Int,
+    val providers: Int,
+    val canvasProjects: Int,
+    val mediaProjects: Int,
+    val evidenceRows: Int,
 )
 
 internal data class C07Job(
@@ -93,6 +118,11 @@ internal data class C07Chunk(
     val eof: Boolean,
 )
 
+internal data class C07CanvasChoice(
+    val canvasID: String,
+    val name: String,
+)
+
 internal data class C07Stage(
     val stageID: String,
     val chunkBytes: Int,
@@ -119,6 +149,8 @@ internal class C07DataExchangeClient(
             formatVersion = response.optInt("formatVersion", 1),
             backupExtension = response.optString("backupExtension", "floebackup"),
             notesExtension = response.optString("notesExtension", "floenote"),
+            canvasExtension = response.optString("canvasExtension", "flocanvas"),
+            documentExtensions = strings(response.optJSONArray("documentExtensions")),
             chunkBytes = response.optInt("chunkBytes", 24_576),
             included = included,
             excluded = excluded,
@@ -164,6 +196,19 @@ internal class C07DataExchangeClient(
                     providerAdvisories = it.optInt("providerAdvisories", 0),
                     trashedNotesExcluded = it.optInt("trashedNotesExcluded", 0),
                     skippedProjects = it.optInt("skippedProjects", 0),
+                    conversations = it.optInt("conversations", 0),
+                    messages = it.optInt("messages", 0),
+                    runs = it.optInt("runs", 0),
+                    toolCalls = it.optInt("toolCalls", 0),
+                    workspaces = it.optInt("workspaces", 0),
+                    canvasProjects = it.optInt("canvasProjects", 0),
+                    mediaProjects = it.optInt("mediaProjects", 0),
+                    mediaAssets = it.optInt("mediaAssets", 0),
+                    schedules = it.optInt("schedules", 0),
+                    actionReceipts = it.optInt("actionReceipts", 0),
+                    mailReceipts = it.optInt("mailReceipts", 0),
+                    providerConfigs = it.optInt("providerConfigs", 0),
+                    executionEvidence = it.optInt("executionEvidence", 0),
                     warnings = strings(response.optJSONArray("warnings")),
                 )
             },
@@ -174,6 +219,16 @@ internal class C07DataExchangeClient(
                     notebooks = it.optInt("notebooks", 0),
                     settings = it.optInt("settings", 0),
                     skippedProjects = it.optInt("projectsSkipped", 0),
+                    conversations = it.optInt("conversations", 0),
+                    messages = it.optInt("messages", 0),
+                    runs = it.optInt("runs", 0),
+                    toolCalls = it.optInt("toolCalls", 0),
+                    workspaces = it.optInt("workspaces", 0),
+                    schedules = it.optInt("schedules", 0),
+                    providers = it.optInt("providers", 0),
+                    canvasProjects = it.optInt("canvasProjects", 0),
+                    mediaProjects = it.optInt("mediaProjects", 0),
+                    evidenceRows = it.optInt("evidenceRows", 0),
                 )
             },
         )
@@ -231,11 +286,37 @@ internal class C07DataExchangeClient(
         }
     }
 
-    fun inspect(owner: C07ExchangeOwner, stageID: String, notePackage: Boolean): String =
-        exchange("c07.restore.inspect", owner) {
-            put("stageID", stageID)
-            put("kind", if (notePackage) "note" else "backup")
+    fun inspect(
+        owner: C07ExchangeOwner,
+        stageID: String,
+        kind: String,
+        displayName: String? = null,
+    ): String = exchange("c07.restore.inspect", owner) {
+        put("stageID", stageID)
+        put("kind", kind)
+        displayName?.takeIf { it.isNotEmpty() }?.let { put("displayName", it) }
+    }.getString("jobID")
+
+    fun canvasExportBegin(owner: C07ExchangeOwner, canvasID: String): String =
+        exchange("c07.document.exportCanvas", owner) {
+            put("canvasID", canvasID)
         }.getString("jobID")
+
+    fun canvases(owner: C07ExchangeOwner): List<C07CanvasChoice> {
+        val response = exchange("c07.document.canvases", owner) { }
+        val array = response.optJSONArray("canvases") ?: JSONArray()
+        val result = ArrayList<C07CanvasChoice>(minOf(array.length(), 500))
+        for (index in 0 until minOf(array.length(), 500)) {
+            val item = array.optJSONObject(index) ?: continue
+            val id = item.optString("canvasID")
+            if (id.isEmpty()) continue
+            result += C07CanvasChoice(
+                canvasID = id,
+                name = item.optString("name", "Canvas"),
+            )
+        }
+        return result
+    }
 
     fun commit(owner: C07ExchangeOwner, jobID: String): String =
         exchange("c07.restore.commit", owner) { put("jobID", jobID) }

@@ -19,6 +19,9 @@ import com.floe.android.host.remote.C05BrokerLocalNetworkGate
 import com.floe.android.host.devicecommunication.C05BrokerDeviceLanGate
 import com.floe.android.host.devicecommunication.C05DevicesHostController
 import com.floe.android.host.remote.C05RemoteHostController
+import com.floe.android.host.rdp.C05RDPClient
+import com.floe.android.host.rdp.C05RDPException
+import com.floe.android.host.rdp.C05RDPHostController
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -29,6 +32,7 @@ import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.JsonElement
 
 /**
@@ -153,6 +157,23 @@ class RuntimeHost internal constructor(
     }
     internal val c05Remote: C05RemoteHostController
         get() = c05RemoteDelegate.value
+
+    /**
+     * C05 Application-owned RDP controller. The real FreeRDP session, frame
+     * lease, explicit certificate decision and bounded input lane live in
+     * FloeAndroidCore/FloeRDP; this controller only owns the trusted
+     * `floe.rdp/17` client and the App-scoped pump. It is created lazily on
+     * the first RDP screen use and drained before Root retirement.
+     */
+    private val c05RdpDelegate = lazy {
+        C05RDPHostController(
+            scope = scope,
+            ioDispatcher = ioDispatcher,
+            currentNativeEpoch = ::nativeRootEpoch,
+        )
+    }
+    internal val c05Rdp: C05RDPHostController
+        get() = c05RdpDelegate.value
 
     /**
      * C05 Application-owned real-device controller: TCP/Telnet sockets, BLE
@@ -522,12 +543,54 @@ class RuntimeHost internal constructor(
      * the native root retires. An unproven drain keeps the old generation
      * pending; no remote session survives into a new epoch.
      */
-    internal suspend fun prepareC05RemoteForRootStop(): Boolean =
+    internal suspend fun prepareC05RemoteForRootStop(): Boolean {
         if (c05RemoteDelegate.isInitialized()) {
-            c05Remote.prepareForRootStop(C05_REMOTE_STOP_WAIT_MS)
-        } else {
-            true
+            return c05Remote.prepareForRootStop(C05_REMOTE_STOP_WAIT_MS)
         }
+        // Ordinary VNC model tools can open a Swift-owned VNC session without
+        // ever showing the Remote screen. Drain the VNC domain directly so
+        // such a session cannot outlive the native Root epoch merely because
+        // the UI controller was never constructed.
+        val epoch = nativeRootEpoch()?.takeIf { it > 0 } ?: return true
+        return try {
+            val result = withContext(ioDispatcher) { C05VNCClient().rootStop(epoch) }
+            result.drained
+        } catch (failure: C05RemoteFailure) {
+            failure.code == "needsCoreUpdate" || failure.code == "coreUnavailable" ||
+                failure.code == "runtimeNotInstalled"
+        } catch (_: Throwable) {
+            false
+        }
+    }
+
+    /**
+     * Root-stop gate for C05 RDP: close every live FreeRDP session, release
+     * pressed input and await the App/tool frame/input pump before the native
+     * root retires. An unproven drain keeps the generation pending; no RDP
+     * session survives into a new epoch.
+     */
+    internal suspend fun prepareC05RDPForRootStop(): Boolean {
+        if (c05RdpDelegate.isInitialized()) {
+            return c05Rdp.prepareForRootStop(C05_RDP_STOP_WAIT_MS)
+        }
+        // Model tools can open a Swift-owned RDP session without ever showing
+        // the RDP screen. Drain that domain directly so a tool session cannot
+        // outlive the native Root epoch just because the UI controller was
+        // never constructed.
+        val epoch = nativeRootEpoch()?.takeIf { it > 0 } ?: return true
+        return try {
+            withContext(ioDispatcher) { C05RDPClient().rootStop(epoch) }
+            true
+        } catch (failure: C05RDPException) {
+            failure.code == "needsCoreUpdate" || failure.code == "coreUnavailable" ||
+                failure.code == "runtimeNotInstalled"
+        } catch (failure: com.floe.android.host.remote.C05RemoteFailure) {
+            failure.code == "needsCoreUpdate" || failure.code == "coreUnavailable" ||
+                failure.code == "runtimeNotInstalled"
+        } catch (_: Throwable) {
+            false
+        }
+    }
 
     /**
      * Root-stop gate for C02: cancel a pending target/migration reply and
@@ -916,6 +979,9 @@ class RuntimeHost internal constructor(
                 if (c05RemoteDelegate.isInitialized()) {
                     c05Remote.onOwnedStoreReady()
                 }
+                if (c05RdpDelegate.isInitialized()) {
+                    c05Rdp.onOwnedStoreReady()
+                }
                 // C05 devices: the engine/tool-pump lane follows the ACTUAL
                 // accepted epoch and must be available to configured model
                 // tools even if the Devices screen was never opened.
@@ -969,6 +1035,7 @@ class RuntimeHost internal constructor(
                 if (cadViewerDelegate.isInitialized()) cadViewer.onRootStopped()
                 executionTargets.release()
                 if (c05RemoteDelegate.isInitialized()) c05Remote.onRootStopped()
+                if (c05RdpDelegate.isInitialized()) c05Rdp.onRootStopped()
                 if (c05DevicesDelegate.isInitialized()) c05Devices.onRootStopped()
                 if (c06MailDelegate.isInitialized()) c06Mail.onRootStopped()
                 if (c06CalendarDelegate.isInitialized()) c06Calendar.onRootStopped()
@@ -1295,6 +1362,9 @@ class RuntimeHost internal constructor(
 
         /** Bounded join for the C05 SSH session/PTY/tunnel drain. */
         internal const val C05_REMOTE_STOP_WAIT_MS = 8_000L
+
+        /** Bounded join for the C05 RDP session/frame/input drain. */
+        internal const val C05_RDP_STOP_WAIT_MS = 8_000L
 
         /** Bounded join for the C05 device sessions/tool mailbox drain. */
         internal const val C05_DEVICES_STOP_WAIT_MS = 6_000L

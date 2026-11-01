@@ -156,6 +156,26 @@ final class C07DataExchangeCoreTests: XCTestCase {
             if storage.settings[key] == json { storage.settings.removeValue(forKey: key) }
             lock.unlock()
         }
+
+        func prepareOwnedData(_ staged: C07StagedOwnedData,
+                              projectMap: [UUID: UUID],
+                              restoreID: UUID,
+                              journalRoot: URL) async throws -> C07PreparedOwnedData {
+            throw C07DataExchangeError.unsupportedFeature("testSinkOwnedData")
+        }
+
+        func commitArtifacts(_ prepared: C07PreparedOwnedData) async throws
+            -> C07ArtifactCommitReceipt {
+            throw C07DataExchangeError.unsupportedFeature("testSinkArtifacts")
+        }
+
+        func commitOwnedData(_ prepared: C07PreparedOwnedData,
+                             artifacts: C07ArtifactCommitReceipt) async throws
+            -> C07OwnedDataCommitReceipt {
+            throw C07DataExchangeError.unsupportedFeature("testSinkData")
+        }
+
+        func rollbackOwnedData(planURL: URL, planSHA256: String) async throws {}
     }
 
     // MARK: - Helpers
@@ -457,7 +477,7 @@ final class C07DataExchangeCoreTests: XCTestCase {
         let fixture = try Fixture()
         let versionURL = fixture.destination("new-format.zip")
         let manifest = C07BackupManifest(
-            formatVersion: 2, appSchemaVersion: 51,
+            formatVersion: 3, appSchemaVersion: 51,
             scope: C07BackupScope(excluded: C07ScopePolicy.excluded),
             projects: [], notes: C07NotesRecord(notebooks: [], documents: []),
             settings: C07SettingsRecord(entry: nil, byteCount: 0, sha256: nil,

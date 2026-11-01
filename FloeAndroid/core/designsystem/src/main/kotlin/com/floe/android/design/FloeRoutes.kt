@@ -47,6 +47,7 @@ enum class MoreDestination(val order: Int) {
     CALENDAR(13),
     DEVICES(14),
     SYSTEM_SERVICES(15),
+    RDP(16),
 }
 
 /** On-demand inspector contents (iOS `AppRouter.InspectorRoute.content`). */

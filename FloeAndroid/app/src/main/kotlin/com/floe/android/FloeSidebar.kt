@@ -157,6 +157,14 @@ fun FloeSidebar(
                 modifier = Modifier.padding(horizontal = 12.dp),
             )
             FloeSidebarRow(
+                icon = FloeIcons.DeviceLocal,
+                label = stringResource(com.floe.android.feature.rdp.R.string.rdp_title),
+                selected = selection == SidebarSelection.More(MoreDestination.RDP),
+                onClick = { onSelect(SidebarSelection.More(MoreDestination.RDP)) },
+                selectionStyle = FloeSelectionStyle.GRAY,
+                modifier = Modifier.padding(horizontal = 12.dp),
+            )
+            FloeSidebarRow(
                 icon = FloeIcons.Bubble,
                 label = stringResource(com.floe.android.feature.mail.R.string.mail_title),
                 selected = selection == SidebarSelection.More(MoreDestination.MAIL),
@@ -319,6 +327,10 @@ fun FloeSidebar(
                             stringResource(com.floe.android.feature.calendar.R.string.calendar_title),
                         ),
                         FloeChoiceOption(
+                            "rdp",
+                            stringResource(com.floe.android.feature.rdp.R.string.rdp_title),
+                        ),
+                        FloeChoiceOption(
                             "devices",
                             stringResource(com.floe.android.feature.devicecommunication.R.string.devices_title),
                         ),
@@ -330,6 +342,7 @@ fun FloeSidebar(
                     selectedKey = when (selection) {
                         SidebarSelection.More(MoreDestination.NETWORK) -> "network"
                         SidebarSelection.More(MoreDestination.REMOTE) -> "remote"
+                        SidebarSelection.More(MoreDestination.RDP) -> "rdp"
                         SidebarSelection.More(MoreDestination.MAIL) -> "mail"
                         SidebarSelection.More(MoreDestination.CALENDAR) -> "calendar"
                         SidebarSelection.More(MoreDestination.DEVICES) -> "devices"
@@ -342,6 +355,7 @@ fun FloeSidebar(
                             SidebarSelection.More(
                                 when (key) {
                                     "remote" -> MoreDestination.REMOTE
+                                    "rdp" -> MoreDestination.RDP
                                     "mail" -> MoreDestination.MAIL
                                     "calendar" -> MoreDestination.CALENDAR
                                     "devices" -> MoreDestination.DEVICES

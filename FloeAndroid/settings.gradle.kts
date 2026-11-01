@@ -79,6 +79,10 @@ include(":core:network", ":feature:network")
 
 // C05 SSH remote-host screens (presentation only; App host owns transport).
 include(":feature:remote")
+// C05 RDP screens (presentation only; the App host owns FreeRDP sessions,
+// certificate decisions and the credential gateway). Lockfile is regenerated
+// by Main's --write-locks stage before the first locked build.
+include(":feature:rdp")
 // C05 real device communications: TCP/Telnet, BLE GATT and USB serial engine
 // plus presentation. Main owns the App route and lockfile regeneration; the
 // App host controller and trusted model-tool pump are App-owned sources.

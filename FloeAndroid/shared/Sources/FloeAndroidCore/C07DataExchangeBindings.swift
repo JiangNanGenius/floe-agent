@@ -29,7 +29,8 @@ public enum C07DataExchangeBridge {
         "c07.restore.stageCommit", "c07.restore.stageAbort",
         "c07.restore.inspect", "c07.restore.commit", "c07.restore.abort",
         "c07.restore.pending", "c07.restore.recover",
-        "c07.document.exportNote",
+        "c07.document.exportNote", "c07.document.exportCanvas",
+        "c07.document.canvases",
     ]
 
     private final class ResultBox<T>: @unchecked Sendable {
@@ -217,15 +218,25 @@ public enum C07DataExchangeBridge {
                     try await domain.makeContext(owner: owner)
                 }.get()
                 let stageID = try c07UUID(object["stageID"])
-                let importNote = c07String(object["kind"], maxBytes: 16) == "note"
+                let kind = c07String(object["kind"], maxBytes: 16) ?? "backup"
+                let displayName = c07String(object["displayName"], maxBytes: 256)
                 let jobID = try block(seconds: 10) {
-                    if importNote {
+                    switch kind {
+                    case "note":
                         return try await domain.startNoteImportInspect(
                             context: context, stageID: stageID)
+                    case "canvas":
+                        return try await domain.startCanvasImportInspect(
+                            context: context, stageID: stageID)
+                    case "document":
+                        return try await domain.startDocumentImportInspect(
+                            context: context, stageID: stageID,
+                            displayName: displayName ?? "document.docx")
+                    default:
+                        return try await domain.startRestoreInspect(
+                            context: context, stageID: stageID,
+                            currentAppSchemaVersion: DatabaseManager.currentSchemaVersion)
                     }
-                    return try await domain.startRestoreInspect(
-                        context: context, stageID: stageID,
-                        currentAppSchemaVersion: DatabaseManager.currentSchemaVersion)
                 }.get()
                 return reply(["jobID": jobID.uuidString])
 
@@ -268,6 +279,24 @@ public enum C07DataExchangeBridge {
                     "details": Array(report.details.prefix(16)),
                 ])
 
+            case "c07.document.exportCanvas":
+                let context = try block(seconds: 10) {
+                    try await domain.makeContext(owner: owner)
+                }.get()
+                let canvasID = try c07UUID(object["canvasID"])
+                let job = block(seconds: 10) {
+                    await domain.startCanvasExport(
+                        context: context, canvasID: canvasID)
+                }
+                return reply(["jobID": try job.get().uuidString])
+
+            case "c07.document.canvases":
+                let context = try block(seconds: 10) {
+                    try await domain.makeContext(owner: owner)
+                }.get()
+                let canvases = c07ListCanvases(context: context)
+                return reply(["canvases": canvases])
+
             case "c07.document.exportNote":
                 let context = try block(seconds: 10) {
                     try await domain.makeContext(owner: owner)
@@ -297,11 +326,48 @@ public enum C07DataExchangeBridge {
 
     // MARK: - JSON projections
 
+    private static func c07ListCanvases(context: C07DataExchangeContext)
+        -> [[String: Any]]
+    {
+        let directory = context.artifactRoot.appendingPathComponent(
+            "Canvases", isDirectory: true)
+        guard let items = try? FileManager.default.contentsOfDirectory(
+            at: directory,
+            includingPropertiesForKeys: [.isRegularFileKey, .isSymbolicLinkKey,
+                                          .contentModificationDateKey],
+            options: [.skipsHiddenFiles]) else { return [] }
+        var result: [[String: Any]] = []
+        for url in items.sorted(by: { $0.lastPathComponent < $1.lastPathComponent })
+        where url.pathExtension.lowercased() == "json" {
+            guard result.count < 500,
+                  let values = try? url.resourceValues(
+                    forKeys: [.isRegularFileKey, .isSymbolicLinkKey,
+                              .fileSizeKey, .contentModificationDateKey]),
+                  values.isRegularFile == true,
+                  values.isSymbolicLink != true,
+                  let size = values.fileSize, size > 0,
+                  size <= 32 * 1_024 * 1_024,
+                  let data = try? Data(contentsOf: url) else { continue }
+            guard let object = (try? JSONSerialization.jsonObject(
+                with: data)) as? [String: Any],
+                  let idText = object["id"] as? String,
+                  let id = UUID(uuidString: idText) else { continue }
+            result.append([
+                "canvasID": id.uuidString,
+                "name": c07SafeText((object["name"] as? String) ?? "Canvas", max: 200),
+                "updatedAt": (object["updatedAt"] as? String) ?? "",
+            ])
+        }
+        return result
+    }
+
     private static func capabilitiesJSON() -> [String: Any] {
         [
             "formatVersion": C07DataExchangeWire.formatVersion,
             "backupExtension": C07DataExchangeWire.backupExtension,
             "notesExtension": C07DataExchangeWire.notesExtension,
+            "canvasExtension": C07DocumentPackageLimits.canvasExtension,
+            "documentExtensions": ["docx", "pdf"],
             "databaseCopied": false,
             "credentialsExcluded": true,
             "modelTools": false,
@@ -320,7 +386,8 @@ public enum C07DataExchangeBridge {
                 "c07.restore.stageCommit", "c07.restore.stageAbort",
                 "c07.restore.inspect", "c07.restore.commit", "c07.restore.abort",
                 "c07.restore.pending", "c07.restore.recover",
-                "c07.document.exportNote",
+                "c07.document.exportNote", "c07.document.exportCanvas",
+                "c07.document.canvases",
             ],
             "limits": [
                 "maximumManifestBytes": C07DataExchangeLimits.maximumManifestBytes,
@@ -358,6 +425,21 @@ public enum C07DataExchangeBridge {
         if let count = status.providerAdvisoryCount { plan["providerAdvisories"] = count }
         if let count = status.trashedNotesExcluded { plan["trashedNotesExcluded"] = count }
         if let count = status.skippedProjects { plan["skippedProjects"] = count }
+        if let count = status.conversationCount { plan["conversations"] = count }
+        if let count = status.messageCount { plan["messages"] = count }
+        if let count = status.runCount { plan["runs"] = count }
+        if let count = status.toolCallCount { plan["toolCalls"] = count }
+        if let count = status.workspaceCount { plan["workspaces"] = count }
+        if let count = status.canvasProjectCount { plan["canvasProjects"] = count }
+        if let count = status.mediaProjectCount { plan["mediaProjects"] = count }
+        if let count = status.mediaAssetCount { plan["mediaAssets"] = count }
+        if let count = status.scheduleCount { plan["schedules"] = count }
+        if let count = status.actionReceiptCount { plan["actionReceipts"] = count }
+        if let count = status.mailReceiptCount { plan["mailReceipts"] = count }
+        if let count = status.providerConfigCount { plan["providerConfigs"] = count }
+        if let count = status.executionEvidenceCount {
+            plan["executionEvidence"] = count
+        }
         if !plan.isEmpty { value["plan"] = plan }
         var receipt: [String: Any] = [:]
         if let count = status.restoredProjects { receipt["projects"] = count }
@@ -365,6 +447,22 @@ public enum C07DataExchangeBridge {
         if let count = status.restoredNotebooks { receipt["notebooks"] = count }
         if let count = status.restoredSettings { receipt["settings"] = count }
         if let count = status.skippedProjects { receipt["projectsSkipped"] = count }
+        if let count = status.restoredConversations { receipt["conversations"] = count }
+        if let count = status.restoredMessages { receipt["messages"] = count }
+        if let count = status.restoredRuns { receipt["runs"] = count }
+        if let count = status.restoredToolCalls { receipt["toolCalls"] = count }
+        if let count = status.restoredWorkspaces { receipt["workspaces"] = count }
+        if let count = status.restoredSchedules { receipt["schedules"] = count }
+        if let count = status.restoredProviders { receipt["providers"] = count }
+        if let count = status.restoredCanvasProjects {
+            receipt["canvasProjects"] = count
+        }
+        if let count = status.restoredMediaProjects {
+            receipt["mediaProjects"] = count
+        }
+        if let count = status.restoredEvidenceRows {
+            receipt["evidenceRows"] = count
+        }
         if !receipt.isEmpty { value["receipt"] = receipt }
         return value
     }

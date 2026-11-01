@@ -18,10 +18,17 @@ public data class DataExchangeScopeRow(
     val reason: String,
 )
 
+public data class DataExchangeCanvasUi(
+    val canvasID: String,
+    val name: String,
+)
+
 public data class DataExchangeCapabilitiesUi(
     val formatVersion: Int,
     val backupExtension: String,
     val notesExtension: String,
+    val canvasExtension: String = "flocanvas",
+    val documentExtensions: List<String> = listOf("docx", "pdf"),
     val chunkBytes: Int,
     val included: List<String>,
     val excluded: List<DataExchangeScopeRow>,
@@ -38,6 +45,19 @@ public data class DataExchangePlanUi(
     val providerAdvisories: Int,
     val trashedNotesExcluded: Int,
     val skippedProjects: Int,
+    val conversations: Int,
+    val messages: Int,
+    val runs: Int,
+    val toolCalls: Int,
+    val workspaces: Int,
+    val canvasProjects: Int,
+    val mediaProjects: Int,
+    val mediaAssets: Int,
+    val schedules: Int,
+    val actionReceipts: Int,
+    val mailReceipts: Int,
+    val providerConfigs: Int,
+    val executionEvidence: Int = 0,
     val warnings: List<String>,
 )
 
@@ -47,9 +67,21 @@ public data class DataExchangeReceiptUi(
     val notebooks: Int,
     val settings: Int,
     val skippedProjects: Int,
+    val conversations: Int = 0,
+    val messages: Int = 0,
+    val runs: Int = 0,
+    val toolCalls: Int = 0,
+    val workspaces: Int = 0,
+    val schedules: Int = 0,
+    val providers: Int = 0,
+    val canvasProjects: Int = 0,
+    val mediaProjects: Int = 0,
+    val evidenceRows: Int = 0,
 ) {
     val isEmpty: Boolean
-        get() = projects == 0 && noteDocuments == 0 && notebooks == 0 && settings == 0
+        get() = projects == 0 && noteDocuments == 0 && notebooks == 0 &&
+            settings == 0 && conversations == 0 && messages == 0 &&
+            canvasProjects == 0 && mediaProjects == 0
 }
 
 public data class DataExchangeUiState(
@@ -62,6 +94,8 @@ public data class DataExchangeUiState(
     val pendingRecoveries: Int = 0,
     val plan: DataExchangePlanUi? = null,
     val importMode: Boolean = false,
+    val documentKind: String = "backup",
+    val canvases: List<DataExchangeCanvasUi> = emptyList(),
     val backupBytes: Long? = null,
     val backupSha256: String? = null,
     val backupWarnings: List<String> = emptyList(),

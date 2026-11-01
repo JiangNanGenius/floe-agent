@@ -20,7 +20,8 @@ import Crypto
 
 public enum C07DataExchangeLimits {
     public static let backupFormat = "floe.appbackup"
-    public static let backupFormatVersion = 1
+    public static let backupFormatVersion = 2
+    public static let legacyBackupFormatVersion = 1
     public static let backupExtension = "floebackup"
     public static let notesExtension = "floenote"
 
@@ -89,6 +90,13 @@ public enum C07DataExchangeError: Error, Equatable, Sendable {
     case restoreBusy
     case restoreIncomplete
     case rollbackFailed(String)
+    case unsupportedFeature(String)
+    case duplicateIdentity(String)
+    case referenceMissing(String)
+    case artifactCollision(String)
+    case documentPackage(String)
+    case schemaMismatch(Int)
+    case planTooLarge
 }
 
 extension C07DataExchangeError: LocalizedError {
@@ -121,6 +129,13 @@ extension C07DataExchangeError: LocalizedError {
         case .restoreBusy: return "restoreBusy"
         case .restoreIncomplete: return "restoreIncomplete"
         case .rollbackFailed(let reason): return "rollbackFailed:\(reason)"
+        case .unsupportedFeature(let feature): return "unsupportedFeature:\(feature)"
+        case .duplicateIdentity(let identity): return "duplicateIdentity:\(identity)"
+        case .referenceMissing(let reference): return "referenceMissing:\(reference)"
+        case .artifactCollision(let path): return "artifactCollision:\(path)"
+        case .documentPackage(let reason): return "documentPackage:\(reason)"
+        case .schemaMismatch(let expected): return "schemaMismatch:\(expected)"
+        case .planTooLarge: return "planTooLarge"
         }
     }
 
@@ -151,6 +166,13 @@ extension C07DataExchangeError: LocalizedError {
         case .restoreBusy: return "restoreBusy"
         case .restoreIncomplete: return "restoreIncomplete"
         case .rollbackFailed: return "rollbackFailed"
+        case .unsupportedFeature: return "unsupportedFeature"
+        case .duplicateIdentity: return "duplicateIdentity"
+        case .referenceMissing: return "referenceMissing"
+        case .artifactCollision: return "artifactCollision"
+        case .documentPackage: return "documentPackage"
+        case .schemaMismatch: return "schemaMismatch"
+        case .planTooLarge: return "planTooLarge"
         }
     }
 }
@@ -265,25 +287,33 @@ public struct C07ExcludedScope: Codable, Sendable, Equatable {
 }
 
 public struct C07BackupScope: Codable, Sendable, Equatable {
-    public static let includedIDs = [
-        "managedProjects",
-        "retainedProjects",
-        "notesDocuments",
+    public static let legacyIncludedIDs = [
+        "managedProjects", "retainedProjects", "notesDocuments",
         "safePreferences",
+    ]
+    public static let includedIDs = [
+        "managedProjects", "retainedProjects", "notesDocuments",
+        "safePreferences", "taskGraph", "chatHistory", "runHistory",
+        "actionReceipts", "canvasMediaDocuments", "appOwnedArtifacts",
+        "savedSchedules", "providerConfiguration",
     ]
 
     public var included: [String]
     public var excluded: [C07ExcludedScope]
-    /// Always `none` for this format. A live SQLite database/WAL is never a
-    /// backup payload; `none` is validated on restore.
+    /// Always `none`: no live SQLite/WAL file is a payload.
     public var database: String
+    /// `logicalRows` for v2: typed rows read from one consistent GRDB read
+    /// transaction, never a file copy. Nil in a legacy v1 package.
+    public var databaseMode: String?
 
     public init(included: [String] = C07BackupScope.includedIDs,
                 excluded: [C07ExcludedScope],
-                database: String = "none") {
+                database: String = "none",
+                databaseMode: String? = "logicalRows") {
         self.included = included
         self.excluded = excluded
         self.database = database
+        self.databaseMode = databaseMode
     }
 }
 
@@ -427,6 +457,76 @@ public struct C07SettingsRecord: Codable, Sendable, Equatable {
     }
 }
 
+public struct C07EntryReference: Codable, Sendable, Equatable {
+    public var entry: String
+    public var byteCount: Int64
+    public var sha256: String
+
+    public init(entry: String, byteCount: Int64, sha256: String) {
+        self.entry = entry
+        self.byteCount = byteCount
+        self.sha256 = sha256
+    }
+}
+
+public struct C07ArtifactCatalog: Codable, Sendable, Equatable {
+    public var format: String
+    public var formatVersion: Int
+    public var records: [C07ArtifactRecord]
+
+    public init(format: String = "floe.artifacts",
+                formatVersion: Int = 1,
+                records: [C07ArtifactRecord]) {
+        self.format = format
+        self.formatVersion = formatVersion
+        self.records = records
+    }
+
+    public func encoded() throws -> Data {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        encoder.dateEncodingStrategy = .iso8601
+        return try encoder.encode(self)
+    }
+
+    public static func decode(_ data: Data) throws -> C07ArtifactCatalog {
+        guard data.count <= C07DataExchangeLimits.maximumManifestBytes else {
+            throw C07DataExchangeError.entryTooLarge("artifactCatalog")
+        }
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        do { return try decoder.decode(C07ArtifactCatalog.self, from: data) }
+        catch { throw C07DataExchangeError.invalidManifest("artifactCatalogDecode") }
+    }
+
+    public func validate() throws {
+        guard format == "floe.artifacts",
+              formatVersion == 1,
+              records.count <= C07OwnedDataLimits.maximumArtifacts else {
+            throw C07DataExchangeError.invalidManifest("artifactCatalog")
+        }
+        var entries = Set<String>()
+        var total: Int64 = 0
+        for record in records {
+            let expectedEntry = try C07ArtifactPath.entry(
+                role: record.role, containerID: record.containerID,
+                ownerID: record.ownerID, logicalPath: record.logicalPath)
+            guard expectedEntry == record.entry,
+                  entries.insert(C07Path.collisionKey(record.entry)).inserted,
+                  record.byteCount >= 0,
+                  record.byteCount <= C07OwnedDataLimits.maximumArtifactBytes,
+                  C07SHA256Hex.isSHA256(record.sha256) else {
+                throw C07DataExchangeError.invalidManifest(
+                    "artifactRecord:\(record.entry)")
+            }
+            total += record.byteCount
+            guard total <= C07OwnedDataLimits.maximumArtifactTotal else {
+                throw C07DataExchangeError.totalTooLarge
+            }
+        }
+    }
+}
+
 public struct C07BackupManifest: Codable, Sendable, Equatable {
     public var format: String
     public var formatVersion: Int
@@ -436,6 +536,10 @@ public struct C07BackupManifest: Codable, Sendable, Equatable {
     public var projects: [C07ProjectRecord]
     public var notes: C07NotesRecord
     public var settings: C07SettingsRecord
+    /// v2 owned-data manifest reference. Nil in a legacy v1 package.
+    public var dataManifest: C07EntryReference?
+    /// v2 Canvas/media/attachment/receipt artifact catalog reference.
+    public var artifactCatalog: C07EntryReference?
     /// Non-fatal export failures already reflected in the component records.
     public var warnings: [String]
 
@@ -447,6 +551,8 @@ public struct C07BackupManifest: Codable, Sendable, Equatable {
                 projects: [C07ProjectRecord],
                 notes: C07NotesRecord,
                 settings: C07SettingsRecord,
+                dataManifest: C07EntryReference? = nil,
+                artifactCatalog: C07EntryReference? = nil,
                 warnings: [String] = []) {
         self.format = format
         self.formatVersion = formatVersion
@@ -456,7 +562,32 @@ public struct C07BackupManifest: Codable, Sendable, Equatable {
         self.projects = projects
         self.notes = notes
         self.settings = settings
+        self.dataManifest = dataManifest
+        self.artifactCatalog = artifactCatalog
         self.warnings = warnings
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case format, formatVersion, createdAt, appSchemaVersion, scope
+        case projects, notes, settings, dataManifest, artifactCatalog, warnings
+    }
+
+    public init(from decoder: any Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        format = try values.decode(String.self, forKey: .format)
+        formatVersion = try values.decode(Int.self, forKey: .formatVersion)
+        createdAt = try values.decode(Date.self, forKey: .createdAt)
+        appSchemaVersion = try values.decode(Int.self, forKey: .appSchemaVersion)
+        scope = try values.decode(C07BackupScope.self, forKey: .scope)
+        projects = try values.decode([C07ProjectRecord].self, forKey: .projects)
+        notes = try values.decode(C07NotesRecord.self, forKey: .notes)
+        settings = try values.decode(C07SettingsRecord.self, forKey: .settings)
+        dataManifest = try values.decodeIfPresent(
+            C07EntryReference.self, forKey: .dataManifest)
+        artifactCatalog = try values.decodeIfPresent(
+            C07EntryReference.self, forKey: .artifactCatalog)
+        warnings = try values.decodeIfPresent(
+            [String].self, forKey: .warnings) ?? []
     }
 
     /// Canonical, deterministic encoding used for the manifest entry and its
@@ -482,39 +613,71 @@ public struct C07BackupManifest: Codable, Sendable, Equatable {
 // MARK: - Scope and settings policy (fixed, not archive-controlled)
 
 public enum C07ScopePolicy {
+    /// V2 full owned-data scope. Every exclusion is explicit; an archive can
+    /// never shrink the declared scope silently.
     public static let excluded: [C07ExcludedScope] = [
-        .init(id: "appDatabase", reason: "liveSQLiteNeverCopied"),
+        .init(id: "appDatabase", reason: "logicalRowsOnlyNoLiveSQLiteOrWALCopy"),
         .init(id: "notesDatabase", reason: "portableDocumentsOnly"),
         .init(id: "credentials", reason: "neverExported"),
         .init(id: "deviceKeys", reason: "deviceBound"),
         .init(id: "sessionSecrets", reason: "neverExported"),
         .init(id: "cookies", reason: "neverExported"),
-        .init(id: "approvalGrants", reason: "notReplayed"),
-        .init(id: "conversationsAndRuns", reason: "notDocumentBackup"),
-        .init(id: "runOutputs", reason: "taskOutputScope"),
-        .init(id: "privateTaskWorkspaces", reason: "taskLifecycleOwned"),
-        .init(id: "externalWorkspaceRoots", reason: "safOwned"),
+        .init(id: "cloudKeys", reason: "neverExported"),
+        .init(id: "approvalGrants", reason: "currentAuthorizationNeverRestored"),
+        .init(id: "taskPolicies", reason: "permissionsNeverRestored"),
+        .init(id: "executionTargetAuthorization", reason: "evidenceOnlyNotLiveAuthorization"),
+        .init(id: "remoteHostTrust", reason: "hostsAndKnownHostsNeverRestored"),
+        .init(id: "externalWorkspaceTokens", reason: "regrantRequired"),
+        .init(id: "browserSessions", reason: "cookiesAndSessionState"),
+        .init(id: "mailCredentials", reason: "mailOwnerSecrets"),
+        .init(id: "mailDraftsAndTransfers", reason: "notReadOnlyReceipts"),
+        .init(id: "runCheckpointsAndPendingInputs", reason: "noRunResume"),
+        .init(id: "mediaGenerationJobs", reason: "notReplayed"),
+        .init(id: "mediaGenerationCandidates", reason: "generationOwner"),
+        .init(id: "creativeAssetIndex", reason: "derivedMediaIndex"),
+        .init(id: "canvasCADDrafts", reason: "androidCanvasHasNoEditableCAD"),
+        .init(id: "canvasNativeCADPackages", reason: "androidCanvasHasNoEditableCAD"),
+        .init(id: "canvasRunContexts", reason: "runResumeState"),
+        .init(id: "realtimeSync", reason: "explicitExchangeOnly"),
         .init(id: "systemPersonalData", reason: "notAppOwned"),
-        .init(id: "canvasMediaProjects", reason: "separateCanvasAuthority"),
+        .init(id: "externalFileBookmarks", reason: "regrantRequired"),
         .init(id: "captureArtifacts", reason: "captureOwner"),
-        .init(id: "environmentsAndCaches", reason: "regenerableOrDeviceBound"),
+        .init(id: "environmentImages", reason: "c01CheckpointPortRequired"),
         .init(id: "trash", reason: "declaredSeparately"),
     ]
 
-    public static func validate(_ scope: C07BackupScope) throws {
+    public static func validate(_ scope: C07BackupScope,
+                                formatVersion: Int = C07DataExchangeLimits.backupFormatVersion) throws {
         guard scope.database == "none" else {
             throw C07DataExchangeError.invalidScope("databaseMustBeNone")
         }
-        guard Set(scope.included) == Set(C07BackupScope.includedIDs),
-              scope.included.count == C07BackupScope.includedIDs.count else {
+        let expected: [String]
+        switch formatVersion {
+        case 1:
+            expected = C07BackupScope.legacyIncludedIDs
+            guard scope.databaseMode == nil || scope.databaseMode == "none" else {
+                throw C07DataExchangeError.invalidScope("legacyDatabaseMode")
+            }
+        case 2:
+            expected = C07BackupScope.includedIDs
+            guard scope.databaseMode == "logicalRows" else {
+                throw C07DataExchangeError.invalidScope("databaseMode")
+            }
+        default:
+            throw C07DataExchangeError.unsupportedVersion(formatVersion)
+        }
+        guard Set(scope.included) == Set(expected),
+              scope.included.count == expected.count else {
             throw C07DataExchangeError.invalidScope("included")
         }
         let excludedIDs = Set(scope.excluded.map(\.id))
         let required: Set<String> = [
             "appDatabase", "notesDatabase", "credentials", "deviceKeys",
-            "sessionSecrets", "cookies",
+            "sessionSecrets", "cookies", "approvalGrants",
+            "externalWorkspaceTokens", "remoteHostTrust", "cloudKeys",
         ]
-        guard required.isSubset(of: excludedIDs) else {
+        guard required.isSubset(of: excludedIDs),
+              excludedIDs.count == scope.excluded.count else {
             throw C07DataExchangeError.invalidScope("excluded")
         }
     }
@@ -641,6 +804,7 @@ public struct C07BackupSource: Sendable {
     public var failedNotes: [C07FailedNote]
     public var settingsValues: [String: String]
     public var providerCatalog: [C07ProviderAdvisory]
+    public var ownedData: C07SourceOwnedData?
     public var warnings: [String]
 
     public init(appSchemaVersion: Int,
@@ -652,6 +816,7 @@ public struct C07BackupSource: Sendable {
                 failedNotes: [C07FailedNote] = [],
                 settingsValues: [String: String] = [:],
                 providerCatalog: [C07ProviderAdvisory] = [],
+                ownedData: C07SourceOwnedData? = nil,
                 warnings: [String] = []) {
         self.appSchemaVersion = appSchemaVersion
         self.createdAt = createdAt
@@ -662,6 +827,7 @@ public struct C07BackupSource: Sendable {
         self.failedNotes = failedNotes
         self.settingsValues = settingsValues
         self.providerCatalog = providerCatalog
+        self.ownedData = ownedData
         self.warnings = warnings
     }
 }

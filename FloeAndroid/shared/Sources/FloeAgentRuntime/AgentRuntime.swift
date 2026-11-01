@@ -2475,7 +2475,8 @@ public actor FloeAgentRuntime {
               artifact.byteCount <= ProviderImageEvidencePolicy.maximumImageBytes,
               (artifact.relativePath.hasPrefix("BrowserArtifacts/")
                 || artifact.relativePath.hasPrefix("GeneratedImages/")
-                || artifact.relativePath.hasPrefix("VNCArtifacts/")),
+                || artifact.relativePath.hasPrefix("VNCArtifacts/")
+                || artifact.relativePath.hasPrefix("RDPArtifacts/")),
               !artifact.relativePath.split(separator: "/").contains("..")
         else { return nil }
         let url = root.appendingPathComponent(artifact.relativePath)

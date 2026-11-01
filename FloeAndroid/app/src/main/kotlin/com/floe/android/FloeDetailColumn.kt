@@ -130,6 +130,13 @@ fun FloeDetailColumn(
                     onExpandSidebar = onExpandSidebar,
                     onOpenDrawer = onOpenDrawer,
                 )
+                MoreDestination.RDP -> com.floe.android.host.rdp.C05RDPDestination(
+                    host = runtimeHost,
+                    compact = compact,
+                    showSidebarToggle = showSidebarToggle,
+                    onExpandSidebar = onExpandSidebar,
+                    onOpenDrawer = onOpenDrawer,
+                )
                 MoreDestination.MAIL -> com.floe.android.host.mail.C06MailDestination(
                     host = runtimeHost,
                     compact = compact,

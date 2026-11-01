@@ -781,6 +781,21 @@ public actor C05VNCDomain {
         return snapshot(record)
     }
 
+    /// Ordinary model-tool seam: returns the live VNC transport only for the
+    /// exact owner/session/epoch. It creates no second session registry and
+    /// grants nothing beyond the existing owner fence; `vnc.connect` is the
+    /// only operation that opens a session.
+    public func modelToolSession(
+        sessionID: UUID,
+        owner: C05RemoteOwner
+    ) throws -> any VNCFloeSessionDriving {
+        try requireOwner(owner)
+        guard let record = sessions[sessionID], sameOwner(record, owner) else {
+            throw C05RemoteError(.sessionNotFound, "vncSessionNotFound")
+        }
+        return record.session
+    }
+
     public func input(
         sessionID: UUID,
         events: [VNCFloeInputEvent],

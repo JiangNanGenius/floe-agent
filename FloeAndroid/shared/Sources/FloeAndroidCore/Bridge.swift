@@ -42,7 +42,8 @@ public enum AndroidBridge {
                 || requestVersion == BridgeV13.version
                 || requestVersion == BridgeV14.version
                 || requestVersion == BridgeV15.version
-                || requestVersion == BridgeV16.version else {
+                || requestVersion == BridgeV16.version
+                || requestVersion == BridgeV17.version else {
             return response(["ok": false, "error": "unsupportedVersion"])
         }
         if requestVersion == BridgeV2.version {
@@ -278,6 +279,24 @@ public enum AndroidBridge {
                                 stampVersion: BridgeV16.version)
             }
             return response(object, stampVersion: BridgeV16.version)
+        }
+        if requestVersion == BridgeV17.version {
+            // Additive C05 host-only RDP channel: original-profile RDP
+            // endpoints, explicit certificate fingerprint decisions, real
+            // FreeRDP sessions, bounded input and the frame metadata lane.
+            // No model tool, V3 command, SSH/SPICE fallback or pixel payload
+            // crosses this JSON channel. V1-V16 branches above remain
+            // byte-identical.
+            let object = C05RDPBridge.handle(requestData: data,
+                                             fallbackRequestID: requestID)
+            let encoded = (try? JSONSerialization.data(withJSONObject: object,
+                                                       options: [.sortedKeys]))
+                ?? Data(#"{"ok":false,"error":"encoding"}"#.utf8)
+            guard encoded.count <= C05RDPWire.maximumResponseBytes else {
+                return response(["ok": false, "error": "responseTooLarge"],
+                                stampVersion: BridgeV17.version)
+            }
+            return response(object, stampVersion: BridgeV17.version)
         }
         switch request["operation"] as? String {
         case "handshake":

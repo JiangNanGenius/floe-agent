@@ -672,6 +672,22 @@ public final class G02InstalledComposition: @unchecked Sendable {
         registerC06SystemServicesTools(registry: runComponents.registry)
         await C06SystemServicesDomain.shared.refreshAvailability(epoch: epoch)
 
+        // C05: register the ordinary VNC/RDP screen tools over the SAME
+        // accepted generation/registry. The screenshot artifact root is the
+        // EXACT owned FloeAgent directory of this generation
+        // (`<owned root>/FloeAgent`), matching the runtime artifact reader.
+        // No screenshot/input tool is advertised before that root exists.
+        // `typeCredential` stays hidden because Android's secure credential
+        // card resolver has no composition seam in this lane; the RDP/VNC
+        // session credentials themselves use the existing floe.rdp/floe.vnc
+        // gateway and are unaffected.
+        registerC05RemoteDesktopTools(
+            environment: C05RemoteDesktopToolEnvironment(
+                artifactRoot: { cluster.identity.root.artifactStoreURL }
+            ),
+            registry: runComponents.registry
+        )
+
         // Close the REAL feed/lease cycle with the exact accepted domain
         // instance; until this line both sides answered fail-closed.
         if let (runDomain, _) = RunDomainFacade.current(epoch: epoch) {

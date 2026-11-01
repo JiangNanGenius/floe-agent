@@ -22,6 +22,9 @@ public enum C07JournalKind: String, Codable, Sendable {
     case notebookRenamed
     case notesCreated
     case settingInserted
+    case dataIntent
+    case artifactsCommitted
+    case dataCommitted
     case complete
     case failed
     case rolledBack
@@ -33,6 +36,7 @@ public enum C07JournalOperation: String, Codable, Sendable {
     case notebook
     case notes
     case setting
+    case data
 }
 
 public struct C07JournalRecord: Codable, Sendable, Equatable {
@@ -51,6 +55,8 @@ public struct C07JournalRecord: Codable, Sendable, Equatable {
     public var settingKey: String?
     public var settingJSON: String?
     public var inserted: Bool?
+    public var planFile: String?
+    public var planSHA256: String?
     public var error: String?
 
     public init(restoreID: UUID, sequence: Int, kind: C07JournalKind,
@@ -59,7 +65,8 @@ public struct C07JournalRecord: Codable, Sendable, Equatable {
                 finalName: String? = nil, notebookID: UUID? = nil,
                 documentIDs: [UUID]? = nil,
                 settingKey: String? = nil, settingJSON: String? = nil,
-                inserted: Bool? = nil, error: String? = nil,
+                inserted: Bool? = nil, planFile: String? = nil,
+                planSHA256: String? = nil, error: String? = nil,
                 timestamp: Date = Date()) {
         self.version = 1
         self.restoreID = restoreID
@@ -76,6 +83,8 @@ public struct C07JournalRecord: Codable, Sendable, Equatable {
         self.settingKey = settingKey
         self.settingJSON = settingJSON
         self.inserted = inserted
+        self.planFile = planFile
+        self.planSHA256 = planSHA256
         self.error = error
     }
 }
@@ -134,6 +143,8 @@ public final class C07RestoreJournal {
                        settingKey: String? = nil,
                        settingJSON: String? = nil,
                        inserted: Bool? = nil,
+                       planFile: String? = nil,
+                       planSHA256: String? = nil,
                        error: String? = nil) throws -> C07JournalRecord {
         sequence += 1
         let record = C07JournalRecord(
@@ -142,7 +153,8 @@ public final class C07RestoreJournal {
             projectID: projectID, marker: marker, finalName: finalName,
             notebookID: notebookID, documentIDs: documentIDs,
             settingKey: settingKey, settingJSON: settingJSON,
-            inserted: inserted, error: error)
+            inserted: inserted, planFile: planFile, planSHA256: planSHA256,
+            error: error)
         guard let handle else {
             throw C07DataExchangeError.storageUnavailable("journalClosed")
         }
@@ -254,6 +266,27 @@ public protocol C07RestoreSink: Sendable {
 
     func insertSettingIfAbsent(key: String, json: String) async throws -> Bool
     func removeSettingIfExact(key: String, json: String) async throws
+
+    /// Plans the full owned-data graph (new identities, artifact roots and
+    /// attachment paths) and writes the durable rollback plan BEFORE any
+    /// live mutation. Read-only with respect to live storage.
+    func prepareOwnedData(_ staged: C07StagedOwnedData,
+                          projectMap: [UUID: UUID],
+                          restoreID: UUID,
+                          journalRoot: URL) async throws -> C07PreparedOwnedData
+    /// Copies Canvas/media/attachment/private-task/receipt bytes into
+    /// app-private destinations. The plan already lists every root for
+    /// reverse cleanup.
+    func commitArtifacts(_ prepared: C07PreparedOwnedData) async throws
+        -> C07ArtifactCommitReceipt
+    /// Inserts every live row in ONE GRDB writer transaction. Rows are
+    /// already normalized for no-replay semantics and identity-remapped.
+    func commitOwnedData(_ prepared: C07PreparedOwnedData,
+                         artifacts: C07ArtifactCommitReceipt) async throws
+        -> C07OwnedDataCommitReceipt
+    /// Idempotent reverse cleanup: exact inserted identities and exact
+    /// created artifact roots only.
+    func rollbackOwnedData(planURL: URL, planSHA256: String) async throws
 }
 
 // MARK: - Engine
@@ -267,6 +300,18 @@ public struct C07RestoreReceipt: Sendable, Equatable {
     public var noteResourcesRestored: Int
     public var settingsInserted: Int
     public var settingsSkipped: Int
+    public var conversationsRestored: Int
+    public var messagesRestored: Int
+    public var runsRestored: Int
+    public var toolCallsRestored: Int
+    public var workspacesRestored: Int
+    public var schedulesRestored: Int
+    public var providersRestored: Int
+    public var canvasProjectsRestored: Int
+    public var mediaProjectsRestored: Int
+    public var mediaAssetsRestored: Int
+    public var mailReceiptsRestored: Int
+    public var evidenceRowsRestored: Int
     public var warnings: [String]
     public var journalURL: URL
 }
@@ -290,14 +335,18 @@ public enum C07RestoreEngine {
             var noteResourcesRestored = 0
             var settingsInserted = 0
             var settingsSkipped = 0
+            var ownedReceipt: C07OwnedDataCommitReceipt?
+            var artifactReceipt: C07ArtifactCommitReceipt?
 
             let totalOps = plan.projects.count + plan.manifest.notes.notebooks.count
                 + plan.notes.count + plan.settingsValues.count
+                + (plan.ownedData == nil ? 0 : 2)
             var completedOps = 0
             progress?(0, totalOps)
 
             // Projects first: new UUID ownership makes every file destination
             // non-colliding with an existing live project.
+            var projectMap: [UUID: UUID] = [:]
             for project in plan.projects {
                 if project.restoreSkipped {
                     projectsSkipped += 1
@@ -326,8 +375,38 @@ public enum C07RestoreEngine {
                     files: project.files)
                 try journal.append(kind: .filesWritten, operationID: opID,
                                    operation: .project, projectID: projectID)
+                projectMap[project.record.projectID] = projectID
                 projectsRestored += 1
                 completedOps += 1
+                progress?(completedOps, totalOps)
+            }
+
+            // Full owned-data graph. The durable plan names every new root
+            // identity and artifact destination BEFORE the first mutation.
+            if let owned = plan.ownedData {
+                let prepared = try await sink.prepareOwnedData(
+                    owned, projectMap: projectMap,
+                    restoreID: journal.restoreID, journalRoot: journalRoot)
+                try journal.append(
+                    kind: .dataIntent, operation: .data,
+                    planFile: prepared.planURL.lastPathComponent,
+                    planSHA256: prepared.planSHA256)
+                let artifacts = try await sink.commitArtifacts(prepared)
+                artifactReceipt = artifacts
+                try journal.append(
+                    kind: .artifactsCommitted, operation: .data,
+                    planFile: prepared.planURL.lastPathComponent,
+                    planSHA256: prepared.planSHA256)
+                let receipt = try await sink.commitOwnedData(
+                    prepared, artifacts: artifacts)
+                try journal.append(
+                    kind: .dataCommitted, operation: .data,
+                    planFile: prepared.planURL.lastPathComponent,
+                    planSHA256: prepared.planSHA256)
+                ownedReceipt = receipt
+                warnings.append(contentsOf: artifacts.warnings)
+                warnings.append(contentsOf: receipt.warnings)
+                completedOps += 2
                 progress?(completedOps, totalOps)
             }
 
@@ -342,12 +421,12 @@ public enum C07RestoreEngine {
                                    finalName: notebook.title)
                 let id = try await sink.createNotebook(markerTitle: marker)
                 try journal.append(kind: .notebookCreated, operationID: opID,
-                                   operation: .notebook, notebookID: id,
-                                   marker: marker, finalName: notebook.title)
+                                   operation: .notebook, marker: marker,
+                                   finalName: notebook.title, notebookID: id)
                 try await sink.renameNotebook(id: id, to: notebook.title)
                 try journal.append(kind: .notebookRenamed, operationID: opID,
-                                   operation: .notebook, notebookID: id,
-                                   finalName: notebook.title)
+                                   operation: .notebook,
+                                   finalName: notebook.title, notebookID: id)
                 notebookMap[notebook.notebookID] = id
                 notebooksRestored += 1
                 completedOps += 1
@@ -404,6 +483,18 @@ public enum C07RestoreEngine {
                 noteResourcesRestored: noteResourcesRestored,
                 settingsInserted: settingsInserted,
                 settingsSkipped: settingsSkipped,
+                conversationsRestored: ownedReceipt?.conversations ?? 0,
+                messagesRestored: ownedReceipt?.messages ?? 0,
+                runsRestored: ownedReceipt?.runs ?? 0,
+                toolCallsRestored: ownedReceipt?.toolCalls ?? 0,
+                workspacesRestored: ownedReceipt?.workspaces ?? 0,
+                schedulesRestored: ownedReceipt?.schedules ?? 0,
+                providersRestored: ownedReceipt?.providers ?? 0,
+                canvasProjectsRestored: artifactReceipt?.canvasProjects ?? 0,
+                mediaProjectsRestored: artifactReceipt?.mediaProjects ?? 0,
+                mediaAssetsRestored: artifactReceipt?.mediaAssets ?? 0,
+                mailReceiptsRestored: artifactReceipt?.mailReceipts ?? 0,
+                evidenceRowsRestored: artifactReceipt?.evidenceRows ?? 0,
                 warnings: warnings,
                 journalURL: journal.url)
         } catch {
@@ -411,7 +502,8 @@ public enum C07RestoreEngine {
             try? journal.append(kind: .failed, error: errorCode)
             do {
                 _ = try await C07RestoreRollback.rollback(
-                    records: journalSnapshot(journal), sink: sink)
+                    records: journalSnapshot(journal), sink: sink,
+                    journalRoot: journalRoot)
                 try? journal.append(kind: .rolledBack,
                                     error: "afterFailure:\(errorCode)")
             } catch {
@@ -451,13 +543,15 @@ public enum C07RestoreRollback {
     /// deletion covers an intent whose receipt never landed; exact receipts
     /// cover the normal case.
     public static func rollback(records: [C07JournalRecord],
-                                sink: C07RestoreSink) async throws -> Int {
+                                sink: C07RestoreSink,
+                                journalRoot: URL) async throws -> Int {
         var actions = 0
         var failures: [String] = []
         var seenNotes = Set<UUID>()
         var seenProjects = Set<UUID>()
         var seenNotebooks = Set<UUID>()
         var seenSettings = Set<String>()
+        var seenDataPlans = Set<String>()
 
         for record in records.sorted(by: { $0.sequence > $1.sequence }) {
             do {
@@ -495,6 +589,16 @@ public enum C07RestoreRollback {
                        seenSettings.insert(key).inserted {
                         try await sink.removeSettingIfExact(key: key, json: json)
                         actions += 1
+                    }
+                case .data:
+                    if let planFile = record.planFile,
+                       seenDataPlans.insert(planFile).inserted {
+                        let url = journalRoot.appendingPathComponent(planFile)
+                        if let sha = record.planSHA256 {
+                            try await sink.rollbackOwnedData(
+                                planURL: url, planSHA256: sha)
+                            actions += 1
+                        }
                     }
                 case .none:
                     break
@@ -536,7 +640,8 @@ public enum C07RestoreRecovery {
             }
             do {
                 _ = try await C07RestoreRollback.rollback(
-                    records: view.records, sink: sink)
+                    records: view.records, sink: sink,
+                    journalRoot: journalRoot)
                 if let journal = C07RestoreJournal(existingURL: view.url) {
                     try? journal.append(kind: .rolledBack, error: "recovery")
                     journal.close()

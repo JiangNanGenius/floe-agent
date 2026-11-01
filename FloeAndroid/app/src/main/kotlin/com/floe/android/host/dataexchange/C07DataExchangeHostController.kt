@@ -10,6 +10,7 @@ import android.content.ContentResolver
 import android.content.Context
 import android.net.Uri
 import android.provider.OpenableColumns
+import com.floe.android.feature.dataexchange.DataExchangeCanvasUi
 import com.floe.android.feature.dataexchange.DataExchangeCapabilitiesUi
 import com.floe.android.feature.dataexchange.DataExchangePhase
 import com.floe.android.feature.dataexchange.DataExchangePlanUi
@@ -197,10 +198,122 @@ internal class C07DataExchangeHostController(
         }
     }
 
-    fun beginRestore(uri: Uri, importNote: Boolean) {
+    fun loadCanvases() {
+        if (state.value.busy) return
+        val owner = runCatching { owner() }.getOrNull() ?: return
+        scope.launch {
+            try {
+                val choices = withContext(ioDispatcher) { client.canvases(owner) }
+                _state.update {
+                    it.copy(canvases = choices.map {
+                        DataExchangeCanvasUi(it.canvasID, it.name)
+                    })
+                }
+            } catch (_: Throwable) {
+                _state.update { it.copy(canvases = emptyList()) }
+            }
+        }
+    }
+
+    fun beginCanvasExport(uri: Uri, canvasID: String) {
         if (state.value.busy ||
             state.value.phase == DataExchangePhase.REVIEWING) return
         cancelRequested = false
+        val owner = try {
+            owner()
+        } catch (failure: Throwable) {
+            fail(failure as? C07ClientFailure
+                ?: C07ClientFailure("runtimeNotInstalled", "runtimeNotInstalled"))
+            return
+        }
+        activeWork = scope.launch {
+            var jobID: String? = null
+            var destinationTouched = false
+            try {
+                _state.update {
+                    it.copy(phase = DataExchangePhase.BACKING_UP, progressDone = 0,
+                        progressTotal = 0, errorCode = null, noticeCode = null,
+                        backupBytes = null, backupSha256 = null,
+                        backupWarnings = emptyList(), resultWarnings = emptyList(),
+                        receipt = null)
+                }
+                val createdJob = withContext(ioDispatcher) {
+                    client.canvasExportBegin(owner, canvasID)
+                }
+                jobID = createdJob
+                activeJobID = createdJob
+                val job = awaitJob(owner, createdJob) { progress ->
+                    _state.update {
+                        it.copy(progressDone = progress.doneBytes,
+                            progressTotal = progress.totalBytes)
+                    }
+                }
+                val bytes = job.fileByteCount
+                val sha = job.fileSha256
+                if (bytes == null || sha == null) {
+                    throw C07ClientFailure("invalidReply", "missingFileReceipt")
+                }
+                destinationTouched = true
+                activeDestinationUri = uri
+                writeDestination(owner, createdJob, uri, bytes, sha)
+                activeDestinationUri = null
+                runCatching {
+                    withContext(ioDispatcher) { client.close(owner, createdJob) }
+                }
+                activeJobID = null
+                _state.update {
+                    it.copy(
+                        phase = DataExchangePhase.IDLE,
+                        backupBytes = bytes,
+                        backupSha256 = sha,
+                        noticeCode = "canvasExported",
+                        progressDone = bytes,
+                        progressTotal = bytes,
+                    )
+                }
+            } catch (cancelled: CancellationException) {
+                jobID?.let {
+                    runCatching {
+                        withContext(NonCancellable + ioDispatcher) { client.cancel(owner, it) }
+                    }
+                }
+                if (destinationTouched) deleteDestination(uri)
+                _state.update {
+                    it.copy(phase = DataExchangePhase.IDLE,
+                        noticeCode = if (destinationTouched) "partialFile" else "cancelled",
+                        errorCode = null)
+                }
+            } catch (failure: C07ClientFailure) {
+                jobID?.let { runCatching { withContext(ioDispatcher) { client.cancel(owner, it) } } }
+                if (destinationTouched) deleteDestination(uri)
+                fail(failure, notice = if (destinationTouched) "partialFile" else null)
+            } catch (error: Throwable) {
+                jobID?.let { runCatching { withContext(ioDispatcher) { client.cancel(owner, it) } } }
+                if (destinationTouched) deleteDestination(uri)
+                fail(C07ClientFailure("unknown", error.javaClass.simpleName),
+                    notice = if (destinationTouched) "partialFile" else null)
+            } finally {
+                activeJobID = null
+                activeStageID = null
+                activeDestinationUri = null
+            }
+        }
+    }
+
+    fun beginRestore(uri: Uri, restoreKind: String = "auto") {
+        if (state.value.busy ||
+            state.value.phase == DataExchangePhase.REVIEWING) return
+        cancelRequested = false
+        val rawDisplayName = queryDisplayName(uri)
+        val displayName = ensureDocumentExtension(
+            rawDisplayName, runCatching { resolver.getType(uri) }.getOrNull(),
+            restoreKind)
+        val kind = if (restoreKind == "auto") {
+            classifyDocument(displayName)
+        } else {
+            restoreKind
+        }
+        val importNote = kind == "note"
         val owner = try {
             owner()
         } catch (failure: Throwable) {
@@ -214,6 +327,7 @@ internal class C07DataExchangeHostController(
             try {
                 _state.update {
                     it.copy(phase = DataExchangePhase.INSPECTING, importMode = importNote,
+                        documentKind = kind,
                         plan = null, progressDone = 0, progressTotal = 0,
                         errorCode = null, noticeCode = null, receipt = null,
                         resultWarnings = emptyList())
@@ -228,7 +342,7 @@ internal class C07DataExchangeHostController(
                 streamToStage(owner, createdStage, prepared, started.chunkBytes)
                 withContext(ioDispatcher) { client.stageCommit(owner, createdStage) }
                 val jobID = withContext(ioDispatcher) {
-                    client.inspect(owner, createdStage, notePackage = importNote)
+                    client.inspect(owner, createdStage, kind, displayName)
                 }
                 activeJobID = jobID
                 activeStageID = null
@@ -240,10 +354,22 @@ internal class C07DataExchangeHostController(
                 }
                 val plan = job.plan
                     ?: throw C07ClientFailure("invalidReply", "missingPlan")
-                if (importNote && (plan.projects > 0 || plan.settingsKeys > 0)) {
+                if (kind == "note" &&
+                    (plan.projects > 0 || plan.settingsKeys > 0 ||
+                        plan.noteDocuments == 0)) {
                     withContext(ioDispatcher) { client.abort(owner, jobID) }
                     activeJobID = null
                     throw C07ClientFailure("invalidFormat", "notNotePackage")
+                }
+                if (kind == "canvas" && plan.canvasProjects == 0) {
+                    withContext(ioDispatcher) { client.abort(owner, jobID) }
+                    activeJobID = null
+                    throw C07ClientFailure("invalidFormat", "notCanvasPackage")
+                }
+                if (kind == "document" && plan.projects == 0) {
+                    withContext(ioDispatcher) { client.abort(owner, jobID) }
+                    activeJobID = null
+                    throw C07ClientFailure("invalidFormat", "notDocument")
                 }
                 _state.update {
                     it.copy(
@@ -293,6 +419,7 @@ internal class C07DataExchangeHostController(
             return
         }
         val importMode = state.value.importMode
+        val documentKind = state.value.documentKind
         activeWork = scope.launch {
             try {
                 _state.update {
@@ -319,7 +446,12 @@ internal class C07DataExchangeHostController(
                         plan = null,
                         receipt = receipt.toUi(),
                         resultWarnings = job.warnings,
-                        noticeCode = if (importMode) "imported" else "restored",
+                        noticeCode = when (documentKind) {
+                            "note" -> "imported"
+                            "canvas" -> "canvasImported"
+                            "document" -> "documentImported"
+                            else -> "restored"
+                        },
                         pendingRecoveries = 0,
                     )
                 }
@@ -609,6 +741,49 @@ internal class C07DataExchangeHostController(
             cleanup = { file.delete() })
     }
 
+    private fun queryDisplayName(uri: Uri): String {
+        return runCatching {
+            resolver.query(
+                uri,
+                arrayOf(OpenableColumns.DISPLAY_NAME),
+                null, null, null,
+            )?.use { cursor ->
+                if (!cursor.moveToFirst()) return@use null
+                val index = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
+                if (index < 0 || cursor.isNull(index)) null else cursor.getString(index)
+            }
+        }.getOrNull()?.takeIf { it.isNotBlank() }
+            ?: uri.lastPathSegment?.substringAfterLast('/')?.takeIf { it.isNotBlank() }
+            ?: "package"
+    }
+
+    private fun ensureDocumentExtension(
+        displayName: String,
+        mimeType: String?,
+        kind: String,
+    ): String {
+        val lower = displayName.lowercase()
+        if (Regex("\\.[a-z0-9]{1,8}$").containsMatchIn(lower)) return displayName
+        val extension = when {
+            kind == "note" -> "floenote"
+            kind == "canvas" -> "flocanvas"
+            kind == "document" && mimeType == "application/pdf" -> "pdf"
+            kind == "document" -> "docx"
+            else -> return displayName
+        }
+        return "$displayName.$extension"
+    }
+
+    private fun classifyDocument(displayName: String): String {
+        val lower = displayName.lowercase()
+        return when {
+            lower.endsWith(".floenote") -> "note"
+            lower.endsWith(".flocanvas") -> "canvas"
+            lower.endsWith(".docx") || lower.endsWith(".pdf") -> "document"
+            else -> "backup"
+        }
+    }
+
     private fun querySize(uri: Uri): Long? {
         return runCatching {
             resolver.query(uri, arrayOf(OpenableColumns.SIZE), null, null, null)?.use { cursor ->
@@ -689,6 +864,8 @@ internal class C07DataExchangeHostController(
             formatVersion = formatVersion,
             backupExtension = backupExtension,
             notesExtension = notesExtension,
+            canvasExtension = canvasExtension,
+            documentExtensions = documentExtensions,
             chunkBytes = chunkBytes,
             included = included,
             excluded = excluded.map { DataExchangeScopeRow(it.first, it.second) },
@@ -706,6 +883,19 @@ internal class C07DataExchangeHostController(
             providerAdvisories = providerAdvisories,
             trashedNotesExcluded = trashedNotesExcluded,
             skippedProjects = skippedProjects,
+            conversations = conversations,
+            messages = messages,
+            runs = runs,
+            toolCalls = toolCalls,
+            workspaces = workspaces,
+            canvasProjects = canvasProjects,
+            mediaProjects = mediaProjects,
+            mediaAssets = mediaAssets,
+            schedules = schedules,
+            actionReceipts = actionReceipts,
+            mailReceipts = mailReceipts,
+            providerConfigs = providerConfigs,
+            executionEvidence = executionEvidence,
             warnings = warnings,
         )
 
@@ -716,6 +906,16 @@ internal class C07DataExchangeHostController(
             notebooks = notebooks,
             settings = settings,
             skippedProjects = skippedProjects,
+            conversations = conversations,
+            messages = messages,
+            runs = runs,
+            toolCalls = toolCalls,
+            workspaces = workspaces,
+            schedules = schedules,
+            providers = providers,
+            canvasProjects = canvasProjects,
+            mediaProjects = mediaProjects,
+            evidenceRows = evidenceRows,
         )
 
     private data class UploadSource(

@@ -37,6 +37,9 @@ public fun DataExchangeSettingsPage(
     onCancelBackup: () -> Unit,
     onPickRestore: () -> Unit,
     onPickNoteImport: () -> Unit,
+    onPickCanvasImport: () -> Unit,
+    onPickDocumentImport: () -> Unit,
+    onExportCanvas: (String) -> Unit,
     onConfirmRestore: () -> Unit,
     onCancelRestore: () -> Unit,
     onRecover: () -> Unit,
@@ -99,6 +102,11 @@ public fun DataExchangeSettingsPage(
                     Bullet(stringResource(R.string.dataexchange_included_projects))
                     Bullet(stringResource(R.string.dataexchange_included_retained))
                     Bullet(stringResource(R.string.dataexchange_included_notes))
+                    Bullet(stringResource(R.string.dataexchange_included_tasks))
+                    Bullet(stringResource(R.string.dataexchange_included_canvas))
+                    Bullet(stringResource(R.string.dataexchange_included_config))
+                    Bullet(stringResource(R.string.dataexchange_included_schedules))
+                    Bullet(stringResource(R.string.dataexchange_included_receipts))
                     Bullet(stringResource(R.string.dataexchange_included_settings))
                     FloeText(
                         stringResource(R.string.dataexchange_floecad_note),
@@ -258,6 +266,45 @@ public fun DataExchangeSettingsPage(
             })
         }
 
+        FloeSettingsSectionCard(title = stringResource(R.string.dataexchange_package_title)) {
+            SectionItem(title = {
+                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    FloeText(
+                        stringResource(R.string.dataexchange_package_body),
+                        style = Floe.typography.metadata,
+                        color = Floe.colors.secondaryLabel,
+                    )
+                    Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                        FloeCapsuleAction(
+                            label = stringResource(R.string.dataexchange_package_canvas_import),
+                            onClick = onPickCanvasImport,
+                            enabled = !state.busy,
+                        )
+                        FloeCapsuleAction(
+                            label = stringResource(R.string.dataexchange_package_document_import),
+                            onClick = onPickDocumentImport,
+                            enabled = !state.busy,
+                        )
+                    }
+                    if (state.canvases.isNotEmpty()) {
+                        FloeDivider()
+                        FloeText(
+                            stringResource(R.string.dataexchange_package_canvas_export),
+                            style = Floe.typography.metadata,
+                            color = Floe.colors.secondaryLabel,
+                        )
+                        state.canvases.take(8).forEach { canvas ->
+                            FloeCapsuleAction(
+                                label = canvas.name,
+                                onClick = { onExportCanvas(canvas.canvasID) },
+                                enabled = !state.busy,
+                            )
+                        }
+                    }
+                }
+            })
+        }
+
         if (state.pendingRecoveries > 0) {
             FloeSettingsSectionCard(title = stringResource(R.string.dataexchange_recovery_title)) {
                 SectionItem(title = {
@@ -303,6 +350,27 @@ public fun DataExchangeSettingsPage(
                             ),
                             style = Floe.typography.metadata,
                         )
+                        if (receipt.conversations > 0 || receipt.messages > 0) {
+                            FloeText(
+                                stringResource(
+                                    R.string.dataexchange_result_tasks,
+                                    receipt.conversations,
+                                    receipt.messages,
+                                    receipt.runs,
+                                ),
+                                style = Floe.typography.metadata,
+                            )
+                        }
+                        if (receipt.canvasProjects > 0 || receipt.mediaProjects > 0) {
+                            FloeText(
+                                stringResource(
+                                    R.string.dataexchange_result_canvas,
+                                    receipt.canvasProjects,
+                                    receipt.mediaProjects,
+                                ),
+                                style = Floe.typography.metadata,
+                            )
+                        }
                         if (receipt.skippedProjects > 0) {
                             FloeText(
                                 stringResource(
@@ -445,6 +513,58 @@ private fun PlanReview(plan: DataExchangePlanUi, importMode: Boolean) {
                 ),
                 style = Floe.typography.metadata,
             )
+            if (plan.conversations > 0 || plan.messages > 0) {
+                FloeText(
+                    stringResource(
+                        R.string.dataexchange_plan_tasks,
+                        plan.conversations,
+                        plan.messages,
+                        plan.runs,
+                    ),
+                    style = Floe.typography.metadata,
+                )
+            }
+            if (plan.canvasProjects > 0 || plan.mediaProjects > 0) {
+                FloeText(
+                    stringResource(
+                        R.string.dataexchange_plan_canvas,
+                        plan.canvasProjects,
+                        plan.mediaProjects,
+                        plan.mediaAssets,
+                    ),
+                    style = Floe.typography.metadata,
+                )
+            }
+            if (plan.schedules > 0) {
+                FloeText(
+                    stringResource(
+                        R.string.dataexchange_plan_schedules,
+                        plan.schedules,
+                    ),
+                    style = Floe.typography.metadata,
+                )
+            }
+            if (plan.actionReceipts > 0 || plan.mailReceipts > 0) {
+                FloeText(
+                    stringResource(
+                        R.string.dataexchange_plan_receipts,
+                        plan.actionReceipts,
+                        plan.mailReceipts,
+                    ),
+                    style = Floe.typography.metadata,
+                    color = Floe.colors.secondaryLabel,
+                )
+            }
+            if (plan.executionEvidence > 0) {
+                FloeText(
+                    stringResource(
+                        R.string.dataexchange_plan_evidence,
+                        plan.executionEvidence,
+                    ),
+                    style = Floe.typography.metadata,
+                    color = Floe.colors.secondaryLabel,
+                )
+            }
         }
         FloeText(
             stringResource(
@@ -521,7 +641,33 @@ private fun excludedCopy(id: String): String = when (id) {
     "deviceKeys" -> stringResource(R.string.dataexchange_excluded_device_keys)
     "sessionSecrets" -> stringResource(R.string.dataexchange_excluded_sessions)
     "cookies" -> stringResource(R.string.dataexchange_excluded_cookies)
-    "approvalGrants" -> stringResource(R.string.dataexchange_excluded_grants)
+    "approvalGrants", "taskPolicies" ->
+        stringResource(R.string.dataexchange_excluded_task_policies)
+    "executionTargetAuthorization" ->
+        stringResource(R.string.dataexchange_excluded_execution_auth)
+    "remoteHostTrust" -> stringResource(R.string.dataexchange_excluded_remote_trust)
+    "externalWorkspaceTokens", "externalFileBookmarks" ->
+        stringResource(R.string.dataexchange_excluded_external_tokens)
+    "browserSessions" -> stringResource(R.string.dataexchange_excluded_browser)
+    "mailCredentials", "mailDraftsAndTransfers" ->
+        stringResource(R.string.dataexchange_excluded_mail_credentials)
+    "runCheckpointsAndPendingInputs" ->
+        stringResource(R.string.dataexchange_excluded_run_state)
+    "mediaGenerationJobs" ->
+        stringResource(R.string.dataexchange_excluded_media_jobs)
+    "mediaGenerationCandidates" ->
+        stringResource(R.string.dataexchange_excluded_media_candidates)
+    "creativeAssetIndex" ->
+        stringResource(R.string.dataexchange_excluded_derived_index)
+    "cloudKeys" -> stringResource(R.string.dataexchange_excluded_cloud_keys)
+    "environmentImages" ->
+        stringResource(R.string.dataexchange_excluded_environment_images)
+    "canvasCADDrafts", "canvasNativeCADPackages" ->
+        stringResource(R.string.dataexchange_excluded_canvas_cad)
+    "canvasRunContexts" ->
+        stringResource(R.string.dataexchange_excluded_canvas_run)
+    "realtimeSync" ->
+        stringResource(R.string.dataexchange_excluded_realtime)
     "conversationsAndRuns" -> stringResource(R.string.dataexchange_excluded_chats)
     "runOutputs" -> stringResource(R.string.dataexchange_excluded_outputs)
     "privateTaskWorkspaces" -> stringResource(R.string.dataexchange_excluded_tasks)
@@ -546,6 +692,10 @@ private fun errorCopy(code: String): String = when (code) {
     "unsafePath", "duplicateEntry", "caseCollision", "symlinkUnsupported" ->
         stringResource(R.string.dataexchange_error_unsafe)
     "notesArchive" -> stringResource(R.string.dataexchange_error_notes)
+    "documentPackage", "unsupportedFeature" ->
+        stringResource(R.string.dataexchange_error_package)
+    "duplicateIdentity", "referenceMissing", "artifactCollision" ->
+        stringResource(R.string.dataexchange_error_reference)
     "receiptMismatch" -> stringResource(R.string.dataexchange_error_hash)
     "bridgeUnavailable" -> stringResource(R.string.dataexchange_error_storage)
     "cancelled" -> stringResource(R.string.dataexchange_error_cancelled)
@@ -558,6 +708,9 @@ private fun errorCopy(code: String): String = when (code) {
 @Composable
 private fun noticeCopy(code: String): String = when (code) {
     "backupSaved" -> stringResource(R.string.dataexchange_notice_backup_saved)
+    "canvasExported" -> stringResource(R.string.dataexchange_notice_canvas_exported)
+    "canvasImported" -> stringResource(R.string.dataexchange_notice_canvas_imported)
+    "documentImported" -> stringResource(R.string.dataexchange_notice_document_imported)
     "restored" -> stringResource(R.string.dataexchange_notice_restored)
     "imported" -> stringResource(R.string.dataexchange_notice_imported)
     "recovered" -> stringResource(R.string.dataexchange_notice_recovered)

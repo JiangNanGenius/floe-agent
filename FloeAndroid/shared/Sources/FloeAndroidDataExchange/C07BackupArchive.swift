@@ -44,6 +44,11 @@ public struct C07StagedProject: Sendable, Equatable {
     public var record: C07ProjectRecord
     public var files: [C07StagedProjectFile]
 
+    public init(record: C07ProjectRecord, files: [C07StagedProjectFile]) {
+        self.record = record
+        self.files = files
+    }
+
     public var restoreSkipped: Bool { !record.warnings.isEmpty && record.files.isEmpty }
 }
 
@@ -54,6 +59,8 @@ public struct C07RestorePlan: Sendable {
     public var projects: [C07StagedProject]
     public var notes: [C07ParsedNoteArchive]
     public var settingsValues: [String: String]
+    /// v2 logical row graph + Canvas/media/attachment/receipt artifacts.
+    public var ownedData: C07StagedOwnedData?
     public var warnings: [String]
     public var totalBytes: Int64
 
@@ -63,6 +70,7 @@ public struct C07RestorePlan: Sendable {
                 projects: [C07StagedProject],
                 notes: [C07ParsedNoteArchive],
                 settingsValues: [String: String],
+                ownedData: C07StagedOwnedData? = nil,
                 warnings: [String],
                 totalBytes: Int64) {
         self.manifest = manifest
@@ -71,6 +79,7 @@ public struct C07RestorePlan: Sendable {
         self.projects = projects
         self.notes = notes
         self.settingsValues = settingsValues
+        self.ownedData = ownedData
         self.warnings = warnings
         self.totalBytes = totalBytes
     }
@@ -79,6 +88,9 @@ public struct C07RestorePlan: Sendable {
     public var noteResourceCount: Int { notes.reduce(0) { $0 + $1.resources.count } }
     public var projectFileCount: Int { projects.reduce(0) { $0 + $1.files.count } }
     public var skippedProjectCount: Int { projects.filter(\.restoreSkipped).count }
+    public var ownedDataCounts: C07OwnedDataCounts {
+        ownedData?.manifest.counts ?? C07OwnedDataCounts()
+    }
 }
 
 // MARK: - Builder
@@ -196,6 +208,26 @@ public enum C07BackupBuilder {
             if let digest = try? C07Digest.file(note.archiveURL) {
                 totalEstimate += digest.byteCount
             }
+        }
+        if let owned = source.ownedData {
+            for table in owned.tables {
+                guard let size = (try? table.url.resourceValues(
+                    forKeys: [.fileSizeKey]))?.fileSize else {
+                    throw C07DataExchangeError.storageUnavailable("tableStat")
+                }
+                totalEstimate += Int64(size)
+            }
+            if let workspaces = owned.workspaces {
+                guard let size = (try? workspaces.url.resourceValues(
+                    forKeys: [.fileSizeKey]))?.fileSize else {
+                    throw C07DataExchangeError.storageUnavailable("workspacesStat")
+                }
+                totalEstimate += Int64(size)
+            }
+            for artifact in owned.artifacts {
+                totalEstimate += artifact.record.byteCount
+            }
+            totalEstimate += 1_048_576
         }
         let estimatedTotal = totalEstimate
         let projected = estimatedTotal > Int64.max / 2
@@ -327,15 +359,201 @@ public enum C07BackupBuilder {
             progress?(done, estimatedTotal)
         }
 
+        // v2 logical row graph and app-owned artifact graph.
+        var dataManifestRef: C07EntryReference?
+        var artifactCatalogRef: C07EntryReference?
+        if let owned = source.ownedData {
+            let tableNames = owned.tables.map(\.name)
+            guard Set(tableNames).count == tableNames.count,
+                  C07OwnedDataPolicy.mandatoryTableNames.isSubset(of: Set(tableNames)),
+                  owned.tables.count <= C07OwnedDataLimits.maximumTables else {
+                throw C07DataExchangeError.invalidManifest("ownedTableSet")
+            }
+            var tableRecords: [C07OwnedTableRecord] = []
+            for table in owned.tables {
+                guard let policy = C07OwnedDataPolicy.policy(for: table.name) else {
+                    throw C07DataExchangeError.invalidManifest("ownedTable:\(table.name)")
+                }
+                _ = policy
+                let entry = c07OwnedTableEntry(table.name)
+                guard archivePaths.insert(C07Path.collisionKey(entry)).inserted else {
+                    throw C07DataExchangeError.caseCollision(entry)
+                }
+                totalFileCount += 1
+                guard totalFileCount <= C07DataExchangeLimits.maximumEntries else {
+                    throw C07DataExchangeError.tooManyEntries
+                }
+                var countedRows = 0
+                try C07RowStream.rows(in: table.url, table: table.name) { row in
+                    guard C07OwnedDataPolicy.shouldExportRow(
+                        table: table.name, row: row) else {
+                        throw C07DataExchangeError.invalidManifest(
+                            "rowNotExportable:\(table.name)")
+                    }
+                    countedRows += 1
+                }
+                guard countedRows == table.rowCount else {
+                    throw C07DataExchangeError.invalidManifest(
+                        "rowCount:\(table.name)")
+                }
+                let stagedURL = staging.appendingPathComponent(entry)
+                try C07FileSystem.ensureDirectory(stagedURL.deletingLastPathComponent())
+                let copied = try C07FileSystem.copyVerified(
+                    source: table.url, destination: stagedURL)
+                totalCopyBytes += copied.byteCount
+                guard totalCopyBytes <= C07DataExchangeLimits.maximumTotalBytes else {
+                    throw C07DataExchangeError.totalTooLarge
+                }
+                tableRecords.append(C07OwnedTableRecord(
+                    name: table.name, entry: entry,
+                    rowCount: countedRows, byteCount: copied.byteCount,
+                    sha256: copied.sha256))
+                done += copied.byteCount
+                progress?(done, estimatedTotal)
+            }
+            guard let workspaces = owned.workspaces else {
+                throw C07DataExchangeError.invalidManifest("workspacesMissing")
+            }
+            let workspaceEntry = C07OwnedDataLimits.workspacesEntry
+            guard archivePaths.insert(C07Path.collisionKey(workspaceEntry)).inserted else {
+                throw C07DataExchangeError.caseCollision(workspaceEntry)
+            }
+            totalFileCount += 1
+            guard totalFileCount <= C07DataExchangeLimits.maximumEntries else {
+                throw C07DataExchangeError.tooManyEntries
+            }
+            let stagedWorkspaces = staging.appendingPathComponent(workspaceEntry)
+            try C07FileSystem.ensureDirectory(stagedWorkspaces.deletingLastPathComponent())
+            let workspaceCopy = try C07FileSystem.copyVerified(
+                source: workspaces.url, destination: stagedWorkspaces,
+                maximum: C07OwnedDataLimits.maximumWorkspaceBytes)
+            let workspaceData: Data
+            do { workspaceData = try Data(contentsOf: stagedWorkspaces) }
+            catch { throw C07DataExchangeError.storageUnavailable("workspacesRead") }
+            let descriptors: [C07WorkspaceDescriptor]
+            do {
+                let decoder = JSONDecoder()
+                decoder.dateDecodingStrategy = .iso8601
+                descriptors = try decoder.decode(
+                    [C07WorkspaceDescriptor].self, from: workspaceData)
+            } catch {
+                throw C07DataExchangeError.invalidManifest("workspacesDecode")
+            }
+            guard descriptors.count == workspaces.count,
+                  descriptors.count <= C07OwnedDataLimits.maximumWorkspaces else {
+                throw C07DataExchangeError.invalidManifest("workspacesCount")
+            }
+            var countedArtifacts: [C07ArtifactRecord] = []
+            for artifact in owned.artifacts {
+                let record = artifact.record
+                let expectedEntry = try C07ArtifactPath.entry(
+                    role: record.role, containerID: record.containerID,
+                    ownerID: record.ownerID, logicalPath: record.logicalPath)
+                guard expectedEntry == record.entry,
+                      record.entry.hasPrefix(
+                        C07OwnedDataLimits.artifactDirectory + "/") else {
+                    throw C07DataExchangeError.invalidManifest(
+                        "artifactEntry:\(record.entry)")
+                }
+                guard archivePaths.insert(
+                    C07Path.collisionKey(record.entry)).inserted else {
+                    throw C07DataExchangeError.caseCollision(record.entry)
+                }
+                totalFileCount += 1
+                guard totalFileCount <= C07DataExchangeLimits.maximumEntries else {
+                    throw C07DataExchangeError.tooManyEntries
+                }
+                let stagedURL = staging.appendingPathComponent(record.entry)
+                try C07FileSystem.ensureDirectory(stagedURL.deletingLastPathComponent())
+                let copied = try C07FileSystem.copyVerified(
+                    source: artifact.url, destination: stagedURL,
+                    maximum: C07OwnedDataLimits.maximumArtifactBytes)
+                guard copied.byteCount == record.byteCount,
+                      copied.sha256 == record.sha256 else {
+                    throw C07DataExchangeError.hashMismatch(record.entry)
+                }
+                totalCopyBytes += copied.byteCount
+                guard totalCopyBytes <= C07DataExchangeLimits.maximumTotalBytes else {
+                    throw C07DataExchangeError.totalTooLarge
+                }
+                countedArtifacts.append(record)
+                done += copied.byteCount
+                progress?(done, estimatedTotal)
+            }
+            let catalog = C07ArtifactCatalog(records: countedArtifacts)
+            try catalog.validate()
+            let catalogData = try catalog.encoded()
+            let catalogEntry = "\(C07OwnedDataLimits.artifactDirectory)/manifest.json"
+            guard archivePaths.insert(C07Path.collisionKey(catalogEntry)).inserted else {
+                throw C07DataExchangeError.caseCollision(catalogEntry)
+            }
+            totalFileCount += 1
+            let catalogURL = staging.appendingPathComponent(catalogEntry)
+            try C07FileSystem.ensureDirectory(catalogURL.deletingLastPathComponent())
+            try catalogData.write(to: catalogURL)
+            let catalogDigest = try C07Digest.file(catalogURL)
+            artifactCatalogRef = C07EntryReference(
+                entry: catalogEntry, byteCount: catalogDigest.byteCount,
+                sha256: catalogDigest.sha256)
+            totalCopyBytes += catalogDigest.byteCount
+            done += catalogDigest.byteCount
+
+            var counts = owned.counts
+            counts.artifacts = countedArtifacts.count
+            counts.artifactBytes = countedArtifacts.reduce(0) { $0 + $1.byteCount }
+            let dataManifest = C07OwnedDataManifest(
+                createdAt: source.createdAt,
+                sourceAppSchemaVersion: source.appSchemaVersion,
+                tables: tableRecords,
+                workspaceCount: descriptors.count,
+                workspaceByteCount: workspaceCopy.byteCount,
+                workspaceSHA256: workspaceCopy.sha256,
+                counts: counts,
+                excluded: owned.excluded,
+                linuxCheckpointPort: owned.linuxCheckpointPort,
+                linuxCheckpointReason: owned.linuxCheckpointReason,
+                warnings: owned.warnings)
+            try dataManifest.validate()
+            let dataManifestData = try dataManifest.encoded()
+            guard archivePaths.insert(
+                C07Path.collisionKey(C07OwnedDataLimits.manifestEntry)).inserted else {
+                throw C07DataExchangeError.caseCollision(C07OwnedDataLimits.manifestEntry)
+            }
+            totalFileCount += 1
+            let dataManifestURL = staging.appendingPathComponent(
+                C07OwnedDataLimits.manifestEntry)
+            try C07FileSystem.ensureDirectory(
+                dataManifestURL.deletingLastPathComponent())
+            try dataManifestData.write(to: dataManifestURL)
+            let dataDigest = try C07Digest.file(dataManifestURL)
+            dataManifestRef = C07EntryReference(
+                entry: C07OwnedDataLimits.manifestEntry,
+                byteCount: dataDigest.byteCount, sha256: dataDigest.sha256)
+            totalCopyBytes += dataDigest.byteCount
+            done += dataDigest.byteCount
+            warnings.append(contentsOf: owned.warnings)
+        }
+        let isFullData = dataManifestRef != nil
         let manifest = C07BackupManifest(
+            formatVersion: isFullData ? 2 : 1,
             createdAt: source.createdAt,
             appSchemaVersion: source.appSchemaVersion,
-            scope: C07BackupScope(excluded: C07ScopePolicy.excluded),
+            scope: isFullData
+                ? C07BackupScope(
+                    excluded: C07ScopePolicy.excluded,
+                    databaseMode: "logicalRows")
+                : C07BackupScope(
+                    included: C07BackupScope.legacyIncludedIDs,
+                    excluded: C07ScopePolicy.excluded,
+                    databaseMode: nil),
             projects: projectRecords,
             notes: notes,
             settings: settingsRecord,
+            dataManifest: dataManifestRef,
+            artifactCatalog: artifactCatalogRef,
             warnings: warnings)
-        try C07ScopePolicy.validate(manifest.scope)
+        try C07ScopePolicy.validate(
+            manifest.scope, formatVersion: manifest.formatVersion)
         let manifestData = try manifest.encoded()
         guard manifestData.count <= C07DataExchangeLimits.maximumManifestBytes else {
             throw C07DataExchangeError.entryTooLarge(C07Path.manifestArchivePath)
@@ -356,8 +574,9 @@ public enum C07BackupBuilder {
         defer { C07FileSystem.removeIfPresent(temporary) }
         try await writeArchive(from: staging, to: temporary, progress: progress,
                                total: estimatedTotal, done: done)
-        let verified = try verifyArchive(temporary, manifest: manifest,
-                                         manifestData: manifestData)
+        let verified = try verifyArchive(
+            temporary, manifest: manifest, manifestData: manifestData,
+            staging: staging)
         try FileManager.default.moveItem(at: temporary, to: destination)
         return C07BuiltBackup(fileURL: destination, manifest: manifest,
                               byteCount: verified.byteCount, sha256: verified.sha256,
@@ -374,8 +593,7 @@ public enum C07BackupBuilder {
         guard let enumerator = FileManager.default.enumerator(
             at: root,
             includingPropertiesForKeys: [.isRegularFileKey, .isDirectoryKey,
-                                          .isSymbolicLinkKey, .fileSizeKey,
-                                          .posixPermissionsKey],
+                                          .isSymbolicLinkKey, .fileSizeKey],
             options: [],
             errorHandler: { _, error in
                 enumerationFailure = error
@@ -384,7 +602,8 @@ public enum C07BackupBuilder {
             throw C07DataExchangeError.storageUnavailable("enumerateProject")
         }
         var directories: [String] = []
-        var files: [(String, URL, Int64)] = []
+        var files: [(relativePath: String, url: URL, byteCount: Int64,
+                     mode: Int)] = []
         var seen = Set<String>()
         for case let url as URL in enumerator {
             try Task.checkCancellation()
@@ -395,7 +614,7 @@ public enum C07BackupBuilder {
             }
             let resource = try url.resourceValues(forKeys: [
                 .isRegularFileKey, .isDirectoryKey, .isSymbolicLinkKey,
-                .fileSizeKey, .posixPermissionsKey,
+                .fileSizeKey,
             ])
             if resource.isSymbolicLink == true {
                 throw C07DataExchangeError.symlinkUnsupported(relative)
@@ -407,7 +626,10 @@ public enum C07BackupBuilder {
                 guard size >= 0, size <= C07DataExchangeLimits.maximumEntryBytes else {
                     throw C07DataExchangeError.entryTooLarge(relative)
                 }
-                let mode = Int(resource.posixPermissions ?? 0o644) & 0o777
+                let attributes = try? FileManager.default.attributesOfItem(
+                    atPath: url.path)
+                let mode = Int((attributes?[.posixPermissions] as? NSNumber)?
+                    .intValue ?? 0o644) & 0o777
                 files.append((relativePath: relative, url: url, byteCount: size, mode: mode))
             } else {
                 throw C07DataExchangeError.specialFileUnsupported(relative)
@@ -472,7 +694,7 @@ public enum C07BackupBuilder {
             throw C07DataExchangeError.storageUnavailable("enumerateStaging")
         }
         let rootPath = root.standardizedFileURL.path
-        for case let url as URL in enumerator {
+        while let url = enumerator.nextObject() as? URL {
             let values = try? url.resourceValues(forKeys: [.isRegularFileKey, .isDirectoryKey, .fileSizeKey])
             let relative = relativePath(rootPath: rootPath, url: url)
             guard !relative.isEmpty else { continue }
@@ -524,12 +746,13 @@ public enum C07BackupBuilder {
     private static func verifyArchive(
         _ url: URL,
         manifest: C07BackupManifest,
-        manifestData: Data
+        manifestData: Data,
+        staging: URL
     ) throws -> (byteCount: Int64, sha256: String) {
         let archive: Archive
         do { archive = try Archive(url: url, accessMode: .read) }
         catch { throw C07DataExchangeError.corruptArchive("open") }
-        let expected = try expectedArchivePaths(manifest)
+        let expected = try expectedArchivePaths(manifest, staging: staging)
         var seen = Set<String>()
         var total: Int64 = 0
         for entry in archive {
@@ -569,7 +792,8 @@ public enum C07BackupBuilder {
                     throw C07DataExchangeError.hashMismatch(path)
                 }
             } else {
-                let expectedHash = expectedHash(for: path, manifest: manifest)
+                let expectedHash = expectedHash(
+                    for: path, manifest: manifest, staging: staging)
                 guard readbackHash == expectedHash else {
                     throw C07DataExchangeError.hashMismatch(path)
                 }
@@ -582,7 +806,9 @@ public enum C07BackupBuilder {
         return (digest.byteCount, digest.sha256)
     }
 
-    private static func expectedArchivePaths(_ manifest: C07BackupManifest) throws -> Set<String> {
+    private static func expectedArchivePaths(
+        _ manifest: C07BackupManifest, staging: URL
+    ) throws -> Set<String> {
         var paths = Set<String>()
         for project in manifest.projects {
             for file in project.files {
@@ -600,11 +826,38 @@ public enum C07BackupBuilder {
             }
             paths.insert(entry)
         }
+        if let ref = manifest.dataManifest {
+            paths.insert(ref.entry)
+            guard ref.entry == C07OwnedDataLimits.manifestEntry else {
+                throw C07DataExchangeError.invalidManifest("dataManifestEntry")
+            }
+            let data = try Data(contentsOf: staging.appendingPathComponent(ref.entry))
+            let dataManifest = try C07OwnedDataManifest.decode(data)
+            try dataManifest.validate()
+            paths.insert(dataManifest.workspacesEntry)
+            for table in dataManifest.tables { paths.insert(table.entry) }
+        } else if manifest.formatVersion >= 2 {
+            throw C07DataExchangeError.invalidManifest("dataManifestMissing")
+        }
+        if let ref = manifest.artifactCatalog {
+            paths.insert(ref.entry)
+            guard ref.entry == "\(C07OwnedDataLimits.artifactDirectory)/manifest.json" else {
+                throw C07DataExchangeError.invalidManifest("artifactCatalogEntry")
+            }
+            let data = try Data(contentsOf: staging.appendingPathComponent(ref.entry))
+            let catalog = try C07ArtifactCatalog.decode(data)
+            try catalog.validate()
+            for record in catalog.records { paths.insert(record.entry) }
+        } else if manifest.formatVersion >= 2 {
+            throw C07DataExchangeError.invalidManifest("artifactCatalogMissing")
+        }
         paths.insert(C07Path.manifestArchivePath)
         return paths
     }
 
-    private static func expectedHash(for path: String, manifest: C07BackupManifest) -> String {
+    private static func expectedHash(
+        for path: String, manifest: C07BackupManifest, staging: URL
+    ) -> String {
         for project in manifest.projects {
             for file in project.files where
                 C07Path.archivePath(origin: project.origin,
@@ -619,6 +872,29 @@ public enum C07BackupBuilder {
         }
         if path == C07Path.settingsArchivePath {
             return manifest.settings.sha256 ?? ""
+        }
+        if let ref = manifest.dataManifest, path == ref.entry {
+            return ref.sha256
+        }
+        if let ref = manifest.artifactCatalog, path == ref.entry {
+            return ref.sha256
+        }
+        if let ref = manifest.dataManifest,
+           let data = try? Data(contentsOf: staging.appendingPathComponent(ref.entry)),
+           let dataManifest = try? C07OwnedDataManifest.decode(data) {
+            if path == dataManifest.workspacesEntry {
+                return dataManifest.workspaceSHA256
+            }
+            for table in dataManifest.tables where table.entry == path {
+                return table.sha256
+            }
+        }
+        if let ref = manifest.artifactCatalog,
+           let data = try? Data(contentsOf: staging.appendingPathComponent(ref.entry)),
+           let catalog = try? C07ArtifactCatalog.decode(data) {
+            for record in catalog.records where record.entry == path {
+                return record.sha256
+            }
         }
         return ""
     }
@@ -767,14 +1043,16 @@ public enum C07BackupReader {
         guard manifest.format == C07DataExchangeLimits.backupFormat else {
             throw C07DataExchangeError.unsupportedFormat(manifest.format)
         }
-        guard manifest.formatVersion == C07DataExchangeLimits.backupFormatVersion else {
+        guard manifest.formatVersion >= C07DataExchangeLimits.legacyBackupFormatVersion,
+              manifest.formatVersion <= C07DataExchangeLimits.backupFormatVersion else {
             throw C07DataExchangeError.unsupportedVersion(manifest.formatVersion)
         }
         guard manifest.appSchemaVersion > 0,
               manifest.appSchemaVersion <= currentAppSchemaVersion else {
             throw C07DataExchangeError.unsupportedVersion(manifest.appSchemaVersion)
         }
-        try C07ScopePolicy.validate(manifest.scope)
+        try C07ScopePolicy.validate(
+            manifest.scope, formatVersion: manifest.formatVersion)
 
         // Validate the manifest before parsing nested content.
         guard manifest.projects.count <= C07DataExchangeLimits.maximumProjects,
@@ -945,6 +1223,129 @@ public enum C07BackupReader {
             }
         }
 
+        // v2 owned-data graph. The data manifest and artifact catalog are
+        // themselves hashed entries; their referenced table/artifact entries
+        // must match both the catalog record and the staged bytes.
+        var ownedData: C07StagedOwnedData?
+        if manifest.formatVersion >= 2 {
+            guard let dataRef = manifest.dataManifest,
+                  let catalogRef = manifest.artifactCatalog,
+                  let dataURL = staged[dataRef.entry],
+                  sizes[dataRef.entry] == dataRef.byteCount,
+                  hashes[dataRef.entry] == dataRef.sha256,
+                  dataRef.entry == C07OwnedDataLimits.manifestEntry else {
+                throw C07DataExchangeError.invalidManifest("dataManifest")
+            }
+            guard let catalogURL = staged[catalogRef.entry],
+                  sizes[catalogRef.entry] == catalogRef.byteCount,
+                  hashes[catalogRef.entry] == catalogRef.sha256,
+                  catalogRef.entry == "\(C07OwnedDataLimits.artifactDirectory)/manifest.json" else {
+                throw C07DataExchangeError.invalidManifest("artifactCatalog")
+            }
+            let dataManifest: C07OwnedDataManifest
+            let catalog: C07ArtifactCatalog
+            do {
+                dataManifest = try C07OwnedDataManifest.decode(
+                    Data(contentsOf: dataURL))
+                try dataManifest.validate()
+                catalog = try C07ArtifactCatalog.decode(
+                    Data(contentsOf: catalogURL))
+                try catalog.validate()
+            } catch let error as C07DataExchangeError {
+                throw error
+            } catch {
+                throw C07DataExchangeError.invalidManifest("ownedDataRead")
+            }
+            guard dataManifest.sourceAppSchemaVersion == manifest.appSchemaVersion else {
+                throw C07DataExchangeError.invalidManifest("dataSchemaVersion")
+            }
+            guard let workspacesURL = staged[dataManifest.workspacesEntry],
+                  sizes[dataManifest.workspacesEntry] == dataManifest.workspaceByteCount,
+                  hashes[dataManifest.workspacesEntry] == dataManifest.workspaceSHA256 else {
+                throw C07DataExchangeError.invalidManifest("workspacesEntry")
+            }
+            let workspaceData: Data
+            do { workspaceData = try Data(contentsOf: workspacesURL) }
+            catch { throw C07DataExchangeError.storageUnavailable("workspacesRead") }
+            let descriptors: [C07WorkspaceDescriptor]
+            do {
+                let decoder = JSONDecoder()
+                decoder.dateDecodingStrategy = .iso8601
+                descriptors = try decoder.decode(
+                    [C07WorkspaceDescriptor].self, from: workspaceData)
+            } catch {
+                throw C07DataExchangeError.invalidManifest("workspacesDecode")
+            }
+            guard descriptors.count == dataManifest.workspaceCount,
+                  descriptors.count <= C07OwnedDataLimits.maximumWorkspaces else {
+                throw C07DataExchangeError.invalidManifest("workspacesCount")
+            }
+            var stagedTables: [C07StagedTable] = []
+            var ownedBytes: Int64 = 0
+            for table in dataManifest.tables {
+                guard let policy = C07OwnedDataPolicy.policy(for: table.name),
+                      let url = staged[table.entry],
+                      sizes[table.entry] == table.byteCount,
+                      hashes[table.entry] == table.sha256 else {
+                    throw C07DataExchangeError.invalidManifest(
+                        "ownedTable:\(table.name)")
+                }
+                var countedRows = 0
+                try C07RowStream.rows(in: url, table: table.name) { row in
+                    guard policy.requiredColumns.isSubset(of: Set(row.keys)),
+                          C07OwnedDataPolicy.shouldExportRow(
+                            table: table.name, row: row) else {
+                        throw C07DataExchangeError.invalidManifest(
+                            "rowShape:\(table.name)")
+                    }
+                    countedRows += 1
+                }
+                guard countedRows == table.rowCount else {
+                    throw C07DataExchangeError.invalidManifest(
+                        "rowCount:\(table.name)")
+                }
+                ownedBytes += table.byteCount
+                stagedTables.append(C07StagedTable(record: table, url: url))
+                expectedPaths.insert(table.entry)
+            }
+            let missingMandatory = C07OwnedDataPolicy.mandatoryTableNames
+                .subtracting(dataManifest.tables.map(\.name))
+            guard missingMandatory.isEmpty else {
+                throw C07DataExchangeError.invalidManifest("ownedTablesMissing")
+            }
+            var stagedArtifacts: [C07StagedArtifact] = []
+            for record in catalog.records {
+                guard let url = staged[record.entry],
+                      sizes[record.entry] == record.byteCount,
+                      hashes[record.entry] == record.sha256 else {
+                    throw C07DataExchangeError.invalidManifest(
+                        "artifact:\(record.entry)")
+                }
+                ownedBytes += record.byteCount
+                stagedArtifacts.append(C07StagedArtifact(record: record, url: url))
+                expectedPaths.insert(record.entry)
+            }
+            guard stagedArtifacts.count == dataManifest.counts.artifacts else {
+                throw C07DataExchangeError.invalidManifest("artifactCount")
+            }
+            expectedPaths.insert(dataManifest.workspacesEntry)
+            expectedPaths.insert(dataRef.entry)
+            expectedPaths.insert(catalogRef.entry)
+            warnings.append(contentsOf: dataManifest.warnings)
+            ownedData = C07StagedOwnedData(
+                manifest: dataManifest,
+                manifestSHA256: dataRef.sha256,
+                tables: stagedTables,
+                workspaces: descriptors,
+                artifacts: stagedArtifacts,
+                totalBytes: ownedBytes)
+        } else {
+            guard manifest.dataManifest == nil,
+                  manifest.artifactCatalog == nil else {
+                throw C07DataExchangeError.invalidManifest("legacyDataSection")
+            }
+        }
+
         expectedPaths.insert(C07Path.manifestArchivePath)
         let stagedFilePaths = Set(staged.keys)
         guard stagedFilePaths == expectedPaths else {
@@ -960,7 +1361,8 @@ public enum C07BackupReader {
             partial + project.files.reduce(Int64(0)) { $0 + $1.byteCount }
         }
         let restoreBytes = total + nestedNoteBytes + liveProjectBytes
-            + nestedNoteBytes + C07DataExchangeLimits.freeSpaceHeadroom
+            + nestedNoteBytes + (ownedData?.totalBytes ?? 0)
+            + C07DataExchangeLimits.freeSpaceHeadroom
         if let available = C07FileSystem.availableBytes(at: stagingRoot),
            available < restoreBytes {
             throw C07DataExchangeError.freeSpaceInsufficient(
@@ -1004,6 +1406,7 @@ public enum C07BackupReader {
             projects: stagedProjects,
             notes: parsedNotes,
             settingsValues: settingsValues,
+            ownedData: ownedData,
             warnings: warnings,
             totalBytes: total)
     }
