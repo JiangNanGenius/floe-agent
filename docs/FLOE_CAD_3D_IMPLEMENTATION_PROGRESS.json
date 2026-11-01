@@ -2481,7 +2481,10 @@
           "0ecb73e9c61de2f60779dd4b8cd2ea3d93ff6875",
           "50c0bb71173d2f734c012f2b2b1c976eeefbf6f7",
           "7f5a44b5",
-          "5902ea4da4c6d8871c8edaf0f4158ea0d87b6ce4"
+          "5902ea4da4c6d8871c8edaf0f4158ea0d87b6ce4",
+          "eddb4fcdfec6ac63a2fcca7384dc0327381c0c88",
+          "bdb49b892fcb2b31ba258eb1e40906b33970c23f",
+          "f15dfdf03365134af4f67be6632cc1bd96e73f5b"
         ],
         "verification": [
           {
@@ -2521,16 +2524,25 @@
             "skipped": 0,
             "original_failed_assertions_retained": 4,
             "observed": "原始复合裁切器三块面变两块的错误命中及历史选错已复现并修复；严格序号签名／原体／原操作数／升级时机／撤销／同摘要重开通过，正常尺寸与基准面、轴、圆柱等回归通过。"
+          },
+          {
+            "kind": "actual_App_face_material_cold_boundary_and_GPU",
+            "source": "f15dfdf03365134af4f67be6632cc1bd96e73f5b",
+            "passed": 69,
+            "failed": 0,
+            "skipped": 0,
+            "original_failed_assertions_retained": true,
+            "observed": "面材质使用实际名称或唯一精确签名；编辑／展示／GLB／OBJ共用实际三角范围。真实扫掠相邻共面壁独立着色，尺寸变更、失面拒绝、撤销及重开通过。精确保存字节内按完整原生面边界唯一验证重开映射，不借此跨重建猜测身份。查询如实报告有名称但无显示范围的缺口。"
           }
         ],
         "limitations": [
-          "签名核对是必要条件，非任意几何完全相同的证明；旧未命名引用、多段生成壁面、对称同签名区域及材质绑定仍待核查。"
+          "任意旧／未命名引用的同签名歧义仍需来源状态证明；材质空网格与新指派缺显示范围等边界继续核对。"
         ]
       },
       "alignment_review": {
         "disposition": "qualified_slice",
         "existing": "基线已有：稳定FeatureID/BodyID、按顺序重放、抑制/删除/排序有依赖检查；原子参数编辑有checkpoint回滚；拓扑命名有内核history+几何签名后备及歧义门控。不是从零缺失历史。",
-        "remaining": "旧未命名引用、多段生成壁面、同签名不同形状及材质绑定仍待。",
+        "remaining": "任意旧／未命名引用的同签名歧义仍需来源状态证明；材质空网格与新指派缺显示范围等边界继续核对。",
         "evidence": [
           {
             "path": "docs/FLOE_CAD_3D_IMPLEMENTATION_PROGRESS.json",
@@ -2591,6 +2603,24 @@
         "scope": "Actual generated wall root/sibling, negativeZ coplanar native face triangle partition, stale/foreign/missing/channel rejection, source identity replacement and owned undo/cache restore. Original186/187 failures retained and assertions preserved. Whole M26 still open for legacy/same-signature and material binding.",
         "canonical_simulator_shutdown": true,
         "new_paid_calls": 0
+      },
+      "material_face_identity_verification": {
+        "source": "f15dfdf03365134af4f67be6632cc1bd96e73f5b",
+        "actual_App_build_passed": true,
+        "actual_App_build_seconds": 226.378,
+        "native": {
+          "passed": 69,
+          "failed": 0,
+          "skipped": 0,
+          "seconds": 59.104
+        },
+        "original_failures_preserved": [
+          "190: malformed input reused a cold derived cache; Sweep render lacked native partitions",
+          "191: overstrict raw native partition equality rejected three normal reopen paths"
+        ],
+        "observed": "面材质使用实际名称或唯一精确签名；编辑／展示／GLB／OBJ共用实际三角范围。真实扫掠相邻共面壁独立着色，尺寸变更、失面拒绝、撤销及重开通过。精确保存字节内按完整原生面边界唯一验证重开映射，不借此跨重建猜测身份。查询如实报告有名称但无显示范围的缺口。",
+        "whole_M26_accepted": false,
+        "scope": "实际App、固定iPad Simulator与实际GPU见证；非实体设备性能或发布验收。"
       }
     },
     {
@@ -8451,7 +8481,7 @@
     "license_delta": "GLTFKit2 ownMIT/cgltfMIT do notclear precompiled libktx4.2.1 etcdec exception; prefer existing O3DV+same-r176 localGLTFLoader qualification"
   },
   "current_integration_verification": {
-    "source": "cb173b4a9a2a88f3d9c15e5c910e8903022272a8",
+    "source": "f15dfdf03365134af4f67be6632cc1bd96e73f5b",
     "all_106_retained": true,
     "all_106_accepted": false,
     "release_ready": false,
@@ -8488,13 +8518,14 @@
     "pending_original_criteria": 50,
     "device_acceptance": "iPad通过的功能复用验收，iPhone仅确认界面；不使用用户手机。",
     "latest_native_batch": {
-      "source": "589d93372a40743e5dac88acb1935ca111ff3781",
+      "source": "f15dfdf03365134af4f67be6632cc1bd96e73f5b",
       "native": {
-        "passed": 35,
+        "passed": 69,
         "failed": 0,
-        "skipped": 0
+        "skipped": 0,
+        "seconds": 59.104
       },
-      "scope": "Configured unlisted Agent Plan image ID reaches the existing adapter without discovery or developer account gating; 507 real native features page past 500 rows without changing stored identity. Controlled HTTP only; no new paid generation."
+      "scope": "M26材质／保存重开／实际GPU定向批次，整项仍待"
     },
     "real_model_editing": {
       "source": "a587571a755989b001e78c16a4fcfd64e23ba8d5",
@@ -8591,6 +8622,33 @@
       "scope": "Actual generated wall root/sibling, negativeZ coplanar native face triangle partition, stale/foreign/missing/channel rejection, source identity replacement and owned undo/cache restore. Original186/187 failures retained and assertions preserved. Whole M26 still open for legacy/same-signature and material binding.",
       "canonical_simulator_shutdown": true,
       "new_paid_calls": 0
+    },
+    "material_face_identity": {
+      "source": "f15dfdf03365134af4f67be6632cc1bd96e73f5b",
+      "actual_App_build_passed": true,
+      "actual_App_build_seconds": 226.378,
+      "native": {
+        "passed": 69,
+        "failed": 0,
+        "skipped": 0,
+        "seconds": 59.104
+      },
+      "original_failures_preserved": [
+        "190: malformed input reused a cold derived cache; Sweep render lacked native partitions",
+        "191: overstrict raw native partition equality rejected three normal reopen paths"
+      ],
+      "observed": "面材质使用实际名称或唯一精确签名；编辑／展示／GLB／OBJ共用实际三角范围。真实扫掠相邻共面壁独立着色，尺寸变更、失面拒绝、撤销及重开通过。精确保存字节内按完整原生面边界唯一验证重开映射，不借此跨重建猜测身份。查询如实报告有名称但无显示范围的缺口。",
+      "whole_M26_accepted": false,
+      "scope": "实际App、固定iPad Simulator与实际GPU见证；非实体设备性能或发布验收。"
+    },
+    "provider_unlisted_id_native_batch": {
+      "source": "589d93372a40743e5dac88acb1935ca111ff3781",
+      "native": {
+        "passed": 35,
+        "failed": 0,
+        "skipped": 0
+      },
+      "scope": "Configured unlisted Agent Plan image ID reaches the existing adapter without discovery or developer account gating; 507 real native features page past 500 rows without changing stored identity. Controlled HTTP only; no new paid generation."
     }
   }
 }
