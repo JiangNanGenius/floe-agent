@@ -262,6 +262,44 @@ nonisolated struct CADPresentationImage: Equatable, Sendable, Identifiable {
     var byteCount: Int
 }
 
+/// X22 persisted section cut as the presentation consumes it. Model-space
+/// millimetres; the same plane the Metal viewport shader clips with.
+nonisolated struct CADPresentationSection: Equatable, Sendable {
+    var origin: SIMD3<Double>
+    /// Side of the plane that stays visible (`CADSectionView.keepNormal`).
+    var keepNormal: SIMD3<Double>
+    var sizeMM: Double
+    var flipped: Bool
+
+    var stableKey: String {
+        let o = origin
+        let n = keepNormal
+        return "section-\(o.x),\(o.y),\(o.z)|\(n.x),\(n.y),\(n.z)|\(sizeMM)|\(flipped)"
+    }
+
+    var summaryJSON: [String: Any] {
+        [
+            "origin": [origin.x, origin.y, origin.z],
+            "keep_normal": [keepNormal.x, keepNormal.y, keepNormal.z],
+            "size_mm": sizeMM,
+            "flipped": flipped,
+        ]
+    }
+}
+
+/// One measurement guide segment already in presentation metres/world space.
+/// The numeric value is formatted by the UI from the document annotation; the
+/// stage draws its actual span.
+nonisolated struct CADPresentationMeasurementGuide: Equatable, Sendable, Identifiable {
+    var id: UUID
+    var start: SIMD3<Float>
+    var end: SIMD3<Float>
+
+    var stableKey: String {
+        "\(id.uuidString)|\(start.x),\(start.y),\(start.z)|\(end.x),\(end.y),\(end.z)"
+    }
+}
+
 nonisolated struct CADPresentationBounds: Equatable, Sendable {
     var min: SIMD3<Float>
     var max: SIMD3<Float>
@@ -283,6 +321,9 @@ nonisolated enum CADPresentationIssueKind: String, Sendable {
     case faceMaterialDisplayUnsupported
     case unresolvedFaceBindings
     case imageDecodeFailed
+    /// X22: an active section could not be applied; the body is not drawn
+    /// uncut in its place.
+    case sectionInvalid
 }
 
 nonisolated struct CADPresentationIssue: Equatable, Sendable, Identifiable {
@@ -309,6 +350,11 @@ nonisolated struct CADPresentationScene: Equatable, Sendable {
     var issues: [CADPresentationIssue]
     var bounds: CADPresentationBounds?
     var materialCount: Int
+    /// X22: active section plane, nil for the full model.
+    var section: CADPresentationSection? = nil
+    /// X22: measurement guides to draw (world metres). Empty when the layer is
+    /// hidden or the document has none.
+    var measurementGuides: [CADPresentationMeasurementGuide] = []
 
     var isEmpty: Bool { bodies.isEmpty }
 
@@ -341,6 +387,14 @@ nonisolated struct CADPresentationScene: Equatable, Sendable {
             for group in body.faceGroups {
                 parts.append(group.stableKey)
             }
+        }
+        // X22: the same document with/without a cut is a different stage.
+        if let section {
+            parts.append(section.stableKey)
+        }
+        parts.append("guides:\(measurementGuides.count)")
+        for guide in measurementGuides {
+            parts.append(guide.stableKey)
         }
         return parts.joined(separator: "|")
     }

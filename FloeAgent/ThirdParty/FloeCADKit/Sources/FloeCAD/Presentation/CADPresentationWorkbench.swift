@@ -664,6 +664,9 @@ struct CADPresentationWorkbenchContent: View {
     @State private var dismissingInterruptedExport = false
     @State private var videoExportOptions = CADAnimationExportOptions.load()
     @State private var videoExportPresentation: VideoExportPresentation?
+    @State private var showOverlays = false
+    @State private var showGLBModelOnlyNotice = false
+    @State private var showNumericTextNotice = false
 
     /// A presentation carries its own frozen values. The first sheet body
     /// must not initialize draft State from an older render's preferences.
@@ -750,10 +753,23 @@ struct CADPresentationWorkbenchContent: View {
         .sheet(isPresented: $showCameraSheet) {
             CADCameraBookmarksSheet(document: document, handle: handle)
         }
+        .sheet(isPresented: $showOverlays) {
+            // Refresh the applied scene before the sheet closes, so Export/
+            // Screenshot immediately after a toggle does not wait for the
+            // 450 ms Present subscription tick.
+            CADViewOverlaySheet(document: document) {
+                store.refresh(force: true)
+            }
+        }
         .sheet(item: $videoExportPresentation) { presentation in
             CADAnimationExportOptionsSheet(
                 initial: presentation.options,
-                clipDuration: presentation.clipDuration) { options in
+                clipDuration: presentation.clipDuration,
+                numericTextNotice: document.viewOverlayState.visibleMeasurements.isEmpty
+                    ? nil
+                    : FloeCADStrings.text(
+                        "cad.ui.export.numericTextNotice",
+                        "Measurement lines are included. Numeric values are not drawn into the image or video; they remain in the overlay list.")) { options in
                 // The confirmed draft is handed to the existing export
                 // service verbatim; nothing is re-defaulted on the way.
                 videoExportOptions = options
@@ -779,6 +795,38 @@ struct CADPresentationWorkbenchContent: View {
                       contentType: .zip,
                       defaultFilename: "\(document.name) animation frames") { _ in
             framesExport = nil
+        }
+        .confirmationDialog(
+            Text(FloeCADStrings.text(
+                "cad.ui.export.numericTextTitle",
+                "Measurement values aren't drawn")),
+            isPresented: $showNumericTextNotice,
+            titleVisibility: .visible
+        ) {
+            Button(FloeCADStrings.text("cad.ui.common.export", "Export")) {
+                performExportPNG()
+            }
+            Button(FloeCADStrings.text("cad.ui.common.cancel", "Cancel"),
+                   role: .cancel) {}
+        } message: {
+            Text(FloeCADStrings.text(
+                "cad.ui.export.numericTextNotice",
+                "Measurement lines are included. Numeric values are not drawn into the image; they remain in the overlay list."))
+        }
+        .confirmationDialog(
+            Text(FloeCADStrings.text("cad.present.export.glbViewOnlyTitle",
+                                     "GLB keeps the model only")),
+            isPresented: $showGLBModelOnlyNotice,
+            titleVisibility: .visible) {
+            Button(FloeCADStrings.text("cad.present.export.glbModelOnly", "Export Model")) {
+                exportGLBModelOnly()
+            }
+            Button(FloeCADStrings.text("cad.ui.common.cancel", "Cancel"),
+                   role: .cancel) {}
+        } message: {
+            Text(FloeCADStrings.text(
+                "cad.present.export.glbViewOnlyMessage",
+                "The section cut and measurement guides are view-only and won't be included in this file."))
         }
         .alert(FloeCADStrings.text("cad.present.export.failed", "Couldn't export"),
                isPresented: Binding(
@@ -811,6 +859,10 @@ struct CADPresentationWorkbenchContent: View {
                 if !animationState.animation.isEmpty { showTimeline = true }
             } else {
                 playback.stop()
+                // X22: Edit's live SectionState mirrors the document. Present
+                // may have toggled/flipped/removed it, so re-read before the
+                // editor paints the first frame.
+                document.viewModel().reloadViewOverlayFromDocument()
             }
         }
     }
@@ -1299,6 +1351,11 @@ struct CADPresentationWorkbenchContent: View {
                           identifier: "CADPresentFit") {
                 handle.fit()
             }
+            presentButton(FloeCADStrings.text("cad.present.overlays", "Overlays"),
+                          symbol: "square.3.layers.3d",
+                          identifier: "CADPresentOverlays") {
+                showOverlays = true
+            }
             Menu {
                 Button {
                     exportPNG()
@@ -1367,6 +1424,17 @@ struct CADPresentationWorkbenchContent: View {
     }
 
     private func exportPNG() {
+        // X22: the capture will include the real guide lines but not their
+        // numeric text. State that before writing when a visible guide exists;
+        // an ordinary document exports in one tap with no dialog.
+        if !document.viewOverlayState.visibleMeasurements.isEmpty {
+            showNumericTextNotice = true
+            return
+        }
+        performExportPNG()
+    }
+
+    private func performExportPNG() {
         // A video export owns the live stage; a framed still must not race it
         // or save/export its transient frame.
         if handle.controller?.isAnimationLeased == true {
@@ -1383,7 +1451,8 @@ struct CADPresentationWorkbenchContent: View {
             do {
                 // A selected saved view exports its exact pose, projection and
                 // saved frame aspect; with no selection the live Present
-                // pixels keep the existing behavior.
+                // pixels keep the existing behavior. The service awaits the
+                // exact overlay stage instead of accepting a stale one.
                 let snapshot = try await snapshotService.capture(
                     handle: handle, document: document, targetWidth: 2048,
                     savedCamera: document.activeSavedCamera)
@@ -1396,6 +1465,17 @@ struct CADPresentationWorkbenchContent: View {
     }
 
     private func exportGLB() {
+        // X22: a GLB writer carries model geometry only. An active cut/guide
+        // is view-only; tell the user before the picker instead of letting a
+        // "complete" export imply it contains them.
+        if document.viewOverlayState.hasViewOnlyContent {
+            showGLBModelOnlyNotice = true
+            return
+        }
+        exportGLBModelOnly()
+    }
+
+    private func exportGLBModelOnly() {
         guard let data = document.viewModel().exportGLB() else {
             exportError = FloeCADStrings.text(
                 "cad.present.export.glbUnavailable",
@@ -1404,6 +1484,168 @@ struct CADPresentationWorkbenchContent: View {
         }
         glbExport = GLBFileDocument(data: data)
         showGLBExporter = true
+    }
+}
+
+// MARK: - X22 section & measurement overlay sheet
+
+/// One place to inspect/change exactly what Edit, Present, screenshots and
+/// video share. The document owns the values; this sheet is a plain Form that
+/// reads them back after every commit and reports a refusal instead of
+/// pretending a read-only document changed.
+struct CADViewOverlaySheet: View {
+    let document: FloeCADDocument
+    /// Called after a committed overlay change (the Present scene store
+    /// refresh). The default is a no-op in a preview/test host.
+    var onCommit: () -> Void = {}
+    @Environment(\.dismiss) private var dismiss
+    @State private var overlay: CADViewOverlayState = .empty
+    @State private var errorMessage: String?
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section {
+                    if overlay.section == nil {
+                        Text(FloeCADStrings.text(
+                            "cad.overlay.section.none",
+                            "Add a section from Edit › Views › Section."))
+                            .foregroundStyle(.secondary)
+                    } else {
+                        Toggle(FloeCADStrings.text(
+                            "cad.overlay.section.toggle", "Show section cut"),
+                               isOn: Binding(
+                                get: { overlay.section?.enabled ?? false },
+                                set: { setSectionEnabled($0) }))
+                            .accessibilityIdentifier("CADOverlaySectionToggle")
+                        Button(FloeCADStrings.text(
+                            "cad.overlay.section.flip", "Flip side")) {
+                            commit { document.flipSectionView() }
+                        }
+                        .accessibilityIdentifier("CADOverlayFlip")
+                        Button(role: .destructive) {
+                            commit { document.removeSectionView() }
+                        } label: {
+                            Text(FloeCADStrings.text(
+                                "cad.overlay.section.remove", "Remove section"))
+                        }
+                        .accessibilityIdentifier("CADOverlayRemoveSection")
+                    }
+                } header: {
+                    Text(FloeCADStrings.text("cad.overlay.section", "Section"))
+                }
+
+                Section {
+                    if overlay.measurements.isEmpty {
+                        Text(FloeCADStrings.text(
+                            "cad.overlay.measurements.none",
+                            "Measure two points in Edit, then save the result."))
+                            .foregroundStyle(.secondary)
+                    } else {
+                        Toggle(FloeCADStrings.text(
+                            "cad.overlay.measurements.toggle", "Show guides"),
+                               isOn: Binding(
+                                get: { overlay.showsMeasurements },
+                                set: { setMeasurementVisibility($0) }))
+                            .accessibilityIdentifier("CADOverlayMeasurementsToggle")
+                        ForEach(Array(overlay.measurements.enumerated()),
+                                id: \.element.id) { index, annotation in
+                            HStack(spacing: 10) {
+                                Text(FloeCADStrings.format(
+                                    "cad.overlay.measurement.row",
+                                    "Measurement %d", index + 1))
+                                Spacer(minLength: 0)
+                                Text(CADPreferences.shared.unit
+                                    .compactLengthString(fromMM: annotation.lengthMM))
+                                    .monospacedDigit()
+                                    .foregroundStyle(.secondary)
+                                Button(role: .destructive) {
+                                    commit { document.removeMeasurementAnnotation(id: annotation.id) }
+                                } label: {
+                                    Image(systemName: "trash")
+                                }
+                                .buttonStyle(.borderless)
+                                .accessibilityIdentifier(
+                                    "CADOverlayDelete-\(annotation.id.uuidString)")
+                            }
+                            .accessibilityIdentifier("CADOverlayAnnotationRow")
+                        }
+                    }
+                } header: {
+                    Text(FloeCADStrings.text(
+                        "cad.overlay.measurements", "Measurements"))
+                }
+
+                Section {
+                    Text(FloeCADStrings.text(
+                        "cad.overlay.footer.capture",
+                        "Screenshots and video include the section cut and measurement lines; values stay in this list."))
+                        .font(.footnote)
+                    Text(FloeCADStrings.text(
+                        "cad.overlay.footer.exchange",
+                        "STEP, IGES, GLB, USDZ, OBJ, STL and 3MF store model geometry only; they don't include view cuts or guides."))
+                        .font(.footnote)
+                    if overlay.section?.enabled == true {
+                        Text(FloeCADStrings.text(
+                            "cad.overlay.footer.faceSelection",
+                            "Face selection is off while a section is shown."))
+                            .font(.footnote)
+                    }
+                    if overlay.section?.enabled == true,
+                       document.animationLoadState().activeClip?.instanceTracks.isEmpty == false {
+                        Text(FloeCADStrings.text(
+                            "cad.overlay.footer.partAnimation",
+                            "Part animation moves the cut with each part. Remove the section before playing or exporting part tracks."))
+                            .font(.footnote)
+                    }
+                }
+            }
+            .navigationTitle(FloeCADStrings.text(
+                "cad.overlay.title", "Section & Annotations"))
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button(FloeCADStrings.text("cad.ui.common.done", "Done")) {
+                        dismiss()
+                    }
+                }
+            }
+            .onAppear { reload() }
+            .alert(FloeCADStrings.text("cad.overlay.error.title", "Couldn't change the view"),
+                   isPresented: Binding(
+                    get: { errorMessage != nil },
+                    set: { if !$0 { errorMessage = nil } })) {
+                Button(FloeCADStrings.text("cad.ui.common.done", "Done")) {
+                    errorMessage = nil
+                }
+            } message: {
+                Text(errorMessage ?? "")
+            }
+        }
+    }
+
+    private func reload() {
+        overlay = document.viewOverlayState
+    }
+
+    private func commit(_ change: () -> Bool) {
+        guard change() else {
+            errorMessage = FloeCADStrings.text(
+                "cad.overlay.error.readOnly",
+                "This document is read-only; its section and annotations can't be changed.")
+            reload()
+            return
+        }
+        reload()
+        onCommit()
+    }
+
+    private func setSectionEnabled(_ enabled: Bool) {
+        commit { document.setSectionEnabled(enabled) }
+    }
+
+    private func setMeasurementVisibility(_ visible: Bool) {
+        commit { document.setMeasurementGuidesVisible(visible) }
     }
 }
 
@@ -1495,6 +1737,14 @@ public nonisolated struct CADPresentationCapture: Sendable, Equatable {
     public var matchesSavedCamera: Bool?
     /// Concise description of the actual camera state for the host/AI.
     public var note: String
+    /// X22: the captured pixels contain the persisted section cut.
+    public var sectionCutIncluded: Bool
+    /// X22: saved measurement guides drawn in the captured pixels.
+    public var measurementGuideCount: Int
+    /// Exact measured lengths (millimetres) of those guides, in draw order.
+    public var measurementLengthsMM: [Double]
+    /// Installed scene/build identity that produced these exact pixels.
+    public var sceneBuildKey: String
 
     /// Compatibility alias for the host bridge that already reads the PNG
     /// digest. `imageSHA256` is the canonical name; `contentSHA256` remains the
@@ -1505,7 +1755,11 @@ public nonisolated struct CADPresentationCapture: Sendable, Equatable {
                 changeCount: Int, documentKey: String, contentSHA256: String,
                 imageSHA256: String, capturedAt: Date,
                 projection: String = "", cameraName: String? = nil,
-                matchesSavedCamera: Bool? = nil, note: String = "") {
+                matchesSavedCamera: Bool? = nil, note: String = "",
+                sectionCutIncluded: Bool = false,
+                measurementGuideCount: Int = 0,
+                measurementLengthsMM: [Double] = [],
+                sceneBuildKey: String = "") {
         self.pngData = pngData
         self.width = width
         self.height = height
@@ -1519,6 +1773,10 @@ public nonisolated struct CADPresentationCapture: Sendable, Equatable {
         self.cameraName = cameraName
         self.matchesSavedCamera = matchesSavedCamera
         self.note = note
+        self.sectionCutIncluded = sectionCutIncluded
+        self.measurementGuideCount = measurementGuideCount
+        self.measurementLengthsMM = measurementLengthsMM
+        self.sceneBuildKey = sceneBuildKey
     }
 }
 
@@ -1608,6 +1866,30 @@ public final class CADPresentationCaptureRegistry {
                 note = "Actual live RealityKit Present render (\(projection)); "
                     + "no saved view is selected."
             }
+            // X22: report the overlay identity that belonged to the EXACT
+            // stage captured, never a later document read. The service pinned
+            // it before the await and refused if the stage or document moved.
+            let sectionCut = snapshot.sectionCutIncluded
+            let guideCount = snapshot.measurementGuideCount
+            var overlayNote: String?
+            if sectionCut || guideCount > 0 {
+                if sectionCut, guideCount > 0 {
+                    overlayNote = "Section cut and \(guideCount) measurement guide(s) are included."
+                } else if sectionCut {
+                    overlayNote = "Section cut is included; no measurement guides are drawn."
+                } else {
+                    overlayNote = "\(guideCount) measurement guide(s) are included."
+                }
+                if guideCount > 0 {
+                    let values = snapshot.measurementLengthsMM.prefix(6).map {
+                        String(format: "%.3f mm", $0)
+                    }
+                    overlayNote? += " Values: " + values.joined(separator: ", ")
+                        + (guideCount > values.count ? ", …" : "")
+                        + ". Values are listed here, not drawn into the pixels."
+                }
+            }
+            let finalNote = [note, overlayNote].compactMap { $0 }.joined(separator: " ")
             return CADPresentationCapture(
                 pngData: snapshot.pngData, width: snapshot.width,
                 height: snapshot.height, revision: snapshot.revision,
@@ -1618,7 +1900,11 @@ public final class CADPresentationCaptureRegistry {
                 projection: projection,
                 cameraName: selected?.name,
                 matchesSavedCamera: matches,
-                note: note)
+                note: finalNote,
+                sectionCutIncluded: sectionCut,
+                measurementGuideCount: guideCount,
+                measurementLengthsMM: snapshot.measurementLengthsMM,
+                sceneBuildKey: snapshot.sceneBuildKey)
         } catch let error as CADPresentationError {
             switch error {
             case .snapshotStale:

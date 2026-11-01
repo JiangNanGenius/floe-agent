@@ -113,6 +113,12 @@ public enum OrdinaryDocumentActionProfile {
                 // still applies); they stay on the write policy path.
                 return ["inspect", "check"].contains(operation) ? .readOnly : nil
             }
+            if action == "scene" {
+                guard let payload = cadPayload(in: arguments),
+                      let operation = payload["action"] as? String else { return nil }
+                return operation.trimmingCharacters(in: .whitespacesAndNewlines)
+                    .lowercased() == "get" ? .readOnly : nil
+            }
             if action == "material" || action == "parameters" || action == "animation" {
                 guard let payload = cadPayload(in: arguments),
                       let operation = payload["action"] as? String else { return nil }

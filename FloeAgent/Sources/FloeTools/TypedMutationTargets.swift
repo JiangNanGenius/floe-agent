@@ -263,7 +263,7 @@ public enum TypedMutationContract {
                     return []
                 }
                 return [.init(argument: "path", role: .sourceWrite, whenAbsent: .required)]
-            case "material", "parameters", "animation":
+            case "material", "parameters", "animation", "scene":
                 guard let raw = arguments["payload"] as? String,
                       let payload = (try? JSONSerialization.jsonObject(with: Data(raw.utf8))) as? [String: Any],
                       let operation = payload["action"] as? String else { return [] }
@@ -285,6 +285,15 @@ public enum TypedMutationContract {
                     ]
                     guard mutations.contains(operation) else { return [] }
                     return [.init(argument: "path", role: .sourceWrite, whenAbsent: .required)]
+                }
+                if action == "scene" {
+                    // The persisted view overlay is ordinary state inside the
+                    // same .floecad package. `get` is a pure read; every
+                    // mutation (including undo/redo) rewrites only `path`.
+                    guard operation.trimmingCharacters(in: .whitespacesAndNewlines)
+                        .lowercased() != "get" else { return [] }
+                    return [.init(argument: "path", role: .sourceWrite,
+                                  whenAbsent: .required)]
                 }
                 if action == "parameters" {
                     // Every variable/formula edit is an ordinary undoable

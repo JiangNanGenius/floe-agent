@@ -252,6 +252,9 @@ struct CADAnimationExportOptionsSheet: View {
     let initial: CADAnimationExportOptions
     /// Active clip duration, used only for the frame estimate footer.
     let clipDuration: Double
+    /// X22: accurate pre-write statement when saved measurement guides are
+    /// visible; their lines are rendered, their numeric values are not baked.
+    let numericTextNotice: String?
     let onExport: (CADAnimationExportOptions) -> Void
 
     @Environment(\.dismiss) private var dismiss
@@ -259,9 +262,11 @@ struct CADAnimationExportOptionsSheet: View {
 
     init(initial: CADAnimationExportOptions,
          clipDuration: Double,
+         numericTextNotice: String? = nil,
          onExport: @escaping (CADAnimationExportOptions) -> Void) {
         self.initial = initial
         self.clipDuration = clipDuration
+        self.numericTextNotice = numericTextNotice
         self.onExport = onExport
         _draft = State(initialValue: initial)
     }
@@ -279,6 +284,12 @@ struct CADAnimationExportOptionsSheet: View {
                     .font(.footnote)
                     .foregroundStyle(.secondary)
                     .accessibilityIdentifier("CADAnimationExportForegroundNotice")
+                if let numericTextNotice {
+                    Text(numericTextNotice)
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                        .accessibilityIdentifier("CADAnimationExportNumericTextNotice")
+                }
                 Picker(FloeCADStrings.text("cad.animation.export.options.format",
                                            "Output"),
                        selection: $draft.format) {

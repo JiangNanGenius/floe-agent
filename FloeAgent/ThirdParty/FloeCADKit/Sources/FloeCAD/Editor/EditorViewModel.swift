@@ -179,13 +179,167 @@ final class EditorViewModel {
     }
 
     /// Re-read the persisted scene presentation after the shared session's
-    /// `sceneSettingsData` changed (facade `importLegacyScene`).
+    /// `sceneSettingsData` changed (facade `importLegacyScene`, an overlay
+    /// edit in Present, undo/redo).
     func reloadSceneSettings() {
-        guard let data = session.document.sceneSettingsData else {
+        if let data = session.document.sceneSettingsData {
+            sceneSettings = try? JSONDecoder().decode(CADSceneSettings.self, from: data)
+        } else {
             sceneSettings = nil
-            return
         }
-        sceneSettings = try? JSONDecoder().decode(CADSceneSettings.self, from: data)
+        reloadViewOverlayFromDocument()
+    }
+
+    /// X22: the section plane and saved measurement guides are document data,
+    /// not editor session state. The live SectionState mirrors them so the
+    /// existing pick/drag/arrow path keeps working; a drag in progress is the
+    /// only authority that may temporarily differ (and it is committed on
+    /// gesture end).
+    private(set) var viewOverlay: CADViewOverlayState = .empty
+    private var sectionDragInProgress = false
+
+    func reloadViewOverlayFromDocument() {
+        viewOverlay = CADViewOverlayCodec.decode(session.document.sceneSettingsData)
+        guard !sectionDragInProgress else { return }
+        sectionState = viewOverlay.section.flatMap(Self.sectionState(from:))
+    }
+
+    static func sectionState(from section: CADSectionView) -> SectionState? {
+        guard section.enabled, let clean = section.sanitized else { return nil }
+        return SectionState(
+            basePlane: SketchPlane(origin: clean.originVector,
+                                   xAxis: clean.xAxisVector,
+                                   yAxis: clean.yAxisVector),
+            offset: 0,
+            flipped: clean.flipped,
+            size: clean.sizeMM)
+    }
+
+    var hasMeasurementAnnotations: Bool {
+        !viewOverlay.measurements.isEmpty
+    }
+
+    var showsMeasurementGuides: Bool {
+        viewOverlay.showsMeasurements
+    }
+
+    /// Persist the live section plane (or its removal) into the same additive
+    /// sceneSettings record every other view setting uses.
+    private func persistViewOverlaySection() {
+        var overlay = CADViewOverlayCodec.decode(session.document.sceneSettingsData)
+        if let section = sectionState {
+            let plane = section.plane
+            overlay.section = CADSectionView(
+                enabled: true, origin: plane.origin,
+                xAxis: plane.xAxis, yAxis: plane.yAxis,
+                flipped: section.flipped, sizeMM: section.size)
+        } else {
+            overlay.section = nil
+        }
+        commitViewOverlay(overlay)
+    }
+
+    /// Apply an overlay to the ONE additive sceneSettings record. Returns true
+    /// only when the document actually holds the requested bytes afterwards.
+    /// A blocked/read-only/refused session leaves the document unchanged,
+    /// restores the live mirror from the authoritative bytes and returns false
+    /// instead of claiming a save.
+    @discardableResult
+    private func commitViewOverlay(_ overlay: CADViewOverlayState) -> Bool {
+        let before = session.document.sceneSettingsData
+        guard let after = CADViewOverlayCodec.settingsData(before, applying: overlay) else {
+            reloadViewOverlayFromDocument()
+            return false
+        }
+        // Already persisted: a no-op is a true commit, not a refused write.
+        if after == before {
+            reloadViewOverlayFromDocument()
+            return true
+        }
+        // `DocumentSession.perform` records a write block and silently keeps
+        // the bytes unchanged; check the same authority so the caller gets an
+        // honest result instead of a retry that discards transient input.
+        let committed: Bool
+        if session.writeBlock != nil {
+            committed = false
+        } else {
+            session.perform(SetSceneSettingsDataCommand(before: before, after: after))
+            committed = session.document.sceneSettingsData == after
+        }
+        // The live SectionState/measurement mirror always follows the actual
+        // document bytes, including after a refusal.
+        reloadViewOverlayFromDocument()
+        return committed
+    }
+
+    /// The authoritative reason a view-overlay write was refused. A session
+    /// block already explains sketch edits and version restores; only its
+    /// generic read-only detail needs the overlay's own product wording.
+    private func viewOverlayRefusalMessage() -> String {
+        guard let block = session.writeBlock else {
+            return FloeCADStrings.text(
+                "cad.measure.saveFailed",
+                "The measurement wasn't saved; the document didn't accept the change.")
+        }
+        if block.code == "read_only" {
+            return FloeCADStrings.text(
+                "cad.overlay.error.readOnly",
+                "This document is read-only; its section and annotations can't be changed.")
+        }
+        return block.message
+    }
+
+    /// Save the current two-point measure result as a persisted guide.
+    @discardableResult
+    func saveMeasurementAnnotation() -> Bool {
+        guard measurePoints.count == 2 else { return false }
+        var overlay = CADViewOverlayCodec.decode(session.document.sceneSettingsData)
+        guard overlay.measurements.count < CADMeasurementAnnotation.maximumCount else {
+            showNotice(FloeCADStrings.format(
+                "cad.overlay.error.limit", "You can save up to %d measurements.",
+                CADMeasurementAnnotation.maximumCount))
+            return false
+        }
+        guard let annotation = CADMeasurementAnnotation(
+            start: measurePoints[0], end: measurePoints[1]).sanitized else {
+            showNotice(FloeCADStrings.text(
+                "cad.overlay.error.measurement",
+                "Move the two picked points apart before saving."))
+            return false
+        }
+        overlay.measurements.append(annotation)
+        overlay.showsMeasurements = true
+        guard commitViewOverlay(overlay),
+              viewOverlay.measurements.contains(where: { $0.id == annotation.id }) else {
+            // Refused (read-only, sketch edit or version restore) or the
+            // document did not end up with the requested annotation in its
+            // authoritative bytes. Keep the two picked points retryable and
+            // never report a false success.
+            showNotice(viewOverlayRefusalMessage())
+            return false
+        }
+        // The saved guide replaces the transient pick pair, so a second Save
+        // cannot create a duplicate of the same measurement.
+        measurePoints.removeAll()
+        showNotice(FloeCADStrings.text(
+            "cad.measure.saved", "Measurement saved to this document."))
+        return true
+    }
+
+    func setMeasurementGuidesVisible(_ visible: Bool) {
+        var overlay = CADViewOverlayCodec.decode(session.document.sceneSettingsData)
+        guard overlay.showsMeasurements != visible else { return }
+        overlay.showsMeasurements = visible
+        commitViewOverlay(overlay)
+    }
+
+    /// Re-enable a section that Present hid without picking a new plane.
+    func setSectionEnabled(_ enabled: Bool) {
+        var overlay = CADViewOverlayCodec.decode(session.document.sceneSettingsData)
+        guard var section = overlay.section, section.enabled != enabled else { return }
+        section.enabled = enabled
+        overlay.section = section
+        commitViewOverlay(overlay)
     }
 
     init(project: Project, modelContext: CADModelContext) {
@@ -1387,7 +1541,18 @@ final class EditorViewModel {
         return sketch.entities.contains { state.entityIDs.contains($0.id) }
     }
 
-    var scene: ViewportScene {
+    var scene: ViewportScene { buildScene(includeSectionPlaneChrome: true) }
+
+    /// Capture/export scene: the SAME live geometry, persisted section cut and
+    /// saved measurement guides, without the interactive section-plane
+    /// rectangle. The indicator is editing chrome, not model content; leaving
+    /// it out keeps an Edit screenshot comparable to a Present capture and
+    /// keeps a video free of a translucent picker.
+    func captureScene() -> ViewportScene {
+        buildScene(includeSectionPlaneChrome: false)
+    }
+
+    private func buildScene(includeSectionPlaneChrome: Bool) -> ViewportScene {
         _ = session.changeCount // establish observation dependency
         _ = explodedPreview.revision // …and the transient exploded preview
         var drawables: [BodyDrawable] = []
@@ -2059,6 +2224,14 @@ final class EditorViewModel {
             break
         }
 
+        // X22: the persisted overlay is the shared display authority. A live
+        // drag is the only state that may lead it (and is committed on end).
+        let persistedOverlay = CADViewOverlayCodec.decode(
+            session.document.sceneSettingsData)
+        let displaySection: SectionState? = sectionDragInProgress
+            ? sectionState
+            : persistedOverlay.section.flatMap(Self.sectionState(from:))
+
         // Display mode + Section View (spec §16, plan §B11/§B12).
         scene.displayMode = displayMode
         scene.showHiddenEdges = showHiddenEdges
@@ -2070,7 +2243,7 @@ final class EditorViewModel {
         scene.showsGrid = sceneSettings?.showsGrid ?? true
         scene.groundShadow = groundShadowEnabled
             || (sceneSettings?.lighting?.castsShadows ?? false)
-        if let section = sectionState {
+        if let section = displaySection {
             let plane = section.plane
             let n = simd_normalize(section.basePlane.normal)
             let keep = section.flipped ? -n : n
@@ -2078,17 +2251,20 @@ final class EditorViewModel {
                 point: SIMD3(Float(plane.origin.x), Float(plane.origin.y), Float(plane.origin.z)),
                 normal: SIMD3(Float(keep.x), Float(keep.y), Float(keep.z))
             )
-            // The plane rectangle, nudged a hair to the kept side so its own
-            // fill/border survive the clip test in the sketch shaders.
-            var quadPlane = plane
-            quadPlane.origin += keep * 1e-3
-            appendPlaneQuad(
-                quadPlane, size: section.size,
-                fill: SIMD4(0.0, 0.52, 1.0, 0.10),
-                border: SIMD4(0.0, 0.52, 1.0, 0.85),
-                into: &scene
-            )
-            // The section plane's own pull arrow comes from `pullArrowState`.
+            if includeSectionPlaneChrome {
+                // The plane rectangle, nudged a hair to the kept side so its
+                // own fill/border survive the clip test in the sketch shaders.
+                var quadPlane = plane
+                quadPlane.origin += keep * 1e-3
+                appendPlaneQuad(
+                    quadPlane, size: section.size,
+                    fill: SIMD4(0.0, 0.52, 1.0, 0.10),
+                    border: SIMD4(0.0, 0.52, 1.0, 0.85),
+                    into: &scene
+                )
+            }
+            // The section plane's own pull arrow comes from `pullArrowState`;
+            // the offscreen snapshot path never draws that overlay pass.
         }
 
         // Measure/Translate/Align picks: cross markers at each picked point
@@ -2122,6 +2298,33 @@ final class EditorViewModel {
             scene.sketchLines.append(SketchLineBatch(
                 segments: segments,
                 color: SIMD4(0.0, 0.52, 1.0, 1)
+            ))
+        }
+
+        // X22: saved measurement guides are document data, so they appear in
+        // Edit, Present and every capture/export. The renderer's section clip
+        // also applies to sketch lines, matching Present's clipped guides.
+        if !persistedOverlay.visibleMeasurements.isEmpty {
+            let radius = Float(max(0.12, 8 * worldPerPoint))
+            var segments: [SIMD3<Float>] = []
+            for annotation in persistedOverlay.visibleMeasurements {
+                let a = annotation.startVector
+                let b = annotation.endVector
+                let start = SIMD3<Float>(Float(a.x), Float(a.y), Float(a.z))
+                let end = SIMD3<Float>(Float(b.x), Float(b.y), Float(b.z))
+                segments.append(start)
+                segments.append(end)
+                for corner in [start, end] {
+                    segments += [
+                        corner - SIMD3(radius, 0, 0), corner + SIMD3(radius, 0, 0),
+                        corner - SIMD3(0, radius, 0), corner + SIMD3(0, radius, 0),
+                        corner - SIMD3(0, 0, radius), corner + SIMD3(0, 0, radius),
+                    ]
+                }
+            }
+            scene.sketchLines.append(SketchLineBatch(
+                segments: segments,
+                color: SIMD4(0.0, 0.52, 1.0, 0.9)
             ))
         }
         return scene
@@ -6720,6 +6923,9 @@ final class EditorViewModel {
     }
 
     private func sanitizeAfterHistoryChange() {
+        // X22: undo/redo may have restored another section/annotation state;
+        // the live mirror follows the document, never the other way around.
+        reloadViewOverlayFromDocument()
         // Face/tool contexts reference geometry that may have changed.
         cancelTool()
         // A blend/shell/offset/axis pick references geometry that may have changed.
@@ -6966,12 +7172,16 @@ final class EditorViewModel {
     /// Flip badge: switch which side of the plane stays visible.
     func flipSection() {
         sectionState?.flipped.toggle()
+        persistViewOverlaySection()
     }
 
-    /// Section off: restore the full model.
+    /// Section off: restore the full model. The persisted plane is removed
+    /// too, so Present/screenshots/export use the full model immediately.
     func endSection() {
         sectionState = nil
         sectionDragAnchor = nil
+        sectionDragInProgress = false
+        persistViewOverlaySection()
         cancelSectionPlanePick()
     }
 
@@ -7000,6 +7210,7 @@ final class EditorViewModel {
         }
         sectionState = SectionState(basePlane: plane, size: size)
         mode = .idle
+        persistViewOverlaySection()
     }
 
     /// A drag starting near the section pull arrow moves the plane along its
@@ -7029,6 +7240,7 @@ final class EditorViewModel {
         else { return false }
         sectionDragAnchor = param
         sectionDragStartOffset = section.offset
+        sectionDragInProgress = true
         return true
     }
 
@@ -7057,6 +7269,8 @@ final class EditorViewModel {
 
     func endSectionDrag() {
         sectionDragAnchor = nil
+        sectionDragInProgress = false
+        persistViewOverlaySection()
     }
 
     private func handleTap(ray: Ray) {

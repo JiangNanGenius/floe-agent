@@ -111,6 +111,9 @@ struct MeshExportOptionsSheet: View {
     let preflight: (Bool, Bool, Int) async -> OBJBundlePreflight?
     let currentChangeCount: () -> Int
     let coverageForFormat: (String) -> CADExchangeCoverage?
+    /// X22: this document carries a section cut / measurement guides that the
+    /// exchange writer does not include. Nil for an ordinary model.
+    var viewOnlyNotice: String? = nil
     /// Localized refusal message for a preflight diagnostic.
     let message: (OBJBundleDiagnostic) -> String
     /// Called with the per-body and materials choices when Export is confirmed.
@@ -172,6 +175,14 @@ struct MeshExportOptionsSheet: View {
                                                "Separate File per Body"),
                            isOn: $perBodyFiles)
                         .accessibilityIdentifier("ExportPerBodyToggle")
+                }
+                if let viewOnlyNotice {
+                    Section {
+                        Text(viewOnlyNotice)
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                            .accessibilityIdentifier("ExportViewOnlyNotice")
+                    }
                 }
                 if let coverage, !coverage.complete {
                     CADExportCoverageSummary(coverage: coverage)
@@ -373,7 +384,16 @@ struct ScreenshotOptionsSheet: View {
     @State private var showGrid = true
 
     @Environment(\.dismiss) private var dismiss
+    /// X22: non-nil only when saved measurement guides are visible and their
+    /// numeric values are not baked into the pixels.
+    let numericTextNotice: String?
     let onExport: (Int, Int, Bool, Bool) -> Void
+
+    init(numericTextNotice: String? = nil,
+         onExport: @escaping (Int, Int, Bool, Bool) -> Void) {
+        self.numericTextNotice = numericTextNotice
+        self.onExport = onExport
+    }
 
     private static let baseSize = (width: 1024, height: 768)
 
@@ -391,6 +411,14 @@ struct ScreenshotOptionsSheet: View {
                     .accessibilityIdentifier("ScreenshotTransparent")
                 Toggle("Show Grid", isOn: $showGrid)
                     .accessibilityIdentifier("ScreenshotGrid")
+                if let numericTextNotice {
+                    Section {
+                        Text(numericTextNotice)
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                            .accessibilityIdentifier("ScreenshotNumericTextNotice")
+                    }
+                }
             }
             .navigationTitle("Screenshot")
             .onDisappear { MacWindowTitle.restore() }
@@ -483,6 +511,15 @@ struct FloeCADEditorView: View {
     @Environment(\.cadSelectionObserver) private var selectionObserver
     @State private var viewModel: EditorViewModel?
     @State private var exportDocument: ExportDocument?
+    /// X22 quick mesh exports (STL/3MF/USDZ/DXF) show the model-only notice
+    /// before writing when the document actually has a view overlay.
+    private enum QuickViewOnlyExport: String {
+        case stl = "STL"
+        case threeMF = "3MF"
+        case usdz = "USDZ"
+        case dxf = "DXF"
+    }
+    @State private var pendingViewOnlyExport: QuickViewOnlyExport?
     @State private var showItemsPanel = false
     /// Canvas result banner (`CADCanvasActionResult`); shown in a safe-area
     /// inset so the toolbar entry always has visible feedback.
@@ -741,6 +778,15 @@ struct FloeCADEditorView: View {
                 .font(.caption)
                 .monospacedDigit()
                 .foregroundStyle(.secondary)
+                // X22: a measurement becomes document data only when saved;
+                // the pill itself stays a transient readout.
+                Button(FloeCADStrings.text("cad.measure.saveAnnotation",
+                                           "Save Annotation")) {
+                    viewModel.saveMeasurementAnnotation()
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                .accessibilityIdentifier("MeasureSaveAnnotation")
             } else {
                 Text(viewModel.measurePoints.isEmpty
                     ? FloeCADStrings.text("cad.status.measureFirstPoint", "Tap two points to measure")
@@ -1240,18 +1286,53 @@ struct FloeCADEditorView: View {
         .accessibilityIdentifier("ImportMenu")
     }
 
+    /// X22: only a document with authored view-only content gets the
+    /// pre-write notice. An ordinary model keeps the one-tap export.
+    private func requestQuickExport(_ choice: QuickViewOnlyExport,
+                                    viewModel: EditorViewModel) {
+        if viewModel.viewOverlay.hasViewOnlyContent {
+            pendingViewOnlyExport = choice
+        } else {
+            performQuickExport(choice)
+        }
+    }
+
+    private func performQuickExport(_ choice: QuickViewOnlyExport) {
+        guard let viewModel else { return }
+        switch choice {
+        case .stl:
+            if let data = viewModel.exportSTL() {
+                exportDocument = ExportDocument(
+                    data: data, contentType: ExportDocument.stlType,
+                    fileExtension: "stl")
+            }
+        case .threeMF:
+            if let data = viewModel.exportThreeMF() {
+                exportDocument = ExportDocument(
+                    data: data, contentType: ExportDocument.threeMFType,
+                    fileExtension: "3mf")
+            }
+        case .usdz:
+            if let data = viewModel.exportUSDZ() {
+                exportDocument = ExportDocument(
+                    data: data, contentType: ExportDocument.usdzType,
+                    fileExtension: "usdz")
+            }
+        case .dxf:
+            if let data = viewModel.exportDXF() {
+                exportDocument = ExportDocument(
+                    data: data, contentType: ExportDocument.dxfType,
+                    fileExtension: "dxf")
+            }
+        }
+    }
+
     /// Toolbar Export menu (spec §12, plan §B14): mesh formats, sketch DXF,
     /// screenshot, and — where ModelIO can write USDZ — USDZ + AR Preview.
     private func exportMenu(_ viewModel: EditorViewModel) -> some View {
         Menu {
             Button("STL") {
-                if let data = viewModel.exportSTL() {
-                    exportDocument = ExportDocument(
-                        data: data,
-                        contentType: ExportDocument.stlType,
-                        fileExtension: "stl"
-                    )
-                }
+                requestQuickExport(.stl, viewModel: viewModel)
             }
             // OBJ and GLB open an options sheet (plan §B14): both
             // support the "Separate File per Body" split.
@@ -1262,36 +1343,18 @@ struct FloeCADEditorView: View {
                 meshExportFormat = .glb
             }
             Button("3MF") {
-                if let data = viewModel.exportThreeMF() {
-                    exportDocument = ExportDocument(
-                        data: data,
-                        contentType: ExportDocument.threeMFType,
-                        fileExtension: "3mf"
-                    )
-                }
+                requestQuickExport(.threeMF, viewModel: viewModel)
             }
             // USDZ only where ModelIO can actually write it
             // (never faked — some simulators can't).
             if USDZExporter.isSupported {
                 Button("USDZ") {
-                    if let data = viewModel.exportUSDZ() {
-                        exportDocument = ExportDocument(
-                            data: data,
-                            contentType: ExportDocument.usdzType,
-                            fileExtension: "usdz"
-                        )
-                    }
+                    requestQuickExport(.usdz, viewModel: viewModel)
                 }
             }
             // DXF of the active/ground sketch (plan §B14).
             Button("DXF") {
-                if let data = viewModel.exportDXF() {
-                    exportDocument = ExportDocument(
-                        data: data,
-                        contentType: ExportDocument.dxfType,
-                        fileExtension: "dxf"
-                    )
-                }
+                requestQuickExport(.dxf, viewModel: viewModel)
             }
             // The exact-solid exchange path always previews included/excluded
             // parts before writing; the old STEP shortcut skipped mesh bodies.
@@ -2041,10 +2104,26 @@ struct FloeCADEditorView: View {
                             Button("Section Off") {
                                 viewModel.endSection()
                             }
+                        } else if viewModel.viewOverlay.section != nil {
+                            Button(FloeCADStrings.text(
+                                "cad.overlay.section.show", "Show Section")) {
+                                viewModel.setSectionEnabled(true)
+                            }
+                            Button("Section Off") {
+                                viewModel.endSection()
+                            }
                         } else {
                             Button("Section") {
                                 viewModel.beginSectionPlanePick()
                             }
+                        }
+                        if viewModel.hasMeasurementAnnotations {
+                            Toggle(FloeCADStrings.text(
+                                "cad.overlay.measurements.toggle", "Show guides"),
+                                   isOn: Binding(
+                                    get: { viewModel.showsMeasurementGuides },
+                                    set: { viewModel.setMeasurementGuidesVisible($0) }))
+                                .accessibilityIdentifier("CADMeasurementGuidesToggle")
                         }
                     } label: {
                         Label("Views", systemImage: "square.stack.3d.up")
@@ -2243,8 +2322,22 @@ struct FloeCADEditorView: View {
                 if viewModel.sectionState != nil {
                     Button("Flip Section") { viewModel.flipSection() }
                     Button("Section Off") { viewModel.endSection() }
+                } else if viewModel.viewOverlay.section != nil {
+                    Button(FloeCADStrings.text(
+                        "cad.overlay.section.show", "Show Section")) {
+                        viewModel.setSectionEnabled(true)
+                    }
+                    Button("Section Off") { viewModel.endSection() }
                 } else {
                     Button("Section") { viewModel.beginSectionPlanePick() }
+                }
+                if viewModel.hasMeasurementAnnotations {
+                    Toggle(FloeCADStrings.text(
+                        "cad.overlay.measurements.toggle", "Show guides"),
+                           isOn: Binding(
+                            get: { viewModel.showsMeasurementGuides },
+                            set: { viewModel.setMeasurementGuidesVisible($0) }))
+                        .accessibilityIdentifier("CADMeasurementGuidesToggle")
                 }
             } label: {
                 Label("Views", systemImage: "square.stack.3d.up")
@@ -2462,7 +2555,13 @@ struct FloeCADEditorView: View {
                     }
                 }
             ) {
-                ScreenshotOptionsSheet { width, height, transparent, showGrid in
+                ScreenshotOptionsSheet(
+                    numericTextNotice: viewModel.viewOverlay.visibleMeasurements.isEmpty
+                        ? nil
+                        : FloeCADStrings.text(
+                            "cad.ui.export.numericTextNotice",
+                            "Measurement lines are included. Numeric values are not drawn into the image; they remain in the overlay list.")
+                ) { width, height, transparent, showGrid in
                     pendingScreenshot = viewModel.captureScreenshot(
                         width: width,
                         height: height,
@@ -2509,6 +2608,11 @@ struct FloeCADEditorView: View {
                     },
                     currentChangeCount: { viewModel.session.changeCount },
                     coverageForFormat: { viewModel.meshExportCoverage(format: $0) },
+                    viewOnlyNotice: viewModel.viewOverlay.hasViewOnlyContent
+                        ? FloeCADStrings.text(
+                            "cad.ui.export.viewOnlyNotice",
+                            "This file stores model geometry only; the section cut and measurement guides are not included.")
+                        : nil,
                     message: { diagnostic in
                         viewModel.objBundleMessage(for: diagnostic)
                     },
@@ -2577,6 +2681,30 @@ struct FloeCADEditorView: View {
                 if case .failure = result {
                     viewModel.errorMessage = "Export failed — please try again."
                 }
+            }
+            .confirmationDialog(
+                Text(FloeCADStrings.text(
+                    "cad.ui.export.viewOnlyTitle",
+                    "View-only overlays aren't included")),
+                isPresented: Binding(
+                    get: { pendingViewOnlyExport != nil },
+                    set: { if !$0 { pendingViewOnlyExport = nil } }
+                ),
+                titleVisibility: .visible,
+                presenting: pendingViewOnlyExport
+            ) { choice in
+                Button(FloeCADStrings.text("cad.ui.common.export", "Export")) {
+                    pendingViewOnlyExport = nil
+                    performQuickExport(choice)
+                }
+                Button(FloeCADStrings.text("cad.ui.common.cancel", "Cancel"),
+                       role: .cancel) {
+                    pendingViewOnlyExport = nil
+                }
+            } message: { choice in
+                Text(FloeCADStrings.text(
+                    "cad.ui.export.viewOnlyNotice",
+                    "This file stores model geometry only; the section cut and measurement guides are not included."))
             }
             .confirmationDialog(
                 "Select Through",

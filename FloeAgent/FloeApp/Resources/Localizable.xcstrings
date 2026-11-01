@@ -15705,6 +15705,23 @@
         }
       }
     },
+    "cad.present.issue.section": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The section cut couldn't be applied to part of this model, so that part isn't shown in Present."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "此模型的局部无法应用剖切，因此该部分不会在演示中显示。"
+          }
+        }
+      }
+    },
     "cad.present.issue.transform": {
       "extractionState": "manual",
       "localizations": {
@@ -124030,6 +124047,516 @@
           "stringUnit": {
             "state": "translated",
             "value": "正在写入帧压缩包…"
+          }
+        }
+      }
+    },
+    "cad.measure.saveAnnotation": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Save Annotation"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "保存标注"
+          }
+        }
+      }
+    },
+    "cad.measure.saveFailed": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The measurement wasn't saved; the document didn't accept the change."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "测量未保存：文档未接受此更改。"
+          }
+        }
+      }
+    },
+    "cad.measure.saved": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Measurement saved to this document."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "测量已保存到此文档。"
+          }
+        }
+      }
+    },
+    "cad.overlay.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Section & Annotations"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "剖切与标注"
+          }
+        }
+      }
+    },
+    "cad.overlay.section": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Section"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "剖切"
+          }
+        }
+      }
+    },
+    "cad.overlay.section.toggle": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Show section cut"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "显示剖切"
+          }
+        }
+      }
+    },
+    "cad.overlay.section.flip": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Flip side"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "翻转方向"
+          }
+        }
+      }
+    },
+    "cad.overlay.section.remove": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Remove section"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "移除剖切"
+          }
+        }
+      }
+    },
+    "cad.overlay.section.none": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Add a section from Edit › Views › Section."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "可在编辑 › 视图 › 剖切中添加剖切。"
+          }
+        }
+      }
+    },
+    "cad.overlay.measurements": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Measurements"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "测量标注"
+          }
+        }
+      }
+    },
+    "cad.overlay.measurements.toggle": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Show guides"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "显示引导线"
+          }
+        }
+      }
+    },
+    "cad.overlay.measurements.none": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Measure two points in Edit, then save the result."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "在编辑中测量两点，然后保存结果。"
+          }
+        }
+      }
+    },
+    "cad.overlay.measurement.row": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Measurement %d"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "测量 %d"
+          }
+        }
+      }
+    },
+    "cad.overlay.footer.capture": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Screenshots and video include the section cut and measurement lines; values stay in this list."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "截图和视频会包含剖切和测量引导线；数值保留在此列表中。"
+          }
+        }
+      }
+    },
+    "cad.overlay.footer.exchange": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "STEP, IGES, GLB, USDZ, OBJ, STL and 3MF store model geometry only; they don't include view cuts or guides."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "STEP、IGES、GLB、USDZ 和 OBJ 仅保存模型几何，不包含视图剖切或引导线。"
+          }
+        }
+      }
+    },
+    "cad.overlay.footer.faceSelection": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Face selection is off while a section is shown."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "显示剖切时无法选择面。"
+          }
+        }
+      }
+    },
+    "cad.overlay.error.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Couldn't change the view"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "无法更改视图"
+          }
+        }
+      }
+    },
+    "cad.overlay.error.readOnly": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This document is read-only; its section and annotations can't be changed."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "此文档为只读，无法更改剖切和标注。"
+          }
+        }
+      }
+    },
+    "cad.overlay.error.limit": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "You can save up to %d measurements."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "最多可保存 %d 个测量。"
+          }
+        }
+      }
+    },
+    "cad.overlay.error.measurement": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Move the two picked points apart before saving."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "保存前请让两个选取点分开。"
+          }
+        }
+      }
+    },
+    "cad.present.overlays": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Overlays"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "叠加显示"
+          }
+        }
+      }
+    },
+    "cad.present.export.glbViewOnlyTitle": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "GLB keeps the model only"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "GLB 仅保存模型"
+          }
+        }
+      }
+    },
+    "cad.present.export.glbViewOnlyMessage": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The section cut and measurement guides are view-only and won't be included in this file."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "剖切和测量引导线仅用于查看，不会写入此文件。"
+          }
+        }
+      }
+    },
+    "cad.present.export.glbModelOnly": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Export Model"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "导出模型"
+          }
+        }
+      }
+    },
+    "cad.overlay.footer.partAnimation": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Part animation moves the cut with each part. Remove the section before playing or exporting part tracks."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "零件动画会让剖切随零件移动。播放或导出零件轨道前请先移除剖切。"
+          }
+        }
+      }
+    },
+    "cad.overlay.section.show": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Show Section"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "显示剖切"
+          }
+        }
+      }
+    },
+    "cad.ui.export.numericTextNotice": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Measurement lines are included. Numeric values are not drawn into the image or video; they remain in the overlay list."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "图像或视频包含测量引导线，但不会绘制数值文字；数值保留在叠加层列表中。"
+          }
+        }
+      }
+    },
+    "cad.ui.export.numericTextTitle": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Measurement values aren't drawn"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "不会绘制测量数值"
+          }
+        }
+      }
+    },
+    "cad.ui.export.viewOnlyNotice": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This file stores model geometry only; the section cut and measurement guides are not included."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "此文件仅保存模型几何，不包含剖切和测量引导线。"
+          }
+        }
+      }
+    },
+    "cad.ui.export.viewOnlyTitle": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "View-only overlays aren't included"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "视图叠加层不会包含在文件中"
           }
         }
       }

@@ -538,6 +538,16 @@ public extension FloeCADDocument {
         let clip = clipID.flatMap { state.animation.clip(withID: $0) }
             ?? state.animation.activeClip
         guard let clip else { throw CADAnimationExportError.noClip }
+        // X22: the section cut is built into each body mesh in its own local
+        // space, so a part track would carry the cut with the moving part
+        // instead of leaving the plane fixed in world space. Refuse the
+        // contradictory combination BEFORE any staging artifact is created;
+        // a camera-only clip keeps the static cut and is unaffected.
+        if viewOverlayState.activeSection != nil, !clip.instanceTracks.isEmpty {
+            throw CADAnimationExportError.invalidSettings(
+                "A section cut is shown. Part animation would move the cut with "
+                + "each part; remove the section or the part tracks before exporting.")
+        }
         // Freeze the live generation alongside the clip value. The async run
         // may start (and settle persistence) after this call returns; an edit
         // in that window must abort the frozen export rather than combine the
@@ -707,6 +717,16 @@ public extension FloeCADDocument {
         let clip = clipID.flatMap { state.animation.clip(withID: $0) }
             ?? state.animation.activeClip
         guard let clip else { throw CADAnimationExportError.noClip }
+        // X22: the section cut is built into each body mesh in its own local
+        // space, so a part track would carry the cut with the moving part
+        // instead of leaving the plane fixed in world space. Refuse the
+        // contradictory combination BEFORE any staging artifact is created;
+        // a camera-only clip keeps the static cut and is unaffected.
+        if viewOverlayState.activeSection != nil, !clip.instanceTracks.isEmpty {
+            throw CADAnimationExportError.invalidSettings(
+                "A section cut is shown. Part animation would move the cut with "
+                + "each part; remove the section or the part tracks before exporting.")
+        }
         guard !CADAnimationExportCenter.shared.hasActiveJob(
             documentKey: url.standardizedFileURL.path) else {
             throw CADAnimationExportError.exportInProgress

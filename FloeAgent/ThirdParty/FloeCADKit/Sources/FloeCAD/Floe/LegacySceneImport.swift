@@ -171,10 +171,11 @@ public nonisolated enum CADLegacyVisualApproximation: String, Sendable, Codable,
 /// `sceneSettings` column. Absent on ordinary CAD documents; older builds
 /// ignore the unknown key (they decode the document record without it).
 public nonisolated struct CADSceneSettings: Codable, Equatable, Sendable {
-    /// 2 adds the optional named-camera list and its selection. The fields are
-    /// additive optionals, so a version-1 package decodes unchanged and a
-    /// version-1 reader ignores them.
-    public static let currentSchemaVersion = 2
+    /// 2 adds the optional named-camera list and its selection; 3 adds the
+    /// optional X22 section/measurement overlay. The fields are additive
+    /// optionals, so a version-1/2 package decodes unchanged and an older
+    /// reader ignores them.
+    public static let currentSchemaVersion = 3
 
     public nonisolated struct Camera: Codable, Equatable, Sendable {
         public var azimuthRadians: Double
@@ -280,17 +281,23 @@ public nonisolated struct CADSceneSettings: Codable, Equatable, Sendable {
     /// Additive optional: older documents decode with nil and use the default
     /// studio/daylight/dark presets.
     var presentation: CADViewAppearance?
+    /// X22 section cut + saved measurement guides shared by Edit, Present,
+    /// screenshots and animation export. Additive optional: nil means the
+    /// historical "no overlay" behavior and an older reader ignores the key.
+    public var viewOverlay: CADViewOverlayState?
 
     public init(schemaVersion: Int = CADSceneSettings.currentSchemaVersion,
                 camera: Camera? = nil, lighting: Lighting? = nil,
                 background: Background? = nil, showsGrid: Bool? = nil,
                 legacy: LegacyProvenance? = nil,
                 savedCameras: [CADSavedCamera]? = nil,
-                activeCameraID: UUID? = nil) {
+                activeCameraID: UUID? = nil,
+                viewOverlay: CADViewOverlayState? = nil) {
         self.schemaVersion = schemaVersion
         self.camera = camera; self.lighting = lighting
         self.background = background; self.showsGrid = showsGrid; self.legacy = legacy
         self.savedCameras = savedCameras; self.activeCameraID = activeCameraID
+        self.viewOverlay = viewOverlay
     }
 }
 

@@ -78,6 +78,13 @@ nonisolated struct CADPresentationSnapshot: Sendable, Equatable {
     var imageSHA256: String
     var capturedAt: Date
     var note: String
+    /// Exact scene/build whose installed stage produced these pixels.
+    var sceneBuildKey: String = ""
+    /// X22 overlay identity captured with the same stage, never re-read from
+    /// the document after the await.
+    var sectionCutIncluded: Bool = false
+    var measurementGuideCount: Int = 0
+    var measurementLengthsMM: [Double] = []
 }
 
 // MARK: - Handle
@@ -271,6 +278,9 @@ final class CADPresentationRenderController: NSObject, UIGestureRecognizerDelega
         var mesh: MeshResource
     }
     private var buildKey: String?
+    /// The most recent scene whose build failed/was cancelled without a
+    /// replacement. A capture waiting for it must refuse instead of hanging.
+    private var failedBuildKey: String?
     private var buildTask: Task<Void, Never>?
     private var environmentTask: Task<Void, Never>?
     private(set) var currentBounds: CADPresentationBounds?
@@ -305,6 +315,10 @@ final class CADPresentationRenderController: NSObject, UIGestureRecognizerDelega
         // pose; pixels taken under it must never share a live-view cache key.
         hasher.combine(camera.transientHalfHeightScale)
         hasher.combine(currentScene?.environment.stableKey)
+        // The requested scene is part of the state identity even while its
+        // stage is still building: a capture must never key old pixels under
+        // the new overlay/document scene.
+        hasher.combine(currentScene?.buildKey)
         hasher.combine(buildKey)
         hasher.combine(animationToken)
         hasher.combine(renderGeneration)
@@ -327,10 +341,28 @@ final class CADPresentationRenderController: NSObject, UIGestureRecognizerDelega
     }
     var currentCamera: CADPresentationCamera { camera }
     var isAnimationLeased: Bool { animationLease != nil }
-    /// True once a real stage has been built and can be snapshotted. The
-    /// service-owned offscreen host waits for this instead of guessing that a
-    /// frame is ready.
-    var isStageReady: Bool { stage != nil && buildKey != nil }
+    /// True only when the installed stage is the EXACT scene currently
+    /// requested. A stage from the previous scene remains visible during a
+    /// rebuild but is never reported ready for capture.
+    var isStageReady: Bool {
+        guard let buildKey else { return false }
+        return isStageCurrent(buildKey: buildKey)
+    }
+    /// The one acceptance rule shared by capture waiters and expected-key
+    /// snapshots: the INSTALLED build and the CURRENTLY REQUESTED scene must
+    /// both name `expected`. Checking only the installed key would accept the
+    /// previous scene's still-mounted stage after `apply(nextScene)`.
+    func isStageCurrent(buildKey expected: String) -> Bool {
+        stage != nil && buildKey == expected && requestedBuildKey == expected
+    }
+    /// Installed stage identity (nil before the first build and after release).
+    var installedBuildKey: String? { buildKey }
+    /// Scene identity currently requested by SwiftUI, whether or not its stage
+    /// has finished building.
+    var requestedBuildKey: String? { currentScene?.buildKey }
+    /// One capture waiting for an exact installed scene. Resumed true only by
+    /// that build's successful install; false on supersede/cancel/release.
+    private var stageWaiters: [UUID: (key: String, continuation: CheckedContinuation<Bool, Never>)] = [:]
     weak var handle: CADPresentationHandle?
 
     private var orbitStartCamera: CADPresentationCamera?
@@ -391,10 +423,82 @@ final class CADPresentationRenderController: NSObject, UIGestureRecognizerDelega
 
     func bindSelection(to document: FloeCADDocument) { selectionDocument = document }
 
+    /// Wait until the stage installed for `buildKey` is the CURRENT scene.
+    /// Both the installed identity AND `currentScene.buildKey` must match: the
+    /// previous stage stays visible while its replacement builds, so an
+    /// installed-only check would accept stale pixels after a scene change.
+    /// The capture service uses this instead of guessing from `stage != nil`:
+    /// an immediate capture after an overlay toggle either returns those exact
+    /// pixels or reports stale. Cancellation resolves the waiter as false.
+    func awaitStage(buildKey expected: String) async -> Bool {
+        // The stage identity alone is not enough: after `apply(nextScene)` the
+        // PREVIOUS stage is still mounted until the new build installs. A
+        // waiter for the superseded identity must refuse in that window
+        // instead of reporting the old pixels as the requested scene.
+        if isStageCurrent(buildKey: expected) { return true }
+        if Task.isCancelled { return false }
+        // No scene has been applied yet (or the surface is released): there is
+        // nothing to wait for and refusing is honest.
+        guard currentScene != nil else { return false }
+        // Only the requested scene can still become installed. Once a newer
+        // scene has been requested, an old identity never becomes current
+        // again, even while its stage is still visible.
+        guard requestedBuildKey == expected else { return false }
+        if failedBuildKey == expected { return false }
+        let id = UUID()
+        return await withTaskCancellationHandler {
+            await withCheckedContinuation { continuation in
+                if Task.isCancelled {
+                    continuation.resume(returning: false)
+                    return
+                }
+                if stage != nil, buildKey == expected,
+                   requestedBuildKey == expected {
+                    continuation.resume(returning: true)
+                    return
+                }
+                // A different scene already superseded this request; waiting
+                // would only delay the honest refusal.
+                if let requested = currentScene?.buildKey, requested != expected {
+                    continuation.resume(returning: false)
+                    return
+                }
+                stageWaiters[id] = (expected, continuation)
+            }
+        } onCancel: {
+            Task { @MainActor [weak self] in
+                self?.resumeStageWaiter(id, value: false)
+            }
+        }
+    }
+
+    private func resumeStageWaiter(_ id: UUID, value: Bool) {
+        guard let waiter = stageWaiters.removeValue(forKey: id) else { return }
+        waiter.continuation.resume(returning: value)
+    }
+
+    private func resumeStageWaiters(matching key: String? = nil, value: Bool) {
+        let ids = stageWaiters.compactMap { id, waiter in
+            key == nil || waiter.key == key ? id : nil
+        }
+        for id in ids { resumeStageWaiter(id, value: value) }
+    }
+
     func apply(_ scene: CADPresentationScene) {
+        let previousKey = currentScene?.buildKey
+        if previousKey != scene.buildKey { failedBuildKey = nil }
         currentScene = scene
         currentBounds = scene.bounds
+        if previousKey != scene.buildKey {
+            // A different scene can never satisfy a waiter for the superseded
+            // identity. Waiters for the new identity stay pending.
+            let staleIDs = stageWaiters.compactMap { id, waiter in
+                waiter.key != scene.buildKey ? id : nil
+            }
+            for id in staleIDs { resumeStageWaiter(id, value: false) }
+        }
         if buildKey == scene.buildKey, stage != nil {
+            resumeStageWaiters(matching: scene.buildKey, value: true)
             refreshSelection()
             // Material-only changes still produce a new key; reaching here
             // means the same bytes/environment, so nothing is rebuilt.
@@ -424,6 +528,7 @@ final class CADPresentationRenderController: NSObject, UIGestureRecognizerDelega
         // The old visible stage cannot accept hits while its replacement
         // builds. The live document fence also rejects the polling interval.
         handle?.markReady(false)
+        failedBuildKey = nil
         let token = scene.buildKey
         buildTask = Task { [weak self] in
             guard let self else { return }
@@ -477,13 +582,19 @@ final class CADPresentationRenderController: NSObject, UIGestureRecognizerDelega
             try Task.checkCancellation()
             guard currentScene?.buildKey == token else { return }
             buildKey = token
+            failedBuildKey = nil
             handle?.markFailure(nil)
             handle?.markReady(true)
             handle?.markBuilt(token)
             refreshSelection()
+            resumeStageWaiters(matching: token, value: true)
         } catch is CancellationError {
+            failedBuildKey = token
+            resumeStageWaiters(matching: token, value: false)
             return
         } catch {
+            failedBuildKey = token
+            resumeStageWaiters(matching: token, value: false)
             issues = scene.issues + [CADPresentationIssue(
                 id: "build-failed", kind: .corruptMaterial,
                 bodyID: nil, bodyName: nil,
@@ -497,6 +608,7 @@ final class CADPresentationRenderController: NSObject, UIGestureRecognizerDelega
     }
 
     func release() {
+        resumeStageWaiters(value: false)
         materialPreviewGeneration &+= 1
         isMaterialPreviewInFlight = false
         restoreMaterialPreviewState(clearIssues: true)
@@ -507,6 +619,7 @@ final class CADPresentationRenderController: NSObject, UIGestureRecognizerDelega
         handle?.savedCamera = camera
         stage?.removeFromParent()
         stage = nil
+        failedBuildKey = nil
         bodyEntities.removeAll()
         pickTargets.removeAll()
         selectionDecorations.removeAll()
@@ -589,6 +702,16 @@ final class CADPresentationRenderController: NSObject, UIGestureRecognizerDelega
               buildKey == scene.buildKey else { return }
         if let document = selectionDocument,
            scene.documentKey != document.url.standardizedFileURL.path { return }
+        // X22: face identities on a cut stage are not the document's render
+        // triangle ordinals. Previews are body-level while a section is shown;
+        // refuse an old face draft rather than paint an uncut face patch.
+        if scene.section != nil, target.isFaceTarget {
+            setMaterialPreviewIssues([CADPresentationIssue(
+                id: "section-face-preview", kind: .faceMaterialDisplayUnsupported,
+                bodyID: nil, bodyName: nil,
+                detail: "Face material preview is unavailable while a section is shown; the applied material is unchanged.")])
+            return
+        }
 
         // Latest request wins over any older await. The previous draft stays
         // visible while the replacement's GPU resources build; the restore
@@ -646,7 +769,8 @@ final class CADPresentationRenderController: NSObject, UIGestureRecognizerDelega
                     guard isCurrent() else { return }
                     issues.append(contentsOf: preview.issues)
                     guard let mesh = await previewMesh(
-                        body.mesh, triangles: triangles, uvs: uvs) else {
+                        body.mesh, triangles: triangles, uvs: uvs,
+                        transform: body.transform) else {
                         issues.append(previewMeshIssue(body))
                         continue
                     }
@@ -672,7 +796,8 @@ final class CADPresentationRenderController: NSObject, UIGestureRecognizerDelega
                     guard isCurrent() else { return }
                     issues.append(contentsOf: preview.issues)
                     guard let mesh = await previewMesh(
-                        body.mesh, triangles: selectedTriangles, uvs: uvs) else {
+                        body.mesh, triangles: selectedTriangles, uvs: uvs,
+                        transform: body.transform) else {
                         issues.append(previewMeshIssue(body))
                         continue
                     }
@@ -701,7 +826,8 @@ final class CADPresentationRenderController: NSObject, UIGestureRecognizerDelega
                 guard isCurrent() else { return }
                 issues.append(contentsOf: preview.issues)
                 guard let mesh = await previewMesh(
-                    body.mesh, indices: body.mesh.indices, uvs: uvs) else {
+                    body.mesh, indices: body.mesh.indices, uvs: uvs,
+                    transform: body.transform) else {
                     issues.append(previewMeshIssue(body))
                     continue
                 }
@@ -807,11 +933,46 @@ final class CADPresentationRenderController: NSObject, UIGestureRecognizerDelega
         return picked.triangles.sorted() == triangles
     }
 
+    /// X22: a draft preview must show the SAME cut as the stage. The preview
+    /// mesh is built from the unclipped body buffers, so it is clipped here
+    /// with the persisted section before it becomes a GPU mesh.
     private func previewMesh(
         _ body: CADPresentationMesh, indices: [UInt32],
-        uvs: [SIMD2<Float>]?
+        uvs: [SIMD2<Float>]?, transform: simd_float4x4
     ) async -> MeshResource? {
         do {
+            if let section = currentScene?.section {
+                guard let plane = CADSectionMeshClip.plane(
+                    originMM: section.origin, normalMM: section.keepNormal,
+                    transform: transform) else { return nil }
+                let outcome = await CADSectionMeshClip.clipOffMain([
+                    CADSectionClipJob(
+                        positions: body.positions, normals: body.normals,
+                        uvs: uvs, authoredUVs: body.authoredUVs,
+                        indices: indices, plane: plane)
+                ]).first ?? .unchanged
+                switch outcome {
+                case .cancelled:
+                    return nil
+                case .invalid:
+                    // Never show an uncut draft in place of the requested cut.
+                    return nil
+                case .removed:
+                    return nil
+                case .clipped(let clipped):
+                    guard !clipped.indices.isEmpty else { return nil }
+                    var mesh = body
+                    mesh.positions = clipped.positions
+                    mesh.normals = clipped.normals
+                    mesh.uvs = clipped.uvs
+                    mesh.authoredUVs = clipped.authoredUVs
+                    mesh.indices = clipped.indices
+                    return try await CADPresentationEntityBuilder.makeMesh(
+                        mesh, indices: mesh.indices, uvs: mesh.uvs)
+                case .unchanged:
+                    break
+                }
+            }
             return try await CADPresentationEntityBuilder.makeMesh(
                 body, indices: indices, uvs: uvs)
         } catch {
@@ -821,14 +982,12 @@ final class CADPresentationRenderController: NSObject, UIGestureRecognizerDelega
 
     private func previewMesh(
         _ body: CADPresentationMesh, triangles: [Int],
-        uvs: [SIMD2<Float>]?
+        uvs: [SIMD2<Float>]?, transform: simd_float4x4
     ) async -> MeshResource? {
-        do {
-            return try await CADPresentationEntityBuilder.makeMesh(
-                body, triangles: triangles, uvs: uvs)
-        } catch {
-            return nil
-        }
+        let indices = CADPresentationEntityBuilder.indices(of: triangles, in: body)
+        guard !indices.isEmpty else { return nil }
+        return await previewMesh(body, indices: indices, uvs: uvs,
+                                 transform: transform)
     }
 
     private func previewMeshIssue(_ body: CADPresentationBody) -> CADPresentationIssue {
@@ -1178,7 +1337,11 @@ final class CADPresentationRenderController: NSObject, UIGestureRecognizerDelega
             let isInstance = body.sourceBodyID != nil
             guard isInstance ? state.instanceIDs.contains(body.id)
                               : state.bodyIDs.contains(body.id) else { continue }
-            if !isInstance, let face = state.faces.first(where: { $0.bodyID == body.id }) {
+            // X22: a section changes the visible triangle ordinals, so an
+            // older face selection is shown as its body. Never paint a full
+            // unclipped face patch over a cut.
+            if !isInstance, scene.section == nil,
+               let face = state.faces.first(where: { $0.bodyID == body.id }) {
                 let triangles = face.triangles.sorted()
                 if let entity = nodes.entities.first(where: {
                     pickTargets[ObjectIdentifier($0)]?.triangles == triangles
@@ -1378,8 +1541,11 @@ final class CADPresentationRenderController: NSObject, UIGestureRecognizerDelega
 
     /// Actual current ARView render. Refuses when the surface is not in a
     /// window; the caller binds the returned image to a document revision.
-    func snapshotPNG(targetWidth: Int?) async throws -> (png: Data, width: Int, height: Int) {
-        let output = try await snapshotImage(targetWidth: targetWidth)
+    func snapshotPNG(targetWidth: Int?,
+                     expectedBuildKey: String? = nil) async throws
+    -> (png: Data, width: Int, height: Int) {
+        let output = try await snapshotImage(targetWidth: targetWidth,
+                                             expectedBuildKey: expectedBuildKey)
         guard let png = output.pngData() else { throw CADPresentationError.snapshotFailed }
         return (png, Int(output.size.width * output.scale),
                 Int(output.size.height * output.scale))
@@ -1387,9 +1553,17 @@ final class CADPresentationRenderController: NSObject, UIGestureRecognizerDelega
 
     /// The same actual ARView render without PNG encoding. Video export needs
     /// the pixels once; a poster image is encoded only for its first frame.
-    func snapshotImage(targetWidth: Int?) async throws -> UIImage {
+    func snapshotImage(targetWidth: Int?,
+                       expectedBuildKey: String? = nil) async throws -> UIImage {
         guard arView.window != nil else { throw CADPresentationError.notAttached }
         guard stage != nil else { throw CADPresentationError.renderingUnavailable }
+        if let expectedBuildKey {
+            // The visible stage must be the requested scene, not merely an
+            // older stage left mounted while a replacement builds.
+            guard isStageCurrent(buildKey: expectedBuildKey) else {
+                throw CADPresentationError.snapshotStale
+            }
+        }
         let image: UIImage? = await withCheckedContinuation { continuation in
             arView.snapshot(saveToHDR: false) { image in
                 continuation.resume(returning: image)
@@ -1397,6 +1571,10 @@ final class CADPresentationRenderController: NSObject, UIGestureRecognizerDelega
         }
         guard let image else { throw CADPresentationError.snapshotFailed }
         if Task.isCancelled { throw CADPresentationError.snapshotCancelled }
+        if let expectedBuildKey,
+           !isStageCurrent(buildKey: expectedBuildKey) {
+            throw CADPresentationError.snapshotStale
+        }
         if let targetWidth, targetWidth > 0,
            Int(image.size.width * image.scale) != targetWidth {
             return Self.resized(image, targetWidth: targetWidth)
@@ -1430,11 +1608,19 @@ final class CADPresentationRenderController: NSObject, UIGestureRecognizerDelega
     /// would need an unsupported lens refuses instead of clipping.
     func framedSnapshotImage(camera exportCamera: CADPresentationCamera,
                              savedAspect: Double,
-                             targetWidth: Int) async throws
+                             targetWidth: Int,
+                             expectedBuildKey: String? = nil) async throws
     -> (image: UIImage, width: Int, height: Int) {
         guard arView.window != nil else { throw CADPresentationError.notAttached }
         guard stage != nil, let viewport = viewportAspect else {
             throw CADPresentationError.renderingUnavailable
+        }
+        if let expectedBuildKey {
+            // Same rule as `snapshotImage`: a framed saved-shot render may
+            // only use the stage of the scene the surface currently requests.
+            guard isStageCurrent(buildKey: expectedBuildKey) else {
+                throw CADPresentationError.snapshotStale
+            }
         }
         guard animationLease == nil else {
             throw CADPresentationError.renderingUnavailable
@@ -1475,7 +1661,8 @@ final class CADPresentationRenderController: NSObject, UIGestureRecognizerDelega
         }
         // Raw pixels: the crop must be derived from the resolution the ARView
         // actually produced, not from an image already resized to the target.
-        let image = try await snapshotImage(targetWidth: nil)
+        let image = try await snapshotImage(targetWidth: nil,
+                                            expectedBuildKey: expectedBuildKey)
         guard animationToken == token,
               renderGeneration == generation,
               let capturedViewport = viewportAspect,
@@ -1646,8 +1833,41 @@ final class CADPresentationSnapshotService {
         let revision = document.revision
         let changeCount = document.liveChangeCount
         let contentSHA256 = document.contentSHA256
+        let overlayAtPin = document.viewOverlayState
+        // Build the exact scene the live document now requests. Its buildKey
+        // covers the document identity, meshes/materials, environment, section
+        // and guides, so an awaited stage can be matched exactly instead of
+        // trusting "a stage exists". The scene value is renderer-neutral and
+        // owns no RealityKit resource.
+        let expectedScene = CADPresentationSceneBuilder.build(
+            snapshot: document.sceneSnapshot(), documentKey: documentKey)
+        let expectedBuildKey = expectedScene.buildKey
+        guard await controller.awaitStage(buildKey: expectedBuildKey) else {
+            #if DEBUG
+            NSLog("[CADPresentationCapture] %@", "stale "
+                + "reason=stage-not-installed requested=\(String(expectedBuildKey.prefix(32))) "
+                + "installed=\(String((controller.installedBuildKey ?? "nil").prefix(32))) "
+                + "revision=\(revision) changeCount=\(changeCount)")
+            #endif
+            throw CADPresentationError.snapshotStale
+        }
+        if Task.isCancelled { throw CADPresentationError.snapshotCancelled }
+        // A different document generation that landed while waiting was never
+        // this capture's stage; refuse before taking pixels.
+        guard !document.isClosed,
+              document.revision == revision,
+              document.liveChangeCount == changeCount,
+              document.contentSHA256 == contentSHA256 else {
+            #if DEBUG
+            NSLog("[CADPresentationCapture] %@", "stale "
+                + "reason=document-changed-while-waiting revision=\(document.revision) "
+                + "expectedRevision=\(revision) changeCount=\(document.liveChangeCount) "
+                + "expectedChangeCount=\(changeCount) closed=\(document.isClosed)")
+            #endif
+            throw CADPresentationError.snapshotStale
+        }
         let stateBefore = controller.renderStateToken
-        let keyBefore = "\(documentKey)|\(revision)|\(changeCount)|\(contentSHA256)|\(stateBefore)|\(targetWidth)"
+        let keyBefore = "\(documentKey)|\(revision)|\(changeCount)|\(contentSHA256)|\(stateBefore)|\(expectedBuildKey)|\(targetWidth)"
         // A framed saved-view capture is not the live render, so it neither
         // reads nor writes this cache.
         if savedView == nil, let cached = cache[keyBefore] {
@@ -1664,7 +1884,8 @@ final class CADPresentationSnapshotService {
             let framed = try await controller.framedSnapshotImage(
                 camera: savedView.presentationCamera,
                 savedAspect: savedView.frameAspect,
-                targetWidth: targetWidth)
+                targetWidth: targetWidth,
+                expectedBuildKey: expectedBuildKey)
             guard let png = framed.image.pngData() else {
                 throw CADPresentationError.snapshotFailed
             }
@@ -1675,7 +1896,8 @@ final class CADPresentationSnapshotService {
                 + "framed from the complete saved shot and bound to the open "
                 + "document revision."
         } else {
-            result = try await controller.snapshotPNG(targetWidth: targetWidth)
+            result = try await controller.snapshotPNG(
+                targetWidth: targetWidth, expectedBuildKey: expectedBuildKey)
             note = "Actual current RealityKit presentation render bound to the open document revision."
         }
         if Task.isCancelled { throw CADPresentationError.snapshotCancelled }
@@ -1710,6 +1932,13 @@ final class CADPresentationSnapshotService {
             #endif
             throw CADPresentationError.snapshotStale
         }
+        let overlayLengthsByID = Dictionary(
+            uniqueKeysWithValues: overlayAtPin.visibleMeasurements.map {
+                ($0.id, $0.lengthMM)
+            })
+        let drawnLengths = expectedScene.measurementGuides.compactMap {
+            overlayLengthsByID[$0.id]
+        }
         let snapshot = CADPresentationSnapshot(
             pngData: result.png,
             width: result.width,
@@ -1720,9 +1949,13 @@ final class CADPresentationSnapshotService {
             contentSHA256: contentSHA256,
             imageSHA256: CADMaterialTexture.digest(result.png),
             capturedAt: Date(),
-            note: note)
+            note: note,
+            sceneBuildKey: expectedBuildKey,
+            sectionCutIncluded: expectedScene.section != nil,
+            measurementGuideCount: expectedScene.measurementGuides.count,
+            measurementLengthsMM: drawnLengths)
         if savedView == nil {
-            let keyAfter = "\(documentKey)|\(revision)|\(changeCount)|\(contentSHA256)|\(stateAfter)|\(targetWidth)"
+            let keyAfter = "\(documentKey)|\(revision)|\(changeCount)|\(contentSHA256)|\(stateAfter)|\(expectedBuildKey)|\(targetWidth)"
             store(snapshot, key: keyAfter)
         }
         return snapshot
@@ -1762,6 +1995,7 @@ extension CADPresentationIssueKind {
         case .missingMeshUV: return "square.on.square.dashed"
         case .faceMaterialDisplayUnsupported, .unresolvedFaceBindings:
             return "square.stack.3d.up.slash"
+        case .sectionInvalid: return "scissors.badge.ellipsis"
         }
     }
 }
@@ -1795,6 +2029,10 @@ extension CADPresentationIssue {
         case .imageDecodeFailed:
             return FloeCADStrings.text("cad.present.issue.image",
                                        "A material image could not be decoded on this device.")
+        case .sectionInvalid:
+            return FloeCADStrings.text(
+                "cad.present.issue.section",
+                "The section cut couldn't be applied to part of this model, so that part isn't shown in Present.")
         }
     }
 

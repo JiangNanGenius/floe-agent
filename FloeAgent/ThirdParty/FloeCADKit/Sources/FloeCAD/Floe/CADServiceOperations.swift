@@ -118,6 +118,7 @@ public nonisolated enum CADServiceOperations {
         case "mesh": writesDocument = mutatingMeshActions.contains(action)
         case "material": writesDocument = ["create", "update", "remove", "apply", "applyFaces", "reassignFaces", "mapping", "textures", "libraryImport", "undo", "redo"].contains(action)
         case "parameter": writesDocument = CADParameterService.actions.contains(action) && action != "list"
+        case "scene": writesDocument = CADViewOverlayService.mutationActions.contains(action)
         default: writesDocument = false
         }
         guard writesDocument, let block = document.session.writeBlock else { return nil }

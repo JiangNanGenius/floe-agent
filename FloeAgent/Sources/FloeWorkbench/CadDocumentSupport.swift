@@ -305,6 +305,16 @@ public enum CadNativeEditActions {
         "addTrack", "deleteTrack", "setKeyframe", "setCameraKeyframe",
         "setPartKeyframe", "deleteKeyframe", "preset", "undo", "redo",
     ]
+    /// X22 persisted section / measurement overlay. `get` is read-only; every
+    /// other action is one existing sceneSettings undoable edit.
+    public static let sceneReads: Set<String> = ["get"]
+    public static let sceneMutations: Set<String> = [
+        "setSection", "setSectionEnabled", "flipSection", "removeSection",
+        "setMeasurementsVisible", "addMeasurement", "removeMeasurement",
+        "clearMeasurements", "undo", "redo",
+    ]
+    public static let scene: Set<String> = sceneReads.union(sceneMutations)
+
     public static let animationMedia: Set<String> = ["capture", "export"]
     public static let animation: Set<String> =
         animationReads.union(animationMutations).union(animationMedia)

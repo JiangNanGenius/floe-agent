@@ -104,6 +104,10 @@ nonisolated struct CADSceneSnapshot: Sendable, Equatable {
     /// X21 saved/selected camera state. Defaulted so historical snapshot
     /// fixtures that predate cameras keep constructing without a camera list.
     var cameras: CADSceneCameraSummary = .empty
+    /// X22 persisted section cut + measurement guides. Defaulted so historical
+    /// fixtures keep constructing without an overlay; `.empty` is the exact
+    /// pre-X22 behavior (full model, no guides).
+    var viewOverlay: CADViewOverlayState = .empty
 
     /// Bounded JSON description (no mesh/image bytes) for `query kind=scene`
     /// and capability replies.
@@ -128,6 +132,7 @@ nonisolated struct CADSceneSnapshot: Sendable, Equatable {
                 "shadows": appearance.shadowsEnabled,
             ],
             "cameras": cameras.summaryJSON,
+            "view_overlay": viewOverlay.summaryJSON,
         ]
     }
 }
@@ -366,6 +371,7 @@ extension FloeCADDocument {
             appearance: viewAppearance,
             unresolvedFaceBindings: unresolved,
             cameras: CADSceneCameraSummary(active: cameraState.active,
-                                           saved: cameraState.saved))
+                                           saved: cameraState.saved),
+            viewOverlay: CADViewOverlayCodec.decode(session.document.sceneSettingsData))
     }
 }

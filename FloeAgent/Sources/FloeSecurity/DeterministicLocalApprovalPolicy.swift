@@ -100,7 +100,7 @@ public enum DeterministicLocalApprovalPolicy {
         if isOrdinaryDocumentReadOrDraft(action) { return true }
         guard let operation = arguments["action"] as? String,
               ["create", "apply", "three_d_apply", "save", "import",
-               "material", "parameters", "animation", "versions"].contains(operation),
+               "material", "parameters", "animation", "versions", "scene"].contains(operation),
               context.typedContractCovered,
               context.mutableTargetPaths.count == 1 else { return false }
         if let resolved = context.nativeCADDocumentPath {

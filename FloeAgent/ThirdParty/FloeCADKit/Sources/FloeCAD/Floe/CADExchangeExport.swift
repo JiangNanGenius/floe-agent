@@ -1008,6 +1008,20 @@ private extension FloeCADDocument {
                                rootExtras: rootExtras)
     }
 
+    /// Exchange format -> the X22 output capability value.
+    static func viewOverlayOutput(for format: String) -> CADViewOverlayOutput? {
+        switch format.lowercased() {
+        case "step": return .step
+        case "iges", "igs": return .iges
+        case "glb": return .glb
+        case "usdz": return .usdz
+        case "obj", "obj_bundle": return .obj
+        case "stl": return .stl
+        case "3mf": return .threeMF
+        default: return nil
+        }
+    }
+
     func makeCoverage(format: String,
                       scope: CADExchangeScope,
                       selection: CADExchangeSelection,
@@ -1049,6 +1063,15 @@ private extension FloeCADDocument {
             // the body authored UVs.
             notes.append("Informational: "
                 + Array(Set(informationalNotes)).sorted().joined(separator: ", "))
+        }
+        // X22: every exchange writer here writes model geometry. When the
+        // document carries a section cut / measurement guides, say exactly
+        // that they are not part of this file instead of letting a complete
+        // coverage receipt imply the view state travelled with the model.
+        if let output = Self.viewOverlayOutput(for: format),
+           let notice = CADViewOverlayOutput.viewOnlyNotice(
+               for: output, overlay: viewOverlayState) {
+            notes.append(notice)
         }
         return CADExchangeCoverage(
             format: format,

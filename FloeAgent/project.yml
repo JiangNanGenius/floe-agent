@@ -1245,6 +1245,8 @@ targets:
       - path: Tests/FloeAgentRuntimeTests/SubagentSafetyTests.swift
       - path: Tests/FloeToolsTests/CADMaterialMutationTargetTests.swift
       - path: Tests/FloeToolsTests/VerifiedToolImageArtifactTests.swift
+      # X22-R2: real cad.document scene-action round trip through the bridge.
+      - path: Tests/FloeAppTests/CADViewOverlayBridgeTests.swift
       - path: Tests/FloeWorkbenchTests/CadDocumentToolTests.swift
       # R3 native read-only observation closure (2026-10-31): the tool
       # contract suite covers argument/pin/refusal semantics without a
@@ -1254,6 +1256,10 @@ targets:
       # apply step.
       - path: Tests/FloeWorkbenchTests/CadDocumentObserveContractTests.swift
       - path: Tests/FloeAppTests/CadNativeObservationTests.swift
+      # X22-R2: section/measurement display-export tests. Explicit App-test
+      # membership (this target lists each file); regenerate the Xcode project
+      # after applying the packet.
+      - path: ThirdParty/FloeCADKit/Tests/FloeCADKitTests/CADViewOverlayTests.swift
       - path: ThirdParty/FloeCADKit/Tests/FloeCADKitTests/CADMaterialCoreTests.swift
       - path: ThirdParty/FloeCADKit/Tests/FloeCADKitTests/CADMaterialUVConsistencyTests.swift
       - path: ThirdParty/FloeCADKit/Tests/FloeCADKitTests/CADMaterialRenderWitnessTests.swift

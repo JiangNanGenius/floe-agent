@@ -307,6 +307,49 @@ enum CADPresentationSceneBuilder {
             }
         }
 
+        // X22: one overlay value drives the cut and the measurement guides.
+        // A section that is off/absent keeps the exact pre-X22 scene.
+        let overlay = snapshot.viewOverlay.sanitized
+        let section = overlay.activeSection.map { clean in
+            CADPresentationSection(origin: clean.originVector,
+                                   keepNormal: clean.keepNormal,
+                                   sizeMM: clean.sizeMM,
+                                   flipped: clean.flipped)
+        }
+        let guides: [CADPresentationMeasurementGuide] = {
+            let annotations = overlay.visibleMeasurements
+            guard !annotations.isEmpty else { return [] }
+            let plane: CADSectionClipPlane? = section.flatMap { value in
+                let origin = SIMD3<Float>(Float(value.origin.x) / 1_000,
+                                          Float(value.origin.y) / 1_000,
+                                          Float(value.origin.z) / 1_000)
+                let normal = SIMD3<Float>(Float(value.keepNormal.x),
+                                          Float(value.keepNormal.y),
+                                          Float(value.keepNormal.z))
+                let length = simd_length(normal)
+                guard length.isFinite, length > 1e-9 else { return nil }
+                return CADSectionClipPlane(origin: origin, normal: normal / length)
+            }
+            return annotations.compactMap { annotation -> CADPresentationMeasurementGuide? in
+                let startMM = annotation.startVector
+                let endMM = annotation.endVector
+                let start = CADPresentationAxes.point(
+                    SIMD3(Float(startMM.x), Float(startMM.y), Float(startMM.z)))
+                let end = CADPresentationAxes.point(
+                    SIMD3(Float(endMM.x), Float(endMM.y), Float(endMM.z)))
+                let clipped: (SIMD3<Float>, SIMD3<Float>)?
+                if let plane {
+                    // The Metal viewport clips sketch-line fragments too; a
+                    // guide on the removed side must not appear in Present.
+                    clipped = CADSectionMeshClip.clipSegment(start, end, plane: plane)
+                } else {
+                    clipped = (start, end)
+                }
+                guard let clipped else { return nil }
+                return CADPresentationMeasurementGuide(
+                    id: annotation.id, start: clipped.0, end: clipped.1)
+            }
+        }()
         let environment = environment(from: snapshot.appearance)
         let images = imagesByID.values.sorted { $0.id < $1.id }
         return CADPresentationScene(
@@ -320,7 +363,9 @@ enum CADPresentationSceneBuilder {
             environment: environment,
             issues: issues,
             bounds: bounds,
-            materialCount: snapshot.materials.count)
+            materialCount: snapshot.materials.count,
+            section: section,
+            measurementGuides: guides)
     }
 
     /// World-space bounds for one body. `min`/`max` are the converted body

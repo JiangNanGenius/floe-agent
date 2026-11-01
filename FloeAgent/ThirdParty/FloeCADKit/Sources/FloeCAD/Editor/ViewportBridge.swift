@@ -432,9 +432,12 @@ public extension FloeCADDocument {
                               camera: CADSavedCamera? = nil) -> Data? {
         guard width > 0, height > 0 else { return nil }
         guard let context = RenderContext() else { return nil }
-        // Read the current scene ONCE (a value type with CoW mesh references);
-        // the snapshot renderer never observes or mutates the editor.
-        let snapshot = viewModel().scene
+        // Read the capture scene ONCE (a value type with CoW mesh references);
+        // the snapshot renderer never observes or mutates the editor. X22 uses
+        // the capture variant so the live section cut and saved measurement
+        // guides are rendered while the interactive plane rectangle stays out
+        // of the saved pixels.
+        let snapshot = viewModel().captureScene()
         let snapshotRenderer = Renderer(context: context)
         return snapshotRenderer.makeSceneSnapshotPNG(
             snapshot, width: width, height: height,

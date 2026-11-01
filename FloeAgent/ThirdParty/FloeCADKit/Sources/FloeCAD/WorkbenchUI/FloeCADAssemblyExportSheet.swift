@@ -106,6 +106,17 @@ struct CADAssemblyExportSheet: View {
                     .accessibilityIdentifier("CADExchangeScope")
                 }
 
+                if document.viewOverlayState.hasViewOnlyContent {
+                    Section {
+                        Text(FloeCADStrings.text(
+                            "cad.ui.export.viewOnlyNotice",
+                            "This file stores model geometry only; the section cut and measurement guides are not included."))
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                            .accessibilityIdentifier("CADExchangeViewOnlyNotice")
+                    }
+                }
+
                 if let coverage {
                     CADExportCoverageSummary(coverage: coverage)
                 }

@@ -37,12 +37,22 @@ public nonisolated struct CADViewportCaptureResult: Sendable, Equatable {
     /// True when the capture is exactly the requested saved view. Nil when no
     /// saved view was requested.
     public var matchesSavedCamera: Bool?
+    /// X22: the pixels contain the persisted section cut.
+    public var sectionCutIncluded: Bool
+    /// X22: saved measurement guides drawn in the pixels.
+    public var measurementGuideCount: Int
+    /// Exact measured lengths (millimetres) of those guides, in draw order.
+    /// Pixels carry the guide geometry; this carries its values.
+    public var measurementLengthsMM: [Double]
 
     public init(pngData: Data, width: Int, height: Int, revision: Int,
                 changeCount: Int, contentSHA256: String, sha256: String,
                 renderer: String = "engineering", note: String,
                 projection: String = "", cameraName: String? = nil,
-                matchesSavedCamera: Bool? = nil) {
+                matchesSavedCamera: Bool? = nil,
+                sectionCutIncluded: Bool = false,
+                measurementGuideCount: Int = 0,
+                measurementLengthsMM: [Double] = []) {
         self.pngData = pngData
         self.width = width
         self.height = height
@@ -55,6 +65,9 @@ public nonisolated struct CADViewportCaptureResult: Sendable, Equatable {
         self.projection = projection
         self.cameraName = cameraName
         self.matchesSavedCamera = matchesSavedCamera
+        self.sectionCutIncluded = sectionCutIncluded
+        self.measurementGuideCount = measurementGuideCount
+        self.measurementLengthsMM = measurementLengthsMM
     }
 }
 
@@ -115,7 +128,10 @@ public extension FloeCADDocument {
                                    message: "The document changed during capture; re-read and capture again.")
         }
         let actual = Self.pngPixelSize(png) ?? (width, height)
-        let note: String
+        let overlay = viewOverlayState
+        let sectionCut = overlay.activeSection != nil
+        let guideCount = overlay.visibleMeasurements.count
+        var note: String
         if let savedCamera {
             note = "Actual offscreen viewport render of the live document scene using "
                 + "saved view “\(savedCamera.name)” "
@@ -124,6 +140,23 @@ public extension FloeCADDocument {
         } else {
             note = "Actual offscreen viewport render of the live document scene "
                 + "(not a drawing page and not an imported preview image)."
+        }
+        if sectionCut || guideCount > 0 {
+            var layers: [String] = []
+            if sectionCut { layers.append("section cut") }
+            if guideCount > 0 {
+                layers.append("\(guideCount) saved measurement guide(s)")
+            }
+            note += " The persisted " + layers.joined(separator: " and ")
+                + " are included; the interactive section-plane rectangle is not."
+            if guideCount > 0 {
+                let values = overlay.visibleMeasurements.prefix(6).map {
+                    String(format: "%.3f mm", $0.lengthMM)
+                }
+                note += " Values: " + values.joined(separator: ", ")
+                    + (guideCount > values.count ? ", …" : "")
+                    + ". Values are listed in this receipt, not drawn into the pixels."
+            }
         }
         return CADViewportCaptureResult(
             pngData: png, width: actual.0, height: actual.1,
@@ -134,7 +167,10 @@ public extension FloeCADDocument {
             note: note,
             projection: savedCamera?.projection.rawValue ?? "perspective",
             cameraName: savedCamera?.name,
-            matchesSavedCamera: savedCamera == nil ? nil : true)
+            matchesSavedCamera: savedCamera == nil ? nil : true,
+            sectionCutIncluded: sectionCut,
+            measurementGuideCount: guideCount,
+            measurementLengthsMM: overlay.visibleMeasurements.map(\.lengthMM))
     }
 }
 

@@ -105,19 +105,27 @@ final class CADPresentationEntityBuilder {
                 baseMesh: mesh,
                 images: imagesByID,
                 castsShadow: scene.environment.shadowsEnabled,
-                picks: picks, issues: &issues)
+                picks: picks, section: scene.section, issues: &issues)
             // Never publish a body entity from a superseded or cancelled
             // build; the caller additionally fences the whole result by
             // scene.buildKey before swapping the stage.
             try Task.checkCancellation()
-            stage.addChild(nodes.parent)
-            entities[body.id] = nodes
+            // A body entirely outside the kept half of a section draws
+            // nothing; the model itself is unchanged.
+            if let nodes {
+                stage.addChild(nodes.parent)
+                entities[body.id] = nodes
+            }
         }
 
         try Task.checkCancellation()
         addFloor(to: stage, environment: scene.environment,
                  bounds: scene.bounds)
         addLights(to: stage, environment: scene.environment)
+        // X22: saved measurement guides are real stage geometry, so they are
+        // in Present pixels and every exported frame — not a SwiftUI-only
+        // annotation that disappears from a capture.
+        addMeasurementGuides(scene.measurementGuides, to: stage)
 
         // A corrupt image is a real missing resource: report the exact image
         // rather than silently drawing an untextured body.
@@ -165,9 +173,114 @@ final class CADPresentationEntityBuilder {
                           images: [String: CADPresentationImage],
                           castsShadow: Bool,
                           picks: CADPresentationPickIndex,
-                          issues: inout [CADPresentationIssue]) async throws -> CADPresentationBodyNodes {
+                          section: CADPresentationSection?,
+                          issues: inout [CADPresentationIssue]) async throws -> CADPresentationBodyNodes? {
         try Task.checkCancellation()
+
+        // X22: the same persisted plane, converted into this body's local
+        // presentation metres. Nil (no section / degenerate frame) keeps the
+        // exact pre-X22 mesh path and cache identity. An authored section that
+        // cannot produce a plane is NOT treated as "no section": the caller
+        // gets a reported invalid-section issue instead of an uncut body.
+        let localPlane: CADSectionClipPlane? = section.flatMap {
+            CADSectionMeshClip.plane(originMM: $0.origin, normalMM: $0.keepNormal,
+                                     transform: body.transform)
+        }
+        if section != nil, localPlane == nil {
+            issues.append(CADPresentationIssue(
+                id: "section-invalid-\(body.id.uuidString)", kind: .sectionInvalid,
+                bodyID: body.id, bodyName: body.name,
+                detail: "The active section plane cannot be expressed in this body's space; this body is not drawn in Present instead of showing it uncut."))
+            return nil
+        }
+        let sectionActive = localPlane != nil
+        var invalidReasons = Set<CADSectionClipInvalidReason>()
+
+        // Value-only clip jobs. The exact body/face index buffers and their
+        // group UVs travel to a detached worker; no document, B-rep or
+        // RealityKit object is transferred. Jobs are built before any entity
+        // so one await joins the whole body's CPU clip work.
+        enum ClipKey: Hashable {
+            case base
+            case face(Int)
+        }
+        func job(indices: [UInt32], uvs: [SIMD2<Float>]?) -> CADSectionClipJob? {
+            guard let localPlane else { return nil }
+            return CADSectionClipJob(
+                positions: body.mesh.positions, normals: body.mesh.normals,
+                uvs: uvs, authoredUVs: body.mesh.authoredUVs,
+                indices: indices, plane: localPlane)
+        }
+        let baseTriangles: [Int] = body.faceGroups.isEmpty
+            ? [] : Self.baseTriangles(for: body.mesh, excluding: body.faceGroups)
+        let baseIndices: [UInt32] = body.faceGroups.isEmpty
+            ? body.mesh.indices : Self.indices(of: baseTriangles, in: body.mesh)
+        var clipJobs: [CADSectionClipJob] = []
+        var clipKeys: [ClipKey] = []
+        if !baseIndices.isEmpty {
+            if let value = job(indices: baseIndices, uvs: body.mesh.uvs) {
+                clipJobs.append(value)
+                clipKeys.append(.base)
+            }
+        }
+        for group in body.faceGroups {
+            if let value = job(indices: group.indices, uvs: group.uvs) {
+                clipJobs.append(value)
+                clipKeys.append(.face(group.faceIndex))
+            }
+        }
+        var clipResults: [ClipKey: CADSectionClipOutcome] = [:]
+        if !clipJobs.isEmpty {
+            let outcomes = await CADSectionMeshClip.clipOffMain(clipJobs)
+            try Task.checkCancellation()
+            for (key, outcome) in zip(clipKeys, outcomes) {
+                if case .cancelled = outcome { throw CancellationError() }
+                clipResults[key] = outcome
+            }
+        }
+
+        func outcome(for key: ClipKey) -> CADSectionClipOutcome {
+            clipResults[key] ?? .unchanged
+        }
+        func noteInvalid(_ reason: CADSectionClipInvalidReason) {
+            invalidReasons.insert(reason)
+        }
+
+        // While a section is shown a tap selects the body. Clipped triangle
+        // ordinals are NOT the document render-mesh ordinals, so a face pick
+        // could select the wrong face; there is no guessed mapping.
+        func pick(for group: CADPresentationFaceGroup? = nil,
+                  triangleGroups: [Int: [Int]]? = nil) -> CADPresentationPick {
+            guard !sectionActive, let group else {
+                return CADPresentationSelection.pick(for: body)
+            }
+            return CADPresentationSelection.pick(
+                for: body, group: group, triangleGroups: triangleGroups)
+        }
+
         if body.faceGroups.isEmpty {
+            let resource: MeshResource
+            switch outcome(for: .base) {
+            case .removed:
+                return nil
+            case .invalid(let reason):
+                noteInvalid(reason)
+                return nil
+            case .cancelled:
+                throw CancellationError()
+            case .clipped(let value):
+                guard let built = try await clippedResource(for: body, value: value) else {
+                    issues.append(CADPresentationIssue(
+                        id: "section-mesh-\(body.id.uuidString)", kind: .emptyBody,
+                        bodyID: body.id, bodyName: body.name,
+                        detail: "The section cut could not be built as a drawable mesh; this body is hidden in Present."))
+                    return nil
+                }
+                resource = built
+            case .unchanged:
+                resource = baseMesh
+            }
+            try Task.checkCancellation()
             let material = await pbrMaterial(for: body.material,
                                              images: images,
                                              hasUVs: body.mesh.uvs != nil,
@@ -175,9 +288,9 @@ final class CADPresentationEntityBuilder {
                                              bodyName: body.name,
                                              issues: &issues)
             try Task.checkCancellation()
-            let entity = ModelEntity(mesh: baseMesh, materials: [material])
+            let entity = ModelEntity(mesh: resource, materials: [material])
             entity.name = body.name
-            try await picks.register(entity, mesh: baseMesh, pick: CADPresentationSelection.pick(for: body))
+            try await picks.register(entity, mesh: resource, pick: pick())
             entity.transform = Transform(matrix: body.transform)
             entity.components.set(GroundingShadowComponent(
                 castsShadow: castsShadow, receivesShadow: true))
@@ -185,84 +298,241 @@ final class CADPresentationEntityBuilder {
                                             faceEntities: [:], faceTriangles: [:])
         }
 
-        // Correlating a large triangle table is value-only work. Keep it
-        // cancellable and off the UI actor; RealityKit resources stay here.
-        let mapping = Task.detached(priority: .userInitiated) {
-            CADPresentationSelection.triangleGroups(in: body)
+        // Correlating a large triangle table is value-only work. It is only
+        // needed for face picking, which a section deliberately makes
+        // body-level; skip it there. RealityKit resources stay on this actor.
+        var triangleGroups: [Int: [Int]] = [:]
+        if !sectionActive {
+            let mapping = Task.detached(priority: .userInitiated) {
+                CADPresentationSelection.triangleGroups(in: body)
+            }
+            triangleGroups = await withTaskCancellationHandler {
+                await mapping.value
+            } onCancel: { mapping.cancel() }
+            try Task.checkCancellation()
         }
-        let triangleGroups = await withTaskCancellationHandler {
-            await mapping.value
-        } onCancel: { mapping.cancel() }
-        try Task.checkCancellation()
         let parent = Entity()
         parent.name = body.name
         parent.transform = Transform(matrix: body.transform)
         var entities: [ModelEntity] = []
         var faceEntities: [Int: ModelEntity] = [:]
-        let baseTriangles = Self.baseTriangles(for: body.mesh,
-                                               excluding: body.faceGroups)
-        if !baseTriangles.isEmpty,
-           let mesh = try await Self.makeMesh(body.mesh, triangles: baseTriangles,
-                                              uvs: body.mesh.uvs) {
-            try Task.checkCancellation()
-            let material = await pbrMaterial(for: body.material,
-                                             images: images,
-                                             hasUVs: body.mesh.uvs != nil,
-                                             bodyID: body.id,
-                                             bodyName: body.name,
-                                             issues: &issues)
-            try Task.checkCancellation()
-            let entity = ModelEntity(mesh: mesh, materials: [material])
-            entity.name = body.name
-            try await picks.register(entity, mesh: mesh, pick: CADPresentationSelection.pick(for: body))
-            entity.components.set(GroundingShadowComponent(
-                castsShadow: castsShadow, receivesShadow: true))
-            parent.addChild(entity)
-            entities.append(entity)
+        if !baseTriangles.isEmpty {
+            switch outcome(for: .base) {
+            case .removed:
+                break
+            case .invalid(let reason):
+                noteInvalid(reason)
+            case .cancelled:
+                throw CancellationError()
+            case .clipped(let value):
+                if let mesh = try await clippedResource(for: body, value: value) {
+                    try Task.checkCancellation()
+                    let material = await pbrMaterial(for: body.material,
+                                                     images: images,
+                                                     hasUVs: body.mesh.uvs != nil,
+                                                     bodyID: body.id,
+                                                     bodyName: body.name,
+                                                     issues: &issues)
+                    try Task.checkCancellation()
+                    let entity = ModelEntity(mesh: mesh, materials: [material])
+                    entity.name = body.name
+                    try await picks.register(entity, mesh: mesh, pick: pick())
+                    entity.components.set(GroundingShadowComponent(
+                        castsShadow: castsShadow, receivesShadow: true))
+                    parent.addChild(entity)
+                    entities.append(entity)
+                }
+            case .unchanged:
+                if let mesh = try await Self.makeMesh(body.mesh, triangles: baseTriangles,
+                                                      uvs: body.mesh.uvs) {
+                    try Task.checkCancellation()
+                    let material = await pbrMaterial(for: body.material,
+                                                     images: images,
+                                                     hasUVs: body.mesh.uvs != nil,
+                                                     bodyID: body.id,
+                                                     bodyName: body.name,
+                                                     issues: &issues)
+                    try Task.checkCancellation()
+                    let entity = ModelEntity(mesh: mesh, materials: [material])
+                    entity.name = body.name
+                    try await picks.register(entity, mesh: mesh, pick: pick())
+                    entity.components.set(GroundingShadowComponent(
+                        castsShadow: castsShadow, receivesShadow: true))
+                    parent.addChild(entity)
+                    entities.append(entity)
+                }
+            }
         }
         for group in body.faceGroups {
             try Task.checkCancellation()
-            guard let mesh = try await Self.makeMesh(body.mesh, indices: group.indices,
-                                                     uvs: group.uvs) else {
-                issues.append(CADPresentationIssue(
-                    id: "face-range-\(body.id.uuidString)-\(group.faceIndex)",
-                    kind: .faceMaterialDisplayUnsupported,
-                    bodyID: body.id, bodyName: body.name,
-                    detail: "Face \(group.faceIndex) has an invalid index range in this snapshot and is not drawn individually."))
+            switch outcome(for: .face(group.faceIndex)) {
+            case .removed:
                 continue
+            case .invalid(let reason):
+                noteInvalid(reason)
+                continue
+            case .cancelled:
+                throw CancellationError()
+            case .clipped(let value):
+                guard let mesh = try await clippedResource(for: body, value: value) else { continue }
+                try Task.checkCancellation()
+                let material = await pbrMaterial(for: group.material,
+                                                 images: images,
+                                                 hasUVs: group.uvs != nil,
+                                                 bodyID: body.id,
+                                                 bodyName: body.name,
+                                                 issues: &issues)
+                try Task.checkCancellation()
+                let entity = ModelEntity(mesh: mesh, materials: [material])
+                entity.name = "\(body.name) · \(group.faceIndex)"
+                try await picks.register(
+                    entity, mesh: mesh,
+                    pick: pick(for: group, triangleGroups: triangleGroups))
+                entity.components.set(GroundingShadowComponent(
+                    castsShadow: castsShadow, receivesShadow: true))
+                parent.addChild(entity)
+                entities.append(entity)
+                faceEntities[group.faceIndex] = entity
+            case .unchanged:
+                guard let mesh = try await Self.makeMesh(body.mesh, indices: group.indices,
+                                                         uvs: group.uvs) else {
+                    issues.append(CADPresentationIssue(
+                        id: "face-range-\(body.id.uuidString)-\(group.faceIndex)",
+                        kind: .faceMaterialDisplayUnsupported,
+                        bodyID: body.id, bodyName: body.name,
+                        detail: "Face \(group.faceIndex) has an invalid index range in this snapshot and is not drawn individually."))
+                    continue
+                }
+                try Task.checkCancellation()
+                let material = await pbrMaterial(for: group.material,
+                                                 images: images,
+                                                 hasUVs: group.uvs != nil,
+                                                 bodyID: body.id,
+                                                 bodyName: body.name,
+                                                 issues: &issues)
+                try Task.checkCancellation()
+                let entity = ModelEntity(mesh: mesh, materials: [material])
+                entity.name = "\(body.name) · \(group.faceIndex)"
+                try await picks.register(
+                    entity, mesh: mesh,
+                    pick: pick(for: group, triangleGroups: triangleGroups))
+                entity.components.set(GroundingShadowComponent(
+                    castsShadow: castsShadow, receivesShadow: true))
+                parent.addChild(entity)
+                entities.append(entity)
+                faceEntities[group.faceIndex] = entity
             }
-            try Task.checkCancellation()
-            let material = await pbrMaterial(for: group.material,
-                                             images: images,
-                                             hasUVs: group.uvs != nil,
-                                             bodyID: body.id,
-                                             bodyName: body.name,
-                                             issues: &issues)
-            try Task.checkCancellation()
-            let entity = ModelEntity(mesh: mesh, materials: [material])
-            entity.name = "\(body.name) · \(group.faceIndex)"
-            try await picks.register(entity, mesh: mesh,
-                pick: CADPresentationSelection.pick(for: body, group: group, triangleGroups: triangleGroups))
-            entity.components.set(GroundingShadowComponent(
-                castsShadow: castsShadow, receivesShadow: true))
-            parent.addChild(entity)
-            entities.append(entity)
-            faceEntities[group.faceIndex] = entity
+        }
+        if !invalidReasons.isEmpty {
+            let reasons = invalidReasons.map(\.rawValue).sorted().joined(separator: ",")
+            issues.append(CADPresentationIssue(
+                id: "section-invalid-\(body.id.uuidString)", kind: .sectionInvalid,
+                bodyID: body.id, bodyName: body.name,
+                detail: "The section plane or this body's index range could not be applied (\(reasons)); the affected part is not drawn in Present instead of showing it uncut."))
         }
         try Task.checkCancellation()
         // Keep only the faces whose exact triangle set is trustworthy. The
         // same correlation is already the pick identity, so previews can never
-        // paint a wider range than a real hit could select.
+        // paint a wider range than a real hit could select. Under a section a
+        // face pick is intentionally body-level, so no face target is offered.
         var faceTriangles: [Int: [Int]] = [:]
-        for group in body.faceGroups {
-            guard faceEntities[group.faceIndex] != nil,
-                  let triangles = triangleGroups[group.faceIndex],
-                  !triangles.isEmpty else { continue }
-            faceTriangles[group.faceIndex] = triangles
+        if !sectionActive {
+            for group in body.faceGroups {
+                guard faceEntities[group.faceIndex] != nil,
+                      let triangles = triangleGroups[group.faceIndex],
+                      !triangles.isEmpty else { continue }
+                faceTriangles[group.faceIndex] = triangles
+            }
         }
+        if entities.isEmpty { return nil }
         return CADPresentationBodyNodes(parent: parent, entities: entities,
                                         faceEntities: faceEntities,
                                         faceTriangles: faceTriangles)
+    }
+
+    /// Build one section-cut entity mesh from the clipped buffers. This is a
+    /// method (not a nested async function) so it keeps the builder's main
+    /// actor isolation while RealityKit creates the resource.
+    private func clippedResource(for body: CADPresentationBody,
+                                 value: CADClippedMesh) async throws -> MeshResource? {
+        var mesh = body.mesh
+        mesh.positions = value.positions
+        mesh.normals = value.normals
+        mesh.uvs = value.uvs
+        mesh.authoredUVs = value.authoredUVs
+        mesh.indices = value.indices
+        if let first = value.positions.first {
+            var minPoint = first
+            var maxPoint = first
+            for point in value.positions.dropFirst() {
+                minPoint = simd_min(minPoint, point)
+                maxPoint = simd_max(maxPoint, point)
+            }
+            mesh.boundsMin = minPoint
+            mesh.boundsMax = maxPoint
+        }
+        return try await Self.makeMesh(mesh, indices: mesh.indices, uvs: mesh.uvs)
+    }
+
+    /// Expand contiguous triangle ordinals into the body index buffer.
+    static func indices(of triangles: [Int], in mesh: CADPresentationMesh) -> [UInt32] {
+        var result: [UInt32] = []
+        result.reserveCapacity(triangles.count * 3)
+        for triangle in triangles {
+            let base = triangle * 3
+            guard base + 2 < mesh.indices.count else { continue }
+            result.append(mesh.indices[base])
+            result.append(mesh.indices[base + 1])
+            result.append(mesh.indices[base + 2])
+        }
+        return result
+    }
+
+    // MARK: X22 measurement guides
+
+    /// Draw saved measurement guides as real stage geometry. Thin unlit boxes
+    /// survive the RealityKit snapshot and every video frame; an entity-based
+    /// SwiftUI overlay would not. Values stay in the document/UI, never baked
+    /// into geometry.
+    private func addMeasurementGuides(_ guides: [CADPresentationMeasurementGuide],
+                                      to stage: Entity) {
+        guard !guides.isEmpty else { return }
+        let material = UnlitMaterial(
+            color: UIColor(red: 0, green: 0.52, blue: 1, alpha: 1))
+        let thickness: Float = 0.0012 // 1.2 mm
+        for guide in guides {
+            addGuideSegment(from: guide.start, to: guide.end,
+                            thickness: thickness, material: material, to: stage)
+            addGuideTick(at: guide.start, size: thickness * 4,
+                         material: material, to: stage)
+            addGuideTick(at: guide.end, size: thickness * 4,
+                         material: material, to: stage)
+        }
+    }
+
+    private func addGuideSegment(from start: SIMD3<Float>, to end: SIMD3<Float>,
+                                 thickness: Float, material: UnlitMaterial,
+                                 to stage: Entity) {
+        let delta = end - start
+        let length = simd_length(delta)
+        guard length.isFinite, length > 1e-6 else { return }
+        let mesh = MeshResource.generateBox(
+            size: SIMD3(thickness, length, thickness))
+        let entity = ModelEntity(mesh: mesh, materials: [material])
+        entity.name = "CADPresentationMeasurementGuide"
+        entity.position = (start + end) * 0.5
+        entity.orientation = simd_quatf(from: SIMD3<Float>(0, 1, 0),
+                                        to: delta / length)
+        stage.addChild(entity)
+    }
+
+    private func addGuideTick(at point: SIMD3<Float>, size: Float,
+                              material: UnlitMaterial, to stage: Entity) {
+        let mesh = MeshResource.generateBox(size: SIMD3(size, size, size))
+        let entity = ModelEntity(mesh: mesh, materials: [material])
+        entity.name = "CADPresentationMeasurementGuideTick"
+        entity.position = point
+        stage.addChild(entity)
     }
 
     /// Triangles that are not claimed by an authoritative face range. The

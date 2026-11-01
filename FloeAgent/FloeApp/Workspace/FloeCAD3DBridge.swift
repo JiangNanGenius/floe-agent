@@ -410,6 +410,51 @@ final class FloeCAD3DBridge {
             }
             return try jsonString(reply)
 
+        case "scene":
+            // X22: the persisted view overlay is ordinary document state in
+            // the existing additive sceneSettings column. The service uses the
+            // document's own undo/read-only/closed rules; this bridge adds the
+            // same revision pin and CAS commit as material/parameter edits.
+            // No new tool, grant or approval path is involved.
+            let payload = request["payload"] as? [String: Any] ?? [:]
+            guard let action = payload["action"] as? String, !action.isEmpty else {
+                throw CADDocumentError(
+                    code: "missing_action",
+                    message: "scene requires payload.action ("
+                        + CADViewOverlayService.actions.joined(separator: "|") + ").")
+            }
+            try Self.requireRevisionPin(request, document: document)
+            let changeBefore = document.liveChangeCount
+            let checkpoint = document.captureEditCheckpoint()
+            var reply = CADViewOverlayService(document: document).handle(
+                action: action, args: payload)
+            if Self.bool(reply["mutated"]) == true {
+                let changeAfter = document.liveChangeCount
+                if changeAfter == changeBefore {
+                    reply["saved"] = false
+                    reply["note"] = "The service reported a mutation but applied no undoable document command."
+                } else {
+                    let commit = await CADNativeEditCommit.save(
+                        document: document, changeAfterMutation: changeAfter,
+                        rollback: action == "undo" ? .redo
+                            : (action == "redo" ? .undo : .undo),
+                        checkpoint: checkpoint)
+                    if commit.saved {
+                        reply["saved"] = true
+                        reply["revision"] = commit.revision
+                        reply["content_sha256"] = commit.contentSHA256
+                    } else {
+                        reply["ok"] = false
+                        reply["error"] = commit.concurrentEdit ? "concurrent_edit" : "save_failed"
+                        reply["message"] = commit.error
+                        reply["rolled_back"] = commit.rolledBack
+                        reply["concurrent_edit"] = commit.concurrentEdit
+                        reply["revision"] = commit.revision
+                    }
+                }
+            }
+            return try jsonString(reply)
+
         case "animation":
             let payload = request["payload"] as? [String: Any] ?? [:]
             guard let action = payload["action"] as? String,
@@ -671,6 +716,13 @@ final class FloeCAD3DBridge {
                 "document_ownership_and_revision_checks": true,
             ],
             "actions": CadDocumentAction.allCases.filter { $0 != .observe }.map(\.rawValue),
+            // X22: the persisted view overlay is an action of this same tool,
+            // not a separate tool or permission surface.
+            "scene_actions": CADViewOverlayService.actions,
+            "scene_note": "Section/measurement and material/animation edits are ordinary "
+                + "undoable document commands committed with CAS; raster/video include "
+                + "the cut and guide lines but not numeric text, and model exchange "
+                + "formats carry geometry only.",
             "creation": [
                 "extension": "floecad",
                 "new_document_is_empty": true,
@@ -1418,7 +1470,10 @@ final class FloeCAD3DBridge {
                 note: presented.note,
                 projection: presented.projection,
                 cameraName: presented.cameraName,
-                matchesSavedCamera: presented.matchesSavedCamera)
+                matchesSavedCamera: presented.matchesSavedCamera,
+                sectionCutIncluded: presented.sectionCutIncluded,
+                measurementGuideCount: presented.measurementGuideCount,
+                measurementLengthsMM: presented.measurementLengthsMM)
         }
         #endif
         // Present is not showing this document. A selected saved view still
@@ -1575,7 +1630,7 @@ final class FloeCAD3DBridge {
             throw CADDocumentError(
                 code: "revision_mismatch",
                 message: "The document is at revision \(document.revision), not the requested "
-                    + "\(value). Re-read it before this material/parameter action.")
+                    + "\(value). Re-read it before this document edit.")
         }
     }
 
