@@ -244,7 +244,7 @@ final class NativeMeshImportBudgetTests: XCTestCase {
     // MARK: - Blender gzip
 
     func testBlendGzipDeclaredExpansionIsRefusedBeforeTheDestinationBuffer() throws {
-        let blend = gzipDeclaring(4 * 1024 * 1024 * 1024 - 1)
+        let blend = gzipDeclaring(UInt32.max)
         var thrown: Error?
         let measured = try measureFootprint {
             do {
