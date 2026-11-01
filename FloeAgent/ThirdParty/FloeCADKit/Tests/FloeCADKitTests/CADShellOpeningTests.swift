@@ -30,23 +30,25 @@ final class CADShellOpeningTests: XCTestCase {
     /// An exact half-cylinder: removing its curved side leaves connected end
     /// caps and a flat wall. Opening a full cylinder's side would instead
     /// disconnect both caps and is not an honest positive shell fixture.
-    private func fixture() async throws -> Fixture {
+    private func fixture(placement: Transform3D = .identity) async throws -> Fixture {
         let document = try await FloeCADDocument.create(
             at: directory.appendingPathComponent("\(UUID().uuidString).floecad"), name: "Curved opening")
         documents.append(document)
         let body = BodyID(), tool = BodyID()
         let cylinder = FeatureNode(name: "Cylinder", kind: .primitive(
-            spec: .cylinder(radius: 10, height: 30), placement: .identity), outputBodyIDs: [body])
+            spec: .cylinder(radius: 10, height: 30), placement: placement), outputBodyIDs: [body])
         let cutter = FeatureNode(name: "Half cutter", kind: .primitive(
             spec: .box(width: 40, depth: 20, height: 40),
-            placement: Transform3D(translation: SIMD3(0, -5, 10))), outputBodyIDs: [tool])
+            placement: Transform3D(
+                translation: placement.translation + placement.rotation.act(SIMD3(0, -5, 10) * placement.scale),
+                rotation: placement.rotation, scale: placement.scale)), outputBodyIDs: [tool])
         let source = FeatureNode(name: "Half cylinder", kind: .boolean(kind: .subtract,
             target: BodyRef(producer: cylinder.id, bodyID: body),
             tools: [BodyRef(producer: cutter.id, bodyID: tool)]), outputBodyIDs: [body])
         document.session.recordAndRebuild([cylinder, cutter, source], title: "Half cylinder")
         XCTAssertTrue(document.session.lastEvalErrors.isEmpty, "\(document.session.lastEvalErrors)")
         let brep = try XCTUnwrap(document.session.document.body(with: body)?.brep)
-        XCTAssertEqual(abs(OCCTKernel.volume(brep)), 1_500 * .pi, accuracy: 1e-4)
+        XCTAssertEqual(abs(OCCTKernel.volume(brep)), 1_500 * .pi * pow(placement.scale, 3), accuracy: 1e-4)
         let face = try XCTUnwrap(OCCTKernel.faceInfo(brep).first {
             guard let signature = $0.signature else { return false }
             if case .cylindrical = signature.kind { return true }
@@ -254,5 +256,21 @@ final class CADShellOpeningTests: XCTestCase {
         XCTAssertTrue(f.document.session.lastEvalErrors.isEmpty, "\(f.document.session.lastEvalErrors)")
         XCTAssertEqual(try volume(f), expected, accuracy: 1e-4)
         try assertWall(f, thickness: 1)
+    }
+
+    func testPartialCylinderFitMeasuresTrueRadiusAfterTranslationRotationAndScale() async throws {
+        let placement = Transform3D(translation: SIMD3(234, -47, 101),
+            rotation: simd_quatd(angle: 0.67, axis: simd_normalize(SIMD3(1, 2, 3))), scale: 2)
+        let f = try await fixture(placement: placement)
+        let body = try XCTUnwrap(f.document.session.document.body(with: f.body))
+        let faces = FaceTopology.enumerateFaces(in: body.render).cylindrical
+        XCTAssertEqual(faces.count, 1)
+        let cylinder = try XCTUnwrap(faces.first)
+        XCTAssertEqual(cylinder.radius, 20, accuracy: 1e-3)
+        let axis = placement.rotation.act(SIMD3<Double>(0, 1, 0))
+        XCTAssertEqual(abs(simd_dot(cylinder.axisDir, axis)), 1, accuracy: 1e-5)
+        let delta = cylinder.axisPoint - placement.translation
+        XCTAssertLessThan(simd_length(delta - axis * simd_dot(delta, axis)), 1e-3)
+        XCTAssertFalse(cylinder.matchesWholeBody, "A partial cylinder must not claim whole-body radial editing")
     }
 }

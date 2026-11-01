@@ -485,12 +485,36 @@ nonisolated enum FaceTopology {
         let axialLeak = norms.map { abs(simd_dot($0, axisDir)) }.reduce(0, +) / Double(norms.count)
         guard axialLeak < 0.12 else { return nil }
 
-        // Axis point (centroid) and radius (mean distance to the axis line).
+        // Fit the circle in the plane perpendicular to the axis. The vertex
+        // centroid lies on the axis only for a complete, evenly sampled
+        // cylinder; for a half-cylinder it lies inside the curved wall. Using
+        // that centroid as the axis made every partial opening fail the
+        // radius-spread check and get partitioned into planar facet slivers.
         var centroid = SIMD3<Double>.zero
         for v in verts { centroid += v }
         centroid /= Double(verts.count)
+        let seed = abs(axisDir.x) < 0.9 ? SIMD3<Double>(1, 0, 0) : SIMD3<Double>(0, 1, 0)
+        let basisX = simd_normalize(simd_cross(axisDir, seed))
+        let basisY = simd_cross(axisDir, basisX)
+        // Centred coordinates remove the constant from the normal equations
+        // for 2*x*cx + 2*y*cy + c = x*x + y*y. Refuse a nearly straight arc
+        // instead of inventing a huge, ill-conditioned cylinder.
+        var xx = 0.0, xy = 0.0, yy = 0.0, xq = 0.0, yq = 0.0
+        for vertex in verts {
+            let delta = vertex - centroid
+            let x = simd_dot(delta, basisX), y = simd_dot(delta, basisY)
+            let q = x * x + y * y
+            xx += x * x; xy += x * y; yy += y * y
+            xq += x * q; yq += y * q
+        }
+        let determinant = xx * yy - xy * xy
+        guard determinant.isFinite, determinant > (xx + yy) * (xx + yy) * 1e-10 else { return nil }
+        let cx = (xq * yy - yq * xy) / (2 * determinant)
+        let cy = (yq * xx - xq * xy) / (2 * determinant)
+        guard cx.isFinite, cy.isFinite else { return nil }
+        let axisPoint = centroid + basisX * cx + basisY * cy
         func distToAxis(_ v: SIMD3<Double>) -> Double {
-            let d = v - centroid
+            let d = v - axisPoint
             let along = simd_dot(d, axisDir)
             return simd_length(d - axisDir * along)
         }
@@ -508,13 +532,13 @@ nonisolated enum FaceTopology {
 
         // Whole-body check: does a rebuilt cylinder of these params match?
         let matches = rebuiltCylinderMatches(
-            mesh: mesh, axisPoint: centroid, axisDir: axisDir,
+            mesh: mesh, axisPoint: axisPoint, axisDir: axisDir,
             radius: radius, minT: minT, maxT: maxT
         )
 
         return CylindricalFace(
             triangles: Array(surface).sorted(),
-            axisPoint: centroid, axisDir: axisDir, radius: radius,
+            axisPoint: axisPoint, axisDir: axisDir, radius: radius,
             minT: minT, maxT: maxT,
             segments: max(surface.count / 2, 12),
             matchesWholeBody: matches
