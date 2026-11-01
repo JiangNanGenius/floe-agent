@@ -170,20 +170,11 @@ final class CADPresentationRenderController: NSObject, UIGestureRecognizerDelega
     private final class SelectionFacePatch {
         let target: SelectionFaceTarget
         let entity: ModelEntity
-        let highlightMaterial: PhysicallyBasedMaterial
         var isPreviewing = false
 
-        init(target: SelectionFaceTarget, entity: ModelEntity,
-             highlightMaterial: PhysicallyBasedMaterial) {
+        init(target: SelectionFaceTarget, entity: ModelEntity) {
             self.target = target
             self.entity = entity
-            self.highlightMaterial = highlightMaterial
-        }
-
-        func restoreHighlight() {
-            guard isPreviewing else { return }
-            entity.model?.materials = [highlightMaterial]
-            isPreviewing = false
         }
     }
 
@@ -195,7 +186,53 @@ final class CADPresentationRenderController: NSObject, UIGestureRecognizerDelega
     private var selectionFacePatch: SelectionFacePatch?
     private var selectionPatchTask: Task<Void, Never>?
     private var selectionPatchTarget: SelectionFaceTarget?
-    private var originalMaterials: [ObjectIdentifier: [any RealityFoundation.Material]] = [:]
+    /// Latest-draft-wins identity for the render-only material preview. Every
+    /// request advances it; an older detached build compares before it touches
+    /// the stage. Ending the preview or replacing the stage advances it again,
+    /// so a late await can never resurrect a cancelled draft.
+    private var materialPreviewGeneration: UInt64 = 0
+    /// Content identity of what is actually installed. It moves only when a
+    /// draft is installed or restored (not when a replacement merely starts),
+    /// so a snapshot cannot cache the old draft under the replacement's key.
+    private var materialPreviewRevision: UInt64 = 0
+    private var materialPreviewInstalled = false
+    /// Body-wide draft overlays: one render-only entity per selected body.
+    /// The original drawable entities stay resident (hidden) so Cancel can
+    /// restore the exact appearance without rebuilding the stage.
+    private var materialPreviewOverlays: [UUID: MaterialPreviewOverlay] = [:]
+    /// Face draft previews swap one entity's ModelComponent. The baseline
+    /// component is retained here until Cancel/end preview.
+    private var materialPreviewModelSwaps: [ObjectIdentifier: MaterialPreviewModelSwap] = [:]
+    private var materialPreviewIssues: [CADPresentationIssue] = []
+    /// Actual render-side resources installed by the latest draft: the exact
+    /// MeshResource reference put on the entity and the sampling coordinates
+    /// handed to its mesh builder. It is a transient diagnostic of what was
+    /// installed, never a model store; cleared on Cancel/end/replacement.
+    private(set) var materialPreviewReceipts: [MaterialPreviewReceipt] = []
+    /// Internal diagnostic used by the render-side tests to interleave a
+    /// cancellation with a real in-flight build. It never feeds document state.
+    private(set) var isMaterialPreviewInFlight = false
+
+    private struct MaterialPreviewOverlay {
+        var entity: ModelEntity
+        var hidden: [(entity: Entity, wasEnabled: Bool)]
+    }
+
+    private struct MaterialPreviewModelSwap {
+        var entity: ModelEntity
+        var model: ModelComponent?
+        var patch: SelectionFacePatch?
+    }
+
+    struct MaterialPreviewReceipt {
+        var bodyID: UUID
+        var faceIndex: Int?
+        /// Triangle ordinals changed by a face draft; nil for a body draft.
+        var triangles: [Int]?
+        /// Sampling coordinates handed to the mesh builder for this install.
+        var samplingUVs: [SIMD2<Float>]?
+        var mesh: MeshResource
+    }
     private var buildKey: String?
     private var buildTask: Task<Void, Never>?
     private var environmentTask: Task<Void, Never>?
@@ -230,6 +267,9 @@ final class CADPresentationRenderController: NSObject, UIGestureRecognizerDelega
         hasher.combine(buildKey)
         hasher.combine(animationToken)
         hasher.combine(renderGeneration)
+        hasher.combine(materialPreviewGeneration)
+        hasher.combine(materialPreviewRevision)
+        hasher.combine(materialPreviewInstalled)
         if let selectionDocument {
             let state = CADPresentationSelection.state(document: selectionDocument)
             hasher.combine(state.bodyIDs.sorted { $0.uuidString < $1.uuidString })
@@ -304,6 +344,12 @@ final class CADPresentationRenderController: NSObject, UIGestureRecognizerDelega
             // means the same bytes/environment, so nothing is rebuilt.
             return
         }
+        // A new stage/build key retires every transient draft overlay. This
+        // happens before the asynchronous build so an in-flight preview cannot
+        // install on the outgoing stage or the replacement.
+        materialPreviewGeneration &+= 1
+        isMaterialPreviewInFlight = false
+        restoreMaterialPreviewState(clearIssues: true)
         #if DEBUG
         if animationLease != nil {
             // A real identity change (edit/environment) during a render lease
@@ -349,7 +395,6 @@ final class CADPresentationRenderController: NSObject, UIGestureRecognizerDelega
             selectionFacePatch = nil
             selectionPatchTarget = nil
             lastSelectionState = nil
-            originalMaterials.removeAll()
             // A replaced stage always starts from its document baseline; any
             // transient animation frame belonged to the previous generation.
             #if DEBUG
@@ -395,6 +440,9 @@ final class CADPresentationRenderController: NSObject, UIGestureRecognizerDelega
     }
 
     func release() {
+        materialPreviewGeneration &+= 1
+        isMaterialPreviewInFlight = false
+        restoreMaterialPreviewState(clearIssues: true)
         buildTask?.cancel()
         environmentTask?.cancel()
         buildTask = nil
@@ -415,7 +463,6 @@ final class CADPresentationRenderController: NSObject, UIGestureRecognizerDelega
         lastSelectionState = nil
         pendingTapStamp = nil
         pendingTapMode = nil
-        originalMaterials.removeAll()
         animationToken = "static"
         animationRestoreCamera = nil
         animationLease = nil
@@ -473,100 +520,330 @@ final class CADPresentationRenderController: NSObject, UIGestureRecognizerDelega
     // MARK: Material draft preview
 
     /// Local preview of an uncommitted inspector draft. No document command,
-    /// no undo record and no rebuild of the mesh: only the material of the
-    /// affected body entities is swapped and later restored.
+    /// no undo record and no stage rebuild: a render-only mesh whose sampling
+    /// UVs come from the CURRENT draft is shown instead of the applied
+    /// appearance. Body drafts cover the whole selected body; face drafts
+    /// change only the exact face range (or the existing unpainted-face
+    /// selection patch) and never repaint the body as a fallback.
     func previewMaterial(_ spec: BodyMaterialSpec, for target: CADMaterialTarget) async {
-        guard let scene = currentScene else { return }
+        guard !target.isEmpty,
+              let scene = currentScene,
+              stage != nil,
+              buildKey == scene.buildKey else { return }
+        if let document = selectionDocument,
+           scene.documentKey != document.url.standardizedFileURL.path { return }
+
+        // Latest request wins over any older await. The previous draft stays
+        // visible while the replacement's GPU resources build; the restore
+        // runs only in the same synchronous install block, so a slider tick
+        // never flashes the applied appearance and Cancel still restores the
+        // exact applied baseline.
+        materialPreviewGeneration &+= 1
+        let generation = materialPreviewGeneration
+        isMaterialPreviewInFlight = true
+        defer {
+            if generation == materialPreviewGeneration {
+                isMaterialPreviewInFlight = false
+            }
+        }
+
+        let startRenderGeneration = renderGeneration
+        let startBuildKey = scene.buildKey
+        let startDocument = selectionDocument
+        let startStage = stage
+
+        func isCurrent() -> Bool {
+            guard !Task.isCancelled,
+                  generation == materialPreviewGeneration,
+                  renderGeneration == startRenderGeneration,
+                  buildKey == startBuildKey,
+                  currentScene?.buildKey == startBuildKey,
+                  stage === startStage,
+                  animationLease == nil else { return false }
+            if let startDocument {
+                guard selectionDocument === startDocument else { return false }
+            }
+            return true
+        }
+
         var ids = Set(target.bodyIDs)
         if let faceBodyID = target.faceBodyID { ids.insert(faceBodyID) }
-        // A source-body material edit must preview every assembly instance
-        // that reuses it. The entity identity stays the instance ID; the
-        // source ID is only the selection key.
+        var issues: [CADPresentationIssue] = []
+        var installations: [MaterialPreviewInstallation] = []
+        var matched: [(id: UUID, meshRevision: UInt64)] = []
+
         for body in scene.bodies where body.matchesMaterialTarget(ids) {
-            guard let nodes = bodyEntities[body.id] else { continue }
+            guard let nodes = bodyEntities[body.id],
+                  targetAccepts(body: body, target: target) else { continue }
+            matched.append((body.id, body.mesh.meshRevision))
+            let uvs = CADPresentationDraftUV.samplingUVs(
+                for: body.mesh, mapping: spec.uvMapping)
+
             if target.isFaceTarget {
-                // A face preview must never fall back to repainting the whole
-                // body. An already painted face reuses its existing face
-                // entity; the first material on an unpainted face paints only
-                // the render-side selection patch for the exact live range.
                 guard let faceIndex = target.faceIndex else { continue }
-                if let group = body.faceGroups.first(where: {
-                    $0.faceIndex == faceIndex
-                }), let faceEntity = nodes.faceEntities[faceIndex] {
-                    let material = await builder.previewMaterial(
-                        spec: spec,
-                        bodyID: body.id,
-                        bodyName: body.name,
-                        hasUVs: group.uvs != nil || body.mesh.uvs != nil)
-                    guard !Task.isCancelled else { return }
-                    let key = ObjectIdentifier(faceEntity)
-                    if originalMaterials[key] == nil {
-                        originalMaterials[key] = faceEntity.model?.materials ?? []
+                if let faceEntity = nodes.faceEntities[faceIndex],
+                   let triangles = nodes.faceTriangles[faceIndex],
+                   !triangles.isEmpty {
+                    let preview = await builder.previewMaterial(
+                        spec: spec, bodyID: body.id, bodyName: body.name, uvs: uvs)
+                    guard isCurrent() else { return }
+                    issues.append(contentsOf: preview.issues)
+                    guard let mesh = await previewMesh(
+                        body.mesh, triangles: triangles, uvs: uvs) else {
+                        issues.append(previewMeshIssue(body))
+                        continue
                     }
-                    faceEntity.model?.materials = [material]
+                    guard isCurrent() else { return }
+                    installations.append(.modelSwap(
+                        entity: faceEntity, bodyID: body.id,
+                        mesh: mesh, material: preview.material, patch: nil,
+                        faceIndex: faceIndex, triangles: triangles,
+                        samplingUVs: uvs))
                 } else {
-                    // The inspector target is frozen at presentation time.
-                    // Paint only the CURRENT selection patch when it names the
-                    // same face; a later viewport selection must keep its own
-                    // truthful highlight instead of being replaced by a stale
-                    // inspector target.
-                    guard let identity = target.faceIdentity,
-                          let selected = lastSelectionState?.faces.first(where: {
-                              $0.bodyID == body.id
-                          }) else { continue }
-                    let selectedSet = Set(selected.triangles.sorted())
-                    let identitySet = Set(identity.triangles.sorted())
-                    guard selectedSet == identitySet
-                            || selectedSet.isSubset(of: identitySet)
-                            || identitySet.isSubset(of: selectedSet) else { continue }
-                    let faceTarget = SelectionFaceTarget(
-                        bodyID: body.id,
-                        triangles: selected.triangles.sorted())
+                    // First material on a face with no applied face entity:
+                    // only the EXACT live selection patch may show it. A
+                    // different (or moved) selection is never repainted.
+                    guard let identity = target.faceIdentity else { continue }
+                    let selectedTriangles = lastSelectionState?.faces
+                        .first(where: { $0.bodyID == body.id })?
+                        .triangles.sorted()
+                    guard let selectedTriangles, !selectedTriangles.isEmpty,
+                          Self.sameFace(selectedTriangles, identity.triangles)
+                    else { continue }
+                    let preview = await builder.previewMaterial(
+                        spec: spec, bodyID: body.id, bodyName: body.name, uvs: uvs)
+                    guard isCurrent() else { return }
+                    issues.append(contentsOf: preview.issues)
+                    guard let mesh = await previewMesh(
+                        body.mesh, triangles: selectedTriangles, uvs: uvs) else {
+                        issues.append(previewMeshIssue(body))
+                        continue
+                    }
+                    guard isCurrent(),
+                          Self.selectionStillMatches(
+                            bodyID: body.id, triangles: selectedTriangles,
+                            state: lastSelectionState) else { return }
                     guard let patch = await ensureSelectionFacePatch(
-                        for: faceTarget, body: body, nodes: nodes, scene: scene),
-                          let material = await previewMaterial(
-                            spec: spec, body: body,
-                            hasUVs: body.mesh.uvs != nil) else { continue }
-                    patch.entity.model?.materials = [material]
-                    patch.isPreviewing = true
+                        for: SelectionFaceTarget(bodyID: body.id,
+                                                 triangles: selectedTriangles),
+                        body: body, nodes: nodes, scene: scene) else { continue }
+                    guard isCurrent(),
+                          selectionFacePatch === patch,
+                          Self.selectionStillMatches(
+                            bodyID: body.id, triangles: selectedTriangles,
+                            state: lastSelectionState) else { return }
+                    installations.append(.modelSwap(
+                        entity: patch.entity, bodyID: body.id,
+                        mesh: mesh, material: preview.material, patch: patch,
+                        faceIndex: faceIndex, triangles: selectedTriangles,
+                        samplingUVs: uvs))
                 }
             } else {
-                let material = await builder.previewMaterial(
-                    spec: spec,
-                    bodyID: body.id,
-                    bodyName: body.name,
-                    hasUVs: body.mesh.uvs != nil)
-                for entity in nodes.entities {
-                    let key = ObjectIdentifier(entity)
-                    if originalMaterials[key] == nil {
-                        originalMaterials[key] = entity.model?.materials ?? []
-                    }
-                    entity.model?.materials = [material]
+                let preview = await builder.previewMaterial(
+                    spec: spec, bodyID: body.id, bodyName: body.name, uvs: uvs)
+                guard isCurrent() else { return }
+                issues.append(contentsOf: preview.issues)
+                guard let mesh = await previewMesh(
+                    body.mesh, indices: body.mesh.indices, uvs: uvs) else {
+                    issues.append(previewMeshIssue(body))
+                    continue
                 }
+                guard isCurrent() else { return }
+                installations.append(.bodyOverlay(
+                    body: body, mesh: mesh, material: preview.material,
+                    samplingUVs: uvs))
             }
+        }
+
+        guard isCurrent() else { return }
+        // The scene generation can only be valid if every body this request
+        // measured is still the same mesh generation at install time.
+        for match in matched {
+            guard let live = currentScene?.bodies.first(where: { $0.id == match.id }),
+                  live.mesh.meshRevision == match.meshRevision else { return }
+        }
+        // Replace the previous draft atomically: restore its exact baseline
+        // and install the new resources with no await in between. A capture
+        // can never observe half of one draft and half of another.
+        restoreMaterialPreviewState(clearIssues: false)
+        for installation in installations {
+            switch installation {
+            case .bodyOverlay(let body, let mesh, let material,
+                              let samplingUVs):
+                guard let nodes = bodyEntities[body.id],
+                      let overlay = installPreviewOverlay(
+                        body: body, nodes: nodes, mesh: mesh,
+                        material: material) else { continue }
+                materialPreviewOverlays[body.id] = overlay
+                materialPreviewReceipts.append(MaterialPreviewReceipt(
+                    bodyID: body.id, faceIndex: nil, triangles: nil,
+                    samplingUVs: samplingUVs, mesh: mesh))
+            case .modelSwap(let entity, let bodyID, let mesh,
+                            let material, let patch, let faceIndex,
+                            let triangles, let samplingUVs):
+                let key = ObjectIdentifier(entity)
+                if materialPreviewModelSwaps[key] == nil {
+                    materialPreviewModelSwaps[key] = MaterialPreviewModelSwap(
+                        entity: entity, model: entity.model, patch: patch)
+                }
+                entity.model = ModelComponent(mesh: mesh,
+                                              materials: [material])
+                patch?.isPreviewing = true
+                materialPreviewReceipts.append(MaterialPreviewReceipt(
+                    bodyID: bodyID, faceIndex: faceIndex,
+                    triangles: triangles, samplingUVs: samplingUVs,
+                    mesh: mesh))
+            }
+        }
+        materialPreviewInstalled = !materialPreviewOverlays.isEmpty
+            || !materialPreviewModelSwaps.isEmpty
+        materialPreviewRevision &+= 1
+        setMaterialPreviewIssues(issues)
+    }
+
+    private enum MaterialPreviewInstallation {
+        case bodyOverlay(body: CADPresentationBody,
+                         mesh: MeshResource,
+                         material: PhysicallyBasedMaterial,
+                         samplingUVs: [SIMD2<Float>]?)
+        case modelSwap(entity: ModelEntity, bodyID: UUID,
+                       mesh: MeshResource,
+                       material: PhysicallyBasedMaterial,
+                       patch: SelectionFacePatch?,
+                       faceIndex: Int?, triangles: [Int],
+                       samplingUVs: [SIMD2<Float>]?)
+    }
+
+    /// The draft target is frozen at presentation time. A scene/stage whose
+    /// body mesh generation moved on must not receive it, and a face target
+    /// must keep pointing at the source body that produced the face.
+    private func targetAccepts(body: CADPresentationBody,
+                               target: CADMaterialTarget) -> Bool {
+        let sourceID = body.sourceBodyID ?? body.id
+        if let expected = target.bodyMeshRevisions[body.id]
+            ?? target.bodyMeshRevisions[sourceID],
+           expected != body.mesh.meshRevision { return false }
+        if target.isFaceTarget {
+            guard let faceBodyID = target.faceBodyID, sourceID == faceBodyID else {
+                return false
+            }
+            if let expected = target.faceIdentity?.meshRevision,
+               expected != body.mesh.meshRevision { return false }
+        }
+        return true
+    }
+
+    /// The same subset/equality rule the first-face preview already used.
+    /// A shared edge or a superset is not the same face for a paint target.
+    private static func sameFace(_ lhs: [Int], _ rhs: [Int]) -> Bool {
+        let left = Set(lhs), right = Set(rhs)
+        return left == right || left.isSubset(of: right) || right.isSubset(of: left)
+    }
+
+    private static func selectionStillMatches(
+        bodyID: UUID, triangles: [Int],
+        state: CADPresentationSelectionState?
+    ) -> Bool {
+        guard let picked = state?.faces.first(where: { $0.bodyID == bodyID }) else {
+            return false
+        }
+        return picked.triangles.sorted() == triangles
+    }
+
+    private func previewMesh(
+        _ body: CADPresentationMesh, indices: [UInt32],
+        uvs: [SIMD2<Float>]?
+    ) async -> MeshResource? {
+        do {
+            return try await CADPresentationEntityBuilder.makeMesh(
+                body, indices: indices, uvs: uvs)
+        } catch {
+            return nil
         }
     }
 
-    private func previewMaterial(spec: BodyMaterialSpec, body: CADPresentationBody,
-                                 hasUVs: Bool) async -> PhysicallyBasedMaterial? {
-        let material = await builder.previewMaterial(
-            spec: spec, bodyID: body.id, bodyName: body.name, hasUVs: hasUVs)
-        return Task.isCancelled ? nil : material
+    private func previewMesh(
+        _ body: CADPresentationMesh, triangles: [Int],
+        uvs: [SIMD2<Float>]?
+    ) async -> MeshResource? {
+        do {
+            return try await CADPresentationEntityBuilder.makeMesh(
+                body, triangles: triangles, uvs: uvs)
+        } catch {
+            return nil
+        }
+    }
+
+    private func previewMeshIssue(_ body: CADPresentationBody) -> CADPresentationIssue {
+        CADPresentationIssue(
+            id: "preview-mesh-\(body.id.uuidString)", kind: .corruptMaterial,
+            bodyID: body.id, bodyName: body.name,
+            detail: "The draft's preview mesh could not be built on this device; the applied appearance is still shown.")
+    }
+
+    private func installPreviewOverlay(
+        body: CADPresentationBody,
+        nodes: CADPresentationBodyNodes,
+        mesh: MeshResource,
+        material: PhysicallyBasedMaterial
+    ) -> MaterialPreviewOverlay? {
+        guard let stage else { return nil }
+        let overlay = ModelEntity(mesh: mesh, materials: [material])
+        overlay.name = "CADPresentationMaterialPreview"
+        // Follow the current body node transform (a playback frame may have
+        // moved it away from the static document pose).
+        overlay.transform = nodes.parent.transform
+        if let shadow = nodes.entities.first?
+            .components[GroundingShadowComponent.self] {
+            overlay.components.set(shadow)
+        }
+        var hidden: [(entity: Entity, wasEnabled: Bool)] = []
+        for entity in nodes.entities {
+            hidden.append((entity, entity.isEnabled))
+            entity.isEnabled = false
+        }
+        stage.addChild(overlay)
+        return MaterialPreviewOverlay(entity: overlay, hidden: hidden)
+    }
+
+    /// Restore every render-side thing a draft may have changed. The stage,
+    /// document, selection and undo stack were never touched, so this only
+    /// removes the transient overlay and puts the exact ModelComponent back.
+    private func restoreMaterialPreviewState(clearIssues: Bool) {
+        for overlay in materialPreviewOverlays.values {
+            overlay.entity.removeFromParent()
+            for hidden in overlay.hidden {
+                hidden.entity.isEnabled = hidden.wasEnabled
+            }
+        }
+        materialPreviewOverlays.removeAll()
+        for swap in materialPreviewModelSwaps.values {
+            swap.entity.model = swap.model
+            swap.patch?.isPreviewing = false
+        }
+        materialPreviewModelSwaps.removeAll()
+        materialPreviewReceipts = []
+        materialPreviewInstalled = false
+        materialPreviewRevision &+= 1
+        if clearIssues {
+            materialPreviewIssues = []
+            handle?.setIssues(issues)
+        }
+    }
+
+    private func setMaterialPreviewIssues(_ new: [CADPresentationIssue]) {
+        // A build issue and a draft issue can name the same condition (for
+        // example a texture-less mesh source). Keep one row per identity so the
+        // details list never gains duplicate Identifiable entries.
+        var seen = Set(issues.map(\.id))
+        materialPreviewIssues = new.filter { seen.insert($0.id).inserted }
+        handle?.setIssues(issues + materialPreviewIssues)
     }
 
     func endMaterialPreview() {
-        selectionFacePatch?.restoreHighlight()
-        let nodes = bodyEntities
-        for (identifier, materials) in originalMaterials {
-            guard !materials.isEmpty else { continue }
-            for bodyNodes in nodes.values {
-                for entity in bodyNodes.entities
-                where ObjectIdentifier(entity) == identifier {
-                    entity.model?.materials = materials
-                }
-            }
-        }
-        originalMaterials.removeAll()
+        materialPreviewGeneration &+= 1
+        isMaterialPreviewInFlight = false
+        restoreMaterialPreviewState(clearIssues: true)
     }
 
     // MARK: Camera
@@ -906,8 +1183,7 @@ final class CADPresentationRenderController: NSObject, UIGestureRecognizerDelega
         let diagonal = simd_length(body.mesh.boundsMax - body.mesh.boundsMin)
         let offset = max(2e-6, min(0.002, diagonal * 0.001))
         entity.position = normal * offset
-        return SelectionFacePatch(target: target, entity: entity,
-                                  highlightMaterial: material)
+        return SelectionFacePatch(target: target, entity: entity)
     }
 
     /// A material draft opened from a face selection may preview before the
@@ -968,6 +1244,8 @@ final class CADPresentationRenderController: NSObject, UIGestureRecognizerDelega
             guard let nodes = bodyEntities[body.id] else { continue }
             nodes.parent.transform = Transform(
                 matrix: instanceTransforms[body.id] ?? body.transform)
+            materialPreviewOverlays[body.id]?.entity.transform =
+                nodes.parent.transform
         }
         // The ground follows the pose actually drawn. Without this an animated
         // part moving below its static minimum would still be cut by a floor
@@ -990,6 +1268,10 @@ final class CADPresentationRenderController: NSObject, UIGestureRecognizerDelega
         if let scene = currentScene {
             for body in scene.bodies {
                 bodyEntities[body.id]?.parent.transform = Transform(matrix: body.transform)
+                if let parent = bodyEntities[body.id]?.parent {
+                    materialPreviewOverlays[body.id]?.entity.transform =
+                        parent.transform
+                }
             }
             floorBounds = scene.bounds
             if let stage {

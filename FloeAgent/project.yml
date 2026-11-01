@@ -1293,6 +1293,9 @@ targets:
       - path: ThirdParty/FloeCADKit/Tests/FloeCADKitTests/CADPresentationSelectionTests.swift
       - path: ThirdParty/FloeCADKit/Tests/FloeCADKitTests/CADPresentationFloorBoundsTests.swift
       - path: ThirdParty/FloeCADKit/Tests/FloeCADKitTests/CADPresentationSelectionObserverTests.swift
+      # X32 render-side draft projection preview: real MeshResource UV/instance
+      # witnesses for body/face/first-face drafts and cancellation fences.
+      - path: ThirdParty/FloeCADKit/Tests/FloeCADKitTests/CADPresentationDraftPreviewTests.swift
       - path: ThirdParty/FloeCADKit/Tests/FloeCADKitTests/CADMechanicalHoleKernelProbeTests.swift
       - path: ThirdParty/FloeCADKit/Tests/FloeCADKitTests/CADVolumeIntegrationTests.swift
       - path: ThirdParty/FloeCADKit/Tests/FloeCADKitTests/CADSavedIdentityObservationTests.swift

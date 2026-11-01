@@ -171,6 +171,12 @@ enum CADPresentationSceneBuilder {
             // orientation is applied at texture sampling, never by rotating
             // this shared UV set.
             let hasMeshUVs = mesh.texcoords?.isEmpty == false
+            // Keep the authored set beside the effective set. A later draft
+            // that chooses the mesh source (or an explicit projection) must
+            // start from the mesh UVs, not from this appearance's projection.
+            let authoredUVs = mesh.texcoords.flatMap {
+                $0.count == mesh.positions.count ? $0 : nil
+            }
             let bodyUsesProjection = body.material?.usesProjectedUVs ?? false
             let uvs = MaterialUVProjector.effectiveUVs(
                 meshTexcoords: mesh.texcoords,
@@ -265,6 +271,7 @@ enum CADPresentationSceneBuilder {
                 normals: convertedNormals,
                 indices: mesh.indices,
                 uvs: uvs,
+                authoredUVs: authoredUVs,
                 meshRevision: mesh.meshRevision,
                 boundsMin: simd_min(convertedBoundsMin, convertedBoundsMax),
                 boundsMax: simd_max(convertedBoundsMin, convertedBoundsMax))

@@ -21,11 +21,18 @@ final class CADPresentationBodyNodes {
     let parent: Entity
     let entities: [ModelEntity]
     let faceEntities: [Int: ModelEntity]
+    /// Exact triangle ordinals for each face entity that could be correlated
+    /// unambiguously with the authoritative body mesh. A draft preview must
+    /// change only these triangles; a missing entry is never widened to the
+    /// whole body.
+    let faceTriangles: [Int: [Int]]
 
-    init(parent: Entity, entities: [ModelEntity], faceEntities: [Int: ModelEntity]) {
+    init(parent: Entity, entities: [ModelEntity], faceEntities: [Int: ModelEntity],
+         faceTriangles: [Int: [Int]]) {
         self.parent = parent
         self.entities = entities
         self.faceEntities = faceEntities
+        self.faceTriangles = faceTriangles
     }
 }
 
@@ -175,7 +182,7 @@ final class CADPresentationEntityBuilder {
             entity.components.set(GroundingShadowComponent(
                 castsShadow: castsShadow, receivesShadow: true))
             return CADPresentationBodyNodes(parent: entity, entities: [entity],
-                                            faceEntities: [:])
+                                            faceEntities: [:], faceTriangles: [:])
         }
 
         // Correlating a large triangle table is value-only work. Keep it
@@ -243,8 +250,19 @@ final class CADPresentationEntityBuilder {
             faceEntities[group.faceIndex] = entity
         }
         try Task.checkCancellation()
+        // Keep only the faces whose exact triangle set is trustworthy. The
+        // same correlation is already the pick identity, so previews can never
+        // paint a wider range than a real hit could select.
+        var faceTriangles: [Int: [Int]] = [:]
+        for group in body.faceGroups {
+            guard faceEntities[group.faceIndex] != nil,
+                  let triangles = triangleGroups[group.faceIndex],
+                  !triangles.isEmpty else { continue }
+            faceTriangles[group.faceIndex] = triangles
+        }
         return CADPresentationBodyNodes(parent: parent, entities: entities,
-                                        faceEntities: faceEntities)
+                                        faceEntities: faceEntities,
+                                        faceTriangles: faceTriangles)
     }
 
     /// Triangles that are not claimed by an authoritative face range. The
@@ -361,29 +379,70 @@ final class CADPresentationEntityBuilder {
 
     // MARK: Material preview
 
-    /// Build the material for an uncommitted draft. The caller swaps it onto
-    /// the live body entity without touching the document or the mesh.
+    /// One transient material for an uncommitted inspector draft plus the real
+    /// issues that draft cannot preview on this device (a missing sampling UV
+    /// buffer, a texture that did not decode). The caller swaps it onto a
+    /// render-side mesh whose texture coordinates are built from `uvs`, so a
+    /// projection/scale/offset edit can be seen before Apply.
+    struct PreviewMaterial {
+        var material: PhysicallyBasedMaterial
+        var issues: [CADPresentationIssue]
+    }
+
+    /// Records per-slot texture failures without touching the applied build's
+    /// issue reporting. Only accessed on the main actor.
+    @MainActor
+    final class TextureFailureRecorder {
+        private(set) var slots: Set<MaterialTextureSlot> = []
+        func record(_ slot: MaterialTextureSlot) { slots.insert(slot) }
+    }
+
+    /// Build the material for a draft that samples `uvs`. Passing nil means
+    /// the draft genuinely has no sampling coordinates (for example a mesh
+    /// source on a body without authored UVs); textures are then omitted and a
+    /// real issue is returned instead of a silently untextured success.
     func previewMaterial(spec: BodyMaterialSpec,
                          bodyID: UUID,
                          bodyName: String,
-                         hasUVs: Bool) async -> PhysicallyBasedMaterial {
+                         uvs: [SIMD2<Float>]?) async -> PreviewMaterial {
+        let clean = spec.clamped
+        let mapping = clean.uvMapping ?? .mesh
         let resolved = CADPresentationMaterialResolver.resolve(
-            spec: spec, bodyID: bodyID, bodyName: bodyName,
-            hasMeshUVs: hasUVs,
-            // A nil mapping means the authored mesh UV set, not a projection.
-            hasProjectedUVs: (spec.uvMapping?.source ?? .mesh) != .mesh)
+            spec: clean, bodyID: bodyID, bodyName: bodyName,
+            hasMeshUVs: mapping.source == .mesh && uvs != nil,
+            hasProjectedUVs: mapping.source != .mesh && uvs != nil)
         var imagesByID: [String: CADPresentationImage] = [:]
         for image in resolved.images { imagesByID[image.id] = image }
-        var issues: [CADPresentationIssue] = []
-        // Preview replaces the material on an already-built entity, so only
-        // the entity's actual UV buffer counts. A mapping edit becomes visible
-        // after Apply rebuilds the entity with its new sampling UVs.
-        return await pbrMaterial(for: resolved.material,
-                                 images: imagesByID,
-                                 hasUVs: hasUVs,
-                                 bodyID: bodyID,
-                                 bodyName: bodyName,
-                                 issues: &issues)
+        var issues = resolved.issues
+        let failures = TextureFailureRecorder()
+        let material = await pbrMaterial(for: resolved.material,
+                                         images: imagesByID,
+                                         hasUVs: uvs != nil,
+                                         bodyID: bodyID,
+                                         bodyName: bodyName,
+                                         issues: &issues,
+                                         textureFailures: failures)
+        for slot in failures.slots.sorted(by: { $0.rawValue < $1.rawValue }) {
+            issues.append(CADPresentationIssue(
+                id: "preview-image-\(bodyID.uuidString)-\(slot.rawValue)",
+                kind: .imageDecodeFailed,
+                bodyID: bodyID, bodyName: bodyName,
+                detail: "The draft's \(slot.rawValue) image could not be decoded on this device; the rest of the draft still previews."))
+        }
+        // Resolver and PBR assembly both describe a missing UV source. Keep
+        // the actionable resolver message once instead of two duplicate rows.
+        var deduplicated: [CADPresentationIssue] = []
+        var hasMissingUV = false
+        var seenIDs = Set<String>()
+        for issue in issues {
+            if issue.kind == .missingMeshUV {
+                guard !hasMissingUV else { continue }
+                hasMissingUV = true
+            }
+            guard seenIDs.insert(issue.id).inserted else { continue }
+            deduplicated.append(issue)
+        }
+        return PreviewMaterial(material: material, issues: deduplicated)
     }
 
     /// Neutral material with no image lookup (used only to restore an
@@ -410,7 +469,8 @@ final class CADPresentationEntityBuilder {
                              hasUVs: Bool,
                              bodyID: UUID,
                              bodyName: String,
-                             issues: inout [CADPresentationIssue]) async -> PhysicallyBasedMaterial {
+                             issues: inout [CADPresentationIssue],
+                             textureFailures: TextureFailureRecorder? = nil) async -> PhysicallyBasedMaterial {
         var material = PhysicallyBasedMaterial()
         let tint = UIColor(
             red: CGFloat(min(max(descriptor.baseColor.x, 0), 1)),
@@ -448,14 +508,18 @@ final class CADPresentationEntityBuilder {
 
         func resource(for slot: MaterialTextureSlot,
                       semantic: TextureResource.Semantic) async -> PhysicallyBasedMaterial.Texture? {
-            guard let reference = descriptor.texture(for: slot),
-                  let image = images[reference.imageID] else { return nil }
+            guard let reference = descriptor.texture(for: slot) else { return nil }
+            guard let image = images[reference.imageID] else {
+                textureFailures?.record(slot)
+                return nil
+            }
             // Each map is normalized with its own declared origin. This is the
             // only place Present turns row order into sampling data, so two
             // maps with opposite origins never share one V flip.
             guard let texture = await cache.texture(
                 for: image, semantic: semantic,
                 orientation: reference.orientation) else {
+                textureFailures?.record(slot)
                 return nil
             }
             return PhysicallyBasedMaterial.Texture(texture)

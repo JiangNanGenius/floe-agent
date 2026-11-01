@@ -137,7 +137,14 @@ nonisolated struct CADPresentationMesh: Equatable, Sendable {
     var positions: [SIMD3<Float>]
     var normals: [SIMD3<Float>]
     var indices: [UInt32]
+    /// Sampling coordinates the applied appearance already projects. This is
+    /// what the built entity draws; it is NOT the authored mesh set when an
+    /// explicit projection is applied.
     var uvs: [SIMD2<Float>]?
+    /// The mesh's own imported/authored UVs, before any appearance mapping.
+    /// A draft that selects the mesh source must sample these, never the
+    /// already-projected scene set in `uvs`. Nil when the mesh has none.
+    var authoredUVs: [SIMD2<Float>]? = nil
     var meshRevision: UInt64
     var boundsMin: SIMD3<Float>
     var boundsMax: SIMD3<Float>
