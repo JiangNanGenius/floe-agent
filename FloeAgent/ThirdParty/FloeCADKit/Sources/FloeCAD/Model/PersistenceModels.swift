@@ -389,9 +389,19 @@ func decodeVariable(_ pv: PersistedVariable) -> Variable {
 
 // MARK: - Feature encode/decode helpers
 
+/// Typed JSON stored inside a record's Data field must itself be canonical.
+/// Sorting only the outer package JSON cannot normalize a base64-encoded
+/// transform/feature/sketch blob, and a native undo would then change the
+/// model digest even when the record values and every geometry blob match.
+nonisolated func cadRecordEncoder() -> JSONEncoder {
+    let encoder = JSONEncoder()
+    encoder.outputFormatting = [.sortedKeys]
+    return encoder
+}
+
 /// JSON-encode a `FeatureKind`; `Data()` on failure (empty decodes back to nil).
 nonisolated func encodeFeatureKind(_ kind: FeatureKind) -> Data {
-    (try? JSONEncoder().encode(kind)) ?? Data()
+    (try? cadRecordEncoder().encode(kind)) ?? Data()
 }
 
 /// JSON-decode a `FeatureKind`; nil if the blob is empty/corrupt.
@@ -401,7 +411,7 @@ nonisolated func decodeFeatureKind(_ data: Data) -> FeatureKind? {
 
 /// JSON-encode a node's `[BodyID]`; `Data()` on failure.
 nonisolated func encodeBodyIDs(_ ids: [BodyID]) -> Data {
-    (try? JSONEncoder().encode(ids)) ?? Data()
+    (try? cadRecordEncoder().encode(ids)) ?? Data()
 }
 
 /// JSON-decode `[BodyID]`; nil if the blob is empty/corrupt (caller uses `?? []`).

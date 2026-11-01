@@ -2602,6 +2602,7 @@ final class DocumentSession {
         guard !isReadOnly else { throw CADDocumentFormatError.opaqueAssociations }
         guard !isSketchPreviewActive else { throw SketchPreviewWriteError.editing }
         try CADDocumentFormat.validateLiveAssociations(document)
+        let encoder = cadRecordEncoder()
 
         // Floe workbench record blobs are document state (undoable commands);
         // mirror them onto the project columns the package store slices
@@ -2630,12 +2631,12 @@ final class DocumentSession {
         var liveIDs = Set<UUID>()
         for body in document.bodies {
             liveIDs.insert(body.id.raw)
-            guard let transformData = try? JSONEncoder().encode(body.transform) else { continue }
-            let primitiveData = body.primitive.flatMap { try? JSONEncoder().encode($0) }
+            guard let transformData = try? encoder.encode(body.transform) else { continue }
+            let primitiveData = body.primitive.flatMap { try? encoder.encode($0) }
             let meshData = MeshBlob.encode(body.render)
-            let materialData = body.material.flatMap { try? JSONEncoder().encode($0) }
+            let materialData = body.material.flatMap { try? encoder.encode($0) }
             let faceMaterialsData = body.materialFaceBindings.isEmpty
-                ? nil : try? JSONEncoder().encode(body.materialFaceBindings)
+                ? nil : try? encoder.encode(body.materialFaceBindings)
             // Exact geometry, when this body has it — so roundness/boolean
             // composability for solids and exact open-surface identity for
             // IGES surfaces survive a reload instead of degrading to triangles.
@@ -2720,7 +2721,7 @@ final class DocumentSession {
             // Fail the whole save BEFORE commit when any saved ref is not in
             // the persistable vocabulary (for example solver-local radiusOnly).
             // The previous healthy package remains readable and byte-stable.
-            let data = try JSONEncoder().encode(sketch)
+            let data = try encoder.encode(sketch)
             if let persisted = persistedSketchByID[sketch.id.raw] {
                 persisted.sketchData = data
             } else {
@@ -2742,7 +2743,7 @@ final class DocumentSession {
         var livePlaneIDs = Set<UUID>()
         for plane in document.planes {
             livePlaneIDs.insert(plane.id.raw)
-            guard let data = try? JSONEncoder().encode(plane) else { continue }
+            guard let data = try? encoder.encode(plane) else { continue }
             if let persisted = persistedPlaneByID[plane.id.raw] {
                 persisted.planeData = data
             } else {
@@ -2764,7 +2765,7 @@ final class DocumentSession {
         var liveAxisIDs = Set<UUID>()
         for axis in document.axes {
             liveAxisIDs.insert(axis.id.raw)
-            guard let data = try? JSONEncoder().encode(axis) else { continue }
+            guard let data = try? encoder.encode(axis) else { continue }
             if let persisted = persistedAxisByID[axis.id.raw] {
                 persisted.axisData = data
             } else {
@@ -2786,7 +2787,7 @@ final class DocumentSession {
         var livePointIDs = Set<UUID>()
         for point in document.datumPoints {
             livePointIDs.insert(point.id.raw)
-            guard let data = try? JSONEncoder().encode(point) else { continue }
+            guard let data = try? encoder.encode(point) else { continue }
             if let persisted = persistedPointByID[point.id.raw] {
                 persisted.pointData = data
             } else {
@@ -2811,7 +2812,7 @@ final class DocumentSession {
             // Blob lives in the externalStorage column; strip it from the JSON.
             var info = image
             info.imageData = Data()
-            guard let infoData = try? JSONEncoder().encode(info) else { continue }
+            guard let infoData = try? encoder.encode(info) else { continue }
             if let persisted = persistedImageByID[image.id.raw] {
                 persisted.infoData = infoData
                 persisted.imageData = image.imageData
@@ -2836,7 +2837,7 @@ final class DocumentSession {
         var liveSymbolIDs = Set<UUID>()
         for symbol in document.symbols {
             liveSymbolIDs.insert(symbol.id.raw)
-            guard let data = try? JSONEncoder().encode(symbol) else { continue }
+            guard let data = try? encoder.encode(symbol) else { continue }
             if let persisted = persistedSymbolByID[symbol.id.raw] {
                 persisted.symbolData = data
             } else {
@@ -2915,7 +2916,7 @@ final class DocumentSession {
         // on the way to disk. A blob load() couldn't decode is left alone.
         if !unreadableRows.itemFolders {
             let folders = ItemFolderTree(document.itemFolders).pruned(to: document.itemKeys)
-            let data = folders.isEmpty ? nil : try? JSONEncoder().encode(folders)
+            let data = folders.isEmpty ? nil : try? encoder.encode(folders)
             if project.itemFoldersData != data { project.itemFoldersData = data }
         }
 

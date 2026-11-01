@@ -187,6 +187,18 @@ final class CADDatumPlaneKindsEditorTests: XCTestCase {
         documents.append(document)
         let anchorA = try XCTUnwrap(document.session.document.sketches.first { $0.name == "Anchor A" })
         let anchorB = try XCTUnwrap(document.session.document.sketches.first { $0.name == "Anchor B" })
+        func record(_ label: String, _ document: FloeCADDocument) throws {
+            let encoder = cadRecordEncoder()
+            let data = try encoder.encode(document.session.document.sketches)
+            let planes = try encoder.encode(document.session.document.planes)
+            let attachment = XCTAttachment(string: "\(label)\nSKETCHES\n"
+                + String(decoding: data, as: UTF8.self) + "\nPLANES\n"
+                + String(decoding: planes, as: UTF8.self))
+            attachment.name = "Exact synthetic M07 records \(label)"
+            attachment.lifetime = .keepAlways
+            add(attachment)
+        }
+        try record("seed", document)
         let lineA = try XCTUnwrap(anchorA.entities.first)
         let lineB = try XCTUnwrap(anchorB.entities.first)
         let refs = [
@@ -195,9 +207,11 @@ final class CADDatumPlaneKindsEditorTests: XCTestCase {
             SketchAnchorRef(sketchID: anchorB.id, entityID: lineB.id, role: .endpointB),
         ]
         XCTAssertTrue(document.viewModel().createThreePointPlane(refs))
+        try record("created", document)
         let planeID = try XCTUnwrap(threePointPlane(document)).id
         let saved = await document.save()
         XCTAssertTrue(saved.succeeded, saved.error ?? "save failed")
+        try record("saved", document)
         document.close()
 
         // Exact same reopen preparation as the UI: installs a real dependent
@@ -205,10 +219,12 @@ final class CADDatumPlaneKindsEditorTests: XCTestCase {
         let reopened = try await CADDatumPlaneFormFixture.open(
             mode: .threePoint, reset: false, reopen: true)
         documents.append(reopened)
+        try record("reopened", reopened)
         let parent = try XCTUnwrap(reopened.session.document.features.nodes.first { $0.name == "ParentPlate" })
         let child = try XCTUnwrap(reopened.session.document.sketches.first { $0.name == "Three point child" })
         XCTAssertEqual(try XCTUnwrap(threePointPlane(reopened)).plane.origin.y, 10, accuracy: 1e-6)
         reopened.viewModel().editFeatureScalar(parent.id, key: .primary, value: 20)
+        try record("parent-edited", reopened)
         let readback = CADDatumPlaneFormFixture.readback(document: reopened, focus: .threePoint)
         let diagnostics = "\(readback.plane) | \(readback.bodies) | \(readback.errors)"
         XCTAssertEqual(try XCTUnwrap(threePointPlane(reopened)).id, planeID)
