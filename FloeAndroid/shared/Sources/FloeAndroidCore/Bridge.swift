@@ -39,7 +39,8 @@ public enum AndroidBridge {
                 || requestVersion == BridgeV11.version
                 || requestVersion == BridgeV12.version
                 || requestVersion == BridgeV13.version
-                || requestVersion == BridgeV14.version else {
+                || requestVersion == BridgeV14.version
+                || requestVersion == BridgeV16.version else {
             return response(["ok": false, "error": "unsupportedVersion"])
         }
         if requestVersion == BridgeV2.version {
@@ -223,6 +224,23 @@ public enum AndroidBridge {
                                 stampVersion: BridgeV14.version)
             }
             return response(object, stampVersion: BridgeV14.version)
+        }
+        if requestVersion == BridgeV16.version {
+            // Additive C07 host-only data-exchange channel: backup/restore
+            // staging, bounded chunk transfer, portable note export and the
+            // restore journal. No model tool, V3 command, SAF/network grant
+            // or live database/WAL is copied. V1-V14 branches above remain
+            // byte-identical.
+            let object = C07DataExchangeBridge.handle(requestData: data,
+                                                      fallbackRequestID: requestID)
+            let encoded = (try? JSONSerialization.data(withJSONObject: object,
+                                                       options: [.sortedKeys]))
+                ?? Data(#"{"ok":false,"error":"encoding"}"#.utf8)
+            guard encoded.count <= C07DataExchangeWire.maximumResponseBytes else {
+                return response(["ok": false, "error": "responseTooLarge"],
+                                stampVersion: BridgeV16.version)
+            }
+            return response(object, stampVersion: BridgeV16.version)
         }
         switch request["operation"] as? String {
         case "handshake":

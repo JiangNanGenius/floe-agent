@@ -207,8 +207,16 @@ fun FloeComposer(
                         Modifier.widthIn(max = FloeLayout.ComposerMaxWidth)
                     }
                 )
+                // Shared iOS chrome material. With no live scene (component
+                // previews, old devices, SDK 31) this is the same opaque
+                // chromeSurface as before; with a real sibling scene Haze
+                // draws the actual backdrop behind the composer.
                 .clip(shape)
-                .background(colors.chromeSurface)
+                .floeMaterialSurface(
+                    level = FloeMaterialLevel.COMPOSER,
+                    shape = shape,
+                    fallbackColor = colors.chromeSurface,
+                )
                 .border(FloeLayout.ComposerStrokeWidth, colors.separator, shape),
         ) {
             Row(

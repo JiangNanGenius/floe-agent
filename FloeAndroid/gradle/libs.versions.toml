@@ -9,10 +9,14 @@ media3 = "1.11.1"
 # release page reviewed 2026-11-02); no dynamic version or Bitmap.compress fake.
 heifwriter = "1.1.0"
 compose-bom = "2026.09.00"
-activity = "1.11.0"
+# Haze 1.7.3 requires Activity 1.12.2; keep the shared direct pin aligned.
+activity = "1.12.2"
 core = "1.17.0"
 workmanager = "2.12.0"
 cupertino = "3.3.1"
+# Fixed Haze 1.7.3 tag/commit 671eda90f5b8e6e72ebc4fce7455353f581c77d9.
+# Real Haze source/effect material; no dynamic version and no global toolchain bump.
+haze = "1.7.3"
 # Official fixed Sora pin; no dynamic version or Apple-restricted assets.
 sora = "0.24.4"
 # UI rendering infrastructure (Main-accepted Option A, verified 2026-10-19):
@@ -46,6 +50,7 @@ compose-material = { module = "androidx.compose.material3:material3" }
 # the cupertino-adaptive module (Material fallback) and cupertino-icons-extended
 # (SF Symbols copyright risk) are deliberately NOT consumable coordinates here.
 cupertino = { module = "io.github.robinpcrd:cupertino", version.ref = "cupertino" }
+haze = { module = "dev.chrisbanes.haze:haze", version.ref = "haze" }
 junit = { module = "junit:junit", version.ref = "junit" }
 usb-serial = { module = "com.github.mik3y:usb-serial-for-android", version.ref = "usb-serial" }
 kotlinx-coroutines-core = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-core", version.ref = "coroutines" }

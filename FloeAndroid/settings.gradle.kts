@@ -90,6 +90,9 @@ include(":feature:mail")
 // CalendarContract client; :feature:calendar is presentation only.
 include(":core:calendar")
 include(":feature:calendar")
+// C07 manual backup/restore and document-package exchange presentation. The
+// App host owns SAF and the Swift bridge; Main generates this module's lock.
+include(":feature:dataexchange")
 include(":core:networkmonitor")
 include(":core:pcap")
 // C06 live capture: bounded PCAP/sink/state core plus the pinned NetBare

@@ -42,6 +42,7 @@ import com.floe.android.design.FloeIcons
 import com.floe.android.design.FloeLayout
 import com.floe.android.design.FloeStatusLine
 import com.floe.android.design.FloeText
+import com.floe.android.design.FloeToolbarIconButton
 import com.floe.android.design.IconGlyph
 import com.floe.android.designintegration.DesignExportPickerEffect
 import com.floe.android.designintegration.DesignTargetResolver
@@ -623,12 +624,10 @@ internal fun WorkspaceDocumentHeader(
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(6.dp),
     ) {
-        FloeCircleButton(
+        FloeToolbarIconButton(
             icon = FloeIcons.ChevronBack,
             contentDescription = stringResource(R.string.workspace_document_back_to_files),
             onClick = onBackToFiles,
-            visualSize = 34.dp,
-            iconSize = 16.dp,
             modifier = Modifier.testTag("workspace.documentBack"),
         )
         FloeText(
@@ -645,12 +644,10 @@ internal fun WorkspaceDocumentHeader(
                 onClick = onEdit,
             )
         }
-        FloeCircleButton(
+        FloeToolbarIconButton(
             icon = FloeIcons.Xmark,
             contentDescription = stringResource(R.string.close),
             onClick = onCloseTask,
-            visualSize = 34.dp,
-            iconSize = 15.dp,
         )
     }
 }

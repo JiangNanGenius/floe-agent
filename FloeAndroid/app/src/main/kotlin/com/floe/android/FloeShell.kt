@@ -35,6 +35,7 @@ import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.key
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.compositionLocalOf
@@ -59,6 +60,9 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.floe.android.design.Floe
+import com.floe.android.design.LocalFloeOverlayMaterial
+import com.floe.android.design.floeMaterialSource
+import com.floe.android.design.rememberFloeMaterialController
 import com.floe.android.design.FloeCheckboxRow
 import com.floe.android.design.FloeColors
 import com.floe.android.design.FloeDraftStore
@@ -104,22 +108,25 @@ fun FloeShell(
     onThemeModeChange: (FloeThemeMode) -> Unit,
 ) {
     val runtimeHost = rememberRuntimeHost()
-    // The shell renders with or without the runtime host; without it every
-    // G02 surface keeps its honest G01 unavailable state.
-    if (runtimeHost != null) {
-        RuntimeHostProvider(runtimeHost) {
+    val overlayMaterial = rememberFloeMaterialController()
+    CompositionLocalProvider(LocalFloeOverlayMaterial provides overlayMaterial) {
+        // The shell renders with or without the runtime host; without it every
+        // G02 surface keeps its honest G01 unavailable state.
+        if (runtimeHost != null) {
+            RuntimeHostProvider(runtimeHost) {
+                FloeShellContent(
+                    themeMode = themeMode,
+                    onThemeModeChange = onThemeModeChange,
+                    runtimeHost = runtimeHost,
+                )
+            }
+        } else {
             FloeShellContent(
                 themeMode = themeMode,
                 onThemeModeChange = onThemeModeChange,
-                runtimeHost = runtimeHost,
+                runtimeHost = null,
             )
         }
-    } else {
-        FloeShellContent(
-            themeMode = themeMode,
-            onThemeModeChange = onThemeModeChange,
-            runtimeHost = null,
-        )
     }
 }
 
@@ -450,6 +457,7 @@ private fun FloeShellContent(
     }
 
     val route: InspectorRoute? = inspectorRoute?.let { decodeInspectorRoute(it) }
+    val overlayMaterial = LocalFloeOverlayMaterial.current
 
     BoxWithConstraints(
         Modifier
@@ -838,7 +846,7 @@ private fun FloeShellContent(
         }
 
         if (persistentSidebar) {
-            Row(Modifier.fillMaxSize().statusBarsPadding()) {
+            Row(Modifier.fillMaxSize().statusBarsPadding().floeMaterialSource(overlayMaterial)) {
                 Box(
                     Modifier
                         .widthIn(FloeLayout.SidebarMinWidth, FloeLayout.SidebarMaxWidth)
@@ -868,7 +876,7 @@ private fun FloeShellContent(
                 }
             }
         } else {
-            Box(Modifier.fillMaxSize().statusBarsPadding()) {
+            Box(Modifier.fillMaxSize().statusBarsPadding().floeMaterialSource(overlayMaterial)) {
                 detail()
                 // Compact drawer: iOS phone idiom — width
                 // min(390, max(300, w-44)), rounded corner, slight scale of
@@ -907,7 +915,7 @@ private fun FloeShellContent(
             // persistent sidebar + readable content + inspector minimum
             // widths cannot coexist, the inspector takes a full-height
             // trailing overlay instead of squeezing content to near zero.
-            Box(Modifier.fillMaxSize().statusBarsPadding()) {
+            Box(Modifier.fillMaxSize().statusBarsPadding().floeMaterialSource(overlayMaterial, zIndex = 1f)) {
                 Box(
                     Modifier
                         .fillMaxSize()
@@ -967,7 +975,8 @@ private fun FloeShellContent(
             // only after the App integrator attaches a real presentation; the
             // PLAY flavour returns an empty list and imports no channel type.
             externalSections =
-                com.floe.android.host.settings.DistributionSettingsFeature.sections(),
+                com.floe.android.host.settings.DistributionSettingsFeature.sections() +
+                    listOf(com.floe.android.host.dataexchange.C07DataExchangeFeature.settingsSection(runtimeHost)),
         )
 
         // G05-R3 Alpha14: one self-update surface (full channel only; the

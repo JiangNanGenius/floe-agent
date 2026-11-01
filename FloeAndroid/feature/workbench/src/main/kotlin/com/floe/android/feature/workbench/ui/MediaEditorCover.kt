@@ -52,7 +52,7 @@ import com.floe.android.design.FloeActivityIndicator
 import com.floe.android.design.FloeBadgePill
 import com.floe.android.design.FloeBadgeTone
 import com.floe.android.design.FloeCapsuleAction
-import com.floe.android.design.FloeCircleButton
+import com.floe.android.design.FloeToolbarIconButton
 import com.floe.android.design.FloeConfirmDialog
 import com.floe.android.design.FloeDivider
 import com.floe.android.design.FloeIcons
@@ -176,7 +176,7 @@ internal fun MediaEditorCover(
                         title = editor.project.name,
                         background = Floe.colors.readingSurface,
                         navigation = {
-                            FloeCircleButton(
+                            FloeToolbarIconButton(
                                 icon = FloeIcons.ChevronBack,
                                 contentDescription = stringResource(R.string.media_back_to_library),
                                 onClick = requestClose,
@@ -196,8 +196,8 @@ internal fun MediaEditorCover(
                                 )
                             }
                             if (editor.isImageProject) {
-                                FloeCircleButton(
-                                    icon = FloeIcons.Wand,
+                                FloeToolbarIconButton(
+                                    icon = FloeIcons.Pencil,
                                     contentDescription = stringResource(
                                         if (drawMode) R.string.media_draw_stop else R.string.media_draw),
                                     onClick = { drawMode = !drawMode },
@@ -206,25 +206,25 @@ internal fun MediaEditorCover(
                                 )
                             }
                             if (editor.r2 != null) {
-                                FloeCircleButton(
+                                FloeToolbarIconButton(
                                     icon = FloeIcons.Wand,
                                     contentDescription = stringResource(R.string.media_r2_ai),
                                     onClick = { showAi = true },
                                 )
                                 if (session.agentAvailable) {
-                                    FloeCircleButton(
-                                        icon = FloeIcons.NewTask,
+                                    FloeToolbarIconButton(
+                                        icon = FloeIcons.ChatRole,
                                         contentDescription = stringResource(R.string.media_ask_ai),
                                         onClick = { showAskAi = true },
                                     )
                                 }
-                                FloeCircleButton(
-                                    icon = FloeIcons.ArrowUp,
+                                FloeToolbarIconButton(
+                                    icon = FloeIcons.Share,
                                     contentDescription = stringResource(R.string.media_r2_export),
                                     onClick = { showExport = true },
                                 )
                             }
-                            FloeCircleButton(
+                            FloeToolbarIconButton(
                                 icon = FloeIcons.Ellipsis,
                                 contentDescription = stringResource(R.string.media_more),
                                 onClick = { showMore = true },

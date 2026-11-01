@@ -573,6 +573,14 @@ let package = Package(
             "FloeCore", "GRDB", "ZIPFoundation",
             .product(name: "Crypto", package: "swift-crypto"),
         ], swiftSettings: [.swiftLanguageMode(.v6)]),
+        // C07 manual data exchange: typed backup manifest/archive staging,
+        // iOS-compatible .floenote reader/writer and the restore journal.
+        // Pure Foundation/Crypto/ZIPFoundation + the real shared FloeNotes
+        // types; no socket, UI, provider or second persistence authority.
+        .target(name: "FloeAndroidDataExchange", dependencies: [
+            "FloeNotes", "ZIPFoundation",
+            .product(name: "Crypto", package: "swift-crypto"),
+        ], swiftSettings: strictSettings),
         .target(name: "FloeAndroidJobTools", dependencies: [
             "FloeCore", "FloeModels", "FloeTools", "FloePersistence", "FloeAndroidShellTools",
             .product(name: "Crypto", package: "swift-crypto"),
@@ -701,6 +709,8 @@ let package = Package(
             // G06 independent Notes authority (one NotesStore per runtime
             // generation; no chat database dependency or incidental open).
             "FloeNotes",
+            // C07 data exchange domain/bindings and typed archive reader.
+            "FloeAndroidDataExchange",
             // G09-R1 creative media project store (seven portable original
             // FloeWorkbench files). Canvas files/asset references reuse the
             // already-linked FloeCore/FloePersistence authorities.
@@ -779,8 +789,15 @@ let package = Package(
         .testTarget(name: "FloeAndroidWorkbenchTests", dependencies: [
             "FloeAndroidWorkbench", "FloeCore",
         ], swiftSettings: strictSettings),
+        // C07 authored archive/staging/journal/Notes-compatibility suites.
+        .testTarget(name: "FloeAndroidDataExchangeTests", dependencies: [
+            "FloeAndroidDataExchange", "FloeNotes", "FloeCore", "ZIPFoundation",
+            .product(name: "Crypto", package: "swift-crypto"),
+        ], swiftSettings: strictSettings),
         .testTarget(name: "FloeAndroidCoreTests", dependencies: [
             "FloeBrowser", "FloeAndroidCore", "FloeSSH", "FloeVNC", "FloeAndroidMail",
+            "FloeAndroidDataExchange",
+            .product(name: "Crypto", package: "swift-crypto"),
             "FloeCore", "FloeModels", "FloePersistence", "GRDB",
             "FloeAndroidNetwork",
             "FloeWorkspace",

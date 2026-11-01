@@ -105,6 +105,8 @@ fun FloeCircleButton(
     background: Color = Floe.colors.chromeSurface,
     tint: Color = if (enabled) Floe.colors.label else Floe.colors.tertiaryLabel,
     hairline: Boolean = true,
+    /** Opt into the shared Haze chrome material; null keeps the opaque circle. */
+    materialLevel: FloeMaterialLevel? = null,
 ) {
     Box(
         modifier = modifier
@@ -120,11 +122,70 @@ fun FloeCircleButton(
         Box(
             modifier = Modifier
                 .size(visualSize)
-                .clip(CircleShape)
-                .background(if (enabled) background else background.copy(alpha = 0.6f))
+                .then(
+                    if (materialLevel != null && enabled) {
+                        Modifier.floeMaterialSurface(
+                            level = materialLevel,
+                            shape = CircleShape,
+                            fallbackColor = background,
+                        )
+                    } else {
+                        Modifier
+                            .clip(CircleShape)
+                            .background(if (enabled) background else background.copy(alpha = 0.6f))
+                    }
+                )
                 .then(if (hairline) Modifier.border(0.5.dp, Floe.colors.chromeHairline, CircleShape) else Modifier),
             contentAlignment = Alignment.Center,
         ) {
+            IconGlyph(icon, tint, iconSize)
+        }
+    }
+}
+
+/**
+ * Compact iOS navigation-bar glyph button: no permanent circle or pill, a
+ * 17dp licensed-role glyph centred in the real 48dp Android target. This is
+ * the shared control for toolbar action groups (the document/media header can
+ * have six visible actions); the previous default [FloeCircleButton] made
+ * each one a 44dp circle and read as a row of oversized pills.
+ */
+@Composable
+fun FloeToolbarIconButton(
+    icon: ImageVector,
+    contentDescription: String,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+    enabled: Boolean = true,
+    tint: Color = if (enabled) Floe.colors.label else Floe.colors.tertiaryLabel,
+    iconSize: Dp = FloeLayout.ToolbarCompactIconSize,
+    materialLevel: FloeMaterialLevel? = null,
+) {
+    Box(
+        modifier = modifier
+            .heightIn(min = FloeLayout.MinimumTarget)
+            .widthIn(min = FloeLayout.MinimumTarget)
+            .clickable(enabled = enabled, role = Role.Button, onClick = onClick)
+            .semantics {
+                this.contentDescription = contentDescription
+                if (!enabled) disabled()
+            },
+        contentAlignment = Alignment.Center,
+    ) {
+        if (materialLevel != null && enabled) {
+            Box(
+                modifier = Modifier
+                    .size(FloeLayout.ToolbarCompactVisualSize)
+                    .floeMaterialSurface(
+                        level = materialLevel,
+                        shape = CircleShape,
+                        fallbackColor = Floe.colors.chromeSurface,
+                    ),
+                contentAlignment = Alignment.Center,
+            ) {
+                IconGlyph(icon, tint, iconSize)
+            }
+        } else {
             IconGlyph(icon, tint, iconSize)
         }
     }
@@ -161,8 +222,18 @@ fun FloeToolbar(
     actions: (@Composable RowScope.() -> Unit)? = null,
     background: Color = Color.Transparent,
     showHairline: Boolean = false,
+    materialLevel: FloeMaterialLevel? = null,
 ) {
-    Column(modifier.background(background)) {
+    Column(
+        modifier = if (materialLevel != null) {
+            modifier.floeMaterialSurface(
+                level = materialLevel,
+                fallbackColor = background,
+            )
+        } else {
+            modifier.background(background)
+        },
+    ) {
         Layout(
             modifier = Modifier
                 .fillMaxWidth()

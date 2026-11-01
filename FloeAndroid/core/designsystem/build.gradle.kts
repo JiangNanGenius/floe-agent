@@ -14,6 +14,10 @@ dependencies {
     // Explicit iOS-style substrate. Pages consume the Floe wrappers in this
     // module; raw Cupertino is kept out of feature code so the seam stays swappable.
     api(libs.cupertino)
+    // Haze types are part of FloeMaterialController/LocalFloeMaterial's public
+    // design-system surface, so this is an `api` dependency rather than an
+    // implementation detail. Fixed 1.7.3; Main owns locks/verification.
+    api(libs.haze)
     implementation(libs.androidx.activity.compose)
     testImplementation(libs.junit)
 }

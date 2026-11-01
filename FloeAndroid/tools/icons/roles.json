@@ -274,6 +274,36 @@
       "ios": "ellipsis",
       "caller": "WorkspaceFilesPane compact toolbar More trigger (iOS ellipsis.circle: FileInspectorView.swift:320 workspaceActions, FilePreviewView.swift:841 file.preview.more; circle chrome drawn by FloeCircleButton)",
       "new": true
+    },
+    {
+      "key": "share",
+      "floeVal": "Share",
+      "ios": "square.and.arrow.up",
+      "caller": "FilePreviewView.swift toolbar Share / MediaEditorCover export"
+    },
+    {
+      "key": "film",
+      "floeVal": "Film",
+      "ios": "film",
+      "caller": "MediaEditorCover video affordance"
+    },
+    {
+      "key": "compass",
+      "floeVal": "Compass",
+      "ios": "safari",
+      "caller": "FilePreviewView html Preview Website (approx: no safari glyph in cupertino_icons 2.0.0)"
+    },
+    {
+      "key": "fullscreen_exit",
+      "floeVal": "Expand",
+      "ios": "arrow.up.left.and.arrow.down.right",
+      "caller": "FilePreviewView full screen / WorkspaceDocumentPreview expand"
+    },
+    {
+      "key": "doc_richtext",
+      "floeVal": "Document",
+      "ios": "doc.richtext",
+      "caller": "binary/typed document placeholder"
     }
   ],
   "fallback": [

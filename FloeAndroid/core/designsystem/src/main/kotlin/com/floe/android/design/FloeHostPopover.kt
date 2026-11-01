@@ -22,7 +22,6 @@
 package com.floe.android.design
 
 import androidx.compose.foundation.Canvas
-import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -35,7 +34,6 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
@@ -99,6 +97,9 @@ fun FloeHostPopoverCard(
     val scrollState = rememberScrollState()
     val shape = RoundedCornerShape(FloeLayout.SettingsSheetCorner)
     val surfaceColor: Color = Floe.colors.groupedSurface
+    // Capture the composition-scoped controller before entering the Popup
+    // window; the same Haze state then spans the main window and the popup.
+    val material = LocalFloeOverlayMaterial.current ?: LocalFloeMaterial.current
     val positionProvider = remember(geometry, resolvedMetrics) {
         FloeHostPopoverPositionProvider(geometry, resolvedMetrics)
     }
@@ -119,8 +120,12 @@ fun FloeHostPopoverCard(
                     modifier = modifier
                         .width(widthDp)
                         .shadow(elevation = 20.dp, shape = shape, clip = false)
-                        .clip(shape)
-                        .background(surfaceColor),
+                        .floeMaterialSurface(
+                            level = FloeMaterialLevel.POPOVER,
+                            shape = shape,
+                            controller = material,
+                            fallbackColor = surfaceColor,
+                        ),
                 ) {
                     Column(
                         modifier = Modifier

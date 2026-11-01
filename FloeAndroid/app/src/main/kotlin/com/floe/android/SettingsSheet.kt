@@ -54,7 +54,6 @@ import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import com.floe.android.design.Floe
-import com.floe.android.design.FloeCircleButton
 import com.floe.android.design.FloeDivider
 import com.floe.android.design.FloeIcons
 import com.floe.android.design.FloeLayout
@@ -66,6 +65,7 @@ import com.floe.android.design.FloeSettingsSection
 import com.floe.android.design.FloeSettingsHostGeometry
 import com.floe.android.design.FloeSidebarRow
 import com.floe.android.design.FloeText
+import com.floe.android.design.FloeToolbarIconButton
 import com.floe.android.design.FloeThemeMode
 import com.floe.android.design.FloeValueRow
 import com.floe.android.design.FloeVerticalDivider
@@ -502,13 +502,11 @@ private fun SettingsSidebarHeader(onToggleColumns: () -> Unit, onDone: () -> Uni
             modifier = Modifier.weight(1f),
         )
         FloeDoneButton(onDone)
-        FloeCircleButton(
+        FloeToolbarIconButton(
             icon = FloeIcons.SidebarToggle,
             contentDescription = stringResource(R.string.toggle_sheet_columns),
             onClick = onToggleColumns,
-            visualSize = 38.dp,
-            iconSize = 20.dp,
-            modifier = Modifier.padding(start = 8.dp),
+            modifier = Modifier.padding(start = 4.dp),
         )
     }
 }
@@ -534,12 +532,10 @@ private fun SettingsDetailHeader(
             modifier = Modifier.weight(1f),
         )
         if (showColumnToggle) {
-            FloeCircleButton(
+            FloeToolbarIconButton(
                 icon = FloeIcons.SidebarToggle,
                 contentDescription = stringResource(R.string.toggle_sheet_columns),
                 onClick = onToggleColumns,
-                visualSize = 38.dp,
-                iconSize = 20.dp,
             )
         }
     }
@@ -561,14 +557,10 @@ private fun SheetToolbar(
         verticalAlignment = Alignment.CenterVertically,
     ) {
         if (compactDetail) {
-            FloeCircleButton(
+            FloeToolbarIconButton(
                 icon = FloeIcons.ChevronBack,
                 contentDescription = stringResource(R.string.back),
                 onClick = onBack,
-                visualSize = 38.dp,
-                iconSize = 18.dp,
-                background = Color.Transparent,
-                hairline = false,
                 modifier = Modifier.padding(end = 2.dp),
             )
         }

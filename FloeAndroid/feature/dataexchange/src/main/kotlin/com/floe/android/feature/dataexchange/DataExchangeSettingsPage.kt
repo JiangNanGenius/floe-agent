@@ -1,0 +1,567 @@
+// SPDX-License-Identifier: MPL-2.0
+//
+// C07 reachable settings surface. Presentation only: backup bytes, restore
+// staging, archive validation, journals, project/note/settings writes and SAF
+// IO are App-host/Swift authority. Copy states the real scope and never claims
+// a cloud, provider or two-device sync path.
+package com.floe.android.feature.dataexchange
+
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.width
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.unit.dp
+import com.floe.android.design.Floe
+import com.floe.android.design.FloeActivityIndicator
+import com.floe.android.design.FloeConfirmDialog
+import com.floe.android.design.FloeCapsuleAction
+import com.floe.android.design.FloeDivider
+import com.floe.android.design.FloePrimaryAction
+import com.floe.android.design.FloeSettingsSectionCard
+import com.floe.android.design.FloeText
+import io.github.robinpcrd.cupertino.section.SectionItem
+
+@Composable
+public fun DataExchangeSettingsPage(
+    state: DataExchangeUiState,
+    onCreateBackup: () -> Unit,
+    onCancelBackup: () -> Unit,
+    onPickRestore: () -> Unit,
+    onPickNoteImport: () -> Unit,
+    onConfirmRestore: () -> Unit,
+    onCancelRestore: () -> Unit,
+    onRecover: () -> Unit,
+    onRefresh: () -> Unit,
+    onDismissStatus: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    var confirm by remember(state.plan) { mutableStateOf(false) }
+    Column(
+        modifier = modifier.fillMaxWidth(),
+        verticalArrangement = Arrangement.spacedBy(16.dp),
+    ) {
+        if (!state.coreReady) {
+            FloeSettingsSectionCard(title = stringResource(R.string.dataexchange_title)) {
+                SectionItem(title = {
+                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        if (state.loading) {
+                            Row(verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
+                                FloeActivityIndicator()
+                                Spacer(Modifier.width(10.dp))
+                                FloeText(stringResource(R.string.dataexchange_checking))
+                            }
+                        } else {
+                            FloeText(
+                                stringResource(R.string.dataexchange_unavailable_body),
+                                style = Floe.typography.metadata,
+                                color = Floe.colors.secondaryLabel,
+                            )
+                            state.errorCode?.let { code ->
+                                FloeText(
+                                    errorCopy(code),
+                                    style = Floe.typography.metadata,
+                                    color = Floe.colors.destructive,
+                                )
+                            }
+                            FloeCapsuleAction(
+                                label = stringResource(R.string.dataexchange_retry),
+                                onClick = onRefresh,
+                            )
+                        }
+                    }
+                })
+            }
+            return@Column
+        }
+
+        FloeSettingsSectionCard(title = stringResource(R.string.dataexchange_scope_title)) {
+            SectionItem(title = {
+                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    FloeText(
+                        stringResource(R.string.dataexchange_scope_body),
+                        style = Floe.typography.metadata,
+                        color = Floe.colors.secondaryLabel,
+                    )
+                    FloeDivider()
+                    FloeText(
+                        stringResource(R.string.dataexchange_included),
+                        style = Floe.typography.bodyEmphasized,
+                    )
+                    Bullet(stringResource(R.string.dataexchange_included_projects))
+                    Bullet(stringResource(R.string.dataexchange_included_retained))
+                    Bullet(stringResource(R.string.dataexchange_included_notes))
+                    Bullet(stringResource(R.string.dataexchange_included_settings))
+                    FloeText(
+                        stringResource(R.string.dataexchange_floecad_note),
+                        style = Floe.typography.metadata,
+                        color = Floe.colors.secondaryLabel,
+                    )
+                    FloeText(
+                        stringResource(R.string.dataexchange_note_export_hint),
+                        style = Floe.typography.metadata,
+                        color = Floe.colors.secondaryLabel,
+                    )
+                    FloeDivider()
+                    FloeText(
+                        stringResource(R.string.dataexchange_excluded),
+                        style = Floe.typography.bodyEmphasized,
+                    )
+                    FloeText(
+                        stringResource(R.string.dataexchange_excluded_body),
+                        style = Floe.typography.metadata,
+                        color = Floe.colors.secondaryLabel,
+                    )
+                    state.capabilities?.excluded?.forEach { item ->
+                        FloeText(
+                            "• " + excludedCopy(item.id),
+                            style = Floe.typography.metadata,
+                            color = Floe.colors.secondaryLabel,
+                        )
+                    }
+                    FloeText(
+                        stringResource(
+                            R.string.dataexchange_no_database,
+                            state.capabilities?.formatVersion ?: 1,
+                            state.capabilities?.backupExtension ?: "floebackup",
+                        ),
+                        style = Floe.typography.metadata,
+                        color = Floe.colors.secondaryLabel,
+                    )
+                }
+            })
+        }
+
+        FloeSettingsSectionCard(title = stringResource(R.string.dataexchange_backup_title)) {
+            SectionItem(title = {
+                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    FloeText(
+                        stringResource(R.string.dataexchange_backup_body),
+                        style = Floe.typography.metadata,
+                        color = Floe.colors.secondaryLabel,
+                    )
+                    if (state.phase == DataExchangePhase.BACKING_UP) {
+                        ProgressRow(state)
+                        FloeCapsuleAction(
+                            label = stringResource(R.string.dataexchange_cancel),
+                            onClick = onCancelBackup,
+                        )
+                    } else {
+                        FloePrimaryAction(
+                            label = stringResource(R.string.dataexchange_backup_action),
+                            onClick = onCreateBackup,
+                            enabled = !state.busy &&
+                                state.phase != DataExchangePhase.REVIEWING,
+                        )
+                    }
+                    state.backupBytes?.let { bytes ->
+                        FloeText(
+                            stringResource(R.string.dataexchange_backup_saved, bytes),
+                            style = Floe.typography.metadata,
+                            color = Floe.colors.secondaryLabel,
+                        )
+                    }
+                    state.backupSha256?.let { sha ->
+                        FloeText(
+                            stringResource(R.string.dataexchange_backup_hash, sha.take(16)),
+                            style = Floe.typography.evidence,
+                            color = Floe.colors.secondaryLabel,
+                        )
+                    }
+                    if (state.backupWarnings.isNotEmpty()) {
+                        FloeDivider()
+                        FloeText(
+                            stringResource(
+                                R.string.dataexchange_backup_warnings,
+                                state.backupWarnings.size,
+                            ),
+                            style = Floe.typography.metadata,
+                            color = Floe.colors.destructive,
+                        )
+                        state.backupWarnings.take(6).forEach { warning ->
+                            FloeText(
+                                "• " + warning,
+                                style = Floe.typography.evidence,
+                                color = Floe.colors.secondaryLabel,
+                            )
+                        }
+                    }
+                }
+            })
+        }
+
+        FloeSettingsSectionCard(title = stringResource(R.string.dataexchange_restore_title)) {
+            SectionItem(title = {
+                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    FloeText(
+                        stringResource(R.string.dataexchange_restore_body),
+                        style = Floe.typography.metadata,
+                        color = Floe.colors.secondaryLabel,
+                    )
+                    if (state.phase == DataExchangePhase.INSPECTING) {
+                        ProgressRow(state)
+                        FloeCapsuleAction(
+                            label = stringResource(R.string.dataexchange_cancel),
+                            onClick = onCancelRestore,
+                        )
+                    } else if (state.phase == DataExchangePhase.REVIEWING) {
+                        state.plan?.let { plan ->
+                            PlanReview(plan, state.importMode)
+                            FloeDivider()
+                            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                                FloePrimaryAction(
+                                    label = if (state.importMode) {
+                                        stringResource(R.string.dataexchange_import_confirm)
+                                    } else {
+                                        stringResource(R.string.dataexchange_restore_confirm)
+                                    },
+                                    onClick = { confirm = true },
+                                    enabled = !state.busy,
+                                    modifier = Modifier.weight(1f),
+                                )
+                                FloeCapsuleAction(
+                                    label = stringResource(R.string.dataexchange_cancel),
+                                    onClick = onCancelRestore,
+                                )
+                            }
+                        }
+                    } else if (state.phase == DataExchangePhase.RESTORING) {
+                        ProgressRow(state)
+                        FloeCapsuleAction(
+                            label = stringResource(R.string.dataexchange_cancel),
+                            onClick = onCancelRestore,
+                        )
+                    } else {
+                        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                            FloePrimaryAction(
+                                label = stringResource(R.string.dataexchange_restore_action),
+                                onClick = onPickRestore,
+                                enabled = !state.busy,
+                                modifier = Modifier.weight(1f),
+                            )
+                            FloeCapsuleAction(
+                                label = stringResource(R.string.dataexchange_import_note_action),
+                                onClick = onPickNoteImport,
+                                enabled = !state.busy,
+                            )
+                        }
+                    }
+                }
+            })
+        }
+
+        if (state.pendingRecoveries > 0) {
+            FloeSettingsSectionCard(title = stringResource(R.string.dataexchange_recovery_title)) {
+                SectionItem(title = {
+                    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                        FloeText(
+                            stringResource(
+                                R.string.dataexchange_recovery_body,
+                                state.pendingRecoveries,
+                            ),
+                            style = Floe.typography.metadata,
+                            color = Floe.colors.secondaryLabel,
+                        )
+                        FloePrimaryAction(
+                            label = stringResource(R.string.dataexchange_recovery_action),
+                            onClick = onRecover,
+                            enabled = !state.busy,
+                        )
+                    }
+                })
+            }
+        }
+
+        state.receipt?.let { receipt ->
+            FloeSettingsSectionCard(title = stringResource(R.string.dataexchange_result_title)) {
+                SectionItem(title = {
+                    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        FloeText(
+                            if (receipt.isEmpty) {
+                                stringResource(R.string.dataexchange_result_empty)
+                            } else {
+                                stringResource(R.string.dataexchange_result_body)
+                            },
+                            style = Floe.typography.metadata,
+                            color = Floe.colors.secondaryLabel,
+                        )
+                        FloeText(
+                            stringResource(
+                                R.string.dataexchange_result_counts,
+                                receipt.projects,
+                                receipt.noteDocuments,
+                                receipt.notebooks,
+                                receipt.settings,
+                            ),
+                            style = Floe.typography.metadata,
+                        )
+                        if (receipt.skippedProjects > 0) {
+                            FloeText(
+                                stringResource(
+                                    R.string.dataexchange_result_skipped,
+                                    receipt.skippedProjects,
+                                ),
+                                style = Floe.typography.metadata,
+                                color = Floe.colors.secondaryLabel,
+                            )
+                        }
+                        if (receipt.noteDocuments > 0) {
+                            FloeText(
+                                stringResource(R.string.dataexchange_result_notes_hint),
+                                style = Floe.typography.metadata,
+                                color = Floe.colors.secondaryLabel,
+                            )
+                        }
+                        state.resultWarnings.take(6).forEach { warning ->
+                            FloeText(
+                                "• " + warning,
+                                style = Floe.typography.evidence,
+                                color = Floe.colors.secondaryLabel,
+                            )
+                        }
+                    }
+                })
+            }
+        }
+
+        state.errorCode?.let { code ->
+            FloeSettingsSectionCard(title = stringResource(R.string.dataexchange_error_title)) {
+                SectionItem(title = {
+                    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        FloeText(
+                            errorCopy(code),
+                            style = Floe.typography.metadata,
+                            color = Floe.colors.destructive,
+                        )
+                        FloeText(
+                            code,
+                            style = Floe.typography.evidence,
+                            color = Floe.colors.secondaryLabel,
+                        )
+                        FloeCapsuleAction(
+                            label = stringResource(R.string.dataexchange_error_dismiss),
+                            onClick = onDismissStatus,
+                        )
+                    }
+                })
+            }
+        }
+
+        state.noticeCode?.let { code ->
+            FloeSettingsSectionCard(title = stringResource(R.string.dataexchange_result_title)) {
+                SectionItem(title = {
+                    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        FloeText(
+                            noticeCopy(code),
+                            style = Floe.typography.metadata,
+                            color = Floe.colors.secondaryLabel,
+                        )
+                        FloeCapsuleAction(
+                            label = stringResource(R.string.dataexchange_error_dismiss),
+                            onClick = onDismissStatus,
+                        )
+                    }
+                })
+            }
+        }
+    }
+
+    if (confirm) state.plan?.let { plan ->
+        FloeConfirmDialog(
+            title = stringResource(
+                if (state.importMode) R.string.dataexchange_import_title
+                else R.string.dataexchange_restore_title_confirm,
+            ),
+            message = if (state.importMode) {
+                stringResource(
+                    R.string.dataexchange_import_message,
+                    plan.noteDocuments,
+                    plan.noteResources,
+                )
+            } else {
+                stringResource(
+                    R.string.dataexchange_restore_message,
+                    plan.projects,
+                    plan.projectFiles,
+                    plan.noteDocuments,
+                    plan.settingsKeys,
+                )
+            },
+            confirmLabel = stringResource(R.string.dataexchange_confirm),
+            dismissLabel = stringResource(R.string.dataexchange_cancel),
+            onConfirm = {
+                confirm = false
+                onConfirmRestore()
+            },
+            onDismiss = { confirm = false },
+        )
+    }
+}
+
+@Composable
+private fun Bullet(text: String) {
+    FloeText(
+        "• " + text,
+        style = Floe.typography.metadata,
+        color = Floe.colors.secondaryLabel,
+    )
+}
+
+@Composable
+private fun ProgressRow(state: DataExchangeUiState) {
+    Row(verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
+        FloeActivityIndicator()
+        Spacer(Modifier.width(10.dp))
+        val text = if (state.progressTotal > 0) {
+            stringResource(
+                R.string.dataexchange_progress,
+                state.progressDone,
+                state.progressTotal,
+            )
+        } else {
+            stringResource(R.string.dataexchange_working)
+        }
+        FloeText(text, style = Floe.typography.metadata, color = Floe.colors.secondaryLabel)
+    }
+}
+
+@Composable
+private fun PlanReview(plan: DataExchangePlanUi, importMode: Boolean) {
+    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        if (!importMode) {
+            FloeText(
+                stringResource(
+                    R.string.dataexchange_plan_projects,
+                    plan.projects,
+                    plan.projectFiles,
+                ),
+                style = Floe.typography.metadata,
+            )
+        }
+        FloeText(
+            stringResource(
+                R.string.dataexchange_plan_notes,
+                plan.noteDocuments,
+                plan.noteResources,
+                plan.notebooks,
+            ),
+            style = Floe.typography.metadata,
+        )
+        if (!importMode) {
+            FloeText(
+                stringResource(R.string.dataexchange_plan_settings, plan.settingsKeys),
+                style = Floe.typography.metadata,
+            )
+            if (plan.providerAdvisories > 0) {
+                FloeText(
+                    stringResource(
+                        R.string.dataexchange_plan_providers,
+                        plan.providerAdvisories,
+                    ),
+                    style = Floe.typography.metadata,
+                    color = Floe.colors.secondaryLabel,
+                )
+            }
+        }
+        if (plan.trashedNotesExcluded > 0) {
+            FloeText(
+                stringResource(
+                    R.string.dataexchange_plan_trash,
+                    plan.trashedNotesExcluded,
+                ),
+                style = Floe.typography.metadata,
+                color = Floe.colors.secondaryLabel,
+            )
+        }
+        if (plan.skippedProjects > 0) {
+            FloeText(
+                stringResource(R.string.dataexchange_plan_skipped, plan.skippedProjects),
+                style = Floe.typography.metadata,
+                color = Floe.colors.destructive,
+            )
+        }
+        if (plan.warnings.isNotEmpty()) {
+            FloeText(
+                stringResource(
+                    R.string.dataexchange_plan_warnings,
+                    plan.warnings.size,
+                ),
+                style = Floe.typography.metadata,
+                color = Floe.colors.secondaryLabel,
+            )
+            plan.warnings.take(6).forEach { warning ->
+                FloeText(
+                    "• " + warning,
+                    style = Floe.typography.evidence,
+                    color = Floe.colors.secondaryLabel,
+                )
+            }
+        }
+        FloeText(
+            stringResource(R.string.dataexchange_plan_new_copies),
+            style = Floe.typography.metadata,
+            color = Floe.colors.secondaryLabel,
+        )
+    }
+}
+
+@Composable
+private fun excludedCopy(id: String): String = when (id) {
+    "appDatabase" -> stringResource(R.string.dataexchange_excluded_database)
+    "notesDatabase" -> stringResource(R.string.dataexchange_excluded_notes_database)
+    "credentials" -> stringResource(R.string.dataexchange_excluded_credentials)
+    "deviceKeys" -> stringResource(R.string.dataexchange_excluded_device_keys)
+    "sessionSecrets" -> stringResource(R.string.dataexchange_excluded_sessions)
+    "cookies" -> stringResource(R.string.dataexchange_excluded_cookies)
+    "approvalGrants" -> stringResource(R.string.dataexchange_excluded_grants)
+    "conversationsAndRuns" -> stringResource(R.string.dataexchange_excluded_chats)
+    "runOutputs" -> stringResource(R.string.dataexchange_excluded_outputs)
+    "privateTaskWorkspaces" -> stringResource(R.string.dataexchange_excluded_tasks)
+    "externalWorkspaceRoots" -> stringResource(R.string.dataexchange_excluded_external)
+    "systemPersonalData" -> stringResource(R.string.dataexchange_excluded_system)
+    "canvasMediaProjects" -> stringResource(R.string.dataexchange_excluded_canvas)
+    "captureArtifacts" -> stringResource(R.string.dataexchange_excluded_capture)
+    "environmentsAndCaches" -> stringResource(R.string.dataexchange_excluded_environments)
+    "trash" -> stringResource(R.string.dataexchange_excluded_trash)
+    else -> id
+}
+
+@Composable
+private fun errorCopy(code: String): String = when (code) {
+    "freeSpaceInsufficient" -> stringResource(R.string.dataexchange_error_space)
+    "hashMismatch", "sizeMismatch" -> stringResource(R.string.dataexchange_error_hash)
+    "corruptArchive" -> stringResource(R.string.dataexchange_error_corrupt)
+    "unsupportedVersion", "unsupportedFormat" -> stringResource(R.string.dataexchange_error_version)
+    "invalidManifest", "invalidScope", "invalidFormat",
+    "entryTooLarge", "totalTooLarge", "tooManyEntries" ->
+        stringResource(R.string.dataexchange_error_manifest)
+    "unsafePath", "duplicateEntry", "caseCollision", "symlinkUnsupported" ->
+        stringResource(R.string.dataexchange_error_unsafe)
+    "notesArchive" -> stringResource(R.string.dataexchange_error_notes)
+    "receiptMismatch" -> stringResource(R.string.dataexchange_error_hash)
+    "bridgeUnavailable" -> stringResource(R.string.dataexchange_error_storage)
+    "cancelled" -> stringResource(R.string.dataexchange_error_cancelled)
+    "restoreIncomplete", "rollbackFailed" -> stringResource(R.string.dataexchange_error_recovery)
+    "storageUnavailable" -> stringResource(R.string.dataexchange_error_storage)
+    "timedOut" -> stringResource(R.string.dataexchange_error_timeout)
+    else -> stringResource(R.string.dataexchange_error_unknown)
+}
+
+@Composable
+private fun noticeCopy(code: String): String = when (code) {
+    "backupSaved" -> stringResource(R.string.dataexchange_notice_backup_saved)
+    "restored" -> stringResource(R.string.dataexchange_notice_restored)
+    "imported" -> stringResource(R.string.dataexchange_notice_imported)
+    "recovered" -> stringResource(R.string.dataexchange_notice_recovered)
+    "cancelled" -> stringResource(R.string.dataexchange_notice_cancelled)
+    "partialFile" -> stringResource(R.string.dataexchange_notice_partial)
+    else -> code
+}

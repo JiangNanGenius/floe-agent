@@ -953,13 +953,35 @@ public enum C06CalendarBridge {
                 limit: limit,
                 offset: offset
             )
-            return [
-                "todos": page.rows.map { todoJSON($0, includeNotes: false, listRow: true) },
-                "total": page.total,
-                "offset": offset,
-                "includeCompleted": include,
-            ]
+            return todoListProjection(rows: page.rows, total: page.total,
+                                      offset: offset, includeCompleted: include)
         }
+    }
+
+    /// Page by actual serialized bytes, not merely the requested row count.
+    /// The host advances by emitted rows, keeping every retained todo reachable.
+    static func todoListProjection(rows: [C06TodoRecord], total: Int, offset: Int,
+                                   includeCompleted: Bool) -> [String: Any] {
+        // Reserve the complete response envelope, correlation ID and version.
+        let rowBudget = C06CalendarWire.maximumResponseBytes - 2_048
+        var values: [[String: Any]] = []
+        var bytes = 0
+        for record in rows {
+            let value = todoJSON(record, includeNotes: false, listRow: true)
+            guard let encoded = try? JSONSerialization.data(withJSONObject: value,
+                                                            options: [.sortedKeys]),
+                  bytes + encoded.count + 1 <= rowBudget else { break }
+            values.append(value)
+            bytes += encoded.count + 1
+        }
+        let next = offset + values.count
+        return [
+            "todos": values,
+            "total": total,
+            "offset": offset,
+            "includeCompleted": includeCompleted,
+            "nextOffset": next < total && !values.isEmpty ? next as Any : NSNull(),
+        ]
     }
 
     private static func todoGet(_ object: [String: Any]) throws -> @Sendable () async throws -> [String: Any] {

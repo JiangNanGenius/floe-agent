@@ -15,6 +15,7 @@ license texts or the final distribution source/notice obligations.
 | AndroidX Ink 1.0.0 (`ink-authoring`, `ink-brush`, `ink-geometry`, `ink-nativeloader`, `ink-rendering`, `ink-storage`, `ink-strokes`), graphics-core 1.0.4 and espresso-idling-resource 3.5.0 (upstream runtime dependency) | https://android.googlesource.com/platform/frameworks/support/ | Apache-2.0; license and pinned provenance in `core/notesmedia/licenses/ink/` |
 | kotlinx.coroutines | https://github.com/Kotlin/kotlinx.coroutines | Apache-2.0 |
 | Compose Cupertino 3.3.1 (selected for the G01 UI foundation) | https://github.com/RobinPcrd/compose-cupertino/tree/3.3.1 | Apache-2.0; retain upstream NOTICE and contributor lineage |
+| Haze 1.7.3 (`dev.chrisbanes.haze:haze`, Android AAR) — real backdrop blur for shared chrome | https://github.com/chrisbanes/haze/tree/1.7.3 | Apache-2.0, copyright Christopher Banes and the Haze project contributors; full text at `licenses/haze/LICENSE` and `assets/legal/haze/LICENSE`; pins/hashes in `licenses/haze/PROVENANCE.json` |
 | Cupertino Icons font 2.0.0 — source-derived vector glyph data only (generated ImageVector paths; the font binary is not shipped and is not a runtime dependency) | https://github.com/flutter/packages/tree/main/third_party/packages/cupertino_icons | MIT; copyright per the shipped license ("Copyright (c) 2016 Vladimir Kharlampidi"), full text bundled at `assets/legal/cupertino-icons/LICENSE`; pinned inputs and hashes in `FloeAndroid/licenses/cupertino-icons/PROVENANCE.json` |
 | commonmark-java 0.30.1 (`org.commonmark:commonmark`, `commonmark-ext-gfm-tables`, `commonmark-ext-gfm-strikethrough`) — pure-JVM Markdown parse adapter for the conversation rich-body projection | https://github.com/atlassian/commonmark-java | BSD-2-Clause; copyright per the shipped license ("Copyright (c) 2015, Atlassian Pty Ltd"), full text preserved at `FloeAndroid/licenses/commonmark/LICENSE.txt` (extracted from the pinned jar's `META-INF/LICENSE.txt`) |
 | Sora Editor 0.24.4 (`io.github.rosemoe:editor`) | https://github.com/Rosemoe/sora-editor/tree/0.24.4 | LGPL-2.1; retain per-file version notices. Exact text and source provenance are preserved at `FloeAndroid/licenses/sora-editor/`. |
@@ -35,6 +36,16 @@ cross-compilation Swift host toolchain are development tools and are not copied
 into the APK. G01 does not bundle Termux, LibreOffice, CAD kernels, root managers
 or any local LLM. Future goals must add the corresponding exact upstream notices
 and source obligations when they integrate those components.
+
+### Haze backdrop material
+
+Haze 1.7.3 is pinned to tag `1.7.3` / commit
+`671eda90f5b8e6e72ebc4fce7455353f581c77d9`. It supplies the real
+source/effect blur used by `FloeMaterial.kt`; no translucent-alpha substitute
+is presented as blur. The Apache-2.0 text is retained at
+`licenses/haze/LICENSE` and bundled at `assets/legal/haze/LICENSE`, with the
+artifact hashes and API readback recorded in `licenses/haze/PROVENANCE.json`.
+SDK 31 and older keep the opaque readable fallback.
 
 The Cupertino selection excludes `cupertino-icons-extended`: its original README
 separately identifies the SF Symbols artwork as copyrighted. Floe ships none of that

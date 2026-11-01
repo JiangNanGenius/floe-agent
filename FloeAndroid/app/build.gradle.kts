@@ -503,6 +503,9 @@ dependencies {
     // C06 system-calendar provider access and Calendar/Todo presentation.
     implementation(project(":core:calendar"))
     implementation(project(":feature:calendar"))
+    // C07 backup/restore and document-package presentation; the App-owned
+    // data-exchange controller owns SAF and the trusted bridge.
+    implementation(project(":feature:dataexchange"))
     implementation(project(":core:credentials"))
     implementation(project(":core:designsystem"))
     implementation(project(":core:swiftbridge"))

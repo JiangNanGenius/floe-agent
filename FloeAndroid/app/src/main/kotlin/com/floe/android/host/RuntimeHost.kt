@@ -12,6 +12,7 @@ import com.floe.android.host.cad.C04CadViewerController
 import com.floe.android.host.mail.C06BrokerMailLanGate
 import com.floe.android.host.mail.C06MailHostController
 import com.floe.android.host.calendar.C06CalendarHostController
+import com.floe.android.host.dataexchange.C07DataExchangeHostController
 import com.floe.android.host.remote.C05BrokerLocalNetworkGate
 import com.floe.android.host.devicecommunication.C05BrokerDeviceLanGate
 import com.floe.android.host.devicecommunication.C05DevicesHostController
@@ -199,6 +200,24 @@ class RuntimeHost internal constructor(
     }
     internal val c06Calendar: C06CalendarHostController
         get() = c06CalendarDelegate.value
+
+    /**
+     * C07 Application-owned manual data exchange. It owns no archive bytes:
+     * SAF source/destination, bounded chunk streaming and the read-back
+     * receipt live here; staging, manifest validation, hashing and the
+     * restore journal live in the trusted Swift domain. App-scoped so a
+     * download/restore does not belong to a dismissed view.
+     */
+    private val c07DataExchangeDelegate = lazy {
+        C07DataExchangeHostController(
+            context = appContext,
+            scope = scope,
+            currentNativeEpoch = ::nativeRootEpoch,
+            ioDispatcher = ioDispatcher,
+        )
+    }
+    internal val c07DataExchange: C07DataExchangeHostController
+        get() = c07DataExchangeDelegate.value
     internal var workspaceGitTrust: G04GitTrustController? = null
     internal var workspaceTerminal: G04TerminalHostController? = null
 
@@ -521,6 +540,18 @@ class RuntimeHost internal constructor(
         } else {
             true
         }
+
+    /**
+     * Root-stop gate for C07: cancel an in-flight SAF read/write and the
+     * native job. Staged files are app-private; the durable restore journal
+     * remains for the next generation's explicit recovery action.
+     */
+    internal suspend fun prepareC07DataExchangeForRootStop(): Boolean {
+        if (c07DataExchangeDelegate.isInitialized()) {
+            c07DataExchange.onRootStopped()
+        }
+        return true
+    }
 
     internal var workspaceSourceHost: WorkspaceSourceHostController? = null
     /** D04 owned run-output lane (list / verified Save Copy / Office egress
@@ -848,6 +879,11 @@ class RuntimeHost internal constructor(
                 // not been opened (configured model calendar tools need it);
                 // it performs no provider query until work is requested.
                 c06Calendar.onOwnedStoreReady()
+                // C07 only reacts if the settings surface already created
+                // the controller; no backup/restore work starts implicitly.
+                if (c07DataExchangeDelegate.isInitialized()) {
+                    c07DataExchange.onOwnedStoreReady()
+                }
                 // Office AI host lane follows the ACTUAL accepted root epoch
                 // with bounded attempts (same doctrine as the browser lane).
                 startOfficeAiLane()
@@ -877,6 +913,7 @@ class RuntimeHost internal constructor(
                 if (c05DevicesDelegate.isInitialized()) c05Devices.onRootStopped()
                 if (c06MailDelegate.isInitialized()) c06Mail.onRootStopped()
                 if (c06CalendarDelegate.isInitialized()) c06Calendar.onRootStopped()
+                if (c07DataExchangeDelegate.isInitialized()) c07DataExchange.onRootStopped()
                 stopOfficeAiLane()
                 // Fence the flavour extension on the real retirement. The
                 // main pre-stop drain already ran prepareForRootStop(); this

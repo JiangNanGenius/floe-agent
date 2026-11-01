@@ -9,7 +9,7 @@ import androidx.compose.ui.graphics.Color
  * Floe semantic colors ported from `FloeAgent/FloeApp/Design/FloeTheme.swift`.
  *
  * The interactive accent is the SYSTEM BLUE observed in the captured iPad
- * references (Local/Private/android-g01-20261018/ios-reference/01-home.png:
+ * references (the approved iOS Home reference:
  * selected capsule #0081F6, chrome circles, hairlines). It is deliberately
  * distinct from the private brand gradient stop `BrandBlue` (#3D7AF5): the
  * brand cyan-blue-violet ramp belongs to the logo/hero identity, while all
@@ -59,6 +59,9 @@ data class FloeColors(
     val separator: Color,
     /** Toolbar / hairline strokes over chrome. */
     val chromeHairline: Color,
+    /** Modal/sheet dimming scrim. Dark mode uses a deeper scrim because the
+     *  underlying reading surface is already black. */
+    val scrim: Color,
 ) {
     companion object {
         /** The brand gradient stops (iOS FloeTheme.swift L24-26). */
@@ -102,6 +105,7 @@ internal val FloeLightColors = FloeColors(
     fillTertiary = Color(0x1F767680),
     separator = Color(0xCCC6C6C8),
     chromeHairline = Color(0x0D000000),
+    scrim = Color(0x47000000), // 28% black, measured page-sheet scrim
 )
 
 internal val FloeDarkColors = FloeColors(
@@ -128,4 +132,5 @@ internal val FloeDarkColors = FloeColors(
     fillTertiary = Color(0x33787880),
     separator = Color(0x66545458),
     chromeHairline = Color(0x1AFFFFFF),
+    scrim = Color(0x7A000000), // 48% black keeps dark sheets distinguishable
 )
