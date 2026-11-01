@@ -49,6 +49,9 @@ nonisolated enum CADDocumentFormat {
     /// actually persisted. Released306 understands format 1 and must not
     /// decode away or reinterpret these non-additive identity semantics.
     static let operationFaceIdentityVersion = 7
+    /// A saved material name is now an active binding, not merely provenance
+    /// that an older similarity-based writer may ignore.
+    static let namedFaceMaterialVersion = 7
     /// Coordinated package floor for a document that actually stores
     /// user-named versions. Ordinary documents keep their existing schema
     /// floor; only a package that gains a checkpoint is raised to this floor.
@@ -128,6 +131,9 @@ nonisolated enum CADDocumentFormat {
 
     static func requiredFormat(document: DesignDocument) -> Int {
         var required = legacyVersion
+        if document.bodies.contains(where: { $0.materialFaceBindings.contains { $0.key.elementName != nil } }) {
+            required = max(required, namedFaceMaterialVersion)
+        }
         if edgeReferences(in: document).contains(where: { $0.faceNames?.schemeVersion != nil }) {
             required = max(required, qualifiedEdgeIdentityVersion)
         }
@@ -666,6 +672,15 @@ nonisolated enum CADDocumentFormat {
         for body in bodies {
             guard let bytes = body.faceMaterials,
                   let object = try? JSONSerialization.jsonObject(with: bytes) else { continue }
+            if let bindings = object as? [[String: Any]], bindings.contains(where: {
+                guard let key = $0["key"] as? [String: Any], let name = key["elementName"] else { return false }
+                return !(name is NSNull)
+            }) {
+                result.requiredVersion = max(result.requiredVersion, namedFaceMaterialVersion)
+                if (try? JSONDecoder().decode([CADFaceMaterialBinding].self, from: bytes)) == nil {
+                    result.opaqueBodyAppearance = true
+                }
+            }
             let identity = try operationIdentityIntent(object)
             if identity.present { result.requiredVersion = max(result.requiredVersion, operationFaceIdentityVersion) }
             if identity.opaque { result.opaqueBodyAppearance = true }

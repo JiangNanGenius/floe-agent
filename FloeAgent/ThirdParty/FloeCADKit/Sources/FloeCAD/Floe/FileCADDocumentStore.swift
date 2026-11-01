@@ -152,6 +152,7 @@ struct CADBodyRecord: Codable, Sendable {
     /// Additive stable per-face material bindings (`[CADFaceMaterialBinding]`
     /// JSON). Absent on every document written before custom materials.
     var faceMaterials: Data?
+    var faceNamingSnapshot: Data?
     var brepBlob: String?
     var brepSHA256: String?
 }
@@ -625,6 +626,7 @@ final class FileCADDocumentStore: CADDocumentStore, @unchecked Sendable {
             persisted.isHidden = record.isHidden
             persisted.materialData = record.material
             persisted.faceMaterialsData = record.faceMaterials
+            persisted.faceNamingSnapshotData = record.faceNamingSnapshot
             persisted.brepData = record.brepBlob.flatMap { blobs[$0] }
             persisted.project = project
             project.bodies.append(persisted)
@@ -736,6 +738,7 @@ final class FileCADDocumentStore: CADDocumentStore, @unchecked Sendable {
                 isHidden: body.isHidden,
                 material: body.materialData,
                 faceMaterials: body.faceMaterialsData,
+                faceNamingSnapshot: body.faceNamingSnapshotData,
                 brepBlob: brepBlob,
                 brepSHA256: brepSHA
             ))
@@ -1483,7 +1486,9 @@ final class FileCADDocumentStore: CADDocumentStore, @unchecked Sendable {
         let metadata = CADModelDigestMetadata(name: name, unit: unit,
                                               tolerance: tolerance)
         hasher.update(data: try canonicalJSON(metadata))
-        hasher.update(data: try canonicalJSON(document))
+        var model = document
+        for index in model.bodies.indices { model.bodies[index].faceNamingSnapshot = nil }
+        hasher.update(data: try canonicalJSON(model))
         for (path, data) in blobs.sorted(by: { $0.key < $1.key }) {
             hasher.update(data: Data(path.utf8))
             hasher.update(data: Data(Self.sha256(data).utf8))

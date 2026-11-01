@@ -113,8 +113,7 @@ public extension FloeCADDocument {
                     row["material"] = material.summaryJSON
                 }
                 if !body.materialFaceBindings.isEmpty {
-                    let resolutions = CADFaceMaterialResolver.resolve(body.materialFaceBindings,
-                                                                      in: body)
+                    let resolutions = CADFaceMaterialResolver.resolve(body.materialFaceBindings, in: body, table: session.faceRangeTable(for: body))
                     let resolved = resolutions.compactMap { resolution -> [String: Any]? in
                         guard let index = resolution.resolvedIndex else { return nil }
                         return ["face_index": index,

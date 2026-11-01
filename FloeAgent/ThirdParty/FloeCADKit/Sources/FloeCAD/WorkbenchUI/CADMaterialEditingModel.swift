@@ -38,6 +38,7 @@ nonisolated struct CADMaterialFaceIdentity: Equatable, Sendable {
     /// Triangle ordinals in that mesh generation. Preview only; it is replaced
     /// with the current authoritative table range when the mesh is rebuilt.
     var triangles: [Int]
+    var elementName: ElementName? = nil
 }
 
 nonisolated struct CADMaterialTarget: Equatable, Sendable {
@@ -165,12 +166,22 @@ enum CADMaterialTargetResolver {
         var faceIndex: Int?
         var signature: FaceSignature?
         var note: String?
+        let table = session.faceRangeTable(for: body, preparingForAssignment: true)
+        let candidates = CADFaceMaterialResolver.candidates(for: body, table: table)
 
-        if let entry = authoritativeEntry(for: body, triangles: triangles,
+        if let channel = table?.nativeFaceChannel, channel.count == body.render.triangleCount {
+            let valid = !triangles.isEmpty && triangles.allSatisfy { channel.indices.contains($0) }
+            let indices: Set<UInt32> = valid ? Set(triangles.map { channel[$0] }) : []
+            if indices.count == 1, let index = indices.first, index > 0,
+               let face = candidates.first(where: { $0.index == Int(index) }) {
+                faceIndex = face.index
+                signature = face.signature
+            } else { note = reselectHint }
+        } else if let entry = authoritativeEntry(for: body, triangles: triangles,
                                           session: session) {
             switch CADFaceMaterialResolver.match(
-                CADFaceKey(signature: entry.signature),
-                candidates: CADFaceMaterialResolver.candidates(for: body)) {
+                CADFaceKey(signature: entry.signature, elementName: entry.elementName),
+                candidates: candidates) {
             case .resolved(let index, _):
                 faceIndex = index
                 signature = kernelSignature(for: index, in: body)
@@ -200,7 +211,7 @@ enum CADMaterialTargetResolver {
         let previewTriangles: [Int]
         if let signature,
            let authoritative = authoritativeTriangles(for: signature, in: body,
-                                                      session: session) {
+                session: session, elementName: candidates.first(where: { $0.index == faceIndex })?.elementName) {
             previewTriangles = authoritative
         } else {
             previewTriangles = triangles
@@ -216,7 +227,8 @@ enum CADMaterialTargetResolver {
             faceIdentity: signature.map {
                 CADMaterialFaceIdentity(signature: $0,
                                         meshRevision: body.meshRevision,
-                                        triangles: previewTriangles)
+                                        triangles: previewTriangles,
+                                        elementName: candidates.first(where: { $0.index == faceIndex })?.elementName)
             },
             bodyMeshRevisions: [body.id.raw: body.meshRevision])
     }
@@ -240,10 +252,11 @@ enum CADMaterialTargetResolver {
         return matched
     }
 
-    static func kernelMatch(for signature: FaceSignature, in body: Body) -> CADFaceMatch {
+    static func kernelMatch(for signature: FaceSignature, in body: Body,
+                            elementName: ElementName? = nil, table: FaceTable? = nil) -> CADFaceMatch {
         CADFaceMaterialResolver.match(
-            CADFaceKey(signature: signature),
-            candidates: CADFaceMaterialResolver.candidates(for: body))
+            CADFaceKey(signature: signature, elementName: elementName),
+            candidates: CADFaceMaterialResolver.candidates(for: body, table: table))
     }
 
     static func kernelSignature(for index: Int, in body: Body) -> FaceSignature? {
@@ -265,24 +278,13 @@ enum CADMaterialTargetResolver {
     /// session has a table for the current mesh generation and exactly one
     /// entry matches. Nil means "do not paint a guessed range".
     static func authoritativeTriangles(for signature: FaceSignature, in body: Body,
-                                       session: DocumentSession) -> [Int]? {
-        guard let table = session.faceRangeTable(for: body) else {
+                                       session: DocumentSession, elementName: ElementName? = nil) -> [Int]? {
+        guard let table = session.faceRangeTable(for: body, preparingForAssignment: true) else {
             return nil
         }
-        var scored: [(triangles: [Int], score: Double)] = []
-        for entry in table.entries {
-            guard !entry.triangles.isEmpty,
-                  let score = CADFaceMaterialResolver.score(signature, entry.signature)
-            else { continue }
-            scored.append((entry.triangles, score))
-        }
-        scored.sort { $0.score > $1.score }
-        guard let best = scored.first,
-              best.score >= CADFaceMaterialResolver.matchThreshold,
-              scored.count == 1
-                || best.score - scored[1].score >= CADFaceMaterialResolver.ambiguityMargin
-        else { return nil }
-        return best.triangles
+        guard case let .resolved(index, _) = kernelMatch(for: signature, in: body,
+            elementName: elementName, table: table) else { return nil }
+        return CADFaceMaterialResolver.triangles(for: index, in: body, table: table)
     }
 
     private static var reselectHint: String {
@@ -402,8 +404,7 @@ final class CADMaterialDraftModel {
             // body appearance: opening the inspector must not silently discard
             // a per-face mapping or a textured normal map.
             if let faceIndex = target.faceIndex,
-               let binding = CADFaceMaterialResolver.resolve(
-                   body.materialFaceBindings, in: body)
+               let binding = CADFaceMaterialResolver.resolve(body.materialFaceBindings, in: body, table: document.session.faceRangeTable(for: body))
                    .first(where: { $0.resolvedIndex == faceIndex })?.binding {
                 initial = CADMaterialDefinition(spec: binding.material)
             } else if let existing = body.material, existing != .default {
@@ -450,8 +451,7 @@ final class CADMaterialDraftModel {
         var warnings: [String] = []
         for body in document.session.document.bodies
         where target.bodyIDs.contains(body.id.raw) && !body.materialFaceBindings.isEmpty {
-            for resolution in CADFaceMaterialResolver.resolve(body.materialFaceBindings,
-                                                              in: body) {
+            for resolution in CADFaceMaterialResolver.resolve(body.materialFaceBindings, in: body, table: document.session.faceRangeTable(for: body)) {
                 guard resolution.resolvedIndex == nil else { continue }
                 var candidates: [Int] = []
                 if case .ambiguous(let indices) = resolution.match { candidates = indices }
@@ -540,7 +540,8 @@ final class CADMaterialDraftModel {
                 resolvedIndex = current
                 currentSignature = currentFaceSignature
             } else if case .resolved(let matched, _) = CADMaterialTargetResolver.kernelMatch(
-                for: identity.signature, in: body) {
+                for: identity.signature, in: body, elementName: identity.elementName,
+                table: document.session.faceRangeTable(for: body, preparingForAssignment: true)) {
                 // The index is NOT reused when the mesh generation changed;
                 // only this unique match against the IMMUTABLE captured
                 // signature may restore it.
@@ -556,7 +557,7 @@ final class CADMaterialDraftModel {
             }
 
             let triangles = CADMaterialTargetResolver.authoritativeTriangles(
-                for: currentSignature, in: body, session: document.session)
+                for: currentSignature, in: body, session: document.session, elementName: identity.elementName)
                 ?? (sameGeneration ? identity.triangles : [])
             target.faceIndex = resolvedIndex
             target.bodyIDs = [body.id.raw]
@@ -566,7 +567,7 @@ final class CADMaterialDraftModel {
                 signature: identity.signature,
                 resolvedSignature: currentSignature,
                 meshRevision: body.meshRevision,
-                triangles: triangles)
+                triangles: triangles, elementName: identity.elementName)
             target.note = nil
             targetError = nil
             if !sameGeneration {
@@ -844,7 +845,7 @@ final class CADMaterialDraftModel {
                     "Face materials need an exact solid; use a whole-body material for this mesh.")
                 return
             }
-            let candidates = CADFaceMaterialResolver.candidates(for: body)
+            let candidates = CADFaceMaterialResolver.candidates(for: body, table: document.session.faceRangeTable(for: body, preparingForAssignment: true))
             let expectedSignature = identity.resolvedSignature ?? identity.signature
             guard let signature = candidates.first(where: { $0.index == faceIndex })?.signature,
                   CADMaterialTargetResolver.signaturesMatch(signature,
@@ -856,7 +857,9 @@ final class CADMaterialDraftModel {
                 targetError = message
                 return
             }
-            let key = CADFaceKey(signature: signature, capturedIndex: faceIndex)
+            let key = CADFaceKey(signature: signature,
+                elementName: candidates.first(where: { $0.index == faceIndex })?.elementName,
+                capturedIndex: faceIndex)
             if case .ambiguous(let indices) = CADFaceMaterialResolver.match(
                 key, candidates: candidates) {
                 errorMessage = FloeCADStrings.format(
@@ -947,7 +950,7 @@ final class CADMaterialDraftModel {
                 target.note = message
                 return
             }
-            let candidates = CADFaceMaterialResolver.candidates(for: faceBody)
+            let candidates = CADFaceMaterialResolver.candidates(for: faceBody, table: document.session.faceRangeTable(for: faceBody, preparingForAssignment: true))
             var bindings = faceBody.materialFaceBindings.filter { binding in
                 if case .resolved(let index, _) = CADFaceMaterialResolver.match(
                     binding.key, candidates: candidates) {
@@ -1164,8 +1167,7 @@ final class CADMaterialDraftModel {
         for raw in target.bodyIDs {
             guard let body = live.bodies.first(where: { $0.id.raw == raw }),
                   !body.materialFaceBindings.isEmpty else { continue }
-            let kept = CADFaceMaterialResolver.resolve(body.materialFaceBindings,
-                                                       in: body)
+            let kept = CADFaceMaterialResolver.resolve(body.materialFaceBindings, in: body, table: document.session.faceRangeTable(for: body))
                 .filter { $0.resolvedIndex != nil }
                 .map(\.binding)
             guard kept.count != body.materialFaceBindings.count else { continue }

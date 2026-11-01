@@ -229,10 +229,17 @@ extension FloeCADDocument {
                              m.columns.2.x, m.columns.2.y, m.columns.2.z, m.columns.2.w,
                              m.columns.3.x, m.columns.3.y, m.columns.3.z, m.columns.3.w]
             let aabb = body.render.localAABB
-            let resolved = CADFaceMaterialResolver.resolve(body.materialFaceBindings, in: body)
+            let faceTable = session.faceRangeTable(for: body)
+            let resolved = CADFaceMaterialResolver.resolve(body.materialFaceBindings, in: body, table: faceTable)
+            let assessment = CADFaceMaterialResolver.assessGroups(in: body, table: faceTable,
+                                                                 tableRevision: body.meshRevision)
+            let rangeByIndex = Dictionary(uniqueKeysWithValues: assessment.groups.map { ($0.faceIndex, $0) })
+            var usedFaceRanges: Set<Int> = []
+            var unresolvedFaceCount = 0
             var faceMaterials: [CADSceneFaceMaterial] = []
             for entry in resolved {
                 guard let index = entry.resolvedIndex else {
+                    unresolvedFaceCount += 1
                     var candidates: [Int] = []
                     if case .ambiguous(let indices) = entry.match { candidates = indices }
                     let reason: String
@@ -252,41 +259,29 @@ extension FloeCADDocument {
                 }
                 var triangleIndices: [UInt32]?
                 var triangleNumbers: [Int]?
-                if let table = session.faceRangeTable(for: body) {
-                    var scored: [(score: Double, triangles: [Int])] = []
-                    for tableEntry in table.entries {
-                        guard let score = CADFaceMaterialResolver.score(
-                            entry.binding.key.signature, tableEntry.signature) else { continue }
-                        scored.append((score, tableEntry.triangles))
+                if let group = rangeByIndex[index], !usedFaceRanges.contains(index),
+                   group.material == entry.binding.material.clamped {
+                    usedFaceRanges.insert(index)
+                    var indices: [UInt32] = []
+                    indices.reserveCapacity(group.triangles.count * 3)
+                    for triangle in group.triangles {
+                        let base = triangle * 3
+                        indices.append(contentsOf: body.render.indices[base..<(base + 3)])
                     }
-                    scored.sort { $0.score > $1.score }
-                    // Same stable-binding ambiguity rule as the B-rep resolver:
-                    // a runner-up within the margin means NO triangle range is
-                    // trustworthy. Nil makes the presentation keep the saved
-                    // face material in the inspector but never paint a guessed
-                    // face.
-                    let unambiguous = scored.first.map { best in
-                        best.score >= CADFaceMaterialResolver.matchThreshold
-                            && (scored.count == 1
-                                || best.score - scored[1].score
-                                    >= CADFaceMaterialResolver.ambiguityMargin)
-                    } ?? false
-                    if unambiguous, let best = scored.first {
-                        var indices: [UInt32] = []
-                        indices.reserveCapacity(best.triangles.count * 3)
-                        for triangle in best.triangles {
-                            let base = triangle * 3
-                            guard base + 2 < body.render.indices.count else { continue }
-                            indices.append(body.render.indices[base])
-                            indices.append(body.render.indices[base + 1])
-                            indices.append(body.render.indices[base + 2])
-                        }
-                        triangleIndices = indices.isEmpty ? nil : indices
-                        triangleNumbers = indices.isEmpty ? nil : best.triangles
-                    }
+                    triangleIndices = indices
+                    triangleNumbers = group.triangles
+                } else {
+                    unresolvedFaceCount += 1
+                    unresolved.append(CADSceneUnresolvedFaceBinding(
+                        bodyID: body.id.raw, bodyName: body.name,
+                        materialName: entry.binding.material.materialName,
+                        materialID: entry.binding.material.materialID,
+                        reason: "face_triangle_map_unavailable", candidateIndices: [index],
+                        signature: entry.binding.key.signature,
+                        capturedIndex: entry.binding.key.capturedIndex))
                 }
                 faceMaterials.append(CADSceneFaceMaterial(
-                    faceIndex: index, material: entry.binding.material,
+                    faceIndex: index, material: entry.binding.material.clamped,
                     signature: entry.binding.key.signature,
                     triangleIndices: triangleIndices,
                     triangleNumbers: triangleNumbers))
@@ -307,7 +302,7 @@ extension FloeCADDocument {
                 id: body.id.raw, name: body.name, isHidden: body.isHidden,
                 transform: transform, mesh: mesh, material: body.material,
                 faceMaterials: faceMaterials,
-                unresolvedFaceCount: resolved.filter { $0.resolvedIndex == nil }.count,
+                unresolvedFaceCount: unresolvedFaceCount,
                 analyticBRep: body.brep != nil))
         }
 

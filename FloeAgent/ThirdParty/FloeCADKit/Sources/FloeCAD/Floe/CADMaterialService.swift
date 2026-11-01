@@ -146,7 +146,7 @@ public final class CADMaterialService {
     private func unresolvedList(_ args: [String: Any]) -> [String: Any] {
         var rows: [[String: Any]] = []
         for body in document.session.document.bodies where !body.materialFaceBindings.isEmpty {
-            for resolution in CADFaceMaterialResolver.resolve(body.materialFaceBindings, in: body) {
+            for resolution in CADFaceMaterialResolver.resolve(body.materialFaceBindings, in: body, table: document.session.faceRangeTable(for: body)) {
                 guard resolution.resolvedIndex == nil else { continue }
                 var row: [String: Any] = [
                     "body_id": body.id.raw.uuidString,
@@ -383,11 +383,13 @@ public final class CADMaterialService {
                              "Body '\(body.name)' has no face \(missing.map(String.init).joined(separator: ", ")). "
                                 + "Re-query kind=faces for current indices.")
         }
+        let candidates = CADFaceMaterialResolver.candidates(for: body,
+            table: document.session.faceRangeTable(for: body, preparingForAssignment: true))
         var bindings: [CADFaceMaterialBinding] = []
         var used: Set<Int> = []
         for existing in body.materialFaceBindings {
             if case .resolved(let index, _) = CADFaceMaterialResolver.match(
-                existing.key, candidates: CADFaceMaterialResolver.candidates(for: body)),
+                existing.key, candidates: candidates),
                indices.contains(index) {
                 continue
             }
@@ -400,12 +402,16 @@ public final class CADMaterialService {
                                  "Face \(index) of '\(body.name)' has no stable material signature; "
                                     + "use a whole-body material.")
             }
-            let key = CADFaceKey(signature: signature, capturedIndex: index)
-            if case let .ambiguous(candidates) = CADFaceMaterialResolver.match(
-                key, candidates: CADFaceMaterialResolver.candidates(for: body)) {
+            let name = candidates.first(where: { $0.index == index })?.elementName
+            let key = CADFaceKey(signature: signature, elementName: name, capturedIndex: index)
+            switch CADFaceMaterialResolver.match(key, candidates: candidates) {
+            case .resolved: break
+            case let .ambiguous(indices):
                 return Self.fail("ambiguous_face",
-                                 "Face \(index) has ambiguous stable identity (candidates \(candidates)). "
+                                 "Face \(index) has ambiguous stable identity (candidates \(indices)). "
                                     + "Re-query faces and assign the whole body or a uniquely shaped face.")
+            case .unresolved(let reason):
+                return Self.fail("unstable_face", reason)
             }
             guard used.insert(index).inserted else { continue }
             bindings.append(CADFaceMaterialBinding(key: key, material: spec))
@@ -453,10 +459,12 @@ public final class CADMaterialService {
         case .success(let value):
             material = value
         }
+        let candidates = CADFaceMaterialResolver.candidates(for: body,
+            table: document.session.faceRangeTable(for: body, preparingForAssignment: true))
         var bindings: [CADFaceMaterialBinding] = []
         for existing in body.materialFaceBindings {
             switch CADFaceMaterialResolver.match(
-                existing.key, candidates: CADFaceMaterialResolver.candidates(for: body)) {
+                existing.key, candidates: candidates) {
             case .resolved(let index, _) where indices.contains(index):
                 continue
             case .resolved:
@@ -474,8 +482,17 @@ public final class CADMaterialService {
                 guard let face = faces[index], let signature = face.signature else {
                     return Self.fail("unstable_face", "Face \(index) has no stable material signature.")
                 }
-                bindings.append(CADFaceMaterialBinding(
-                    key: CADFaceKey(signature: signature, capturedIndex: index), material: spec))
+                let key = CADFaceKey(signature: signature,
+                    elementName: candidates.first(where: { $0.index == index })?.elementName,
+                    capturedIndex: index)
+                switch CADFaceMaterialResolver.match(key, candidates: candidates) {
+                case .resolved: break
+                case .ambiguous:
+                    return Self.fail("ambiguous_face", "Select one uniquely identified face.")
+                case .unresolved(let reason):
+                    return Self.fail("unstable_face", reason)
+                }
+                bindings.append(CADFaceMaterialBinding(key: key, material: spec))
             }
         }
         document.session.perform(SetMaterialAppearanceCommand(
@@ -884,7 +901,7 @@ public final class CADMaterialService {
                 return Self.fail("mesh_body",
                                  "Stable face signatures require an analytic B-rep; use a whole-body material.")
             }
-            let candidates = CADFaceMaterialResolver.candidates(for: body)
+            let candidates = CADFaceMaterialResolver.candidates(for: body, table: document.session.faceRangeTable(for: body, preparingForAssignment: true))
             for index in indices {
                 guard let reference = signatures[index] else {
                     if tokenAccepted { continue }

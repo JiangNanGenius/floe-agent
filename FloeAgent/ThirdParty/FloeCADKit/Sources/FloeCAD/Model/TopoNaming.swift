@@ -34,6 +34,12 @@ nonisolated struct FaceTable: Codable, Sendable {
     var nativeFaceChannel: [UInt32]? = nil
     var nativeBodyID: BodyID? = nil
     var nativeMeshRevision: UInt64? = nil
+    /// Derived once for material readers; excluded from cache serialization.
+    var nativeFaceSignatures: [Int: FaceSignature]? = nil
+
+    private enum CodingKeys: String, CodingKey {
+        case entries, nativeFaceNames, nativeFaceChannel, nativeBodyID, nativeMeshRevision
+    }
 
     struct Entry: Codable, Sendable {
         var role: FaceRole

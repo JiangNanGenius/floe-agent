@@ -360,6 +360,296 @@ final class CADMaterialCoreTests: XCTestCase {
 
     // MARK: E29 reopened face-material ranges
 
+    func testMaterialBindingNeverUsesSimilarityOrCapturedIndexToReplaceANamedFace() throws {
+        let creator = FeatureID()
+        let name = ElementName(creator: creator, source: .primitiveFace(.boxFace(.py)))
+        let signature = FaceSignature(kind: .planar, normal: SIMD3(0, 1, 0),
+            centroid: .zero, area: 100, planeOffset: 0)
+        var changed = signature
+        changed.centroid.x = 0.1
+        changed.area = 101
+        XCTAssertGreaterThan(try XCTUnwrap(CADFaceMaterialResolver.score(signature, changed)),
+                             CADFaceMaterialResolver.matchThreshold)
+        let unnamed = CADFaceKey(signature: signature, capturedIndex: 3)
+        XCTAssertNil(CADFaceMaterialResolver.match(unnamed,
+            candidates: [CADFaceCandidate(index: 3, signature: changed)]).resolvedIndex)
+        let named = CADFaceKey(signature: signature, elementName: name, capturedIndex: 999)
+        let actual = CADFaceCandidate(index: 7, signature: changed, elementName: name)
+        XCTAssertEqual(CADFaceMaterialResolver.match(named, candidates: [actual]).resolvedIndex, 7)
+        XCTAssertNil(CADFaceMaterialResolver.match(named,
+            candidates: [CADFaceCandidate(index: 999, signature: signature)]).resolvedIndex,
+            "A missing saved name cannot fall back to its old geometry or captured ordinal")
+        XCTAssertEqual(CADFaceMaterialResolver.match(named, candidates: [actual,
+            CADFaceCandidate(index: 2, signature: signature, elementName: name)]),
+            .ambiguous(indices: [2, 7]))
+        XCTAssertEqual(CADFaceMaterialResolver.match(unnamed, candidates: [
+            .init(index: 8, signature: signature), .init(index: 3, signature: signature)]),
+            .ambiguous(indices: [3, 8]))
+        let legacy = ElementName(creator: creator, source: .opFace(operation: creator,
+            parents: [name], index: 0))
+        XCTAssertNil(CADFaceMaterialResolver.match(
+            CADFaceKey(signature: signature, elementName: legacy),
+            candidates: [.init(index: 7, signature: changed, elementName: legacy)]).resolvedIndex)
+    }
+
+    func testNamedRegionMaterialFollowsDimensionsButNeverMovesToTheSurvivingRegion() async throws {
+        let url = workDir.appendingPathComponent("named-region.floecad")
+        let document = try await FloeCADDocument.create(at: url, name: "Named region")
+        defer { document.close() }
+        let bodyID = BodyID(), aID = BodyID(), bID = BodyID()
+        let source = FeatureNode(name: "Plate", kind: .primitive(
+            spec: .box(width: 60, depth: 20, height: 10), placement: .identity), outputBodyIDs: [bodyID])
+        func slot(_ x: Double, _ output: BodyID) -> FeatureNode {
+            FeatureNode(name: "Slot", kind: .primitive(spec: .box(width: 5, depth: 40, height: 30),
+                placement: Transform3D(translation: SIMD3(x, -10, 0))), outputBodyIDs: [output])
+        }
+        let a = slot(-10, aID), b = slot(10, bID)
+        let cut = FeatureNode(name: "Three regions", kind: .boolean(kind: .subtract,
+            target: BodyRef(producer: source.id, bodyID: bodyID),
+            tools: [BodyRef(producer: a.id, bodyID: aID), BodyRef(producer: b.id, bodyID: bID)]),
+            outputBodyIDs: [bodyID])
+        document.session.recordAndRebuild([source, a, b, cut], title: "Three regions")
+        XCTAssertTrue(document.session.lastEvalErrors.isEmpty, "\(document.session.lastEvalErrors)")
+        let before = try XCTUnwrap(document.session.document.body(with: bodyID))
+        let table = try XCTUnwrap(document.session.faceRangeTable(for: before, preparingForAssignment: true))
+        let selected = try XCTUnwrap(CADFaceMaterialResolver.candidates(for: before, table: table)
+            .filter { $0.signature.normal.y > 0.99 }.min { $0.signature.centroid.x < $1.signature.centroid.x })
+        XCTAssertEqual(selected.signature.centroid.x, -21.25, accuracy: 1e-5)
+        let name = try XCTUnwrap(selected.elementName)
+        XCTAssertFalse(name.requiresExactSignature)
+        let service = CADMaterialService(document: document)
+        let materialID = try XCTUnwrap(service.handle(action: "create", args: [
+            "name": "Left region red", "color": [0.9, 0.15, 0.12, 1.0]])["id"] as? String)
+        let token = CADGeometryQueryGeneration(scope: "faces", bodyID: bodyID.raw,
+            documentRevision: document.revision, changeCount: document.session.changeCount,
+            meshRevision: before.meshRevision).token
+        let applied = service.handle(action: "applyFaces", args: ["bodyID": bodyID.raw.uuidString,
+            "material_id": materialID, "faces": [selected.index], "query_token": token])
+        XCTAssertEqual(applied["ok"] as? Bool, true, "\(applied)")
+        let binding = try XCTUnwrap(document.session.document.body(with: bodyID)?.materialFaceBindings.first)
+        XCTAssertEqual(binding.key.elementName, name)
+
+        let update = CADParameterService(document: document).handle(action: "update", args: [
+            "feature_id": source.id.raw.uuidString, "changes": ["width": 80.0]])
+        XCTAssertEqual(update["ok"] as? Bool, true, "\(update)")
+        let widened = try XCTUnwrap(document.session.document.body(with: bodyID))
+        let widerTable = try XCTUnwrap(document.session.faceRangeTable(for: widened))
+        let face = try XCTUnwrap(CADFaceMaterialResolver.candidates(for: widened, table: widerTable)
+            .first { $0.elementName == name })
+        XCTAssertEqual(face.signature.centroid.x, -26.25, accuracy: 1e-5)
+        XCTAssertGreaterThan(face.signature.area, selected.signature.area)
+        let assessment = CADFaceMaterialResolver.assessGroups(in: widened, table: widerTable,
+            tableRevision: widened.meshRevision)
+        XCTAssertTrue(assessment.isLossless, "\(assessment.issues)")
+        XCTAssertEqual(assessment.groups.count, 1)
+        let triangles = try XCTUnwrap(assessment.groups.first?.triangles)
+        let channel = try XCTUnwrap(widerTable.nativeFaceChannel)
+        XCTAssertFalse(triangles.isEmpty)
+        XCTAssertTrue(triangles.allSatisfy { channel[$0] == UInt32(face.index) })
+        XCTAssertEqual(document.sceneSnapshot().bodies.first { $0.id == bodyID.raw }?
+            .faceMaterials.first?.triangleNumbers, triangles)
+        #if canImport(UIKit)
+        XCTAssertEqual(document.viewModel().faceRenderGroups(for: widened).first?.triangles, triangles)
+        #endif
+
+        let removal = CADParameterService(document: document).handle(action: "update", args: [
+            "feature_id": a.id.raw.uuidString, "changes": ["width": 70.0]])
+        XCTAssertEqual(removal["ok"] as? Bool, true, "\(removal)")
+        XCTAssertTrue(document.session.lastEvalErrors.isEmpty, "\(document.session.lastEvalErrors)")
+        let remaining = try XCTUnwrap(document.session.document.body(with: bodyID))
+        XCTAssertFalse(OCCTKernel.faceInfo(try XCTUnwrap(remaining.brep)).contains {
+            $0.normal.y > 0.99 && $0.centroid.x < -20
+        }, "The selected physical region must actually be removed")
+        let refused = CADFaceMaterialResolver.assessGroups(in: remaining,
+            table: document.session.faceRangeTable(for: remaining), tableRevision: remaining.meshRevision)
+        XCTAssertTrue(refused.groups.isEmpty)
+        XCTAssertEqual(refused.issues.count, 1)
+        XCTAssertEqual(remaining.materialFaceBindings.first, binding,
+            "An unresolved binding stays available for explicit reassignment")
+        document.session.undo()
+        let undone = try XCTUnwrap(document.session.document.body(with: bodyID))
+        XCTAssertTrue(CADFaceMaterialResolver.assessGroups(in: undone,
+            table: document.session.faceRangeTable(for: undone), tableRevision: undone.meshRevision).isLossless)
+        document.session.redo()
+        let saved = await document.save()
+        XCTAssertTrue(saved.succeeded, saved.error ?? "")
+        let modelSHA = document.modelSHA256
+        document.close()
+        let reopened = try await FloeCADDocument.open(at: url)
+        defer { reopened.close() }
+        XCTAssertEqual(reopened.modelSHA256, modelSHA)
+        let reopenedBody = try XCTUnwrap(reopened.session.document.body(with: bodyID))
+        XCTAssertEqual(reopenedBody.materialFaceBindings.first, binding)
+        XCTAssertNil(CADFaceMaterialResolver.resolve(reopenedBody.materialFaceBindings, in: reopenedBody,
+            table: reopened.session.faceRangeTable(for: reopenedBody)).first?.resolvedIndex)
+    }
+
+    func testCoplanarNativeSweepFacesKeepDisjointMaterialsThroughEveryConsumerAndReopen() async throws {
+        let url = workDir.appendingPathComponent("coplanar-wall-material.floecad")
+        let document = try await FloeCADDocument.create(at: url, name: "Coplanar walls")
+        defer { document.close() }
+        let sketch = Sketch(plane: .ground, entities: [.rect(id: UUID(), min: SIMD2(-2, -2), max: SIMD2(2, 2))])
+        document.session.perform(AddSketchCommand(sketch: sketch))
+        let bodyID = BodyID()
+        let sweep = FeatureNode(name: "Bent sweep", kind: .sweep(
+            profile: ProfileRef(sketchID: sketch.id, entityIDs: [], holeEntityIDs: [], seedPoint: .zero),
+            plane: PlaneRef(source: .sketch(sketch.id)),
+            spine: [PointWrapper(SIMD3(0, 0, 0)), PointWrapper(SIMD3(0, 12, 0)), PointWrapper(SIMD3(12, 24, 0))],
+            boolean: BooleanIntent(op: .newBody, resolvedTargets: []), helix: nil), outputBodyIDs: [bodyID])
+        document.session.recordAndRebuild([sweep], title: "Bent sweep")
+        XCTAssertTrue(document.session.lastEvalErrors.isEmpty, "\(document.session.lastEvalErrors)")
+        let before = try XCTUnwrap(document.session.document.body(with: bodyID))
+        let table = try XCTUnwrap(document.session.faceRangeTable(for: before, preparingForAssignment: true))
+        let channel = try XCTUnwrap(table.nativeFaceChannel)
+        let faces = CADFaceMaterialResolver.candidates(for: before, table: table)
+            .filter { $0.signature.normal.z < -0.99 }.sorted { $0.signature.centroid.y < $1.signature.centroid.y }
+        XCTAssertEqual(faces.count, 2, "The original186 coplanar native wall pair must really exist")
+        let ids = Set(faces.map { UInt32($0.index) })
+        XCTAssertTrue(table.entries.contains { ids.isSubset(of: Set($0.triangles.map { channel[$0] })) },
+            "This fixture must exercise a merged display patch, not two convenient separate entries")
+        let service = CADMaterialService(document: document)
+        for (offset, face) in faces.enumerated() {
+            let materialID = try XCTUnwrap(service.handle(action: "create", args: [
+                "name": "Wall \(offset)", "color": offset == 0 ? [0.9, 0.12, 0.12, 1.0] : [0.12, 0.2, 0.9, 1.0]])["id"] as? String)
+            let token = CADGeometryQueryGeneration(scope: "faces", bodyID: bodyID.raw,
+                documentRevision: document.revision, changeCount: document.session.changeCount,
+                meshRevision: before.meshRevision).token
+            let applied = service.handle(action: "applyFaces", args: ["bodyID": bodyID.raw.uuidString,
+                "material_id": materialID, "faces": [face.index], "query_token": token])
+            XCTAssertEqual(applied["ok"] as? Bool, true, "\(applied)")
+        }
+        func verify(_ document: FloeCADDocument) throws -> [CADFaceGroup] {
+            let body = try XCTUnwrap(document.session.document.body(with: bodyID))
+            let table = try XCTUnwrap(document.session.faceRangeTable(for: body))
+            let groups = CADFaceMaterialResolver.assessGroups(in: body, table: table,
+                tableRevision: body.meshRevision)
+            XCTAssertTrue(groups.isLossless, "\(groups.issues)")
+            XCTAssertEqual(groups.groups.count, 2)
+            let nativeChannel = try XCTUnwrap(table.nativeFaceChannel)
+            var used: Set<Int> = []
+            for group in groups.groups {
+                XCTAssertFalse(group.triangles.isEmpty)
+                XCTAssertTrue(group.triangles.allSatisfy { nativeChannel[$0] == UInt32(group.faceIndex) })
+                XCTAssertTrue(used.isDisjoint(with: group.triangles))
+                used.formUnion(group.triangles)
+            }
+            let scene = document.sceneSnapshot()
+            let sceneBody = try XCTUnwrap(scene.bodies.first { $0.id == bodyID.raw })
+            XCTAssertEqual(sceneBody.unresolvedFaceCount, 0)
+            XCTAssertTrue(scene.unresolvedFaceBindings.isEmpty)
+            #if canImport(UIKit)
+            let editGroups = document.viewModel().faceRenderGroups(for: body)
+            XCTAssertEqual(editGroups.count, 2)
+            #endif
+            for group in groups.groups {
+                XCTAssertEqual(sceneBody.faceMaterials.first { $0.faceIndex == group.faceIndex }?.triangleNumbers,
+                               group.triangles)
+                #if canImport(UIKit)
+                XCTAssertEqual(editGroups.first { $0.faceIndex == group.faceIndex }?.triangles, group.triangles)
+                #endif
+            }
+            let ranges = document.session.faceRangeTables(for: [body])
+            let glb = try jsonChunk(GLBExporter.glb(bodies: [body], faceTables: ranges.tables,
+                faceTableRevisions: ranges.revisions))
+            let meshes = try XCTUnwrap(glb["meshes"] as? [[String: Any]])
+            XCTAssertEqual((meshes.first?["primitives"] as? [[String: Any]])?.count, 3)
+            let extras = try XCTUnwrap(meshes.first?["extras"] as? [String: Any])
+            XCTAssertTrue(try XCTUnwrap(extras["floe_unresolved_face_bindings"] as? [[String: Any]]).isEmpty)
+            let obj = OBJBundleExporter.export(bodies: [body], faceTables: ranges.tables,
+                faceTableRevisions: ranges.revisions)
+            XCTAssertTrue(obj.succeeded)
+            let receipt = try XCTUnwrap(obj.receipt?.bodies.first)
+            XCTAssertTrue(receipt.unresolvedFaceBindings.isEmpty)
+            XCTAssertEqual(receipt.groups.filter { $0.faceIndex != nil }.count, 2)
+            return groups.groups
+        }
+        let actualGroups = try verify(document)
+        let saved = await document.save()
+        XCTAssertTrue(saved.succeeded, saved.error ?? "")
+        let modelSHA = document.modelSHA256
+        document.close()
+        let reopened = try await FloeCADDocument.open(at: url)
+        defer { reopened.close() }
+        XCTAssertEqual(reopened.modelSHA256, modelSHA)
+        XCTAssertNil(reopened.session.lastFaceTables[bodyID], "Derived material tables are not a graph rebuild")
+        XCTAssertEqual(try verify(reopened), actualGroups)
+    }
+
+    func testFaceNamingSnapshotOnlyRestoresExactStoredGeometryAndDoesNotChangeModelIdentity() async throws {
+        let url = workDir.appendingPathComponent("naming-cache.floecad")
+        let document = try await FloeCADDocument.create(at: url, name: "Naming cache")
+        defer { document.close() }
+        let (bodyID, _) = try makeBox(document)
+        let service = CADMaterialService(document: document)
+        let materialID = try XCTUnwrap(service.handle(action: "create", args: [
+            "name": "Cache green", "color": [0.1, 0.7, 0.2, 1.0]])["id"] as? String)
+        let top = try topFace(of: bodyID, in: document)
+        let applied = service.handle(action: "applyFaces", args: ["bodyID": bodyID,
+            "material_id": materialID, "faces": [top.index], "query_token": top.token])
+        XCTAssertEqual(applied["ok"] as? Bool, true, "\(applied)")
+        let saved = await document.save()
+        XCTAssertTrue(saved.succeeded, saved.error ?? "")
+        let body = try documentBody(bodyID, in: document)
+        let record = try CADAssociativeFormatFixture.record(url)
+        let row = try XCTUnwrap(record.bodies.first)
+        let cache = try XCTUnwrap(row.faceNamingSnapshot)
+        let snapshot = try JSONDecoder().decode(CADFaceNamingSnapshot.self, from: cache)
+        let mesh = try Data(contentsOf: url.appendingPathComponent(try XCTUnwrap(row.meshBlob)))
+        let brep = try Data(contentsOf: url.appendingPathComponent(try XCTUnwrap(row.brepBlob)))
+        let restored = try XCTUnwrap(CADFaceNamingSnapshot.restore(cache, body: body, mesh: mesh, brep: brep))
+        XCTAssertEqual(restored.nativeBodyID, body.id)
+        XCTAssertEqual(restored.nativeMeshRevision, body.meshRevision)
+        XCTAssertEqual(restored.nativeFaceNames, snapshot.table.nativeFaceNames)
+        XCTAssertNotNil(restored.nativeFaceSignatures)
+        var alteredMesh = mesh; alteredMesh.append(0)
+        XCTAssertNil(CADFaceNamingSnapshot.restore(cache, body: body, mesh: alteredMesh, brep: brep))
+        var alteredBrep = brep; alteredBrep.append(0)
+        XCTAssertNil(CADFaceNamingSnapshot.restore(cache, body: body, mesh: mesh, brep: alteredBrep))
+        var invalid = snapshot; invalid.bodyID = BodyID()
+        XCTAssertNil(CADFaceNamingSnapshot.restore(try JSONEncoder().encode(invalid),
+            body: body, mesh: mesh, brep: brep))
+        invalid = snapshot; invalid.version = 999
+        XCTAssertNil(CADFaceNamingSnapshot.restore(try JSONEncoder().encode(invalid),
+            body: body, mesh: mesh, brep: brep))
+        invalid = snapshot; invalid.table.nativeFaceChannel = []
+        XCTAssertNil(CADFaceNamingSnapshot.restore(try JSONEncoder().encode(invalid),
+            body: body, mesh: mesh, brep: brep))
+        let originalManifest = try CADAssociativeFormatFixture.manifest(url)
+        document.close()
+        let valid = try await FloeCADDocument.open(at: url)
+        let reopenedBody = try documentBody(bodyID, in: valid)
+        let validTable = try XCTUnwrap(valid.session.faceRangeTable(for: reopenedBody))
+        XCTAssertTrue(CADFaceMaterialResolver.assessGroups(in: reopenedBody, table: validTable,
+            tableRevision: reopenedBody.meshRevision).isLossless)
+        XCTAssertEqual(valid.modelSHA256, originalManifest.modelSHA256)
+        valid.close()
+
+        try CADAssociativeFormatFixture.rewrite(url, schema: originalManifest.schemaVersion) {
+            $0.bodies[0].faceNamingSnapshot = Data("not a naming cache".utf8)
+        }
+        let changedManifest = try CADAssociativeFormatFixture.manifest(url)
+        XCTAssertEqual(changedManifest.modelSHA256, originalManifest.modelSHA256,
+            "An advisory range cache is not an authoring change")
+        XCTAssertNotEqual(changedManifest.contentSHA256, originalManifest.contentSHA256,
+            "The package content checksum still covers the cache bytes")
+        let damaged = try await FloeCADDocument.open(at: url)
+        defer { damaged.close() }
+        let retained = try documentBody(bodyID, in: damaged)
+        XCTAssertEqual(retained.render, body.render)
+        XCTAssertNotNil(retained.brep)
+        XCTAssertEqual(retained.materialFaceBindings, body.materialFaceBindings)
+        XCTAssertNil(CADFaceMaterialResolver.resolve(retained.materialFaceBindings, in: retained,
+            table: damaged.session.faceRangeTable(for: retained)).first?.resolvedIndex,
+            "A damaged cache cannot reinterpret a saved native name by geometry")
+        let bytesBefore = try CADAssociativeFormatFixture.bytes(url)
+        var changedRecord = try CADAssociativeFormatFixture.record(url)
+        changedRecord.bodies[0].faceNamingSnapshot = cache
+        try JSONEncoder().encode(changedRecord).write(to: url.appendingPathComponent("document.json"))
+        XCTAssertThrowsError(try FileCADDocumentStore(packageURL: url).readWithoutRecovery(),
+            "Changing derived bytes still requires the ordinary content checksum")
+        try XCTUnwrap(bytesBefore["document.json"]).write(to: url.appendingPathComponent("document.json"))
+    }
+
     /// A normal save/close/reopen must keep the painted face's REAL triangle
     /// range, visible to Edit, Present/Scene and both material exports, without
     /// guessing an index, blessing the naming cache or touching the document.

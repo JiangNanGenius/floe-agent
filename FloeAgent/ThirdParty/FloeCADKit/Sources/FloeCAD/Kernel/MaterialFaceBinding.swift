@@ -11,6 +11,7 @@
 //
 
 import Foundation
+import CryptoKit
 import simd
 
 // MARK: - Stable key
@@ -18,9 +19,8 @@ import simd
 nonisolated struct CADFaceKey: Codable, Equatable, Sendable {
     /// Body-local geometric fingerprint at assignment time.
     var signature: FaceSignature
-    /// Kernel-history identity when the caller had one. Kept as provenance and
-    /// as a tie-breaker for a future naming-aware resolver; material resolution
-    /// below never guesses on it alone.
+    /// Kernel-history identity when available. A missing recorded name never
+    /// falls back to geometric resemblance.
     var elementName: ElementName?
     /// The 1-based kernel index at assignment time. Provenance ONLY: it is
     /// never used to resolve after a rebuild.
@@ -51,6 +51,82 @@ nonisolated struct CADFaceMaterialBinding: Codable, Equatable, Sendable {
         self.key = key
         self.material = material.clamped
         self.assignedAt = assignedAt
+    }
+}
+
+/// An advisory naming/range cache bound to the EXACT stored geometry bytes.
+/// This preserves a saved native face map across reload; archive bytes are
+/// never used as identity across a rebuild. Authoring/model digests exclude
+/// this derived cache, while the ordinary package content digest covers it.
+nonisolated struct CADFaceNamingSnapshot: Codable, Sendable {
+    var version: Int = 1
+    var bodyID: BodyID
+    var meshSHA256: String
+    var brepSHA256: String
+    var table: FaceTable
+
+    private static func digest(_ data: Data) -> String {
+        SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+    }
+
+    static func encode(table: FaceTable, body: Body, mesh: Data, brep: Data?) -> Data? {
+        guard let brep, body.brep != nil, table.nativeBodyID == body.id,
+              table.nativeMeshRevision == body.meshRevision else { return nil }
+        var stable = table
+        // Session revision counters change on open/undo, not authoring intent.
+        stable.nativeMeshRevision = 0
+        let value = Self(bodyID: body.id, meshSHA256: digest(mesh), brepSHA256: digest(brep), table: stable)
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        return try? encoder.encode(value)
+    }
+
+    static func restore(_ data: Data, body: Body, mesh: Data, brep: Data?) -> FaceTable? {
+        guard let brep, body.brep != nil,
+              let saved = try? JSONDecoder().decode(Self.self, from: data), saved.version == 1,
+              saved.bodyID == body.id, saved.table.nativeBodyID == body.id,
+              saved.table.nativeMeshRevision == 0,
+              saved.meshSHA256 == digest(mesh), saved.brepSHA256 == digest(brep),
+              saved.table.nativeFaceNames?.values.allSatisfy(\.hasSupportedOperationIdentity) != false,
+              saved.table.entries.allSatisfy({ entry in
+                  entry.elementName?.hasSupportedOperationIdentity != false
+                      && entry.triangles.allSatisfy({ $0 >= 0 && $0 < body.render.triangleCount })
+              }),
+              saved.table.nativeFaceChannel == nil
+                || saved.table.nativeFaceChannel?.count == body.render.triangleCount else { return nil }
+        var restored = saved.table
+        // Exact saved-byte ownership was checked above, independently of a
+        // previous process's session counter.
+        restored.nativeMeshRevision = body.meshRevision
+        return prepare(restored, for: body, names: saved.table.nativeFaceNames)
+    }
+
+    /// Called once per geometry revision, including cold legacy documents.
+    /// A freshly tessellated channel is usable ONLY if its actual buffers
+    /// equal the saved render. Equal triangle counts alone prove nothing.
+    static func prepare(_ table: FaceTable, for body: Body,
+                        names: [Int: ElementName]? = nil) -> FaceTable {
+        guard let brep = body.brep else { return table }
+        var result = table
+        if table.nativeBodyID != nil,
+           table.nativeBodyID != body.id || table.nativeMeshRevision != body.meshRevision {
+            result = SignatureNaming.currentFaceTable(for: body)
+        }
+        result.nativeBodyID = body.id
+        result.nativeMeshRevision = body.meshRevision
+        result.nativeFaceNames = names ?? result.nativeFaceNames
+        result.nativeFaceSignatures = Dictionary(uniqueKeysWithValues: OCCTKernel.faceInfo(brep).compactMap {
+            face in face.signature.map { (face.index, $0) }
+        })
+        if result.nativeFaceChannel == nil {
+            let native = OCCTKernel.renderMesh(from: brep)
+            if native.positions == body.render.positions, native.normals == body.render.normals,
+               native.indices == body.render.indices {
+                let channel = OCCTKernel.renderMeshFaceChannel(from: brep)
+                if channel.count == body.render.triangleCount { result.nativeFaceChannel = channel }
+            }
+        }
+        return result
     }
 }
 
@@ -161,10 +237,12 @@ nonisolated enum CADFaceSignatureCodec {
 nonisolated struct CADFaceCandidate: Sendable, Equatable {
     var index: Int
     var signature: FaceSignature
+    var elementName: ElementName?
 
-    init(index: Int, signature: FaceSignature) {
+    init(index: Int, signature: FaceSignature, elementName: ElementName? = nil) {
         self.index = index
         self.signature = signature
+        self.elementName = elementName
     }
 }
 
@@ -261,9 +339,8 @@ nonisolated struct CADFaceGroupAssessment: Sendable, Equatable {
 }
 
 nonisolated enum CADFaceMaterialResolver {
-    /// Minimum score for an automatic match. A parameter edit changes a face's
-    /// area/centroid, so this must tolerate real resizing while still rejecting
-    /// a different face.
+    /// Retained for query/preview comparisons. Persisted bindings use names
+    /// or unique exact fingerprints below, never this similarity threshold.
     static let matchThreshold: Double = 0.72
     /// A match must beat its runner-up by this margin; else the binding is
     /// ambiguous and needs explicit reassignment.
@@ -287,7 +364,24 @@ nonisolated enum CADFaceMaterialResolver {
                                           remainingTriangles: [])
         }
         let tableIsFresh = table != nil && tableRevision == body.meshRevision
-        let candidates = candidates(for: body)
+            && (table?.nativeBodyID == nil
+                || (table?.nativeBodyID == body.id && table?.nativeMeshRevision == body.meshRevision))
+        let candidates = candidates(for: body, table: tableIsFresh ? table : nil)
+        let byIndex = Dictionary(uniqueKeysWithValues: candidates.map { ($0.index, $0) })
+        var channelGroups: [UInt32: [Int]] = [:]
+        var coverage: [Int: Int] = [:]
+        var invalidEntryRanges: [Set<Int>] = []
+        if tableIsFresh, let table,
+           table.nativeBodyID == body.id, table.nativeMeshRevision == body.meshRevision,
+           let channel = table.nativeFaceChannel, channel.count == body.render.triangleCount {
+            for triangle in channel.indices { channelGroups[channel[triangle], default: []].append(triangle) }
+            for entry in table.entries {
+                for triangle in entry.triangles { coverage[triangle, default: 0] += 1 }
+                if entry.triangles.contains(where: { $0 < 0 || $0 >= triangleCount }) {
+                    invalidEntryRanges.append(Set(entry.triangles))
+                }
+            }
+        }
         var claimed = Set<Int>()
         var groups: [CADFaceGroup] = []
         var issues: [CADFaceGroupIssue] = []
@@ -303,28 +397,47 @@ nonisolated enum CADFaceMaterialResolver {
                         materialName: materialName, capturedIndex: captured))
                     continue
                 }
-                var scored: [(score: Double, triangles: [Int])] = []
-                for entry in table.entries {
-                    guard let score = score(binding.key.signature, entry.signature)
-                    else { continue }
-                    scored.append((score, entry.triangles))
+                guard let candidate = byIndex[faceIndex] else { continue }
+                let triangles: [Int]
+                if let native = UInt32(exactly: faceIndex), let owned = channelGroups[native] {
+                    guard owned.allSatisfy({ $0 >= 0 && $0 < triangleCount }),
+                          owned.allSatisfy({ coverage[$0, default: 0] <= 1 }),
+                          invalidEntryRanges.allSatisfy({ $0.isDisjoint(with: owned) }) else {
+                        issues.append(CADFaceGroupIssue(kind: .overlapOrInvalid, faceIndex: faceIndex,
+                            materialName: materialName, capturedIndex: captured))
+                        continue
+                    }
+                    guard owned.allSatisfy({ coverage[$0, default: 0] == 1 }) else {
+                        issues.append(CADFaceGroupIssue(kind: .missing, faceIndex: faceIndex,
+                            materialName: materialName, capturedIndex: captured))
+                        continue
+                    }
+                    triangles = owned
+                } else {
+                    // Euclid's baked box render has no native channel, but
+                    // its validated author-owned box roles are exact names.
+                    let namedBox: Bool
+                    if case .box? = body.primitive,
+                       case .primitiveFace(.boxFace)? = candidate.elementName?.source { namedBox = true }
+                    else { namedBox = false }
+                    let entries = table.entries.filter {
+                        namedBox ? $0.elementName == candidate.elementName
+                            : SignatureNaming.exactSignature($0.signature, candidate.signature)
+                    }
+                    guard !entries.isEmpty else {
+                        issues.append(CADFaceGroupIssue(
+                            kind: .missing, faceIndex: faceIndex,
+                            materialName: materialName, capturedIndex: captured))
+                        continue
+                    }
+                    guard entries.count == 1, let entry = entries.first else {
+                        issues.append(CADFaceGroupIssue(
+                            kind: .ambiguous, faceIndex: faceIndex,
+                            materialName: materialName, capturedIndex: captured))
+                        continue
+                    }
+                    triangles = entry.triangles
                 }
-                scored.sort { $0.score > $1.score }
-                guard let best = scored.first,
-                      best.score >= matchThreshold else {
-                    issues.append(CADFaceGroupIssue(
-                        kind: .missing, faceIndex: faceIndex,
-                        materialName: materialName, capturedIndex: captured))
-                    continue
-                }
-                if scored.count > 1,
-                   best.score - scored[1].score < ambiguityMargin {
-                    issues.append(CADFaceGroupIssue(
-                        kind: .ambiguous, faceIndex: faceIndex,
-                        materialName: materialName, capturedIndex: captured))
-                    continue
-                }
-                let triangles = best.triangles
                 guard !triangles.isEmpty,
                       triangles.allSatisfy({ $0 >= 0 && $0 < triangleCount }),
                       triangles.allSatisfy({ !claimed.contains($0) }) else {
@@ -356,12 +469,31 @@ nonisolated enum CADFaceMaterialResolver {
                                       remainingTriangles: remaining)
     }
 
-    static func candidates(for body: Body) -> [CADFaceCandidate] {
+    static func candidates(for body: Body, table: FaceTable? = nil) -> [CADFaceCandidate] {
         guard let brep = body.brep else { return [] }
+        let fresh = table?.nativeBodyID == body.id && table?.nativeMeshRevision == body.meshRevision
+        let names = fresh ? table?.nativeFaceNames : nil
+        if fresh, let signatures = table?.nativeFaceSignatures {
+            return signatures.keys.sorted().compactMap { index in
+                signatures[index].map { CADFaceCandidate(index: index, signature: $0, elementName: names?[index]) }
+            }
+        }
         return OCCTKernel.faceInfo(brep).compactMap { face in
             guard let signature = face.signature else { return nil }
-            return CADFaceCandidate(index: face.index, signature: signature)
+            return CADFaceCandidate(index: face.index, signature: signature, elementName: names?[face.index])
         }
+    }
+
+    /// Selection previews consume the same actual range contract as writers.
+    static func triangles(for index: Int, in body: Body, table: FaceTable) -> [Int]? {
+        guard let face = candidates(for: body, table: table).first(where: { $0.index == index }) else { return nil }
+        var selected = body
+        selected.materialFaceBindings = [CADFaceMaterialBinding(
+            key: CADFaceKey(signature: face.signature, elementName: face.elementName, capturedIndex: index),
+            material: .default)]
+        let assessment = assessGroups(in: selected, table: table, tableRevision: body.meshRevision)
+        guard assessment.issues.isEmpty, assessment.groups.count == 1 else { return nil }
+        return assessment.groups.first?.triangles
     }
 
     static func match(_ key: CADFaceKey,
@@ -369,22 +501,27 @@ nonisolated enum CADFaceMaterialResolver {
         guard !candidates.isEmpty else {
             return .unresolved(reason: "The body has no analytic B-rep faces; face materials need an exact solid.")
         }
-        var scored: [(index: Int, score: Double)] = []
-        for candidate in candidates {
-            guard let score = score(key.signature, candidate.signature) else { continue }
-            scored.append((candidate.index, score))
+        let matches: [CADFaceCandidate]
+        if let name = key.elementName {
+            guard name.hasSupportedOperationIdentity else {
+                return .unresolved(reason: "This face reference is not supported. Select the face again.")
+            }
+            let named = candidates.filter { $0.elementName == name }
+            guard named.count <= 1 else { return .ambiguous(indices: named.map(\.index).sorted()) }
+            matches = named.filter {
+                SignatureNaming.acceptsNamedSignature(name, current: $0.signature, reference: key.signature)
+            }
+        } else {
+            matches = candidates.filter { SignatureNaming.exactSignature($0.signature, key.signature) }
         }
-        scored.sort { lhs, rhs in
-            lhs.score == rhs.score ? lhs.index < rhs.index : lhs.score > rhs.score
+        guard !matches.isEmpty else {
+            return .unresolved(reason: FloeCADStrings.text("cad.material.target.reselectFaceHint",
+                "This selection doesn't match one stable face. Reselect a single face."))
         }
-        guard let best = scored.first, best.score >= matchThreshold else {
-            return .unresolved(reason: "The stored face signature no longer matches this body's faces.")
+        guard matches.count == 1, let candidate = matches.first else {
+            return .ambiguous(indices: matches.map(\.index).sorted())
         }
-        if scored.count > 1, best.score - scored[1].score < ambiguityMargin {
-            let tied = scored.prefix { best.score - $0.score < ambiguityMargin }.map(\.index)
-            return .ambiguous(indices: Array(tied))
-        }
-        return .resolved(index: best.index, confidence: best.score)
+        return .resolved(index: candidate.index, confidence: 1)
     }
 
     /// Scores one stored signature against a current face. Nil = incompatible
@@ -425,8 +562,8 @@ nonisolated enum CADFaceMaterialResolver {
     }
 
     static func resolve(_ bindings: [CADFaceMaterialBinding],
-                        in body: Body) -> [Resolution] {
-        let candidates = candidates(for: body)
+                        in body: Body, table: FaceTable? = nil) -> [Resolution] {
+        let candidates = candidates(for: body, table: table)
         return bindings.map { binding in
             Resolution(binding: binding,
                        match: match(binding.key, candidates: candidates))

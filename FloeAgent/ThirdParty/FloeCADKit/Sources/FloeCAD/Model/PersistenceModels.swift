@@ -120,6 +120,8 @@ final class PersistedBody {
     /// JSON-encoded `[CADFaceMaterialBinding]` (stable per-face snapshots).
     /// Additive and nil for every pre-material document/body.
     var faceMaterialsData: Data?
+    /// Optional derived face map bound to the stored mesh/BRep bytes.
+    var faceNamingSnapshotData: Data?
     /// OCCT BRep blob, so analytic geometry survives a reload.
     var brepData: Data?
     weak var project: Project?

@@ -161,12 +161,11 @@ final class DocumentSession {
     /// document, its revision/change count, undo history or package bytes, and
     /// it reuses the cached table across view refreshes until the body's mesh
     /// revision actually changes.
-    func faceRangeTable(for body: Body) -> FaceTable? {
-        if let table = lastFaceTables[body.id],
-           lastNamingRevisions[body.id] == body.meshRevision {
-            return table
-        }
-        guard !body.materialFaceBindings.isEmpty, body.brep != nil else { return nil }
+    func faceRangeTable(for body: Body, preparingForAssignment: Bool = false) -> FaceTable? {
+        let liveTable = lastNamingRevisions[body.id] == body.meshRevision ? lastFaceTables[body.id] : nil
+        if let liveTable, liveTable.nativeFaceSignatures != nil { return liveTable }
+        guard preparingForAssignment || !body.materialFaceBindings.isEmpty else { return liveTable }
+        guard body.brep != nil else { return liveTable }
         if let prepared = preparedFaceRangeTables[body.id],
            prepared.meshRevision == body.meshRevision {
             return prepared.table.entries.isEmpty ? nil : prepared.table
@@ -182,7 +181,8 @@ final class DocumentSession {
               body.render.normals.allSatisfy({ $0.x.isFinite && $0.y.isFinite && $0.z.isFinite }),
               body.render.indices.allSatisfy({ Int($0) < body.render.positions.count })
         else { return nil }
-        let table = SignatureNaming.currentFaceTable(for: body)
+        let table = CADFaceNamingSnapshot.prepare(liveTable ?? SignatureNaming.currentFaceTable(for: body),
+            for: body, names: liveTable == nil ? nil : lastKernelNames[body.id])
         preparedFaceRangeTables[body.id] = PreparedFaceRangeTable(
             meshRevision: body.meshRevision, table: table)
         return table.entries.isEmpty ? nil : table
@@ -1909,6 +1909,7 @@ final class DocumentSession {
         OpenTiming.mark("load start")
         #endif
         var loaded = DesignDocument()
+        var restoredFaceRanges: [BodyID: PreparedFaceRangeTable] = [:]
         for persisted in project.bodies {
             guard let render = try? MeshBlob.decode(persisted.meshData),
                   let transform = try? JSONDecoder().decode(Transform3D.self, from: persisted.transformData)
@@ -1972,6 +1973,11 @@ final class DocumentSession {
                 } else {
                     unreadableRows.bodyBrep.insert(persisted.bodyID)
                 }
+            }
+            if let cache = persisted.faceNamingSnapshotData,
+               let table = CADFaceNamingSnapshot.restore(cache, body: body,
+                   mesh: persisted.meshData, brep: persisted.brepData) {
+                restoredFaceRanges[body.id] = PreparedFaceRangeTable(meshRevision: body.meshRevision, table: table)
             }
             loaded.bodies.append(body)
         }
@@ -2101,7 +2107,7 @@ final class DocumentSession {
         evalCache = EvalCache()   // a fresh memo for a freshly loaded document
         // A named-version restore reuses this session with a fresh revision
         // sequence; never let a table from the replaced document survive it.
-        preparedFaceRangeTables = [:]
+        preparedFaceRangeTables = restoredFaceRanges
         #if DEBUG
         OpenTiming.mark("\(loaded.features.nodes.count) features decoded, load done")
         #endif
@@ -2659,6 +2665,10 @@ final class DocumentSession {
             // IGES surfaces survive a reload instead of degrading to triangles.
             // Cache-first: `saveAsync` pre-serializes changed exact bodies off-main.
             let brepData = serializedBrep(for: body)
+            let faceNamingSnapshotData = body.materialFaceBindings.isEmpty ? nil
+                : faceRangeTable(for: body).flatMap {
+                    CADFaceNamingSnapshot.encode(table: $0, body: body, mesh: meshData, brep: brepData)
+                }
 
             if let persisted = persistedByID[body.id.raw] {
                 let id = body.id.raw
@@ -2706,6 +2716,7 @@ final class DocumentSession {
                 if !(preserve(unreadableRows.bodyBrep, brepData) && meshUnchanged) {
                     persisted.brepData = brepData
                 }
+                persisted.faceNamingSnapshotData = faceNamingSnapshotData
             } else {
                 let persisted = PersistedBody(
                     bodyID: body.id.raw,
@@ -2718,6 +2729,7 @@ final class DocumentSession {
                 persisted.materialData = materialData
                 persisted.faceMaterialsData = faceMaterialsData
                 persisted.brepData = brepData
+                persisted.faceNamingSnapshotData = faceNamingSnapshotData
                 persisted.project = project
                 modelContext.insert(persisted)
             }

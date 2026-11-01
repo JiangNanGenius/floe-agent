@@ -426,6 +426,59 @@ final class CADAssociativeFormatTests: XCTestCase {
         }
     }
 
+    func testOnlyActualNamedMaterialIntentRaisesTheFloorAndUnknownNameStaysOpaque() throws {
+        let seed = try CADAssociativeFormatFixture.plane()
+        guard case let .offset(offset)? = seed.definition else { return XCTFail("Missing fixture") }
+        let face = offset.source
+        var binding = CADFaceMaterialBinding(key: CADFaceKey(signature: face.signature), material: .default)
+        var row = CADBodyRecord(bodyID: face.body.bodyID.raw, name: "Face appearance",
+            transform: try JSONEncoder().encode(Transform3D()), isHidden: false,
+            faceMaterials: try JSONEncoder().encode([binding]),
+            faceNamingSnapshot: Data("advisory cache does not define intent".utf8))
+        XCTAssertEqual(try CADDocumentFormat.assess(planes: [], sketches: [], bodies: [row]).requiredVersion,
+                       CADDocumentFormat.legacyVersion)
+        binding.key.elementName = ElementName(creator: face.creator, source: .primitiveFace(.boxFace(.py)))
+        row.faceMaterials = try JSONEncoder().encode([binding])
+        let named = try CADDocumentFormat.assess(planes: [], sketches: [], bodies: [row])
+        XCTAssertEqual(named.requiredVersion, CADDocumentFormat.namedFaceMaterialVersion)
+        XCTAssertFalse(named.isOpaqueReadOnly)
+        var object = try XCTUnwrap(JSONSerialization.jsonObject(with: try XCTUnwrap(row.faceMaterials)) as? [[String: Any]])
+        var key = try XCTUnwrap(object[0]["key"] as? [String: Any])
+        var name = try XCTUnwrap(key["elementName"] as? [String: Any])
+        name["source"] = ["futureFaceIdentity": ["version": 700]]
+        key["elementName"] = name; object[0]["key"] = key
+        row.faceMaterials = try JSONSerialization.data(withJSONObject: object)
+        let future = try CADDocumentFormat.assess(planes: [], sketches: [], bodies: [row])
+        XCTAssertEqual(future.requiredVersion, CADDocumentFormat.namedFaceMaterialVersion)
+        XCTAssertTrue(future.opaqueBodyAppearance)
+        XCTAssertTrue(future.isOpaqueReadOnly)
+    }
+
+    func testUnknownSavedMaterialNamePreservesThePackageReadOnly() async throws {
+        let package = url()
+        try await CADAssociativeFormatFixture.basicPackage(at: package)
+        try CADAssociativeFormatFixture.rewrite(package, schema: CADDocumentFormat.namedFaceMaterialVersion) { record in
+            let seed = try CADAssociativeFormatFixture.plane()
+            guard case let .offset(offset)? = seed.definition else { return XCTFail("Missing fixture") }
+            let binding = CADFaceMaterialBinding(key: CADFaceKey(signature: offset.source.signature,
+                elementName: ElementName(creator: offset.source.creator, source: .primitiveFace(.boxFace(.py)))),
+                material: .default)
+            var object = try XCTUnwrap(JSONSerialization.jsonObject(with: JSONEncoder().encode([binding])) as? [[String: Any]])
+            var key = try XCTUnwrap(object[0]["key"] as? [String: Any])
+            var name = try XCTUnwrap(key["elementName"] as? [String: Any])
+            name["source"] = ["futureFaceIdentity": ["version": 700]]
+            key["elementName"] = name; object[0]["key"] = key
+            record.bodies[0].faceMaterials = try JSONSerialization.data(withJSONObject: object)
+        }
+        let bytes = try CADAssociativeFormatFixture.bytes(package)
+        let document = try await open(package)
+        XCTAssertTrue(document.session.isReadOnly)
+        XCTAssertNotNil(document.session.document.bodies.first?.brep)
+        let saved = await document.save()
+        XCTAssertFalse(saved.succeeded)
+        XCTAssertEqual(try CADAssociativeFormatFixture.bytes(package), bytes)
+    }
+
     func testSavedOperationFaceIdentityReopensAndFutureVersionRemainsBytePreservedReadOnly() async throws {
         let package = url()
         try await CADAssociativeFormatFixture.basicPackage(at: package)
