@@ -87,7 +87,7 @@ nonisolated struct EvalCache: Sendable {
                 adopted.edges = doc.edges
                 adopted.brep = doc.brep
                 adopted.surfaceBRep = doc.surfaceBRep
-                return .put(adopted, table?.rebindingNativeRevision(afterOwnedRestore: adopted), kernelNames: names)
+                return .put(adopted, table.rebindingNativeRevision(afterOwnedRestore: adopted), kernelNames: names)
             }
             entries[id] = EvalCacheEntry(fingerprint: entry.fingerprint, delta: delta)
         }
