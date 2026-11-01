@@ -41,7 +41,9 @@ import kotlinx.serialization.json.JsonElement
  *  * [IntegrationsHostController] — Skills/MCP/backend tool discovery;
  *  * [SettingsHostController] — defaults/memory/personalization/usage/privacy;
  *  * [WebSearchHostController] — web-search provider metadata + secure editor;
- *  * [AttachmentImportController] — picker/SAF/staging handoff ownership.
+ *  * [AttachmentImportController] — picker/SAF/staging handoff ownership;
+ *  * [ProjectHostController] — the real user project library CRUD +
+ *    pre-first-run assignment projections.
  *
  * Nothing in this package executes business logic natively in Kotlin: the
  * Swift runtime remains the single structural authority; the host only
@@ -67,6 +69,9 @@ class RuntimeHost internal constructor(
     val webSearch = WebSearchHostController(this)
     val attachments = AttachmentImportController(this)
     val home = HomeLaunchpadHost(this)
+    /** Real managed user-project library. Source-only until Main wires the
+     * native C01 library/bridge; commands stay fail-closed until then. */
+    val projects = ProjectHostController(this)
     /** Ordinary-task editor projections outlive Activity/inspector views. */
     internal val workspaceEditors = G04WorkspaceEditorController(this)
     internal val browser = BrowserHostController(this)
@@ -436,6 +441,7 @@ class RuntimeHost internal constructor(
         settings.start()
         webSearch.start()
         home.start()
+        projects.start()
     }
 
     /**
@@ -458,6 +464,7 @@ class RuntimeHost internal constructor(
         settings.stop()
         webSearch.stop()
         home.stop()
+        projects.stop()
         observationJob?.cancel()
         // The Office AI pump drains through its OWN contract first: an
         // unproven drain keeps the old generation owned/pending honestly
@@ -601,6 +608,9 @@ class RuntimeHost internal constructor(
                 startOfficeAiLane()
                 startNetworkDiagnosticsLane()
                 startNetworkArtifactLane()
+                // C01: the project list becomes readable with the accepted
+                // store; refresh once on the real readiness transition.
+                projects.refresh()
                 // G08 Full-only platform extension follows the SAME accepted
                 // generation. A null/foreign epoch is never fabricated.
                 nativeRootEpoch()?.takeIf { it > 0 }?.let { epoch ->

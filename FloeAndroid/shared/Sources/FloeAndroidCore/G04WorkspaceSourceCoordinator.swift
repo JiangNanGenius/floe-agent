@@ -567,7 +567,7 @@ public actor G04WorkspaceSourceCoordinator {
         }
         do {
             let owner = G04WorkspaceOwner(epoch: epoch, taskID: taskID, workspaceID: workspaceID)
-            let service = try await G04LiveWorkspaceAccess.privateTaskService(owner,
+            let service = try await G04LiveWorkspaceAccess.managedService(owner,
                                                                               cancellation: lease.cancellation)
             let stagedDigest = try FloeDigest.sha256Hex(ofFileAt: stagedURL,
                                                         isCancelled: { lease.cancellation.isCancelled })
@@ -638,7 +638,7 @@ public actor G04WorkspaceSourceCoordinator {
         }
         do {
             let owner = G04WorkspaceOwner(epoch: epoch, taskID: taskID, workspaceID: workspaceID)
-            let service = try await G04LiveWorkspaceAccess.privateTaskService(owner,
+            let service = try await G04LiveWorkspaceAccess.managedService(owner,
                                                                               cancellation: lease.cancellation)
             let sourceURL = try service.guardResolver.resolve(logicalPath)
             let keys: Set<URLResourceKey> = [.isRegularFileKey, .isSymbolicLinkKey, .fileSizeKey]
@@ -714,7 +714,7 @@ public actor G04WorkspaceSourceCoordinator {
         }
         do {
             let owner = G04WorkspaceOwner(epoch: epoch, taskID: taskID, workspaceID: workspaceID)
-            let service = try await G04LiveWorkspaceAccess.privateTaskService(
+            let service = try await G04LiveWorkspaceAccess.managedService(
                 owner, cancellation: operation.cancellation)
             if operation.cancellation.isCancelled {
                 throw G04SourceCoordinatorError.transitionRefused("cancelled")

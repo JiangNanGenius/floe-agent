@@ -125,6 +125,16 @@ class HomeLaunchpadHost internal constructor(
     private val selectedModelIdState = MutableStateFlow<String?>(null)
     val selectedModelId: StateFlow<String?> = selectedModelIdState
 
+    /** The REAL project selected for the NEXT ordinary Home launch. null is
+     * the honest "no project" choice; the assignment happens only after the
+     * durable conversation header exists and before its first run. */
+    private val selectedProjectIdState = MutableStateFlow<String?>(null)
+    val selectedProjectId: StateFlow<String?> = selectedProjectIdState
+
+    fun selectProject(projectId: String?) {
+        selectedProjectIdState.value = projectId?.takeIf { it.isNotBlank() }
+    }
+
     /** The real composer model options (usable rows from the F1 projection). */
     private val modelOptionsState = MutableStateFlow<List<ModelOptionUi>>(emptyList())
     val modelOptions: StateFlow<List<ModelOptionUi>> = modelOptionsState
@@ -505,6 +515,11 @@ class HomeLaunchpadHost internal constructor(
         // (or ungated) launch; refusal settles with the text and hands the
         // attachment rows back to the draft.
         val providerId = providerIdFor(modelID)
+        // The project choice is captured for THIS send. It is NOT written
+        // into conversation.create: the durable assignment only becomes
+        // possible after the empty ordinary header exists and is fenced by
+        // the native project.assign (pre-first-run only).
+        val projectID = selectedProjectIdState.value
         fun proceedWithCreate() {
             val created = host.conversations.createConversationForLaunch(
                 title = title,
@@ -528,11 +543,42 @@ class HomeLaunchpadHost internal constructor(
                     }
                     holder.selectAgentMode(parseMode(mode))
                     holder.setDraftTaskApprovalMode(draftApproval)
-                    host.conversations.rootWorkspace.clearHandedOff(draftNonce)
-                    host.conversations.navigationRequest.value =
-                        SidebarSelection.Conversation(conversationID)
-                    launchWhenModelReady(holder, modelID) { reason ->
-                        settleOrdinarySend(reason, onFailure)
+                    fun publishAndLaunch() {
+                        host.conversations.rootWorkspace.clearHandedOff(draftNonce)
+                        host.conversations.navigationRequest.value =
+                            SidebarSelection.Conversation(conversationID)
+                        launchWhenModelReady(holder, modelID) { reason ->
+                            settleOrdinarySend(reason, onFailure)
+                        }
+                    }
+                    if (projectID == null) {
+                        // No project choice: the existing independent
+                        // private-task launch path is unchanged.
+                        publishAndLaunch()
+                        return@createConversationForLaunch
+                    }
+                    host.projects.assignBeforeFirstRun(
+                        projectId = projectID,
+                        conversationId = conversationID,
+                        expectedRevision = null,
+                        onSuccess = { publishAndLaunch() },
+                    ) { code, canRollback ->
+                        // Only a DEFINITE refusal may roll back the fresh
+                        // header. A timeout/superseded admission may still
+                        // commit natively, so its empty header is retained.
+                        fun settleRollback() {
+                            host.conversations.releaseHolder(conversationID)
+                            host.conversations.rootWorkspace.restoreHandedOff(draftNonce)
+                            settleOrdinarySend(code, onFailure)
+                        }
+                        if (!canRollback) {
+                            settleRollback()
+                            return@assignBeforeFirstRun
+                        }
+                        host.projects.rollbackFreshConversation(
+                            conversationId = conversationID,
+                            assignedProjectId = projectID,
+                        ) { settleRollback() }
                     }
                 },
                 onFailure = { reason ->
@@ -621,6 +667,7 @@ class HomeLaunchpadHost internal constructor(
         if (token == null) return
         sendingState.value = true
         val taskTitle = text.lines().firstOrNull()?.take(80) ?: text.take(80)
+        val selectedProject = selectedProjectIdState.value
         val (draftNonce, _) = host.conversations.rootWorkspace.currentDraftOwner()
         val handoffAttachments = host.conversations.rootWorkspace.takeSendableForLaunch()
         fun failWith(reason: String) {
@@ -668,55 +715,81 @@ class HomeLaunchpadHost internal constructor(
                     failWith(host.attachments.failureMessage("stage_refused"))
                     return@createConversationForLaunch
                 }
-                admissionPublishBarrier?.invoke()
-                var draftTransferred = false
-                val published = synchronized(stateLock) {
-                    if (!isCurrentLocked(token)) {
-                        false
-                    } else {
-                        draftTransferred = HomeDraftTransfer.consumeTransferred(
-                            FloeFoundation.draftStore,
-                            text,
-                            isOriginCurrent = true,
-                        )
-                        host.conversations.rootWorkspace.clearHandedOff(draftNonce)
-                        val target = SidebarSelection.Conversation(conversationID)
-                        ownedNavigation = OwnedNavigation(
-                            navigationID = nextNavigationID + 1,
-                            token = token,
-                            target = target,
-                        )
-                        nextNavigationID += 1
-                        // Publication is the SAME critical section as the
-                        // final ownership proof (the existing owned-navigation
-                        // contract): from here the shell's one-shot commit or
-                        // an actual invalidation owns the outcome. The
-                        // observable sending indicator settles HERE too —
-                        // never after the lock, where an invalidate + a newer
-                        // request could otherwise be cleared by this stale
-                        // settlement (the existing blank-temporary publish
-                        // precedent).
-                        host.conversations.navigationRequest.value = target
-                        sendingValue = false
-                        sendingState.value = false
-                        true
+                fun publish() {
+                    admissionPublishBarrier?.invoke()
+                    var draftTransferred = false
+                    val published = synchronized(stateLock) {
+                        if (!isCurrentLocked(token)) {
+                            false
+                        } else {
+                            draftTransferred = HomeDraftTransfer.consumeTransferred(
+                                FloeFoundation.draftStore,
+                                text,
+                                isOriginCurrent = true,
+                            )
+                            host.conversations.rootWorkspace.clearHandedOff(draftNonce)
+                            val target = SidebarSelection.Conversation(conversationID)
+                            ownedNavigation = OwnedNavigation(
+                                navigationID = nextNavigationID + 1,
+                                token = token,
+                                target = target,
+                            )
+                            nextNavigationID += 1
+                            // Publication is the SAME critical section as the
+                            // final ownership proof (the existing
+                            // owned-navigation contract): from here the
+                            // shell's one-shot commit or an actual invalidation
+                            // owns the outcome. The observable sending
+                            // indicator settles HERE too — never after the
+                            // lock, where an invalidate + a newer request could
+                            // otherwise be cleared by this stale settlement.
+                            host.conversations.navigationRequest.value = target
+                            sendingValue = false
+                            sendingState.value = false
+                            true
+                        }
                     }
+                    if (!published) {
+                        // An actual navigation fenced FIRST: the durable row
+                        // simply waits in history, the staged rows return to
+                        // the draft, the unused holder is released, and
+                        // NOTHING publishes a route, clears a flag or
+                        // consumes a draft.
+                        host.conversations.rootWorkspace.restoreHandedOff(draftNonce)
+                        holder?.let { host.conversations.releaseHolder(conversationID) }
+                        return
+                    }
+                    // One-shot page notification about the committed
+                    // transfer, carrying the EXACT token (the temporary
+                    // send's onAdmitted shape): the page re-validates
+                    // isCurrentHome(token) plus the exact text, so a departed
+                    // generation can never clear a newer Home field even on
+                    // coincidentally identical text.
+                    onDraftConsumed(token, draftTransferred)
                 }
-                if (!published) {
-                    // An actual navigation fenced FIRST: the durable row
-                    // simply waits in history, the staged rows return to the
-                    // draft, the unused holder is released, and NOTHING
-                    // publishes a route, clears a flag or consumes a draft.
-                    host.conversations.rootWorkspace.restoreHandedOff(draftNonce)
-                    holder?.let { host.conversations.releaseHolder(conversationID) }
+                if (selectedProject == null) {
+                    publish()
                     return@createConversationForLaunch
                 }
-                // One-shot page notification about the committed transfer,
-                // carrying the EXACT token (the temporary send's onAdmitted
-                // shape): the page re-validates isCurrentHome(token) plus the
-                // exact text, so a departed generation can never clear a
-                // newer Home field even on coincidentally identical text.
-                onDraftConsumed(token, draftTransferred)
+                // Assign the blank task BEFORE its route becomes visible and
+                // before any run can start. A definite refusal rolls back only
+                // the still-empty fresh header; a timeout/superseded admission
+                // may still commit, so it stays in history and is reported.
+                host.projects.assignBeforeFirstRun(
+                    projectId = selectedProject,
+                    conversationId = conversationID,
+                    expectedRevision = null,
+                    onSuccess = { publish() },
+                ) { code, canRollback ->
+                    if (canRollback) {
+                        host.projects.rollbackFreshConversation(
+                            conversationId = conversationID,
+                            assignedProjectId = selectedProject,
+                        ) { _ -> }
+                    }
+                    holder?.let { host.conversations.releaseHolder(conversationID) }
+                    failWith(code)
+                }
             },
             onFailure = { reason -> failWith(reason) },
         )

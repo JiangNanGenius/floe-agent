@@ -119,14 +119,38 @@ public struct G04LiveWorkspaceAccess: G04WorkspaceAccessPort {
         }
     }
 
-    /// The existing private-task path, for a caller explicitly selecting
-    /// that write layer. Managed project/SAF resolvers must be wired from
-    /// their ORIGINAL records; this never guesses the first project.
-    public static func privateTaskService(_ owner: G04WorkspaceOwner, cancellation: CancellationToken) async throws -> WorkspaceFileService {
+    /// The ONE normalized managed-root resolver shared by the workspace
+    /// editor, source coordinator and draft recovery. `LinuxWorkspaceAuthority`
+    /// already validates the persisted kind/path/non-following layout; this
+    /// only proves the owner still equals that exact binding. A missing
+    /// project leaf resolves to nil and is never recreated here.
+    public static func managedService(_ owner: G04WorkspaceOwner,
+                                      cancellation: CancellationToken) async throws
+        -> WorkspaceFileService {
         try cancellation.throwIfCancelled()
-        guard let binding = await LinuxWorkspaceAuthority.resolveWorkspace(conversationID: owner.taskID),
-              binding.workspaceID == owner.workspaceID else { throw G04DocumentError.ownerChanged }
+        guard let binding = await LinuxWorkspaceAuthority.resolveWorkspace(
+            conversationID: owner.taskID),
+              binding.workspaceID == owner.workspaceID else {
+            throw G04DocumentError.ownerChanged
+        }
         try cancellation.throwIfCancelled()
         return WorkspaceFileService(guard: WorkspacePathGuard(rootURL: binding.rootURL))
+    }
+
+    /// Explicit private-task-only path retained for callers that must not
+    /// accept a managed project root (legacy network workspace lane). A
+    /// project-bound task is typed `ownerChanged` here.
+    public static func privateTaskService(_ owner: G04WorkspaceOwner,
+                                          cancellation: CancellationToken) async throws
+        -> WorkspaceFileService {
+        try cancellation.throwIfCancelled()
+        guard let composition = G02RuntimeComposition.shared.installedComposition,
+              let record = try? await composition.cluster.workspaceStore
+                .workspace(id: owner.workspaceID),
+              record.kind == .privateTask else {
+            throw G04DocumentError.ownerChanged
+        }
+        try cancellation.throwIfCancelled()
+        return try await managedService(owner, cancellation: cancellation)
     }
 }

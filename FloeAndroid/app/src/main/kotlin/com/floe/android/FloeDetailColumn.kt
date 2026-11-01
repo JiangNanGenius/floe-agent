@@ -126,7 +126,14 @@ fun FloeDetailColumn(
                 MoreDestination.SKILLS -> FloeTaskCenterPage(showSidebarToggle, onExpandSidebar, onOpenDrawer, compact)
                 else -> FloePlaceholderPage(stringResource(R.string.app_name), FloeIcons.InfoCircle, stringResource(R.string.workspace_later_update), showSidebarToggle, onExpandSidebar, onOpenDrawer, compact)
             }
-            is SidebarSelection.Workspace -> FloePlaceholderPage(stringResource(R.string.workspaces), FloeIcons.Folder, stringResource(R.string.projects_runtime_pending), showSidebarToggle, onExpandSidebar, onOpenDrawer, compact)
+            is SidebarSelection.Workspace -> ProjectDetailPage(
+                projectId = selection.workspaceId,
+                showSidebarToggle = showSidebarToggle,
+                onExpandSidebar = onExpandSidebar,
+                onOpenDrawer = onOpenDrawer,
+                compact = compact,
+                runtimeHost = runtimeHost,
+            )
             is SidebarSelection.Conversation -> ConversationDestination(
                 conversationId = selection.conversationId,
                 showSidebarToggle = showSidebarToggle,

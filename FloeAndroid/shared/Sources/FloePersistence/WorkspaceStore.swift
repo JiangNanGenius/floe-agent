@@ -99,6 +99,14 @@ public protocol WorkspaceStore: Sendable {
     func deleteGrant(id: UUID) async throws
 }
 
+/// Exact outcome of the C01 conditional workspace deletion transaction.
+public enum WorkspaceConditionalDeleteOutcome: Sendable, Equatable {
+    case deleted
+    case notFound
+    case staleRevision
+    case ownerChanged
+}
+
 /// SQLite/GRDB implementation of `WorkspaceStore`.
 public actor SQLiteWorkspaceStore: WorkspaceStore {
     private let database: DatabaseManager
@@ -343,6 +351,64 @@ public actor SQLiteWorkspaceStore: WorkspaceStore {
                 sql: "DELETE FROM workspaces WHERE id = ?",
                 arguments: [id.uuidString]
             )
+        }
+    }
+
+    /// Exact conditional project/workspace deletion used by C01. The
+    /// caller supplies the persisted revision it observed AND the exact
+    /// conversation-ownership snapshot it fenced. The row check, ownership
+    /// snapshot check, original rehome helper and delete all run inside ONE
+    /// SQLite writer transaction, so a concurrent assignment can only make
+    /// the result `.ownerChanged` (nothing deleted/rehomed) or block until
+    /// afterwards (row absent). There is no timestamp pre-claim, no second
+    /// database and no separate deleteWorkspace call.
+    public func deleteWorkspaceConditional(
+        id: UUID,
+        expectedUpdatedAt: String,
+        expectedConversationIDs: [UUID]
+    ) async throws -> WorkspaceConditionalDeleteOutcome {
+        try await database.writer { db -> WorkspaceConditionalDeleteOutcome in
+            guard let row = try Row.fetchOne(
+                db,
+                sql: "SELECT updated_at, kind, root_bookmark, internal_relative_path FROM workspaces WHERE id = ?",
+                arguments: [id.uuidString]
+            ) else { return .notFound }
+            guard (row["updated_at"] as String) == expectedUpdatedAt else {
+                return .staleRevision
+            }
+            guard (row["kind"] as String) == "project",
+                  (row["root_bookmark"] as Data).isEmpty,
+                  (row["internal_relative_path"] as String?) == "Projects/" + id.uuidString else {
+                return .ownerChanged
+            }
+            let rawOwners = try String.fetchAll(
+                db,
+                sql: """
+                    SELECT conversation_id FROM conversation_workspace_ownership
+                    WHERE workspace_id = ?
+                    """,
+                arguments: [id.uuidString]
+            )
+            let parsedOwners = rawOwners.compactMap(UUID.init(uuidString:))
+            guard parsedOwners.count == rawOwners.count,
+                  Set(parsedOwners) == Set(expectedConversationIDs) else {
+                return .ownerChanged
+            }
+            try Self.moveOwnedConversationsToPrivateWorkspaces(
+                in: db,
+                workspaceID: id,
+                now: PersistenceCodec.encode(Date())
+            )
+            try db.execute(
+                sql: "DELETE FROM workspaces WHERE id = ? AND updated_at = ?",
+                arguments: [id.uuidString, expectedUpdatedAt]
+            )
+            guard db.changesCount == 1 else {
+                // A trigger/refusal after rehome must ROLLBACK the whole write,
+                // never commit moved owners alongside a failure receipt.
+                throw FloeError.validationFailed("workspace.conditionalDelete.notDeleted")
+            }
+            return .deleted
         }
     }
 

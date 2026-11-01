@@ -15,6 +15,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.remember
@@ -148,15 +149,63 @@ fun FloeSidebar(
                 modifier = Modifier.padding(horizontal = 12.dp),
             )
 
-            FloeSectionHeader(stringResource(R.string.workspaces))
-            // Truthful empty state. Filled workspace rows are exercised only
-            // in the labelled debug preview.
-            FloeText(
-                stringResource(R.string.no_projects_yet),
-                style = Floe.typography.metadata,
-                color = Floe.colors.secondaryLabel,
-                modifier = Modifier.padding(start = 20.dp, end = 16.dp, bottom = 4.dp),
-            )
+            FloeSectionHeader(stringResource(R.string.projects))
+            val defaultProjectName = stringResource(R.string.project_default_name)
+            val projectState = if (runtimeHost == null) {
+                null
+            } else {
+                val observed by runtimeHost.projects.state.collectAsState()
+                observed
+            }
+            if (runtimeHost == null) {
+                FloeText(
+                    stringResource(R.string.no_projects_yet),
+                    style = Floe.typography.metadata,
+                    color = Floe.colors.secondaryLabel,
+                    modifier = Modifier.padding(start = 20.dp, end = 16.dp, bottom = 4.dp),
+                )
+            } else {
+                val projects = projectState?.projects.orEmpty()
+                if (projects.isEmpty()) {
+                    FloeText(
+                        if (projectState?.errorCode != null) {
+                            stringResource(R.string.project_unavailable)
+                        } else {
+                            stringResource(R.string.no_projects_yet)
+                        },
+                        style = Floe.typography.metadata,
+                        color = Floe.colors.secondaryLabel,
+                        modifier = Modifier.padding(start = 20.dp, end = 16.dp, bottom = 4.dp),
+                    )
+                } else {
+                    projects.forEach { project ->
+                        FloeSidebarRow(
+                            icon = FloeIcons.Folder,
+                            label = project.name,
+                            selected = selection is SidebarSelection.Workspace &&
+                                selection.workspaceId == project.id,
+                            onClick = {
+                                runtimeHost.projects.open(project.id)
+                                onSelect(SidebarSelection.Workspace(project.id))
+                            },
+                            selectionStyle = FloeSelectionStyle.GRAY,
+                            modifier = Modifier.padding(horizontal = 12.dp),
+                        )
+                    }
+                }
+                FloeSidebarRow(
+                    icon = FloeIcons.Plus,
+                    label = stringResource(R.string.project_new),
+                    selected = false,
+                    onClick = {
+                        runtimeHost.projects.create(defaultProjectName) { projectId ->
+                            onSelect(SidebarSelection.Workspace(projectId))
+                        }
+                    },
+                    selectionStyle = FloeSelectionStyle.GRAY,
+                    modifier = Modifier.padding(horizontal = 12.dp),
+                )
+            }
 
             FloeSectionHeader(stringResource(R.string.chat))
             val historyState = runtimeHost?.conversations?.historyHolder?.state?.value

@@ -99,6 +99,11 @@ public final class G02InstalledComposition: @unchecked Sendable {
     /// table binds `G073TaskScheduleBindings` against this same instance.
     public let taskSchedules: G073TaskScheduleService
 
+    /// C01: the ONE managed user-project library over this generation's SAME
+    /// owned store cluster. Main's command table binds `C01ProjectBindings`
+    /// against this same instance; no second database or project registry.
+    public let projectLibrary: C01ProjectLibrary
+
     /// Optional-domain extensions that attached successfully for this
     /// epoch (temporary, privacy successors). Empty in the ordinary product.
     internal var attachedExtensions: [G02DomainExtensionID: any G02DomainExtension] = [:]
@@ -141,7 +146,8 @@ public final class G02InstalledComposition: @unchecked Sendable {
          defaultsAdapter: FacadeSettingsDefaultsAdapter,
          usageAdapter: FacadeUsageAdapter,
          feedBinder: RunPersonalizationFeedBinder,
-         taskSchedules: G073TaskScheduleService) {
+         taskSchedules: G073TaskScheduleService,
+         projectLibrary: C01ProjectLibrary) {
         self.epoch = epoch
         self.cluster = cluster
         self.registry = registry
@@ -172,6 +178,7 @@ public final class G02InstalledComposition: @unchecked Sendable {
         self.usageAdapter = usageAdapter
         self.feedBinder = feedBinder
         self.taskSchedules = taskSchedules
+        self.projectLibrary = projectLibrary
     }
 
     // MARK: - Build
@@ -670,6 +677,11 @@ public final class G02InstalledComposition: @unchecked Sendable {
         let defaultsAdapter = FacadeSettingsDefaultsAdapter(database: database)
         let usageAdapter = FacadeUsageAdapter(database: database)
 
+        // C01: the managed project library over the SAME cluster. Its
+        // lifecycle provider resolves the run deletion lifecycle lazily, so
+        // construction order cannot invent a second run domain.
+        let projectLibrary = C01ProjectLibrary(epoch: epoch, cluster: cluster)
+
         var installed = G02InstalledComposition(
             epoch: epoch, cluster: cluster,
             registry: gen.registry,
@@ -699,7 +711,8 @@ public final class G02InstalledComposition: @unchecked Sendable {
             defaultsAdapter: defaultsAdapter,
             usageAdapter: usageAdapter,
             feedBinder: feedBinder,
-            taskSchedules: scheduleService)
+            taskSchedules: scheduleService,
+            projectLibrary: projectLibrary)
         // Capture the SAME-database identity evidence at build time: each
         // entry is the identifier of the ACTUAL argument bound at the
         // domain's construction call site — a second DatabaseManager opened

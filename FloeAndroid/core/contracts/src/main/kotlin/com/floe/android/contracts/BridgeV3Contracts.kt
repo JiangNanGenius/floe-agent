@@ -62,6 +62,8 @@ object BridgeProtocolV3 {
         "settings.defaults", "memory", "personalization", "usage", "privacy",
         // G07.3B: schedule settings are host-owned, not a run-role bypass.
         "schedule",
+        // C01: user-project library metadata is host-owned configuration.
+        "projects",
     )
 
     val SCOPES = listOf(
@@ -331,6 +333,17 @@ object BridgeV3CommandMatrix {
         rule("schedule.dispatch", BridgeV3Scope.Kind.APPLICATION_CONFIGURATION, "schedule"),
         rule("schedule.rearm", BridgeV3Scope.Kind.APPLICATION_CONFIGURATION, "schedule"),
         rule("schedule.dispatchPending", BridgeV3Scope.Kind.APPLICATION_CONFIGURATION, "schedule"),
+
+        // C01 user project library (2026-11-02): APPEND-ONLY six tuples under
+        // the new `projects` label. Mutations carry the outer
+        // `project.<uuid>` revision; the version is the exact persisted
+        // `workspaces.updated_at`. project.create alone is create-intent.
+        rule("project.list", BridgeV3Scope.Kind.APPLICATION_CONFIGURATION, "projects"),
+        rule("project.get", BridgeV3Scope.Kind.APPLICATION_CONFIGURATION, "projects"),
+        rule("project.create", BridgeV3Scope.Kind.APPLICATION_CONFIGURATION, "projects", revision = true, create = true),
+        rule("project.rename", BridgeV3Scope.Kind.APPLICATION_CONFIGURATION, "projects", revision = true),
+        rule("project.assign", BridgeV3Scope.Kind.APPLICATION_CONFIGURATION, "projects", revision = true),
+        rule("project.delete", BridgeV3Scope.Kind.APPLICATION_CONFIGURATION, "projects", revision = true),
     )
 
     fun entry(command: String, scope: BridgeV3Scope.Kind): BridgeV3CommandRule? =
