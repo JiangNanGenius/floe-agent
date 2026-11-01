@@ -225,9 +225,9 @@ struct MeshExportOptionsSheet: View {
                         dismiss()
                     } label: {
                         if coverage?.requiresConfirmation == true {
-                            FloeCADStrings.label("cad.ui.export.coverage.confirmPartial", "Export Included")
+                            Text(FloeCADStrings.label("cad.ui.export.coverage.confirmPartial", "Export Included"))
                         } else {
-                            FloeCADStrings.label("cad.ui.common.export", "Export")
+                            Text(FloeCADStrings.label("cad.ui.common.export", "Export"))
                         }
                     }
                     .disabled(exportUnavailable)
