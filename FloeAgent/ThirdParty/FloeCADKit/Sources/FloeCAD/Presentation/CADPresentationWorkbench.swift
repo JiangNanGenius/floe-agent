@@ -663,7 +663,15 @@ struct CADPresentationWorkbenchContent: View {
     @State private var interruptedExport: CADAnimationExportRecoverySummary?
     @State private var dismissingInterruptedExport = false
     @State private var videoExportOptions = CADAnimationExportOptions.load()
-    @State private var showVideoExportOptions = false
+    @State private var videoExportPresentation: VideoExportPresentation?
+
+    /// A presentation carries its own frozen values. The first sheet body
+    /// must not initialize draft State from an older render's preferences.
+    private struct VideoExportPresentation: Identifiable {
+        let id = UUID()
+        let options: CADAnimationExportOptions
+        let clipDuration: Double
+    }
 
     /// One presentation owns one frozen selection. Keeping the target in the
     /// sheet item prevents a first-open closure from observing the previous
@@ -742,10 +750,10 @@ struct CADPresentationWorkbenchContent: View {
         .sheet(isPresented: $showCameraSheet) {
             CADCameraBookmarksSheet(document: document, handle: handle)
         }
-        .sheet(isPresented: $showVideoExportOptions) {
+        .sheet(item: $videoExportPresentation) { presentation in
             CADAnimationExportOptionsSheet(
-                initial: videoExportOptions,
-                clipDuration: animationState.activeClip?.duration ?? 0) { options in
+                initial: presentation.options,
+                clipDuration: presentation.clipDuration) { options in
                 // The confirmed draft is handed to the existing export
                 // service verbatim; nothing is re-defaulted on the way.
                 videoExportOptions = options
@@ -902,10 +910,18 @@ struct CADPresentationWorkbenchContent: View {
     }
 
     private func openExportOptions(format: CADAnimationExportOutputFormat) {
-        videoExportOptions.format = format
+        var options = videoExportOptions
+        options.format = format
         // The sheet only offers the executable opaque output.
-        videoExportOptions.alpha = .opaque
-        showVideoExportOptions = true
+        options.alpha = .opaque
+        videoExportOptions = options
+        presentExportOptions(options)
+    }
+
+    private func presentExportOptions(_ options: CADAnimationExportOptions) {
+        videoExportPresentation = VideoExportPresentation(
+            options: options,
+            clipDuration: animationState.activeClip?.duration ?? 0)
     }
 
     private func exportVideo(options: CADAnimationExportOptions) {
@@ -1153,7 +1169,7 @@ struct CADPresentationWorkbenchContent: View {
                         "cad.animation.export.recovery.restore", "Use settings")) {
                         if let restored {
                             videoExportOptions = restored
-                            showVideoExportOptions = true
+                            presentExportOptions(restored)
                         }
                         interruptedExport = nil
                     }

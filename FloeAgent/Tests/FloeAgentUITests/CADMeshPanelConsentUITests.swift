@@ -464,10 +464,13 @@ final class CADMeshPanelConsentUITests: XCTestCase {
     }
 
     private var panelOutcome: XCUIElement {
+        // The shipped outcome badge exposes its icon and message separately.
+        // The icon is first in the hierarchy (label "Warning"); assertions
+        // must read the actual message, not mistake that icon for the text.
         if meshPanel.exists {
-            return meshPanel.descendants(matching: .any)["CADPanelOutcome"].firstMatch
+            return meshPanel.staticTexts["CADPanelOutcome"].firstMatch
         }
-        return app.descendants(matching: .any)["CADPanelOutcome"].firstMatch
+        return app.staticTexts["CADPanelOutcome"].firstMatch
     }
 
     private func pendingIsPresent() -> Bool {
