@@ -928,24 +928,23 @@ enum IOSBridgeToolOutput {
 
     struct Projection: Sendable {
         let data: Data
+        let fullData: Data
         let omitted: Bool
         let originalByteCount: Int
     }
 
-    private static let omissionNote = "The result exceeded the 64 KiB model-visible bound. Use a narrower observation such as screen_text or find_element."
+    private static let omissionNote = "The summary is shortened. The full result is available."
 
-    /// Bounded UTF-8 projection for one tool result. Results up to 64 KiB
-    /// keep their full JSON; above that, `result` is replaced by an explicit
-    /// omission marker and the final document remains valid JSON and within
-    /// the same bound. The published tool-summary ceiling is 65_536, so this
-    /// 64 KiB payload is not silently cut again by the executor.
+    /// Bounded valid JSON for display only. The admitted full JSON goes to
+    /// the existing runtime capture/request-budget/paging path; this producer
+    /// must never discard it merely because the display summary is shorter.
     static func boundedProjection(
         _ object: [String: Any],
         maximumBytes: Int = 64 * 1_024
     ) throws -> Projection {
         let full = try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])
         guard full.count > maximumBytes else {
-            return Projection(data: full, omitted: false, originalByteCount: full.count)
+            return Projection(data: full, fullData: full, omitted: false, originalByteCount: full.count)
         }
         var bounded = object
         _ = bounded.removeValue(forKey: "result")
@@ -966,7 +965,7 @@ enum IOSBridgeToolOutput {
             ]
             data = try JSONSerialization.data(withJSONObject: minimal, options: [.sortedKeys])
         }
-        return Projection(data: data, omitted: true, originalByteCount: full.count)
+        return Projection(data: data, fullData: full, omitted: true, originalByteCount: full.count)
     }
 
     private static func json(
@@ -974,13 +973,16 @@ enum IOSBridgeToolOutput {
         artifacts: [ToolArtifactReference] = []
     ) throws -> ToolExecutionOutput {
         let projection = try boundedProjection(object)
-        return ToolExecutionOutput(
+        var output = ToolExecutionOutput(
             summary: String(decoding: projection.data, as: UTF8.self),
-            fullOutputSHA256: FloeDigest.sha256Hex(projection.data),
+            fullOutputSHA256: FloeDigest.sha256Hex(projection.fullData),
             exitStatus: 0,
             artifacts: artifacts,
-            maximumSummaryCharacters: 65_536
+            maximumSummaryCharacters: 65_536,
+            capturedOutput: String(decoding: projection.fullData, as: UTF8.self)
         )
+        output.summaryTruncated = projection.omitted
+        return output
     }
 
     private static func guidance(_ status: IOSBridgeConnectionStatus) -> String {

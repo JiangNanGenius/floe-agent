@@ -474,7 +474,7 @@ struct IOSBridgeIntegrationTests {
         #expect(!IOSBridgeIntegration.configurationMutationAffectsBridge(fieldKeys: ["apiKey"]))
     }
 
-    @Test("Projection keeps >4 KiB results up to 64 KiB and omits larger ones as valid bounded JSON")
+    @Test("Projection bounds only display JSON and retains the full admitted result")
     func projectionBound() throws {
         let retained = String(repeating: "x", count: 8 * 1_024)
         let retainedProjection = try IOSBridgeToolOutput.boundedProjection([
@@ -508,6 +508,29 @@ struct IOSBridgeIntegrationTests {
         #expect(omittedObject["resultOmitted"] as? Bool == true)
         #expect(omittedObject["resultByteCount"] as? Int == omittedProjection.originalByteCount)
         #expect((omittedObject["note"] as? String)?.isEmpty == false)
+        let fullObject = try #require(JSONSerialization.jsonObject(with: omittedProjection.fullData) as? [String: Any])
+        #expect((fullObject["result"] as? [String: Any])?["tree"] as? String == omitted)
+        #expect(omittedProjection.fullData.count == omittedProjection.originalByteCount)
+    }
+
+    @Test("Large actual action output reaches the existing full capture and digest path")
+    func actionOutputKeepsFullCapture() throws {
+        let tree = "START_OF_TREE:" + String(repeating: "页面内容", count: 24_000) + ":END_OF_TREE"
+        let receipt = IOSAutomationReceipt(action: .pageSource, effect: .readOnly,
+            operationID: "full-tree-receipt", outcome: .succeeded,
+            result: .object(["tree": .string(tree)]), startedAt: Date(),
+            completedAt: Date(), usedInputLease: false)
+        let output = try IOSBridgeToolOutput.make(receipt: receipt, action: .pageSource)
+        #expect(output.summary.utf8.count <= 64 * 1_024)
+        #expect(output.summaryTruncated)
+        #expect(!output.capturedOutputTruncated)
+        let capture = try #require(output.capturedOutput)
+        let data = Data(capture.utf8)
+        #expect(data.count > 64 * 1_024)
+        let full = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        #expect((full["result"] as? [String: Any])?["tree"] as? String == tree)
+        #expect(output.fullOutputSHA256 == FloeDigest.sha256Hex(data))
+        #expect(output.ephemeralSensitiveOutput == nil)
     }
 }
 #endif
