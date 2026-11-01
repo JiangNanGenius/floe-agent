@@ -7,6 +7,7 @@
 //
 
 import Foundation
+import simd
 
 nonisolated enum AssociativeReferenceKey: Codable, Hashable, Sendable {
     case plane(ConstructionPlaneID)
