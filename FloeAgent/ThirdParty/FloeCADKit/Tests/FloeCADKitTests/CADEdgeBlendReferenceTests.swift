@@ -197,7 +197,8 @@ final class CADEdgeBlendReferenceTests: XCTestCase {
                                                     ([index], 1_000.0, 422)] {
             let response = executor.run(.blend(body: fixture.body, isFillet: true,
                                                amount: amount, edges: selection))
-            XCTAssertEqual(response.status, expectedStatus, "\(try payload(response))")
+            let body = try payload(response)
+            XCTAssertEqual(response.status, expectedStatus, "\(body)")
             let outcome = try report(response)
             XCTAssertEqual(outcome["requested"] as? [Int], selection)
             XCTAssertEqual(outcome["processed"] as? [Int], [])
@@ -212,7 +213,8 @@ final class CADEdgeBlendReferenceTests: XCTestCase {
 
         let response = executor.run(.blend(body: fixture.body, isFillet: true,
                                           amount: 1, edges: [index, index]))
-        XCTAssertEqual(response.status, 200, "\(try payload(response))")
+        let body = try payload(response)
+        XCTAssertEqual(response.status, 200, "\(body)")
         XCTAssertEqual(try report(response)["requested"] as? [Int], [index, index])
         XCTAssertEqual(try report(response)["processed"] as? [Int], [index])
         XCTAssertEqual(try report(response)["rejected"] as? [Int], [])
@@ -231,7 +233,7 @@ final class CADEdgeBlendReferenceTests: XCTestCase {
         XCTAssertEqual(reopened.session.document.features.nodes.last?.id, featureID)
         XCTAssertEqual(reopened.session.document.bodies.first?.id, fixture.body)
         XCTAssertTrue(reopened.session.lastEvalErrors.isEmpty)
-        reopened.session.rebuildFrom(0)
+        reopened.session.rebuildFrom(fixture.source.id)
         XCTAssertTrue(reopened.session.lastEvalErrors.isEmpty)
         XCTAssertLessThan(abs(OCCTKernel.volume(try XCTUnwrap(
             reopened.session.document.bodies.first?.brep))), 8_000)
