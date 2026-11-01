@@ -40,7 +40,8 @@ final class NativeCADDocumentCreationTests: XCTestCase {
     }
 
     override func tearDown() async throws {
-        for name in ["Bracket.floecad", "Bracket 2.floecad", "Part.floecad", "Imported.floecad"] {
+        for name in ["Bracket.floecad", "Bracket 2.floecad", "Part.floecad", "Imported.floecad",
+                     "TextAlternative.floecad"] {
             let url = workspace.appendingPathComponent(name)
             if FileManager.default.fileExists(atPath: url.path) {
                 await FloeCAD3DBridge.shared.releaseDocument(at: url)
@@ -1699,6 +1700,245 @@ extension NativeCADDocumentCreationTests {
             XCTAssertTrue(CADServiceOperations.mutatingDrawingActions.contains(action))
             XCTAssertTrue(CadServiceOperationCatalog.isMutating(kind: "drawing", action: action))
         }
+    }
+
+    // MARK: - X07: text-to-mesh discovery and the native text alternative
+
+    /// X07 through the real model-facing surface: the current capabilities
+    /// reply says standalone `mesh.text` is unavailable and names the native
+    /// `sketch.addText` → `feature.extrude` route; the same `cad.document`
+    /// tool then executes that route on a real `.floecad` package, saves it,
+    /// closes it and reopens the solid by its stable id. Unsupported font
+    /// content is a concrete refusal that adds nothing. No mesh.text action,
+    /// parallel text feature or fabricated catalog string is introduced.
+    func testTextSketchAlternativeIsDiscoverableAndProducesAReopenableBody() async throws {
+        let center = CadDocumentCenter(nativeProposalStoreFileURL:
+            workspace.appendingPathComponent("proposals-x07-\(UUID().uuidString).json"))
+        let tool = CadDocumentTool(host: center)
+        let context = ToolContext(runID: UUID(), toolCallID: "call-x07", scope: .local,
+                                  workspaceRootURL: workspace,
+                                  cancellation: CancellationToken(),
+                                  environmentID: "env-1", conversationID: UUID())
+        let documentID = "TextAlternative.floecad"
+        let url = workspace.appendingPathComponent(documentID)
+
+        // 1. Create the real native package through the tool.
+        let created = try await tool.execute(try cadArgs([
+            "action": "create", "path": documentID, "name": "Text alternative",
+        ]), context: context)
+        XCTAssertTrue(created.summary.contains("cad.document created"), created.summary)
+
+        // 2. Discovery from the live document. The reply must say text-to-mesh
+        //    is unavailable, name the executable alternative, and not list a
+        //    `text` mesh action that would always refuse.
+        let capabilitiesOutput = try await tool.execute(try cadArgs([
+            "action": "capabilities", "path": documentID,
+        ]), context: context)
+        let capabilities = try cadJSON(capabilitiesOutput.summary)
+        XCTAssertEqual(capabilities["ok"] as? Bool, true, "\(capabilities)")
+        let unavailable = try XCTUnwrap(capabilities["unavailable_actions"] as? [String: Any])
+        let meshText = try XCTUnwrap(unavailable["mesh.text"] as? [String: Any])
+        XCTAssertEqual(meshText["code"] as? String, "text_mesh_unavailable")
+        XCTAssertEqual(meshText["alternative_op"] as? String, "sketch.addText")
+        let alternative = try XCTUnwrap(meshText["message"] as? String)
+        XCTAssertTrue(alternative.contains("sketch.addText"), alternative)
+        XCTAssertTrue(alternative.contains("feature.extrude"), alternative)
+        XCTAssertTrue((capabilities["operation_names"] as? [String] ?? []).contains("sketch.addText"))
+        XCTAssertFalse((capabilities["mesh_actions"] as? [String] ?? []).contains("text"),
+                       "mesh.text must not be advertised as an executable mesh action")
+
+        // 3. The legacy `mesh.text` request itself is refused by the real mesh
+        //    service with the same alternative, creates no body and mutates
+        //    nothing. This ties the discovery text to the executable refusal.
+        let meshTextOutput = try await tool.execute(try cadArgs([
+            "action": "propose", "path": documentID, "op": "mesh.text",
+            "args": try cadArgsString(["text": "I", "size": 20.0, "depth": 5.0]),
+            "summary": "legacy mesh.text must refuse",
+        ]), context: context)
+        let meshTextReply = try cadJSON(meshTextOutput.summary)
+        let meshTextProposal = try XCTUnwrap(meshTextReply["proposal"] as? [String: Any])
+        let meshTextPreview = try XCTUnwrap(meshTextProposal["preview"] as? [String: Any])
+        XCTAssertEqual(meshTextPreview["failed"] as? Bool, true)
+        let meshTextErrors = try XCTUnwrap(meshTextPreview["evalErrors"] as? [String])
+        XCTAssertTrue(meshTextErrors.contains { $0.contains("sketch.addText") },
+                      "the legacy mesh.text refusal must name the native alternative: \(meshTextErrors)")
+        let bodiesAfterRefusal = try await queryRowsX07(tool, context, documentID: documentID,
+                                                        kind: "bodies")
+        XCTAssertTrue(bodiesAfterRefusal.isEmpty,
+                      "mesh.text must not create a fabricated mesh body")
+
+        // 4. Execute the advertised alternative through the typed
+        //    propose → grant → apply path on the same tool.
+        let sketchProposal = try await proposeX07(tool, context, documentID: documentID,
+                                                  op: "sketch.create",
+                                                  args: ["name": "Text profile"],
+                                                  summary: "text profile sketch")
+        try await applyX07(tool, context, center: center, documentID: documentID,
+                           proposalID: sketchProposal)
+        let sketches = try await queryRowsX07(tool, context, documentID: documentID,
+                                              kind: "sketches")
+        let sketchID = try XCTUnwrap(sketches.first?["id"] as? String)
+
+        let textProposal = try await proposeX07(tool, context, documentID: documentID,
+                                                op: "sketch.addText",
+                                                args: ["sketchID": sketchID,
+                                                       "text": "I",
+                                                       "height": 20.0,
+                                                       "fontName": "Helvetica",
+                                                       "origin": [10.0, 5.0]],
+                                                summary: "20 mm native text outlines")
+        try await applyX07(tool, context, center: center, documentID: documentID,
+                           proposalID: textProposal)
+
+        // The text outlines are ordinary sketch line entities. Derive an
+        // interior seed from their real bounds (the same document query data
+        // the model reads); no engine-internal profile helper is needed.
+        let textSketches = try await queryRowsX07(tool, context, documentID: documentID,
+                                                  kind: "sketches")
+        let textRow = try XCTUnwrap(textSketches.first { ($0["id"] as? String) == sketchID })
+        let entityRows = try XCTUnwrap(textRow["entityRows"] as? [[String: Any]])
+        XCTAssertGreaterThanOrEqual(entityRows.count, 4, "the glyph must be real outline geometry")
+        var minX = Double.infinity, minY = Double.infinity
+        var maxX = -Double.infinity, maxY = -Double.infinity
+        for row in entityRows where (row["kind"] as? String) == "line" {
+            for key in ["a", "b"] {
+                guard let point = row[key] as? [Double], point.count == 2 else { continue }
+                minX = min(minX, point[0]); maxX = max(maxX, point[0])
+                minY = min(minY, point[1]); maxY = max(maxY, point[1])
+            }
+        }
+        XCTAssertTrue(minX.isFinite && maxX.isFinite, "text entities must carry real coordinates")
+        let seed = [(minX + maxX) / 2, (minY + maxY) / 2]
+
+        let extrudeProposal = try await proposeX07(tool, context, documentID: documentID,
+                                                   op: "feature.extrude",
+                                                   args: ["sketchID": sketchID,
+                                                          "seedPoint": seed,
+                                                          "distance": 10.0],
+                                                   summary: "10 mm text extrude")
+        try await applyX07(tool, context, center: center, documentID: documentID,
+                           proposalID: extrudeProposal)
+
+        let bodies = try await queryRowsX07(tool, context, documentID: documentID,
+                                            kind: "bodies")
+        let body = try XCTUnwrap(bodies.first, "the text extrusion must create a body")
+        let bodyID = try XCTUnwrap(body["id"] as? String)
+        XCTAssertEqual(body["analyticBRep"] as? Bool, true)
+        let volume = try XCTUnwrap(body["volumeMM3"] as? Double)
+        XCTAssertGreaterThan(volume, 10, "the text extrusion must carry real volume")
+        let features = try await queryRowsX07(tool, context, documentID: documentID,
+                                              kind: "features")
+        let extrudeFeature = try XCTUnwrap(features.first {
+            ($0["kind"] as? String) == "extrude"
+                && (($0["referencedSketches"] as? [String]) ?? []).contains(sketchID)
+        })
+        let featureID = try XCTUnwrap(extrudeFeature["id"] as? String)
+
+        // 5. Concrete unsupported-font fallback: the preview names the real
+        //    font and adds no partial outline; the sketch is unchanged.
+        let entitiesBeforeRefusal = textRow["entities"] as? Int
+        let refusedOutput = try await tool.execute(try cadArgs([
+            "action": "propose", "path": documentID, "op": "sketch.addText",
+            "args": try cadArgsString(["sketchID": sketchID, "text": "A",
+                                       "height": 10.0, "fontName": "FloeNoSuchFontXYZ"]),
+            "summary": "unsupported font must refuse",
+        ]), context: context)
+        let refused = try cadJSON(refusedOutput.summary)
+        let refusedProposal = try XCTUnwrap(refused["proposal"] as? [String: Any])
+        let refusedPreview = try XCTUnwrap(refusedProposal["preview"] as? [String: Any])
+        XCTAssertEqual(refusedPreview["failed"] as? Bool, true)
+        let refusalErrors = try XCTUnwrap(refusedPreview["evalErrors"] as? [String])
+        XCTAssertTrue(refusalErrors.contains { $0.contains("FloeNoSuchFontXYZ") },
+                      "the refusal must name the real font: \(refusalErrors)")
+        let afterRefusal = try await queryRowsX07(tool, context, documentID: documentID,
+                                                  kind: "sketches")
+        let afterRefusalRow = afterRefusal.first { ($0["id"] as? String) == sketchID }
+        XCTAssertEqual(afterRefusalRow?["entities"] as? Int, entitiesBeforeRefusal,
+                       "a refused text proposal must add nothing")
+
+        // 6. Save, close and reopen: the body and its extrude feature survive
+        //    by stable id, and the model-facing measure reads the same volume.
+        let savedOutput = try await tool.execute(try cadArgs([
+            "action": "save", "path": documentID,
+        ]), context: context)
+        let saved = try cadJSON(savedOutput.summary)
+        XCTAssertEqual(saved["ok"] as? Bool, true, "\(saved)")
+        let liveDocument = try await FloeCAD3DBridge.shared.openDocument(at: url)
+        await FloeCAD3DBridge.shared.releaseDocument(at: url)
+        let reopenedDocument = try await FloeCAD3DBridge.shared.openDocument(at: url)
+        XCTAssertFalse(liveDocument === reopenedDocument,
+                       "release must drop the cached session so the query reopens from disk")
+
+        let reopenedBodies = try await queryRowsX07(tool, context, documentID: documentID,
+                                                    kind: "bodies")
+        let reopened = try XCTUnwrap(reopenedBodies.first { ($0["id"] as? String) == bodyID },
+                                     "the text-derived body must survive reopen by id")
+        XCTAssertEqual(reopened["analyticBRep"] as? Bool, true)
+        XCTAssertEqual(try XCTUnwrap(reopened["volumeMM3"] as? Double), volume,
+                       accuracy: max(volume.magnitude * 1e-6, 0.01))
+        let reopenedFeatures = try await queryRowsX07(tool, context, documentID: documentID,
+                                                      kind: "features")
+        XCTAssertTrue(reopenedFeatures.contains { ($0["id"] as? String) == featureID },
+                      "the text-derived extrude feature must survive reopen by id")
+
+        let measuredOutput = try await tool.execute(try cadArgs([
+            "action": "measure", "path": documentID, "op": "body",
+            "handles": ["body:\(bodyID)"],
+        ]), context: context)
+        let measured = try cadJSON(measuredOutput.summary)
+        let measuredResult = try XCTUnwrap(measured["result"] as? [String: Any])
+        XCTAssertEqual(measuredResult["kind"] as? String, "body")
+        XCTAssertEqual(try XCTUnwrap(measuredResult["volumeMM3"] as? Double), volume,
+                       accuracy: max(volume.magnitude * 1e-6, 0.01))
+    }
+
+    // MARK: - X07 helpers (real tool → center → bridge calls)
+
+    private func cadArgs(_ object: [String: Any]) throws -> CadDocumentArguments {
+        let data = try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])
+        return try XCTUnwrap(try? JSONDecoder().decode(CadDocumentArguments.self, from: data))
+    }
+
+    private func cadArgsString(_ object: [String: Any]) throws -> String {
+        let data = try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])
+        return try XCTUnwrap(String(data: data, encoding: .utf8))
+    }
+
+    private func proposeX07(_ tool: CadDocumentTool, _ context: ToolContext,
+                            documentID: String, op: String, args: [String: Any],
+                            summary: String) async throws -> UUID {
+        let output = try await tool.execute(try cadArgs([
+            "action": "propose", "path": documentID, "op": op,
+            "args": try cadArgsString(args), "summary": summary,
+        ]), context: context)
+        let reply = try cadJSON(output.summary)
+        let proposal = try XCTUnwrap(reply["proposal"] as? [String: Any])
+        let raw = try XCTUnwrap(proposal["id"] as? String)
+        return try XCTUnwrap(UUID(uuidString: raw))
+    }
+
+    private func applyX07(_ tool: CadDocumentTool, _ context: ToolContext,
+                          center: CadDocumentCenter, documentID: String,
+                          proposalID: UUID) async throws {
+        let grant = try await center.issueNativeCADGrant(proposalID: proposalID)
+        let output = try await tool.execute(try cadArgs([
+            "action": "apply", "path": documentID,
+            "proposal_id": proposalID.uuidString,
+            "grant_id": grant,
+            "request_id": "x07-\(proposalID.uuidString)",
+        ]), context: context)
+        let reply = try cadJSON(output.summary)
+        XCTAssertEqual(reply["ok"] as? Bool, true, "\(reply)")
+    }
+
+    private func queryRowsX07(_ tool: CadDocumentTool, _ context: ToolContext,
+                              documentID: String, kind: String) async throws -> [[String: Any]] {
+        let output = try await tool.execute(try cadArgs([
+            "action": "query", "path": documentID, "kind": kind,
+        ]), context: context)
+        let reply = try cadJSON(output.summary)
+        let result = try XCTUnwrap(reply["result"] as? [String: Any], "\(reply)")
+        return try XCTUnwrap(result["rows"] as? [[String: Any]], "\(result)")
     }
 }
 
