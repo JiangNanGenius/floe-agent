@@ -283,6 +283,61 @@ final class NativeCADLiveCaptureEvidenceTests: XCTestCase {
                                          "status": status, "summary": "capture receipt"])
     }
 
+    private func formulaRequest(_ sequence: Int, _ id: String,
+                                action: String) throws -> RunEventRecord {
+        let arguments: [String: Any]
+        if action == "save" {
+            arguments = ["action": "save"]
+        } else {
+            arguments = ["action": "parameters", "payload": String(decoding:
+                try JSONSerialization.data(withJSONObject: ["action": action]), as: UTF8.self)]
+        }
+        return try event(sequence, .toolRequest, ["tool": CadDocumentTool.name, "id": id,
+            "input": String(decoding: try JSONSerialization.data(withJSONObject: arguments), as: UTF8.self)])
+    }
+
+    private func formulaResponse(_ sequence: Int, _ id: String,
+                                 status: String = "ok", ok: Bool = true) throws -> RunEventRecord {
+        try event(sequence, .toolResult, ["tool": CadDocumentTool.name, "id": id,
+            "status": status, "summary": "cad.document:\n{\"ok\":\(ok),\"revision\":8}"])
+    }
+
+    func testFormulaUndoCountsOnlySuccessfulRetries() throws {
+        for status in ["failed", "ok"] {
+            let events = try [formulaRequest(1, "rejected", action: "undo"),
+                              formulaResponse(2, "rejected", status: status, ok: false),
+                              formulaRequest(3, "actual", action: "undo"),
+                              formulaResponse(4, "actual"),
+                              formulaRequest(5, "save", action: "save"),
+                              formulaResponse(6, "save")]
+            XCTAssertNoThrow(try NativeCADLiveEvidence.assertFormulaTurn(
+                events, required: ["undo"], allowed: ["undo"],
+                allowGeometryEdits: false, undoCount: 1))
+        }
+    }
+
+    func testFormulaVariableOnlyTurnRefusesSuccessfulNumericBypass() throws {
+        func events(numericSucceeded: Bool) throws -> [RunEventRecord] {
+            try [formulaRequest(1, "variable", action: "variable.update"),
+                 formulaResponse(2, "variable"),
+                 formulaRequest(3, "numeric", action: "update"),
+                 formulaResponse(4, "numeric", ok: numericSucceeded),
+                 formulaRequest(5, "save", action: "save"),
+                 formulaResponse(6, "save")]
+        }
+        XCTAssertThrowsError(try NativeCADLiveEvidence.assertFormulaTurn(
+            events(numericSucceeded: true), required: ["variable.update"],
+            allowed: ["variable.update"], allowGeometryEdits: false, undoCount: 0))
+        XCTAssertNoThrow(try NativeCADLiveEvidence.assertFormulaTurn(
+            events(numericSucceeded: false), required: ["variable.update"],
+            allowed: ["variable.update"], allowGeometryEdits: false, undoCount: 0))
+        // Initial authoring may use numeric preparation before binding formulas;
+        // later variable-only turns must not use that to fake fan-out.
+        XCTAssertNoThrow(try NativeCADLiveEvidence.assertFormulaTurn(
+            events(numericSucceeded: true), required: ["variable.update"],
+            allowed: ["variable.update"], allowGeometryEdits: true, undoCount: 0))
+    }
+
     func testRejectedCaptureRetrySelectsTheSuccessfulReceiptRequest() throws {
         let events = try [captureRequest(1, "rejected"),
                           captureResult(3, "rejected", status: "failed"),
@@ -3460,17 +3515,18 @@ private enum NativeCADLiveEvidence {
             guard let action = parameterPayload(request.arguments)?["action"] as? String else { return nil }
             return (request, action)
         }
-        guard edits.allSatisfy({ allowed.contains($0.1) }),
-              edits.filter({ $0.1 == "undo" }).count == undoCount else {
+        func succeeded(_ request: Request) -> Bool {
+            guard let response = responses[request.callID], response.status == "ok",
+                  let object = receipt(response), object["ok"] as? Bool != false else { return false }
+            return true
+        }
+        let committedEdits = edits.filter { succeeded($0.0) }
+        guard (allowGeometryEdits || committedEdits.allSatisfy({ allowed.contains($0.1) })),
+              committedEdits.filter({ $0.1 == "undo" }).count == undoCount else {
             throw NativeCADLiveError.invalidDocument("Formula turn used an unexpected parameter mutation or undo count.")
         }
         for action in required {
-            guard edits.contains(where: { request, name in
-                guard name == action, let response = responses[request.callID],
-                      response.status == "ok", let object = receipt(response),
-                      object["ok"] as? Bool != false else { return false }
-                return true
-            }) else {
+            guard committedEdits.contains(where: { $0.1 == action }) else {
                 throw NativeCADLiveError.invalidDocument("Missing successful native formula action: \(action).")
             }
         }
@@ -3478,7 +3534,7 @@ private enum NativeCADLiveEvidence {
             let readActions: Set<String> = [
                 "query", "read", "three_d_snapshot", "three_d_measure", "measure", "help", "capture",
             ]
-            guard all.allSatisfy({ request in
+            guard all.filter(succeeded).allSatisfy({ request in
                 let action = request.arguments["action"] as? String ?? ""
                 return readActions.contains(action) || ["parameters", "save"].contains(action)
             }) else {
