@@ -654,19 +654,11 @@
       "package": "mechanical",
       "implementation": {
         "stage": "B",
-        "status": "in_progress",
+        "status": "verified_actual_App_core_native_UI_and_primary_visual_review",
         "source_changes": [
-          "Frozen geometry-version and offset-attachment values; optional plane.definition/sketch.support preserve nil legacy encoding",
-          "真实Session关联预检/诊断/checkpoint和变量偏移fanout",
-          "关联安全合并及命名/实际writer重映射",
-          "Editor保留支撑身份、显式解除与History拒绝反馈",
-          "五个关联偏移面/支撑参数动作与planes/具名源发现，复用现有解析器严格入口",
-          "原生Offset Plane与Items偏移公式CAS表单复用参数服务",
-          "OCCT具名构造面映射支持未预旋转长方体，保留Euclid显示",
-          "Session拥有关联草图预览token，单步提交/失败取消恢复，保存await前后与其他写入隔离",
-          "查询epoch与持久化marker分离且避免恢复后marker复用；独立每次save结果",
-          "公开UIKit/SwiftUI识别器取消事件与输入epoch隔离；复制/分解/solver/焊接/数值变换统一关联事务",
-          "Session observable atomic successfulcommitreceipt sharedby nativeautosave/facade/scene; exact percalloutcome andmonotonicdirtyack"
+          "e39cccab persistent angle and three-point datums through shared service/editor",
+          "6015e581 fixes exact stored-expression and entity-scoped wall fixture contracts after native153",
+          "16e25a06 DEBUG real native form acceptance with product surface IDs"
         ],
         "verification": [
           "11 value/Codable/frame tests passed after correcting one mathematical fixture; 49 existing related compatibility tests passed",
@@ -692,12 +684,16 @@
           {
             "result": "195relatedbaseline +9actualsavedidentity +7realhostedobserver allpassed; percallreceipt andlatecommit monotonicidentity proven; actualNumericCancel diskbytesunchanged",
             "evidence": "Local/Private/cad-3d-implementation-20261030/verification/identity-volume-qualified-summary.json"
+          },
+          {
+            "kind": "actual_App_native_and_UI",
+            "source": "ae9dec14ad530d8fc4d1c93bc1837c915791e093",
+            "scope": "21项基准面原生测试、2条完整表单界面通过；紧凑大字界面复用已通过结果。",
+            "release_ready": false
           }
         ],
         "limitations": [
-          "Offsetdatum/sketchsupport complete inthisslice; otherdatumdefinitions/broaderTopo remain",
-          "Scoped nativecomponenttouch/form/save-reopen verified; fullFloeApp/NLmulti-turn/device/iPhone/systemgesturecancel/othercontextcontrols notclaimed",
-          "Ordinary andmodel-mode previews remainseparate"
+          "Simulator/native App behavior, no new physical performance or release claim. iPhone limited to UI acceptance per latest user instruction."
         ]
       },
       "alignment_review": {
@@ -798,10 +794,25 @@
       "package": "mechanical",
       "implementation": {
         "stage": "B",
-        "status": "planned",
-        "source_changes": [],
-        "verification": [],
-        "limitations": []
+        "status": "accepted_actual_ipad_native_and_affected_storage_ui_evidence",
+        "source_changes": [
+          "be30d459 R1 R2 R3 associative axis/point definitions, analytic cylinder position, real Revolve/Pattern references and floor2 protection",
+          "5c65a5cd actual compiler import correction",
+          "961399ff stable persisted-value no-change comparison",
+          "af803811 datum presenter extraction after compiler timeout"
+        ],
+        "verification": [
+          {
+            "kind": "actual_App_native_and_UI",
+            "source": "ae9dec14ad530d8fc4d1c93bc1837c915791e093",
+            "scope": "原61项原生测试及新增变量事务、撤销重开和存储兼容测试通过。",
+            "release_ready": false
+          }
+        ],
+        "limitations": [
+          "Actual evidence uses canonical reused iPad Simulator; no physical-device performance or additional iPhone functional testing claimed.",
+          "Current failed M07 fixture input is independently tracked, does not satisfy M07 merely through M08 completion."
+        ]
       },
       "alignment_review": {
         "disposition": "planned",
@@ -4891,10 +4902,23 @@
       "package": "engineering",
       "implementation": {
         "stage": "E",
-        "status": "planned",
-        "source_changes": [],
-        "verification": [],
-        "limitations": []
+        "status": "accepted_actual_ipad_native_and_affected_storage_ui_evidence",
+        "source_changes": [
+          "c647e8f7 owned off-main source read/queued exact import cancellation, preallocation budgets, atomic commit and operation identity"
+        ],
+        "verification": [
+          {
+            "kind": "actual_App_native_and_UI",
+            "source": "ae9dec14ad530d8fc4d1c93bc1837c915791e093",
+            "scope": "41项原生测试与6条导入界面通过；小样本模拟器内存和主线程响应实测保留，不宣称实体设备峰值。",
+            "release_ready": false
+          }
+        ],
+        "limitations": [
+          "Metrics are from the real Simulator FloeAppTests process and small exact fixtures, not physical-device pressure/performance claims.",
+          "Already-running C++ work is joined and fenced rather than force-killed.",
+          "Xcode diagnostic collector reported its own simctl lookup failure on failed overall runs; actual test results and owned shutdown0 retained, absence of attachedIPS is not a crash-free guarantee for unexercised paths."
+        ]
       },
       "alignment_review": {
         "disposition": "planned",
@@ -6940,10 +6964,21 @@
       "package": "experience",
       "implementation": {
         "stage": "G",
-        "status": "planned",
-        "source_changes": [],
-        "verification": [],
-        "limitations": []
+        "status": "verified_actual_App_core_native_UI_and_primary_visual_review",
+        "source_changes": [
+          "3aca81fa R1authoring +R2real curve schema/floor guard and GPU frame witness source"
+        ],
+        "verification": [
+          {
+            "kind": "actual_App_native_and_UI",
+            "source": "ae9dec14ad530d8fc4d1c93bc1837c915791e093",
+            "scope": "34项动画原生测试、实际GPU帧序列及2条相机/零件界面流程通过。",
+            "release_ready": false
+          }
+        ],
+        "limitations": [
+          "Simulator/native App behavior, no new physical performance or release claim. iPhone limited to UI acceptance per latest user instruction."
+        ]
       },
       "alignment_review": {
         "disposition": "retain_open_partial",
@@ -6998,10 +7033,21 @@
       "package": "experience",
       "implementation": {
         "stage": "G",
-        "status": "planned",
-        "source_changes": [],
-        "verification": [],
-        "limitations": []
+        "status": "verified_actual_App_core_native_UI_and_primary_visual_review",
+        "source_changes": [
+          "3aca81fa R1authoring +R2real curve schema/floor guard and GPU frame witness source"
+        ],
+        "verification": [
+          {
+            "kind": "actual_App_native_and_UI",
+            "source": "ae9dec14ad530d8fc4d1c93bc1837c915791e093",
+            "scope": "34项动画原生测试、实际GPU帧序列及2条相机/零件界面流程通过。",
+            "release_ready": false
+          }
+        ],
+        "limitations": [
+          "Simulator/native App behavior, no new physical performance or release claim. iPhone limited to UI acceptance per latest user instruction."
+        ]
       },
       "alignment_review": {
         "disposition": "retain_open_extension",
@@ -7061,10 +7107,21 @@
       "package": "experience",
       "implementation": {
         "stage": "G",
-        "status": "planned",
-        "source_changes": [],
-        "verification": [],
-        "limitations": []
+        "status": "verified_actual_App_core_native_UI_and_primary_visual_review",
+        "source_changes": [
+          "3aca81fa R1authoring +R2real curve schema/floor guard and GPU frame witness source"
+        ],
+        "verification": [
+          {
+            "kind": "actual_App_native_and_UI",
+            "source": "ae9dec14ad530d8fc4d1c93bc1837c915791e093",
+            "scope": "34项动画原生测试、实际GPU帧序列及2条相机/零件界面流程通过。",
+            "release_ready": false
+          }
+        ],
+        "limitations": [
+          "Simulator/native App behavior, no new physical performance or release claim. iPhone limited to UI acceptance per latest user instruction."
+        ]
       },
       "alignment_review": {
         "disposition": "retain_open_partial",
@@ -8268,7 +8325,7 @@
     "license_delta": "GLTFKit2 ownMIT/cgltfMIT do notclear precompiled libktx4.2.1 etcdec exception; prefer existing O3DV+same-r176 localGLTFLoader qualification"
   },
   "current_integration_verification": {
-    "source": "b281bb0c91f6e50ecd6e40da015490a2cb00e710",
+    "source": "ae9dec14ad530d8fc4d1c93bc1837c915791e093",
     "all_106_retained": true,
     "all_106_accepted": false,
     "release_ready": false,
@@ -8300,6 +8357,23 @@
       "actual_STEP": "真实OCCT导出STEP，原始文件与资源摘要、不同视角PNG及源变化拒绝通过。",
       "actual_OBJ": "真实OBJ/MTL/PNG显示、缺失贴图及仅资源变化后的旧帧拒绝通过。",
       "scope": "本地实际渲染与资源来源；不冒充原生可编辑BRep，也不代替真实LLM视觉连续编辑。"
+    },
+    "accepted_original_criteria": 53,
+    "pending_original_criteria": 53,
+    "device_acceptance": "iPad通过的功能复用验收，iPhone仅确认界面；不使用用户手机。",
+    "latest_native_batch": {
+      "source": "ae9dec14ad530d8fc4d1c93bc1837c915791e093",
+      "native": {
+        "passed": 22,
+        "failed": 0,
+        "skipped": 0
+      },
+      "native_UI": {
+        "passed": 4,
+        "failed": 0,
+        "skipped": 0
+      },
+      "scope": "关联基准面、关键帧与曲线编辑；原有动画34项及真实GPU帧序列证据复用。"
     }
   }
 }
