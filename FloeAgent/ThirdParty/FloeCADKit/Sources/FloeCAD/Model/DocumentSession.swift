@@ -1869,7 +1869,8 @@ final class DocumentSession {
                                  name: $0.name, suppressed: $0.suppressed,
                                  kind: $0.kindData, outputBodyIDs: $0.outputBodyIDData)
             },
-            drawings: project.drawingsData)
+            drawings: project.drawingsData,
+            animation: project.animationData)
         project.hasOpaqueAssociations = project.hasOpaqueAssociations || associationAssessment?.isOpaqueReadOnly == true
         storeIsNewerThanApp = project.formatVersion > Project.currentFormatVersion || project.hasOpaqueAssociations
         #if DEBUG

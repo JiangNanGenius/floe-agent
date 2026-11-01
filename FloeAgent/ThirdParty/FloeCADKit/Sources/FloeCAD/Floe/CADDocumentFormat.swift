@@ -105,10 +105,15 @@ nonisolated enum CADDocumentFormat {
         /// is stamped with a future drawing schema. The bytes are preserved and
         /// the whole document opens read-only; no writer may overwrite them.
         var opaqueDrawings = false
+        /// A future animation schema carries semantics this build cannot
+        /// verify. Preserve the bytes and open the document view-only rather
+        /// than letting an edit remove targets that future schema depends on.
+        var opaqueAnimation = false
         var isOpaqueReadOnly: Bool {
             !opaquePlanes.isEmpty || !opaqueSketches.isEmpty
                 || !opaqueAxes.isEmpty || !opaqueDatumPoints.isEmpty
                 || !opaqueFeatures.isEmpty || opaqueDrawings
+                || opaqueAnimation
         }
     }
 
@@ -127,6 +132,15 @@ nonisolated enum CADDocumentFormat {
         }) {
             required = max(required, holeVersion)
         }
+        // X23-X25 R2: a persisted timing curve is non-additive for the
+        // released schema-1 animation writer, which decodes the record
+        // without the curve and drops it on its next animation edit. The
+        // floor comes from the REAL bytes (`timingCurve` member and/or a
+        // schema-2 header), never from "this build can write 2". Ordinary
+        // legacy/default clips without a curve keep floor 1. A future
+        // animation schema keeps at least its own floor so an older package
+        // writer cannot claim compatibility.
+        required = max(required, CADAnimationFormat.intent(document.animationData).requiredVersion)
         // M08 intent is the REFERENCE, not only the source definition. A
         // pattern's `axisRef` or a revolve's `AxisRef.constructionAxis` can
         // point at a LEGACY absolute axis (`definition == nil`), and a datum
@@ -500,7 +514,8 @@ nonisolated enum CADDocumentFormat {
                        datumPoints: [CADBlobRecord] = [],
                        features: [CADFeatureRecord] = [],
                        assembly: Data? = nil,
-                       drawings: Data? = nil) throws -> Assessment {
+                       drawings: Data? = nil,
+                       animation: Data? = nil) throws -> Assessment {
         var result = Assessment()
         if assemblyRequiresNestedFormat(assembly) {
             result.requiredVersion = max(result.requiredVersion, nestedAssemblyVersion)
@@ -511,6 +526,14 @@ nonisolated enum CADDocumentFormat {
         let drawingIntent = drawingIntent(drawings)
         result.requiredVersion = max(result.requiredVersion, drawingIntent.version)
         if drawingIntent.opaque { result.opaqueDrawings = true }
+        // R2: inspect the persisted animation bytes for non-additive curve
+        // intent. A malformed/future curve is preserved by the animation
+        // load/edit guard; the floor still rises so a schema-1 package writer
+        // can never overwrite the curve semantics.
+        let animationIntent = CADAnimationFormat.intent(animation)
+        result.requiredVersion = max(result.requiredVersion,
+                                     animationIntent.requiredVersion)
+        if animationIntent.isFutureSchema { result.opaqueAnimation = true }
         for row in planes {
             guard let object = try? JSONSerialization.jsonObject(with: row.data) as? [String: Any],
                   let definition = object["definition"], !(definition is NSNull) else { continue }
@@ -630,7 +653,7 @@ nonisolated enum CADDocumentFormat {
         try assess(planes: record.planes, sketches: record.sketches,
                    axes: record.axes, datumPoints: record.datumPoints ?? [],
                    features: record.features, assembly: record.assembly,
-                   drawings: record.drawings)
+                   drawings: record.drawings, animation: record.animation)
     }
 
     /// RAW twin of `FeatureNode.referencedConstructionAxisIDs`: true only when

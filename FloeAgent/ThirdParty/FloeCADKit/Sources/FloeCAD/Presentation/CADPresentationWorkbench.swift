@@ -651,6 +651,7 @@ struct CADPresentationWorkbenchContent: View {
     @State private var exportError: String?
     @State private var playback = CADAnimationPlaybackModel()
     @State private var animationState = CADAnimationLoadState()
+    @State private var animationTrackCandidates: [CADAnimationTrackCandidate] = []
     @State private var showTimeline = false
     @State private var movieExport: MovieFileDocument?
     @State private var showMovieExporter = false
@@ -714,6 +715,7 @@ struct CADPresentationWorkbenchContent: View {
                             handle: handle,
                             playback: playback,
                             state: animationState,
+                            candidates: animationTrackCandidates,
                             onChanged: { refreshAnimation() })
                             .padding(.horizontal, 12)
                     }
@@ -872,6 +874,7 @@ struct CADPresentationWorkbenchContent: View {
     private func refreshAnimation(attach: Bool = false) {
         let next = document.animationLoadState()
         animationState = next
+        animationTrackCandidates = document.animationTrackCandidates()
         if attach || playback.clipID == nil {
             playback.attach(document: document, handle: handle,
                             clipID: next.animation.activeClip?.id)

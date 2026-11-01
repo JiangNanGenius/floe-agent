@@ -56,6 +56,27 @@ public nonisolated enum CADAnimationPresetKind: String, Sendable, CaseIterable {
     }
 }
 
+// MARK: - Track candidate
+
+/// One part that the current document can animate. Built from the saved
+/// assembly and the live body table; never a second assembly store.
+public nonisolated struct CADAnimationTrackCandidate: Identifiable, Sendable, Equatable {
+    public var instanceID: UUID
+    public var sourceBodyID: UUID
+    public var name: String
+    public var baseline: CADAnimationInstanceValue
+
+    public var id: UUID { instanceID }
+
+    public init(instanceID: UUID, sourceBodyID: UUID,
+                name: String, baseline: CADAnimationInstanceValue) {
+        self.instanceID = instanceID
+        self.sourceBodyID = sourceBodyID
+        self.name = name
+        self.baseline = baseline
+    }
+}
+
 // MARK: - Document facade
 
 @MainActor
@@ -77,6 +98,26 @@ public extension FloeCADDocument {
                     detail: "The saved animation payload exceeds the 2 MB limit and was not read.")],
                 hasStoredData: true, storedDataSHA256: digest)
         }
+        // Inspect the REAL bytes before decoding so a schema-1 writer that
+        // ignored `timingCurve`, or a future/malformed curve, is classified
+        // from persisted intent instead of from the tolerant current model.
+        let intent = CADAnimationFormat.intent(data)
+        if intent.isFutureSchema {
+            return CADAnimationLoadState(
+                animation: CADAnimationDocument(),
+                issues: [CADAnimationIssue(
+                    id: "animation-newer-schema", kind: .newerSchema,
+                    detail: "The saved animation uses a newer schema; this build reads schema \(CADAnimationDocument.currentSchemaVersion) and preserves the original bytes.")],
+                hasStoredData: true, storedDataSHA256: digest)
+        }
+        if intent.isMalformed, intent.containsTimingCurve {
+            return CADAnimationLoadState(
+                animation: CADAnimationDocument(),
+                issues: [CADAnimationIssue(
+                    id: "animation-malformed-curve", kind: .corruptData,
+                    detail: "The saved animation has an unreadable or future timing curve. Its original data is preserved and cannot be edited.")],
+                hasStoredData: true, storedDataSHA256: digest)
+        }
         do {
             let decoded = try CADAnimationCodec.decode(data)
             guard decoded.schemaVersion <= CADAnimationDocument.currentSchemaVersion else {
@@ -84,7 +125,15 @@ public extension FloeCADDocument {
                     animation: CADAnimationDocument(),
                     issues: [CADAnimationIssue(
                         id: "animation-newer-schema", kind: .newerSchema,
-                        detail: "The saved animation uses schema \(decoded.schemaVersion); this build reads schema \(CADAnimationDocument.currentSchemaVersion).")],
+                        detail: "The saved animation uses a newer schema; this build reads schema \(CADAnimationDocument.currentSchemaVersion) and preserves the original bytes.")],
+                    hasStoredData: true, storedDataSHA256: digest)
+            }
+            guard !decoded.hasInvalidTimingCurve else {
+                return CADAnimationLoadState(
+                    animation: CADAnimationDocument(),
+                    issues: [CADAnimationIssue(
+                        id: "animation-malformed-curve", kind: .corruptData,
+                        detail: "The saved animation has an unreadable timing curve. Its original data is preserved and cannot be edited.")],
                     hasStoredData: true, storedDataSHA256: digest)
             }
             return CADAnimationLoadState(animation: decoded.sanitized(),
@@ -128,6 +177,38 @@ public extension FloeCADDocument {
             bodyRevisions: Dictionary(uniqueKeysWithValues:
                 bodiesByID.map { ($0.key, $0.value.meshRevision) }),
             boundsMinMM: bounds?.min, boundsMaxMM: bounds?.max)
+    }
+
+    /// Visible leaf assembly instances that can receive a part track, with
+    /// their real instance names. Hidden instances, subassembly containers and
+    /// instances whose source body is missing are excluded instead of offered
+    /// as a track that could never evaluate.
+    func animationTrackCandidates() -> [CADAnimationTrackCandidate] {
+        let document = session.document
+        let assembly = (try? CADAssembly.decode(from: document.assemblyData)) ?? CADAssembly()
+        let bodies = Dictionary(uniqueKeysWithValues: document.bodies.map { ($0.id.raw, $0) })
+        return assembly.instances
+            .filter { !$0.isHidden && !$0.isSubassembly }
+            .compactMap { instance in
+                let sourceID = instance.copiedBodyID ?? instance.bodyID
+                guard let body = bodies[sourceID] else { return nil }
+                let trimmed = instance.name.trimmingCharacters(in: .whitespacesAndNewlines)
+                let name = trimmed.isEmpty ? body.name : trimmed
+                return CADAnimationTrackCandidate(
+                    instanceID: instance.id,
+                    sourceBodyID: sourceID,
+                    name: String(name.prefix(CADAnimationDocument.maximumNameLength)),
+                    baseline: CADAnimationInstanceValue(
+                        translationMM: instance.transform.position,
+                        rotation: instance.transform.rotation))
+            }
+            .sorted { lhs, rhs in
+                let order = lhs.name.localizedStandardCompare(rhs.name)
+                if order == .orderedSame {
+                    return lhs.instanceID.uuidString < rhs.instanceID.uuidString
+                }
+                return order == .orderedAscending
+            }
     }
 
     /// Evaluate one clip without touching the document. `time` is clamped to
@@ -208,7 +289,25 @@ public extension FloeCADDocument {
         }
         var clip = animation.clips[index]
         if let name { clip.name = Self.validatedAnimationName(name, fallback: clip.name) }
-        if let duration { clip.duration = try Self.validatedAnimationDuration(duration) }
+        if let duration {
+            let length = try Self.validatedAnimationDuration(duration)
+            let stranded = clip.tracks.reduce(0) { total, track in
+                total + track.keyframes.filter { $0.time > length + 1e-6 }.count
+            }
+            guard stranded == 0 else {
+                throw CADDocumentError(
+                    code: "animation_duration_conflict",
+                    message: "\(stranded) keyframe(s) sit after the new duration. Move or delete them first.")
+            }
+            var candidate = clip
+            candidate.duration = length
+            guard candidate.sanitized().keyframeCount == clip.keyframeCount else {
+                throw CADDocumentError(
+                    code: "animation_duration_conflict",
+                    message: "That duration would merge or drop existing keyframes. Move them first.")
+            }
+            clip.duration = length
+        }
         if let isLooping { clip.isLooping = isLooping }
         if let speed { clip.speed = CADAnimationClip.validSpeed(speed) }
         clip = clip.sanitized()
@@ -283,6 +382,11 @@ public extension FloeCADDocument {
                     code: "animation_source_mismatch",
                     message: "The instance places a different source body than the track names.")
             }
+            guard context.bodyRevisions[instance.sourceBodyID] != nil else {
+                throw CADDocumentError(
+                    code: "unknown_animation_instance",
+                    message: "That instance has no animatable source body. Animate a placed part instead.")
+            }
             cleanTarget.sourceBodyID = instance.sourceBodyID
         }
         var clip = animation.clips[clipIndex]
@@ -325,6 +429,8 @@ public extension FloeCADDocument {
                               keyframeID: UUID? = nil,
                               time: Double,
                               interpolation: CADAnimationInterpolation = .linear,
+                              timingCurve: CADAnimationTimingCurve? = nil,
+                              clearTimingCurve: Bool = false,
                               camera: CADAnimationCameraValue? = nil,
                               instance: CADAnimationInstanceValue? = nil,
                               replace: Bool = false) throws -> CADAnimationKeyframe {
@@ -344,6 +450,11 @@ public extension FloeCADDocument {
             throw CADDocumentError(code: "bad_animation_time",
                                    message: "A keyframe must sit between 0 and the clip duration (\(clip.duration) s).")
         }
+        if let timingCurve, !timingCurve.isValid {
+            throw CADDocumentError(
+                code: "bad_animation_curve",
+                message: "A timing curve needs all four control values in 0...1.")
+        }
         let target = clip.tracks[trackIndex].target
         switch target.kind {
         case .camera:
@@ -362,16 +473,15 @@ public extension FloeCADDocument {
             CADAnimationInstanceValue(translationMM: $0.translationMM,
                                       rotation: $0.normalizedRotation)
         }
-        var keyframe: CADAnimationKeyframe
+        var existingFrame: CADAnimationKeyframe?
         if let keyframeID {
-            guard let index = clip.tracks[trackIndex].keyframes.firstIndex(where: { $0.id == keyframeID }) else {
+            guard let index = clip.tracks[trackIndex].keyframes.firstIndex(where: {
+                $0.id == keyframeID
+            }) else {
                 throw CADDocumentError(code: "unknown_animation_keyframe",
                                        message: "No keyframe has that id on this track.")
             }
-            keyframe = CADAnimationKeyframe(
-                id: keyframeID, time: cleanTime, interpolation: interpolation,
-                camera: camera, instance: cleanInstance)
-            clip.tracks[trackIndex].keyframes[index] = keyframe
+            existingFrame = clip.tracks[trackIndex].keyframes[index]
         } else if let index = clip.tracks[trackIndex].keyframes.firstIndex(where: {
             abs($0.time - cleanTime) < 1e-6
         }) {
@@ -380,11 +490,40 @@ public extension FloeCADDocument {
                     code: "animation_keyframe_exists",
                     message: "A keyframe already exists at this time. Pass replace to update it.")
             }
+            existingFrame = clip.tracks[trackIndex].keyframes[index]
+        }
+        let resolvedCurve: CADAnimationTimingCurve? = clearTimingCurve
+            ? nil
+            : (timingCurve ?? existingFrame?.timingCurve)
+        var keyframe: CADAnimationKeyframe
+        if let keyframeID {
+            guard existingFrame != nil else {
+                throw CADDocumentError(code: "unknown_animation_keyframe",
+                                       message: "No keyframe has that id on this track.")
+            }
+            guard !clip.tracks[trackIndex].keyframes.contains(where: {
+                $0.id != keyframeID && abs($0.time - cleanTime) < 1e-6
+            }) else {
+                throw CADDocumentError(
+                    code: "animation_keyframe_conflict",
+                    message: "Another keyframe already sits at this time. Move it away or delete it first.")
+            }
             keyframe = CADAnimationKeyframe(
-                id: clip.tracks[trackIndex].keyframes[index].id,
-                time: cleanTime, interpolation: interpolation,
-                camera: camera, instance: cleanInstance)
-            clip.tracks[trackIndex].keyframes[index] = keyframe
+                id: keyframeID, time: cleanTime, interpolation: interpolation,
+                camera: camera, instance: cleanInstance,
+                timingCurve: resolvedCurve)
+            clip.tracks[trackIndex].keyframes.removeAll { $0.id == keyframeID }
+            clip.tracks[trackIndex].keyframes.append(keyframe)
+        } else if let existingFrame {
+            keyframe = CADAnimationKeyframe(
+                id: existingFrame.id, time: cleanTime, interpolation: interpolation,
+                camera: camera, instance: cleanInstance,
+                timingCurve: resolvedCurve)
+            if let index = clip.tracks[trackIndex].keyframes.firstIndex(where: {
+                $0.id == existingFrame.id
+            }) {
+                clip.tracks[trackIndex].keyframes[index] = keyframe
+            }
         } else {
             guard clip.tracks[trackIndex].keyframes.count < CADAnimationDocument.maximumKeyframesPerTrack else {
                 throw CADDocumentError(
@@ -393,13 +532,63 @@ public extension FloeCADDocument {
             }
             keyframe = CADAnimationKeyframe(
                 time: cleanTime, interpolation: interpolation,
-                camera: camera, instance: cleanInstance)
+                camera: camera, instance: cleanInstance,
+                timingCurve: resolvedCurve)
             clip.tracks[trackIndex].keyframes.append(keyframe)
         }
         clip.tracks[trackIndex].keyframes = CADAnimationKeyframe.sortedAndDeduplicated(
             clip.tracks[trackIndex].keyframes, maximumTime: clip.duration)
         animation.clips[clipIndex] = clip
         _ = try commitAnimation(animation, title: "Edit Animation Keyframe")
+        return keyframe
+    }
+
+    /// Move one existing keyframe to a new time without changing its value,
+    /// interpolation, curve or stable identity. One ordinary undoable edit;
+    /// a move onto another keyframe's time is refused instead of silently
+    /// collapsing a key.
+    @discardableResult
+    func moveAnimationKeyframe(clipID: UUID,
+                               trackID: UUID,
+                               keyframeID: UUID,
+                               to time: Double) throws -> CADAnimationKeyframe {
+        let state = animationLoadState()
+        try requireWritableAnimation(state)
+        var animation = state.animation
+        guard let clipIndex = animation.clips.firstIndex(where: { $0.id == clipID }) else {
+            throw CADDocumentError(code: "unknown_animation_clip",
+                                   message: "No animation clip has that id.")
+        }
+        var clip = animation.clips[clipIndex]
+        guard let trackIndex = clip.tracks.firstIndex(where: { $0.id == trackID }) else {
+            throw CADDocumentError(code: "unknown_animation_track",
+                                   message: "No animation track has that id.")
+        }
+        guard time.isFinite, time >= 0, time <= clip.duration + 1e-9 else {
+            throw CADDocumentError(code: "bad_animation_time",
+                                   message: "A keyframe must sit between 0 and the clip duration (\(clip.duration) s).")
+        }
+        guard let index = clip.tracks[trackIndex].keyframes.firstIndex(where: {
+            $0.id == keyframeID
+        }) else {
+            throw CADDocumentError(code: "unknown_animation_keyframe",
+                                   message: "No keyframe has that id on this track.")
+        }
+        let cleanTime = min(max(time, 0), clip.duration)
+        guard !clip.tracks[trackIndex].keyframes.contains(where: {
+            $0.id != keyframeID && abs($0.time - cleanTime) < 1e-6
+        }) else {
+            throw CADDocumentError(
+                code: "animation_keyframe_conflict",
+                message: "Another keyframe already sits at this time. Move it away or delete it first.")
+        }
+        var keyframe = clip.tracks[trackIndex].keyframes[index]
+        keyframe.time = cleanTime
+        clip.tracks[trackIndex].keyframes[index] = keyframe
+        clip.tracks[trackIndex].keyframes = CADAnimationKeyframe.sortedAndDeduplicated(
+            clip.tracks[trackIndex].keyframes, maximumTime: clip.duration)
+        animation.clips[clipIndex] = clip
+        _ = try commitAnimation(animation, title: "Move Animation Keyframe")
         return keyframe
     }
 
@@ -444,8 +633,11 @@ public extension FloeCADDocument {
                 throw CADDocumentError(code: "animation_keyframe_exists",
                                        message: "A keyframe already exists at this time.")
             }
-            keyframe = CADAnimationKeyframe(id: keyframes[existing].id, time: cleanTime,
-                                            interpolation: .linear, camera: camera)
+            keyframe = CADAnimationKeyframe(
+                id: keyframes[existing].id, time: cleanTime,
+                interpolation: keyframes[existing].interpolation,
+                camera: camera,
+                timingCurve: keyframes[existing].timingCurve)
             keyframes[existing] = keyframe
         } else {
             guard keyframes.count < CADAnimationDocument.maximumKeyframesPerTrack else {
@@ -484,6 +676,11 @@ public extension FloeCADDocument {
             throw CADDocumentError(code: "animation_source_mismatch",
                                    message: "The instance places a different source body than the keyframe names.")
         }
+        guard context.bodyRevisions[instance.sourceBodyID] != nil else {
+            throw CADDocumentError(
+                code: "unknown_animation_instance",
+                message: "That instance has no animatable source body. Animate a placed part instead.")
+        }
         let value = CADAnimationInstanceValue(
             translationMM: translationMM,
             rotation: CADAnimationQuaternion.normalize(rotation))
@@ -521,8 +718,11 @@ public extension FloeCADDocument {
                 throw CADDocumentError(code: "animation_keyframe_exists",
                                        message: "A keyframe already exists at this time.")
             }
-            keyframe = CADAnimationKeyframe(id: keyframes[existing].id, time: cleanTime,
-                                            interpolation: .linear, instance: value)
+            keyframe = CADAnimationKeyframe(
+                id: keyframes[existing].id, time: cleanTime,
+                interpolation: keyframes[existing].interpolation,
+                instance: value,
+                timingCurve: keyframes[existing].timingCurve)
             keyframes[existing] = keyframe
         } else {
             guard keyframes.count < CADAnimationDocument.maximumKeyframesPerTrack else {
@@ -589,6 +789,7 @@ public extension FloeCADDocument {
                 base: base, turns: turns)
         case .explodeReturn:
             let seeds = context.instances.values
+                .filter { context.bodyRevisions[$0.sourceBodyID] != nil }
                 .sorted { $0.id.uuidString < $1.id.uuidString }
                 .map { seed in
                     CADAnimationInstanceSeed(instanceID: seed.id,
@@ -760,31 +961,125 @@ public extension FloeCADDocument {
                     throw CADDocumentError(code: "missing_keyframe_time",
                                            message: "setKeyframe needs time in seconds.")
                 }
-                let interpolation = payload.string("interpolation")
-                    .flatMap(CADAnimationInterpolation.init(rawValue:)) ?? .linear
+                let requestedInterpolation = payload.string("interpolation")
+                    .flatMap(CADAnimationInterpolation.init(rawValue:))
+                if payload.string("interpolation") != nil, requestedInterpolation == nil {
+                    throw CADDocumentError(
+                        code: "bad_animation_interpolation",
+                        message: "interpolation must be linear or easeInOut.")
+                }
                 let targetKind = try animationTargetKind(clipID: clipID, trackID: trackID)
+                let keyframeID = payload.uuid("keyframe_id") ?? payload.uuid("keyframeID")
+                let replaceRequested = payload.bool("replace") ?? (action == "updateKeyframe")
+                let existingKeyframe: CADAnimationKeyframe?
+                if let keyframeID {
+                    let state = animationLoadState()
+                    guard let clip = state.animation.clip(withID: clipID),
+                          let track = clip.tracks.first(where: { $0.id == trackID }),
+                          let frame = track.keyframes.first(where: { $0.id == keyframeID }) else {
+                        throw CADDocumentError(code: "unknown_animation_keyframe",
+                                               message: "No keyframe has that id on this track.")
+                    }
+                    existingKeyframe = frame
+                } else if replaceRequested {
+                    // A same-time replace keeps the existing interpolation and
+                    // curve when the caller does not name new ones, instead of
+                    // silently reverting the key to linear.
+                    let state = animationLoadState()
+                    existingKeyframe = state.animation.clip(withID: clipID)?
+                        .tracks.first(where: { $0.id == trackID })?
+                        .keyframes.first { abs($0.time - time) < 1e-6 }
+                } else {
+                    existingKeyframe = nil
+                }
                 let camera = payload.animationCameraValue()
                 let instance = payload.animationInstanceValue()
+                let cameraPresent = payload.animationCameraInputPresent
+                let instancePresent = payload.animationInstanceInputPresent
+                let explicitPosition = payload["position"] != nil
+                let resolvedCamera: CADAnimationCameraValue?
+                let resolvedInstance: CADAnimationInstanceValue?
                 switch targetKind {
                 case .camera:
-                    guard camera != nil else {
+                    guard !instancePresent else {
+                        throw CADDocumentError(
+                            code: "bad_animation_value",
+                            message: "A camera keyframe cannot carry a part value.")
+                    }
+                    if cameraPresent || explicitPosition {
+                        guard let camera else {
+                            throw CADDocumentError(
+                                code: "bad_animation_value",
+                                message: "A camera keyframe needs target, distance, azimuth/elevation and fov.")
+                        }
+                        resolvedCamera = camera
+                        resolvedInstance = nil
+                    } else if let existingKeyframe {
+                        guard let camera = existingKeyframe.camera else {
+                            throw CADDocumentError(
+                                code: "bad_animation_value",
+                                message: "A camera keyframe needs target, distance, azimuth/elevation and fov.")
+                        }
+                        resolvedCamera = camera
+                        resolvedInstance = nil
+                    } else {
                         throw CADDocumentError(
                             code: "bad_animation_value",
                             message: "A camera keyframe needs target, distance, azimuth/elevation and fov.")
                     }
                 case .instance:
-                    guard instance != nil else {
+                    guard !cameraPresent else {
+                        throw CADDocumentError(
+                            code: "bad_animation_value",
+                            message: "A part keyframe cannot carry a camera value.")
+                    }
+                    if instancePresent || explicitPosition {
+                        guard let instance else {
+                            throw CADDocumentError(
+                                code: "bad_animation_value",
+                                message: "A part keyframe needs translation_mm and rotation or rotation_degrees.")
+                        }
+                        resolvedCamera = nil
+                        resolvedInstance = instance
+                    } else if let existingKeyframe {
+                        guard let instance = existingKeyframe.instance else {
+                            throw CADDocumentError(
+                                code: "bad_animation_value",
+                                message: "A part keyframe needs translation_mm and rotation or rotation_degrees.")
+                        }
+                        resolvedCamera = nil
+                        resolvedInstance = instance
+                    } else {
                         throw CADDocumentError(
                             code: "bad_animation_value",
                             message: "A part keyframe needs translation_mm and rotation or rotation_degrees.")
                     }
                 }
+                var timingCurve: CADAnimationTimingCurve?
+                if payload.hasAnimationTimingCurveInput {
+                    guard let curve = payload.animationTimingCurve() else {
+                        throw CADDocumentError(
+                            code: "bad_animation_curve",
+                            message: "timing_curve needs finite x1, y1, x2, y2, all in 0...1.")
+                    }
+                    timingCurve = curve
+                }
+                let clearTimingCurve = payload.bool("clear_timing_curve")
+                    ?? (requestedInterpolation != nil && timingCurve == nil)
+                if clearTimingCurve, timingCurve != nil {
+                    throw CADDocumentError(
+                        code: "bad_animation_curve",
+                        message: "Pass either timing_curve or clear_timing_curve, not both.")
+                }
+                let interpolation = requestedInterpolation
+                    ?? existingKeyframe?.interpolation ?? .linear
                 let keyframe = try setAnimationKeyframe(
                     clipID: clipID, trackID: trackID,
-                    keyframeID: payload.uuid("keyframe_id") ?? payload.uuid("keyframeID"),
+                    keyframeID: keyframeID,
                     time: time, interpolation: interpolation,
-                    camera: camera, instance: instance,
-                    replace: payload.bool("replace") ?? (action == "updateKeyframe"))
+                    timingCurve: timingCurve, clearTimingCurve: clearTimingCurve,
+                    camera: resolvedCamera, instance: resolvedInstance,
+                    replace: replaceRequested)
                 return mutationOutcome(title: "keyframe_set",
                                        clip: animationLoadState().clip(withID: clipID),
                                        extra: ["keyframe": Self.keyframeJSON(keyframe)])
@@ -907,6 +1202,11 @@ public extension FloeCADDocument {
                 code: "animation_newer_schema",
                 message: "The saved animation was written by a newer app version and is preserved read-only.")
         }
+        if state.issues.contains(where: { $0.kind == .corruptData }) {
+            throw CADDocumentError(
+                code: "animation_corrupt",
+                message: "The saved animation could not be read. Its original data is preserved and cannot be edited.")
+        }
         if state.issues.contains(where: { $0.kind == .tooLarge }) {
             throw CADDocumentError(
                 code: "animation_too_large",
@@ -918,6 +1218,16 @@ public extension FloeCADDocument {
     private func commitAnimation(_ candidate: CADAnimationDocument,
                                  title: String) throws -> CADAnimationDocument {
         let clean = candidate.sanitized()
+        guard !clean.hasInvalidTimingCurve else {
+            throw CADDocumentError(
+                code: "bad_animation_curve",
+                message: "A timing curve needs all four control values in 0...1.")
+        }
+        guard clean.schemaVersion <= CADAnimationDocument.currentSchemaVersion else {
+            throw CADDocumentError(
+                code: "animation_newer_schema",
+                message: "The saved animation was written by a newer app version and is preserved read-only.")
+        }
         let data = try CADAnimationCodec.encode(clean)
         guard data.count <= CADAnimationDocument.maximumEncodedBytes else {
             throw CADDocumentError(
@@ -1052,6 +1362,12 @@ public extension FloeCADDocument {
             "time": keyframe.time,
             "interpolation": keyframe.interpolation.rawValue,
         ]
+        if let curve = keyframe.timingCurve {
+            object["timing_curve"] = [
+                "x1": curve.x1, "y1": curve.y1,
+                "x2": curve.x2, "y2": curve.y2,
+            ]
+        }
         if let camera = keyframe.camera {
             object["camera"] = [
                 "target": [camera.target.x, camera.target.y, camera.target.z],
@@ -1248,6 +1564,53 @@ private extension Dictionary where Key == String, Value == Any {
             return Self.instanceValue(raw)
         }
         return Self.instanceValue(self)
+    }
+
+    /// True when the payload explicitly attempts a camera value, even if the
+    /// value is malformed. An update with no value fields keeps the existing
+    /// keyframe value; an explicit malformed value is refused.
+    var animationCameraInputPresent: Bool {
+        ["camera", "target", "distance",
+         "azimuth_radians", "azimuth", "azimuth_degrees", "azimuthDegrees",
+         "elevation_radians", "elevation", "elevation_degrees", "elevationDegrees",
+         "fov_y_degrees", "fov", "fovY"].contains { self[$0] != nil }
+    }
+
+    /// True when the payload explicitly attempts a part value. `position` is
+    /// shared with the camera shape, so the target kind decides which meaning
+    /// applies; both flags may be true without ambiguity.
+    var animationInstanceInputPresent: Bool {
+        ["instance", "translation_mm", "translation",
+         "rotation", "quaternion", "rotation_degrees", "rotationDegrees"]
+            .contains { self[$0] != nil }
+    }
+
+    var hasAnimationTimingCurveInput: Bool { self["timing_curve"] != nil }
+
+    func animationTimingCurve() -> CADAnimationTimingCurve? {
+        guard let raw = self["timing_curve"] as? [String: Any] else { return nil }
+        return Self.timingCurveValue(raw)
+    }
+
+    static func timingCurveValue(_ raw: [String: Any]) -> CADAnimationTimingCurve? {
+        guard let x1 = raw.realNumber("x1"), let y1 = raw.realNumber("y1"),
+              let x2 = raw.realNumber("x2"), let y2 = raw.realNumber("y2") else {
+            return nil
+        }
+        let curve = CADAnimationTimingCurve(x1: x1, y1: y1, x2: x2, y2: y2)
+        return curve.isValid ? curve : nil
+    }
+
+    /// A curve control must be a REAL finite JSON number, not a boolean
+    /// bridged through NSNumber (where `true` reads as 1) and not a string.
+    /// Out-of-range/non-finite values are refused by the curve validation
+    /// before any commit.
+    func realNumber(_ key: String) -> Double? {
+        guard let number = self[key] as? NSNumber else { return nil }
+        guard String(cString: number.objCType) != "c" else { return nil }
+        let value = number.doubleValue
+        guard value.isFinite else { return nil }
+        return value
     }
 
     static func instanceValue(_ raw: [String: Any]) -> CADAnimationInstanceValue? {

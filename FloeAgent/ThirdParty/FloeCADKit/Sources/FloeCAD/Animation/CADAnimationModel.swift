@@ -28,7 +28,14 @@ import simd
 /// The optional `animationData` payload of a FloeCAD package. Absent on every
 /// document that never animated; additive, so old documents open unchanged.
 public nonisolated struct CADAnimationDocument: Codable, Sendable, Equatable {
-    public static let currentSchemaVersion = 1
+    /// Schema 2 adds the authored timing curve. Documents that never stored a
+    /// curve keep schema 1, so an ordinary legacy/default clip stays writable
+    /// by the released schema-1 reader. Once a real curve (or a higher
+    /// schema) is stored, the header never drops back to 1 just because the
+    /// curve was later removed.
+    public static let legacySchemaVersion = 1
+    public static let timingCurveSchemaVersion = 2
+    public static let currentSchemaVersion = timingCurveSchemaVersion
     public static let defaultDurationSeconds: Double = 5
     public static let minimumDurationSeconds: Double = 0.1
     public static let maximumDurationSeconds: Double = 600
@@ -42,7 +49,7 @@ public nonisolated struct CADAnimationDocument: Codable, Sendable, Equatable {
     public var clips: [CADAnimationClip]
     public var activeClipID: UUID?
 
-    public init(schemaVersion: Int = CADAnimationDocument.currentSchemaVersion,
+    public init(schemaVersion: Int = CADAnimationDocument.legacySchemaVersion,
                 clips: [CADAnimationClip] = [],
                 activeClipID: UUID? = nil) {
         self.schemaVersion = schemaVersion
@@ -73,15 +80,50 @@ public nonisolated struct CADAnimationDocument: Codable, Sendable, Equatable {
         }
     }
 
+    /// Schema required by the REAL stored data, independent of the declared
+    /// header. A timing curve is non-additive for a schema-1 writer, so its
+    /// presence requires schema 2 even if a bad/older writer left the header
+    /// at 1.
+    public var requiredSchemaVersion: Int {
+        clips.contains { clip in
+            clip.tracks.contains { track in
+                track.keyframes.contains { $0.timingCurve != nil }
+            }
+        } ? CADAnimationDocument.timingCurveSchemaVersion
+          : CADAnimationDocument.legacySchemaVersion
+    }
+
+    /// A curve that is present but unreadable must never be accepted as a
+    /// writer input. Raw load/store assessment preserves those bytes and the
+    /// animation surface reports them read-only; this is the last local check
+    /// before a programmatic candidate is encoded.
+    public var hasInvalidTimingCurve: Bool {
+        clips.contains { clip in
+            clip.tracks.contains { track in
+                track.keyframes.contains {
+                    guard let curve = $0.timingCurve else { return false }
+                    return !curve.isValid
+                }
+            }
+        }
+    }
+
     /// Clamp, sort and bound a document before it is stored. Values that
     /// cannot be addressed at all (non-finite times, unknown targets) are
     /// dropped here rather than left to fail every later evaluation.
+    ///
+    /// The header is NOT unconditionally stamped with the newest schema.
+    /// Legacy/default clips without a curve stay at schema 1; a real curve
+    /// raises it to 2; an already-higher header is preserved so removing the
+    /// last curve can never lower a document's declared/floor semantics.
     public func sanitized() -> CADAnimationDocument {
         var clean = self
-        clean.schemaVersion = CADAnimationDocument.currentSchemaVersion
         clean.clips = Array(clips.prefix(CADAnimationDocument.maximumClips))
             .map { $0.sanitized() }
             .filter { !$0.tracks.isEmpty || !$0.name.isEmpty }
+        clean.schemaVersion = max(
+            max(self.schemaVersion, CADAnimationDocument.legacySchemaVersion),
+            clean.requiredSchemaVersion)
         if let activeClipID, clean.clips.contains(where: { $0.id == activeClipID }) {
             clean.activeClipID = activeClipID
         } else {
@@ -247,6 +289,11 @@ public nonisolated struct CADAnimationKeyframe: Codable, Sendable, Equatable, Id
     public var time: Double
     /// Interpolation of the segment that STARTS at this keyframe.
     public var interpolation: CADAnimationInterpolation
+    /// Optional additive timing curve for the segment that STARTS here. When
+    /// present and valid it overrides `interpolation`; nil keeps the legacy
+    /// linear/easeInOut behaviour. This member is additive: old documents
+    /// decode it as nil and older readers ignore it.
+    public var timingCurve: CADAnimationTimingCurve?
     public var camera: CADAnimationCameraValue?
     public var instance: CADAnimationInstanceValue?
 
@@ -254,12 +301,24 @@ public nonisolated struct CADAnimationKeyframe: Codable, Sendable, Equatable, Id
                 time: Double,
                 interpolation: CADAnimationInterpolation = .linear,
                 camera: CADAnimationCameraValue? = nil,
-                instance: CADAnimationInstanceValue? = nil) {
+                instance: CADAnimationInstanceValue? = nil,
+                timingCurve: CADAnimationTimingCurve? = nil) {
         self.id = id
         self.time = time
         self.interpolation = interpolation
         self.camera = camera
         self.instance = instance
+        self.timingCurve = timingCurve
+    }
+
+    /// Normalized segment progress. A valid authored timing curve wins; an
+    /// absent or malformed curve falls back to the persisted enumeration so a
+    /// damaged additive member never changes the evaluated pose.
+    public func progress(_ rawProgress: Double) -> Double {
+        if let timingCurve, timingCurve.isValid {
+            return timingCurve.progress(rawProgress)
+        }
+        return interpolation.eased(rawProgress)
     }
 
     public func value(for kind: CADAnimationTarget.Kind) -> CADAnimationKeyframeValue? {
@@ -348,6 +407,97 @@ public nonisolated enum CADAnimationInterpolation: String, Codable, Sendable, Ca
             let shifted = -2 * t + 2
             return 1 - (shifted * shifted * shifted) / 2
         }
+    }
+}
+
+// MARK: - Timing curve
+
+/// Narrow, additive timing curve for one keyframe's outgoing segment.
+///
+/// The four values are the standard cubic-Bézier control points
+/// `(x1, y1, x2, y2)` with the implicit endpoints `(0, 0)` and `(1, 1)`.
+/// All four control values stay in `0...1`, so the curve is a function of
+/// time and cannot push an interpolated camera/part value outside the two
+/// endpoint values. A nil `timingCurve` keeps the existing
+/// `CADAnimationInterpolation` behaviour, so documents written before this
+/// field existed evaluate exactly as before and older readers ignore the
+/// additive JSON member.
+public nonisolated struct CADAnimationTimingCurve: Codable, Sendable, Equatable {
+    /// The accepted control-value range. An authored edit outside it is
+    /// refused instead of being silently clamped or dropped.
+    public static let minimumControlValue = 0.0
+    public static let maximumControlValue = 1.0
+    public static let defaultCurve = CADAnimationTimingCurve(
+        x1: 0.42, y1: 0, x2: 0.58, y2: 1)
+
+    public var x1: Double
+    public var y1: Double
+    public var x2: Double
+    public var y2: Double
+
+    public init(x1: Double, y1: Double, x2: Double, y2: Double) {
+        self.x1 = x1
+        self.y1 = y1
+        self.x2 = x2
+        self.y2 = y2
+    }
+
+    public var isValid: Bool {
+        x1.isFinite && y1.isFinite && x2.isFinite && y2.isFinite
+            && x1 >= Self.minimumControlValue && x1 <= Self.maximumControlValue
+            && y1 >= Self.minimumControlValue && y1 <= Self.maximumControlValue
+            && x2 >= Self.minimumControlValue && x2 <= Self.maximumControlValue
+            && y2 >= Self.minimumControlValue && y2 <= Self.maximumControlValue
+    }
+
+    /// Normalized segment progress in `0...1`. A deterministic Newton solve
+    /// with a bisection fallback keeps this a real evaluated curve, not a
+    /// cosmetic mode label.
+    public func progress(_ rawProgress: Double) -> Double {
+        let x = min(max(rawProgress.isFinite ? rawProgress : 0, 0), 1)
+        if x <= 0 { return 0 }
+        if x >= 1 { return 1 }
+        guard isValid else { return x }
+        var t = x
+        for _ in 0..<6 {
+            let error = sample(x1, x2, t) - x
+            if abs(error) < 1e-7 { return sample(y1, y2, t) }
+            let slope = derivative(x1, x2, t)
+            guard slope.isFinite, abs(slope) > 1e-9 else { break }
+            let next = t - error / slope
+            guard next.isFinite, next > 0, next < 1 else { break }
+            t = next
+        }
+        var lower = 0.0
+        var upper = 1.0
+        for _ in 0..<40 {
+            t = (lower + upper) * 0.5
+            let value = sample(x1, x2, t)
+            if abs(value - x) < 1e-7 { break }
+            if value < x { lower = t } else { upper = t }
+        }
+        return sample(y1, y2, t)
+    }
+
+    /// Point at Bézier parameter `t`, in curve space. The native editor draws
+    /// the same shape the evaluator consumes.
+    public func point(at t: Double) -> (x: Double, y: Double) {
+        let value = min(max(t.isFinite ? t : 0, 0), 1)
+        return (sample(x1, x2, value), sample(y1, y2, value))
+    }
+
+    private func sample(_ p1: Double, _ p2: Double, _ t: Double) -> Double {
+        let oneMinusT = 1 - t
+        return 3 * oneMinusT * oneMinusT * t * p1
+            + 3 * oneMinusT * t * t * p2
+            + t * t * t
+    }
+
+    private func derivative(_ p1: Double, _ p2: Double, _ t: Double) -> Double {
+        let oneMinusT = 1 - t
+        return 3 * oneMinusT * oneMinusT * p1
+            + 6 * oneMinusT * t * (p2 - p1)
+            + 3 * t * t * (1 - p2)
     }
 }
 
@@ -515,12 +665,37 @@ public nonisolated enum CADAnimationQuaternion {
     /// JSON API so a caller can author a part rotation without packing a
     /// quaternion by hand.
     public static func fromEulerDegrees(_ degrees: SIMD3<Double>) -> SIMD4<Double> {
-        let half = degrees * (.pi / 360)
-        let qx = simd_quatd(angle: half.x, axis: SIMD3(1, 0, 0))
-        let qy = simd_quatd(angle: half.y, axis: SIMD3(0, 1, 0))
-        let qz = simd_quatd(angle: half.z, axis: SIMD3(0, 0, 1))
+        // simd_quatd(angle:axis:) takes the rotation angle in radians and
+        // applies the half-angle internally. Passing a pre-halved angle here
+        // silently authored every part rotation at half its declared value.
+        let radians = degrees * (.pi / 180)
+        let qx = simd_quatd(angle: radians.x, axis: SIMD3(1, 0, 0))
+        let qy = simd_quatd(angle: radians.y, axis: SIMD3(0, 1, 0))
+        let qz = simd_quatd(angle: radians.z, axis: SIMD3(0, 0, 1))
         let q = qz * qy * qx
         return normalize(SIMD4(q.imag.x, q.imag.y, q.imag.z, q.real))
+    }
+
+    /// Intrinsic XYZ Euler degrees matching `fromEulerDegrees`. Near gimbal
+    /// lock the roll/yaw pair is not unique; this returns one deterministic
+    /// finite representative for the editable value form.
+    public static func eulerDegrees(from quaternion: SIMD4<Double>) -> SIMD3<Double> {
+        let q = normalize(quaternion)
+        let x = q.x, y = q.y, z = q.z, w = q.w
+        let sinPitch = min(max(2 * (w * y - z * x), -1), 1)
+        let pitch = asin(sinPitch)
+        let roll: Double
+        let yaw: Double
+        if abs(sinPitch) > 0.999999 {
+            // Gimbal lock: put the remaining rotation on yaw.
+            roll = 0
+            yaw = atan2(2 * (x * y + w * z), 1 - 2 * (y * y + z * z))
+        } else {
+            roll = atan2(2 * (w * x + y * z), 1 - 2 * (x * x + y * y))
+            yaw = atan2(2 * (w * z + x * y), 1 - 2 * (y * y + z * z))
+        }
+        let degrees = 180 / Double.pi
+        return SIMD3(roll * degrees, pitch * degrees, yaw * degrees)
     }
 
     /// True when the quaternion rotates `vector` by roughly `angleDegrees`
@@ -728,6 +903,138 @@ public nonisolated struct CADAnimationInstanceSeed: Sendable, Equatable {
         self.instanceID = instanceID
         self.sourceBodyID = sourceBodyID
         self.value = value
+    }
+}
+
+// MARK: - Persisted format intent
+
+/// Raw classification of the optional animation column. It deliberately does
+/// NOT decode through the Swift model first: a schema-1 writer can ignore an
+/// unknown `timingCurve` member and then rewrite the record without it, so the
+/// package floor and the animation read/editability state must be derived
+/// from the persisted bytes themselves.
+///
+/// The inspector is intentionally narrow (schema header plus the new curve
+/// member). Other animation fields keep their existing decode/issue path.
+public nonisolated struct CADAnimationFormatIntent: Sendable, Equatable {
+    /// Package floor implied by the animation bytes, using the existing
+    /// coordinated associative/curve floor (2).
+    public var requiredVersion = CADAnimationDocument.legacySchemaVersion
+    public var declaredSchemaVersion: Int?
+    public var containsTimingCurve = false
+    /// A curve member this build cannot verify. The original bytes must be
+    /// preserved; no reader/writer may replace it with linear/ease.
+    public var isMalformed = false
+
+    public var isFutureSchema: Bool {
+        guard let declaredSchemaVersion else { return false }
+        return declaredSchemaVersion > CADAnimationDocument.currentSchemaVersion
+    }
+}
+
+public nonisolated enum CADAnimationFormat {
+    /// Inspect the actual JSON bytes. Missing data is legacy/empty. A missing
+    /// or non-integer schema is malformed; a schema above this build's
+    /// current version is future and keeps at least its own floor (capped in
+    /// practice by `CADDocumentFormat.supportedVersion`, so a far-future value
+    /// makes the package unwritable instead of silently downgrading it).
+    public static func intent(_ data: Data?) -> CADAnimationFormatIntent {
+        var result = CADAnimationFormatIntent()
+        guard let data, !data.isEmpty else { return result }
+        guard data.count <= CADAnimationDocument.maximumEncodedBytes else {
+            result.requiredVersion = CADAnimationDocument.timingCurveSchemaVersion
+            result.isMalformed = true
+            return result
+        }
+        guard let raw = try? JSONSerialization.jsonObject(with: data),
+              let object = raw as? [String: Any] else {
+            result.requiredVersion = CADAnimationDocument.timingCurveSchemaVersion
+            result.isMalformed = true
+            return result
+        }
+        guard let rawSchema = object["schemaVersion"],
+              let schema = realInteger(rawSchema), schema >= 1 else {
+            result.requiredVersion = CADAnimationDocument.timingCurveSchemaVersion
+            result.isMalformed = true
+            return result
+        }
+        result.declaredSchemaVersion = schema
+        if schema > CADAnimationDocument.currentSchemaVersion {
+            result.requiredVersion = max(CADAnimationDocument.timingCurveSchemaVersion,
+                                         schema)
+        } else if schema >= CADAnimationDocument.timingCurveSchemaVersion {
+            result.requiredVersion = max(result.requiredVersion, schema)
+        }
+        guard let rawClips = object["clips"] else {
+            result.isMalformed = true
+            result.requiredVersion = max(result.requiredVersion,
+                                          CADAnimationDocument.timingCurveSchemaVersion)
+            return result
+        }
+        guard let clips = rawClips as? [[String: Any]] else {
+            result.isMalformed = true
+            result.requiredVersion = max(result.requiredVersion,
+                                          CADAnimationDocument.timingCurveSchemaVersion)
+            return result
+        }
+        for clip in clips {
+            guard let rawTracks = clip["tracks"],
+                  let tracks = rawTracks as? [[String: Any]] else {
+                result.isMalformed = true
+                continue
+            }
+            for track in tracks {
+                guard let rawKeyframes = track["keyframes"],
+                      let keyframes = rawKeyframes as? [[String: Any]] else {
+                    result.isMalformed = true
+                    continue
+                }
+                for keyframe in keyframes {
+                    guard let rawCurve = keyframe["timingCurve"] else { continue }
+                    if rawCurve is NSNull { continue }
+                    result.containsTimingCurve = true
+                    result.requiredVersion = max(result.requiredVersion,
+                                                  CADAnimationDocument.timingCurveSchemaVersion)
+                    guard let curve = rawCurve as? [String: Any],
+                          Set(curve.keys) == Set(["x1", "y1", "x2", "y2"]),
+                          let x1 = realNumber(curve["x1"]),
+                          let y1 = realNumber(curve["y1"]),
+                          let x2 = realNumber(curve["x2"]),
+                          let y2 = realNumber(curve["y2"]),
+                          CADAnimationTimingCurve(x1: x1, y1: y1,
+                                                  x2: x2, y2: y2).isValid else {
+                        result.isMalformed = true
+                        continue
+                    }
+                }
+            }
+        }
+        if result.isMalformed {
+            result.requiredVersion = max(result.requiredVersion,
+                                          CADAnimationDocument.timingCurveSchemaVersion)
+        }
+        return result
+    }
+
+    /// JSONSerialization bridges booleans to NSNumber and `doubleValue`
+    /// accepts them as 1/0. A persisted control value must be a real number.
+    private static func realNumber(_ raw: Any?) -> Double? {
+        guard let number = raw as? NSNumber else { return nil }
+        guard String(cString: number.objCType) != "c" else { return nil }
+        let value = number.doubleValue
+        guard value.isFinite else { return nil }
+        return value
+    }
+
+    private static func realInteger(_ raw: Any?) -> Int? {
+        guard let number = raw as? NSNumber else { return nil }
+        guard String(cString: number.objCType) != "c" else { return nil }
+        let value = number.doubleValue
+        guard value.isFinite, value == value.rounded(),
+              value >= Double(Int.min), value <= Double(Int.max) else {
+            return nil
+        }
+        return number.intValue
     }
 }
 

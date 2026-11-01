@@ -120,7 +120,7 @@ public nonisolated enum CADAnimationEvaluator {
         guard let a = start.camera, let b = end.camera else { return start.camera }
         let span = end.time - start.time
         let raw = span > 1e-9 ? (time - start.time) / span : 0
-        return a.interpolated(to: b, progress: start.interpolation.eased(raw))
+        return a.interpolated(to: b, progress: start.progress(raw))
     }
 
     static func sampleInstance(_ track: CADAnimationTrack,
@@ -148,6 +148,6 @@ public nonisolated enum CADAnimationEvaluator {
         guard let a = start.instance, let b = end.instance else { return start.instance }
         let span = end.time - start.time
         let raw = span > 1e-9 ? (time - start.time) / span : 0
-        return a.interpolated(to: b, progress: start.interpolation.eased(raw))
+        return a.interpolated(to: b, progress: start.progress(raw))
     }
 }

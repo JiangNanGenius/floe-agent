@@ -1366,6 +1366,15 @@ targets:
       - path: ThirdParty/FloeCADKit/Tests/FloeCADKitTests/CADPresentationUITests.swift
       - path: ThirdParty/FloeCADKit/Tests/FloeCADKitTests/CADAssemblyDrawingExtensionTests.swift
       - path: ThirdParty/FloeCADKit/Tests/FloeCADKitTests/CADAnimationTests.swift
+      # X23-X25 part/camera track authoring, keyframe move/delete and the
+      # additive timed-curve evaluator. The package test target also builds
+      # it; this explicit entry is what makes it execute in FloeAppTests.
+      - path: ThirdParty/FloeCADKit/Tests/FloeCADKitTests/CADAnimationAuthoringTests.swift
+      # X23-X25 R2 version contract: curve intent raises schema/package floor,
+      # ordinary clips stay 1, malformed/future bytes stay preserved.
+      - path: ThirdParty/FloeCADKit/Tests/FloeCADKitTests/CADAnimationVersionedPersistenceTests.swift
+      # X23-X25 R2 actual GPU PNG capture/export oracle for the authored curve.
+      - path: ThirdParty/FloeCADKit/Tests/FloeCADKitTests/CADAnimationCurveFrameWitnessTests.swift
       # E26 IGES open-surface exact round-trip + solid/surface boundary
       # regressions. Package test target also builds it; this explicit entry is
       # what makes it execute in FloeAppTests. Regenerate with gen_project.sh.
