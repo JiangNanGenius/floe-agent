@@ -462,6 +462,22 @@ final class CADUSDZMaterialExportTests: XCTestCase {
             return true
         }
         XCTAssertTrue(success)
+        // CGContext draws premultiplied RGBA. Compare the actual straight
+        // texture samples, as the shader/importer does, rather than multiplying
+        // an opacity mask by its newly preserved alpha a second time here.
+        for offset in stride(from: 0, to: bytes.count, by: 4) {
+            let alpha = Int(bytes[offset + 3])
+            if alpha == 0 {
+                bytes[offset] = 0
+                bytes[offset + 1] = 0
+                bytes[offset + 2] = 0
+            } else if alpha < 255 {
+                for channel in 0..<3 {
+                    bytes[offset + channel] = UInt8(min(255,
+                        (Int(bytes[offset + channel]) * 255 + alpha / 2) / alpha))
+                }
+            }
+        }
         return bytes
     }
 
