@@ -775,12 +775,14 @@ final class CADSavedCameraPresentTests: XCTestCase {
                         projection: .perspective))
         handle.showCamera(stored.presentationCamera)
         try await settle(handle, mounted.store)
+        let clipID = try prepareVideoClip(fixture.document, name: "wide-square",
+                                          cameraTrack: false)
         let liveBefore = try XCTUnwrap(handle.currentCamera)
         let changeBefore = fixture.document.liveChangeCount
 
         let export = try await exportVideo(
-            fixture.document, name: "wide-square", width: 480, height: 480,
-            fps: 8, cameraTrack: false)
+            fixture.document, clipID: clipID, name: "wide-square",
+            width: 480, height: 480, fps: 8)
         XCTAssertEqual(export.width, 480)
         XCTAssertEqual(export.height, 480)
 
@@ -822,9 +824,11 @@ final class CADSavedCameraPresentTests: XCTestCase {
         handle.showCamera(stored.presentationCamera)
         try await settle(handle, mounted.store)
 
+        let clipID = try prepareVideoClip(fixture.document, name: "portrait-landscape",
+                                          cameraTrack: false)
         let export = try await exportVideo(
-            fixture.document, name: "portrait-landscape", width: 640, height: 360,
-            fps: 8, cameraTrack: false)
+            fixture.document, clipID: clipID, name: "portrait-landscape",
+            width: 640, height: 360, fps: 8)
         XCTAssertEqual(export.width, 640)
         XCTAssertEqual(export.height, 360)
         let first = try await videoFrame(export.url, atSeconds: 0)
@@ -855,9 +859,11 @@ final class CADSavedCameraPresentTests: XCTestCase {
         handle.showCamera(stored.presentationCamera)
         try await settle(handle, mounted.store)
 
+        let clipID = try prepareVideoClip(fixture.document, name: "tracked-ortho",
+                                          cameraTrack: true)
         let export = try await exportVideo(
-            fixture.document, name: "tracked-ortho", width: 960, height: 960,
-            fps: 8, cameraTrack: true)
+            fixture.document, clipID: clipID, name: "tracked-ortho",
+            width: 960, height: 960, fps: 8)
         let first = try await videoFrame(export.url, atSeconds: 0)
         let lastTime = Double(max(export.frameCount - 1, 0)) / 8.0
         let last = try await videoFrame(export.url, atSeconds: lastTime)
@@ -900,11 +906,9 @@ final class CADSavedCameraPresentTests: XCTestCase {
         var posterPNG: Data?
     }
 
-    /// One real, small MP4 through the production exporter. No fabricated
-    /// frames: the test decodes the file it just wrote.
-    private func exportVideo(_ document: FloeCADDocument, name: String,
-                             width: Int, height: Int, fps: Int,
-                             cameraTrack: Bool) async throws -> VideoExport {
+    /// Author the fixture before measuring the export's document invariants.
+    private func prepareVideoClip(_ document: FloeCADDocument, name: String,
+                                  cameraTrack: Bool) throws -> UUID {
         let clip = try document.createAnimationClip(name: name, duration: 0.5)
         if cameraTrack {
             let track = try document.addAnimationTrack(clipID: clip.id,
@@ -921,6 +925,14 @@ final class CADSavedCameraPresentTests: XCTestCase {
                     azimuthRadians: 20 * .pi / 180,
                     elevationRadians: 0, fovYDegrees: 60))
         }
+        return clip.id
+    }
+
+    /// One real, small MP4 through the production exporter. No fabricated
+    /// frames: the test decodes the file it just wrote.
+    private func exportVideo(_ document: FloeCADDocument, clipID: UUID,
+                             name: String, width: Int, height: Int,
+                             fps: Int) async throws -> VideoExport {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("SavedCameraVideo-\(UUID().uuidString)",
                                     isDirectory: true)
@@ -931,11 +943,18 @@ final class CADSavedCameraPresentTests: XCTestCase {
         let settings = CADAnimationExportSettings(
             width: width, height: height, frameRate: fps, codec: .h264,
             bitrate: nil, overwrite: false, posterEnabled: true)
+        let preparedChangeCount = document.liveChangeCount
         let handle = try document.startAnimationExportMP4(
-            clipID: clip.id, to: url, settings: settings)
+            clipID: clipID, to: url, settings: settings)
         let status = await CADAnimationExportCenter.shared.wait(handle.id)
         let result = try XCTUnwrap(status.result,
                                    status.error ?? "the video export produced no result")
+        XCTAssertEqual(document.liveChangeCount, preparedChangeCount,
+                       "exporting an authored clip must not edit the document")
+        let attachment = XCTAttachment(contentsOf: result.url)
+        attachment.name = "Actual saved-camera video \(name)"
+        attachment.lifetime = .keepAlways
+        add(attachment)
         return VideoExport(url: result.url, width: result.width,
                            height: result.height, frameCount: result.frameCount,
                            posterPNG: result.posterPNG)
@@ -953,7 +972,12 @@ final class CADSavedCameraPresentTests: XCTestCase {
         generator.requestedTimeToleranceAfter = window
         let time = CMTime(seconds: seconds, preferredTimescale: 600)
         let cgImage = try await generator.image(at: time).image
-        return UIImage(cgImage: cgImage)
+        let image = UIImage(cgImage: cgImage)
+        let attachment = XCTAttachment(image: image)
+        attachment.name = "Decoded \(url.lastPathComponent) at \(seconds) seconds"
+        attachment.lifetime = .keepAlways
+        add(attachment)
+        return image
     }
 
     private struct PixelRegion {
