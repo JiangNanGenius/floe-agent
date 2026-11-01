@@ -340,7 +340,12 @@ final class CADPresentationDraftPreviewTests: XCTestCase {
                                 handle: CADPresentationHandle? = nil)
     async throws -> CADPresentationRenderController {
         let controller = CADPresentationRenderController()
-        if let handle { controller.attach(handle: handle) }
+        if let handle {
+            controller.attach(handle: handle)
+            // Match CADPresentationView.makeUIView's two-way weak binding:
+            // inspector sinks reach the renderer through the stable handle.
+            handle.controller = controller
+        }
         if let document { controller.bindSelection(to: document) }
         controller.apply(scene)
         try await waitReady(controller)
@@ -1033,15 +1038,22 @@ final class CADPresentationDraftPreviewTests: XCTestCase {
         let controller = try await makeController(scene: firstScene)
         defer { controller.release() }
 
-        let secondBody = presentationBody(id: bodyID, name: "replaced body",
+        var secondBody = presentationBody(id: bodyID, name: "replaced body",
                                           mesh: mesh)
+        // Change actual scene content. Revision/changeCount alone deliberately
+        // do not rebuild an identical renderer (CADPresentationScene.buildKey).
+        secondBody.transform.columns.3.x = 0.005
         let secondScene = CADPresentationScene(
             schemaVersion: firstScene.schemaVersion,
             documentKey: firstScene.documentKey, documentRevision: 1,
             changeCount: 2, contentSHA256: "draft-preview-fixture-2",
             bodies: [secondBody], images: [],
             environment: firstScene.environment, issues: [],
-            bounds: firstScene.bounds, materialCount: 0)
+            bounds: CADPresentationSceneBuilder.worldBounds(
+                min: mesh.boundsMin, max: mesh.boundsMax,
+                transform: secondBody.transform), materialCount: 0)
+        XCTAssertNotEqual(firstScene.buildKey, secondScene.buildKey,
+                          "the fixture must request a genuinely different stage")
 
         let spec = try draftSpec(mapping: planarMapping)
         let target = bodyTarget(for: body)
