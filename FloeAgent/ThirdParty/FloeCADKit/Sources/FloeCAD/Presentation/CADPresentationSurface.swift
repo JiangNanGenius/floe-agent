@@ -89,6 +89,10 @@ nonisolated struct CADPresentationSnapshot: Sendable, Equatable {
 @Observable
 final class CADPresentationHandle {
     @ObservationIgnored weak var controller: CADPresentationRenderController?
+    /// Explicit view controls invalidate camera readers. Rendered animation
+    /// frames keep their existing controller path and do not refresh SwiftUI
+    /// on every frame. The controller itself remains a weak, ignored owner.
+    private var cameraControlRevision: UInt64 = 0
     /// Latest reported issues (missing images, unsupported face display,
     /// stale bindings). The UI shows these in a details section, never as
     /// fake success.
@@ -111,22 +115,33 @@ final class CADPresentationHandle {
     var bounds: CADPresentationBounds? { controller?.currentBounds }
     /// Current live camera; used by the timeline to capture a keyframe from
     /// exactly what the user is looking at.
-    var currentCamera: CADPresentationCamera? { controller?.currentCamera }
+    var currentCamera: CADPresentationCamera? {
+        _ = cameraControlRevision
+        _ = isReady
+        return controller?.currentCamera
+    }
     /// Current viewport width ÷ height, captured into a saved view.
-    var currentFrameAspect: Double? { controller?.currentFrameAspect }
+    var currentFrameAspect: Double? {
+        _ = cameraControlRevision
+        _ = isReady
+        return controller?.currentFrameAspect
+    }
 
     func fit() {
         controller?.fit()
+        cameraControlRevision &+= 1
     }
 
     /// Show an already-persisted saved view without writing the document.
     func showCamera(_ camera: CADPresentationCamera) {
         controller?.showCamera(camera)
+        cameraControlRevision &+= 1
     }
 
     /// Temporary live projection change; never overwrites a saved camera.
     func setProjection(_ projection: CADCameraProjection) {
         controller?.setProjection(projection)
+        cameraControlRevision &+= 1
     }
 
     /// The host control routes through here so a pending tap that began under

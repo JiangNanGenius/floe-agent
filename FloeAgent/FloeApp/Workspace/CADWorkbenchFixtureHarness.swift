@@ -208,6 +208,161 @@ enum CADQualificationFixture {
         }
     }
 
+    /// E29/X31 native OBJ options coverage fixture: two real saved bodies where
+    /// one body carries a face-material binding whose saved face range is no
+    /// longer trusted in the reopened generation. The package is saved and
+    /// reopened exactly like a user reopening a design, so the app's own shared
+    /// coverage receipt reports the real partial state ("face material ranges
+    /// are stale") and the real OBJ preflight falls back with its own warning.
+    /// Nothing here fabricates an invalid mesh or a renderer verdict: the two
+    /// bodies are ordinary Extrudes built through the typed command vocabulary,
+    /// and the face material is applied through `CADMaterialService` with a
+    /// fresh `query_token` from the real faces query.
+    @MainActor
+    static func openOBJCoverage() async throws -> FloeCADDocument {
+        let url = try fixtureURL("obj-coverage.floecad")
+        if FileManager.default.fileExists(atPath: url.path) {
+            try FileManager.default.removeItem(at: url)
+        }
+        let document = try await FloeCADDocument.create(at: url, name: "OBJ coverage")
+        do {
+            let plate = try makeExtrudedBody(document, name: "Plate",
+                                             min: [0, 0], max: [100, 60], distance: 10)
+            _ = try makeExtrudedBody(document, name: "Block",
+                                     min: [130, 0], max: [150, 20], distance: 10)
+            let top = try horizontalPlanarFace(of: plate, in: document)
+            let reply = CADMaterialService(document: document).handle(
+                action: "applyFaces",
+                args: ["bodyID": plate,
+                       "faces": [top.index],
+                       "query_token": top.token,
+                       "color": [0.82, 0.24, 0.18, 1.0]])
+            guard reply["ok"] as? Bool == true else {
+                throw CADDocumentError(
+                    code: reply["error"] as? String ?? "fixture_material_failed",
+                    message: reply["message"] as? String
+                        ?? "The OBJ coverage fixture could not apply its face material.")
+            }
+            let save = await document.save()
+            guard save.succeeded else {
+                throw CADDocumentError(code: "fixture_save_failed",
+                                       message: save.error ?? "The fixture could not be saved.")
+            }
+        } catch {
+            document.close()
+            throw error
+        }
+        document.close()
+        return try await FloeCADDocument.open(at: url)
+    }
+
+    /// E29/X31 native OBJ refusal fixture: one real body whose material was
+    /// applied through the production material service with an emission
+    /// strength the service accepts (0…100) but the OBJ bundle correctly
+    /// refuses to represent (> 1). The shared coverage receipt and the real
+    /// preflight must both show the loss before any file exists.
+    @MainActor
+    static func openOBJRefusal() async throws -> FloeCADDocument {
+        let url = try fixtureURL("obj-refusal.floecad")
+        if FileManager.default.fileExists(atPath: url.path) {
+            try FileManager.default.removeItem(at: url)
+        }
+        let document = try await FloeCADDocument.create(at: url, name: "OBJ refusal")
+        do {
+            let plate = try makeExtrudedBody(document, name: "Plate",
+                                             min: [0, 0], max: [100, 60], distance: 10)
+            let reply = CADMaterialService(document: document).handle(
+                action: "apply",
+                args: ["bodyID": plate,
+                       "color": [0.8, 0.3, 0.2, 1.0],
+                       "emissive": [1.0, 1.0, 1.0],
+                       "emissive_strength": 2.0])
+            guard reply["ok"] as? Bool == true else {
+                throw CADDocumentError(
+                    code: reply["error"] as? String ?? "fixture_material_failed",
+                    message: reply["message"] as? String
+                        ?? "The OBJ refusal fixture could not apply its material.")
+            }
+            let save = await document.save()
+            guard save.succeeded else {
+                throw CADDocumentError(code: "fixture_save_failed",
+                                       message: save.error ?? "The fixture could not be saved.")
+            }
+            return document
+        } catch {
+            document.close()
+            throw error
+        }
+    }
+
+    /// One rectangular plate Extrude through the same typed command vocabulary
+    /// the product uses. Returns the produced body id.
+    @MainActor
+    private static func makeExtrudedBody(_ document: FloeCADDocument, name: String,
+                                         min: [Double], max: [Double],
+                                         distance: Double) throws -> String {
+        let sketch = try run(document,
+                             #"{"op":"sketch.create","args":{"name":"\#(name)"}}"#)
+        let sketchID = try text(sketch, "sketchID")
+        try run(document, """
+        {"op":"sketch.addEntities","args":{"sketchID":"\(sketchID)",
+         "entities":[{"kind":"rect","min":[\(min[0]),\(min[1])],
+                      "max":[\(max[0]),\(max[1])]}]}}
+        """)
+        let extrude = try run(document, """
+        {"op":"feature.extrude","args":{"sketchID":"\(sketchID)",
+         "seedPoint":[\((min[0] + max[0]) / 2),\((min[1] + max[1]) / 2)],
+         "distance":\(distance)}}
+        """)
+        guard let bodyID = (extrude["producedBodyIDs"] as? [String])?.first else {
+            throw CADDocumentError(code: "fixture_failed",
+                                   message: "The \(name) Extrude produced no body.")
+        }
+        return bodyID
+    }
+
+    /// The largest horizontal planar face (normal along the sketch axis),
+    /// with the exact query generation token the material service requires for
+    /// an index-based face application. This is the same query/token contract
+    /// the Material inspector uses; the index alone is never trusted as
+    /// identity, and the normal's sign is kernel orientation (not identity).
+    @MainActor
+    private static func horizontalPlanarFace(of bodyID: String,
+                                             in document: FloeCADDocument) throws
+        -> (index: Int, token: String) {
+        let outcome = document.nativeQueryJSON(["scope": "faces"])
+        guard outcome.isOK,
+              let object = (try? JSONSerialization.jsonObject(with: outcome.payload))
+                as? [String: Any],
+              let rows = object["rows"] as? [[String: Any]] else {
+            throw CADDocumentError(
+                code: outcome.errorCode ?? "fixture_face_query_failed",
+                message: outcome.message ?? "The fixture could not query the document faces.")
+        }
+        func number(_ value: Any?) -> Double? {
+            (value as? NSNumber)?.doubleValue
+        }
+        let own = rows.filter { row in
+            guard let id = row["bodyID"] as? String else { return false }
+            return id.caseInsensitiveCompare(bodyID) == .orderedSame
+        }
+        let tops = own.filter { row in
+            guard (row["kind"] as? String) == "planar",
+                  let normal = row["normal"] as? [Any], normal.count == 3,
+                  let z = number(normal[2]) else { return false }
+            return abs(z) > 0.99
+        }
+        guard let top = tops.max(by: { lhs, rhs in
+            (number(lhs["areaMM2"]) ?? 0) < (number(rhs["areaMM2"]) ?? 0)
+        }),
+        let index = (top["index"] as? NSNumber)?.intValue,
+        let token = top["query_token"] as? String else {
+            throw CADDocumentError(code: "fixture_face_query_failed",
+                                   message: "The fixture found no top planar face to paint.")
+        }
+        return (index, token)
+    }
+
     @MainActor
     private static func openSeededFixture(
         fileName: String, name: String, scenario: CADDebugFixtures.Scenario
@@ -340,6 +495,14 @@ struct CADWorkbenchFixtureHarness: View {
                 } else if arguments.contains("--ui-test-cad-face-rotation") {
                     document = try await CADQualificationFixture.openFaceRotation(
                         reset: arguments.contains("--ui-test-cad-face-rotation-reset"))
+                } else if arguments.contains("--ui-test-cad-obj-coverage") {
+                    // E29/X31 native OBJ options: real mixed valid/stale
+                    // material-range receipt, saved and reopened.
+                    document = try await CADQualificationFixture.openOBJCoverage()
+                } else if arguments.contains("--ui-test-cad-obj-refusal") {
+                    // E29/X31 native OBJ options: real unsupported-material
+                    // refusal from the production preflight.
+                    document = try await CADQualificationFixture.openOBJRefusal()
                 } else {
                     document = try await CADQualificationFixture.openPlateHole(
                         reopen: arguments.contains("--ui-test-cad-reopen"))
