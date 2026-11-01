@@ -39,7 +39,8 @@ final class CADAnimationAuthoringFlowUITests: XCTestCase {
 
         // Create a REAL placed-part track through the production add menu.
         let addTrack = app.buttons["CADAnimationAddTrack"]
-        XCTAssertTrue(addTrack.waitForExistence(timeout: 10))
+        XCTAssertTrue(addTrack.waitForExistence(timeout: 10),
+                      "the real Add Track menu must be accessible: \(app.debugDescription)")
         addTrack.tap()
         tapMenuItem("Plate A", app: app)
         let partRow = app.buttons["CADAnimationTrackRow-1"]
@@ -55,7 +56,8 @@ final class CADAnimationAuthoringFlowUITests: XCTestCase {
         XCTAssertTrue(app.buttons["CADAnimationEditValue"].exists)
 
         let slider = app.sliders["CADAnimationSlider"]
-        XCTAssertTrue(slider.exists)
+        XCTAssertTrue(slider.exists,
+                      "the real animation slider must be accessible: \(app.debugDescription)")
         slider.adjust(toNormalizedSliderPosition: 0.4)
         addKey.tap()
         let secondKey = app.buttons["CADAnimationKeyRow-1"]
