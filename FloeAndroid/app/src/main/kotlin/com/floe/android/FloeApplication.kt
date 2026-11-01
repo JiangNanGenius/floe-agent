@@ -516,6 +516,7 @@ class FloeApplication : Application() {
                 (linuxCleanup.boundNativeEpoch == 0L ||
                     linuxCleanup.drainAndStop(linuxCleanup.boundNativeEpoch)) &&
                 prepareCreativeForRootStop() &&
+                (runtimeHost?.prepareVoiceForRootStop() != false) &&
                 prepareNotesForRootStop() &&
                 // G07.1: the full-window PDF/image preview holds a verified
                 // native-root snapshot plus an isolated renderer lease. Its
@@ -616,7 +617,7 @@ class FloeApplication : Application() {
                 // fails closed when a drain is unproven.
                 val firstStart = !started
                 started = true
-                if (firstStart) runtimeHost?.start()
+                if (firstStart) runtimeHost?.start() else runtimeHost?.onVoiceRootChanged()
                 // Bind the schedule platform on the FIRST ready epoch AND on
                 // every later root-generation replacement. bindHost is
                 // idempotent for the same live host and performs a bounded
@@ -736,6 +737,7 @@ class FloeApplication : Application() {
     internal fun setActivityForeground(active: Boolean) {
         activityForeground = active
         runtimeHost?.workspaceActions?.scene(active)
+        runtimeHost?.onVoiceForeground(active)
         if (!active) runtimeHost?.browser?.flushPersistentState()
     }
 

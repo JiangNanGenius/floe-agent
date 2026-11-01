@@ -52,6 +52,10 @@ import com.floe.android.feature.conversation.TimelineRowUi
 import com.floe.android.feature.providers.ProviderCredentialStateUi
 import com.floe.android.FloeApplication
 import com.floe.android.host.questions.UserQuestionHostController
+import com.floe.android.host.voice.C03DictationSink
+import com.floe.android.host.voice.C03StartOutcome
+import com.floe.android.host.voice.C03VoiceFailure
+import com.floe.android.host.voice.C03VoiceOwner
 import com.floe.android.host.questions.UserQuestionSurface
 import com.floe.android.host.output.RunOutputHostService
 import com.floe.android.host.output.RunOutputListResult
@@ -982,7 +986,14 @@ class ConversationHostController internal constructor(
         if (temporaryNativeRootEpoch >= 0L) {
             holder.temporaryNativeRootEpoch = temporaryNativeRootEpoch
         }
-        val builder = ThreadProjectionBuilder(conversationId).also {
+        val builder = ThreadProjectionBuilder(
+            conversationId = conversationId,
+            voiceAvailability = {
+                val snapshot = host.voiceOrNull()?.state?.value
+                (snapshot?.inputAvailable == true) to
+                    (snapshot?.outputAvailable == true)
+            },
+        ).also {
             it.session = holder.session
             val projection = currentModels()
             it.applyModels(projection.models, projection.needsProvider)
@@ -1017,6 +1028,7 @@ class ConversationHostController internal constructor(
         invalidatePlanGoalDetails(conversationId)
         invalidatePendingInputBodies(conversationId)
         holders.remove(conversationId)?.let { entry ->
+            host.voiceOrNull()?.cancelForConversation(conversationId)
             retireHolderResources(conversationId, entry)
         }
         // Question/search facts are RAM-only per holder; drop them with the
@@ -6094,10 +6106,73 @@ class ConversationHostController internal constructor(
     override fun speakMessageText(
         session: ConversationSessionToken,
         text: String,
-    ): Boolean = false
+    ): Boolean {
+        val entry = holders[session.conversationId] ?: return false
+        if (entry.holder.session != session || entry.builder.isTemporary) return false
+        if (host.nativeRootEpoch() == null) return false
+        return host.voiceOrNull()?.speak(
+            text,
+            C03VoiceOwner(conversationID = session.conversationId),
+        ) == true
+    }
 
     override fun stopSpeaking(session: ConversationSessionToken) {
-        // No TTS backend in G02.
+        host.voiceOrNull()?.stopSpeaking()
+    }
+
+    override fun startVoiceInput(session: ConversationSessionToken): Boolean {
+        val entry = holders[session.conversationId] ?: return false
+        if (entry.holder.session != session) return false
+        if (host.nativeRootEpoch() == null) return false
+        val sink = object : C03DictationSink {
+            override fun onPartial(text: String) {
+                if (holders[session.conversationId]?.holder?.session == session) {
+                    entry.holder.setVoiceListening(true)
+                }
+            }
+
+            override fun onFinal(text: String) {
+                if (holders[session.conversationId]?.holder?.session == session) {
+                    entry.holder.applyVoiceTranscript(text)
+                }
+            }
+
+            override fun onFailure(failure: C03VoiceFailure) {
+                if (holders[session.conversationId]?.holder?.session == session) {
+                    entry.holder.setVoiceListening(false)
+                }
+            }
+
+            override fun onCancelled() {
+                if (holders[session.conversationId]?.holder?.session == session) {
+                    entry.holder.setVoiceListening(false)
+                }
+            }
+        }
+        entry.holder.setVoiceListening(true)
+        val outcome = host.voiceOrNull()?.startDictation(
+            C03VoiceOwner(
+                conversationID = session.conversationId,
+                // RAM temporary keeps text-only system dictation. The host
+                // rejects cloud microphone capture with a typed failure.
+                temporary = entry.builder.isTemporary,
+            ),
+            sink,
+        )
+        if (outcome != C03StartOutcome.ACCEPTED &&
+            outcome != C03StartOutcome.PERMISSION_REQUIRED
+        ) {
+            entry.holder.setVoiceListening(false)
+        }
+        return outcome == C03StartOutcome.ACCEPTED ||
+            outcome == C03StartOutcome.PERMISSION_REQUIRED
+    }
+
+    override fun stopVoiceInput(session: ConversationSessionToken) {
+        val entry = holders[session.conversationId] ?: return
+        if (entry.holder.session != session) return
+        host.voiceOrNull()?.stopDictation()
+        entry.holder.setVoiceListening(false)
     }
 
     /**

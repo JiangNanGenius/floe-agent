@@ -31,7 +31,8 @@ public enum AndroidBridge {
                 || requestVersion == BridgeV3.version
                 || requestVersion == BridgeV4.version
                 || requestVersion == BridgeV5.version
-                || requestVersion == BridgeV6.version else {
+                || requestVersion == BridgeV6.version
+                || requestVersion == BridgeV7.version else {
             return response(["ok": false, "error": "unsupportedVersion"])
         }
         if requestVersion == BridgeV2.version {
@@ -85,6 +86,21 @@ public enum AndroidBridge {
                                 stampVersion: BridgeV6.version)
             }
             return response(object, stampVersion: BridgeV6.version)
+        }
+        if requestVersion == BridgeV7.version {
+            // Additive C03 voice channel: capabilities, bounded cloud ASR/TTS
+            // lifecycle and timed subtitle write-back. Same C ABI, host-only,
+            // no model tool; v1-v6 bytes above remain unchanged.
+            let object = C03VoiceBridge.handle(requestData: data,
+                                               fallbackRequestID: requestID)
+            let encoded = (try? JSONSerialization.data(withJSONObject: object,
+                                                       options: [.sortedKeys]))
+                ?? Data(#"{"ok":false,"error":"encoding"}"#.utf8)
+            guard encoded.count <= BridgeV7.maximumResponseBytes else {
+                return response(["ok": false, "error": "responseTooLarge"],
+                                stampVersion: BridgeV7.version)
+            }
+            return response(object, stampVersion: BridgeV7.version)
         }
         switch request["operation"] as? String {
         case "handshake":

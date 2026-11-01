@@ -14,6 +14,8 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.platform.LocalContext
 import com.floe.android.feature.canvas.CreativeException
+import com.floe.android.feature.canvas.CreativeOriginContext
+import com.floe.android.feature.canvas.CreativeStorageLayer
 import com.floe.android.feature.canvas.ui.api.CanvasAssetImport
 import com.floe.android.feature.canvas.ui.api.CanvasEditorPorts
 import com.floe.android.feature.canvas.ui.api.CanvasPickedSource
@@ -25,6 +27,9 @@ import com.floe.android.feature.workbench.ui.api.MediaAssetImport
 import com.floe.android.feature.workbench.ui.api.MediaEditorPorts
 import com.floe.android.feature.workbench.ui.api.MediaPickedSource
 import com.floe.android.feature.workbench.ui.api.MediaSourceCreate
+import com.floe.android.feature.workbench.ui.api.MediaTranscriptionPort
+import com.floe.android.feature.workbench.ui.api.MediaTranscriptionReceipt
+import com.floe.android.host.voice.C03VoiceFailure
 import com.floe.android.feature.workbench.ui.r2.WorkbenchR2Ports
 import com.floe.android.feature.workbench.ui.state.MediaWorkspaceSession
 import com.floe.android.mediaintegration.MediaWorkbenchImportPolicy
@@ -240,6 +245,43 @@ private class MediaPorts(private val bundle: CreativeHostControllerBundle) : Med
             // large-import host after an accepted submit and is never deleted
             // from this App finally.
             bundle.app.mediaWorkbench.workspacePrestage.consume(source.uri)
+        }
+    }
+
+    override val transcription = MediaTranscriptionPort { context, assetID, expectedRevision ->
+        val voice = bundle.app.runtimeHost?.voiceOrNull()
+            ?: throw CreativeException(
+                "runtimeUnavailable", "voiceHostUnavailable", retryable = true)
+        val storageKind = when (context.storage) {
+            CreativeStorageLayer.AppOwned -> "appOwned"
+            is CreativeStorageLayer.Workspace -> "workspace"
+        }
+        val workspaceID = (context.storage as? CreativeStorageLayer.Workspace)?.workspaceID
+        val origin = context.origin
+        try {
+            val receipt = voice.transcribeAndWrite(
+                projectID = context.projectID,
+                sessionToken = context.sessionToken,
+                storageKind = storageKind,
+                workspaceID = workspaceID,
+                originKind = origin?.kind,
+                originOwnerID = origin?.ownerID,
+                originEnvironmentID = origin?.environmentID,
+                expectedRevision = expectedRevision,
+                assetID = assetID,
+            )
+            MediaTranscriptionReceipt(
+                projectID = receipt.projectID,
+                revision = receipt.revision,
+                operationID = receipt.operationID,
+                idempotent = receipt.idempotent,
+            )
+        } catch (failure: C03VoiceFailure) {
+            throw CreativeException(
+                failure.code.wire,
+                failure.reason,
+                retryable = failure.retryable,
+            )
         }
     }
 

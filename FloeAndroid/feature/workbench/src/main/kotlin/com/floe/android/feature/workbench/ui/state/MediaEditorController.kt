@@ -89,6 +89,10 @@ class MediaEditorController internal constructor(
         private set
     var busy by mutableStateOf(false)
         private set
+    /** C03 long-file transcription in flight; it does not borrow [busy] so the
+     * editor can show the real progress/error without a fake apply state. */
+    var transcriptionBusy by mutableStateOf(false)
+        private set
     var failure: MediaFailure? by mutableStateOf(null)
         private set
     var notice: MediaNotice? by mutableStateOf(null)
@@ -630,6 +634,51 @@ class MediaEditorController internal constructor(
     fun applyVideoCommands(commands: List<VideoEditCommand>, notice: VideoNotice? = null) {
         if (commands.isEmpty()) return
         runVideoTransaction(notice) { commands }
+    }
+
+    /**
+     * C03: transcribe the selected clip's real project asset through the
+     * App-owned cloud route and write timed captions with the existing project
+     * CAS. The port must resolve the exact project/asset; this controller never
+     * falls back to a filename search or a preview blob. A failed/stale write
+     * leaves [videoEnvelope] unchanged and sets a typed failure.
+     */
+    fun transcribeSelectedClip() {
+        if (transcriptionBusy || retired || !writable || needsReload) return
+        val port = ports.transcription ?: return
+        val assetID = selectedVideoClip?.assetID
+            ?: videoTimeline?.clips?.firstOrNull()?.assetID
+            ?: return
+        scope.launch {
+            operationMutex.withLock {
+                if (retired) return@withLock
+                transcriptionBusy = true
+                failure = null
+                try {
+                    val receipt = port.transcribeAndApply(
+                        context = r2Context,
+                        assetID = assetID,
+                        expectedRevision = currentVideoRevision(),
+                    )
+                    if (retired) return@withLock
+                    if (receipt.projectID != r2Context.projectID) {
+                        failure = MediaFailure(MediaFailureKind.INVALID_REQUEST, "projectMismatch")
+                        return@withLock
+                    }
+                    if (!refreshVideoLocked()) {
+                        needsReload = true
+                        return@withLock
+                    }
+                    videoNotice = VideoNotice.CAPTION_ADDED
+                } catch (cancelled: CancellationException) {
+                    throw cancelled
+                } catch (error: Throwable) {
+                    handleFailure(error)
+                } finally {
+                    transcriptionBusy = false
+                }
+            }
+        }
     }
 
     fun updateSelectedClip(

@@ -74,6 +74,8 @@ import kotlinx.serialization.json.longOrNull
  */
 class ThreadProjectionBuilder internal constructor(
     private val conversationId: String,
+    /** Read at build time so permission/TTS readiness never stays stale. */
+    private val voiceAvailability: () -> Pair<Boolean, Boolean> = { false to false },
 ) {
     var session: ConversationSessionToken = ConversationSessionToken(conversationId, 0L)
     var taskTitle: String = ""
@@ -1162,6 +1164,7 @@ class ThreadProjectionBuilder internal constructor(
 
     /** Build the complete immutable snapshot. */
     fun build(): ThreadUiState {
+        val voice = voiceAvailability()
         snapshotCounter += 1
         val rows = ArrayList<TimelineRowUi>()
         val messages = (userMessages.values + assistantMessages.values)
@@ -1283,7 +1286,9 @@ class ThreadProjectionBuilder internal constructor(
             liveReasoningText = reasoningTail,
             networkActionsAvailable = true,
             usesLocalModel = false,
-            voiceAvailable = false,
+            voiceAvailable = voice.first || voice.second,
+            voiceInputAvailable = voice.first,
+            voiceOutputAvailable = voice.second,
             capabilityChips = emptyList(),
             taskPolicyRevision = policyRevisionValue,
             taskRecoveryPolicyRaw = policyRecoveryRaw,

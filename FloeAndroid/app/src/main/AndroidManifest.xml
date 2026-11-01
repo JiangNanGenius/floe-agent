@@ -7,8 +7,19 @@
         <package android:name="com.floe.agent.runtime.dev" />
         <package android:name="com.floe.agent.runtime.full" />
         <package android:name="com.floe.agent.runtime.full.dev" />
+        <!-- Android 11+ package visibility for the system recognizer and TTS
+             engine services used by C03. No app package is named here. -->
+        <intent>
+            <action android:name="android.speech.RecognitionService" />
+        </intent>
+        <intent>
+            <action android:name="android.intent.action.TTS_SERVICE" />
+        </intent>
     </queries>
     <uses-permission android:name="android.permission.INTERNET" />
+    <!-- C03 short interactive dictation only; long files use a cloud/Linux
+         transcription route and never this microphone permission. -->
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
     <!-- User-started, bounded network monitoring; never a background keepalive. -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />

@@ -77,6 +77,7 @@ import com.floe.android.host.RuntimeHost
 import com.floe.android.host.SettingsHostPages
 import com.floe.android.host.WebSearchSettingsPage
 import com.floe.android.host.GitHubCredentialEditor
+import com.floe.android.host.voice.C03VoiceSettingsCard
 import io.github.robinpcrd.cupertino.section.SectionItem
 
 /**
@@ -619,6 +620,7 @@ private fun SettingsSectionContent(
         FloeSettingsSection.GENERAL -> {
             GeneralSettingsPage(themeMode, onThemeModeChange)
             com.floe.android.host.linux.LocalRuntimeSettingsCard()
+            C03VoiceSettingsCard(runtimeHost?.voiceOrNull())
             if (runtimeHost != null) {
                 SettingsHostPages.DefaultsPage(runtimeHost.settings)
             }

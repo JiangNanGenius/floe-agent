@@ -1154,3 +1154,9 @@ Final Android regular hash after this round:
 `5e19292574adaf36fe69a8e6a022e9d151c322ea36b7b326809cd0c40b8b737f`
 (bytes 110,384). Original source untouched; future upstream adoption requires
 an explicit diff and relevant checks.
+
+## C01/C03 additive Android source overlays (2026-11-02)
+
+`FloeCore/ProviderSaveRunner.swift` and `FloePersistence/SettingsStore.swift` are materialized Android overlay files. The former preserves the provider region through read-edit-save; the latter adds atomic raw-value compare-and-set on the existing app_settings table. Their frozen donor preimages were respectively `7fbf0a39b5341b7e51ce8a0692f85481a78fde2daadebc9ca4a37e731730cd33` and `aa48dc53b4e7efad03dfa640f07c682c1114753ab3f1000b96521adfebaee67f`. Frozen donors and the native iOS checkout were not modified. No database table is added by the settings CAS method.
+
+C01 conversation pinning uses schema 50 and preserves R2 tables/selected_at. C03 system/cloud speech and media transcription are source integrations; object compilation, Android linking, App/device behavior and provider qualification are pending the unified all-code cohort. Existing packaged native libraries do not prove these new sources are linked.

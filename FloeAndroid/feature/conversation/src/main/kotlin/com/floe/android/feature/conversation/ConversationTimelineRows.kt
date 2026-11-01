@@ -550,7 +550,7 @@ private fun AssistantRow(
             ) {
                 FloeText(copyLabel, style = Floe.typography.metadata, color = Floe.colors.secondaryLabel)
             }
-            if (holder.snapshot.value?.voiceAvailable == true) {
+            if (holder.snapshot.value?.voiceOutputAvailable == true) {
                 Box(
                     modifier = Modifier
                         .heightIn(min = FloeLayout.MinimumTarget)

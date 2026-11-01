@@ -387,4 +387,7 @@
     <string name="media_r2_scrub">拖动播放位置</string>
     <string name="media_r2_recovered">已恢复</string>
     <string name="media_r2_recovered_note">从导出记录中恢复。缺少原始请求，无法重试。</string>
+    <string name="media_r2_transcribe">转写音频</string>
+    <string name="media_r2_transcribing">正在转写…</string>
+    <string name="media_r2_transcribe_unavailable">请先添加音频或视频片段。</string>
 </resources>

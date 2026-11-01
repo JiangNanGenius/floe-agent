@@ -32,6 +32,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.floe.android.design.Floe
 import com.floe.android.design.FloeActionSheet
+import com.floe.android.design.FloeActivityIndicator
 import com.floe.android.design.FloeBadgePill
 import com.floe.android.design.FloeBadgeTone
 import com.floe.android.design.FloeCapsuleAction
@@ -488,12 +489,37 @@ internal fun MediaVideoPropertiesPanel(
             onChange = { controller.updateSnapEnabled(it) },
         )
         VideoCanvasEditor(controller, enabled)
-        FloeText(
-            stringResource(R.string.media_r2_no_transcribe),
-            style = Floe.typography.metadata,
-            color = Floe.colors.tertiaryLabel,
-            modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp),
-        )
+        val transcribableAsset = controller.selectedVideoClip?.assetID != null ||
+            controller.videoTimeline?.clips?.isNotEmpty() == true
+        if (controller.transcriptionBusy) {
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 10.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+                FloeActivityIndicator(description = stringResource(R.string.media_r2_transcribing))
+                FloeText(
+                    stringResource(R.string.media_r2_transcribing),
+                    style = Floe.typography.metadata,
+                    color = Floe.colors.secondaryLabel,
+                )
+            }
+        } else if (transcribableAsset) {
+            Box(Modifier.padding(horizontal = 14.dp, vertical = 10.dp)) {
+                FloeCapsuleAction(
+                    stringResource(R.string.media_r2_transcribe),
+                    onClick = { controller.transcribeSelectedClip() },
+                    enabled = controller.writable && !controller.busy && !controller.needsReload,
+                )
+            }
+        } else {
+            FloeText(
+                stringResource(R.string.media_r2_transcribe_unavailable),
+                style = Floe.typography.metadata,
+                color = Floe.colors.tertiaryLabel,
+                modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp),
+            )
+        }
     }
 }
 

@@ -389,4 +389,7 @@
     <string name="media_r2_scrub">Scrub</string>
     <string name="media_r2_recovered">Recovered</string>
     <string name="media_r2_recovered_note">Recovered from the saved export journal. Retry needs the original request and is unavailable.</string>
+    <string name="media_r2_transcribe">Transcribe audio</string>
+    <string name="media_r2_transcribing">Transcribing…</string>
+    <string name="media_r2_transcribe_unavailable">Add an audio or video clip to transcribe it.</string>
 </resources>

@@ -2,6 +2,7 @@
 package com.floe.android.host
 
 import com.floe.android.RuntimeBootstrapCapability
+import com.floe.android.host.voice.C03VoiceHost
 import com.floe.android.SecretGatewayCapability
 import com.floe.android.host.officeai.AppOfficeAiDocumentPorts
 import com.floe.android.host.officeai.NativeOfficeAiTransport
@@ -118,6 +119,11 @@ class RuntimeHost internal constructor(
 
     /** G09-R1 creative Canvas/media lane; bound by the Application owner. */
     internal var creativeHost: com.floe.android.host.creative.CreativeHostController? = null
+    /**
+     * C03 App-owned voice coordinator. Created by [create] after the context is
+     * attached; pure controller fixtures never touch it.
+     */
+    internal lateinit var voice: C03VoiceHost
     /** Typed accessor for the later Canvas/media UI routes (same instance). */
     internal fun creativeServices(): com.floe.android.feature.workbench.CreativeHostApi? =
         creativeHost?.services
@@ -442,6 +448,7 @@ class RuntimeHost internal constructor(
         webSearch.start()
         home.start()
         projects.start()
+        if (::voice.isInitialized) voice.start()
     }
 
     /**
@@ -450,6 +457,9 @@ class RuntimeHost internal constructor(
      * RB-1 owner stop. The host never cancels another owner's work.
      */
     suspend fun stop() {
+        // C03 voice owns real microphone/TTS/cloud operations; fence and join
+        // them before the native root retires.
+        if (::voice.isInitialized && !voice.prepareForRootStop()) return
         // A real preview reader still holding a native-root snapshot must
         // close before the root retires; a refused drain keeps the old
         // generation rather than pretending the document work is gone.
@@ -477,7 +487,31 @@ class RuntimeHost internal constructor(
                 officeAi = null
             }
         }
+        if (::voice.isInitialized) voice.shutdown()
         platformExtension?.close()
+    }
+
+    /** Null in pure controller fixtures, never a fabricated adapter. */
+    internal fun voiceOrNull(): C03VoiceHost? =
+        if (::voice.isInitialized) voice else null
+
+    internal fun onVoiceForeground(active: Boolean) {
+        voiceOrNull()?.onAppForegroundChanged(active)
+    }
+
+    internal fun onVoicePermissionResult(granted: Boolean) {
+        voiceOrNull()?.onMicrophonePermissionResult(granted)
+    }
+
+    internal fun voicePermissionRequests(): kotlinx.coroutines.flow.Flow<Unit>? =
+        voiceOrNull()?.permissionRequests
+
+    internal suspend fun prepareVoiceForRootStop(): Boolean =
+        voiceOrNull()?.prepareForRootStop() ?: true
+
+    /** Re-read canonical voice settings after a root-generation replacement. */
+    internal fun onVoiceRootChanged() {
+        voiceOrNull()?.onRootChanged()
     }
 
     /**
@@ -968,6 +1002,12 @@ class RuntimeHost internal constructor(
             bootstrapCapability = bootstrapCapability,
         ).also {
             it.appContext = context.applicationContext ?: context
+            it.voice = C03VoiceHost(
+                context = it.appContext,
+                scope = it.scope,
+                ioDispatcher = it.ioDispatcher,
+                currentEpoch = { it.nativeRootEpoch() },
+            )
             // Flavour seam: FULL returns the real phone/ADB/Root extension,
             // PLAY an inert one. Construction is data-only; no backend,
             // native, disk or device work happens here.

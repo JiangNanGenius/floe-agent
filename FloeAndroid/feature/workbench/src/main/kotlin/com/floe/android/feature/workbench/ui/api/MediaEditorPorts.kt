@@ -4,6 +4,7 @@ package com.floe.android.feature.workbench.ui.api
 import android.net.Uri
 import com.floe.android.feature.canvas.CreativeOriginContext
 import com.floe.android.feature.canvas.CreativeStorageLayer
+import com.floe.android.feature.workbench.CreativeProjectContext
 import com.floe.android.feature.workbench.MediaAssetReceipt
 import com.floe.android.feature.workbench.MediaProjectEnvelope
 
@@ -50,8 +51,31 @@ fun interface MediaAssetImport {
     ): MediaAssetReceipt
 }
 
+/** One real project CAS receipt returned by the C03 subtitle write-back. */
+data class MediaTranscriptionReceipt(
+    val projectID: String,
+    val revision: Long,
+    val operationID: String,
+    val idempotent: Boolean,
+)
+
+/**
+ * Optional C03 long-file transcription entry. It must resolve the EXACT
+ * selected media project/asset and write timed captions through the existing
+ * project CAS; a preview blob or filename lookup is not a valid implementation.
+ */
+fun interface MediaTranscriptionPort {
+    suspend fun transcribeAndApply(
+        context: CreativeProjectContext,
+        assetID: String,
+        expectedRevision: Long,
+    ): MediaTranscriptionReceipt
+}
+
 /** Required host callbacks; no default implementation exists on purpose. */
 interface MediaEditorPorts {
     val sourceCreate: MediaSourceCreate
     val assetImport: MediaAssetImport
+    /** Null means the media editor keeps automatic transcription unavailable. */
+    val transcription: MediaTranscriptionPort? get() = null
 }

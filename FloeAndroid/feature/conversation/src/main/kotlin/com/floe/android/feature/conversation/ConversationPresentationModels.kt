@@ -924,8 +924,8 @@ data class ThreadUiState(
     /** ⇄ usesLocalModel — always false on Android (cloud-only); kept as an
      * explicit projection so bindings cannot silently invent the flag. */
     val usesLocalModel: Boolean,
-    /** ⇄ Voice availability for this host build (Apple speech service has no
-     * Android product implementation; false until a real adapter exists). */
+    /** ⇄ Voice availability for this host build (false until a real adapter
+     * exists). Input gates the microphone control; output gates read-aloud. */
     val voiceAvailable: Boolean,
     /** ⇄ skill-capability availability surfaced in chat selectors
      * (enabled+configured+usable; admin pages are a later package). */
@@ -954,6 +954,10 @@ data class ThreadUiState(
      * `none` is the only settlement proof. Runs the native reply omits
      * simply have no entry (never assumed active or settled). */
     val goalReviewByRun: Map<String, String> = emptyMap(),
+    /** C03 system-recognizer availability + microphone permission. */
+    val voiceInputAvailable: Boolean = false,
+    /** C03 system/cloud TTS availability for read-aloud. */
+    val voiceOutputAvailable: Boolean = false,
 )
 
 /** ⇄ ImportantFileShortcut (host-projected working set; this module never
