@@ -68,6 +68,7 @@ internal data class TodoRecordUi(
     val reminderMinutesBefore: Int?,
     val completed: Boolean,
     val revision: Int,
+    val remindersSuspended: Boolean = false,
 )
 
 internal data class TodoPlanUi(
@@ -311,6 +312,7 @@ internal class C06CalendarClient(
         },
         completed = objectValue.optBoolean("completed", false),
         revision = objectValue.optInt("revision", 1),
+        remindersSuspended = objectValue.optBoolean("remindersSuspended", false),
     )
 
     private fun parsePlan(objectValue: JSONObject): TodoPlanUi? {

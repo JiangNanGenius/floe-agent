@@ -494,9 +494,13 @@ public struct C07CanvasPackageManifest: Codable, Sendable, Equatable {
     public var missingChildProjects: [UUID]
     public var missingAssets: [String]
     public var missingExternalNodeAssets: [String]
-    /// Present only to reject an unsupported donor section explicitly.
-    public var cadDrafts: [C07OpaqueSection]?
-    public var nativeCADPackages: [C07OpaqueSection]?
+    /// Opaque donor CAD sections. Android has no CAD editing kernel; these
+    /// bytes are preserved read-only so a donor package loses nothing.
+    public var cadDrafts: [C07CanvasCADDraft]?
+    public var cadRevisionAssets: [C07CanvasCADRevision]?
+    public var missingCADRevisionAssets: [String]?
+    public var nativeCADPackages: [C07CanvasNativeCADPackage]?
+    public var missingNativeCADPackages: [String]?
 
     public init(format: String? = C07DocumentPackageLimits.canvasFormat,
                 formatVersion: Int = C07DocumentPackageLimits.canvasFormatVersion,
@@ -508,8 +512,11 @@ public struct C07CanvasPackageManifest: Codable, Sendable, Equatable {
                 externalNodeAssets: [NodeAsset] = [],
                 missingChildProjects: [UUID] = [], missingAssets: [String] = [],
                 missingExternalNodeAssets: [String] = [],
-                cadDrafts: [C07OpaqueSection]? = nil,
-                nativeCADPackages: [C07OpaqueSection]? = nil) {
+                cadDrafts: [C07CanvasCADDraft]? = nil,
+                cadRevisionAssets: [C07CanvasCADRevision]? = nil,
+                missingCADRevisionAssets: [String]? = nil,
+                nativeCADPackages: [C07CanvasNativeCADPackage]? = nil,
+                missingNativeCADPackages: [String]? = nil) {
         self.format = format
         self.formatVersion = formatVersion
         self.canvasID = canvasID
@@ -526,7 +533,10 @@ public struct C07CanvasPackageManifest: Codable, Sendable, Equatable {
         self.missingAssets = missingAssets
         self.missingExternalNodeAssets = missingExternalNodeAssets
         self.cadDrafts = cadDrafts
+        self.cadRevisionAssets = cadRevisionAssets
+        self.missingCADRevisionAssets = missingCADRevisionAssets
         self.nativeCADPackages = nativeCADPackages
+        self.missingNativeCADPackages = missingNativeCADPackages
     }
 
     public func encoded() throws -> Data {
@@ -599,23 +609,140 @@ public struct C07CanvasPackageManifest: Codable, Sendable, Equatable {
                 throw C07DataExchangeError.invalidManifest("canvasAsset")
             }
         }
-        if let cadDrafts, !cadDrafts.isEmpty {
-            throw C07DataExchangeError.unsupportedFeature("canvasCADDrafts")
+        if let drafts = cadDrafts {
+            guard drafts.count <= 4_096 else { throw C07DataExchangeError.tooManyEntries }
+            for draft in drafts {
+                guard draft.canvasID == canvasID,
+                      C07SHA256Hex.isSHA256(draft.drawingSHA256),
+                      C07SHA256Hex.isSHA256(draft.descriptorSHA256),
+                      draft.drawingByteCount > 0,
+                      draft.descriptorByteCount > 0 else {
+                    throw C07DataExchangeError.invalidManifest("canvasCADDraft")
+                }
+                _ = try C07Path.validateRelative(draft.descriptorFile)
+                _ = try C07Path.validateRelative(draft.drawingFile)
+                guard draft.descriptorFile != draft.drawingFile else {
+                    throw C07DataExchangeError.invalidManifest("canvasCADDraft")
+                }
+            }
         }
-        if let nativeCADPackages, !nativeCADPackages.isEmpty {
-            throw C07DataExchangeError.unsupportedFeature("canvasNativeCADPackages")
+        if let revisions = cadRevisionAssets {
+            guard revisions.count <= 4_096 else { throw C07DataExchangeError.tooManyEntries }
+            var paths = Set<String>()
+            for revision in revisions {
+                let path = try C07Path.validateRelative(revision.relativePath)
+                _ = try C07Path.validateRelative(revision.file)
+                guard paths.insert(C07Path.collisionKey(path)).inserted,
+                      revision.byteCount > 0,
+                      C07SHA256Hex.isSHA256(revision.sha256) else {
+                    throw C07DataExchangeError.invalidManifest("canvasCADRevision")
+                }
+            }
+        }
+        if let packages = nativeCADPackages {
+            guard packages.count <= 256 else { throw C07DataExchangeError.tooManyEntries }
+            var names = Set<String>()
+            for package in packages {
+                guard package.canvasID == canvasID,
+                      !package.fileName.isEmpty,
+                      package.fileName.utf8.count <= 256,
+                      !package.fileName.contains("/"),
+                      !package.fileName.contains("\\"),
+                      package.fileName != ".", package.fileName != "..",
+                      names.insert(C07Path.collisionKey(package.fileName)).inserted,
+                      package.files.count <= 4_096 else {
+                    throw C07DataExchangeError.invalidManifest("canvasNativeCAD")
+                }
+                var paths = Set<String>()
+                for file in package.files {
+                    let path = try C07Path.validateRelative(file.relativePath)
+                    _ = try C07Path.validateRelative(file.file)
+                    guard paths.insert(C07Path.collisionKey(path)).inserted,
+                          file.byteCount > 0,
+                          C07SHA256Hex.isSHA256(file.sha256) else {
+                        throw C07DataExchangeError.invalidManifest(
+                            "canvasNativeCADFile")
+                    }
+                }
+            }
+        }
+        for list in [missingCADRevisionAssets ?? [], missingNativeCADPackages ?? []] {
+            guard list.count <= 4_096 else { throw C07DataExchangeError.tooManyEntries }
+            for value in list { _ = try C07Path.validateRelative(value) }
         }
     }
 }
 
-/// Placeholder decoder for a donor section this package cannot carry. Its
-/// presence is detected and rejected; its contents are never interpreted.
-public struct C07OpaqueSection: Codable, Sendable, Equatable {
-    public init() {}
-    public init(from decoder: any Decoder) throws {
-        self.init()
+/// One unapplied donor CAD draft. The descriptor/drawing entries are carried
+/// verbatim and validated by hash; Android never interprets or edits them.
+public struct C07CanvasCADDraft: Codable, Sendable, Equatable {
+    public var nodeID: UUID
+    public var canvasID: UUID
+    public var descriptorFile: String
+    public var drawingFile: String
+    public var drawingByteCount: Int64
+    public var drawingSHA256: String
+    public var descriptorByteCount: Int64
+    public var descriptorSHA256: String
+
+    public init(nodeID: UUID, canvasID: UUID, descriptorFile: String,
+                drawingFile: String, drawingByteCount: Int64,
+                drawingSHA256: String, descriptorByteCount: Int64,
+                descriptorSHA256: String) {
+        self.nodeID = nodeID
+        self.canvasID = canvasID
+        self.descriptorFile = descriptorFile
+        self.drawingFile = drawingFile
+        self.drawingByteCount = drawingByteCount
+        self.drawingSHA256 = drawingSHA256
+        self.descriptorByteCount = descriptorByteCount
+        self.descriptorSHA256 = descriptorSHA256
     }
-    public func encode(to encoder: any Encoder) throws {}
+}
+
+/// One immutable CAD revision asset referenced by a donor node history.
+public struct C07CanvasCADRevision: Codable, Sendable, Equatable {
+    public var relativePath: String
+    public var file: String
+    public var byteCount: Int64
+    public var sha256: String
+
+    public init(relativePath: String, file: String, byteCount: Int64,
+                sha256: String) {
+        self.relativePath = relativePath
+        self.file = file
+        self.byteCount = byteCount
+        self.sha256 = sha256
+    }
+}
+
+public struct C07CanvasNativeCADFile: Codable, Sendable, Equatable {
+    public var relativePath: String
+    public var file: String
+    public var byteCount: Int64
+    public var sha256: String
+
+    public init(relativePath: String, file: String, byteCount: Int64,
+                sha256: String) {
+        self.relativePath = relativePath
+        self.file = file
+        self.byteCount = byteCount
+        self.sha256 = sha256
+    }
+}
+
+/// One native `.floecad` bundle carried file-by-file, read-only on Android.
+public struct C07CanvasNativeCADPackage: Codable, Sendable, Equatable {
+    public var canvasID: UUID
+    public var fileName: String
+    public var files: [C07CanvasNativeCADFile]
+
+    public init(canvasID: UUID, fileName: String,
+                files: [C07CanvasNativeCADFile]) {
+        self.canvasID = canvasID
+        self.fileName = fileName
+        self.files = files
+    }
 }
 
 // MARK: - Canvas export/inspect
@@ -656,6 +783,22 @@ public struct C07BuiltCanvasPackage: Sendable, Equatable {
     public var sha256: String
 }
 
+public enum C07CanvasCADKind: String, Sendable, Equatable {
+    case draftDescriptor
+    case draftDrawing
+    case revision
+    case native
+}
+
+public struct C07StagedCADFile: Sendable, Equatable {
+    public var kind: C07CanvasCADKind
+    /// Package-relative logical path used for the preserved destination.
+    public var logicalPath: String
+    public var url: URL
+    public var byteCount: Int64
+    public var sha256: String
+}
+
 public struct C07StagedCanvasImport: Sendable {
     public var manifest: C07CanvasPackageManifest
     public var manifestSHA256: String
@@ -665,6 +808,7 @@ public struct C07StagedCanvasImport: Sendable {
     public var materials: [String: URL]
     public var assets: [String: URL]
     public var nodeAssets: [String: URL]
+    public var preservedCAD: [C07StagedCADFile]
     public var totalBytes: Int64
 }
 
@@ -900,6 +1044,54 @@ public enum C07CanvasPackage {
             }
             nodeAssets[asset.relativePath] = entry.url
         }
+        var preservedCAD: [C07StagedCADFile] = []
+        func stagedCAD(_ file: String, byteCount: Int64, sha256: String,
+                       kind: C07CanvasCADKind, logicalPath: String) throws {
+            guard let entry = staged[file],
+                  entry.byteCount == byteCount,
+                  entry.sha256 == sha256 else {
+                throw C07DataExchangeError.hashMismatch(file)
+            }
+            guard expected.insert(file).inserted else {
+                throw C07DataExchangeError.duplicateEntry(file)
+            }
+            _ = try C07Path.validateRelative(logicalPath)
+            preservedCAD.append(C07StagedCADFile(
+                kind: kind, logicalPath: logicalPath, url: entry.url,
+                byteCount: byteCount, sha256: sha256))
+        }
+        if let drafts = manifest.cadDrafts {
+            for draft in drafts {
+                try stagedCAD(
+                    draft.descriptorFile, byteCount: draft.descriptorByteCount,
+                    sha256: draft.descriptorSHA256,
+                    kind: .draftDescriptor,
+                    logicalPath: "drafts/\(draft.nodeID.uuidString)/\(draft.descriptorFile)")
+                try stagedCAD(
+                    draft.drawingFile, byteCount: draft.drawingByteCount,
+                    sha256: draft.drawingSHA256,
+                    kind: .draftDrawing,
+                    logicalPath: "drafts/\(draft.nodeID.uuidString)/\(draft.drawingFile)")
+            }
+        }
+        if let revisions = manifest.cadRevisionAssets {
+            for revision in revisions {
+                try stagedCAD(
+                    revision.file, byteCount: revision.byteCount,
+                    sha256: revision.sha256, kind: .revision,
+                    logicalPath: "revisions/\(revision.relativePath)")
+            }
+        }
+        if let packages = manifest.nativeCADPackages {
+            for package in packages {
+                for file in package.files {
+                    try stagedCAD(
+                        file.file, byteCount: file.byteCount,
+                        sha256: file.sha256, kind: .native,
+                        logicalPath: "native/\(package.fileName)/\(file.relativePath)")
+                }
+            }
+        }
         guard Set(staged.keys) == expected else {
             throw C07DataExchangeError.invalidManifest("canvasEntrySet")
         }
@@ -913,6 +1105,7 @@ public enum C07CanvasPackage {
             materials: materials,
             assets: assets,
             nodeAssets: nodeAssets,
+            preservedCAD: preservedCAD,
             totalBytes: total)
     }
 

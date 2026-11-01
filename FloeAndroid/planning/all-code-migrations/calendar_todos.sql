@@ -32,6 +32,10 @@ CREATE TABLE IF NOT EXISTS calendar_todos (
     owner_environment_id TEXT,
     last_reminder_at TEXT,
     last_reminder_occurrence TEXT,
+    -- Set by a C07 backup restore. The planner ignores a suspended row;
+    -- due/content/completion/reminder preference survive and an explicit
+    -- user save re-enables it.
+    reminders_suspended INTEGER NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );

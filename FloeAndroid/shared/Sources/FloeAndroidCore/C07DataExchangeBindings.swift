@@ -440,6 +440,13 @@ public enum C07DataExchangeBridge {
         if let count = status.executionEvidenceCount {
             plan["executionEvidence"] = count
         }
+        if let count = status.todoCount { plan["todos"] = count }
+        if let count = status.toolResultCount { plan["toolResults"] = count }
+        if let count = status.appArtifactCount { plan["appArtifacts"] = count }
+        if let count = status.captureFileCount { plan["captureFiles"] = count }
+        if let count = status.configSectionCount { plan["configSections"] = count }
+        if let partial = status.partial { plan["partial"] = partial }
+        if let count = status.omissionCount { plan["omissions"] = count }
         if !plan.isEmpty { value["plan"] = plan }
         var receipt: [String: Any] = [:]
         if let count = status.restoredProjects { receipt["projects"] = count }
@@ -463,6 +470,23 @@ public enum C07DataExchangeBridge {
         if let count = status.restoredEvidenceRows {
             receipt["evidenceRows"] = count
         }
+        if let count = status.restoredTodos { receipt["todos"] = count }
+        if let count = status.restoredToolResults {
+            receipt["toolResults"] = count
+        }
+        if let count = status.restoredAppArtifacts {
+            receipt["appArtifacts"] = count
+        }
+        if let count = status.restoredCaptureFiles {
+            receipt["captureFiles"] = count
+        }
+        if let count = status.restoredCADPreserved {
+            receipt["cadPreserved"] = count
+        }
+        if let count = status.restoredConfigSections {
+            receipt["configSections"] = count
+        }
+        if let partial = status.partial { receipt["partial"] = partial }
         if !receipt.isEmpty { value["receipt"] = receipt }
         return value
     }

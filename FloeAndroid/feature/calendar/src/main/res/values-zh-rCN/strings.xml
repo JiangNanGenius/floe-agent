@@ -82,6 +82,7 @@
     <string name="calendar_todo_reminder_1440">提前 1 天</string>
     <string name="calendar_todo_recurrence">重复</string>
     <string name="calendar_todo_completed">已完成</string>
+    <string name="calendar_todo_reminders_paused">恢复后提醒已暂停 · 打开并保存即可恢复提醒</string>
     <string name="calendar_todo_show_completed">显示已完成</string>
     <string name="calendar_todo_delete">删除</string>
     <string name="calendar_todo_delete_title">删除此待办？</string>

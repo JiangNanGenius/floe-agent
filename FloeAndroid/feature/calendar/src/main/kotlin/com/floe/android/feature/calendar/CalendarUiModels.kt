@@ -51,6 +51,7 @@ data class TodoRowUi(
     val reminderMinutesBefore: Int?,
     val completed: Boolean,
     val reminderState: String?,
+    val remindersSuspended: Boolean = false,
 )
 
 data class CalendarEventDraftUi(

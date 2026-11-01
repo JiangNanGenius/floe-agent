@@ -760,6 +760,7 @@ internal class C06CalendarHostController(
             reminderMinutesBefore = result.todo.reminderMinutesBefore,
             completed = result.todo.completed,
             reminderState = result.reminderState,
+            remindersSuspended = result.todo.remindersSuspended,
         )
         _state.update { state ->
             val existing = state.todos.indexOfFirst { it.id == row.id }
@@ -951,6 +952,7 @@ internal class C06CalendarHostController(
         reminderMinutesBefore = row.reminderMinutesBefore,
         completed = row.completed,
         reminderState = null,
+        remindersSuspended = row.remindersSuspended,
     )
 
     private fun selectedCalendarID(): Long? {

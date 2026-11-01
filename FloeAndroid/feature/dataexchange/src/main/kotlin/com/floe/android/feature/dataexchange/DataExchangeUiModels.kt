@@ -58,6 +58,13 @@ public data class DataExchangePlanUi(
     val mailReceipts: Int,
     val providerConfigs: Int,
     val executionEvidence: Int = 0,
+    val todos: Int = 0,
+    val toolResults: Int = 0,
+    val appArtifacts: Int = 0,
+    val captureFiles: Int = 0,
+    val configSections: Int = 0,
+    val omissions: Int = 0,
+    val partial: Boolean = false,
     val warnings: List<String>,
 )
 
@@ -77,11 +84,20 @@ public data class DataExchangeReceiptUi(
     val canvasProjects: Int = 0,
     val mediaProjects: Int = 0,
     val evidenceRows: Int = 0,
+    val todos: Int = 0,
+    val toolResults: Int = 0,
+    val appArtifacts: Int = 0,
+    val captureFiles: Int = 0,
+    val cadPreserved: Int = 0,
+    val configSections: Int = 0,
+    val partial: Boolean = false,
 ) {
     val isEmpty: Boolean
         get() = projects == 0 && noteDocuments == 0 && notebooks == 0 &&
             settings == 0 && conversations == 0 && messages == 0 &&
-            canvasProjects == 0 && mediaProjects == 0
+            canvasProjects == 0 && mediaProjects == 0 && todos == 0 &&
+            toolResults == 0 && appArtifacts == 0 && captureFiles == 0 &&
+            configSections == 0
 }
 
 public data class DataExchangeUiState(

@@ -68,6 +68,10 @@ public enum C06TodoSchema {
             owner_environment_id TEXT,
             last_reminder_at TEXT,
             last_reminder_occurrence TEXT,
+            -- Set by a C07 backup restore. The planner ignores a suspended
+            -- row until the user edits/saves it; due date, content,
+            -- completion and the reminder preference all survive.
+            reminders_suspended INTEGER NOT NULL DEFAULT 0,
             created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL
         )
@@ -220,6 +224,9 @@ public struct C06TodoRecord: Sendable, Equatable, Identifiable {
     public var ownerEnvironmentID: String?
     public var lastReminderAt: Date?
     public var lastReminderOccurrence: String?
+    /// Restored todos start suspended so no alarm/notification is armed
+    /// without a fresh user action.
+    public var remindersSuspended: Bool
     public var createdAt: Date
     public var updatedAt: Date
 
@@ -240,6 +247,7 @@ public struct C06TodoRecord: Sendable, Equatable, Identifiable {
         ownerEnvironmentID: String? = nil,
         lastReminderAt: Date? = nil,
         lastReminderOccurrence: String? = nil,
+        remindersSuspended: Bool = false,
         createdAt: Date = Date(),
         updatedAt: Date = Date()
     ) {
@@ -259,6 +267,7 @@ public struct C06TodoRecord: Sendable, Equatable, Identifiable {
         self.ownerEnvironmentID = ownerEnvironmentID
         self.lastReminderAt = lastReminderAt
         self.lastReminderOccurrence = lastReminderOccurrence
+        self.remindersSuspended = remindersSuspended
         self.createdAt = createdAt
         self.updatedAt = updatedAt
     }
@@ -386,8 +395,9 @@ public actor C06TodoStore: C06TodoStoring {
                         recurrence_interval, recurrence_until, reminder_minutes_before,
                         completed, completed_at, revision, owner_conversation_id,
                         owner_task_id, owner_environment_id, last_reminder_at,
-                        last_reminder_occurrence, created_at, updated_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        last_reminder_occurrence, reminders_suspended,
+                        created_at, updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                 arguments: StatementArguments(Self.arguments(record, formatter: formatter))
             )
@@ -401,6 +411,8 @@ public actor C06TodoStore: C06TodoStoring {
         var updated = record
         updated.revision = expectedRevision + 1
         updated.updatedAt = Date()
+        // Saving through the normal editor is the explicit enable pathway.
+        updated.remindersSuspended = false
         let values: [DatabaseValueConvertible?] = [
             updated.title, updated.notes,
             updated.dueAt.map { formatter.string(from: $0) } ?? nil,
@@ -416,6 +428,7 @@ public actor C06TodoStore: C06TodoStoring {
             updated.ownerEnvironmentID ?? nil,
             updated.lastReminderAt.map { formatter.string(from: $0) } ?? nil,
             updated.lastReminderOccurrence ?? nil,
+            updated.remindersSuspended ? 1 : 0,
             formatter.string(from: updated.createdAt),
             formatter.string(from: updated.updatedAt),
             updated.id.uuidString.lowercased(),
@@ -430,7 +443,8 @@ public actor C06TodoStore: C06TodoStoring {
                         reminder_minutes_before = ?, completed = ?, completed_at = ?,
                         revision = ?, owner_conversation_id = ?, owner_task_id = ?,
                         owner_environment_id = ?, last_reminder_at = ?,
-                        last_reminder_occurrence = ?, created_at = ?, updated_at = ?
+                        last_reminder_occurrence = ?, reminders_suspended = ?,
+                        created_at = ?, updated_at = ?
                     WHERE id = ? AND revision = ?
                     """,
                 arguments: StatementArguments(values)
@@ -488,6 +502,7 @@ public actor C06TodoStore: C06TodoStoring {
                     SELECT * FROM \(C06TodoWire.table)
                     WHERE completed = 0 AND due_at IS NOT NULL
                       AND reminder_minutes_before IS NOT NULL
+                      AND reminders_suspended = 0
                     ORDER BY due_at, id
                     LIMIT ?
                     """,
@@ -538,6 +553,7 @@ public actor C06TodoStore: C06TodoStoring {
             record.ownerEnvironmentID ?? nil,
             record.lastReminderAt.map { formatter.string(from: $0) } ?? nil,
             record.lastReminderOccurrence ?? nil,
+            record.remindersSuspended ? 1 : 0,
             formatter.string(from: record.createdAt),
             formatter.string(from: record.updatedAt),
         ]
@@ -575,6 +591,7 @@ public actor C06TodoStore: C06TodoStoring {
             ownerEnvironmentID: row["owner_environment_id"],
             lastReminderAt: date("last_reminder_at"),
             lastReminderOccurrence: row["last_reminder_occurrence"],
+            remindersSuspended: ((row["reminders_suspended"] as Int?) ?? 0) != 0,
             createdAt: createdAt,
             updatedAt: updatedAt
         )

@@ -291,11 +291,18 @@ public struct C07BackupScope: Codable, Sendable, Equatable {
         "managedProjects", "retainedProjects", "notesDocuments",
         "safePreferences",
     ]
-    public static let includedIDs = [
+    /// The 2026-10-17 v2 declaration. Kept verbatim so an archive written by
+    /// that build still validates on restore after coverage expanded.
+    public static let legacyV2IncludedIDs = [
         "managedProjects", "retainedProjects", "notesDocuments",
         "safePreferences", "taskGraph", "chatHistory", "runHistory",
         "actionReceipts", "canvasMediaDocuments", "appOwnedArtifacts",
         "savedSchedules", "providerConfiguration",
+    ]
+    public static let includedIDs = legacyV2IncludedIDs + [
+        "calendarTodos", "toolResultRetention", "appArtifactFiles",
+        "captureFiles", "safeRemoteConfiguration", "safeMailConfiguration",
+        "voicePreferences", "canvasOpaqueCAD",
     ]
 
     public var included: [String]
@@ -635,13 +642,30 @@ public enum C07ScopePolicy {
         .init(id: "mediaGenerationJobs", reason: "notReplayed"),
         .init(id: "mediaGenerationCandidates", reason: "generationOwner"),
         .init(id: "creativeAssetIndex", reason: "derivedMediaIndex"),
-        .init(id: "canvasCADDrafts", reason: "androidCanvasHasNoEditableCAD"),
-        .init(id: "canvasNativeCADPackages", reason: "androidCanvasHasNoEditableCAD"),
         .init(id: "canvasRunContexts", reason: "runResumeState"),
+        .init(id: "personalizationMemory",
+              reason: "separateMemoryAuthorityNotInThisPackage"),
+        .init(id: "skillsLibrary", reason: "reinstallableSkillPackages"),
+        .init(id: "taskChecklistRevisions", reason: "runPlanStateNotResumable"),
+        .init(id: "modelPreferences", reason: "derivedUiChoice"),
+        .init(id: "workspaceRecentFiles", reason: "derivedUiHistory"),
+        .init(id: "runDependencies", reason: "executionGraphNotResumable"),
+        // C02 continuity is execution-control state, not reusable user data:
+        // a pause marker carries a root epoch/fingerprint and a
+        // resumeInProgress CAS claim. Restoring it under new ids would let a
+        // historical task look resumable; the table is deliberately absent
+        // from the C07 graph and never recreated. Nonterminal runs are
+        // restored as `interrupted` with no marker or target pin.
+        .init(id: "taskContinuityExecutionControl",
+              reason: "pauseMarkersRootFingerprintsAndResumeCASNeverRestored"),
         .init(id: "realtimeSync", reason: "explicitExchangeOnly"),
         .init(id: "systemPersonalData", reason: "notAppOwned"),
         .init(id: "externalFileBookmarks", reason: "regrantRequired"),
-        .init(id: "captureArtifacts", reason: "captureOwner"),
+        .init(id: "voiceTransientStaging", reason: "tenMinuteStagingNotDurable"),
+        .init(id: "privilegedPacketCaptureBuffers", reason: "rootOwnerNotAppData"),
+        .init(id: "rdpTrustPins", reason: "freshTrustRequired"),
+        .init(id: "toolResultExecutionReplay", reason: "captureOnlyNeverReExecuted"),
+        .init(id: "cadEditingKernel", reason: "opaqueReadOnlyPreservationOnly"),
         .init(id: "environmentImages", reason: "c01CheckpointPortRequired"),
         .init(id: "trash", reason: "declaredSeparately"),
     ]
@@ -666,8 +690,12 @@ public enum C07ScopePolicy {
         default:
             throw C07DataExchangeError.unsupportedVersion(formatVersion)
         }
-        guard Set(scope.included) == Set(expected),
-              scope.included.count == expected.count else {
+        let provided = Set(scope.included)
+        let acceptedV2 = formatVersion == 2
+            && provided == Set(C07BackupScope.legacyV2IncludedIDs)
+        guard scope.included.count == provided.count,
+              (provided == Set(expected) && scope.included.count == expected.count)
+                || acceptedV2 else {
             throw C07DataExchangeError.invalidScope("included")
         }
         let excludedIDs = Set(scope.excluded.map(\.id))
@@ -696,6 +724,13 @@ public enum C07SettingsPolicy {
         "shortcuts.",
     ]
 
+    /// Exact, reviewed non-secret settings keys that do not use a broad UI
+    /// prefix. `voice.settings.v1` is the C03 voice picker/preference record;
+    /// it contains no credential reference (validated again below).
+    public static let explicitSafeKeys: Set<String> = [
+        "voice.settings.v1",
+    ]
+
     public static let forbiddenFragments = [
         "credential", "secret", "token", "cookie", "password", "apikey",
         "api_key", "auth", "session", "bearer", "privatekey", "devicekey",
@@ -707,6 +742,7 @@ public enum C07SettingsPolicy {
               key.unicodeScalars.allSatisfy({
                   $0.value < 128 && !CharacterSet.controlCharacters.contains($0)
               }) else { return false }
+        if explicitSafeKeys.contains(key) { return true }
         let lower = key.lowercased()
         guard !forbiddenFragments.contains(where: { lower.contains($0) }) else { return false }
         return allowedPrefixes.contains(where: { lower.hasPrefix($0) })

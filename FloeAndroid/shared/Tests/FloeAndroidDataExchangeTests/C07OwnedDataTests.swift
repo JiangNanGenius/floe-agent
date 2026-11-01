@@ -231,7 +231,8 @@ final class C07OwnedDataTests: XCTestCase {
 
     func testManifestV2RequiresFullScopeAndOptionalEvidenceMayBeAbsent() throws {
         var tables: [C07OwnedTableRecord] = []
-        for name in C07OwnedDataPolicy.mandatoryTableNames.sorted() {
+        for name in C07OwnedDataPolicy.mandatoryTableNames(
+            forSchema: 52).sorted() {
             tables.append(C07OwnedTableRecord(
                 name: name, entry: c07OwnedTableEntry(name), rowCount: 0,
                 byteCount: 0, sha256: String(repeating: "a", count: 64)))
@@ -251,7 +252,10 @@ final class C07OwnedDataTests: XCTestCase {
 
         var scope = C07BackupScope(
             excluded: C07ScopePolicy.excluded, databaseMode: "logicalRows")
-        scope.included = Array(C07BackupScope.legacyIncludedIDs)
+        // A package written by the first v2 build is still readable.
+        scope.included = Array(C07BackupScope.legacyV2IncludedIDs)
+        XCTAssertNoThrow(try C07ScopePolicy.validate(scope, formatVersion: 2))
+        scope.included = Array(C07BackupScope.includedIDs.dropLast())
         XCTAssertThrowsError(try C07ScopePolicy.validate(scope, formatVersion: 2))
         var legacy = scope
         legacy.databaseMode = nil
@@ -363,12 +367,25 @@ final class C07OwnedDataTests: XCTestCase {
                        Data("png".utf8))
     }
 
-    func testCanvasPackageRejectsUnsupportedDonorSectionsAndHashMismatch() throws {
+    func testCanvasPackageCarriesOpaqueDonorCADSectionsReadOnly() throws {
+        let canvasID = UUID()
+        let nodeID = UUID()
         var manifest = C07CanvasPackageManifest(
-            canvasID: UUID(), canvasName: "x", canvasSchemaVersion: 7,
+            canvasID: canvasID, canvasName: "x", canvasSchemaVersion: 7,
             canvasByteCount: 1,
             canvasSHA256: String(repeating: "a", count: 64))
-        manifest.cadDrafts = [C07OpaqueSection()]
+        manifest.cadDrafts = [C07CanvasCADDraft(
+            nodeID: nodeID, canvasID: canvasID,
+            descriptorFile: "caddrafts/draft-0.json",
+            drawingFile: "caddrafts/draft-0.png",
+            drawingByteCount: 2,
+            drawingSHA256: String(repeating: "b", count: 64),
+            descriptorByteCount: 2,
+            descriptorSHA256: String(repeating: "c", count: 64))]
+        XCTAssertNoThrow(try manifest.validate())
+        // A draft owned by another canvas is a reference error, never a
+        // silent drop.
+        manifest.cadDrafts?[0].canvasID = UUID()
         XCTAssertThrowsError(try manifest.validate())
     }
 

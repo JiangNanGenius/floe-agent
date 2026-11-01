@@ -896,6 +896,13 @@ internal class C07DataExchangeHostController(
             mailReceipts = mailReceipts,
             providerConfigs = providerConfigs,
             executionEvidence = executionEvidence,
+            todos = todos,
+            toolResults = toolResults,
+            appArtifacts = appArtifacts,
+            captureFiles = captureFiles,
+            configSections = configSections,
+            omissions = omissions,
+            partial = partial,
             warnings = warnings,
         )
 
@@ -916,6 +923,13 @@ internal class C07DataExchangeHostController(
             canvasProjects = canvasProjects,
             mediaProjects = mediaProjects,
             evidenceRows = evidenceRows,
+            todos = todos,
+            toolResults = toolResults,
+            appArtifacts = appArtifacts,
+            captureFiles = captureFiles,
+            cadPreserved = cadPreserved,
+            configSections = configSections,
+            partial = partial,
         )
 
     private data class UploadSource(

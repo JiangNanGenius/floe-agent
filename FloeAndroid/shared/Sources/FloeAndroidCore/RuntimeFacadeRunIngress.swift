@@ -804,10 +804,8 @@ public struct RunToolAssembly {
                 .union(TemporaryChatToolPolicy.providerBackedWebSearchToolNames)
             ceiling = ceiling.map { $0.intersection(frozenCeiling) } ?? frozenCeiling
         } else {
-            // The generic result reader is runtime metadata over the SAME
-            // task's already-redacted evidence. An explicit ordinary ceiling
-            // must include it; nil already means "compiled default", which
-            // includes the registered runner. Temporary runs are never widened.
+            // The compiled default includes the generic result reader.
+            // Explicit task/host ceilings remain exact, especially [] = no tools.
             ceiling = C02ToolResultIntegration.offeredToolNames(ceiling, temporary: false)
         }
         return ceiling

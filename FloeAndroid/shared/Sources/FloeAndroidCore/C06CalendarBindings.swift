@@ -1197,6 +1197,7 @@ public enum C06CalendarBridge {
         if let occurrence = record.lastReminderOccurrence {
             value["lastReminderOccurrence"] = occurrence
         }
+        value["remindersSuspended"] = record.remindersSuspended
         return value
     }
 

@@ -48,12 +48,16 @@ final class C02ToolResultDomainTests: XCTestCase {
         )
     }
 
-    func testOfferedCeilingAddsTheReaderOnlyForOrdinaryRuns() {
-        let ordinary = C02ToolResultIntegration.offeredToolNames(["workspace.readFile"], temporary: false)
-        XCTAssertTrue(ordinary?.contains(ToolResultPagingTool.name) == true)
-        let temporary = C02ToolResultIntegration.offeredToolNames(["workspace.readFile"], temporary: true)
-        XCTAssertEqual(temporary ?? [], Set(["workspace.readFile"]))
-        XCTAssertNil(C02ToolResultIntegration.offeredToolNames(nil, temporary: false))
+    func testReaderNeverWidensExplicitTaskOrHostCeilings() {
+        let ceilings: [Set<String>?] = [nil, [], ["workspace.readFile"], [ToolResultPagingTool.name]]
+        for ceiling in ceilings {
+            for temporary in [false, true] {
+                XCTAssertEqual(
+                    C02ToolResultIntegration.offeredToolNames(ceiling, temporary: temporary),
+                    ceiling
+                )
+            }
+        }
     }
 
     func testHandshakeBindsTheRegisteredModelToolAndLimits() throws {

@@ -35,15 +35,21 @@ public actor ToolResultCaptureStore {
         public var perResultBytes: Int
         public var perTaskBytes: Int
         public var perTaskResults: Int
+        /// Global payload-text bound across every task resident in this
+        /// process. At least one full task always fits. Durable records
+        /// evicted from RAM reload from disk on the next read.
+        public var totalPayloadBytes: Int
 
         public init(
             perResultBytes: Int = 2 * 1024 * 1024,
             perTaskBytes: Int = 16 * 1024 * 1024,
-            perTaskResults: Int = 64
+            perTaskResults: Int = 64,
+            totalPayloadBytes: Int = 32 * 1024 * 1024
         ) {
             self.perResultBytes = max(1, perResultBytes)
             self.perTaskBytes = max(self.perResultBytes, perTaskBytes)
             self.perTaskResults = max(1, perTaskResults)
+            self.totalPayloadBytes = max(self.perTaskBytes, totalPayloadBytes)
         }
 
         /// Ordinary durable conversations may capture a much larger full
@@ -53,14 +59,19 @@ public actor ToolResultCaptureStore {
         public static let durableStandard = Caps(
             perResultBytes: 8 * 1024 * 1024,
             perTaskBytes: 64 * 1024 * 1024,
-            perTaskResults: 64
+            perTaskResults: 64,
+            // Two full-size tasks resident; older tasks reload from disk.
+            totalPayloadBytes: 128 * 1024 * 1024
         )
         /// Temporary conversations are RAM-only; keeping the smaller quota
         /// makes the absence of a durable copy explicit.
         public static let memoryStandard = Caps(
             perResultBytes: 2 * 1024 * 1024,
             perTaskBytes: 16 * 1024 * 1024,
-            perTaskResults: 64
+            perTaskResults: 64,
+            // RAM-only tasks cannot reload; the global bound is the only
+            // protection against N tasks accumulating forever.
+            totalPayloadBytes: 32 * 1024 * 1024
         )
         public static let standard = memoryStandard
     }
@@ -83,6 +94,9 @@ public actor ToolResultCaptureStore {
     /// Tasks whose durable directory was already loaded into the bounded index
     /// (including empty/failed loads, which are attempted once).
     private var loadedTasks: Set<UUID> = []
+    /// Least-recently-used ordering for the global payload cache.
+    private var taskUse: [UUID: Int] = [:]
+    private var useSequence = 0
     /// Tasks whose deletion lifecycle already fenced late settlements.
     private var fencedConversations: Set<UUID> = []
     /// Scan/read ceilings for restart reload. The cap budget is per task, so a
@@ -226,6 +240,8 @@ public actor ToolResultCaptureStore {
             kept[index] = final
         }
         retained[conversationID] = kept
+        touch(conversationID)
+        trimPayloadCache(keeping: conversationID)
         return .init(
             outcome: .retained,
             ref: ref,
@@ -587,6 +603,28 @@ public actor ToolResultCaptureStore {
         for conversationID in retained.keys { fencedConversations.insert(conversationID) }
         retained.removeAll()
         evicted.removeAll()
+        taskUse.removeAll()
+    }
+
+    /// Read-only diagnostics for the global RAM payload cache. It never
+    /// exposes payload text, paths or ownership beyond counts.
+    public struct PayloadCacheStats: Sendable, Equatable {
+        public let retainedBytes: Int
+        public let retainedTasks: Int
+        public let evictedCopies: Int
+        public let payloadCapBytes: Int
+    }
+
+    public func payloadCacheStats() -> PayloadCacheStats {
+        let bytes = retained.values.reduce(0) { total, entries in
+            total + entries.reduce(0) { $0 + $1.capture.text.utf8.count }
+        }
+        let evictedCopies = evicted.values.reduce(0, +)
+        return PayloadCacheStats(
+            retainedBytes: bytes,
+            retainedTasks: retained.count,
+            evictedCopies: evictedCopies,
+            payloadCapBytes: caps.totalPayloadBytes)
     }
 
     // MARK: - Bounds
@@ -595,6 +633,7 @@ public actor ToolResultCaptureStore {
         fencedConversations.insert(conversationID)
         retained.removeValue(forKey: conversationID)
         evicted.removeValue(forKey: conversationID)
+        taskUse.removeValue(forKey: conversationID)
         loadedTasks.insert(conversationID)
     }
 
@@ -610,6 +649,49 @@ public actor ToolResultCaptureStore {
             dropped.append(ordered.removeFirst())
         }
         return (ordered, dropped)
+    }
+
+    /// Marks one task as most recently used. Called on every load/read and
+    /// every capture so the global trim keeps the active task resident.
+    private func touch(_ conversationID: UUID) {
+        useSequence += 1
+        taskUse[conversationID] = useSequence
+    }
+
+    /// Global RAM-payload bound. Only in-memory entries are removed; durable
+    /// files are never deleted here. A fully durable task is reloadable from
+    /// disk, so it is not reported as an eviction. Any RAM-only copy
+    /// (temporary store, no durable root, or a failed durable write) is lost:
+    /// its count is reported through the existing eviction provenance.
+    private func trimPayloadCache(keeping: UUID?) {
+        let cap = caps.totalPayloadBytes
+        guard cap > 0 else { return }
+        var total = retained.values.reduce(0) { sum, entries in
+            sum + entries.reduce(0) { $0 + $1.capture.text.utf8.count }
+        }
+        guard total > cap else { return }
+        let candidates = retained.keys
+            .filter { $0 != keeping }
+            .sorted { left, right in
+                (taskUse[left] ?? 0) < (taskUse[right] ?? 0)
+            }
+        for conversationID in candidates {
+            guard total > cap else { break }
+            guard let entries = retained[conversationID] else { continue }
+            let bytes = entries.reduce(0) { $0 + $1.capture.text.utf8.count }
+            let nonDurable = entries.reduce(0) {
+                $0 + ($1.capture.durability == .durable ? 0 : 1)
+            }
+            retained.removeValue(forKey: conversationID)
+            // Allow a later search/index/read to reconstruct the durable
+            // subset. The eviction path never removes a file.
+            loadedTasks.remove(conversationID)
+            taskUse.removeValue(forKey: conversationID)
+            total -= bytes
+            if nonDurable > 0 {
+                evicted[conversationID, default: 0] += nonDurable
+            }
+        }
     }
 
     private func makePage(
@@ -738,6 +820,7 @@ public actor ToolResultCaptureStore {
     /// is opened with O_NOFOLLOW and its size cap is enforced before and during
     /// the read.
     private func loadDurableTaskIfNeeded(_ conversationID: UUID) {
+        touch(conversationID)
         guard !loadedTasks.contains(conversationID) else { return }
         loadedTasks.insert(conversationID)
         guard let root = durableRoot, !fencedConversations.contains(conversationID) else { return }
@@ -807,6 +890,7 @@ public actor ToolResultCaptureStore {
         }
         if !dropped.isEmpty { evicted[conversationID, default: 0] += dropped.count }
         retained[conversationID] = kept
+        trimPayloadCache(keeping: conversationID)
     }
 
     /// Best-effort durable write. Path ownership: the root and the per-task

@@ -26,6 +26,7 @@ import FloeModels
 import FloePersistence
 import FloeNotes
 import FloeAndroidDataExchange
+import FloeAndroidToolResults
 
 // MARK: - Wire
 
@@ -95,6 +96,19 @@ struct C07DataExchangeContext: Sendable {
     let settingsStore: SQLiteSettingsStore
     let modelConfigurationStore: ModelConfigurationStore
     let projectLibrary: C01ProjectLibrary
+
+    var toolResultsRoot: URL {
+        artifactRoot.appendingPathComponent("ToolResults", isDirectory: true)
+    }
+    var restoredConfigRoot: URL {
+        dataRoot.appendingPathComponent("RestoredConfig", isDirectory: true)
+    }
+    var restoredArtifactRoot: URL {
+        dataRoot.appendingPathComponent("RestoredArtifacts", isDirectory: true)
+    }
+    var cadPreservedRoot: URL {
+        artifactRoot.appendingPathComponent("CadPreserved", isDirectory: true)
+    }
 
     static func make(owner: C07ExchangeOwner) throws -> C07DataExchangeContext {
         guard G02NativeRootEpoch.readback() == owner.nativeEpoch,
@@ -797,6 +811,19 @@ public struct C07JobStatus: Sendable, Equatable {
     public var restoredCanvasProjects: Int?
     public var restoredMediaProjects: Int?
     public var restoredEvidenceRows: Int?
+    public var todoCount: Int?
+    public var toolResultCount: Int?
+    public var appArtifactCount: Int?
+    public var captureFileCount: Int?
+    public var configSectionCount: Int?
+    public var omissionCount: Int?
+    public var partial: Bool?
+    public var restoredTodos: Int?
+    public var restoredToolResults: Int?
+    public var restoredAppArtifacts: Int?
+    public var restoredCaptureFiles: Int?
+    public var restoredCADPreserved: Int?
+    public var restoredConfigSections: Int?
     public var canCommit: Bool
 }
 
@@ -1218,6 +1245,24 @@ public actor C07DataExchangeDomain {
             restoredCanvasProjects: job.receipt?.canvasProjectsRestored,
             restoredMediaProjects: job.receipt?.mediaProjectsRestored,
             restoredEvidenceRows: job.receipt?.evidenceRowsRestored,
+            todoCount: job.plan?.ownedDataCounts.todos,
+            toolResultCount: job.plan?.ownedDataCounts.toolResults,
+            appArtifactCount: job.plan?.ownedDataCounts.appArtifacts,
+            captureFileCount: job.plan?.ownedDataCounts.captureFiles,
+            configSectionCount: job.plan?.ownedDataCounts.configSections,
+            omissionCount: job.plan?.ownedData?.manifest.omissions?.count
+                ?? job.receipt?.omissions,
+            partial: job.plan?.ownedData.map {
+                ($0.manifest.completeness
+                    ?? (($0.manifest.omissions?.isEmpty == false)
+                        ? .partial : .complete)) == .partial
+            } ?? job.receipt?.partial,
+            restoredTodos: job.receipt?.todosRestored,
+            restoredToolResults: job.receipt?.toolResultsRestored,
+            restoredAppArtifacts: job.receipt?.appArtifactsRestored,
+            restoredCaptureFiles: job.receipt?.captureFilesRestored,
+            restoredCADPreserved: job.receipt?.cadPreservedRestored,
+            restoredConfigSections: job.receipt?.configSectionsRestored,
             canCommit: ((job.kind == "restore" || job.kind == "noteImport")
                 && job.phase == .ready && job.plan != nil))
     }
@@ -1356,15 +1401,36 @@ public actor C07DataExchangeDomain {
 /// the Canvas/media/attachment/receipt artifact graph. It never copies
 /// `floe.sqlite`, `-wal`, `-shm` or a guest image.
 struct C07OwnedDataSource {
+    /// The existing App-owned artifact namespaces that carry durable user
+    /// files. `Attachments` has its own role because the database owns its
+    /// identity; every other namespace is captured path-for-path.
+    static let appArtifactNamespaces: [String] = [
+        "GeneratedImages", "BrowserArtifacts", "VNCArtifacts", "RDPArtifacts",
+        "PresentationArtifacts", "ChangeArtifacts", "JobDownloads",
+        "DesignRevisions", "RunOutputs",
+    ]
+
+    /// User-owned capture files outside the artifact root. They are restored
+    /// into a read-only recovery area, never silently into a live capture
+    /// library.
+    static let captureAreas: [String] = [
+        "packet-captures", "network-artifacts/pcap",
+    ]
+
     static func capture(context: C07DataExchangeContext,
                         workRoot: URL,
                         includeRetainedProjects: Bool) async throws
         -> C07SourceOwnedData
     {
+        _ = includeRetainedProjects
         try C07FileSystem.ensureDirectory(workRoot)
         let tablesRoot = workRoot.appendingPathComponent("tables", isDirectory: true)
         try C07FileSystem.ensureDirectory(tablesRoot)
+        let artifactStageRoot = workRoot.appendingPathComponent(
+            "artifacts", isDirectory: true)
+        try C07FileSystem.ensureDirectory(artifactStageRoot)
         var warnings: [String] = []
+        var omissions = C07OmissionCollector()
 
         let captured = try await captureTables(
             database: context.database, directory: tablesRoot)
@@ -1386,20 +1452,33 @@ struct C07OwnedDataSource {
         catch { throw C07DataExchangeError.storageUnavailable("workspacesWrite") }
         counts.workspaces = descriptors.count
 
-        var artifacts: [C07SourceArtifact] = []
-        var entries = Set<String>()
+        var collector = C07ArtifactCollector(stagingRoot: artifactStageRoot)
         warnings.append(contentsOf: try captureCanvasArtifacts(
-            context: context, workRoot: workRoot,
-            artifacts: &artifacts, entries: &entries, counts: &counts))
+            context: context, collector: &collector, omissions: &omissions,
+            counts: &counts))
         warnings.append(contentsOf: try captureAttachmentArtifacts(
             context: context, tables: captured.tables,
-            artifacts: &artifacts, entries: &entries, counts: &counts))
+            collector: &collector, omissions: &omissions, counts: &counts))
         warnings.append(contentsOf: try capturePrivateTaskArtifacts(
             context: context, workspaces: descriptors,
-            artifacts: &artifacts, entries: &entries, counts: &counts))
+            collector: &collector, omissions: &omissions, counts: &counts))
         warnings.append(contentsOf: try captureMailReceipts(
-            context: context, artifacts: &artifacts, entries: &entries,
+            context: context, collector: &collector, omissions: &omissions,
             counts: &counts))
+        warnings.append(contentsOf: try captureAppArtifacts(
+            context: context, collector: &collector, omissions: &omissions,
+            counts: &counts))
+        warnings.append(contentsOf: try captureUserCaptureFiles(
+            context: context, collector: &collector, omissions: &omissions,
+            counts: &counts))
+
+        var configs: [C07SourceConfigSection] = []
+        warnings.append(contentsOf: try captureConfigurations(
+            context: context, captured: captured, workRoot: workRoot,
+            configs: &configs, omissions: &omissions, counts: &counts))
+        let toolResults = try await captureToolResults(
+            context: context, captured: captured, workRoot: workRoot,
+            omissions: &omissions, counts: &counts, warnings: &warnings)
 
         var checkpointPort = "unavailable"
         var checkpointReason: String? = "c01CheckpointPortNotInstalled"
@@ -1433,28 +1512,26 @@ struct C07OwnedDataSource {
                         throw C07DataExchangeError.storageUnavailable(
                             "environmentDescriptorWrite")
                     }
-                    appendArtifact(
-                        role: .environmentCheckpoint,
-                        ownerID: environment.environmentID,
-                        containerID: nil,
+                    _ = try collector.appendFile(
+                        source: metadataURL, role: .environmentCheckpoint,
+                        ownerID: environment.environmentID, containerID: nil,
                         logicalPath: "metadata.json",
-                        sourceURL: metadataURL,
-                        artifacts: &artifacts, entries: &entries, counts: &counts)
+                        expectedSHA256: nil, expectedByteCount: nil)
                     for file in environment.files {
                         do {
                             _ = try C07Path.validateRelative(file.relativePath)
                         } catch {
-                            warnings.append("environmentPathRejected")
+                            omissions.add("environmentCheckpoint",
+                                          "\(environment.environmentID.uuidString)/\(file.relativePath)",
+                                          "unsafePath")
                             continue
                         }
-                        appendArtifact(
-                            role: .environmentCheckpoint,
-                            ownerID: environment.environmentID,
-                            containerID: nil,
+                        _ = try collector.appendFile(
+                            source: file.url, role: .environmentCheckpoint,
+                            ownerID: environment.environmentID, containerID: nil,
                             logicalPath: file.relativePath,
-                            sourceURL: file.url,
-                            artifacts: &artifacts, entries: &entries,
-                            counts: &counts)
+                            expectedSHA256: file.sha256,
+                            expectedByteCount: file.byteCount)
                     }
                 }
                 checkpointPort = "available"
@@ -1463,24 +1540,54 @@ struct C07OwnedDataSource {
                 checkpointPort = "unavailable"
                 checkpointReason = "c01CheckpointExportFailed"
                 warnings.append("environmentExportFailed")
+                omissions.add("environmentCheckpoint", "c01",
+                              "c01CheckpointExportFailed")
             }
         }
 
+        counts.artifacts = collector.artifacts.count
+        counts.artifactBytes = collector.artifacts.reduce(0) {
+            $0 + $1.record.byteCount
+        }
+        counts.omissions = omissions.items.count
+        counts.configSections = configs.count
         let excluded = C07ScopePolicy.excluded
-        counts.artifacts = artifacts.count
-        counts.artifactBytes = artifacts.reduce(0) { $0 + $1.record.byteCount }
-        _ = includeRetainedProjects
-        return C07SourceOwnedData(
+        warnings.append(contentsOf: omissions.warnings)
+        let source = C07SourceOwnedData(
             tables: captured.tables,
             workspaces: C07SourceWorkspaces(
                 url: workspaceFile, count: descriptors.count),
-            artifacts: artifacts,
+            artifacts: collector.artifacts,
+            toolResults: toolResults,
+            configs: configs,
+            omissions: omissions.items,
+            deduplicatedArtifacts: collector.deduplicated,
             counts: counts,
             excluded: excluded,
             linuxCheckpointPort: checkpointPort,
             linuxCheckpointReason: checkpointReason,
             warnings: warnings)
+        // Final writer-side closure check over the staged bytes. The archive
+        // builder repeats it; this makes a bad capture fail before a large
+        // archive copy.
+        _ = try C07OwnedDataClosure.validate(
+            tables: source.tables.map {
+                C07ClosureTable(name: $0.name, url: $0.url, rowCount: $0.rowCount)
+            },
+            artifacts: source.artifacts.map {
+                C07ClosureArtifact(record: $0.record, url: $0.url)
+            },
+            toolResults: source.toolResults.map {
+                C07ClosureToolResults(url: $0.url, section: $0.section)
+            },
+            configs: source.configs.map {
+                C07ClosureConfig(section: $0.section, url: $0.url)
+            },
+            omissions: source.omissions)
+        return source
     }
+
+    // MARK: Table snapshot
 
     private struct CapturedTables {
         var tables: [C07SourceTable]
@@ -1488,15 +1595,29 @@ struct C07OwnedDataSource {
         var counts: C07OwnedDataCounts
         var warnings: [String]
         var schemaVersion: Int
+        var conversationIDs: [UUID]
+        var toolCallCount: Int
+        var hosts: C07RemoteHostConfigDocument?
+        var invalidHostIDs: [String]
+        var mailAccounts: C07MailAccountConfigDocument?
+        var invalidMailIDs: [String]
     }
 
     private static func captureTables(database: DatabaseManager,
                                       directory: URL) async throws -> CapturedTables {
         try await database.reader { db in
             let schemaVersion = try Int.fetchOne(db, sql: "PRAGMA user_version") ?? 0
+            // The static version and the live table set must be one coherent
+            // schema. A half-migrated database is never labelled as a full
+            // backup of a different schema.
+            guard schemaVersion == DatabaseManager.currentSchemaVersion else {
+                throw C07DataExchangeError.schemaMismatch(schemaVersion)
+            }
             var tables: [C07SourceTable] = []
             var counts = C07OwnedDataCounts()
             var warnings: [String] = []
+            var conversationIDs: [UUID] = []
+            var toolCalls = 0
             for policy in C07OwnedDataPolicy.tables {
                 let exists = try db.tableExists(policy.name)
                 if !exists {
@@ -1504,10 +1625,19 @@ struct C07OwnedDataSource {
                         warnings.append("tableUnavailable:\(policy.name)")
                         continue
                     }
+                    if !policy.isExpected(at: schemaVersion) {
+                        // Declared schema fact (for example calendar_todos
+                        // before coordinated migration 52). No user data of
+                        // that category exists on this schema.
+                        warnings.append(
+                            "tableNotInSchema:\(policy.name):\(schemaVersion)")
+                        continue
+                    }
                     throw C07DataExchangeError.schemaMismatch(schemaVersion)
                 }
                 let columns = Set(try db.columns(in: policy.name).map(\.name))
-                guard policy.requiredColumns.isSubset(of: columns) else {
+                guard policy.requiredColumns(at: schemaVersion)
+                        .isSubset(of: columns) else {
                     throw C07DataExchangeError.schemaMismatch(schemaVersion)
                 }
                 let url = directory.appendingPathComponent(
@@ -1528,6 +1658,12 @@ struct C07OwnedDataSource {
                         excludedRows += 1
                         continue
                     }
+                    if policy.name == "conversations",
+                       let idText: String = row["id"],
+                       let id = UUID(uuidString: idText) {
+                        conversationIDs.append(id)
+                    }
+                    if policy.name == "tool_calls" { toolCalls += 1 }
                     let exported = C07OwnedDataPolicy.exportedRow(
                         table: policy.name, row: values)
                     try writer.append(exported)
@@ -1536,17 +1672,26 @@ struct C07OwnedDataSource {
                 if excludedRows > 0 {
                     warnings.append("rowsExcluded:\(policy.name):\(excludedRows)")
                 }
-                let digest = try C07Digest.file(url)
                 tables.append(C07SourceTable(
                     name: policy.name, url: url, rowCount: writer.rowCount))
                 updateCounts(table: policy.name, rows: writer.rowCount,
                              counts: &counts)
             }
             let workspaces = try captureWorkspaces(db: db, warnings: &warnings)
+            let hostConfig = try captureHosts(db: db, warnings: &warnings)
+            let mailConfig = try captureMailAccountConfiguration(
+                db: db, warnings: &warnings)
             return CapturedTables(
                 tables: tables, workspaces: workspaces,
                 counts: counts, warnings: warnings,
-                schemaVersion: schemaVersion)
+                schemaVersion: schemaVersion,
+                conversationIDs: conversationIDs.sorted {
+                    $0.uuidString < $1.uuidString
+                },
+                toolCallCount: toolCalls,
+                hosts: hostConfig.document, invalidHostIDs: hostConfig.invalid,
+                mailAccounts: mailConfig.document,
+                invalidMailIDs: mailConfig.invalid)
         }
     }
 
@@ -1571,6 +1716,7 @@ struct C07OwnedDataSource {
         case "attachments": counts.attachments = rows
         case "task_schedules": counts.schedules = rows
         case "task_schedule_occurrences": counts.occurrences = rows
+        case "calendar_todos": counts.todos = rows
         case "providers": counts.providers = rows
         case "models": counts.models = rows
         case "task_execution_targets": counts.executionTargets = rows
@@ -1583,6 +1729,158 @@ struct C07OwnedDataSource {
             counts.actionReceipts += rows
         default: break
         }
+    }
+
+    // MARK: Non-secret configuration snapshot (same DB read transaction)
+
+    private static func captureHosts(
+        db: Database,
+        warnings: inout [String]
+    ) throws -> (document: C07RemoteHostConfigDocument?, invalid: [String]) {
+        guard try db.tableExists("hosts") else { return (nil, []) }
+        let rows: [Row]
+        do {
+            rows = try Row.fetchAll(db, sql: """
+                SELECT id, display_name, address, port, user, device_kind,
+                       is_remote_execution_environment, jump_chain_json,
+                       host_key_policy, allows_legacy_algorithms,
+                       vnc_endpoints_json, auxiliary_connections_json
+                FROM hosts ORDER BY id
+                """)
+        } catch {
+            throw C07DataExchangeError.schemaMismatch(
+                DatabaseManager.currentSchemaVersion)
+        }
+        var hosts: [C07RemoteHostConfig] = []
+        var invalid: [String] = []
+        for row in rows {
+            guard let idText: String = row["id"],
+                  let id = UUID(uuidString: idText) else {
+                warnings.append("hostRowIgnored")
+                continue
+            }
+            let jump = (row["jump_chain_json"] as String?)
+                .flatMap(C07OwnedDataSource.jsonArrayCount) ?? 0
+            let vnc = (row["vnc_endpoints_json"] as String?)
+                .flatMap(C07OwnedDataSource.jsonArrayCount)
+                ?? ((row["vnc_endpoint_json"] as String?) == nil ? 0 : 1)
+            let aux = (row["auxiliary_connections_json"] as String?)
+                .flatMap(C07OwnedDataSource.jsonArrayCount) ?? 0
+            let displayName = Self.bounded(row["display_name"] as String?, 512)
+            let address = Self.bounded(row["address"] as String?, 1_024)
+            guard !displayName.isEmpty, !address.isEmpty else {
+                invalid.append(idText)
+                continue
+            }
+            hosts.append(C07RemoteHostConfig(
+                id: id,
+                displayName: displayName,
+                address: address,
+                port: min(65_535, max(1, (row["port"] as Int?) ?? 22)),
+                user: Self.bounded(row["user"] as String?, 512),
+                deviceKind: Self.bounded(row["device_kind"] as String?, 64),
+                isRemoteExecutionEnvironment:
+                    (row["is_remote_execution_environment"] as Bool?) ?? true,
+                jumpHostCount: min(64, jump),
+                vncEndpointCount: min(64, vnc),
+                auxiliaryConnectionCount: min(64, aux),
+                hostKeyPolicy: Self.hostKeyPolicy(
+                    row["host_key_policy"] as String?),
+                allowsLegacyAlgorithms:
+                    (row["allows_legacy_algorithms"] as Bool?) ?? false))
+        }
+        guard !hosts.isEmpty else { return (nil, invalid) }
+        let document = C07RemoteHostConfigDocument(hosts: hosts)
+        try document.validate()
+        return (document, invalid)
+    }
+
+    private static func captureMailAccountConfiguration(
+        db: Database,
+        warnings: inout [String]
+    ) throws -> (document: C07MailAccountConfigDocument?, invalid: [String]) {
+        guard try db.tableExists("mail_accounts") else { return (nil, []) }
+        let rows: [Row]
+        do {
+            rows = try Row.fetchAll(db, sql: """
+                SELECT id, address, display_name, incoming_protocol,
+                       incoming_host, incoming_port, incoming_tls,
+                       incoming_username, outgoing_host, outgoing_port,
+                       outgoing_tls, outgoing_username
+                FROM mail_accounts ORDER BY id
+                """)
+        } catch {
+            throw C07DataExchangeError.schemaMismatch(
+                DatabaseManager.currentSchemaVersion)
+        }
+        var accounts: [C07MailAccountConfig] = []
+        var invalid: [String] = []
+        for row in rows {
+            guard let idText: String = row["id"],
+                  let id = UUID(uuidString: idText) else {
+                warnings.append("mailAccountRowIgnored")
+                continue
+            }
+            let address = Self.bounded(row["address"] as String?, 1_024)
+            let protocolName = Self.bounded(
+                row["incoming_protocol"] as String?, 32)
+            let incomingHost = Self.bounded(
+                row["incoming_host"] as String?, 1_024)
+            let outgoingHost = Self.bounded(
+                row["outgoing_host"] as String?, 1_024)
+            guard !address.isEmpty, !protocolName.isEmpty,
+                  !incomingHost.isEmpty, !outgoingHost.isEmpty else {
+                invalid.append(idText)
+                continue
+            }
+            accounts.append(C07MailAccountConfig(
+                id: id,
+                address: address,
+                displayName: Self.bounded(row["display_name"] as String?, 512),
+                incomingProtocol: protocolName,
+                incomingHost: incomingHost,
+                incomingPort: min(65_535, max(1, (row["incoming_port"] as Int?) ?? 1)),
+                incomingTLS: Self.bounded(row["incoming_tls"] as String?, 32),
+                incomingUsername: Self.bounded(
+                    row["incoming_username"] as String?, 512),
+                outgoingHost: outgoingHost,
+                outgoingPort: min(65_535, max(1, (row["outgoing_port"] as Int?) ?? 1)),
+                outgoingTLS: Self.bounded(row["outgoing_tls"] as String?, 32),
+                outgoingUsername: Self.bounded(
+                    row["outgoing_username"] as String?, 512)))
+        }
+        guard !accounts.isEmpty else { return (nil, invalid) }
+        let document = C07MailAccountConfigDocument(accounts: accounts)
+        try document.validate()
+        return (document, invalid)
+    }
+
+    private static func jsonArrayCount(_ raw: String) -> Int {
+        guard let data = raw.data(using: .utf8),
+              let value = try? JSONSerialization.jsonObject(with: data) as? [Any]
+        else { return 0 }
+        return value.count
+    }
+
+    private static func hostKeyPolicy(_ raw: String?) -> String {
+        switch raw {
+        case "strict", "ask", "trustOnFirstUse": return raw ?? "trustOnFirstUse"
+        default: return "trustOnFirstUse"
+        }
+    }
+
+    private static func bounded(_ raw: String?, _ bytes: Int) -> String {
+        guard let raw else { return "" }
+        var value = raw.precomposedStringWithCanonicalMapping
+        value = value.filter {
+            $0.unicodeScalars.allSatisfy {
+                !CharacterSet.controlCharacters.contains($0)
+            }
+        }
+        if value.utf8.count > bytes {
+            value = ToolResultUTF8Fallback.prefix(value, maxBytes: bytes)
+        }
+        return value
     }
 
     // MARK: Workspace descriptors (same read transaction)
@@ -1691,141 +1989,161 @@ struct C07OwnedDataSource {
 
     // MARK: Artifact capture
 
-    private static let maximumArtifactFileBytes: Int64 =
-        C07OwnedDataLimits.maximumArtifactBytes
-
-    private static func appendArtifact(role: C07ArtifactRole,
-                                       ownerID: UUID?,
-                                       containerID: UUID?,
-                                       logicalPath: String,
-                                       sourceURL: URL,
-                                       artifacts: inout [C07SourceArtifact],
-                                       entries: inout Set<String>,
-                                       counts: inout C07OwnedDataCounts) {
-        guard let entry = try? C07ArtifactPath.entry(
-            role: role, containerID: containerID, ownerID: ownerID,
-            logicalPath: logicalPath) else { return }
-        guard entries.insert(C07Path.collisionKey(entry)).inserted else { return }
-        guard C07FileSystem.isRegularFile(sourceURL) else { return }
-        guard let digest = try? C07Digest.file(
-            sourceURL, maximum: maximumArtifactFileBytes) else { return }
-        artifacts.append(C07SourceArtifact(
-            record: C07ArtifactRecord(
-                role: role, ownerID: ownerID, containerID: containerID,
-                logicalPath: logicalPath, entry: entry,
-                byteCount: digest.byteCount, sha256: digest.sha256),
-            url: sourceURL))
-        counts.artifacts += 1
-        counts.artifactBytes += digest.byteCount
-    }
-
     private static func captureCanvasArtifacts(
-        context: C07DataExchangeContext, workRoot: URL,
-        artifacts: inout [C07SourceArtifact], entries: inout Set<String>,
+        context: C07DataExchangeContext,
+        collector: inout C07ArtifactCollector,
+        omissions: inout C07OmissionCollector,
         counts: inout C07OwnedDataCounts) throws -> [String]
     {
-        _ = workRoot
         var warnings: [String] = []
         let canvasDirectory = context.artifactRoot.appendingPathComponent(
             "Canvases", isDirectory: true)
-        guard let items = try? FileManager.default.contentsOfDirectory(
-            at: canvasDirectory,
-            includingPropertiesForKeys: [.isRegularFileKey, .isSymbolicLinkKey],
-            options: [.skipsHiddenFiles]) else {
-            return warnings
+        let items: [URL]
+        do {
+            items = try FileManager.default.contentsOfDirectory(
+                at: canvasDirectory,
+                includingPropertiesForKeys: [.isRegularFileKey, .isSymbolicLinkKey],
+                options: [.skipsHiddenFiles])
+        } catch {
+            // A directory that does not exist is simply empty. An existing
+            // but unreadable canvas directory is an IO failure, never a
+            // silent "no canvases" backup.
+            if !FileManager.default.fileExists(atPath: canvasDirectory.path) {
+                return warnings
+            }
+            throw C07DataExchangeError.storageUnavailable("canvasEnumerate")
         }
         for url in items.sorted(by: { $0.lastPathComponent < $1.lastPathComponent })
         where url.pathExtension.lowercased() == "json" {
-            guard C07FileSystem.isRegularFile(url) else { continue }
+            guard C07FileSystem.isRegularFile(url) else {
+                omissions.add("canvasDocument",
+                              url.deletingPathExtension().lastPathComponent,
+                              "notRegularFile")
+                continue
+            }
             let data: Data
             do { data = try Data(contentsOf: url) }
-            catch { warnings.append("canvasUnreadable"); continue }
+            catch { throw C07DataExchangeError.storageUnavailable("canvasRead") }
             let references: C07CanvasReferences
             do { references = try C07CanvasGraph.scan(canvasData: data) }
             catch {
-                warnings.append("canvasInvalid:\(url.deletingPathExtension().lastPathComponent.prefix(8))")
+                omissions.add("canvasDocument",
+                              url.deletingPathExtension().lastPathComponent,
+                              "invalidCanvasJSON")
                 continue
             }
-            appendArtifact(
-                role: .canvasProject, ownerID: references.canvasID,
-                containerID: references.canvasID, logicalPath: "project.json",
-                sourceURL: url, artifacts: &artifacts, entries: &entries,
-                counts: &counts)
+            _ = try collector.appendData(
+                data, role: .canvasProject, ownerID: references.canvasID,
+                containerID: references.canvasID, logicalPath: "project.json")
             counts.canvasProjects += 1
-            for name in references.materialNames {
+            for name in references.materialNames.sorted() {
                 let materialURL = context.artifactRoot
                     .appendingPathComponent("Materials", isDirectory: true)
                     .appendingPathComponent(name)
-                if C07FileSystem.isRegularFile(materialURL) {
-                    appendArtifact(
-                        role: .canvasMaterial, ownerID: nil,
-                        containerID: references.canvasID, logicalPath: name,
-                        sourceURL: materialURL, artifacts: &artifacts,
-                        entries: &entries, counts: &counts)
-                } else {
-                    warnings.append("canvasMaterialMissing:\(name)")
+                if !FileManager.default.fileExists(atPath: materialURL.path) {
+                    omissions.add("canvasMaterial",
+                                  "\(references.canvasID.uuidString)/\(name)",
+                                  "missing")
+                    continue
                 }
+                _ = try collector.appendFile(
+                    source: materialURL, role: .canvasMaterial, ownerID: nil,
+                    containerID: references.canvasID, logicalPath: name,
+                    expectedSHA256: nil, expectedByteCount: nil)
             }
             var coveredMediaRoots = Set<String>()
-            for childID in references.childProjectIDs {
+            for childID in references.childProjectIDs.sorted(
+                by: { $0.uuidString < $1.uuidString }) {
                 let projectURL = context.artifactRoot
                     .appendingPathComponent("MediaProjects", isDirectory: true)
                     .appendingPathComponent("media-project-\(childID.uuidString).json")
-                guard C07FileSystem.isRegularFile(projectURL) else {
+                guard FileManager.default.fileExists(atPath: projectURL.path) else {
+                    omissions.add("canvasChildProject",
+                                  "\(references.canvasID.uuidString)/\(childID.uuidString)",
+                                  "missing")
                     warnings.append("canvasChildMissing:\(childID.uuidString.prefix(8))")
                     continue
                 }
                 let projectData: Data
                 do { projectData = try Data(contentsOf: projectURL) }
-                catch { warnings.append("canvasChildUnreadable"); continue }
-                appendArtifact(
-                    role: .canvasMediaProject, ownerID: childID,
+                catch { throw C07DataExchangeError.storageUnavailable("mediaRead") }
+                let media: (projectID: UUID, ownerKind: String, ownerID: UUID?,
+                            assetIDs: [UUID], assetPaths: [String],
+                            taskWorkspacePath: String?)
+                do { media = try C07CanvasGraph.scanMediaProject(data: projectData) }
+                catch {
+                    omissions.add("canvasChildProject",
+                                  "\(references.canvasID.uuidString)/\(childID.uuidString)",
+                                  "invalidMediaProject")
+                    continue
+                }
+                guard media.projectID == childID else {
+                    omissions.add("canvasChildProject",
+                                  "\(references.canvasID.uuidString)/\(childID.uuidString)",
+                                  "mediaIdentityMismatch")
+                    continue
+                }
+                _ = try collector.appendData(
+                    projectData, role: .canvasMediaProject, ownerID: childID,
                     containerID: references.canvasID,
-                    logicalPath: "media-project-\(childID.uuidString).json",
-                    sourceURL: projectURL, artifacts: &artifacts,
-                    entries: &entries, counts: &counts)
+                    logicalPath: "media-project-\(childID.uuidString).json")
                 counts.mediaProjects += 1
                 let mediaRoot = "WorkbenchRoot/\(childID.uuidString)"
                 coveredMediaRoots.insert(mediaRoot)
-                guard let media = try? C07CanvasGraph.scanMediaProject(
-                    data: projectData) else {
-                    warnings.append("canvasMediaInvalid:\(childID.uuidString.prefix(8))")
-                    continue
-                }
                 var seenAssetPaths = Set<String>()
                 let childRoot = context.artifactRoot
                     .appendingPathComponent("WorkbenchRoot", isDirectory: true)
                     .appendingPathComponent(childID.uuidString, isDirectory: true)
-                for assetPath in media.assetPaths {
+                for assetPath in media.assetPaths.sorted() {
                     seenAssetPaths.insert(assetPath)
                     let assetURL = assetPath.hasPrefix("WorkbenchRoot/")
                         ? context.artifactRoot.appendingPathComponent(assetPath)
                         : childRoot.appendingPathComponent(assetPath)
-                    if C07FileSystem.isRegularFile(assetURL) {
-                        appendArtifact(
-                            role: .canvasAsset, ownerID: childID,
-                            containerID: references.canvasID,
-                            logicalPath: assetPath, sourceURL: assetURL,
-                            artifacts: &artifacts, entries: &entries,
-                            counts: &counts)
-                        counts.mediaAssets += 1
-                    } else {
-                        warnings.append("canvasAssetMissing:\(assetPath.prefix(40))")
+                    guard FileManager.default.fileExists(atPath: assetURL.path) else {
+                        omissions.add(
+                            "canvasAsset",
+                            "\(references.canvasID.uuidString)/\(childID.uuidString)/\(assetPath)",
+                            "missing")
+                        continue
                     }
+                    _ = try collector.appendFile(
+                        source: assetURL, role: .canvasAsset, ownerID: childID,
+                        containerID: references.canvasID,
+                        logicalPath: assetPath,
+                        expectedSHA256: nil, expectedByteCount: nil)
+                    counts.mediaAssets += 1
                 }
                 // Durable app-owned files in the media project root that are
                 // not merely referenced (for example Workbench/Exports).
+                var childEnumeratorError: Error?
                 if let enumerator = FileManager.default.enumerator(
                     at: childRoot,
                     includingPropertiesForKeys: [.isRegularFileKey,
                                                   .isSymbolicLinkKey],
-                    options: [.skipsHiddenFiles]) {
+                    options: [.skipsHiddenFiles],
+                    errorHandler: { _, error in
+                        childEnumeratorError = error
+                        return false
+                    }) {
                     let rootPath = childRoot.standardizedFileURL.path
                     for case let fileURL as URL in enumerator {
-                        let values = try? fileURL.resourceValues(
-                            forKeys: [.isRegularFileKey, .isSymbolicLinkKey])
-                        guard values?.isRegularFile == true,
-                              values?.isSymbolicLink != true else { continue }
+                        if let childEnumeratorError {
+                            throw C07DataExchangeError.storageUnavailable(
+                                "mediaEnumerate")
+                        }
+                        let values: URLResourceValues
+                        do {
+                            values = try fileURL.resourceValues(
+                                forKeys: [.isRegularFileKey, .isSymbolicLinkKey])
+                        } catch {
+                            throw C07DataExchangeError.storageUnavailable(
+                                "mediaEnumerate")
+                        }
+                        if values.isSymbolicLink == true {
+                            warnings.append("mediaSymlinkSkipped")
+                            continue
+                        }
+                        guard values.isRegularFile == true else { continue }
                         let path = fileURL.standardizedFileURL.path
                         guard path.hasPrefix(rootPath + "/") else { continue }
                         let relative = String(path.dropFirst(rootPath.count + 1))
@@ -1833,31 +2151,33 @@ struct C07OwnedDataSource {
                               seenAssetPaths.insert(relative).inserted else {
                             continue
                         }
-                        appendArtifact(
-                            role: .canvasAsset, ownerID: childID,
+                        _ = try collector.appendFile(
+                            source: fileURL, role: .canvasAsset,
+                            ownerID: childID,
                             containerID: references.canvasID,
-                            logicalPath: relative, sourceURL: fileURL,
-                            artifacts: &artifacts, entries: &entries,
-                            counts: &counts)
+                            logicalPath: relative,
+                            expectedSHA256: nil, expectedByteCount: nil)
                         counts.mediaAssets += 1
                     }
+                } else if childEnumeratorError != nil {
+                    throw C07DataExchangeError.storageUnavailable("mediaEnumerate")
                 }
             }
-            for path in references.nodeAssetPaths {
+            for path in references.nodeAssetPaths.sorted() {
                 if coveredMediaRoots.contains(where: { path.hasPrefix($0 + "/") }) {
                     continue
                 }
-                let assetURL = context.artifactRoot
-                    .appendingPathComponent(path)
-                if C07FileSystem.isRegularFile(assetURL) {
-                    appendArtifact(
-                        role: .canvasNodeAsset, ownerID: nil,
-                        containerID: references.canvasID, logicalPath: path,
-                        sourceURL: assetURL, artifacts: &artifacts,
-                        entries: &entries, counts: &counts)
-                } else {
-                    warnings.append("canvasNodeAssetMissing:\(path.prefix(40))")
+                let assetURL = context.artifactRoot.appendingPathComponent(path)
+                if !FileManager.default.fileExists(atPath: assetURL.path) {
+                    omissions.add("canvasNodeAsset",
+                                  "\(references.canvasID.uuidString)/\(path)",
+                                  "missing")
+                    continue
                 }
+                _ = try collector.appendFile(
+                    source: assetURL, role: .canvasNodeAsset, ownerID: nil,
+                    containerID: references.canvasID, logicalPath: path,
+                    expectedSHA256: nil, expectedByteCount: nil)
             }
         }
         return warnings
@@ -1865,7 +2185,8 @@ struct C07OwnedDataSource {
 
     private static func captureAttachmentArtifacts(
         context: C07DataExchangeContext, tables: [C07SourceTable],
-        artifacts: inout [C07SourceArtifact], entries: inout Set<String>,
+        collector: inout C07ArtifactCollector,
+        omissions: inout C07OmissionCollector,
         counts: inout C07OwnedDataCounts) throws -> [String]
     {
         guard let table = tables.first(where: { $0.name == "attachments" }) else {
@@ -1877,32 +2198,58 @@ struct C07OwnedDataSource {
             .appendingPathComponent("Attachments", isDirectory: true)
         let rootPath = attachmentsRoot.standardizedFileURL.path
         try C07RowStream.rows(in: table.url, table: "attachments") { row in
-            guard row["storage"]?.stringValue == "applicationSupport",
-                  let relative = row["relative_path"]?.stringValue,
-                  !relative.isEmpty,
-                  let idText = row["id"]?.stringValue,
+            guard row["storage"]?.stringValue == "applicationSupport" else { return }
+            guard let idText = row["id"]?.stringValue,
                   let attachmentID = UUID(uuidString: idText) else { return }
+            guard let relative = row["relative_path"]?.stringValue,
+                  !relative.isEmpty else {
+                omissions.add("attachmentPath", attachmentID.uuidString,
+                              "missingPath")
+                return
+            }
             guard (try? C07Path.validateRelative(relative)) != nil else {
-                warnings.append("attachmentPathRejected")
+                omissions.add("attachmentPath", attachmentID.uuidString,
+                              "unsafePath")
                 return
             }
             let url = attachmentsRoot.appendingPathComponent(relative)
                 .standardizedFileURL
-            guard url.path.hasPrefix(rootPath + "/"),
-                  C07FileSystem.isRegularFile(url) else {
-                warnings.append("attachmentBytesMissing:\(attachmentID.uuidString.prefix(8))")
+            guard url.path.hasPrefix(rootPath + "/") else {
+                omissions.add("attachmentPath", attachmentID.uuidString,
+                              "outsideRoot")
                 return
             }
-            if let expected = row["sha256"]?.stringValue, !expected.isEmpty,
-               let actual = try? C07Digest.file(url),
-               actual.sha256 != expected {
-                warnings.append("attachmentDigestMismatch:\(attachmentID.uuidString.prefix(8))")
+            guard FileManager.default.fileExists(atPath: url.path) else {
+                omissions.add("attachmentBytes", attachmentID.uuidString,
+                              "missing")
+                warnings.append(
+                    "attachmentBytesMissing:\(attachmentID.uuidString.prefix(8))")
                 return
             }
-            appendArtifact(
-                role: .attachment, ownerID: attachmentID, containerID: nil,
-                logicalPath: relative, sourceURL: url,
-                artifacts: &artifacts, entries: &entries, counts: &counts)
+            let expectedSize = row["byte_count"]?.integerValue
+            let expectedDigest = row["sha256"]?.stringValue
+            let digest: (sha256: String, byteCount: Int64)
+            do {
+                digest = try C07Digest.file(url, maximum:
+                    C07OwnedDataLimits.maximumArtifactBytes)
+            } catch {
+                throw C07DataExchangeError.storageUnavailable("attachmentRead")
+            }
+            if let expectedSize, expectedSize > 0,
+               digest.byteCount != expectedSize {
+                // Bytes changed after the database row was written. Refuse a
+                // mixed snapshot rather than carrying an inconsistent pair.
+                throw C07DataExchangeError.storageUnavailable("sourceChanged")
+            }
+            if let expectedDigest, !expectedDigest.isEmpty,
+               digest.sha256 != expectedDigest {
+                throw C07DataExchangeError.storageUnavailable("sourceChanged")
+            }
+            _ = try collector.appendFile(
+                source: url, role: .attachment, ownerID: attachmentID,
+                containerID: nil, logicalPath: relative,
+                expectedSHA256: digest.sha256,
+                expectedByteCount: digest.byteCount)
         }
         return warnings
     }
@@ -1910,7 +2257,8 @@ struct C07OwnedDataSource {
     private static func capturePrivateTaskArtifacts(
         context: C07DataExchangeContext,
         workspaces: [C07WorkspaceDescriptor],
-        artifacts: inout [C07SourceArtifact], entries: inout Set<String>,
+        collector: inout C07ArtifactCollector,
+        omissions: inout C07OmissionCollector,
         counts: inout C07OwnedDataCounts) throws -> [String]
     {
         var warnings: [String] = []
@@ -1922,15 +2270,21 @@ struct C07OwnedDataSource {
                     ?? workspace.internalRelativePath
                         .flatMap({ path -> UUID? in
                             guard path.hasPrefix("PrivateTasks/") else { return nil }
-                            return UUID(uuidString: String(path.dropFirst("PrivateTasks/".count)))
+                            return UUID(uuidString: String(
+                                path.dropFirst("PrivateTasks/".count)))
                         }) else {
-                warnings.append("privateTaskOwnerUnknown")
+                omissions.add("privateTaskRoot",
+                              workspace.workspaceID.uuidString,
+                              "ownerUnknown")
                 continue
             }
             let root = tasksRoot.appendingPathComponent(
                 conversationID.uuidString, isDirectory: true)
             guard C07FileSystem.isDirectory(root) else {
-                warnings.append("privateTaskMissing:\(conversationID.uuidString.prefix(8))")
+                omissions.add("privateTaskRoot", conversationID.uuidString,
+                              "missing")
+                warnings.append(
+                    "privateTaskMissing:\(conversationID.uuidString.prefix(8))")
                 continue
             }
             let rootPath = root.standardizedFileURL.path
@@ -1944,35 +2298,49 @@ struct C07OwnedDataSource {
                     enumerationFailure = error
                     return false
                 }) else {
-                warnings.append("privateTaskEnumerateFailed")
-                continue
+                throw C07DataExchangeError.storageUnavailable(
+                    "privateTaskEnumerate")
             }
             for case let url as URL in enumerator {
                 if Task.isCancelled { throw C07DataExchangeError.cancelled }
-                let values = try? url.resourceValues(
-                    forKeys: [.isRegularFileKey, .isDirectoryKey,
-                              .isSymbolicLinkKey, .fileSizeKey])
-                if values?.isSymbolicLink == true {
+                if enumerationFailure != nil {
+                    throw C07DataExchangeError.storageUnavailable(
+                        "privateTaskEnumerate")
+                }
+                let values: URLResourceValues
+                do {
+                    values = try url.resourceValues(
+                        forKeys: [.isRegularFileKey, .isDirectoryKey,
+                                  .isSymbolicLinkKey, .fileSizeKey])
+                } catch {
+                    throw C07DataExchangeError.storageUnavailable(
+                        "privateTaskEnumerate")
+                }
+                if values.isSymbolicLink == true {
                     warnings.append("privateTaskSymlinkSkipped")
                     continue
                 }
-                if values?.isDirectory == true { continue }
-                guard values?.isRegularFile == true else { continue }
+                if values.isDirectory == true { continue }
+                guard values.isRegularFile == true else { continue }
                 let path = url.standardizedFileURL.path
                 guard path.hasPrefix(rootPath + "/") else { continue }
                 let relative = String(path.dropFirst(rootPath.count + 1))
                 guard (try? C07Path.validateRelative(relative)) != nil else {
-                    warnings.append("privateTaskPathRejected")
+                    omissions.add("privateTaskFile",
+                                  "\(conversationID.uuidString)/\(relative)",
+                                  "unsafePath")
                     continue
                 }
-                appendArtifact(
-                    role: .privateTaskFile, ownerID: conversationID,
-                    containerID: nil, logicalPath: relative, sourceURL: url,
-                    artifacts: &artifacts, entries: &entries, counts: &counts)
+                _ = try collector.appendFile(
+                    source: url, role: .privateTaskFile,
+                    ownerID: conversationID, containerID: nil,
+                    logicalPath: relative,
+                    expectedSHA256: nil, expectedByteCount: nil)
                 counts.privateTaskFiles += 1
             }
             if enumerationFailure != nil {
-                warnings.append("privateTaskEnumeratePartial")
+                throw C07DataExchangeError.storageUnavailable(
+                    "privateTaskEnumerate")
             }
         }
         return warnings
@@ -1980,43 +2348,633 @@ struct C07OwnedDataSource {
 
     private static func captureMailReceipts(
         context: C07DataExchangeContext,
-        artifacts: inout [C07SourceArtifact], entries: inout Set<String>,
+        collector: inout C07ArtifactCollector,
+        omissions: inout C07OmissionCollector,
         counts: inout C07OwnedDataCounts) throws -> [String]
     {
         var warnings: [String] = []
         for area in ["MailMutations", "MailDelivery"] {
             let root = context.artifactRoot.appendingPathComponent(
                 area, isDirectory: true)
+            var enumerationFailure: Error?
+            guard FileManager.default.fileExists(atPath: root.path) else {
+                continue
+            }
             guard let enumerator = FileManager.default.enumerator(
                 at: root,
                 includingPropertiesForKeys: [.isRegularFileKey,
                                               .isSymbolicLinkKey],
-                options: [.skipsHiddenFiles]) else { continue }
+                options: [.skipsHiddenFiles],
+                errorHandler: { _, error in
+                    enumerationFailure = error
+                    return false
+                }) else {
+                throw C07DataExchangeError.storageUnavailable(
+                    "mailReceiptEnumerate")
+            }
             let rootPath = root.standardizedFileURL.path
             for case let url as URL in enumerator {
-                let values = try? url.resourceValues(
-                    forKeys: [.isRegularFileKey, .isSymbolicLinkKey])
-                guard values?.isRegularFile == true,
-                      values?.isSymbolicLink != true,
+                if enumerationFailure != nil {
+                    throw C07DataExchangeError.storageUnavailable(
+                        "mailReceiptEnumerate")
+                }
+                let values: URLResourceValues
+                do {
+                    values = try url.resourceValues(
+                        forKeys: [.isRegularFileKey, .isSymbolicLinkKey])
+                } catch {
+                    throw C07DataExchangeError.storageUnavailable(
+                        "mailReceiptEnumerate")
+                }
+                guard values.isRegularFile == true,
+                      values.isSymbolicLink != true,
                       url.pathExtension.lowercased() == "json" else { continue }
                 let path = url.standardizedFileURL.path
                 guard path.hasPrefix(rootPath + "/") else { continue }
                 let relative = String(path.dropFirst(rootPath.count + 1))
                 let logical = "\(area)/\(relative)"
                 guard (try? C07Path.validateRelative(logical)) != nil else {
-                    warnings.append("mailReceiptPathRejected")
+                    omissions.add("mailReceipt", relative, "unsafePath")
                     continue
                 }
-                appendArtifact(
-                    role: .mailReceipt, ownerID: nil, containerID: nil,
-                    logicalPath: logical, sourceURL: url,
-                    artifacts: &artifacts, entries: &entries, counts: &counts)
+                _ = try collector.appendFile(
+                    source: url, role: .mailReceipt, ownerID: nil,
+                    containerID: nil, logicalPath: logical,
+                    expectedSHA256: nil, expectedByteCount: nil)
                 counts.mailReceipts += 1
             }
         }
         return warnings
     }
+
+    private static func captureAppArtifacts(
+        context: C07DataExchangeContext,
+        collector: inout C07ArtifactCollector,
+        omissions: inout C07OmissionCollector,
+        counts: inout C07OwnedDataCounts) throws -> [String]
+    {
+        var warnings: [String] = []
+        for namespace in appArtifactNamespaces {
+            let root = context.artifactRoot.appendingPathComponent(
+                namespace, isDirectory: true)
+            guard C07FileSystem.isDirectory(root) else { continue }
+            let rootPath = root.standardizedFileURL.path
+            var enumerationFailure: Error?
+            guard let enumerator = FileManager.default.enumerator(
+                at: root,
+                includingPropertiesForKeys: [.isRegularFileKey,
+                                              .isSymbolicLinkKey],
+                options: [.skipsHiddenFiles],
+                errorHandler: { _, error in
+                    enumerationFailure = error
+                    return false
+                }) else {
+                throw C07DataExchangeError.storageUnavailable(
+                    "appArtifactEnumerate")
+            }
+            for case let url as URL in enumerator {
+                if Task.isCancelled { throw C07DataExchangeError.cancelled }
+                if enumerationFailure != nil {
+                    throw C07DataExchangeError.storageUnavailable(
+                        "appArtifactEnumerate")
+                }
+                let values: URLResourceValues
+                do {
+                    values = try url.resourceValues(
+                        forKeys: [.isRegularFileKey, .isSymbolicLinkKey])
+                } catch {
+                    throw C07DataExchangeError.storageUnavailable(
+                        "appArtifactEnumerate")
+                }
+                if values.isSymbolicLink == true {
+                    warnings.append("appArtifactSymlinkSkipped")
+                    continue
+                }
+                guard values.isRegularFile == true else { continue }
+                let path = url.standardizedFileURL.path
+                guard path.hasPrefix(rootPath + "/") else { continue }
+                let relative = String(path.dropFirst(rootPath.count + 1))
+                let logical = "\(namespace)/\(relative)"
+                guard (try? C07Path.validateRelative(logical)) != nil else {
+                    omissions.add("appArtifact", logical, "unsafePath")
+                    continue
+                }
+                _ = try collector.appendFile(
+                    source: url, role: .appArtifact, ownerID: nil,
+                    containerID: nil, logicalPath: logical,
+                    expectedSHA256: nil, expectedByteCount: nil)
+                counts.appArtifacts = (counts.appArtifacts ?? 0) + 1
+            }
+        }
+        return warnings
+    }
+
+    private static func captureUserCaptureFiles(
+        context: C07DataExchangeContext,
+        collector: inout C07ArtifactCollector,
+        omissions: inout C07OmissionCollector,
+        counts: inout C07OwnedDataCounts) throws -> [String]
+    {
+        var warnings: [String] = []
+        let appFilesRoot = URL(fileURLWithPath: context.rootPath,
+                               isDirectory: true).deletingLastPathComponent()
+        guard C07FileSystem.isDirectory(appFilesRoot) else { return warnings }
+        for area in captureAreas {
+            let root = appFilesRoot.appendingPathComponent(area, isDirectory: true)
+            guard C07FileSystem.isDirectory(root) else { continue }
+            let rootPath = root.standardizedFileURL.path
+            var enumerationFailure: Error?
+            guard let enumerator = FileManager.default.enumerator(
+                at: root,
+                includingPropertiesForKeys: [.isRegularFileKey,
+                                              .isSymbolicLinkKey],
+                options: [.skipsHiddenFiles],
+                errorHandler: { _, error in
+                    enumerationFailure = error
+                    return false
+                }) else {
+                throw C07DataExchangeError.storageUnavailable(
+                    "captureEnumerate")
+            }
+            for case let url as URL in enumerator {
+                if enumerationFailure != nil {
+                    throw C07DataExchangeError.storageUnavailable(
+                        "captureEnumerate")
+                }
+                let values: URLResourceValues
+                do {
+                    values = try url.resourceValues(
+                        forKeys: [.isRegularFileKey, .isSymbolicLinkKey])
+                } catch {
+                    throw C07DataExchangeError.storageUnavailable(
+                        "captureEnumerate")
+                }
+                if values.isSymbolicLink == true {
+                    warnings.append("captureSymlinkSkipped")
+                    continue
+                }
+                guard values.isRegularFile == true else { continue }
+                let path = url.standardizedFileURL.path
+                guard path.hasPrefix(rootPath + "/") else { continue }
+                let relative = String(path.dropFirst(rootPath.count + 1))
+                let logical = "\(area)/\(relative)"
+                guard (try? C07Path.validateRelative(logical)) != nil else {
+                    omissions.add("captureFile", logical, "unsafePath")
+                    continue
+                }
+                _ = try collector.appendFile(
+                    source: url, role: .captureFile, ownerID: nil,
+                    containerID: nil, logicalPath: logical,
+                    expectedSHA256: nil, expectedByteCount: nil)
+                counts.captureFiles = (counts.captureFiles ?? 0) + 1
+            }
+        }
+        return warnings
+    }
+
+    // MARK: Config documents
+
+    private static func captureConfigurations(
+        context: C07DataExchangeContext,
+        captured: CapturedTables,
+        workRoot: URL,
+        configs: inout [C07SourceConfigSection],
+        omissions: inout C07OmissionCollector,
+        counts: inout C07OwnedDataCounts) throws -> [String]
+    {
+        var warnings: [String] = []
+        let directory = workRoot.appendingPathComponent("config", isDirectory: true)
+        try C07FileSystem.ensureDirectory(directory)
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        encoder.dateEncodingStrategy = .iso8601
+
+        func write(_ data: Data, kind: C07OwnedConfigKind) throws {
+            let url = directory.appendingPathComponent("\(kind.rawValue).json")
+            do { try data.write(to: url) }
+            catch { throw C07DataExchangeError.storageUnavailable("configWrite") }
+            let digest = try C07Digest.file(
+                url, maximum: C07OwnedDataLimits.maximumConfigBytes)
+            configs.append(C07SourceConfigSection(
+                section: C07OwnedConfigSection(
+                    kind: kind, count: 0, byteCount: digest.byteCount,
+                    sha256: digest.sha256),
+                url: url))
+        }
+
+        for id in captured.invalidHostIDs {
+            omissions.add("remoteHostConfiguration", id, "invalidStoredRow")
+        }
+        for id in captured.invalidMailIDs {
+            omissions.add("mailAccountConfiguration", id, "invalidStoredRow")
+        }
+        if let hosts = captured.hosts {
+            let data: Data
+            do { data = try encoder.encode(hosts) }
+            catch { throw C07DataExchangeError.storageUnavailable("hostEncode") }
+            try write(data, kind: .remoteHosts)
+        }
+
+        // RDP endpoint metadata is a separate app file keyed by the ORIGINAL
+        // host profile UUID. Password references and approved fingerprints
+        // are never read into the package.
+        let rdpURL = URL(fileURLWithPath: context.rootPath, isDirectory: true)
+            .appendingPathComponent("Floe", isDirectory: true)
+            .appendingPathComponent("RDP", isDirectory: true)
+            .appendingPathComponent("endpoints-v1.json", isDirectory: false)
+        if FileManager.default.fileExists(atPath: rdpURL.path) {
+            if let parsed = try? readRDPConfiguration(rdpURL) {
+                let hostIDs = Set(captured.hosts?.hosts.map(\.id) ?? [])
+                var usable: [C07RDPEndpointConfig] = []
+                for endpoint in parsed {
+                    if hostIDs.contains(endpoint.profileID) {
+                        usable.append(endpoint)
+                    } else {
+                        // A stale endpoint whose host profile was deleted
+                        // cannot be restored meaningfully; declare it.
+                        omissions.add(
+                            "rdpEndpoint",
+                            "\(endpoint.profileID.uuidString)/\(endpoint.id.uuidString)",
+                            "hostProfileMissing")
+                    }
+                }
+                if !usable.isEmpty {
+                    let document = C07RDPConfigDocument(endpoints: usable)
+                    let data: Data
+                    do { data = try encoder.encode(document) }
+                    catch {
+                        throw C07DataExchangeError.storageUnavailable("rdpEncode")
+                    }
+                    try write(data, kind: .rdpEndpoints)
+                }
+            } else {
+                omissions.add("rdpConfiguration", "endpoints-v1.json",
+                              "invalidRDPStore")
+                warnings.append("rdpConfigurationInvalid")
+            }
+        }
+
+        if let mail = captured.mailAccounts {
+            let data: Data
+            do { data = try encoder.encode(mail) }
+            catch { throw C07DataExchangeError.storageUnavailable("mailEncode") }
+            try write(data, kind: .mailAccounts)
+        }
+
+        // Fill in exact counts + enforce the raw secret-key gate once more.
+        for index in configs.indices {
+            let url = configs[index].url
+            let data: Data
+            do { data = try Data(contentsOf: url) }
+            catch { throw C07DataExchangeError.storageUnavailable("configRead") }
+            guard !C07ConfigSafety.containsForbiddenKey(data) else {
+                throw C07DataExchangeError.credentialExcluded(
+                    configs[index].section.entry)
+            }
+            let count: Int
+            switch configs[index].section.kind {
+            case .remoteHosts:
+                count = (try? JSONDecoder().decode(
+                    C07RemoteHostConfigDocument.self, from: data))?.hosts.count ?? 0
+            case .rdpEndpoints:
+                count = (try? JSONDecoder().decode(
+                    C07RDPConfigDocument.self, from: data))?.endpoints.count ?? 0
+            case .mailAccounts:
+                count = (try? JSONDecoder().decode(
+                    C07MailAccountConfigDocument.self, from: data))?.accounts.count ?? 0
+            }
+            let digest = try C07Digest.file(
+                url, maximum: C07OwnedDataLimits.maximumConfigBytes)
+            configs[index] = C07SourceConfigSection(
+                section: C07OwnedConfigSection(
+                    kind: configs[index].section.kind,
+                    count: count, byteCount: digest.byteCount,
+                    sha256: digest.sha256),
+                url: url)
+        }
+        return warnings
+    }
+
+    private static func readRDPConfiguration(
+        _ url: URL
+    ) throws -> [C07RDPEndpointConfig] {
+        let values = try url.resourceValues(
+            forKeys: [.isRegularFileKey, .isSymbolicLinkKey, .fileSizeKey])
+        guard values.isRegularFile == true, values.isSymbolicLink != true,
+              let size = values.fileSize, size <= 256 * 1_024 else {
+            throw C07DataExchangeError.storageUnavailable("rdpStore")
+        }
+        let data: Data
+        do { data = try Data(contentsOf: url) }
+        catch { throw C07DataExchangeError.storageUnavailable("rdpStore") }
+        guard data.count <= 256 * 1_024,
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let version = object["version"] as? Int, version == 1,
+              let rawEndpoints = object["endpoints"] as? [[String: Any]],
+              rawEndpoints.count <= 4_096 else {
+            throw C07DataExchangeError.invalidManifest("rdpStore")
+        }
+        var result: [C07RDPEndpointConfig] = []
+        var seen = Set<UUID>()
+        for raw in rawEndpoints {
+            guard let profileText = raw["profileID"] as? String,
+                  let profileID = UUID(uuidString: profileText),
+                  let idText = raw["id"] as? String,
+                  let id = UUID(uuidString: idText),
+                  seen.insert(id).inserted,
+                  let host = raw["host"] as? String, !host.isEmpty,
+                  host.utf8.count <= 1_024,
+                  let portNumber = raw["port"] as? NSNumber,
+                  (1...65_535).contains(portNumber.intValue) else {
+                throw C07DataExchangeError.invalidManifest("rdpEndpoint")
+            }
+            let hasLogin = (raw["passwordRef"] as? [String: Any]) != nil
+            result.append(C07RDPEndpointConfig(
+                profileID: profileID, id: id,
+                displayName: String(((raw["displayName"] as? String) ?? "")
+                    .prefix(512)),
+                host: host,
+                port: portNumber.intValue,
+                username: String(((raw["username"] as? String) ?? "")
+                    .prefix(512)),
+                domain: String(((raw["domain"] as? String) ?? "")
+                    .prefix(256)),
+                hasLogin: hasLogin))
+        }
+        return result
+    }
+
+    // MARK: Tool results
+
+    private static func captureToolResults(
+        context: C07DataExchangeContext,
+        captured: CapturedTables,
+        workRoot: URL,
+        omissions: inout C07OmissionCollector,
+        counts: inout C07OwnedDataCounts,
+        warnings: inout [String]
+    ) async throws -> C07SourceToolResultSection? {
+        guard !captured.conversationIDs.isEmpty else { return nil }
+        let store = ToolResultCaptureStore.shared(
+            durableRoot: context.toolResultsRoot, caps: .durableStandard)
+        let output = try ToolResultLineWriter(directory: workRoot)
+        var records = 0
+        var totalBytes: Int64 = 0
+        var excludedLegacy = 0
+        var excludedNonDurable = 0
+        var excludedUnreadable = 0
+        for conversationID in captured.conversationIDs {
+            if Task.isCancelled { throw C07DataExchangeError.cancelled }
+            let export = await ToolResultBackupExchange.export(
+                store: store, storeRoot: context.toolResultsRoot,
+                conversationID: conversationID)
+            excludedLegacy += export.excludedLegacyCalls
+            excludedNonDurable += export.excludedNonDurable
+            excludedUnreadable += export.excludedUnreadable
+            for record in export.records {
+                if records >= C07OwnedDataLimits.maximumToolResults {
+                    throw C07DataExchangeError.tooManyEntries
+                }
+                let line = try ToolResultBackupRecord.encodeLine(record)
+                totalBytes += Int64(line.count)
+                guard totalBytes <= C07OwnedDataLimits.maximumToolResultTotalBytes else {
+                    throw C07DataExchangeError.totalTooLarge
+                }
+                try output.append(line)
+                records += 1
+            }
+            if export.excludedUnreadable > 0 {
+                omissions.add("toolResultRecord", conversationID.uuidString,
+                              "unreadableDurableRecord")
+            }
+            if export.excludedNonDurable > 0 {
+                omissions.add("toolResultRecord", conversationID.uuidString,
+                              "memoryOnlyNotCarried")
+                warnings.append(
+                    "toolResultMemoryOnly:\(conversationID.uuidString.prefix(8))")
+            }
+        }
+        guard records > 0 else { return nil }
+        let file = try output.finish(
+            at: workRoot.appendingPathComponent(
+                C07OwnedDataPolicy.toolResultsEntry))
+        counts.toolResults = records
+        if captured.toolCallCount > records {
+            excludedLegacy = captured.toolCallCount - records
+        }
+        let section = C07OwnedToolResultSection(
+            count: records, byteCount: file.byteCount, sha256: file.sha256,
+            excludedLegacyCalls: excludedLegacy,
+            excludedNonDurable: excludedNonDurable,
+            excludedUnreadable: excludedUnreadable)
+        try section.validate()
+        return C07SourceToolResultSection(
+            section: section,
+            url: workRoot.appendingPathComponent(
+                C07OwnedDataPolicy.toolResultsEntry))
+    }
+
+    // MARK: Small helpers
+
+    private static func jsonObject(_ data: Data) -> [String: Any]? {
+        (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
+    }
 }
+
+// MARK: - Artifact collection
+
+/// Stages the exact bytes that will be copied into the archive. A staged copy
+/// is what makes the canvas JSON and its parsed references the SAME bytes,
+/// and it keeps a concurrent source change from producing a mixed snapshot:
+/// a file that changes between digests fails the copy instead of silently
+/// being carried twice.
+private struct C07ArtifactCollector {
+    let stagingRoot: URL
+    private(set) var artifacts: [C07SourceArtifact] = []
+    private var entries: [String: (sha256: String, byteCount: Int64)] = [:]
+    private(set) var deduplicated = 0
+
+    private func temporaryURL() -> URL {
+        stagingRoot.appendingPathComponent(
+            ".tmp-\(UUID().uuidString)", isDirectory: false)
+    }
+
+    private mutating func commit(_ temp: URL, entry: String,
+                                 digest: (sha256: String, byteCount: Int64))
+        throws -> URL
+    {
+        if artifacts.count >= C07OwnedDataLimits.maximumArtifacts {
+            throw C07DataExchangeError.tooManyEntries
+        }
+        let key = C07Path.collisionKey(entry)
+        if let existing = entries[key] {
+            C07FileSystem.removeIfPresent(temp)
+            guard existing.sha256 == digest.sha256,
+                  existing.byteCount == digest.byteCount else {
+                throw C07DataExchangeError.artifactCollision(entry)
+            }
+            deduplicated += 1
+            throw C07ArtifactDuplicate()
+        }
+        entries[key] = digest
+        let destination = stagingRoot.appendingPathComponent(entry)
+        try C07FileSystem.ensureDirectory(destination.deletingLastPathComponent())
+        guard !FileManager.default.fileExists(atPath: destination.path) else {
+            C07FileSystem.removeIfPresent(temp)
+            throw C07DataExchangeError.artifactCollision(entry)
+        }
+        do { try FileManager.default.moveItem(at: temp, to: destination) }
+        catch {
+            C07FileSystem.removeIfPresent(temp)
+            throw C07DataExchangeError.storageUnavailable("artifactStage")
+        }
+        return destination
+    }
+
+    mutating func appendData(
+        _ data: Data, role: C07ArtifactRole, ownerID: UUID?,
+        containerID: UUID?, logicalPath: String
+    ) throws -> Bool {
+        let entry = try C07ArtifactPath.entry(
+            role: role, containerID: containerID, ownerID: ownerID,
+            logicalPath: logicalPath)
+        let digest = (sha256: C07Digest.sha256(data), byteCount: Int64(data.count))
+        guard digest.byteCount <= C07OwnedDataLimits.maximumArtifactBytes else {
+            throw C07DataExchangeError.entryTooLarge(entry)
+        }
+        let temp = temporaryURL()
+        do { try data.write(to: temp) }
+        catch { throw C07DataExchangeError.storageUnavailable("artifactStage") }
+        do {
+            let destination = try commit(temp, entry: entry, digest: digest)
+            artifacts.append(C07SourceArtifact(
+                record: C07ArtifactRecord(
+                    role: role, ownerID: ownerID, containerID: containerID,
+                    logicalPath: logicalPath, entry: entry,
+                    byteCount: digest.byteCount, sha256: digest.sha256),
+                url: destination))
+            return true
+        } catch is C07ArtifactDuplicate {
+            return false
+        }
+    }
+
+    mutating func appendFile(
+        source: URL, role: C07ArtifactRole, ownerID: UUID?,
+        containerID: UUID?, logicalPath: String,
+        expectedSHA256: String?, expectedByteCount: Int64?
+    ) throws -> Bool {
+        let entry = try C07ArtifactPath.entry(
+            role: role, containerID: containerID, ownerID: ownerID,
+            logicalPath: logicalPath)
+        guard C07FileSystem.isRegularFile(source) else {
+            throw C07DataExchangeError.specialFileUnsupported(
+                source.lastPathComponent)
+        }
+        let temp = temporaryURL()
+        let copied: (sha256: String, byteCount: Int64)
+        do {
+            copied = try C07FileSystem.copyVerified(
+                source: source, destination: temp,
+                expectedSize: expectedByteCount,
+                maximum: C07OwnedDataLimits.maximumArtifactBytes)
+        } catch {
+            C07FileSystem.removeIfPresent(temp)
+            throw error
+        }
+        if let expectedSHA256, copied.sha256 != expectedSHA256 {
+            C07FileSystem.removeIfPresent(temp)
+            throw C07DataExchangeError.storageUnavailable("sourceChanged")
+        }
+        do {
+            let destination = try commit(temp, entry: entry, digest: copied)
+            artifacts.append(C07SourceArtifact(
+                record: C07ArtifactRecord(
+                    role: role, ownerID: ownerID, containerID: containerID,
+                    logicalPath: logicalPath, entry: entry,
+                    byteCount: copied.byteCount, sha256: copied.sha256),
+                url: destination))
+            return true
+        } catch is C07ArtifactDuplicate {
+            return false
+        }
+    }
+}
+
+private struct C07ArtifactDuplicate: Error {}
+
+/// Exact, de-duplicated omission receipts. A repeated scope/subject is one
+/// receipt, never an inflated count.
+private struct C07OmissionCollector {
+    private(set) var items: [C07DataOmission] = []
+    private var keys = Set<String>()
+    var warnings: [String] {
+        items.prefix(64).map { "omission:\($0.scope):\($0.reason)" }
+    }
+
+    mutating func add(_ scope: String, _ subject: String, _ reason: String) {
+        let key = "\(scope)|\(subject)"
+        guard keys.insert(key).inserted else { return }
+        guard items.count < C07OwnedDataLimits.maximumOmissions else { return }
+        items.append(C07DataOmission(
+            scope: scope, subject: subject, reason: reason))
+    }
+}
+
+/// Streaming line writer with a running SHA-256 (no whole-file buffering).
+private final class ToolResultLineWriter {
+    private let handle: FileHandle
+    private let url: URL
+    private var hasher = SHA256()
+    private var count: Int64 = 0
+
+    init(directory: URL) throws {
+        try C07FileSystem.ensureDirectory(directory)
+        url = directory.appendingPathComponent(
+            ".tool-results-\(UUID().uuidString)")
+        guard FileManager.default.createFile(atPath: url.path, contents: nil) else {
+            throw C07DataExchangeError.storageUnavailable("toolResultWrite")
+        }
+        do { handle = try FileHandle(forWritingTo: url) }
+        catch { throw C07DataExchangeError.storageUnavailable("toolResultWrite") }
+    }
+
+    deinit { try? handle.close(); try? FileManager.default.removeItem(at: url) }
+
+    func append(_ data: Data) throws {
+        do { try handle.write(contentsOf: data) }
+        catch { throw C07DataExchangeError.storageUnavailable("toolResultWrite") }
+        hasher.update(data: data)
+        count += Int64(data.count)
+    }
+
+    func finish(at destination: URL) throws -> (byteCount: Int64, sha256: String) {
+        do {
+            try handle.synchronize()
+            try handle.close()
+        } catch {
+            throw C07DataExchangeError.storageUnavailable("toolResultWrite")
+        }
+        try C07FileSystem.ensureDirectory(destination.deletingLastPathComponent())
+        do { try FileManager.default.moveItem(at: url, to: destination) }
+        catch { throw C07DataExchangeError.storageUnavailable("toolResultWrite") }
+        let sha = hasher.finalize().map { String(format: "%02x", $0) }.joined()
+        return (count, sha)
+    }
+}
+
+enum ToolResultUTF8Fallback {
+    static func prefix(_ text: String, maxBytes: Int) -> String {
+        guard maxBytes > 0, text.utf8.count > maxBytes else { return text }
+        var bytes = Array(text.utf8.prefix(maxBytes))
+        while !bytes.isEmpty {
+            if let value = String(bytes: bytes, encoding: .utf8) { return value }
+            bytes.removeLast()
+        }
+        return ""
+    }
+}
+
 
 // MARK: - Full owned-data restore sink
 
@@ -2155,6 +3113,208 @@ extension C07LiveRestoreSink {
             let path = url.standardizedFileURL.path
             if artifactRootSet.insert(path).inserted {
                 artifactRoots.append(path)
+            }
+        }
+
+        // Archive-only configuration identities. No host/mail row, trust pin
+        // or credential is recreated; the restored document is a read-only
+        // recovery record with remapped ids.
+        var remoteHostIDs: [String: String] = [:]
+        var mailAccountIDs: [String: String] = [:]
+        var configEntries: [String] = []
+        let orderedConfigs = staged.configs.sorted {
+            configOrder($0.section.kind) < configOrder($1.section.kind)
+        }
+        for config in orderedConfigs {
+            let data: Data
+            do { data = try Data(contentsOf: config.url) }
+            catch { throw C07DataExchangeError.storageUnavailable("configRead") }
+            guard !C07ConfigSafety.containsForbiddenKey(data) else {
+                throw C07DataExchangeError.credentialExcluded(
+                    config.section.entry)
+            }
+            switch config.section.kind {
+            case .remoteHosts:
+                let document: C07RemoteHostConfigDocument
+                do { document = try JSONDecoder().decode(
+                    C07RemoteHostConfigDocument.self, from: data) }
+                catch { throw C07DataExchangeError.invalidManifest("remoteHostDecode") }
+                try document.validate()
+                guard document.hosts.count == config.section.count else {
+                    throw C07DataExchangeError.invalidManifest("remoteHostCount")
+                }
+                for host in document.hosts {
+                    let old = host.id.uuidString
+                    let new = UUID().uuidString
+                    try mapping.insert(.remoteHost, old: old, new: new)
+                    remoteHostIDs[old] = new
+                }
+            case .rdpEndpoints:
+                let document: C07RDPConfigDocument
+                do { document = try JSONDecoder().decode(
+                    C07RDPConfigDocument.self, from: data) }
+                catch { throw C07DataExchangeError.invalidManifest("rdpDecode") }
+                try document.validate()
+                guard document.endpoints.count == config.section.count else {
+                    throw C07DataExchangeError.invalidManifest("rdpCount")
+                }
+                for endpoint in document.endpoints
+                where remoteHostIDs[endpoint.profileID.uuidString] == nil {
+                    throw C07DataExchangeError.referenceMissing(
+                        "rdpHostProfile:\(endpoint.profileID.uuidString)")
+                }
+            case .mailAccounts:
+                let document: C07MailAccountConfigDocument
+                do { document = try JSONDecoder().decode(
+                    C07MailAccountConfigDocument.self, from: data) }
+                catch { throw C07DataExchangeError.invalidManifest("mailDecode") }
+                try document.validate()
+                guard document.accounts.count == config.section.count else {
+                    throw C07DataExchangeError.invalidManifest("mailCount")
+                }
+                for account in document.accounts {
+                    let old = account.id.uuidString
+                    let new = UUID().uuidString
+                    try mapping.insert(.mailAccount, old: old, new: new)
+                    mailAccountIDs[old] = new
+                }
+            }
+            configEntries.append(config.section.entry)
+        }
+        if !configEntries.isEmpty {
+            recordRoot(context.restoredConfigRoot.appendingPathComponent(
+                restoreID.uuidString, isDirectory: true))
+        }
+
+        // Retained tool results: allocate the exact new run/call identities
+        // and their derived refs before any capture happens. The durable plan
+        // records the mapping for rollback and for the checkpoint rewrite.
+        var toolResultEntries: [C07ToolResultPlanEntry] = []
+        var toolResultTaskIDs: [UUID] = []
+        var toolResultTaskSet = Set<UUID>()
+        func mappedToolID(_ kind: C07IDKind, _ raw: String) -> String? {
+            mapping.newID(kind, old: raw)
+                ?? mapping.newID(kind, old: raw.lowercased())
+                ?? mapping.newID(kind, old: raw.uppercased())
+        }
+        if let toolResults = staged.toolResults {
+            try C07PlainJSONLines.readLines(
+                toolResults.url, label: "toolResults",
+                maximumRows: C07OwnedDataLimits.maximumToolResults,
+                maximumRowBytes: C07OwnedDataLimits.maximumToolResultRowBytes
+            ) { line in
+                let record = try ToolResultBackupRecord.decodeLine(line)
+                try record.validate()
+                guard let newTaskText = mappedToolID(
+                        .conversation, record.taskID.uuidString),
+                      let newTask = UUID(uuidString: newTaskText) else {
+                    throw C07DataExchangeError.referenceMissing(
+                        "toolResultTask:\(record.taskID.uuidString)")
+                }
+                let newRunText = mappedToolID(
+                    .run, record.runID.uuidString)
+                    ?? mappedToolID(.childRun, record.runID.uuidString)
+                guard let newRunText, let newRun = UUID(uuidString: newRunText) else {
+                    throw C07DataExchangeError.referenceMissing(
+                        "toolResultRun:\(record.runID.uuidString)")
+                }
+                let newCall: String
+                if let mapped = mappedToolID(.toolCall, record.callID) {
+                    newCall = mapped
+                } else if UUID(uuidString: record.callID) != nil,
+                          (mappedToolID(.childRun, record.runID.uuidString) != nil
+                            || mappedToolID(.run, record.runID.uuidString) != nil) {
+                    // A child entry or an App build that keeps call ids only
+                    // in run_events has no tool_calls row. Allocated ids are
+                    // inserted into the map so every JSON reference is
+                    // rewritten to the same new identity.
+                    let fresh = UUID().uuidString
+                    try mapping.insert(.toolCall, old: record.callID,
+                                       new: fresh)
+                    newCall = fresh
+                } else {
+                    throw C07DataExchangeError.referenceMissing(
+                        "toolResultCall:\(record.callID.prefix(16))")
+                }
+                let ref = ToolResultCaptureStore.reference(
+                    runID: newRun, callID: newCall)
+                toolResultEntries.append(C07ToolResultPlanEntry(
+                    oldTaskID: record.taskID, oldRunID: record.runID,
+                    oldCallID: record.callID, newTaskID: newTask,
+                    newRunID: newRun, newCallID: newCall, newRef: ref,
+                    byteCount: record.byteCount, sha256: record.sha256,
+                    originalDigest: record.originalDigest,
+                    retentionTruncated: record.retentionTruncated,
+                    executionReportedTruncation:
+                        record.executionReportedTruncation))
+                if toolResultTaskSet.insert(newTask).inserted {
+                    toolResultTaskIDs.append(newTask)
+                }
+            }
+            for task in toolResultTaskIDs {
+                recordRoot(context.toolResultsRoot.appendingPathComponent(
+                    task.uuidString, isDirectory: true))
+            }
+        }
+
+        // App-owned artifact destinations. Exact-path reuse is a legitimate
+        // de-duplication only when the bytes match; a different file at the
+        // same path is a collision. Capture files and opaque CAD bytes are
+        // restored into read-only recovery roots, never into a live library.
+        for artifact in staged.artifacts {
+            switch artifact.record.role {
+            case .appArtifact:
+                let rewritten = C07IDRewrite.rewritePath(
+                    artifact.record.logicalPath, mapping: mapping)
+                guard appArtifactNamespacesContain(rewritten) else {
+                    throw C07DataExchangeError.unsafePath(rewritten)
+                }
+                let destination = artifactRoot.appendingPathComponent(rewritten)
+                if FileManager.default.fileExists(atPath: destination.path) {
+                    guard let digest = try? C07Digest.file(destination),
+                          digest.byteCount == artifact.record.byteCount,
+                          digest.sha256 == artifact.record.sha256 else {
+                        throw C07DataExchangeError.artifactCollision(rewritten)
+                    }
+                } else {
+                    recordRoot(destination)
+                }
+            case .captureFile:
+                let destination = context.restoredArtifactRoot
+                    .appendingPathComponent(restoreID.uuidString, isDirectory: true)
+                    .appendingPathComponent(artifact.record.logicalPath)
+                if FileManager.default.fileExists(atPath: destination.path) {
+                    throw C07DataExchangeError.artifactCollision(
+                        artifact.record.logicalPath)
+                }
+                recordRoot(destination)
+            case .canvasCADDraft, .canvasCADRevision, .canvasNativeCAD:
+                guard let oldCanvas = artifact.record.containerID,
+                      let newCanvas = mapping.newID(
+                        .canvas, old: oldCanvas.uuidString) else {
+                    throw C07DataExchangeError.referenceMissing("canvasCADOwner")
+                }
+                let kind: String
+                switch artifact.record.role {
+                case .canvasCADDraft: kind = "drafts"
+                case .canvasCADRevision: kind = "revisions"
+                default: kind = "native"
+                }
+                let destination = artifactRoot
+                    .appendingPathComponent("CadPreserved", isDirectory: true)
+                    .appendingPathComponent(newCanvas, isDirectory: true)
+                    .appendingPathComponent(kind, isDirectory: true)
+                    .appendingPathComponent(artifact.record.logicalPath)
+                if FileManager.default.fileExists(atPath: destination.path) {
+                    throw C07DataExchangeError.artifactCollision(
+                        artifact.record.logicalPath)
+                }
+                recordRoot(destination)
+            case .configuration:
+                throw C07DataExchangeError.unsupportedFeature(
+                    "configurationArtifact")
+            default:
+                break
             }
         }
 
@@ -2408,6 +3568,13 @@ extension C07LiveRestoreSink {
             environmentIDs: environmentIDs.isEmpty ? nil : environmentIDs,
             environmentIdentityMap: environmentIdentityMap.isEmpty
                 ? nil : environmentIdentityMap,
+            toolResultEntries: toolResultEntries.isEmpty
+                ? nil : toolResultEntries,
+            toolResultTaskIDs: toolResultTaskIDs.isEmpty
+                ? nil : toolResultTaskIDs,
+            remoteHostIDs: remoteHostIDs.isEmpty ? nil : remoteHostIDs,
+            mailAccountIDs: mailAccountIDs.isEmpty ? nil : mailAccountIDs,
+            configEntries: configEntries.isEmpty ? nil : configEntries,
             counts: counts,
             warnings: warnings)
         let written = try C07DurablePlan.write(plan, root: journalRoot)
@@ -2421,11 +3588,13 @@ extension C07LiveRestoreSink {
             ("conversations", "id", .conversation),
             ("workspaces", "id", .workspace),
             ("task_schedules", "id", .schedule),
+            ("calendar_todos", "id", .todo),
             ("providers", "id", .provider),
             ("models", "id", .model),
         ]
         try await context.database.reader { db in
             for (table, column, kind) in checks {
+                guard try db.tableExists(table) else { continue }
                 let ids = mapping.allNewIDs(kind)
                 for chunk in ids.chunked(max: 400) {
                     let placeholders = Array(repeating: "?", count: chunk.count)
@@ -2477,6 +3646,11 @@ extension C07LiveRestoreSink {
         var mediaAssets = 0
         var privateTaskFiles = 0
         var mailReceipts = 0
+        var appArtifacts = 0
+        var captureFiles = 0
+        var cadPreservedFiles = 0
+        var toolResults = 0
+        var configSections = 0
 
         func noteCreated(_ url: URL) {
             let path = url.standardizedFileURL.path
@@ -2673,6 +3847,225 @@ extension C07LiveRestoreSink {
             mailReceipts += 1
         }
 
+        // Durable app-owned artifact namespaces. RunOutputs paths carry a
+        // run UUID and are remapped; every destination is re-contained.
+        for artifact in staged.artifacts where artifact.record.role == .appArtifact {
+            let rewritten = C07IDRewrite.rewritePath(
+                artifact.record.logicalPath, mapping: plan.idMap)
+            guard appArtifactNamespacesContain(rewritten) else {
+                throw C07DataExchangeError.unsafePath(rewritten)
+            }
+            let destination = artifactRoot.appendingPathComponent(rewritten)
+            _ = try copyFile(artifact.url, to: destination, record: artifact.record)
+            appArtifacts += 1
+        }
+
+        // User-owned capture files are recovered read-only, never injected
+        // into the live capture library.
+        for artifact in staged.artifacts where artifact.record.role == .captureFile {
+            let destination = context.restoredArtifactRoot
+                .appendingPathComponent(plan.restoreID.uuidString,
+                                        isDirectory: true)
+                .appendingPathComponent(artifact.record.logicalPath)
+            _ = try copyFile(artifact.url, to: destination, record: artifact.record)
+            captureFiles += 1
+        }
+
+        // Opaque donor CAD sections: preserved read-only. Android has no CAD
+        // editing kernel and never pretends these bytes are editable.
+        for artifact in staged.artifacts where
+            artifact.record.role == .canvasCADDraft
+                || artifact.record.role == .canvasCADRevision
+                || artifact.record.role == .canvasNativeCAD {
+            guard let oldCanvas = artifact.record.containerID,
+                  let newCanvas = plan.idMap.newID(
+                    .canvas, old: oldCanvas.uuidString) else {
+                throw C07DataExchangeError.referenceMissing("canvasCADOwner")
+            }
+            let kind: String
+            switch artifact.record.role {
+            case .canvasCADDraft: kind = "drafts"
+            case .canvasCADRevision: kind = "revisions"
+            default: kind = "native"
+            }
+            let destination = context.cadPreservedRoot
+                .appendingPathComponent(newCanvas, isDirectory: true)
+                .appendingPathComponent(kind, isDirectory: true)
+                .appendingPathComponent(artifact.record.logicalPath)
+            var readOnly = artifact.record
+            readOnly.mode = 0o444
+            _ = try copyFile(artifact.url, to: destination, record: readOnly)
+            cadPreservedFiles += 1
+        }
+
+        // Retained tool results: recreate them through the REAL result
+        // engine under the plan's new identities and verify a read-back.
+        if let entries = plan.toolResultEntries, !entries.isEmpty {
+            guard let toolResultsSection = staged.toolResults else {
+                throw C07DataExchangeError.invalidManifest("toolResultsMissing")
+            }
+            var byTask: [UUID: [(C07ToolResultPlanEntry, ToolResultBackupRecord)]] = [:]
+            var index: [String: C07ToolResultPlanEntry] = [:]
+            for entry in entries {
+                index["\(entry.oldRunID.uuidString)|\(entry.oldCallID)"] = entry
+            }
+            var seen = Set<String>()
+            try C07PlainJSONLines.readLines(
+                toolResultsSection.url, label: "toolResults",
+                maximumRows: C07OwnedDataLimits.maximumToolResults,
+                maximumRowBytes: C07OwnedDataLimits.maximumToolResultRowBytes
+            ) { line in
+                let record = try ToolResultBackupRecord.decodeLine(line)
+                try record.validate()
+                let key = "\(record.runID.uuidString)|\(record.callID)"
+                guard let entry = index[key] else {
+                    throw C07DataExchangeError.referenceMissing("toolResultPlan")
+                }
+                guard seen.insert(key).inserted else {
+                    throw C07DataExchangeError.duplicateIdentity("toolResultPlan")
+                }
+                byTask[entry.newTaskID, default: []].append((entry, record))
+            }
+            guard seen.count == entries.count else {
+                throw C07DataExchangeError.referenceMissing("toolResultPlanCount")
+            }
+            let store = ToolResultCaptureStore.shared(
+                durableRoot: context.toolResultsRoot, caps: .durableStandard)
+            for (taskID, pairs) in byTask.sorted(by: {
+                $0.key.uuidString < $1.key.uuidString
+            }) {
+                var runMap: [UUID: UUID] = [:]
+                var callMap: [String: String] = [:]
+                for (entry, _) in pairs {
+                    runMap[entry.oldRunID] = entry.newRunID
+                    callMap[entry.oldCallID] = entry.newCallID
+                }
+                let restored = try await ToolResultBackupExchange.restore(
+                    records: pairs.map(\.1), store: store,
+                    destinationTaskID: taskID,
+                    runMap: runMap, callMap: callMap)
+                let verified = try await ToolResultBackupExchange.verifyReadback(
+                    receipts: restored, store: store,
+                    conversationID: taskID)
+                guard verified.count == pairs.count else {
+                    throw C07DataExchangeError.storageUnavailable(
+                        "toolResultVerify")
+                }
+                for receipt in verified {
+                    guard let entry = pairs.first(where: {
+                        $0.0.newCallID == receipt.callID
+                    })?.0,
+                          entry.newRef == receipt.ref,
+                          entry.sha256 == receipt.sha256 else {
+                        throw C07DataExchangeError.storageUnavailable(
+                            "toolResultIdentity")
+                    }
+                }
+                noteCreated(context.toolResultsRoot.appendingPathComponent(
+                    taskID.uuidString, isDirectory: true))
+                toolResults += verified.count
+            }
+        }
+
+        // Non-secret configuration recovery record. Hosts/mail identities are
+        // remapped; credential refs and trust pins are absent. The document
+        // is read-only and never applied to a live authorization table.
+        if let configEntries = plan.configEntries, !configEntries.isEmpty {
+            let destinationRoot = context.restoredConfigRoot
+                .appendingPathComponent(plan.restoreID.uuidString,
+                                        isDirectory: true)
+            try ensureOwnedDirectory(destinationRoot)
+            for config in staged.configs {
+                let data: Data
+                do { data = try Data(contentsOf: config.url) }
+                catch { throw C07DataExchangeError.storageUnavailable("configRead") }
+                let encoder = JSONEncoder()
+                encoder.outputFormatting = [.sortedKeys]
+                encoder.dateEncodingStrategy = .iso8601
+                let output: Data
+                switch config.section.kind {
+                case .remoteHosts:
+                    let document = try JSONDecoder().decode(
+                        C07RemoteHostConfigDocument.self, from: data)
+                    var hosts: [C07RemoteHostConfig] = []
+                    for host in document.hosts {
+                        guard let newText = plan.remoteHostIDs?[
+                            host.id.uuidString] else {
+                            throw C07DataExchangeError.referenceMissing(
+                                "remoteHostIdentity")
+                        }
+                        var copy = host
+                        copy.id = UUID(uuidString: newText) ?? host.id
+                        hosts.append(copy)
+                    }
+                    do { output = try encoder.encode(
+                        C07RemoteHostConfigDocument(hosts: hosts)) }
+                    catch { throw C07DataExchangeError.storageUnavailable("hostEncode") }
+                case .rdpEndpoints:
+                    let document = try JSONDecoder().decode(
+                        C07RDPConfigDocument.self, from: data)
+                    var endpoints: [C07RDPEndpointConfig] = []
+                    for endpoint in document.endpoints {
+                        guard let newProfile = plan.remoteHostIDs?[
+                            endpoint.profileID.uuidString] else {
+                            throw C07DataExchangeError.referenceMissing(
+                                "rdpHostIdentity")
+                        }
+                        var copy = endpoint
+                        copy.profileID = UUID(uuidString: newProfile)
+                            ?? endpoint.profileID
+                        copy.id = UUID(uuidString: C07IDDerivation.fresh(
+                            restoreID: plan.restoreID, table: "rdpEndpoint",
+                            old: endpoint.id.uuidString)) ?? endpoint.id
+                        endpoints.append(copy)
+                    }
+                    do { output = try encoder.encode(
+                        C07RDPConfigDocument(endpoints: endpoints)) }
+                    catch { throw C07DataExchangeError.storageUnavailable("rdpEncode") }
+                case .mailAccounts:
+                    let document = try JSONDecoder().decode(
+                        C07MailAccountConfigDocument.self, from: data)
+                    var accounts: [C07MailAccountConfig] = []
+                    for account in document.accounts {
+                        guard let newText = plan.mailAccountIDs?[
+                            account.id.uuidString] else {
+                            throw C07DataExchangeError.referenceMissing(
+                                "mailAccountIdentity")
+                        }
+                        var copy = account
+                        copy.id = UUID(uuidString: newText) ?? account.id
+                        accounts.append(copy)
+                    }
+                    do { output = try encoder.encode(
+                        C07MailAccountConfigDocument(accounts: accounts)) }
+                    catch { throw C07DataExchangeError.storageUnavailable("mailEncode") }
+                }
+                let destination = destinationRoot.appendingPathComponent(
+                    "\(config.section.kind.rawValue).json")
+                try writeExclusiveData(output, destination: destination, mode: 0o444)
+                noteCreated(destination)
+                configSections += 1
+            }
+            // Exact recovery receipt: source->new identity and the explicit
+            // "re-authenticate / fresh trust" requirement.
+            let receipt: [String: Any] = [
+                "format": "floe.restoredconfig",
+                "formatVersion": 1,
+                "remoteHostIDs": plan.remoteHostIDs ?? [:],
+                "mailAccountIDs": plan.mailAccountIDs ?? [:],
+                "requiresReauthentication": true,
+                "requiresFreshTrust": true,
+                "sections": configEntries.sorted(),
+            ]
+            if let data = try? JSONSerialization.data(
+                withJSONObject: receipt, options: [.sortedKeys]) {
+                let url = destinationRoot.appendingPathComponent(
+                    "restore-manifest.json")
+                try writeExclusiveData(data, destination: url, mode: 0o444)
+                noteCreated(url)
+            }
+        }
+
         // Execution-target/pin/receipt evidence is retained as a read-only
         // archive. It is NEVER inserted into the live authorization tables.
         var evidenceRows = 0
@@ -2765,6 +4158,11 @@ extension C07LiveRestoreSink {
             privateTaskFiles: privateTaskFiles,
             mailReceipts: mailReceipts,
             evidenceRows: evidenceRows,
+            appArtifacts: appArtifacts,
+            captureFiles: captureFiles,
+            cadPreservedFiles: cadPreservedFiles,
+            toolResults: toolResults,
+            configSections: configSections,
             warnings: warnings)
     }
 
@@ -2912,7 +4310,9 @@ extension C07LiveRestoreSink {
                       policy.disposition == .live else { continue }
                 let schemaColumns = Set(
                     try db.columns(in: table.record.name).map(\.name))
-                guard policy.requiredColumns.isSubset(of: schemaColumns) else {
+                guard policy.requiredColumns(
+                    at: staged.manifest.sourceAppSchemaVersion)
+                    .isSubset(of: schemaColumns) else {
                     throw C07DataExchangeError.schemaMismatch(
                         staged.manifest.sourceAppSchemaVersion)
                 }
@@ -2966,6 +4366,32 @@ extension C07LiveRestoreSink {
                         } else {
                             values[column] = .null
                         }
+                    }
+                    // tool_calls keeps a plain-text output summary on some
+                    // builds; rewrite its structured ref to the new identity.
+                    if table.record.name == "tool_calls",
+                       let summary = values["output_summary"]?.stringValue {
+                        values["output_summary"] = .string(
+                            C07ToolResultReceipt.rewriteSummary(
+                                summary,
+                                oldRunID: row["run_id"]?.stringValue,
+                                oldCallID: oldPrimary,
+                                entries: plan.toolResultEntries ?? []))
+                    }
+                    // Tool-result checkpoint summaries: replace the OLD
+                    // capture ref with the restored ref (or an explicit
+                    // unavailable marker) before the generic UUID rewrite.
+                    if values["kind"]?.stringValue == "toolResult",
+                       let payload = values["payload_json"]?.stringValue,
+                       table.record.name == "run_events"
+                        || table.record.name == "child_run_entries" {
+                        let oldRun = table.record.name == "child_run_entries"
+                            ? row["child_run_id"]?.stringValue
+                            : row["run_id"]?.stringValue
+                        values["payload_json"] = .string(
+                            try C07ToolResultReceipt.rewrite(
+                                payload, oldRunID: oldRun, oldCallID: nil,
+                                entries: plan.toolResultEntries ?? []))
                     }
                     for column in policy.jsonIDColumns {
                         if let value = values[column] {
@@ -3076,6 +4502,14 @@ extension C07LiveRestoreSink {
         var receipt = outcome.0
         receipt.warnings = outcome.1
         receipt.evidenceRows = artifacts.evidenceRows
+        let declaredPartial = (staged.manifest.completeness
+            ?? ((staged.manifest.omissions?.isEmpty == false)
+                ? .partial : .complete)) == .partial
+        receipt.partial = declaredPartial
+        receipt.omissions = staged.manifest.omissions?.count ?? 0
+        if receipt.partial {
+            receipt.warnings.append("restorePartialPackage")
+        }
         return receipt
     }
 
@@ -3088,6 +4522,7 @@ extension C07LiveRestoreSink {
         case "tool_calls": receipt.toolCalls = rows
         case "attachments": receipt.attachments = rows
         case "task_schedules": receipt.schedules = rows
+        case "calendar_todos": receipt.todos = rows
         case "providers": receipt.providers = rows
         case "models": receipt.models = rows
         default: break
@@ -3116,6 +4551,7 @@ extension C07LiveRestoreSink {
         let childRuns = map.allNewIDs(.childRun)
         let providers = map.allNewIDs(.provider)
         let models = map.allNewIDs(.model)
+        let todos = map.allNewIDs(.todo)
 
         try await context.database.writer { db in
             for chunk in conversations.chunked(max: 400) {
@@ -3178,11 +4614,17 @@ extension C07LiveRestoreSink {
                 try c07DeleteWhereIn(db, table: "models", column: "id",
                                      values: chunk)
             }
+            if try db.tableExists("calendar_todos") {
+                for chunk in todos.chunked(max: 400) {
+                    try c07DeleteWhereIn(db, table: "calendar_todos",
+                                         column: "id", values: chunk)
+                }
+            }
         }
 
         // Exact artifact roots only. Each path must sit under one of the
         // app-private roots that this restore may create.
-        let allowed = [
+        var allowed = [
             context.artifactRoot.appendingPathComponent("Canvases").path,
             context.artifactRoot.appendingPathComponent("Materials").path,
             context.artifactRoot.appendingPathComponent("MediaProjects").path,
@@ -3193,8 +4635,27 @@ extension C07LiveRestoreSink {
                 .appendingPathComponent("Workspace")
                 .appendingPathComponent("PrivateTasks").path,
             context.dataRoot.appendingPathComponent("RestoredReceipts").path,
+            context.toolResultsRoot.path,
+            context.restoredConfigRoot.path,
+            context.restoredArtifactRoot.path,
+            context.cadPreservedRoot.path,
         ]
-        for raw in plan.artifactRoots {
+        for namespace in C07OwnedDataSource.appArtifactNamespaces {
+            allowed.append(context.artifactRoot.appendingPathComponent(
+                namespace).path)
+        }
+        if let taskIDs = plan.toolResultTaskIDs, !taskIDs.isEmpty {
+            let store = ToolResultCaptureStore.shared(
+                durableRoot: context.toolResultsRoot, caps: .durableStandard)
+            _ = await ToolResultBackupExchange.rollback(
+                conversationIDs: taskIDs, store: store)
+        }
+        // Deepest first: a listed directory that contains another listed path
+        // must not be removed before the child.
+        let orderedRoots = plan.artifactRoots.sorted {
+            $0.split(separator: "/").count > $1.split(separator: "/").count
+        }
+        for raw in orderedRoots {
             let path = URL(fileURLWithPath: raw).standardizedFileURL.path
             guard allowed.contains(where: { path.hasPrefix($0 + "/") }) else {
                 throw C07DataExchangeError.rollbackFailed("artifactRoot")
@@ -3249,6 +4710,20 @@ func c07DeleteWhereIn(_ db: Database, table: String, column: String,
     try db.execute(
         sql: "DELETE FROM \"\(table)\" WHERE \"\(column)\" IN (\(placeholders))",
         arguments: StatementArguments(values.map { $0 as String? }))
+}
+
+func configOrder(_ kind: C07OwnedConfigKind) -> Int {
+    switch kind {
+    case .remoteHosts: return 0
+    case .mailAccounts: return 1
+    case .rdpEndpoints: return 2
+    }
+}
+
+func appArtifactNamespacesContain(_ logicalPath: String) -> Bool {
+    let components = logicalPath.split(separator: "/", omittingEmptySubsequences: false)
+    guard let first = components.first else { return false }
+    return C07OwnedDataSource.appArtifactNamespaces.contains(String(first))
 }
 
 func c07SafeArtifactName(_ raw: String) -> String {
@@ -3586,6 +5061,32 @@ enum C07CanvasImportPlan {
                     logicalPath: asset.relativePath, url: url,
                     byteCount: asset.byteCount, sha256: asset.sha256)
         }
+        // Opaque donor CAD sections are preserved read-only. Android cannot
+        // edit them, but refusing them (the previous behavior) silently lost
+        // user data from an otherwise valid donor package.
+        var cadWarnings: [String] = []
+        for file in staged.preservedCAD where file.kind == .native
+            && file.logicalPath.hasSuffix("/manifest.json") {
+            // Reuse the C04 read-only native package contract for a bounded
+            // sanity check. A malformed package is still preserved byte for
+            // byte; the warning only prevents presenting it as editable.
+            if let data = try? Data(contentsOf: file.url),
+               (try? C04FloecadPackage.parseManifest(data)) == nil {
+                cadWarnings.append("canvasCADNativeUnreadable")
+            }
+        }
+        for file in staged.preservedCAD {
+            let role: C07ArtifactRole
+            switch file.kind {
+            case .draftDescriptor, .draftDrawing: role = .canvasCADDraft
+            case .revision: role = .canvasCADRevision
+            case .native: role = .canvasNativeCAD
+            }
+            try add(role: role, ownerID: nil,
+                    containerID: manifest.canvasID,
+                    logicalPath: file.logicalPath, url: file.url,
+                    byteCount: file.byteCount, sha256: file.sha256)
+        }
         let counts = C07OwnedDataCounts(
             canvasProjects: 1,
             mediaProjects: manifest.childProjects.count,
@@ -3634,7 +5135,12 @@ enum C07CanvasImportPlan {
                 "canvasChildMissing:\($0.uuidString.prefix(8))"
             } + staged.manifest.missingAssets.map {
                 "canvasAssetMissing:\($0.prefix(40))"
-            },
+            } + (staged.manifest.missingCADRevisionAssets ?? []).map {
+                "canvasCADRevisionMissing:\($0.prefix(40))"
+            } + (staged.manifest.missingNativeCADPackages ?? []).map {
+                "canvasNativeCADMissing:\($0.prefix(40))"
+            } + (staged.preservedCAD.isEmpty ? [] : ["canvasCADPreservedReadOnly"])
+              + cadWarnings,
             totalBytes: staged.totalBytes)
     }
 }

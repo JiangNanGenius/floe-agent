@@ -82,6 +82,7 @@
     <string name="calendar_todo_reminder_1440">1 day before</string>
     <string name="calendar_todo_recurrence">Repeat</string>
     <string name="calendar_todo_completed">Completed</string>
+    <string name="calendar_todo_reminders_paused">Reminders paused after restore · open and save to resume</string>
     <string name="calendar_todo_show_completed">Show completed</string>
     <string name="calendar_todo_delete">Delete</string>
     <string name="calendar_todo_delete_title">Delete this todo?</string>

@@ -104,6 +104,7 @@ public fun DataExchangeSettingsPage(
                     Bullet(stringResource(R.string.dataexchange_included_notes))
                     Bullet(stringResource(R.string.dataexchange_included_tasks))
                     Bullet(stringResource(R.string.dataexchange_included_canvas))
+                    Bullet(stringResource(R.string.dataexchange_included_files))
                     Bullet(stringResource(R.string.dataexchange_included_config))
                     Bullet(stringResource(R.string.dataexchange_included_schedules))
                     Bullet(stringResource(R.string.dataexchange_included_receipts))
@@ -381,6 +382,41 @@ public fun DataExchangeSettingsPage(
                                 color = Floe.colors.secondaryLabel,
                             )
                         }
+                        if (receipt.todos > 0) {
+                            FloeText(
+                                stringResource(R.string.dataexchange_result_todos,
+                                    receipt.todos),
+                                style = Floe.typography.metadata,
+                            )
+                        }
+                        if (receipt.toolResults > 0) {
+                            FloeText(
+                                stringResource(R.string.dataexchange_result_tool_results,
+                                    receipt.toolResults),
+                                style = Floe.typography.metadata,
+                            )
+                        }
+                        if (receipt.appArtifacts > 0 || receipt.captureFiles > 0) {
+                            FloeText(
+                                stringResource(R.string.dataexchange_result_artifacts,
+                                    receipt.appArtifacts, receipt.captureFiles),
+                                style = Floe.typography.metadata,
+                            )
+                        }
+                        if (receipt.configSections > 0) {
+                            FloeText(
+                                stringResource(R.string.dataexchange_result_config,
+                                    receipt.configSections),
+                                style = Floe.typography.metadata,
+                            )
+                        }
+                        if (receipt.partial) {
+                            FloeText(
+                                stringResource(R.string.dataexchange_result_partial),
+                                style = Floe.typography.metadata,
+                                color = Floe.colors.destructive,
+                            )
+                        }
                         if (receipt.noteDocuments > 0) {
                             FloeText(
                                 stringResource(R.string.dataexchange_result_notes_hint),
@@ -565,6 +601,43 @@ private fun PlanReview(plan: DataExchangePlanUi, importMode: Boolean) {
                     color = Floe.colors.secondaryLabel,
                 )
             }
+            if (plan.todos > 0) {
+                FloeText(
+                    stringResource(R.string.dataexchange_plan_todos, plan.todos),
+                    style = Floe.typography.metadata,
+                )
+            }
+            if (plan.toolResults > 0) {
+                FloeText(
+                    stringResource(R.string.dataexchange_plan_tool_results,
+                        plan.toolResults),
+                    style = Floe.typography.metadata,
+                )
+            }
+            if (plan.appArtifacts > 0 || plan.captureFiles > 0) {
+                FloeText(
+                    stringResource(R.string.dataexchange_plan_artifacts,
+                        plan.appArtifacts, plan.captureFiles),
+                    style = Floe.typography.metadata,
+                    color = Floe.colors.secondaryLabel,
+                )
+            }
+            if (plan.configSections > 0) {
+                FloeText(
+                    stringResource(R.string.dataexchange_plan_config,
+                        plan.configSections),
+                    style = Floe.typography.metadata,
+                    color = Floe.colors.secondaryLabel,
+                )
+            }
+            if (plan.partial || plan.omissions > 0) {
+                FloeText(
+                    stringResource(R.string.dataexchange_plan_partial,
+                        plan.omissions),
+                    style = Floe.typography.metadata,
+                    color = Floe.colors.destructive,
+                )
+            }
         }
         FloeText(
             stringResource(
@@ -675,6 +748,27 @@ private fun excludedCopy(id: String): String = when (id) {
     "systemPersonalData" -> stringResource(R.string.dataexchange_excluded_system)
     "canvasMediaProjects" -> stringResource(R.string.dataexchange_excluded_canvas)
     "captureArtifacts" -> stringResource(R.string.dataexchange_excluded_capture)
+    "privilegedPacketCaptureBuffers" ->
+        stringResource(R.string.dataexchange_excluded_privileged_capture)
+    "voiceTransientStaging" ->
+        stringResource(R.string.dataexchange_excluded_voice_staging)
+    "rdpTrustPins" -> stringResource(R.string.dataexchange_excluded_rdp_trust)
+    "toolResultExecutionReplay" ->
+        stringResource(R.string.dataexchange_excluded_tool_replay)
+    "cadEditingKernel" -> stringResource(R.string.dataexchange_excluded_cad_kernel)
+    "personalizationMemory" ->
+        stringResource(R.string.dataexchange_excluded_memory)
+    "skillsLibrary" -> stringResource(R.string.dataexchange_excluded_skills)
+    "taskChecklistRevisions" ->
+        stringResource(R.string.dataexchange_excluded_checklists)
+    "modelPreferences" ->
+        stringResource(R.string.dataexchange_excluded_model_prefs)
+    "workspaceRecentFiles" ->
+        stringResource(R.string.dataexchange_excluded_recent_files)
+    "runDependencies" ->
+        stringResource(R.string.dataexchange_excluded_run_dependencies)
+    "taskContinuityExecutionControl" ->
+        stringResource(R.string.dataexchange_excluded_continuity)
     "environmentsAndCaches" -> stringResource(R.string.dataexchange_excluded_environments)
     "trash" -> stringResource(R.string.dataexchange_excluded_trash)
     else -> id

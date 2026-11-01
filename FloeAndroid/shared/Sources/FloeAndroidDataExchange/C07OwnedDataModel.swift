@@ -39,6 +39,17 @@ public enum C07OwnedDataLimits {
     public static let maximumWorkspaces = 20_000
     public static let maximumWorkspaceBytes: Int64 = 64 * 1_024 * 1_024
     public static let maximumPlanBytes = 256 * 1_024 * 1_024
+    /// Result engine retention caps: 8 MiB per retained result, 64 MiB per
+    /// task, 64 results per task. The aggregate is bounded well below the
+    /// 8 GiB table cap.
+    public static let maximumToolResultBytes = 8 * 1_024 * 1_024
+    public static let maximumToolResultRowBytes = 12 * 1_024 * 1_024
+    public static let maximumToolResults = 200_000
+    public static let maximumToolResultTotalBytes: Int64 = 4 * 1_024 * 1_024 * 1_024
+    public static let maximumConfigEntries = 4_096
+    public static let maximumConfigBytes: Int64 = 32 * 1_024 * 1_024
+    public static let maximumOmissions = 20_000
+    public static let maximumOmissionBytes = 16 * 1_024 * 1_024
     public static let maximumJSONDepth = 64
     public static let maximumJSONNodes = 2_000_000
     public static let copyChunkBytes = 1_048_576
@@ -205,6 +216,13 @@ public enum C07IDKind: String, Codable, Sendable, CaseIterable {
     case mediaProject
     case questionRequest
     case userQuestion
+    /// App-local calendar todo. New identity is allocated so a restore never
+    /// overwrites or collides with an existing todo.
+    case todo
+    /// Configuration-only identities. They are remapped inside the restored
+    /// non-secret config archive, never inserted into a live table.
+    case remoteHost
+    case mailAccount
     /// Receipt-only rows whose primary identity is not rewritten because
     /// they never enter a live authorization table.
     case executionEvidence
@@ -214,7 +232,7 @@ public enum C07IDKind: String, Codable, Sendable, CaseIterable {
     public var isRoot: Bool {
         switch self {
         case .conversation, .workspace, .schedule, .provider, .model,
-             .canvas, .mediaProject:
+             .canvas, .mediaProject, .todo:
             return true
         default:
             return false
@@ -297,6 +315,7 @@ public enum C07RowNormalization: String, Codable, Sendable {
     case model
     case attachment
     case conversation
+    case todo
 }
 
 public struct C07OwnedTablePolicy: Sendable {
@@ -321,6 +340,14 @@ public struct C07OwnedTablePolicy: Sendable {
     /// Evidence tables may be absent before the coordinated schema
     /// registration; their absence is declared, never hidden.
     public var optional: Bool
+    /// The table is expected to exist from this coordinated schema onward.
+    /// Below this version its absence is a declared schema fact, not a
+    /// silent scope reduction; at or above it, absence is a hard failure.
+    public var minimumSchemaVersion: Int?
+    /// Columns that only become required from a later coordinated schema.
+    /// Used for `calendar_todos.reminders_suspended` (schema 52). A package
+    /// written by a newer schema still fails closed on a narrowed app.
+    public var requiredColumnMinimumSchema: [String: Int]
 
     public init(name: String,
                 primaryColumn: String = "id",
@@ -333,7 +360,9 @@ public struct C07OwnedTablePolicy: Sendable {
                 freshPrimary: Bool = false,
                 requiredColumns: Set<String> = [],
                 disposition: C07TableDisposition = .live,
-                optional: Bool = false) {
+                optional: Bool = false,
+                minimumSchemaVersion: Int? = nil,
+                requiredColumnMinimumSchema: [String: Int] = [:]) {
         self.name = name
         self.primaryColumn = primaryColumn
         self.primaryKind = primaryKind
@@ -346,10 +375,33 @@ public struct C07OwnedTablePolicy: Sendable {
         self.disposition = disposition
         self.freshPrimary = freshPrimary
         self.optional = optional
+        self.minimumSchemaVersion = minimumSchemaVersion
+        self.requiredColumnMinimumSchema = requiredColumnMinimumSchema
+    }
+
+    /// Columns that must exist on an app at `schemaVersion`.
+    public func requiredColumns(at schemaVersion: Int) -> Set<String> {
+        var result = requiredColumns
+        for (column, minimum) in requiredColumnMinimumSchema
+        where schemaVersion >= minimum {
+            result.insert(column)
+        }
+        return result
+    }
+
+    /// True when the table is expected on this schema version.
+    public func isExpected(at schemaVersion: Int) -> Bool {
+        guard let minimumSchemaVersion else { return true }
+        return schemaVersion >= minimumSchemaVersion
     }
 }
 
 public enum C07OwnedDataPolicy {
+    /// Archive entry for the bounded tool-result retention records. The body
+    /// is produced by the result engine; the manifest carries its exact
+    /// count/byte/digest contract.
+    public static let toolResultsEntry = "data/tool-results.jsonl"
+
     /// Closed, ordered restore graph. Order is dependency order: a target
     /// table always appears before the tables that reference it.
     public static let tables: [C07OwnedTablePolicy] = [
@@ -522,6 +574,25 @@ public enum C07OwnedDataPolicy {
               normalization: .occurrence,
               requiredColumns: ["id", "schedule_id", "scheduled_for", "state",
                                 "dedupe_key", "created_at", "updated_at"]),
+        // C06 App-local todos. They are independent user data, not a chat
+        // projection. Due time, content, completion and reminder preference
+        // survive; the planner's new `reminders_suspended` gate keeps a
+        // restored reminder from firing until the user re-enables it.
+        .init(name: "calendar_todos", primaryKind: .todo,
+              optionalReferences: ["owner_conversation_id": .conversation,
+                                   "owner_task_id": .conversation],
+              normalization: .todo,
+              requiredColumns: ["id", "title", "notes", "due_at",
+                                "due_timezone", "all_day", "recurrence",
+                                "recurrence_interval", "recurrence_until",
+                                "reminder_minutes_before", "completed",
+                                "completed_at", "revision",
+                                "owner_conversation_id", "owner_task_id",
+                                "owner_environment_id", "last_reminder_at",
+                                "last_reminder_occurrence", "created_at",
+                                "updated_at"],
+              minimumSchemaVersion: 52,
+              requiredColumnMinimumSchema: ["reminders_suspended": 52]),
         // C02 execution-target evidence. These rows are exported and
         // verified, then restored ONLY into the read-only receipt archive.
         // A historical target, run pin or remote-command receipt never
@@ -590,6 +661,16 @@ public enum C07OwnedDataPolicy {
         "child_run_entries", "run_relations", "user_question_requests",
         "user_questions", "task_schedules", "task_schedule_occurrences",
     ]
+
+    /// Tables required for a full backup at one coordinated schema version.
+    /// `calendar_todos` is required from schema 52 onward; on an older app it
+    /// does not exist and its absence is a declared schema fact, not a
+    /// silent scope reduction.
+    public static func mandatoryTableNames(forSchema schemaVersion: Int) -> Set<String> {
+        var result = mandatoryTableNames
+        if schemaVersion >= 52 { result.insert("calendar_todos") }
+        return result
+    }
 
     /// Export-time row admission. Temporary chats never leave RAM and must
     /// never appear in a package, even if a historical bug wrote one.
@@ -678,6 +759,14 @@ public enum C07OwnedDataPolicy {
             if state == "pending" || state == "claimed" || state == "running" {
                 result["state"] = .string("interrupted")
             }
+        case .todo:
+            // Content/due/completion/reminder preference survive. The
+            // reminder itself is suspended so no alarm or notification is
+            // re-armed by a restore; the user resumes it explicitly. Set the
+            // field unconditionally so a hand-edited row that omits it still
+            // fails closed instead of taking the schema default (0).
+            result["reminders_suspended"] = .int(1)
+            result["owner_environment_id"] = .null
         case .provider:
             result["is_enabled"] = .int(0)
             result["secret_ref_account"] = .null
@@ -730,7 +819,33 @@ public enum C07OwnedDataPolicy {
         switch table {
         case "run_events":
             let kind = result["kind"]?.stringValue ?? ""
-            if ["toolRequest", "toolResult", "approval"].contains(kind) {
+            if kind == "toolResult" {
+                // A settled result receipt is user data: keep the bounded
+                // redacted summary and identity, drop action bodies and any
+                // artifact/output-file link that could point at an old id.
+                if let payload = result["payload_json"]?.stringValue,
+                   let sanitized = C07ToolResultReceipt.sanitize(payload) {
+                    result["payload_json"] = .string(sanitized)
+                } else {
+                    result["payload_json"] = .string(
+                        "{\"redacted\":\"secretBearingActionPayload\",\"kind\":\"toolResult\"}")
+                }
+            } else if ["toolRequest", "approval"].contains(kind) {
+                result["payload_json"] = .string(
+                    "{\"redacted\":\"secretBearingActionPayload\",\"kind\":\"\(kind)\"}")
+            }
+        case "child_run_entries":
+            let kind = result["kind"]?.stringValue ?? ""
+            if kind == "toolResult" {
+                if let payload = result["payload_json"]?.stringValue,
+                   let sanitized = C07ToolResultReceipt.sanitize(
+                    payload, includeText: false) {
+                    result["payload_json"] = .string(sanitized)
+                } else {
+                    result["payload_json"] = .string(
+                        "{\"redacted\":\"secretBearingActionPayload\",\"kind\":\"toolResult\"}")
+                }
+            } else if ["toolRequest", "approval"].contains(kind) {
                 result["payload_json"] = .string(
                     "{\"redacted\":\"secretBearingActionPayload\",\"kind\":\"\(kind)\"}")
             }
@@ -919,6 +1034,23 @@ public enum C07ArtifactRole: String, Codable, Sendable, CaseIterable {
     case privateTaskFile
     case mailReceipt
     case environmentCheckpoint
+    /// A durable file in one of the existing `ArtifactNamespace` roots
+    /// (`GeneratedImages`, `VNCArtifacts`, `RDPArtifacts`, `RunOutputs`,
+    /// `JobDownloads`, ...). The logical path keeps the namespace-relative
+    /// path verbatim.
+    case appArtifact
+    /// A user-owned capture file outside the artifact root (packet captures
+    /// and their App-owned analysis). Restored into a read-only recovery
+    /// area, never into a live capture library.
+    case captureFile
+    /// One non-secret configuration document (`remoteHosts`, `rdpEndpoints`,
+    /// `mailAccounts`). Never live authorization.
+    case configuration
+    /// Opaque donor CAD sections carried by a `.flocanvas` package. Android
+    /// has no CAD editing kernel; bytes are preserved read-only.
+    case canvasCADDraft
+    case canvasCADRevision
+    case canvasNativeCAD
 
     public var packageRoot: String {
         switch self {
@@ -931,6 +1063,12 @@ public enum C07ArtifactRole: String, Codable, Sendable, CaseIterable {
         case .privateTaskFile: return "\(C07OwnedDataLimits.artifactDirectory)/private-tasks"
         case .mailReceipt: return "\(C07OwnedDataLimits.artifactDirectory)/mail-receipts"
         case .environmentCheckpoint: return "\(C07OwnedDataLimits.artifactDirectory)/environments"
+        case .appArtifact: return "\(C07OwnedDataLimits.artifactDirectory)/app"
+        case .captureFile: return "\(C07OwnedDataLimits.artifactDirectory)/captures"
+        case .configuration: return "\(C07OwnedDataLimits.artifactDirectory)/config"
+        case .canvasCADDraft: return "\(C07OwnedDataLimits.artifactDirectory)/canvas-cad-drafts"
+        case .canvasCADRevision: return "\(C07OwnedDataLimits.artifactDirectory)/canvas-cad-revisions"
+        case .canvasNativeCAD: return "\(C07OwnedDataLimits.artifactDirectory)/canvas-native-cad"
         }
     }
 }
@@ -1002,6 +1140,18 @@ public enum C07ArtifactPath {
                 throw C07DataExchangeError.unsafePath(logicalPath)
             }
             return "\(root)/\(ownerID.uuidString)/\(logical)"
+        case .appArtifact, .captureFile, .configuration:
+            guard ownerID == nil, containerID == nil else {
+                throw C07DataExchangeError.unsafePath(logicalPath)
+            }
+            // `logical` already includes the namespace/area prefix so two
+            // different roots can never collide silently.
+            return "\(root)/\(logical)"
+        case .canvasCADDraft, .canvasCADRevision, .canvasNativeCAD:
+            guard let containerID else {
+                throw C07DataExchangeError.unsafePath(logicalPath)
+            }
+            return "\(root)/\(containerID.uuidString)/\(logical)"
         }
     }
 
@@ -1039,6 +1189,14 @@ public struct C07OwnedDataCounts: Codable, Sendable, Equatable {
     public var remoteCommandReceipts: Int
     public var artifacts: Int
     public var artifactBytes: Int64
+    // Added after the first v2 packages shipped. Optional so an existing
+    // archive still decodes; absent means zero for that category.
+    public var todos: Int?
+    public var appArtifacts: Int?
+    public var captureFiles: Int?
+    public var configSections: Int?
+    public var toolResults: Int?
+    public var omissions: Int?
 
     public init(conversations: Int = 0, messages: Int = 0,
                 messageParts: Int = 0, runs: Int = 0, toolCalls: Int = 0,
@@ -1052,7 +1210,10 @@ public struct C07OwnedDataCounts: Codable, Sendable, Equatable {
                 executionTargetMigrations: Int = 0,
                 runExecutionPins: Int = 0,
                 remoteCommandReceipts: Int = 0, artifacts: Int = 0,
-                artifactBytes: Int64 = 0) {
+                artifactBytes: Int64 = 0, todos: Int? = nil,
+                appArtifacts: Int? = nil, captureFiles: Int? = nil,
+                configSections: Int? = nil, toolResults: Int? = nil,
+                omissions: Int? = nil) {
         self.conversations = conversations
         self.messages = messages
         self.messageParts = messageParts
@@ -1076,6 +1237,12 @@ public struct C07OwnedDataCounts: Codable, Sendable, Equatable {
         self.remoteCommandReceipts = remoteCommandReceipts
         self.artifacts = artifacts
         self.artifactBytes = artifactBytes
+        self.todos = todos
+        self.appArtifacts = appArtifacts
+        self.captureFiles = captureFiles
+        self.configSections = configSections
+        self.toolResults = toolResults
+        self.omissions = omissions
     }
 }
 
@@ -1111,6 +1278,13 @@ public struct C07OwnedDataManifest: Codable, Sendable, Equatable {
     public var linuxCheckpointPort: String
     public var linuxCheckpointReason: String?
     public var warnings: [String]
+    // Optional additions keep older v2 packages readable. A writer always
+    // sets them, and `validate()` requires internal consistency.
+    public var completeness: C07DataCompleteness?
+    public var omissions: [C07DataOmission]?
+    public var toolResults: C07OwnedToolResultSection?
+    public var configSections: [C07OwnedConfigSection]?
+    public var deduplicatedArtifacts: Int?
 
     public init(format: String = C07OwnedDataLimits.format,
                 formatVersion: Int = C07OwnedDataLimits.formatVersion,
@@ -1125,7 +1299,12 @@ public struct C07OwnedDataManifest: Codable, Sendable, Equatable {
                 excluded: [C07ExcludedScope],
                 linuxCheckpointPort: String,
                 linuxCheckpointReason: String? = nil,
-                warnings: [String] = []) {
+                warnings: [String] = [],
+                completeness: C07DataCompleteness? = nil,
+                omissions: [C07DataOmission]? = nil,
+                toolResults: C07OwnedToolResultSection? = nil,
+                configSections: [C07OwnedConfigSection]? = nil,
+                deduplicatedArtifacts: Int? = nil) {
         self.format = format
         self.formatVersion = formatVersion
         self.createdAt = createdAt
@@ -1140,6 +1319,11 @@ public struct C07OwnedDataManifest: Codable, Sendable, Equatable {
         self.linuxCheckpointPort = linuxCheckpointPort
         self.linuxCheckpointReason = linuxCheckpointReason
         self.warnings = warnings
+        self.completeness = completeness
+        self.omissions = omissions
+        self.toolResults = toolResults
+        self.configSections = configSections
+        self.deduplicatedArtifacts = deduplicatedArtifacts
     }
 
     public func encoded() throws -> Data {
@@ -1188,8 +1372,18 @@ public struct C07OwnedDataManifest: Codable, Sendable, Equatable {
             }
         }
         let provided = Set(tables.map(\.name))
-        guard C07OwnedDataPolicy.mandatoryTableNames.isSubset(of: provided) else {
+        guard C07OwnedDataPolicy.mandatoryTableNames(
+            forSchema: sourceAppSchemaVersion).isSubset(of: provided) else {
             throw C07DataExchangeError.invalidManifest("ownedTablesMissing")
+        }
+        // A table that belongs to a newer coordinated schema may be absent
+        // only when the archive itself was written by an older schema.
+        for policy in C07OwnedDataPolicy.tables
+        where !provided.contains(policy.name) {
+            if policy.isExpected(at: sourceAppSchemaVersion) && !policy.optional {
+                throw C07DataExchangeError.invalidManifest(
+                    "ownedTableMissing:\(policy.name)")
+            }
         }
         let missingOptional = C07OwnedDataPolicy.optionalTableNames
             .subtracting(provided)
@@ -1204,6 +1398,66 @@ public struct C07OwnedDataManifest: Codable, Sendable, Equatable {
         }
         guard ["available", "unavailable"].contains(linuxCheckpointPort) else {
             throw C07DataExchangeError.invalidManifest("checkpointPort")
+        }
+
+        let declaredOmissions = omissions ?? []
+        guard declaredOmissions.count <= C07OwnedDataLimits.maximumOmissions else {
+            throw C07DataExchangeError.tooManyEntries
+        }
+        for omission in declaredOmissions { try omission.validate() }
+        let resolvedCompleteness: C07DataCompleteness =
+            completeness ?? (declaredOmissions.isEmpty ? .complete : .partial)
+        switch resolvedCompleteness {
+        case .complete:
+            guard declaredOmissions.isEmpty else {
+                throw C07DataExchangeError.invalidManifest("completeWithOmissions")
+            }
+        case .partial:
+            guard !declaredOmissions.isEmpty else {
+                throw C07DataExchangeError.invalidManifest("partialWithoutOmissions")
+            }
+        }
+        if let toolResults {
+            try toolResults.validate()
+        }
+        if let configSections {
+            guard configSections.count <= C07OwnedConfigKind.allCases.count else {
+                throw C07DataExchangeError.tooManyEntries
+            }
+            var kinds = Set<C07OwnedConfigKind>()
+            var entries = Set<String>()
+            for section in configSections {
+                try section.validate()
+                guard kinds.insert(section.kind).inserted,
+                      entries.insert(section.entry).inserted else {
+                    throw C07DataExchangeError.invalidManifest("configDuplicate")
+                }
+            }
+            if kinds.contains(.rdpEndpoints) {
+                guard kinds.contains(.remoteHosts) else {
+                    throw C07DataExchangeError.referenceMissing("rdpHostsSection")
+                }
+            }
+        }
+        if let deduplicatedArtifacts {
+            guard deduplicatedArtifacts >= 0,
+                  deduplicatedArtifacts <= C07OwnedDataLimits.maximumArtifacts else {
+                throw C07DataExchangeError.invalidManifest("deduplicatedArtifacts")
+            }
+        }
+        if let toolResults {
+            guard (counts.toolResults ?? toolResults.count) == toolResults.count else {
+                throw C07DataExchangeError.invalidManifest("toolResultCountField")
+            }
+        }
+        if let configSections {
+            guard (counts.configSections ?? configSections.count) == configSections.count else {
+                throw C07DataExchangeError.invalidManifest("configCountField")
+            }
+        }
+        if let declaredCount = counts.omissions,
+           declaredCount != declaredOmissions.count {
+            throw C07DataExchangeError.invalidManifest("omissionCountField")
         }
     }
 }
@@ -1242,10 +1496,34 @@ public struct C07SourceArtifact: Sendable, Equatable {
     }
 }
 
+public struct C07SourceConfigSection: Sendable, Equatable {
+    public var section: C07OwnedConfigSection
+    public var url: URL
+
+    public init(section: C07OwnedConfigSection, url: URL) {
+        self.section = section
+        self.url = url
+    }
+}
+
+public struct C07SourceToolResultSection: Sendable, Equatable {
+    public var section: C07OwnedToolResultSection
+    public var url: URL
+
+    public init(section: C07OwnedToolResultSection, url: URL) {
+        self.section = section
+        self.url = url
+    }
+}
+
 public struct C07SourceOwnedData: Sendable {
     public var tables: [C07SourceTable]
     public var workspaces: C07SourceWorkspaces?
     public var artifacts: [C07SourceArtifact]
+    public var toolResults: C07SourceToolResultSection?
+    public var configs: [C07SourceConfigSection]
+    public var omissions: [C07DataOmission]
+    public var deduplicatedArtifacts: Int
     public var counts: C07OwnedDataCounts
     public var excluded: [C07ExcludedScope]
     public var linuxCheckpointPort: String
@@ -1255,6 +1533,10 @@ public struct C07SourceOwnedData: Sendable {
     public init(tables: [C07SourceTable],
                 workspaces: C07SourceWorkspaces?,
                 artifacts: [C07SourceArtifact],
+                toolResults: C07SourceToolResultSection? = nil,
+                configs: [C07SourceConfigSection] = [],
+                omissions: [C07DataOmission] = [],
+                deduplicatedArtifacts: Int = 0,
                 counts: C07OwnedDataCounts,
                 excluded: [C07ExcludedScope],
                 linuxCheckpointPort: String,
@@ -1263,6 +1545,10 @@ public struct C07SourceOwnedData: Sendable {
         self.tables = tables
         self.workspaces = workspaces
         self.artifacts = artifacts
+        self.toolResults = toolResults
+        self.configs = configs
+        self.omissions = omissions
+        self.deduplicatedArtifacts = deduplicatedArtifacts
         self.counts = counts
         self.excluded = excluded
         self.linuxCheckpointPort = linuxCheckpointPort
@@ -1291,12 +1577,34 @@ public struct C07StagedArtifact: Sendable, Equatable {
     }
 }
 
+public struct C07StagedConfigSection: Sendable, Equatable {
+    public var section: C07OwnedConfigSection
+    public var url: URL
+
+    public init(section: C07OwnedConfigSection, url: URL) {
+        self.section = section
+        self.url = url
+    }
+}
+
+public struct C07StagedToolResultSection: Sendable, Equatable {
+    public var section: C07OwnedToolResultSection
+    public var url: URL
+
+    public init(section: C07OwnedToolResultSection, url: URL) {
+        self.section = section
+        self.url = url
+    }
+}
+
 public struct C07StagedOwnedData: Sendable {
     public var manifest: C07OwnedDataManifest
     public var manifestSHA256: String
     public var tables: [C07StagedTable]
     public var workspaces: [C07WorkspaceDescriptor]
     public var artifacts: [C07StagedArtifact]
+    public var toolResults: C07StagedToolResultSection?
+    public var configs: [C07StagedConfigSection]
     public var totalBytes: Int64
 
     public init(manifest: C07OwnedDataManifest,
@@ -1304,17 +1612,61 @@ public struct C07StagedOwnedData: Sendable {
                 tables: [C07StagedTable],
                 workspaces: [C07WorkspaceDescriptor],
                 artifacts: [C07StagedArtifact],
+                toolResults: C07StagedToolResultSection? = nil,
+                configs: [C07StagedConfigSection] = [],
                 totalBytes: Int64) {
         self.manifest = manifest
         self.manifestSHA256 = manifestSHA256
         self.tables = tables
         self.workspaces = workspaces
         self.artifacts = artifacts
+        self.toolResults = toolResults
+        self.configs = configs
         self.totalBytes = totalBytes
     }
 }
 
 // MARK: - Restore plan file (durable rollback identity)
+
+/// One retained tool result to recreate through the real result engine under
+/// NEW identities. `newRef` is derived from the new run/call pair and is what
+/// the durable toolResult checkpoint summary is rewritten to.
+public struct C07ToolResultPlanEntry: Codable, Sendable, Equatable {
+    public var oldTaskID: UUID
+    public var oldRunID: UUID
+    public var oldCallID: String
+    public var newTaskID: UUID
+    public var newRunID: UUID
+    public var newCallID: String
+    public var newRef: String
+    public var byteCount: Int
+    public var sha256: String
+    public var originalDigest: String?
+    /// Source retention/execution truncation facts. Optional so a plan written
+    /// before this field still decodes (treated as false).
+    public var retentionTruncated: Bool?
+    public var executionReportedTruncation: Bool?
+
+    public init(oldTaskID: UUID, oldRunID: UUID, oldCallID: String,
+                newTaskID: UUID, newRunID: UUID, newCallID: String,
+                newRef: String, byteCount: Int, sha256: String,
+                originalDigest: String?,
+                retentionTruncated: Bool? = nil,
+                executionReportedTruncation: Bool? = nil) {
+        self.oldTaskID = oldTaskID
+        self.oldRunID = oldRunID
+        self.oldCallID = oldCallID
+        self.newTaskID = newTaskID
+        self.newRunID = newRunID
+        self.newCallID = newCallID
+        self.newRef = newRef
+        self.byteCount = byteCount
+        self.sha256 = sha256
+        self.originalDigest = originalDigest
+        self.retentionTruncated = retentionTruncated
+        self.executionReportedTruncation = executionReportedTruncation
+    }
+}
 
 public struct C07OwnedDataRestorePlanFile: Codable, Sendable, Equatable {
     public var restoreID: UUID
@@ -1325,6 +1677,11 @@ public struct C07OwnedDataRestorePlanFile: Codable, Sendable, Equatable {
     public var workspaceIDs: [String]
     public var environmentIDs: [UUID]?
     public var environmentIdentityMap: [String: String]?
+    public var toolResultEntries: [C07ToolResultPlanEntry]?
+    public var toolResultTaskIDs: [UUID]?
+    public var remoteHostIDs: [String: String]?
+    public var mailAccountIDs: [String: String]?
+    public var configEntries: [String]?
     public var counts: C07OwnedDataCounts
     public var warnings: [String]
 
@@ -1335,6 +1692,11 @@ public struct C07OwnedDataRestorePlanFile: Codable, Sendable, Equatable {
                 workspaceIDs: [String],
                 environmentIDs: [UUID]? = nil,
                 environmentIdentityMap: [String: String]? = nil,
+                toolResultEntries: [C07ToolResultPlanEntry]? = nil,
+                toolResultTaskIDs: [UUID]? = nil,
+                remoteHostIDs: [String: String]? = nil,
+                mailAccountIDs: [String: String]? = nil,
+                configEntries: [String]? = nil,
                 counts: C07OwnedDataCounts,
                 warnings: [String]) {
         self.restoreID = restoreID
@@ -1345,6 +1707,11 @@ public struct C07OwnedDataRestorePlanFile: Codable, Sendable, Equatable {
         self.workspaceIDs = workspaceIDs
         self.environmentIDs = environmentIDs
         self.environmentIdentityMap = environmentIdentityMap
+        self.toolResultEntries = toolResultEntries
+        self.toolResultTaskIDs = toolResultTaskIDs
+        self.remoteHostIDs = remoteHostIDs
+        self.mailAccountIDs = mailAccountIDs
+        self.configEntries = configEntries
         self.counts = counts
         self.warnings = warnings
     }
@@ -1561,6 +1928,11 @@ public struct C07ArtifactCommitReceipt: Sendable, Equatable {
     public var privateTaskFiles: Int
     public var mailReceipts: Int
     public var evidenceRows: Int
+    public var appArtifacts: Int
+    public var captureFiles: Int
+    public var cadPreservedFiles: Int
+    public var toolResults: Int
+    public var configSections: Int
     public var warnings: [String]
 
     public init(createdRoots: [String],
@@ -1568,6 +1940,9 @@ public struct C07ArtifactCommitReceipt: Sendable, Equatable {
                 canvasProjects: Int, mediaProjects: Int, mediaAssets: Int,
                 privateTaskFiles: Int, mailReceipts: Int,
                 evidenceRows: Int = 0,
+                appArtifacts: Int = 0, captureFiles: Int = 0,
+                cadPreservedFiles: Int = 0, toolResults: Int = 0,
+                configSections: Int = 0,
                 warnings: [String] = []) {
         self.createdRoots = createdRoots
         self.attachmentPaths = attachmentPaths
@@ -1577,6 +1952,11 @@ public struct C07ArtifactCommitReceipt: Sendable, Equatable {
         self.privateTaskFiles = privateTaskFiles
         self.mailReceipts = mailReceipts
         self.evidenceRows = evidenceRows
+        self.appArtifacts = appArtifacts
+        self.captureFiles = captureFiles
+        self.cadPreservedFiles = cadPreservedFiles
+        self.toolResults = toolResults
+        self.configSections = configSections
         self.warnings = warnings
     }
 }
@@ -1592,13 +1972,18 @@ public struct C07OwnedDataCommitReceipt: Sendable, Equatable {
     public var providers: Int
     public var models: Int
     public var evidenceRows: Int
+    public var todos: Int
+    public var partial: Bool
+    public var omissions: Int
     public var warnings: [String]
 
     public init(conversations: Int = 0, messages: Int = 0, runs: Int = 0,
                 toolCalls: Int = 0, attachments: Int = 0,
                 workspaces: Int = 0, schedules: Int = 0,
                 providers: Int = 0, models: Int = 0,
-                evidenceRows: Int = 0, warnings: [String] = []) {
+                evidenceRows: Int = 0, todos: Int = 0,
+                partial: Bool = false, omissions: Int = 0,
+                warnings: [String] = []) {
         self.conversations = conversations
         self.messages = messages
         self.runs = runs
@@ -1609,6 +1994,9 @@ public struct C07OwnedDataCommitReceipt: Sendable, Equatable {
         self.providers = providers
         self.models = models
         self.evidenceRows = evidenceRows
+        self.todos = todos
+        self.partial = partial
+        self.omissions = omissions
         self.warnings = warnings
     }
 }

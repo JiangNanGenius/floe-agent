@@ -119,16 +119,14 @@ public enum C02ToolResultIntegration {
         box.clear(epoch: epoch)
     }
 
-    /// Adds the model paging tool to an explicitly-bounded ordinary run. A nil
-    /// ceiling already means "compiled default", which includes the registered
-    /// runner; a temporary run is never widened.
+    /// Preserve exact task/host ceilings, including an explicit empty set.
+    /// A nil ceiling uses the compiled registry default, which already
+    /// includes the reader. Registration never grants an extra allowed tool.
     public static func offeredToolNames(
         _ base: Set<String>?,
-        temporary: Bool
+        temporary _: Bool
     ) -> Set<String>? {
-        guard !temporary, var names = base else { return base }
-        names.insert(ToolResultPagingTool.name)
-        return names
+        base
     }
 
     /// Purges one deleted task's captured results through the installed

@@ -71,6 +71,13 @@ internal data class C07Plan(
     val mailReceipts: Int,
     val providerConfigs: Int,
     val executionEvidence: Int,
+    val todos: Int = 0,
+    val toolResults: Int = 0,
+    val appArtifacts: Int = 0,
+    val captureFiles: Int = 0,
+    val configSections: Int = 0,
+    val omissions: Int = 0,
+    val partial: Boolean = false,
     val warnings: List<String>,
 )
 
@@ -90,6 +97,13 @@ internal data class C07Receipt(
     val canvasProjects: Int,
     val mediaProjects: Int,
     val evidenceRows: Int,
+    val todos: Int = 0,
+    val toolResults: Int = 0,
+    val appArtifacts: Int = 0,
+    val captureFiles: Int = 0,
+    val cadPreserved: Int = 0,
+    val configSections: Int = 0,
+    val partial: Boolean = false,
 )
 
 internal data class C07Job(
@@ -209,6 +223,13 @@ internal class C07DataExchangeClient(
                     mailReceipts = it.optInt("mailReceipts", 0),
                     providerConfigs = it.optInt("providerConfigs", 0),
                     executionEvidence = it.optInt("executionEvidence", 0),
+                    todos = it.optInt("todos", 0),
+                    toolResults = it.optInt("toolResults", 0),
+                    appArtifacts = it.optInt("appArtifacts", 0),
+                    captureFiles = it.optInt("captureFiles", 0),
+                    configSections = it.optInt("configSections", 0),
+                    omissions = it.optInt("omissions", 0),
+                    partial = it.optBoolean("partial", false),
                     warnings = strings(response.optJSONArray("warnings")),
                 )
             },
@@ -229,6 +250,13 @@ internal class C07DataExchangeClient(
                     canvasProjects = it.optInt("canvasProjects", 0),
                     mediaProjects = it.optInt("mediaProjects", 0),
                     evidenceRows = it.optInt("evidenceRows", 0),
+                    todos = it.optInt("todos", 0),
+                    toolResults = it.optInt("toolResults", 0),
+                    appArtifacts = it.optInt("appArtifacts", 0),
+                    captureFiles = it.optInt("captureFiles", 0),
+                    cadPreserved = it.optInt("cadPreserved", 0),
+                    configSections = it.optInt("configSections", 0),
+                    partial = it.optBoolean("partial", false),
                 )
             },
         )

@@ -522,7 +522,11 @@ private fun TodoRow(
                 }
                 val detail = buildList {
                     if (todo.recurrence != "none") add(todo.recurrence)
-                    todo.reminderMinutesBefore?.let { add(reminderText(it)) }
+                    if (todo.remindersSuspended && todo.reminderMinutesBefore != null) {
+                        add(stringResource(R.string.calendar_todo_reminders_paused))
+                    } else {
+                        todo.reminderMinutesBefore?.let { add(reminderText(it)) }
+                    }
                     if (todo.completed) add(stringResource(R.string.calendar_todo_completed))
                 }.joinToString(" · ")
                 if (detail.isNotEmpty()) {

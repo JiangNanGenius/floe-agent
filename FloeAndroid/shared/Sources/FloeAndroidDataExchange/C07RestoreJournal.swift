@@ -312,6 +312,14 @@ public struct C07RestoreReceipt: Sendable, Equatable {
     public var mediaAssetsRestored: Int
     public var mailReceiptsRestored: Int
     public var evidenceRowsRestored: Int
+    public var todosRestored: Int
+    public var toolResultsRestored: Int
+    public var appArtifactsRestored: Int
+    public var captureFilesRestored: Int
+    public var cadPreservedRestored: Int
+    public var configSectionsRestored: Int
+    public var partial: Bool
+    public var omissions: Int
     public var warnings: [String]
     public var journalURL: URL
 }
@@ -495,6 +503,14 @@ public enum C07RestoreEngine {
                 mediaAssetsRestored: artifactReceipt?.mediaAssets ?? 0,
                 mailReceiptsRestored: artifactReceipt?.mailReceipts ?? 0,
                 evidenceRowsRestored: artifactReceipt?.evidenceRows ?? 0,
+                todosRestored: ownedReceipt?.todos ?? 0,
+                toolResultsRestored: artifactReceipt?.toolResults ?? 0,
+                appArtifactsRestored: artifactReceipt?.appArtifacts ?? 0,
+                captureFilesRestored: artifactReceipt?.captureFiles ?? 0,
+                cadPreservedRestored: artifactReceipt?.cadPreservedFiles ?? 0,
+                configSectionsRestored: artifactReceipt?.configSections ?? 0,
+                partial: ownedReceipt?.partial ?? false,
+                omissions: ownedReceipt?.omissions ?? 0,
                 warnings: warnings,
                 journalURL: journal.url)
         } catch {
