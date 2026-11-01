@@ -155,7 +155,7 @@ final class CADDatumAxisPointEditorTests: XCTestCase {
         guard case let .pattern(_, spec) = node.kind else {
             return XCTFail("the pattern node was not recorded")
         }
-        XCTAssertEqual(spec.axisRef?.axisID, axis,
+        XCTAssertEqual(spec.axisRef?.axisID, axis.id,
                        "the spec must store the axis IDENTITY, not a baked line")
         XCTAssertEqual(spec.kind, .circular)
         XCTAssertEqual(spec.count, 3)
@@ -229,7 +229,7 @@ final class CADDatumAxisPointEditorTests: XCTestCase {
         // The point offset edits through the same service and follows the axis.
         XCTAssertTrue(model.updateDatumPointOffset(point.id, offset: "9",
                                                   expectedOffset: "4"))
-        XCTAssertEqual(f.document.session.document.datumPoints.first?.position.y, 19,
+        XCTAssertEqual(try XCTUnwrap(f.document.session.document.datumPoints.first).position.y, 19,
                        accuracy: 1e-6)
 
         // Deleting the point frees the axis.

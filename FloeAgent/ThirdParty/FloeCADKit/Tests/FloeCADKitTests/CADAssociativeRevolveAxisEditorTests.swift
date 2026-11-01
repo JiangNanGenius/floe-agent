@@ -247,7 +247,7 @@ final class CADAssociativeRevolveAxisEditorTests: XCTestCase {
             document.session.document.features.node(revolve.id)).kind else {
             return XCTFail("the revolve node disappeared")
         }
-        XCTAssertEqual(ref.source, .constructionAxis(axis))
+        XCTAssertEqual(ref.source, .constructionAxis(axis.id))
         XCTAssertEqual(try volume(document, body), before, accuracy: 1e-6)
 
         // Move the axis source; the actual revolve geometry follows.
