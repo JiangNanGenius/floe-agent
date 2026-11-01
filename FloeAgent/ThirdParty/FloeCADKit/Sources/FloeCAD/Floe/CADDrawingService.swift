@@ -90,6 +90,23 @@ public final class CADDrawingService {
     public static let maxPages = 64
     public static let maxSourceBodies = 12
 
+    /// Every action `handle(action:args:)` dispatches. The model-facing
+    /// capability arrays and `CadServiceOperationCatalog` are pinned to this
+    /// executor vocabulary by `NativeCADCapabilityDiscoveryTests`.
+    public nonisolated static let actions: [String] = [
+        "standardSheet", "multiViewSheet", "addView", "updateView",
+        "removeView", "layoutViews", "dimensionCandidates", "assemblySheet",
+        "addPage", "updatePage", "removePage", "setBOM",
+        "addBalloon", "updateBalloon", "removeBalloon",
+        "addDimension", "updateDimension", "removeDimension",
+        "addAnnotation", "updateAnnotation", "removeAnnotation",
+        "addManufacturingAnnotation", "updateManufacturingAnnotation",
+        "removeManufacturingAnnotation",
+        "listTemplates", "createTemplate", "updateTemplate", "copyTemplate",
+        "applyTemplate", "deleteTemplate",
+        "pages", "project", "dimensions", "export",
+    ]
+
     private let document: FloeCADDocument
 
     public init(document: FloeCADDocument) {
@@ -139,7 +156,9 @@ public final class CADDrawingService {
         case "applyTemplate": return applyTemplateAction(args)
         case "deleteTemplate": return deleteTemplateAction(args)
         default:
-            return fail("unknown_action", "Unknown drawing action '\(action)'.")
+            return fail("unknown_action",
+                        "Unknown drawing action '\(action)'. Use "
+                            + Self.actions.joined(separator: ", ") + ".")
         }
     }
 

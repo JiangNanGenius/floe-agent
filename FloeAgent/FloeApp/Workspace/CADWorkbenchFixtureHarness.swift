@@ -16,6 +16,13 @@
 // production create/tap route, so the shipped HoleOptionsSheet and the real
 // History edit/save/reopen path are what the UI test exercises.
 //
+// `--ui-test-cad-iges-surface-import` / `--ui-test-cad-iges-surface-export`
+// seed an owned workspace `.floecad` package (closed plate + mesh-only body,
+// plus one OCCT-written exact open IGES surface for export) and present the
+// SHIPPED `FilePreviewView`; the import mode also drafts a real pending import
+// proposal through the same host action the assistant uses. See
+// `CADIGESSurfaceUIFixture` for the exact fixture provenance.
+//
 
 #if DEBUG && canImport(SwiftUI) && canImport(UIKit)
 import SwiftUI
@@ -630,8 +637,13 @@ enum CADQualificationFixture {
 /// The harness view the launch argument presents. It owns the fixture document
 /// for the lifetime of the scene.
 struct CADWorkbenchFixtureHarness: View {
+    @EnvironmentObject private var environment: AppEnvironment
     @State private var document: FloeCADDocument?
     @State private var error: String?
+    /// E26: set when the fixture seeded a workspace-owned .floecad package and
+    /// a real pending import proposal; the product FilePreviewView is then the
+    /// only surface presented, so the shipped banner/export sheet are real.
+    @State private var igesPreview: CADIGESSurfaceUIFixture.Prepared?
 
     /// The App fixture cannot reach FloeCAD's internal `testHeavyComputeProbe`.
     /// This DEBUG-only launch choice installs the one existing scheduling seam
@@ -652,7 +664,16 @@ struct CADWorkbenchFixtureHarness: View {
 
     var body: some View {
         Group {
-            if let document {
+            if let igesPreview {
+                // E26: the SHIPPED workspace preview. The pre-Apply import
+                // banner and the part-scope IGES exchange sheet are the
+                // product views; this branch only selects the real file.
+                NavigationStack {
+                    FilePreviewView(relativePath: igesPreview.workspaceRelativePath,
+                                    center: environment.workspaceCenter,
+                                    conversationID: igesPreview.conversationID)
+                }
+            } else if let document {
                 // Mirror the real FilePreview host: the workbench's title and
                 // toolbar chrome (undo/redo, views, history, variables, items,
                 // import/export, tools, settings) only render inside a
@@ -701,11 +722,14 @@ struct CADWorkbenchFixtureHarness: View {
         }
         .accessibilityIdentifier("CADFixtureHarness")
         .task {
-            guard document == nil, error == nil else { return }
+            guard document == nil, igesPreview == nil, error == nil else { return }
             Self.installMeshPanelFlowProbeIfRequested()
             do {
                 let arguments = ProcessInfo.processInfo.arguments
-                if arguments.contains("--ui-test-cad-hole-form") {
+                if let mode = CADIGESSurfaceUIFixture.Mode.selected(from: arguments) {
+                    igesPreview = try await CADIGESSurfaceUIFixture.prepare(
+                        mode: mode, in: environment)
+                } else if arguments.contains("--ui-test-cad-hole-form") {
                     // H1 mechanical-hole FORM acceptance. The FloeCAD fixture
                     // seeds a real unconsumed placement circle, arms the real
                     // `beginCreate(.hole)` + viewport-tap route, and presents

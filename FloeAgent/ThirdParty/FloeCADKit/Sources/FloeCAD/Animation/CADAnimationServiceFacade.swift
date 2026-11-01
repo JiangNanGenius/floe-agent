@@ -20,6 +20,13 @@ public final class CADAnimationService {
         "preset", "evaluate", "undo", "redo",
     ]
 
+    /// The model-facing animation vocabulary: authored/read actions plus the
+    /// host-owned `capture`/`export` media actions. Kept sorted so capability
+    /// discovery is stable; `CadNativeEditActions.animation` is pinned to this
+    /// set by `NativeCADCapabilityDiscoveryTests`.
+    public nonisolated static let advertisedActions: [String] =
+        (actions + ["capture", "export"]).sorted()
+
     public let document: FloeCADDocument
 
     public init(document: FloeCADDocument) {

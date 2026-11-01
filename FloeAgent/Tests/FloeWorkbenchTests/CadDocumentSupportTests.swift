@@ -598,6 +598,18 @@ struct CadServiceOperationCatalogTests {
         let properties = try #require(schema["properties"] as? [String: Any])
         let opDescription = try #require((properties["op"] as? [String: Any])?["description"] as? String)
         #expect(opDescription.contains("sketch.addText"))
+        // X33: the schema is derived from the same executable vocabulary and
+        // marks the retained guaranteed refusals as unavailable, rather than
+        // listing them as runnable operations.
+        #expect(!opDescription.contains("__NATIVE_"))
+        #expect(opDescription.contains(CadNativeOperationVocabulary.executable.joined(separator: ", ")))
+        #expect(!CadNativeOperationVocabulary.executable.contains("feature.scaleFace"))
+        #expect(!CadNativeOperationVocabulary.executable.contains("feature.rotateFace"))
+        #expect(opDescription.contains("feature.scaleFace, feature.rotateFace are NOT executable"))
+        #expect(opDescription.contains("exact_edit_unsupported"))
+        #expect(opDescription.contains("capabilities.unavailable_operations"))
+        #expect(opDescription.contains("cylinderRadial"))
+        #expect(opDescription.contains("normal-axis"))
         let argsDescription = try #require((properties["args"] as? [String: Any])?["description"] as? String)
         #expect(argsDescription.contains("sketch.addText"))
         #expect(argsDescription.contains("unsupported_font"))

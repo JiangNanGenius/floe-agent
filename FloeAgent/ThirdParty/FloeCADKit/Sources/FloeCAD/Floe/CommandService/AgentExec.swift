@@ -163,19 +163,55 @@ nonisolated enum AgentExecOp: Sendable, Equatable {
 
 // MARK: - Parsing
 
+/// One deliberately unavailable operation. `available` is a real boolean in
+/// the capabilities JSON so a consumer does not have to infer availability
+/// from an op name or a human-readable message.
+nonisolated struct AgentExecUnavailableOperation: Sendable, Equatable {
+    var op: String
+    var code: String
+    var message: String
+
+    /// Compact capability row. The human-readable message stays in the
+    /// operation record (and the tool schema) so the every-turn capability
+    /// reply does not grow past its model-visible budget.
+    var jsonObject: [String: Any] {
+        ["op": op, "available": false, "code": code]
+    }
+}
+
 nonisolated enum AgentExec {
 
-    /// Every op this build accepts, for `/v1/commands`-style discovery and for
-    /// naming the alternatives in an `unknown_op` message.
+    /// Every EXECUTABLE op this build advertises through `/v1/commands`-style
+    /// discovery, `cad.document` capabilities (`operation_names`) and the tool
+    /// schema. Guaranteed-refusal operations are deliberately absent; they
+    /// stay parseable below and are reported through `unavailableOps` so a
+    /// caller receives the stable refusal instead of `unknown_op`.
     static let opNames = [
         "sketch.create", "sketch.addEntities", "sketch.addText",
         "feature.extrude", "feature.revolve", "feature.hole",
         "feature.pattern", "feature.mirror", "feature.transform", "feature.boolean",
         "feature.fillet", "feature.chamfer", "feature.shell",
         "feature.sweep", "feature.loft", "feature.pushPull",
-        "feature.moveFace", "feature.scaleFace", "feature.rotateFace",
+        "feature.moveFace",
         "feature.deleteFace", "feature.replaceFace", "feature.draftFace",
         "body.setMaterial", "item.setHidden",
+    ]
+
+    /// Operations the parser and executor still recognize, but that are
+    /// guaranteed to refuse without mutating the document. They are not part
+    /// of the advertised executable vocabulary; capabilities expose this list
+    /// under `unavailable_operations` so the model sees `available=false`
+    /// before it calls. The parse/execute cases remain for historical callers
+    /// and produce the original `exact_edit_unsupported` response.
+    static let unavailableOps: [AgentExecUnavailableOperation] = [
+        AgentExecUnavailableOperation(
+            op: "feature.scaleFace",
+            code: "exact_edit_unsupported",
+            message: "Exact per-face scaling is not implemented; no geometry, history or undo step is changed. Use feature.transform for a whole-body scale."),
+        AgentExecUnavailableOperation(
+            op: "feature.rotateFace",
+            code: "exact_edit_unsupported",
+            message: "Exact per-face rotation is not implemented; no geometry, history or undo step is changed. Use feature.transform for a whole-body rotation."),
     ]
 
     static let booleanKinds = ["union", "subtract", "intersect"]

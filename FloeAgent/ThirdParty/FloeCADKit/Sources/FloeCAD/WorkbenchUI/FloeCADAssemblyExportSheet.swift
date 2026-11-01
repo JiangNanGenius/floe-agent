@@ -92,6 +92,7 @@ struct CADAssemblyExportSheet: View {
                             Text(item.title).tag(item)
                         }
                     }
+                    .accessibilityIdentifier("CADExchangeFormat")
                     Picker(FloeCADStrings.label("cad.ui.export.scope", "Scope"),
                            selection: $scope) {
                         Text(FloeCADStrings.text("cad.ui.export.scope.part", "Part / parts only"))
@@ -102,6 +103,7 @@ struct CADAssemblyExportSheet: View {
                                 .tag(CADExchangeScope.assembly)
                         }
                     }
+                    .accessibilityIdentifier("CADExchangeScope")
                 }
 
                 if let coverage {
@@ -139,11 +141,13 @@ struct CADAssemblyExportSheet: View {
                             perform()
                         }
                         .disabled((coverage?.includedCount ?? 0) == 0)
+                        .accessibilityIdentifier("CADExchangeConfirm")
                     } else {
                         Button(FloeCADStrings.label("cad.ui.common.export", "Export")) {
                             perform()
                         }
                         .disabled((coverage?.includedCount ?? 0) == 0)
+                        .accessibilityIdentifier("CADExchangeConfirm")
                     }
                 }
             }

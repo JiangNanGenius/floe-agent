@@ -948,9 +948,15 @@ ground plane. Exact argument names (unknown fields are refused by the kernel):
   `feature.pattern`,
   `feature.mirror`, `feature.transform`, `feature.boolean`, `feature.fillet`,
   `feature.chamfer`, `feature.shell`, `feature.sweep`, `feature.loft`,
-  `feature.pushPull`, `feature.moveFace`, `feature.scaleFace`,
-  `feature.rotateFace`, `feature.deleteFace`, `feature.replaceFace`,
-  `feature.draftFace`, `body.setMaterial`, `item.setHidden`.
+  `feature.pushPull`, `feature.moveFace`, `feature.deleteFace`,
+  `feature.replaceFace`, `feature.draftFace`, `body.setMaterial`,
+  `item.setHidden`. `feature.scaleFace` and `feature.rotateFace` are not
+  executable in this build: the kernel returns `exact_edit_unsupported` without
+  mutation and reports them under `capabilities.unavailable_operations`; use
+  `feature.transform` for a whole-body transform. `feature.pushPull` supports
+  `mode=planarAxial` only (`cylinderRadial` is refused), and
+  `feature.moveFace` supports normal-axis (`dn`) movement only (tangential
+  `du`/`dv` is refused).
 - 中文：单位为毫米与度；`sketch.create` 默认使用地面平面，返回 `sketchID`；
   文字请走原生文字草图链：`sketch.addText {sketchID,text,height,fontName?,origin?}`
   （height 为字帽高度毫米；origin 为基线起点，默认 [0,0]）在一次撤销步骤内把字形轮廓

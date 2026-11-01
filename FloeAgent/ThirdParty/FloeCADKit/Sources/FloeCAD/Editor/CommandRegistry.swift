@@ -79,6 +79,14 @@ nonisolated struct AppCommand: Identifiable, Hashable, Sendable {
     /// change re-renders the search corpus without a relaunch.
     var title: String { FloeCADStrings.text(titleKey, titleFallback) }
 
+    /// Whether `EditorViewModel.runCommand(_:)` actually has a dispatcher case
+    /// for this id. `CommandDispatch.routableIDs` is the single authority: a
+    /// catalog entry added without a handler is automatically non-executable
+    /// instead of being advertised as a live command. The entry stays in the
+    /// catalog so its stable id/localization and a truthful unavailable
+    /// reason survive until the feature lands.
+    var isExecutable: Bool { CommandRegistry.routableIDs.contains(id) }
+
     init(id: String, title: String, category: Category, chord: KeyChord?) {
         self.id = id
         self.titleKey = "cad.cmd.\(id)"
@@ -114,7 +122,7 @@ nonisolated struct CommandRegistry: Sendable {
     /// hotkey, so nothing is dispatched.
     func command(for chord: KeyChord) -> AppCommand? {
         if chord.isBareKey, singleKeyAction == .commandSearch { return nil }
-        return Self.all.first { $0.chord == chord }
+        return Self.all.first { $0.chord == chord && $0.isExecutable }
     }
 
     func command(id: String) -> AppCommand? { Self.all.first { $0.id == id } }
@@ -131,10 +139,13 @@ nonisolated struct CommandRegistry: Sendable {
     ///
     /// An empty query returns recents (spec), so the launcher is useful before
     /// the user types. `scope` narrows to a category when a selection implies
-    /// one — the spec's "pre-selection scopes results".
+    /// one — the spec's "pre-selection scopes results". The default corpus is
+    /// the executable launcher set; pass `CommandRegistry.all` explicitly
+    /// only for non-launcher introspection, because the wider catalog also
+    /// names planned entries that no dispatcher case can perform yet.
     func search(
         _ query: String, scope: AppCommand.Category? = nil,
-        in catalog: [AppCommand] = CommandRegistry.all
+        in catalog: [AppCommand] = CommandRegistry.launchableCommands
     ) -> [AppCommand] {
         let pool = scope.map { s in catalog.filter { $0.category == s } } ?? catalog
         let trimmed = query.trimmingCharacters(in: .whitespaces)
@@ -276,8 +287,37 @@ nonisolated struct CommandRegistry: Sendable {
         AppCommand(id: "project.rename", title: "Rename Project", category: .project, chord: nil),
     ]
 
+    /// Catalog entries retained for stable ids/localization/planned work but
+    /// not executable by the current dispatcher. No launcher or hotkey surface
+    /// may present these as working commands.
+    static var unavailableCommands: [AppCommand] {
+        all.filter { !$0.isExecutable }
+    }
+
+    /// Specific truthful reasons for the commands named by the current
+    /// capability audit. Everything else still receives the generic reason
+    /// below, so no non-executable entry is left unexplained.
+    private static let plannedReasons: [String: String] = [
+        "plane.angle": "M07 angle datums are not implemented; no editor entry point is wired.",
+        "plane.offset": "Offset datums are created through the existing NumericInputBar datum tool; this command id has no Command Dispatch entry.",
+        "plane.threePoints": "M07 three-point datums are not implemented; no editor entry point is wired.",
+        "project.insertProject": "E35 two-copy compare/merge is not implemented; insertion is not merge and no editor entry point is wired.",
+    ]
+
+    /// Why the entry cannot run, or nil when it is executable. This is the
+    /// truthful availability a catalog/search surface must show instead of
+    /// silently offering the title as an action.
+    static func unavailableReason(for id: String) -> String? {
+        guard let command = all.first(where: { $0.id == id }), !command.isExecutable else {
+            return nil
+        }
+        return plannedReasons[id]
+            ?? "This command id has no Command Dispatch entry; use the matching tool or palette action where available."
+    }
+
     /// Every command that has a chord, for the cheat sheet (long-press ⌘).
     static var cheatSheet: [AppCommand.Category: [AppCommand]] {
-        Dictionary(grouping: all.filter { $0.chord != nil }, by: \.category)
+        Dictionary(grouping: all.filter { $0.chord != nil && $0.isExecutable },
+                   by: \.category)
     }
 }

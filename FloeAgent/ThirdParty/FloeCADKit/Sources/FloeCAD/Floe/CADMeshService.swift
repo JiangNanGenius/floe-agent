@@ -316,6 +316,17 @@ public final class CADMeshService {
     public static let wallClockLimitSeconds: Double = 10
     public static let maxImageBytes = 8 * 1024 * 1024
 
+    /// Every action `handle(action:args:)` recognizes. `text` is retained for
+    /// historical callers and returns the structured `text_mesh_unavailable`
+    /// refusal; it is deliberately excluded from `advertisedActions`, which is
+    /// the executable vocabulary exposed by capabilities and pinned to
+    /// `CadServiceOperationCatalog` by `NativeCADCapabilityDiscoveryTests`.
+    public nonisolated static let actions: [String] = [
+        "combine", "boolean", "transform", "recomputeNormals",
+        "repair", "simplify", "material", "image", "boundary", "text",
+    ]
+    public nonisolated static let advertisedActions: [String] = actions.filter { $0 != "text" }
+
     private let document: FloeCADDocument
     /// Per-service deadline used by every operation. The public initializer
     /// keeps the shared 10-second limit; the internal one exists only so the
@@ -420,8 +431,8 @@ public final class CADMeshService {
         case "image": return image(args)
         default:
             return Self.fail("unknown_action",
-                             "Unknown mesh action '\(action)'. Use combine, boolean, transform, "
-                             + "recomputeNormals, boundary, repair, simplify, material, text or image.")
+                             "Unknown mesh action '\(action)'. Use "
+                                + Self.advertisedActions.joined(separator: ", ") + ".")
         }
     }
 

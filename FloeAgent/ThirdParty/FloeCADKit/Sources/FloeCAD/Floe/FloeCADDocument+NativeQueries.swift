@@ -19,8 +19,17 @@ public extension FloeCADDocument {
     /// Kernel build string (OCCT version) for capability discovery.
     static var kernelVersion: String { OCCTKernel.version }
 
-    /// The typed native operation vocabulary this build accepts.
+    /// The typed native operation vocabulary this build advertises as
+    /// executable. Guaranteed-refusal operations are not part of this list.
     static var nativeOperationNames: [String] { AgentExec.opNames }
+
+    /// Guaranteed-refusal operations that remain parseable for historical
+    /// callers. Capability discovery reports them as unavailable instead of
+    /// advertising them as executable, while the executor keeps returning the
+    /// original stable refusal. `available` is a real JSON boolean.
+    static var unavailableNativeOperations: [[String: Any]] {
+        AgentExec.unavailableOps.map { $0.jsonObject }
+    }
 
     // MARK: Query
 

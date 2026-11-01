@@ -96,6 +96,13 @@ public final class CADScriptService {
     /// Parameter `foo` is injected into the script as `param_foo`.
     public static let parameterPrefix = "param_"
 
+    /// Every action `handle(action:args:)` dispatches. The model-facing
+    /// capability arrays and `CadServiceOperationCatalog` are pinned to this
+    /// executor vocabulary by `NativeCADCapabilityDiscoveryTests`.
+    public nonisolated static let actions: [String] = [
+        "put", "remove", "apply", "list", "status", "preview",
+    ]
+
     private let document: FloeCADDocument
     private var lastEvaluation: [String: Any]?
 
@@ -120,7 +127,8 @@ public final class CADScriptService {
         case "status": return status()
         default:
             return Self.fail("unknown_action",
-                             "Unknown script action '\(action)'. Use list, put, remove, preview, apply or status.")
+                             "Unknown script action '\(action)'. Use "
+                                + Self.actions.joined(separator: ", ") + ".")
         }
     }
 

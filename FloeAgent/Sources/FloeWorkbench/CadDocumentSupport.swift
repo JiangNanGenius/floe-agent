@@ -318,6 +318,34 @@ public enum CadNativeEditActions {
     ]
 }
 
+/// The model-facing native operation vocabulary used by the every-turn tool
+/// schema. FloeWorkbench deliberately does not import FloeCAD, so the schema
+/// cannot read `FloeCADDocument` directly; these two lists are the single
+/// schema authority and are pinned to the kernel/executor by
+/// `NativeCADCapabilityDiscoveryTests`. `capabilities.operation_names` and
+/// `capabilities.unavailable_operations` remain derived from the executor.
+public enum CadNativeOperationVocabulary: Sendable {
+    /// Every model-facing executable native op, in the order the kernel
+    /// reports it. `document.import` is deliberately not here: it is an
+    /// internal parser route used only by the guarded host import proposal.
+    public static let executable: [String] = [
+        "sketch.create", "sketch.addEntities", "sketch.addText",
+        "feature.extrude", "feature.revolve", "feature.hole",
+        "feature.pattern", "feature.mirror", "feature.transform",
+        "feature.boolean", "feature.fillet", "feature.chamfer",
+        "feature.shell", "feature.sweep", "feature.loft",
+        "feature.pushPull", "feature.moveFace",
+        "feature.deleteFace", "feature.replaceFace", "feature.draftFace",
+        "body.setMaterial", "item.setHidden",
+    ]
+
+    /// Guaranteed-refusal ops retained for historical callers. They must
+    /// never be presented as executable.
+    public static let unavailable: [String] = [
+        "feature.scaleFace", "feature.rotateFace",
+    ]
+}
+
 // MARK: - Native package naming and creation/import policy
 
 /// Shared policy for the native `.floecad` package surface (tool create/import

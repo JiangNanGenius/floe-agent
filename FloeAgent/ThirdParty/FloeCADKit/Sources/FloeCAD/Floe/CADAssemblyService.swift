@@ -228,6 +228,26 @@ final class CADAssemblyInterferenceRun {
 
 @MainActor
 public final class CADAssemblyService {
+    /// Every action `handle(action:args:)` dispatches. This is the executor's
+    /// own vocabulary; the model-facing capability arrays and
+    /// `CadServiceOperationCatalog` are pinned to it by
+    /// `NativeCADCapabilityDiscoveryTests`. Order matches the catalog's
+    /// declaration so summary/detail pages remain stable.
+    public nonisolated static let actions: [String] = [
+        "addInstance", "addConstraint", "updateConstraint", "removeInstance",
+        "setTransform", "setVisible", "removeConstraint", "suppressConstraint",
+        "solve", "sourceUpdate", "clear",
+        "reference", "referenceCandidates", "explodedViews",
+        "addExplodedView", "updateExplodedView", "removeExplodedView",
+        "previewExplodedView", "resetExplodedView",
+        "partMetadata", "setPartMetadata",
+        "report", "instances", "dof", "interference", "interferencePlan",
+        "interferenceStatus", "cancelInterference",
+        "hierarchy", "references", "referenceDiagnostics",
+        "addSubassembly", "placePartReference", "moveInstance",
+        "removePartReference", "makeIndependent",
+    ]
+
     private let document: FloeCADDocument
 
     public init(document: FloeCADDocument) {
@@ -285,7 +305,9 @@ public final class CADAssemblyService {
         case "partMetadata": return partMetadataAction(args)
         case "setPartMetadata": return setPartMetadataAction(args)
         default:
-            return fail("unknown_action", "Unknown assembly action '\(action)'.")
+            return fail("unknown_action",
+                        "Unknown assembly action '\(action)'. Use "
+                            + Self.actions.joined(separator: ", ") + ".")
         }
     }
 

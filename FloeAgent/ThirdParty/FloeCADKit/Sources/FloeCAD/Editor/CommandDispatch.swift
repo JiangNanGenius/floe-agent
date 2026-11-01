@@ -33,7 +33,9 @@ extension CommandRegistry {
     /// Kept as data rather than inferred from the switch so a test can diff it
     /// against the catalog: adding a chorded command without routing it shows
     /// up in `unroutedChordedCommands` instead of silently doing nothing when
-    /// the user presses the key.
+    /// the user presses the key. This set is also the single availability
+    /// authority for `AppCommand.isExecutable`, Command Search's default
+    /// corpus, the chord registry and the cheat sheet.
     nonisolated static let routableIDs: Set<String> = [
         // Sketch tools — the tutorial's C / A / L / R / T / G.
         "sketch.line", "sketch.rectangle", "sketch.circle", "sketch.arc",
@@ -65,18 +67,20 @@ extension CommandRegistry {
     ]
 
     /// Catalog entries that advertise a chord but have no editor entry point
-    /// yet — Insert Image, Command Search, the project/import commands,
-    /// Select All. Surfaced (and pinned by a test) so the gap stays visible
-    /// rather than presenting as a key that quietly does nothing.
+    /// yet — Insert Image, the project/import commands, Select All. Surfaced
+    /// (and pinned by a test) so the gap stays visible rather than presenting
+    /// as a key that quietly does nothing. `AppCommand.isExecutable` reads
+    /// this same dispatcher authority, so the chord, search and cheat-sheet
+    /// surfaces cannot disagree with `perform(_:)`.
     static var unroutedChordedCommands: [AppCommand] {
-        all.filter { $0.chord != nil && !routableIDs.contains($0.id) }
+        all.filter { $0.chord != nil && !$0.isExecutable }
             .sorted { $0.id < $1.id }
     }
 
     /// Every routable command that has a chord — the set the UI needs to
     /// register with the system so a hardware keyboard can reach it.
     static var routableChordedCommands: [AppCommand] {
-        all.filter { $0.chord != nil && routableIDs.contains($0.id) }
+        all.filter { $0.chord != nil && $0.isExecutable }
     }
 
     /// What Command Search is allowed to offer: commands `runCommand` can
@@ -87,10 +91,10 @@ extension CommandRegistry {
     /// keeps that gap visible. A launcher must not show them: a result that
     /// does nothing when chosen is the same silent failure as a hotkey that
     /// does nothing, and harder to explain because the user just read the name
-    /// off a list. `CommandSearchTests` pins the two sets together.
+    /// off a list. `CADCapabilityAvailabilityTests` pins the two sets together.
     nonisolated static var launchableCommands: [AppCommand] {
         all.filter {
-            routableIDs.contains($0.id)
+            $0.isExecutable
                 && $0.id != "app.commandSearch" && $0.id != "app.commandSearchAlt"
         }
     }
@@ -109,7 +113,8 @@ extension EditorViewModel {
     /// the equivalent button would have refused.
     @discardableResult
     func runCommand(_ id: String, honoringSingleKeyAction: Bool = true) -> Bool {
-        guard let command = CommandRegistry.command(inCatalog: id) else { return false }
+        guard let command = CommandRegistry.command(inCatalog: id),
+              command.isExecutable else { return false }
 
         // Honour the spec's Single Key Action setting. The registry is a pure
         // value and does not observe preferences, so sync its copy here rather

@@ -310,6 +310,49 @@ public enum CADDebugFixtures {
         CADMeshService.testHeavyComputeProbe = probe
     }
 
+    // MARK: - E26 IGES open-surface native UI fixture
+
+    /// DEBUG-only native UI fixture support: real IGES bytes for ONE
+    /// standalone exact face taken from the native box primitive. The bytes
+    /// come from OCCT's own IGES writer (`brepMode: true`), so the App's
+    /// import proposal reads a legitimate open-sheet exchange file — never a
+    /// hand-authored string, a renamed mesh or a copied glTF payload.
+    ///
+    /// `offset` moves the donor box so the sheet sits clear of the fixture's
+    /// plate in the viewport; it changes only the fixture's placement, not
+    /// the kind of geometry. The temporary file lives for this call only and
+    /// is removed before returning, so nothing is written into the user's
+    /// workspace here. This file is DEBUG-only; Release has neither this
+    /// helper nor any call site.
+    public static func openSurfaceIGES(width: Double = 60,
+                                       depth: Double = 40,
+                                       height: Double = 4,
+                                       offset: SIMD3<Double> = .zero) throws -> Data {
+        let placement = Transform3D(
+            translation: offset,
+            rotation: .init(ix: 0, iy: 0, iz: 0, r: 1),
+            scale: 1)
+        guard let box = OCCTKernel.primitiveShape(
+            .box(width: width, depth: depth, height: height),
+            placement: placement) else {
+            throw fixtureError("The OCCT box primitive for the IGES UI fixture was not created.")
+        }
+        guard let face = OCCTKernel.debugStandaloneFace(from: box) else {
+            throw fixtureError("The OCCT fixture box yielded no standalone open face.")
+        }
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("floe-e26-open-surface-\(UUID().uuidString).igs")
+        defer { try? FileManager.default.removeItem(at: url) }
+        guard OCCTKernel.debugWriteIGES([face], to: url, brepMode: true) else {
+            throw fixtureError("OCCT's IGES writer refused the open-surface UI fixture.")
+        }
+        let data = try Data(contentsOf: url)
+        guard !data.isEmpty else {
+            throw fixtureError("The IGES open-surface UI fixture produced no bytes.")
+        }
+        return data
+    }
+
     // MARK: - Helpers
 
     private static func run(_ document: FloeCADDocument,

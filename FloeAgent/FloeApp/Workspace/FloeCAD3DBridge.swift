@@ -689,6 +689,12 @@ final class FloeCAD3DBridge {
                 "formats": NativeCADCapabilityMatrix.json(),
             ],
             "operation_names": FloeCADDocument.nativeOperationNames,
+            // Guaranteed-refusal ops stay parseable for historical callers but
+            // are NOT advertised as executable. Each row names the stable
+            // executor refusal; the tool schema teaches the supported
+            // alternatives. A capability consumer must not offer these as
+            // callable operations.
+            "unavailable_operations": FloeCADDocument.unavailableNativeOperations,
             "material_actions": CADMaterialService.actions,
             "parameter_actions": CADParameterService.actions,
             "scene_snapshot_schema": FloeCADDocument.sceneSnapshotSchemaVersion,
@@ -706,7 +712,10 @@ final class FloeCAD3DBridge {
                     + "plain obj remains a single .obj with UVs and no materials",
             ],
             "viewport_capture": ["formats": ["png"], "min_size": 64, "max_size": 4096],
-            "animation_actions": CadNativeEditActions.animation.sorted(),
+            "animation_actions": CADAnimationService.advertisedActions,
+            // Keep service summary and detail names in one catalog. App-level
+            // parity tests pin every catalog array to its native executor;
+            // material/parameter/animation vocabularies use the native services.
             "assembly_actions": CadServiceOperationCatalog.actionNames(forKind: "assembly"),
             "drawing_actions": CadServiceOperationCatalog.actionNames(forKind: "drawing"),
             "script_actions": CadServiceOperationCatalog.actionNames(forKind: "script"),

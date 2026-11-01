@@ -748,9 +748,11 @@ private enum CADNativeSheetLaunch {
 
 /// Drives the real presented Form sheets. Every helper acts on the production
 /// controls (buttons, toggles, segmented pickers, alerts); none of them calls a
-/// model/view-model API or fabricates a rendered result.
+/// model/view-model API or fabricates a rendered result. Shared by the other
+/// native CAD Form UI suites (E26 IGES exchange), so it is module-internal;
+/// it remains test-target-only.
 @MainActor
-private enum CADSheetProbe {
+enum CADSheetProbe {
     static func attach(_ name: String, to test: XCTestCase) {
         let attachment = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
         attachment.name = name
