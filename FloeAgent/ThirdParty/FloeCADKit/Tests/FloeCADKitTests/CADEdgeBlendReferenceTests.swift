@@ -457,8 +457,11 @@ final class CADEdgeBlendReferenceTests: XCTestCase {
                        case .profileWall = parents[0].source { return parents[0] }
                     return name
                 }
-                reference.faceNames?.faceA = legacyRoot(try XCTUnwrap(reference.faceNames?.faceA))
-                reference.faceNames?.faceB = legacyRoot(try XCTUnwrap(reference.faceNames?.faceB))
+                let prior = try XCTUnwrap(reference.faceNames)
+                var legacy = prior
+                legacy.faceA = legacyRoot(prior.faceA)
+                legacy.faceB = legacyRoot(prior.faceB)
+                reference.faceNames = legacy
             }
             let node = blend(f, refs: [reference], fillet: true)
             var document = DesignDocument()
