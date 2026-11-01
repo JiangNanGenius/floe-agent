@@ -271,9 +271,8 @@ struct CADPresentationWorkbenchContent: View {
     let canvasActions: CADCanvasActions?
 
     @State private var mode: CADWorkbenchMode = .edit
-    @State private var showMaterialInspector = false
     @State private var showEnvironmentInspector = false
-    @State private var materialTarget: CADMaterialTarget = .empty
+    @State private var materialInspector: MaterialInspectorRequest?
     @State private var handle = CADPresentationHandle()
     @State private var store: CADPresentationSceneStore
     @State private var presentSink = CADPresentationMaterialPreviewSink()
@@ -292,6 +291,14 @@ struct CADPresentationWorkbenchContent: View {
     @State private var exportHandle: CADAnimationExportHandle?
     @State private var videoExportOptions = CADAnimationExportOptions.load()
     @State private var showVideoExportOptions = false
+
+    /// One presentation owns one frozen selection. Keeping the target in the
+    /// sheet item prevents a first-open closure from observing the previous
+    /// target while the inspector's draft State is being initialized.
+    private struct MaterialInspectorRequest: Identifiable {
+        let id = UUID()
+        let target: CADMaterialTarget
+    }
 
     init(document: FloeCADDocument, canvasActions: CADCanvasActions?) {
         self.document = document
@@ -332,10 +339,10 @@ struct CADPresentationWorkbenchContent: View {
                 exportProgressCard(progress)
             }
         }
-        .sheet(isPresented: $showMaterialInspector) {
+        .sheet(item: $materialInspector) { request in
             CADMaterialInspectorView(
                 document: document,
-                target: materialTarget,
+                target: request.target,
                 previewSink: presentSink
             ) {
                 store.refresh(force: true)
@@ -625,9 +632,9 @@ struct CADPresentationWorkbenchContent: View {
     // MARK: Actions
 
     private func openMaterialInspector() {
-        materialTarget = CADPresentationSelection.materialTarget(document: document)
         presentSink.handle = handle
-        showMaterialInspector = true
+        materialInspector = MaterialInspectorRequest(
+            target: CADPresentationSelection.materialTarget(document: document))
     }
 
     private func exportPNG() {

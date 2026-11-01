@@ -208,6 +208,8 @@ struct CADMaterialInspectorView: View {
                     Text(model.target.title)
                         .multilineTextAlignment(.trailing)
                 }
+                .accessibilityElement(children: .combine)
+                .accessibilityIdentifier("CADMaterialSelectedTarget")
             }
             // The material name belongs to the draft/library, not only to an
             // apply target. Keeping it visible lets a user prepare or import

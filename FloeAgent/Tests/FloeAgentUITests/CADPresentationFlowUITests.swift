@@ -106,6 +106,97 @@ final class CADBackgroundOwnershipFlowUITests: XCTestCase {
 
 @MainActor
 final class CADPresentationFlowUITests: XCTestCase {
+    func testFirstUnpaintedFaceMaterialOpenAndModeRoundTripKeepSameTarget() throws {
+        continueAfterFailure = false
+        XCUIDevice.shared.orientation = .landscapeLeft
+        let app = XCUIApplication()
+        app.launchArguments = ["-AppleLanguages", "(en)", "-AppleLocale", "en_US",
+                               "-ui-testing", "-ui-testing-ipad", "--ui-test-cad-fixture",
+                               "--ui-test-cad-uninstanced"]
+        app.launch()
+        defer { app.terminate() }
+        XCTAssertTrue(app.buttons["UndoButton"].waitForExistence(timeout: 60))
+        let mode = app.segmentedControls["CADWorkbenchMode"]
+        mode.buttons["Present"].tap()
+        let surface = app.descendants(matching: .any)
+            .matching(identifier: "CADPresentationSurface").firstMatch
+        XCTAssertTrue(surface.waitForExistence(timeout: 30))
+        let granularity = app.segmentedControls["CADPresentSelectionMode"]
+        XCTAssertTrue(granularity.waitForExistence(timeout: 10))
+        app.buttons["CADPresentFit"].tap()
+        granularity.buttons["Face"].tap()
+
+        // Project the fixture's known top-face point (25,10,-30) mm through
+        // the production Fit camera. This is an actual viewport touch on an
+        // unpainted B-rep, not a direct selection or pre-painted test seam.
+        let azimuth = Double.pi * 0.22
+        let elevation = Double.pi * 0.12
+        let halfFov = Double.pi / 6
+        let radius = sqrt(100.0 * 100 + 10.0 * 10 + 60.0 * 60) / 2
+        let distance = max(radius / tan(halfFov) * 1.18, radius * 1.6)
+        let horizontal = -25 * cos(azimuth)
+        let vertical = 25 * sin(azimuth) * sin(elevation) + 5 * cos(elevation)
+        let depth = distance - (-25 * cos(elevation) * sin(azimuth) + 5 * sin(elevation))
+        let aspect = Double(surface.frame.width / surface.frame.height)
+        let x = 0.5 + horizontal / (2 * depth * tan(halfFov) * aspect)
+        let y = 0.5 - vertical / (2 * depth * tan(halfFov))
+        XCTAssertGreaterThan(x, 0.1)
+        XCTAssertLessThan(x, 0.9)
+        XCTAssertGreaterThan(y, 0.1)
+        XCTAssertLessThan(y, 0.9)
+        surface.coordinate(withNormalizedOffset: CGVector(dx: x, dy: y)).tap()
+
+        let selection = app.staticTexts["CADPresentSelection"]
+        let facePicked = NSPredicate(format: "exists == true AND label CONTAINS %@", " · Face ")
+        XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(
+            predicate: facePicked, object: selection)], timeout: 20), .completed)
+        let expectedTarget = selection.label
+        snapshotFaceFlow("X20 actual unpainted face selected")
+
+        let material = app.buttons["CADPresentMaterial"]
+        material.tap()
+        assertMaterialTarget(app, equals: expectedTarget)
+        snapshotFaceFlow("X20 first material open keeps exact face")
+        XCTAssertTrue(app.buttons["CADMaterialApply"].isEnabled)
+        app.buttons["CADMaterialCancel"].tap()
+
+        mode.buttons["Edit"].tap()
+        XCTAssertTrue(app.buttons["UndoButton"].waitForExistence(timeout: 20))
+        snapshotFaceFlow("X20 edit retains selected face")
+        mode.buttons["Present"].tap()
+        XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(
+            predicate: NSPredicate(format: "exists == true AND label == %@", expectedTarget),
+            object: selection)], timeout: 20), .completed)
+        material.tap()
+        assertMaterialTarget(app, equals: expectedTarget)
+        app.buttons["CADMaterialApply"].tap()
+        let target = app.descendants(matching: .any)
+            .matching(identifier: "CADMaterialSelectedTarget").firstMatch
+        XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(
+            predicate: NSPredicate(format: "exists == false"), object: target)], timeout: 20), .completed)
+        XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(
+            predicate: NSPredicate(format: "exists == true AND label == %@", expectedTarget),
+            object: selection)], timeout: 20), .completed)
+        snapshotFaceFlow("X20 apply keeps same face target")
+    }
+
+    private func assertMaterialTarget(_ app: XCUIApplication, equals expected: String) {
+        let target = app.descendants(matching: .any)
+            .matching(identifier: "CADMaterialSelectedTarget").firstMatch
+        XCTAssertTrue(target.waitForExistence(timeout: 10),
+                      "the first material sheet must receive a real selection")
+        XCTAssertTrue(target.label.contains(expected)
+                      || (target.value as? String)?.contains(expected) == true,
+                      "the inspector must own the same exact face as the viewport")
+    }
+
+    private func snapshotFaceFlow(_ name: String) {
+        let attachment = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
+        attachment.name = name
+        attachment.lifetime = .keepAlways
+        add(attachment)
+    }
+
     func testNarrowLargeTextPresentationAndMaterialRemainReachable() throws {
         continueAfterFailure = false
         XCUIDevice.shared.orientation = .portrait
