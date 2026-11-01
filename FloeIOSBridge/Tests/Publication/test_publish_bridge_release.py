@@ -449,6 +449,46 @@ class PublisherTests(unittest.TestCase):
         self.assertIn("iphoneLocalControl", report["error"])
         self.assertEqual(client.mutation_calls(), [])
 
+    def test_owner_assumed_reboot_is_disclosed_without_claiming_a_device_test(self) -> None:
+        payload = self.fixture.receipt_payload()
+        payload["checks"]["rebootRecovery"] = pub.REBOOT_OWNER_ASSUMPTION
+        self.fixture.receipt.write_text(json.dumps(payload), encoding="utf-8")
+        self.fixture.notes.write_text(self.fixture.notes.read_text() + "\n" + pub.REBOOT_ASSUMPTION_NOTE + "\n")
+        code, report, _, client, _, _ = self.run_publisher(publish=True)
+        self.assertEqual(code, 0)
+        self.assertIn(pub.REBOOT_ASSUMPTION_NOTE, report["limitations"])
+        self.assertTrue(report["complete"])
+
+    def test_owner_assumed_reboot_requires_public_disclosure(self) -> None:
+        payload = self.fixture.receipt_payload()
+        payload["checks"]["rebootRecovery"] = pub.REBOOT_OWNER_ASSUMPTION
+        self.fixture.receipt.write_text(json.dumps(payload), encoding="utf-8")
+        code, report, _, client, _, _ = self.run_publisher(publish=True)
+        self.assertEqual(code, 2)
+        self.assertIn("disclose", report["error"])
+        self.assertEqual(client.mutation_calls(), [])
+
+    def test_other_physical_checks_cannot_be_assumed(self) -> None:
+        payload = self.fixture.receipt_payload()
+        payload["checks"]["nativeDDIRecovery"] = pub.REBOOT_OWNER_ASSUMPTION
+        self.fixture.receipt.write_text(json.dumps(payload), encoding="utf-8")
+        code, report, _, client, _, _ = self.run_publisher(publish=True)
+        self.assertEqual(code, 2)
+        self.assertIn("nativeDDIRecovery", report["error"])
+        self.assertEqual(client.mutation_calls(), [])
+
+    def test_reboot_false_and_unknown_assumptions_remain_rejected(self) -> None:
+        for value in (False, "assumed", 1):
+            with self.subTest(value=value):
+                payload = self.fixture.receipt_payload()
+                payload["checks"]["rebootRecovery"] = value
+                self.fixture.receipt.write_text(json.dumps(payload), encoding="utf-8")
+                with self.assertRaises(pub.PublicationAbort):
+                    pub.validate_receipt(self.fixture.receipt, source_ref=payload["sourceRef"],
+                                         source_tree_sha256=payload["sourceTreeSHA256"],
+                                         ipa_sha256=payload["ipaSHA256"],
+                                         version=payload["marketingVersion"], build=payload["buildNumber"])
+
     def test_receipt_unknown_field_is_rejected(self) -> None:
         payload = self.fixture.receipt_payload()
         payload["udid"] = "0000000000000000000000000000000000000000"

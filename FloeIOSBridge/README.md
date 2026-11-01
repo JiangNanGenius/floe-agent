@@ -48,6 +48,8 @@ The public assets are `Floe-iOS-Bridge-<version>-unsigned.ipa`, its `.sha256`, a
 
 The independent tag family is `floe-ios-bridge-v<version>`. The publisher defaults to read-only verification; explicit `--publish` requires an immutable pushed tag, matching public assets and a private receipt from actual qualification. It publishes stable with `make_latest=false`, leaving the main Floe and macOS Bridge release/feed paths unchanged.
 
+When the owner explicitly accepts reboot recovery without another device run, the private receipt records `checks.rebootRecovery` as `assumed-by-owner`. The publisher requires that limitation in public release notes; it does not accept this value for other iPhone checks.
+
 ## Verification and licensing
 
 Focused checks live under `Tests/` and `scripts/run_core_checks.sh`; the primary owner runs the final App build and device acceptance. Physical iPad testing is waived by the project owner: compatibility is assumed for the universal target and must not be described as hardware-tested. Simulator/component results do not prove DDI recovery, background control or reboot recovery.

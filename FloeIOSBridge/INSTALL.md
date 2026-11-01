@@ -68,4 +68,6 @@ Pairing records, signing material and client keys are private. Use redacted diag
 
 ## Qualification boundaries
 
+An owner-accepted reboot recovery assumption is recorded separately from device tests and disclosed in the corresponding release notes.
+
 Compilation, signing and installation, device behavior, and public downloads are separate evidence. By project-owner direction, iPad compatibility is assumed rather than physically qualified. The release notes identify the actual iPhone checks for each version.

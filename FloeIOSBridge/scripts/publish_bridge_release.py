@@ -108,6 +108,8 @@ RECEIPT_FIELDS = {
     "ipadQualification",
 }
 IPAD_QUALIFICATION = "assumed-by-owner"
+REBOOT_OWNER_ASSUMPTION = "assumed-by-owner"
+REBOOT_ASSUMPTION_NOTE = "Reboot recovery was accepted by the owner and was not retested for this release."
 
 FORBIDDEN_TEXT_PATTERNS = (
     (re.compile(r"/Users/[^/\s\"']+"), "absolute user path"),
@@ -881,6 +883,8 @@ def validate_receipt(
     if not isinstance(checks, dict) or set(checks) != set(QUALIFICATION_CHECKS):
         raise PublicationAbort("preflight", "preflight-failed", "qualification receipt checks are not the exact required set", exit_code=2)
     for name in QUALIFICATION_CHECKS:
+        if name == "rebootRecovery" and checks.get(name) == REBOOT_OWNER_ASSUMPTION:
+            continue
         if checks.get(name) is not True:
             raise PublicationAbort("preflight", "preflight-failed", f"qualification receipt check {name} is not true", exit_code=2)
     if payload.get("ipadQualification") != IPAD_QUALIFICATION:
@@ -1134,6 +1138,8 @@ class Publisher:
         ]
         if not self.inputs.publish:
             limitations.append("Dry run: no release, tag or asset was created or changed.")
+        if (self.receipt_payload or {}).get("checks", {}).get("rebootRecovery") == REBOOT_OWNER_ASSUMPTION:
+            limitations.append(REBOOT_ASSUMPTION_NOTE)
         return limitations
 
     def _abort_report(self, error: PublicationAbort) -> dict:
@@ -1451,6 +1457,9 @@ class Publisher:
 
     def _validate_notes(self) -> None:
         text, digest, size = validate_notes(self.inputs.notes)
+        if (self.receipt_payload or {}).get("checks", {}).get("rebootRecovery") == REBOOT_OWNER_ASSUMPTION:
+            if REBOOT_ASSUMPTION_NOTE not in text:
+                self._abort("preflight", "preflight-failed", "release notes must disclose the owner-assumed reboot recovery", exit_code=2)
         self.notes_text = text
         self.notes_sha256 = digest
         self.report["notes"] = {"sha256": digest, "bytes": size}
