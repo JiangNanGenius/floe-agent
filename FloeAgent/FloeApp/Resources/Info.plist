@@ -86,6 +86,8 @@
 	</array>
 	<key>CFBundleVersion</key>
 	<string>$(CURRENT_PROJECT_VERSION)</string>
+	<key>FloeIOSBridgeDownloadURL</key>
+	<string>https://www.floe-agent.com/ios-bridge</string>
 	<key>FLOEGitHubOAuthClientID</key>
 	<string>$(FLOE_GITHUB_OAUTH_CLIENT_ID)</string>
 	<key>FloeMacBridgeDownloadURL</key>

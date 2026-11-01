@@ -204,6 +204,7 @@ targets:
               - public.rtf
         LSSupportsOpeningDocumentsInPlace: true
         FLOEGitHubOAuthClientID: $(FLOE_GITHUB_OAUTH_CLIENT_ID)
+        FloeIOSBridgeDownloadURL: https://www.floe-agent.com/ios-bridge
         ITSAppUsesNonExemptEncryption: false
         NSAppTransportSecurity:
           NSAllowsLocalNetworking: true
@@ -300,6 +301,8 @@ targets:
         product: FloeTools
       - package: FloeAgentPackages
         product: FloeSkills
+      - package: FloeAgentPackages
+        product: FloeIOSAutomation
       - package: FloeAgentPackages
         product: FloePersistence
       - package: FloeAgentPackages
@@ -702,6 +705,7 @@ targets:
       Release: Vendor/Office/native-host.xcconfig
     sources:
       - path: Tests/FloeAppTests/SkillRuntimeTargetTests.swift
+      - path: Tests/FloeAppTests/IOSBridgeIntegrationTests.swift
       - path: Tests/FloeAppTests/TaskEnvironmentOwnershipTests.swift
       - path: Tests/FloeAppTests/TaskRemoteEnvironmentLiveTests.swift
       - path: Tests/FloeAppTests/NativeCADLiveLLMTests.swift
@@ -1413,6 +1417,8 @@ targets:
       - path: Tests/FloeExecutionTests/SearchProviderCatalogTests.swift
       - path: Tests/FloeWorkbenchTests/CadDocumentSupportTests.swift
     dependencies:
+      - package: FloeAgentPackages
+        product: FloeIOSAutomation
       - target: FloeAgent
       - package: FloeMacBridge
         product: FloeMacBridgeProtocol
