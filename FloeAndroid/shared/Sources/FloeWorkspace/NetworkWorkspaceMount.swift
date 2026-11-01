@@ -51,6 +51,10 @@ import FoundationNetworking
 public enum NetworkWorkspaceProtocol: String, Codable, Sendable, CaseIterable {
     case webDAV
     case smb
+    /// C05 SSH/SFTP source. The trusted production factory supplies the
+    /// adapter from FloeAndroidCore; the default factory fails closed
+    /// because FloeWorkspace cannot depend on the C05 SSH domain.
+    case sftp
 }
 
 public enum NetworkWorkspaceMountStatus: String, Codable, Sendable {
@@ -184,6 +188,13 @@ public enum WorkspaceMountAdapterFactory {
             return try WebDAVWorkspaceMountAdapter(mount: mount, credentialResolver: credentialResolver)
         case .smb:
             return try SMBWorkspaceMountAdapter(mount: mount, credentialResolver: credentialResolver)
+        case .sftp:
+            throw NetworkWorkspaceError(
+                code: .unsupported,
+                stage: "configuration",
+                retryable: false,
+                safeDetail: "SFTP mounts require the trusted C05 adapter factory."
+            )
         }
     }
 }

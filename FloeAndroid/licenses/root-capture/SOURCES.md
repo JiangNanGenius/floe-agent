@@ -23,9 +23,27 @@ Build inputs and output identity:
   either file.
 
 The exact upstream license texts are preserved verbatim in
-`tcpdump-LICENSE` and `libpcap-LICENSE`. No local source patch is applied to
-either package beyond the build configuration. Corresponding source is the
-unmodified upstream archive named above.
+`tcpdump-LICENSE` and `libpcap-LICENSE`. The official archive hashes above are
+never rewritten.
+
+## Local guard patch
+
+The Full helper embeds the Floe capture guard
+(`scripts/root-capture/guard/`) through a minimal local patch to tcpdump:
+
+| Local input | Location |
+| --- | --- |
+| Guard implementation | `scripts/root-capture/guard/floe_capture_guard.c` |
+| Guard header | `scripts/root-capture/guard/floe_capture_guard.h` |
+| tcpdump hook patch | `scripts/root-capture/patches/0001-tcpdump-install-guard.patch` |
+
+`build-helper.sh` applies the patch to the exact tcpdump 4.99.5 archive,
+compiles the guard into the same AArch64 PIE, and records the SHA-256 of all
+three local inputs in `helper.json` plus one stripped-safe identity string in
+the ELF. `verify-helper.py` and `stage-helper.py` fail closed when the manifest,
+the embedded identity and the build inputs do not match. The guard is
+Floe-authored MPL-2.0 source; tcpdump and libpcap remain under their upstream
+licenses, and no upstream hash is replaced or treated as mutable.
 
 Build command:
 

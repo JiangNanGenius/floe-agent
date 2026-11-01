@@ -344,6 +344,9 @@ internal class FloeSystemServiceBinder(
                 "start" -> {
                     val info = operations.packetCaptureStart(
                         requestId = claim.requestId,
+                        taskId = claim.taskId,
+                        runId = claim.runId,
+                        epoch = claim.epoch,
                         helperId = req.getString(BinderProtocol.KEY_HELPER_ID) ?: "",
                         interfaceName = req.getString(BinderProtocol.KEY_INTERFACE_NAME) ?: "any",
                         snaplen = req.getInt(BinderProtocol.KEY_SNAPLEN, 65_535),
@@ -358,6 +361,9 @@ internal class FloeSystemServiceBinder(
                 "read" -> {
                     val chunk = operations.packetCaptureRead(
                         req.getString(BinderProtocol.KEY_CAPTURE_ID) ?: "",
+                        claim.taskId,
+                        claim.runId,
+                        claim.epoch,
                         req.getInt(BinderProtocol.KEY_MAX_BYTES, 64 * 1024),
                     )
                     captureChunk(chunk)
@@ -365,6 +371,9 @@ internal class FloeSystemServiceBinder(
                 "stop" -> {
                     val chunk = operations.packetCaptureStop(
                         req.getString(BinderProtocol.KEY_CAPTURE_ID) ?: "",
+                        claim.taskId,
+                        claim.runId,
+                        claim.epoch,
                     )
                     captureChunk(chunk)
                 }

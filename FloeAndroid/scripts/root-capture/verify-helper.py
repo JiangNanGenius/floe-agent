@@ -12,6 +12,7 @@ import argparse
 import hashlib
 import json
 import os
+import re
 import struct
 import sys
 
@@ -39,8 +40,14 @@ EM_AARCH64 = 183
 MAX_BYTES = 32 * 1024 * 1024
 MIN_PAGE = 16 * 1024
 EXPECTED_ID = "tcpdump-v1"
-EXPECTED_SCHEMA = "floe.root-capture-helper.v1"
+EXPECTED_SCHEMA = "floe.root-capture-helper.v2"
 EXPECTED_NAME = "libfloecapture_helper.so"
+GUARD_SCHEMA = "floe.capture-guard.v1"
+GUARD_VERSION = 1
+GUARD_ABI = "arm64-v8a"
+GUARD_MAGIC = b"FLOE_CAPTURE_GUARD_V1|"
+GUARD_MAX_IDENTITY = 512
+HEX64 = re.compile(r"^[0-9a-f]{64}$")
 
 
 class VerificationError(RuntimeError):
@@ -158,6 +165,71 @@ def read_dynamic(data: bytes, parsed: dict) -> dict:
     return {"needed": sorted(set(needed))}
 
 
+def parse_guard_identity(data: bytes) -> dict:
+    """Extract the stripped-safe guard build identity from .rodata.
+
+    The marker is a single NUL-terminated record:
+      FLOE_CAPTURE_GUARD_V1|arm64-v8a|1|<source>|<header>|<patch>
+    Exactly one occurrence is required; the hashes must be syntactically
+    valid. This is a packaging-identity binding, not an ELF signature.
+    """
+    positions = []
+    cursor = 0
+    while True:
+        found = data.find(GUARD_MAGIC, cursor)
+        if found < 0:
+            break
+        positions.append(found)
+        cursor = found + 1
+    if len(positions) != 1:
+        fail(f"expected exactly one guard identity record, found {len(positions)}")
+    start = positions[0]
+    stop = data.find(b"\x00", start, start + GUARD_MAX_IDENTITY)
+    if stop < 0:
+        fail("guard identity record is not NUL terminated")
+    try:
+        text = data[start:stop].decode("ascii", "strict")
+    except UnicodeDecodeError:
+        fail("guard identity record is not ASCII")
+    fields = text.split("|")
+    if len(fields) != 6:
+        fail(f"guard identity record has {len(fields)} fields, expected 6")
+    magic, abi, version, source, header, patch = fields
+    if magic != GUARD_MAGIC.decode("ascii").rstrip("|"):
+        fail("guard identity magic mismatch")
+    if abi != GUARD_ABI:
+        fail(f"guard identity ABI mismatch: {abi}")
+    if version != str(GUARD_VERSION):
+        fail(f"guard identity version mismatch: {version}")
+    for label, value in (("source", source), ("header", header), ("patch", patch)):
+        if not HEX64.match(value):
+            fail(f"guard identity {label} hash is not 64 lowercase hex characters")
+    return {
+        "schema": GUARD_SCHEMA,
+        "version": int(version),
+        "abi": abi,
+        "sourceSha256": source,
+        "headerSha256": header,
+        "patchSha256": patch,
+    }
+
+
+def guard_problem(guard: dict | None) -> str | None:
+    if not isinstance(guard, dict):
+        return "guard manifest is missing"
+    if guard.get("schema") != GUARD_SCHEMA:
+        return "guard schema mismatch"
+    if str(guard.get("version")) != str(GUARD_VERSION):
+        return "guard version mismatch"
+    if guard.get("abi") != GUARD_ABI:
+        return "guard ABI mismatch"
+    for key in ("sourceSha256", "headerSha256", "patchSha256"):
+        value = guard.get(key)
+        if not isinstance(value, str) or not HEX64.match(value):
+            return f"guard {key} is invalid"
+    return None
+
+
 def verify(path: str) -> tuple[dict, bytes]:
     with open(path, "rb") as handle:
         data = handle.read(MAX_BYTES + 1)
@@ -165,12 +237,14 @@ def verify(path: str) -> tuple[dict, bytes]:
         fail("helper exceeds the 32 MiB byte cap")
     parsed = parse_elf(data)
     dynamic = read_dynamic(data, parsed)
+    guard = parse_guard_identity(data)
     digest = hashlib.sha256(data).hexdigest()
     return {
         "sha256": digest,
         "sizeBytes": len(data),
         "needed": dynamic["needed"],
         "pageSize": min(segment["align"] for segment in parsed["loads"]),
+        "guard": guard,
     }, data
 
 
@@ -180,8 +254,14 @@ def main() -> int:
     parser.add_argument("--write-manifest")
     parser.add_argument("--expect-sha")
     parser.add_argument("--source", action="append", default=[])
+    parser.add_argument("--guard-source", default="")
+    parser.add_argument("--guard-header", default="")
+    parser.add_argument("--guard-patch", default="")
     parser.add_argument("--ndk-version", default="")
-    parser.add_argument("--version", default="tcpdump-4.99.5+libpcap-1.10.5")
+    parser.add_argument(
+        "--version",
+        default="tcpdump-4.99.5+libpcap-1.10.5+floe-guard-1",
+    )
     args = parser.parse_args()
 
     binary = os.path.abspath(args.binary)
@@ -196,6 +276,26 @@ def main() -> int:
     if args.expect_sha and result["sha256"] != args.expect_sha.lower():
         print("error: helper digest does not match --expect-sha", file=sys.stderr)
         return 4
+    supplied = {
+        "sourceSha256": args.guard_source.lower(),
+        "headerSha256": args.guard_header.lower(),
+        "patchSha256": args.guard_patch.lower(),
+    }
+    if any(supplied.values()):
+        for key, value in supplied.items():
+            if not HEX64.match(value):
+                print(f"error: {key} must be 64 lowercase hex characters", file=sys.stderr)
+                return 5
+        for key, value in supplied.items():
+            if result["guard"][key] != value:
+                print(f"error: embedded guard {key} does not match the build input", file=sys.stderr)
+                return 6
+    if args.write_manifest and not all(supplied.values()):
+        print(
+            "error: --write-manifest requires --guard-source/--guard-header/--guard-patch",
+            file=sys.stderr,
+        )
+        return 5
     manifest = {
         "schema": EXPECTED_SCHEMA,
         "id": EXPECTED_ID,
@@ -209,6 +309,7 @@ def main() -> int:
         "needed": result["needed"],
         "ndkVersion": args.ndk_version,
         "sources": args.source,
+        "guard": result["guard"],
     }
     if args.write_manifest:
         destination = os.path.abspath(args.write_manifest)

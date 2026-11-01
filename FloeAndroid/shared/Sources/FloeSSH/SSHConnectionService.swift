@@ -599,7 +599,6 @@ public protocol SSHSessionTransport: Sendable {
     func close() async
 }
 
-extension PTYSessionHandle: SSHSessionPTY {}
 
 public final class SSHSessionHandle: SSHSessionTransport, @unchecked Sendable {
     private let clients: [SSHClient]

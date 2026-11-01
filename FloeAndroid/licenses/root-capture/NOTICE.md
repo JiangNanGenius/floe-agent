@@ -10,6 +10,15 @@ license texts are reproduced verbatim in `tcpdump-LICENSE` and
 `libpcap-LICENSE`. Copyright and redistribution conditions remain those of the
 upstream projects; Floe does not relicense either component.
 
+The helper also contains the Floe-authored MPL-2.0 capture guard
+(`scripts/root-capture/guard/`, applied with
+`scripts/root-capture/patches/0001-tcpdump-install-guard.patch`). The guard is
+not a separate component or download: it is compiled into the same pinned PIE
+and enforces parent-pipe liveness, a monotonic deadline and the output byte
+budget independently of the Java root server. Its exact source/header/patch
+hashes are embedded in the ELF and recorded in the manifest; an unguarded
+helper is rejected by the verifier, stager and runtime manifest check.
+
 The Full APK ships the executable as
 `lib/arm64-v8a/libfloecapture_helper.so` plus the digest/source manifest
 `assets/root-capture/helper.json`. The root server binds the packaged bytes to

@@ -470,6 +470,19 @@ val verifyRootCaptureHelper = tasks.register("verifyRootCaptureHelper") {
             )
         }
         val metadata = groovy.json.JsonSlurper().parse(manifest) as Map<*, *>
+        val schema = metadata["schema"] as? String
+        val guard = metadata["guard"] as? Map<*, *>
+        val guardHashes = listOf("sourceSha256", "headerSha256", "patchSha256")
+            .map { guard?.get(it) as? String }
+        if (schema != "floe.root-capture-helper.v2" || guard == null ||
+            guard["schema"] != "floe.capture-guard.v1" || guard["abi"] != "arm64-v8a" ||
+            guardHashes.any { it == null || !it.matches(Regex("^[0-9a-f]{64}$")) }
+        ) {
+            throw GradleException(
+                "Full root capture helper is not the guarded v2 artifact; " +
+                    "rebuild and restage with scripts/root-capture/build-helper.sh --stage",
+            )
+        }
         val expected = metadata["sha256"] as? String
         val size = (metadata["sizeBytes"] as? Number)?.toLong()
         val digest = java.security.MessageDigest.getInstance("SHA-256")
@@ -536,6 +549,7 @@ dependencies {
     implementation("androidx.concurrent:concurrent-futures-ktx:1.2.0")
     implementation(project(":feature:network"))
     implementation(project(":feature:remote"))
+    implementation(project(":feature:sftp"))
     implementation(project(":feature:rdp"))
     implementation(project(":feature:mail"))
     implementation(project(":feature:devicecommunication"))

@@ -672,6 +672,10 @@ public final class G02InstalledComposition: @unchecked Sendable {
         registerC06SystemServicesTools(registry: runComponents.registry)
         await C06SystemServicesDomain.shared.refreshAvailability(epoch: epoch)
 
+        // C05 SFTP uses this accepted ordinary registry and the original
+        // task workspace, host trust and credential services.
+        registerC05SFTPTools(registry: runComponents.registry)
+
         // C05: register the ordinary VNC/RDP screen tools over the SAME
         // accepted generation/registry. The screenshot artifact root is the
         // EXACT owned FloeAgent directory of this generation

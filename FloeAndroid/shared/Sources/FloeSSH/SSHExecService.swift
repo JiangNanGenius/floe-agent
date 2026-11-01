@@ -18,6 +18,7 @@ import Foundation
 import Citadel
 import NIOCore
 import FloeCore
+import FloeTools
 
 /// Errors specific to bounded exec runs.
 public enum SSHExecError: Error, Sendable, Equatable {
@@ -550,7 +551,7 @@ public extension SSHSessionHandle {
     /// Opens one command on its own SSH channel. The returned stream yields
     /// real stdout/stderr bytes and a final `.exited` status; cancellation
     /// closes the channel without touching sibling channels.
-    func openExec(_ command: String) async throws -> SSHExecStreamHandle {
+    func openExec(_ command: String) async throws -> any SSHSessionExec {
         let (stream, continuation) = AsyncThrowingStream<SSHExecEvent, Error>.makeStream()
         let box = SSHExecClientBox(targetClient)
 

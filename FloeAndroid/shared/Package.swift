@@ -39,8 +39,7 @@ let package = Package(
         // C05 SSH: the fixed iOS-proven Citadel/SwiftNIO graph. Exact
         // revisions and transitive exact pins keep the Android product graph
         // reproducible; licence lineage is in licenses/ssh/README.md.
-        .package(url: "https://github.com/orlandos-nl/Citadel.git",
-                 revision: "ae8562f895de06ccb86fdb1cbb65fd99c8976e12"),
+        .package(name: "Citadel", path: "Vendor/SSH/Citadel"),
         .package(url: "https://github.com/apple/swift-nio.git", exact: "2.88.0"),
         .package(url: "https://github.com/Wellz26/swift-nio-ssh.git", exact: "0.3.6"),
         .package(url: "https://github.com/attaswift/BigInt.git", exact: "5.7.0"),
@@ -777,6 +776,8 @@ let package = Package(
         ], swiftSettings: strictSettings),
         .testTarget(name: "FloeSSHTests", dependencies: [
             "FloeSSH", "FloeCore", "FloePersistence",
+            .product(name: "NIOCore", package: "swift-nio"),
+            .product(name: "NIOEmbedded", package: "swift-nio"),
         ], swiftSettings: strictSettings),
         .testTarget(name: "FloeVNCTests", dependencies: [
             "FloeVNC",

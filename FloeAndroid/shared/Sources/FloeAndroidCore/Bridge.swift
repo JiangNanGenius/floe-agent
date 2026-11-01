@@ -43,7 +43,8 @@ public enum AndroidBridge {
                 || requestVersion == BridgeV14.version
                 || requestVersion == BridgeV15.version
                 || requestVersion == BridgeV16.version
-                || requestVersion == BridgeV17.version else {
+                || requestVersion == BridgeV17.version
+                || requestVersion == BridgeV18.version else {
             return response(["ok": false, "error": "unsupportedVersion"])
         }
         if requestVersion == BridgeV2.version {
@@ -297,6 +298,22 @@ public enum AndroidBridge {
                                 stampVersion: BridgeV17.version)
             }
             return response(object, stampVersion: BridgeV17.version)
+        }
+        if requestVersion == BridgeV18.version {
+            // Additive C05 host-only SFTP channel: real remote directory
+            // browsing and owned upload/download lanes over the existing
+            // Citadel SSH/known-host/credential services. No model tool, V3
+            // command, guest/local permission or local path alias.
+            let object = C05SFTPBridge.handle(requestData: data,
+                                              fallbackRequestID: requestID)
+            let encoded = (try? JSONSerialization.data(withJSONObject: object,
+                                                       options: [.sortedKeys]))
+                ?? Data(#"{"ok":false,"error":"encoding"}"#.utf8)
+            guard encoded.count <= C05SFTPWire.maximumResponseBytes else {
+                return response(["ok": false, "error": "responseTooLarge"],
+                                stampVersion: BridgeV18.version)
+            }
+            return response(object, stampVersion: BridgeV18.version)
         }
         switch request["operation"] as? String {
         case "handshake":

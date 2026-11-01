@@ -48,12 +48,17 @@ object RootCaptureHelper {
     const val PACKAGED_NAME: String = "libfloecapture_helper.so"
     const val APK_ENTRY: String = "lib/arm64-v8a/$PACKAGED_NAME"
     const val HELPER_ID: String = "tcpdump-v1"
-    const val SCHEMA: String = "floe.root-capture-helper.v1"
+    const val SCHEMA: String = "floe.root-capture-helper.v2"
+    const val GUARD_SCHEMA: String = "floe.capture-guard.v1"
+    const val GUARD_VERSION: Int = 1
+    const val GUARD_ABI: String = "arm64-v8a"
 
     /** Root-owned, non-shell-writable execution/output parent. */
     const val PROTECTED_ROOT: String = "/data/local/floe-capture"
     const val HELPER_ROOT: String = "$PROTECTED_ROOT/helper"
     const val WORK_ROOT: String = "$PROTECTED_ROOT/work"
+    /** Bounded capture-identity journal and recovery tombstones. */
+    const val STATE_ROOT: String = "$PROTECTED_ROOT/state"
 
     /** Ordinary adb/shell identity; never an accepted owner of helper paths. */
     const val SHELL_UID: Int = 2000
@@ -80,6 +85,20 @@ object RootCaptureHelper {
     private const val STALE_STAGE_MILLIS = 60L * 60L * 1000L
     private const val STALE_CAPTURE_MILLIS = 24L * 60L * 60L * 1000L
     private const val MAX_WORK_FILES = 16
+    private const val GUARD_SIDECAR_SUFFIX = ".guard"
+
+    /**
+     * Build identity of the embedded native guard. The helper digest in the
+     * same manifest binds these exact source/patch bytes to the executable.
+     */
+    data class Guard(
+        val schema: String,
+        val version: Int,
+        val abi: String,
+        val sourceSha256: String,
+        val headerSha256: String,
+        val patchSha256: String,
+    )
 
     data class Manifest(
         val id: String,
@@ -90,6 +109,7 @@ object RootCaptureHelper {
         val packagedName: String,
         val sha256: String,
         val sizeBytes: Long,
+        val guard: Guard,
     )
 
     data class Status(
@@ -187,6 +207,13 @@ object RootCaptureHelper {
         return directory
     }
 
+    /** Root-owned directory for the bounded capture-identity journal. */
+    fun prepareStateDirectory(): File {
+        val directory = File(STATE_ROOT)
+        ensureProtectedDirectory(directory)
+        return directory
+    }
+
     /**
      * Pure manifest validation shared with the deterministic tests.
      * Returns a closed failure code or null.
@@ -212,6 +239,24 @@ object RootCaptureHelper {
         return null
     }
 
+    /** Pure guard-manifest rule; old manifests without it fail closed. */
+    fun guardProblem(
+        schema: String,
+        version: Int,
+        abi: String,
+        sourceSha256: String,
+        headerSha256: String,
+        patchSha256: String,
+    ): String? {
+        if (schema != GUARD_SCHEMA) return "helper_manifest_guard"
+        if (version != GUARD_VERSION) return "helper_manifest_guard"
+        if (abi != GUARD_ABI) return "helper_manifest_guard"
+        for (value in listOf(sourceSha256, headerSha256, patchSha256)) {
+            if (!value.matches(Regex("^[0-9a-f]{64}$"))) return "helper_manifest_guard"
+        }
+        return null
+    }
+
     fun readManifest(input: InputStream): Manifest? {
         val bytes = try {
             readBounded(input, MAX_MANIFEST_BYTES) ?: return null
@@ -223,6 +268,7 @@ object RootCaptureHelper {
         } catch (_: Throwable) {
             return null
         }
+        if (json.optString("schema") != SCHEMA) return null
         val id = json.optString("id")
         val version = json.optString("version")
         val abi = json.optString("abi")
@@ -234,7 +280,27 @@ object RootCaptureHelper {
         if (manifestProblem(id, version, abi, minSdk, pageSize, packagedName, sha, size) != null) {
             return null
         }
-        return Manifest(id, version, abi, minSdk, pageSize, packagedName, sha, size)
+        val guardJson = json.optJSONObject("guard") ?: return null
+        val guard = Guard(
+            schema = guardJson.optString("schema"),
+            version = guardJson.optInt("version", -1),
+            abi = guardJson.optString("abi"),
+            sourceSha256 = guardJson.optString("sourceSha256").lowercase(),
+            headerSha256 = guardJson.optString("headerSha256").lowercase(),
+            patchSha256 = guardJson.optString("patchSha256").lowercase(),
+        )
+        if (guardProblem(
+                guard.schema,
+                guard.version,
+                guard.abi,
+                guard.sourceSha256,
+                guard.headerSha256,
+                guard.patchSha256,
+            ) != null
+        ) {
+            return null
+        }
+        return Manifest(id, version, abi, minSdk, pageSize, packagedName, sha, size, guard)
     }
 
     /** One filesystem object's no-follow facts for ancestry validation. */
@@ -648,12 +714,26 @@ object RootCaptureHelper {
                 .orEmpty()
             for ((index, file) in captures.withIndex()) {
                 val age = now - file.lastModified()
+                // A crash-recovery journal owns this file until a replacement
+                // server proves the helper dead; never evict its evidence by
+                // age or by the ordinary 16-file working-set cap.
+                val identity = file.name.removePrefix("capture-").removeSuffix(".pcap")
+                if (File(STATE_ROOT, "capture-$identity.journal").exists()) continue
                 // A live capture is bounded to five minutes; files this old
                 // can never be a live writer's output. The newest 16 stay
                 // retained even past the age bound.
                 if (index < MAX_WORK_FILES && age < STALE_CAPTURE_MILLIS) continue
                 if (age >= STALE_CAPTURE_MILLIS || index >= MAX_WORK_FILES) {
                     runCatching { file.delete() }
+                    runCatching { File(file.path + GUARD_SIDECAR_SUFFIX).delete() }
+                }
+            }
+            for (child in directory.listFiles().orEmpty()) {
+                if (!child.name.endsWith(GUARD_SIDECAR_SUFFIX)) continue
+                val base = child.path.removeSuffix(GUARD_SIDECAR_SUFFIX)
+                if (File(base).exists()) continue
+                if (now - child.lastModified() >= STALE_CAPTURE_MILLIS) {
+                    runCatching { child.delete() }
                 }
             }
             for (child in directory.listFiles().orEmpty()) {

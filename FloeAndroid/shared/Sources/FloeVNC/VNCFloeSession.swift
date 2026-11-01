@@ -133,24 +133,24 @@ public final class VNCFloeSession: VNCConnectionDelegate, VNCFloeSessionDriving,
     /// prove closure inside `timeout`; the caller must keep the session in
     /// `.closing` and retry rather than report a drained state.
     public func close(timeout: TimeInterval = 5) async -> Bool {
-        lock.lock()
-        if closeCompleted {
-            lock.unlock()
-            return true
-        }
-        if _state.isTerminal {
-            closeCompleted = true
+        let plan = lock.withLock { () -> (finished: Bool, disconnect: Bool) in
+            if closeCompleted { return (true, false) }
+            if _state.isTerminal {
+                closeCompleted = true
+                closeRequested = true
+                password = nil
+                latestFrame = nil
+                leases.removeAll()
+                return (true, true)
+            }
             closeRequested = true
-            password = nil
-            latestFrame = nil
-            leases.removeAll()
-            lock.unlock()
-            connection.disconnect()
+            _state = .closing
+            return (false, false)
+        }
+        if plan.finished {
+            if plan.disconnect { connection.disconnect() }
             return true
         }
-        closeRequested = true
-        _state = .closing
-        lock.unlock()
 
         releaseAllInput()
         if connection.connectionState.status == .disconnected {
@@ -165,14 +165,14 @@ public final class VNCFloeSession: VNCConnectionDelegate, VNCFloeSessionDriving,
             scheduleCloseTimeout(timeout)
         }
         if disconnected {
-            lock.lock()
-            closeCompleted = true
-            closeRequested = true
-            password = nil
-            latestFrame = nil
-            leases.removeAll()
-            _state = .disconnected
-            lock.unlock()
+            lock.withLock {
+                closeCompleted = true
+                closeRequested = true
+                password = nil
+                latestFrame = nil
+                leases.removeAll()
+                _state = .disconnected
+            }
         }
         return disconnected
     }

@@ -79,6 +79,8 @@ include(":core:network", ":feature:network")
 
 // C05 SSH remote-host screens (presentation only; App host owns transport).
 include(":feature:remote")
+// C05 SFTP browser over the owned native subsystem and workspace service.
+include(":feature:sftp")
 // C05 RDP screens (presentation only; the App host owns FreeRDP sessions,
 // certificate decisions and the credential gateway). Lockfile is regenerated
 // by Main's --write-locks stage before the first locked build.

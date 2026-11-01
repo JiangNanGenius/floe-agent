@@ -532,6 +532,7 @@ class FloeApplication : Application() {
                 // native root retires.
                 (runtimeHost?.prepareC02ExecutionTargetsForRootStop() != false) &&
                 (runtimeHost?.prepareC05RemoteForRootStop() != false) &&
+                (runtimeHost?.prepareC05SFTPForRootStop() != false) &&
                 // C05 RDP: every live FreeRDP session, frame lease and
                 // bounded input lane closes before the native root retires.
                 (runtimeHost?.prepareC05RDPForRootStop() != false) &&

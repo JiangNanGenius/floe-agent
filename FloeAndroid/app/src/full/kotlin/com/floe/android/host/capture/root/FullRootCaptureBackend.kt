@@ -337,6 +337,13 @@ class FullRootCaptureBackend(
         "cancelled" -> com.floe.android.core.networkcapture.CaptureEndReason.USER_STOP
         "serviceStop" -> com.floe.android.core.networkcapture.CaptureEndReason.SERVICE_DESTROYED
         "stopTimeout" -> com.floe.android.core.networkcapture.CaptureEndReason.STOP_TIMEOUT
+        // Native guard stop / root-server death / helper exit are genuine
+        // data-plane failures, never a successful capture.
+        "daemonLost",
+        "helperExit",
+        "outputError",
+        "clientLease",
+        -> com.floe.android.core.networkcapture.CaptureEndReason.DATA_PLANE_ERROR
         else -> com.floe.android.core.networkcapture.CaptureEndReason.DATA_PLANE_ERROR
     }
 

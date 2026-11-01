@@ -400,6 +400,9 @@ internal class SystemOperations(
 
     fun packetCaptureStart(
         requestId: String,
+        taskId: String,
+        runId: String,
+        epoch: Long,
         helperId: String,
         interfaceName: String,
         snaplen: Int,
@@ -413,17 +416,36 @@ internal class SystemOperations(
             snaplen = snaplen,
             maxBytes = maxBytes,
             maxMillis = maxMillis,
+            owner = RootCaptureSessions.OwnerIdentity(taskId, runId, epoch),
         )
         return PacketCaptureInfo(started.captureId, started.helperPath)
     }
 
-    fun packetCaptureRead(captureId: String, maxBytes: Int): PacketCaptureChunk {
-        val chunk = captureSessions.read(captureId, maxBytes)
+    fun packetCaptureRead(
+        captureId: String,
+        taskId: String,
+        runId: String,
+        epoch: Long,
+        maxBytes: Int,
+    ): PacketCaptureChunk {
+        val chunk = captureSessions.read(
+            captureId,
+            maxBytes,
+            RootCaptureSessions.OwnerIdentity(taskId, runId, epoch),
+        )
         return PacketCaptureChunk(chunk.bytes, chunk.done, chunk.bytesRead, chunk.endReason)
     }
 
-    fun packetCaptureStop(captureId: String): PacketCaptureChunk {
-        val chunk = captureSessions.stop(captureId)
+    fun packetCaptureStop(
+        captureId: String,
+        taskId: String,
+        runId: String,
+        epoch: Long,
+    ): PacketCaptureChunk {
+        val chunk = captureSessions.stop(
+            captureId,
+            RootCaptureSessions.OwnerIdentity(taskId, runId, epoch),
+        )
         return PacketCaptureChunk(chunk.bytes, chunk.done, chunk.bytesRead, chunk.endReason)
     }
 

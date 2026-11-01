@@ -103,10 +103,12 @@ public final class LoopbackSSHForwarder: @unchecked Sendable {
     }
 
     public func close() async {
-        lock.lock()
-        guard !closed else { lock.unlock(); return }
-        closed = true
-        lock.unlock()
+        let shouldClose = lock.withLock {
+            guard !closed else { return false }
+            closed = true
+            return true
+        }
+        guard shouldClose else { return }
 
         server.close(promise: nil)
         do {
@@ -190,14 +192,17 @@ private final class ConnectionHub: @unchecked Sendable {
     }
 
     func closeAll() async {
-        lock.lock()
-        guard !closed else { lock.unlock(); return }
-        closed = true
-        let childSnapshot = children
-        let channelSnapshot = channels
-        children.removeAll()
-        channels.removeAll()
-        lock.unlock()
+        let snapshots: ([UUID: Channel], [UUID: any SSHSessionByteChannel])? = lock.withLock {
+            guard !closed else { return nil }
+            closed = true
+            let snapshot = (children, channels)
+            children.removeAll()
+            channels.removeAll()
+            return snapshot
+        }
+        guard let snapshots else { return }
+        let childSnapshot = snapshots.0
+        let channelSnapshot = snapshots.1
 
         for channel in childSnapshot.values { channel.close(promise: nil) }
         for channel in channelSnapshot.values { await channel.close() }
@@ -219,15 +224,16 @@ private final class ConnectionHub: @unchecked Sendable {
     ) async {
         do {
             let sshChannel = try await session.openDirectTCPIP(host: targetHost, port: targetPort)
-            lock.lock()
-            if closed {
-                lock.unlock()
+            let accepted = lock.withLock {
+                guard !closed else { return false }
+                channels[id] = sshChannel
+                return true
+            }
+            guard accepted else {
                 await sshChannel.close()
                 channel.close(promise: nil)
                 return
             }
-            channels[id] = sshChannel
-            lock.unlock()
 
             await withTaskGroup(of: Void.self) { group in
                 group.addTask {
@@ -248,10 +254,10 @@ private final class ConnectionHub: @unchecked Sendable {
             channel.close(promise: nil)
         }
 
-        lock.lock()
-        channels.removeValue(forKey: id)
-        children.removeValue(forKey: id)
-        lock.unlock()
+        lock.withLock {
+            channels.removeValue(forKey: id)
+            children.removeValue(forKey: id)
+        }
         onActiveChanged?(-1)
     }
 

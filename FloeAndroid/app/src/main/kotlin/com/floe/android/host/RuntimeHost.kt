@@ -19,6 +19,7 @@ import com.floe.android.host.remote.C05BrokerLocalNetworkGate
 import com.floe.android.host.devicecommunication.C05BrokerDeviceLanGate
 import com.floe.android.host.devicecommunication.C05DevicesHostController
 import com.floe.android.host.remote.C05RemoteHostController
+import com.floe.android.host.sftp.C05SFTPHostController
 import com.floe.android.host.rdp.C05RDPClient
 import com.floe.android.host.rdp.C05RDPException
 import com.floe.android.host.rdp.C05RDPHostController
@@ -157,6 +158,23 @@ class RuntimeHost internal constructor(
     }
     internal val c05Remote: C05RemoteHostController
         get() = c05RemoteDelegate.value
+
+    /**
+     * C05 Application-owned SFTP controller. It is created lazily on the
+     * first remote-file use; all host trust, credentials and destination
+     * commits stay in the Swift `floe.sftp/18` domain. The root-stop gate
+     * below drains every lane and staging file before the epoch retires.
+     */
+    private val c05SFTPDelegate = lazy {
+        C05SFTPHostController(
+            context = appContext,
+            scope = scope,
+            ioDispatcher = ioDispatcher,
+            currentNativeEpoch = ::nativeRootEpoch,
+        )
+    }
+    internal val c05Sftp: C05SFTPHostController
+        get() = c05SFTPDelegate.value
 
     /**
      * C05 Application-owned RDP controller. The real FreeRDP session, frame
@@ -591,6 +609,18 @@ class RuntimeHost internal constructor(
             false
         }
     }
+
+    /**
+     * Root-stop gate for C05 SFTP: cancel every staged transfer, remove only
+     * this lane's staging files, close the SFTP channel/SSH transport and
+     * await the native typed drain before the root epoch retires.
+     */
+    internal suspend fun prepareC05SFTPForRootStop(): Boolean =
+        if (c05SFTPDelegate.isInitialized()) {
+            c05Sftp.prepareForRootStop(C05_SFTP_STOP_WAIT_MS)
+        } else {
+            true
+        }
 
     /**
      * Root-stop gate for C02: cancel a pending target/migration reply and
@@ -1035,6 +1065,7 @@ class RuntimeHost internal constructor(
                 if (cadViewerDelegate.isInitialized()) cadViewer.onRootStopped()
                 executionTargets.release()
                 if (c05RemoteDelegate.isInitialized()) c05Remote.onRootStopped()
+                if (c05SFTPDelegate.isInitialized()) c05Sftp.onRootStopped()
                 if (c05RdpDelegate.isInitialized()) c05Rdp.onRootStopped()
                 if (c05DevicesDelegate.isInitialized()) c05Devices.onRootStopped()
                 if (c06MailDelegate.isInitialized()) c06Mail.onRootStopped()
@@ -1362,6 +1393,7 @@ class RuntimeHost internal constructor(
 
         /** Bounded join for the C05 SSH session/PTY/tunnel drain. */
         internal const val C05_REMOTE_STOP_WAIT_MS = 8_000L
+        internal const val C05_SFTP_STOP_WAIT_MS = 8_000L
 
         /** Bounded join for the C05 RDP session/frame/input drain. */
         internal const val C05_RDP_STOP_WAIT_MS = 8_000L

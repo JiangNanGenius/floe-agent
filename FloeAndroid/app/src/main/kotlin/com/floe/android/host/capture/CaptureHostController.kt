@@ -657,6 +657,8 @@ class CaptureHostController internal constructor(
                     progress.malformed -> CaptureFailure("pcapMalformed")
                     progress.endReason == CaptureEndReason.HELPER_UNAVAILABLE ->
                         CaptureFailure("helperUnavailable")
+                    progress.endReason == CaptureEndReason.DATA_PLANE_ERROR ->
+                        CaptureFailure("dataPlaneError")
                     !proofComplete -> CaptureFailure("stopNotProven")
                     else -> analysis.failure
                 }

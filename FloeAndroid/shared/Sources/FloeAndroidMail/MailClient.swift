@@ -246,7 +246,7 @@ public final class MailClient: MailTransporting, @unchecked Sendable {
                                       operation: @escaping @Sendable (MailProtocolSession) throws -> T) async throws -> T {
         guard acquire() else { throw MailFailure.busy }
         let cancellation = MailOperationCancellation()
-        lock.lock(); activeCancellation = cancellation; lock.unlock()
+        lock.withLock { activeCancellation = cancellation }
         return try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation { continuation in
                 queue.async { [self] in

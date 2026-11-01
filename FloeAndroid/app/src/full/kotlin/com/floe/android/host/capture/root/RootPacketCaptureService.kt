@@ -244,16 +244,21 @@ class RootPacketCaptureService : Service() {
                             endReason = result.progress.endReason ?: value.lastEndReason,
                         )
                         if (progress.drainProven) markRootDrained(artifact.sessionId)
-                        if (progress.endReason == CaptureEndReason.DATA_PLANE_ERROR) {
-                            // A genuine helper/data-plane failure is never
-                            // published as a complete capture.
+                        val failedDataPlane =
+                            progress.endReason == CaptureEndReason.DATA_PLANE_ERROR
+                        if (failedDataPlane) {
+                            // A genuine helper/data-plane failure (including a
+                            // daemon-loss recovery tombstone) is never
+                            // published as a complete capture, even though the
+                            // resource ledger is settled.
                             value.completionAllowed = false
                         }
                         finish(
                             host,
                             value,
                             progress.endReason ?: CaptureEndReason.USER_STOP,
-                            proof = progress.drainProven && !progress.malformed,
+                            proof = progress.drainProven && !progress.malformed &&
+                                !failedDataPlane,
                             writerJoined = true,
                             drainSettled = progress.drainProven,
                         )
