@@ -592,7 +592,7 @@ final class CADAssociativePlaneKindsServiceTests: XCTestCase {
         ])
         XCTAssertFalse(f.document.session.performAssociativeTransaction([
             EditConstructionPlaneDefinitionCommand(planeID: planeID,
-                before: plane(f, planeID).definition, after: .threePoints(forged)),
+                before: try plane(f, planeID).definition, after: .threePoints(forged)),
         ], title: "Missing sketch"))
         XCTAssertEqual(f.document.session.lastRebuildRejection[.plane(planeID)],
                        .missingSketch(missingSketchID))
