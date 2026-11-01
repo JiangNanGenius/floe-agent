@@ -146,33 +146,33 @@ public final class CADMaterialService {
     private func unresolvedList(_ args: [String: Any]) -> [String: Any] {
         var rows: [[String: Any]] = []
         for body in document.session.document.bodies where !body.materialFaceBindings.isEmpty {
-            for resolution in CADFaceMaterialResolver.resolve(body.materialFaceBindings, in: body, table: document.session.faceRangeTable(for: body)) {
-                guard resolution.resolvedIndex == nil else { continue }
+            let assessment = CADFaceMaterialResolver.assessGroups(in: body,
+                table: document.session.faceRangeTable(for: body), tableRevision: body.meshRevision)
+            let currentFaces = body.brep.map { Array(OCCTKernel.faceInfo($0).prefix(32)).map(\.stableFaceJSON) }
+            for issue in assessment.issues {
+                guard let index = issue.bindingIndex, body.materialFaceBindings.indices.contains(index) else { continue }
+                let binding = body.materialFaceBindings[index]
                 var row: [String: Any] = [
                     "body_id": body.id.raw.uuidString,
                     "body_name": body.name,
-                    "material_name": resolution.binding.material.materialName ?? "Material",
-                    "material_id": resolution.binding.material.materialID ?? "",
-                    "captured_index": resolution.binding.key.capturedIndex ?? 0,
+                    "material_name": binding.material.materialName ?? "Material",
+                    "material_id": binding.material.materialID ?? "",
+                    "captured_index": binding.key.capturedIndex ?? 0,
+                    "code": issue.kind.rawValue,
+                    "reason": issue.detail ?? issue.kind.rawValue,
                     "face_signature": [
-                        "kind": resolution.binding.key.signature.kind.materialKindName,
-                        "centroid": Self.vector(resolution.binding.key.signature.centroid),
-                        "normal": Self.vector(resolution.binding.key.signature.normal),
-                        "areaMM2": resolution.binding.key.signature.area,
+                        "kind": binding.key.signature.kind.materialKindName,
+                        "centroid": Self.vector(binding.key.signature.centroid),
+                        "normal": Self.vector(binding.key.signature.normal),
+                        "areaMM2": binding.key.signature.area,
                     ],
                 ]
-                switch resolution.match {
-                case .unresolved(let reason):
-                    row["reason"] = reason
-                case .ambiguous(let indices):
+                if issue.kind == .ambiguousSignature {
                     row["reason"] = "The stored signature matches more than one face."
-                    row["candidate_indices"] = indices
-                case .resolved:
-                    continue
                 }
-                if let brep = body.brep {
-                    row["current_faces"] = Array(OCCTKernel.faceInfo(brep).prefix(32)).map(\.stableFaceJSON)
-                }
+                if let indices = issue.candidateIndices { row["candidate_indices"] = indices }
+                if let index = issue.faceIndex { row["face_index"] = index }
+                if let currentFaces { row["current_faces"] = currentFaces }
                 rows.append(row)
             }
         }

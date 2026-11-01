@@ -113,18 +113,17 @@ public extension FloeCADDocument {
                     row["material"] = material.summaryJSON
                 }
                 if !body.materialFaceBindings.isEmpty {
-                    let resolutions = CADFaceMaterialResolver.resolve(body.materialFaceBindings, in: body, table: session.faceRangeTable(for: body))
-                    let resolved = resolutions.compactMap { resolution -> [String: Any]? in
-                        guard let index = resolution.resolvedIndex else { return nil }
-                        return ["face_index": index,
-                                "material_name": resolution.binding.material.materialName ?? "Material",
-                                "material_id": resolution.binding.material.materialID ?? ""]
+                    let assessment = CADFaceMaterialResolver.assessGroups(in: body,
+                        table: session.faceRangeTable(for: body), tableRevision: body.meshRevision)
+                    let resolved = assessment.groups.map { group -> [String: Any] in
+                        ["face_index": group.faceIndex,
+                         "material_name": group.material.materialName ?? "Material",
+                         "material_id": group.material.materialID ?? ""]
                     }
-                    let unresolved = resolutions.filter { $0.resolvedIndex == nil }.count
                     row["face_material_bindings"] = [
                         "count": body.materialFaceBindings.count,
                         "resolved": resolved,
-                        "unresolved_count": unresolved,
+                        "unresolved_count": assessment.issues.count,
                     ]
                 }
                 return row

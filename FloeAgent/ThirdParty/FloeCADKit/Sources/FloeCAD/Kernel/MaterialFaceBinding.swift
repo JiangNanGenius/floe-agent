@@ -59,49 +59,111 @@ nonisolated struct CADFaceMaterialBinding: Codable, Equatable, Sendable {
 /// never used as identity across a rebuild. Authoring/model digests exclude
 /// this derived cache, while the ordinary package content digest covers it.
 nonisolated struct CADFaceNamingSnapshot: Codable, Sendable {
-    var version: Int = 2
+    var version: Int = 3
     var bodyID: BodyID
     var meshSHA256: String
     var brepSHA256: String
-    /// Proves the deserialized kernel's actual face numbering and partitions.
-    /// This is a cold-load cache check, never an identity across a rebuild.
-    var nativePartitionSHA256: String
+    /// Proves each analytic face's actual boundary independently of kernel
+    /// vertex/triangle ordering. Used only within the exact saved bytes.
+    var nativeFaces: [Int: NativeFaceWitness]
     var table: FaceTable
+
+    nonisolated struct NativeFaceWitness: Codable, Sendable {
+        var boundarySHA256: String
+        var signature: FaceSignature
+    }
+
+    private nonisolated struct Vertex: Hashable, Comparable {
+        var x: UInt32
+        var y: UInt32
+        var z: UInt32
+        init(_ value: SIMD3<Float>) {
+            x = value.x == 0 ? 0 : value.x.bitPattern
+            y = value.y == 0 ? 0 : value.y.bitPattern
+            z = value.z == 0 ? 0 : value.z.bitPattern
+        }
+        static func < (lhs: Self, rhs: Self) -> Bool {
+            if lhs.x != rhs.x { return lhs.x < rhs.x }
+            if lhs.y != rhs.y { return lhs.y < rhs.y }
+            return lhs.z < rhs.z
+        }
+    }
+
+    private nonisolated struct BoundaryEdge: Hashable, Comparable {
+        var a: Vertex
+        var b: Vertex
+        init(_ first: Vertex, _ second: Vertex) {
+            a = min(first, second); b = max(first, second)
+        }
+        static func < (lhs: Self, rhs: Self) -> Bool {
+            lhs.a != rhs.a ? lhs.a < rhs.a : lhs.b < rhs.b
+        }
+    }
 
     private static func digest(_ data: Data) -> String {
         SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
     }
 
-    private static func nativePartition(_ handle: BRepHandle)
-        -> (render: RenderMesh, channel: [UInt32], sha256: String) {
+    /// Internal diagonals cancel. Face IDs, vertex order, triangle order and
+    /// winding are not part of a face's boundary digest. Coordinates remain
+    /// exact at native render precision; there is no nearest-shape score.
+    static func boundaryDigests(render: RenderMesh, channel: [UInt32]) -> [Int: String]? {
+        guard !render.indices.isEmpty, render.indices.count % 3 == 0,
+              channel.count == render.triangleCount,
+              render.positions.allSatisfy({ $0.x.isFinite && $0.y.isFinite && $0.z.isFinite }),
+              render.indices.allSatisfy({ Int($0) < render.positions.count }) else { return nil }
+        var edges: [UInt32: [BoundaryEdge: Int]] = [:]
+        for triangle in channel.indices {
+            let face = channel[triangle]
+            guard face > 0 else { continue }
+            let base = triangle * 3
+            let points = (0..<3).map { Vertex(render.positions[Int(render.indices[base + $0])]) }
+            for index in 0..<3 where points[index] != points[(index + 1) % 3] {
+                edges[face, default: [:]][BoundaryEdge(points[index], points[(index + 1) % 3]), default: 0] += 1
+            }
+        }
+        var result: [Int: String] = [:]
+        for (face, counts) in edges {
+            guard counts.values.allSatisfy({ $0 <= 2 }) else { return nil }
+            let boundary = counts.filter { $0.value == 1 }.map(\.key).sorted()
+            var bytes = Data("FloeCAD.NativeFaceBoundary.v1".utf8)
+            withUnsafeBytes(of: UInt64(boundary.count).littleEndian) { bytes.append(contentsOf: $0) }
+            for edge in boundary {
+                for vertex in [edge.a, edge.b] {
+                    for component in [vertex.x, vertex.y, vertex.z] {
+                        withUnsafeBytes(of: component.littleEndian) { bytes.append(contentsOf: $0) }
+                    }
+                }
+            }
+            result[Int(face)] = digest(bytes)
+        }
+        return result
+    }
+
+    private static func nativeWitnesses(_ handle: BRepHandle) -> [Int: NativeFaceWitness]? {
         let native = OCCTKernel.renderMesh(from: handle)
         let render = RenderMesh(positions: native.positions, normals: native.normals, indices: native.indices)
         let channel = OCCTKernel.renderMeshFaceChannel(from: handle)
-        var hasher = SHA256()
-        hasher.update(data: Data("FloeCAD.NativeFacePartition.v1".utf8))
-        hasher.update(data: MeshBlob.encode(render))
-        withUnsafeBytes(of: UInt64(channel.count).littleEndian) { hasher.update(data: Data($0)) }
-        channel.map(\.littleEndian).withUnsafeBufferPointer { hasher.update(data: Data(buffer: $0)) }
-        let hash = hasher.finalize().map { String(format: "%02x", $0) }.joined()
-        return (render, channel, hash)
-    }
-
-    private static func sameGeometry(_ lhs: RenderMesh, _ rhs: RenderMesh) -> Bool {
-        lhs.positions == rhs.positions && lhs.normals == rhs.normals && lhs.indices == rhs.indices
+        guard let boundaries = boundaryDigests(render: render, channel: channel) else { return nil }
+        return Dictionary(uniqueKeysWithValues: OCCTKernel.faceInfo(handle).compactMap { face in
+            guard let signature = face.signature, let boundary = boundaries[face.index] else { return nil }
+            return (face.index, NativeFaceWitness(boundarySHA256: boundary, signature: signature))
+        })
     }
 
     static func encode(table: FaceTable, body: Body, mesh: Data, brep: Data?) -> Data? {
         guard let brep, let handle = body.brep, table.nativeBodyID == body.id,
               table.nativeMeshRevision == body.meshRevision else { return nil }
-        let native = nativePartition(handle)
+        guard let native = nativeWitnesses(handle), !native.isEmpty else { return nil }
         if let channel = table.nativeFaceChannel {
-            guard channel == native.channel, sameGeometry(native.render, body.render) else { return nil }
+            guard let ranges = boundaryDigests(render: body.render, channel: channel),
+                  native.allSatisfy({ ranges[$0.key] == $0.value.boundarySHA256 }) else { return nil }
         }
         var stable = table
         // Session revision counters change on open/undo, not authoring intent.
         stable.nativeMeshRevision = 0
         let value = Self(bodyID: body.id, meshSHA256: digest(mesh), brepSHA256: digest(brep),
-            nativePartitionSHA256: native.sha256, table: stable)
+            nativeFaces: native, table: stable)
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys]
         return try? encoder.encode(value)
@@ -109,7 +171,7 @@ nonisolated struct CADFaceNamingSnapshot: Codable, Sendable {
 
     static func restore(_ data: Data, body: Body, mesh: Data, brep: Data?) -> FaceTable? {
         guard let brep, let handle = body.brep,
-              let saved = try? JSONDecoder().decode(Self.self, from: data), saved.version == 2,
+              let saved = try? JSONDecoder().decode(Self.self, from: data), saved.version == 3,
               saved.bodyID == body.id, saved.table.nativeBodyID == body.id,
               saved.table.nativeMeshRevision == 0,
               saved.meshSHA256 == digest(mesh), saved.brepSHA256 == digest(brep),
@@ -120,16 +182,35 @@ nonisolated struct CADFaceNamingSnapshot: Codable, Sendable {
               }),
               saved.table.nativeFaceChannel == nil
                 || saved.table.nativeFaceChannel?.count == body.render.triangleCount else { return nil }
-        let native = nativePartition(handle)
-        guard native.sha256 == saved.nativePartitionSHA256 else { return nil }
+        guard !saved.nativeFaces.isEmpty, let native = nativeWitnesses(handle) else { return nil }
+        let byBoundary = Dictionary(grouping: native, by: { $0.value.boundarySHA256 })
+        var indexMap: [Int: Int] = [:]
+        for (oldIndex, witness) in saved.nativeFaces {
+            guard oldIndex > 0 else { return nil }
+            let matches = (byBoundary[witness.boundarySHA256] ?? []).filter {
+                SignatureNaming.exactSignature($0.value.signature, witness.signature)
+            }
+            guard matches.count == 1, let match = matches.first else { return nil }
+            indexMap[oldIndex] = match.key
+        }
+        guard Set(indexMap.values).count == indexMap.count else { return nil }
         if let channel = saved.table.nativeFaceChannel {
-            guard channel == native.channel, sameGeometry(native.render, body.render) else { return nil }
+            guard let ranges = boundaryDigests(render: body.render, channel: channel),
+                  saved.nativeFaces.allSatisfy({ ranges[$0.key] == $0.value.boundarySHA256 }) else { return nil }
         }
         var restored = saved.table
         // Exact saved-byte ownership was checked above, independently of a
         // previous process's session counter.
         restored.nativeMeshRevision = body.meshRevision
-        return prepare(restored, for: body, names: saved.table.nativeFaceNames)
+        restored.nativeFaceNames = saved.table.nativeFaceNames.map { names in
+            Dictionary(uniqueKeysWithValues: names.compactMap { oldIndex, name in
+                indexMap[oldIndex].map { ($0, name) }
+            })
+        }
+        restored.nativeFaceChannel = saved.table.nativeFaceChannel.map { channel in
+            channel.map { UInt32(indexMap[Int($0)] ?? 0) }
+        }
+        return prepare(restored, for: body, names: restored.nativeFaceNames)
     }
 
     /// Called once per geometry revision, including cold legacy documents.
@@ -308,6 +389,7 @@ nonisolated enum CADFaceGroupIssueKind: String, Sendable, Equatable {
 }
 
 nonisolated struct CADFaceGroupIssue: Sendable, Equatable {
+    var bindingIndex: Int? = nil
     var kind: CADFaceGroupIssueKind
     var faceIndex: Int?
     var materialName: String
@@ -417,7 +499,11 @@ nonisolated enum CADFaceMaterialResolver {
         var groups: [CADFaceGroup] = []
         var issues: [CADFaceGroupIssue] = []
 
-        for binding in body.materialFaceBindings {
+        for (bindingIndex, binding) in body.materialFaceBindings.enumerated() {
+            let firstIssue = issues.count
+            defer {
+                for index in firstIssue..<issues.count { issues[index].bindingIndex = bindingIndex }
+            }
             let materialName = binding.material.materialName ?? "Material"
             let captured = binding.key.capturedIndex
             switch match(binding.key, candidates: candidates) {

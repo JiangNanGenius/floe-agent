@@ -614,7 +614,11 @@ final class CADMaterialCoreTests: XCTestCase {
         invalid = snapshot; invalid.table.nativeFaceChannel = []
         XCTAssertNil(CADFaceNamingSnapshot.restore(try JSONEncoder().encode(invalid),
             body: body, mesh: mesh, brep: brep))
-        invalid = snapshot; invalid.nativePartitionSHA256 = String(repeating: "0", count: 64)
+        invalid = snapshot
+        let witnessIndex = try XCTUnwrap(invalid.nativeFaces.keys.first)
+        var badWitness = try XCTUnwrap(invalid.nativeFaces[witnessIndex])
+        badWitness.boundarySHA256 = String(repeating: "0", count: 64)
+        invalid.nativeFaces[witnessIndex] = badWitness
         XCTAssertNil(CADFaceNamingSnapshot.restore(try JSONEncoder().encode(invalid),
             body: body, mesh: mesh, brep: brep))
         invalid = snapshot
@@ -663,6 +667,81 @@ final class CADMaterialCoreTests: XCTestCase {
         XCTAssertThrowsError(try FileCADDocumentStore(packageURL: url).readWithoutRecovery(),
             "Changing derived bytes still requires the ordinary content checksum")
         try XCTUnwrap(bytesBefore["document.json"]).write(to: url.appendingPathComponent("document.json"))
+    }
+
+    func testMaterialQueriesReportMissingRangesEvenWhenTheNativeNameStillResolves() async throws {
+        let url = workDir.appendingPathComponent("missing-range-query.floecad")
+        let document = try await FloeCADDocument.create(at: url, name: "Missing range")
+        defer { document.close() }
+        let (bodyID, _) = try makeBox(document)
+        let service = CADMaterialService(document: document)
+        let materialID = try XCTUnwrap(service.handle(action: "create", args: [
+            "name": "Named face", "color": [0.9, 0.15, 0.12, 1.0]])["id"] as? String)
+        let face = try topFace(of: bodyID, in: document)
+        let applied = service.handle(action: "applyFaces", args: ["bodyID": bodyID,
+            "material_id": materialID, "faces": [face.index], "query_token": face.token])
+        XCTAssertEqual(applied["ok"] as? Bool, true, "\(applied)")
+        let body = try documentBody(bodyID, in: document)
+        let complete = try XCTUnwrap(document.session.faceRangeTable(for: body))
+        let before = CADFaceMaterialResolver.assessGroups(in: body, table: complete, tableRevision: body.meshRevision)
+        XCTAssertTrue(before.isLossless)
+        let painted = Set(try XCTUnwrap(before.groups.first?.triangles))
+        // Inject an incomplete derivative table through the existing exact
+        // checkpoint seam; leave the real geometry and its native names intact.
+        var checkpoint = document.captureEditCheckpoint()
+        var partial = try XCTUnwrap(checkpoint.lastFaceTables[body.id])
+        partial.entries.removeAll { !painted.isDisjoint(with: $0.triangles) }
+        XCTAssertFalse(partial.entries.isEmpty)
+        checkpoint.lastFaceTables[body.id] = partial
+        document.restoreEditCheckpoint(checkpoint)
+        let actual = try documentBody(bodyID, in: document)
+        let ranges = try XCTUnwrap(document.session.faceRangeTable(for: actual))
+        XCTAssertEqual(CADFaceMaterialResolver.resolve(actual.materialFaceBindings, in: actual,
+            table: ranges).first?.resolvedIndex, face.index, "The native reference really still resolves")
+        let failure = CADFaceMaterialResolver.assessGroups(in: actual, table: ranges, tableRevision: actual.meshRevision)
+        XCTAssertEqual(failure.issues.map(\.kind), [.missing])
+        let unresolved = service.handle(action: "unresolved", args: [:])
+        XCTAssertEqual(unresolved["count"] as? Int, 1, "\(unresolved)")
+        let rows = try XCTUnwrap(unresolved["bindings"] as? [[String: Any]])
+        XCTAssertEqual(rows.first?["code"] as? String, "face_triangle_map_missing")
+        let query = document.nativeQueryJSON(["scope": "bodies"])
+        XCTAssertTrue(query.isOK)
+        let object = try XCTUnwrap(JSONSerialization.jsonObject(with: query.payload) as? [String: Any])
+        let bodies = try XCTUnwrap(object["rows"] as? [[String: Any]])
+        let bindings = try XCTUnwrap(bodies.first?["face_material_bindings"] as? [String: Any])
+        XCTAssertEqual(bindings["unresolved_count"] as? Int, 1)
+        XCTAssertTrue(try XCTUnwrap(bindings["resolved"] as? [[String: Any]]).isEmpty)
+        let scene = document.sceneSnapshot()
+        XCTAssertEqual(scene.bodies.first?.unresolvedFaceCount, 1)
+        XCTAssertNil(scene.bodies.first?.faceMaterials.first?.triangleNumbers)
+    }
+
+    func testNativeFaceBoundaryProofIgnoresOrderingAndDiagonalsButNotChangedBoundaries() throws {
+        let positions: [SIMD3<Float>] = [SIMD3(0, 0, 0), SIMD3(2, 0, 0), SIMD3(2, 2, 0), SIMD3(0, 2, 0),
+            SIMD3(3, 0, 0), SIMD3(5, 0, 0), SIMD3(5, 2, 0), SIMD3(3, 2, 0)]
+        let render = RenderMesh(positions: positions, normals: Array(repeating: SIMD3(0, 0, 1), count: 8),
+            indices: [0, 1, 2, 0, 2, 3, 4, 5, 6, 4, 6, 7])
+        let first = try XCTUnwrap(CADFaceNamingSnapshot.boundaryDigests(render: render, channel: [10, 10, 20, 20]))
+        var reordered = render
+        reordered.positions[0].x = Float(bitPattern: 0x80000000)
+        // Swap face order/IDs, reverse winding and use the OTHER internal
+        // diagonal. The complete physical boundary must stay identical.
+        reordered.indices = [7, 5, 4, 7, 6, 5, 3, 1, 0, 3, 2, 1]
+        let second = try XCTUnwrap(CADFaceNamingSnapshot.boundaryDigests(render: reordered, channel: [8, 8, 7, 7]))
+        XCTAssertEqual(first[10], second[7])
+        XCTAssertEqual(first[20], second[8])
+        XCTAssertNotEqual(first[10], first[20])
+        var changed = reordered
+        changed.positions[1].x += 0.1
+        let third = try XCTUnwrap(CADFaceNamingSnapshot.boundaryDigests(render: changed, channel: [8, 8, 7, 7]))
+        XCTAssertNotEqual(second[7], third[7])
+        XCTAssertEqual(second[8], third[8])
+        let wrongPartition = try XCTUnwrap(CADFaceNamingSnapshot.boundaryDigests(render: reordered, channel: [8, 7, 8, 7]))
+        XCTAssertNotEqual(second[7], wrongPartition[7])
+        XCTAssertNotEqual(second[8], wrongPartition[8])
+        XCTAssertNil(CADFaceNamingSnapshot.boundaryDigests(render: render, channel: [10]))
+        var invalid = render; invalid.indices[0] = .max
+        XCTAssertNil(CADFaceNamingSnapshot.boundaryDigests(render: invalid, channel: [10, 10, 20, 20]))
     }
 
     /// A normal save/close/reopen must keep the painted face's REAL triangle
