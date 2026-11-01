@@ -113,4 +113,5 @@
     <string name="calendar_span_this">仅此单次</string>
     <string name="calendar_span_future">此单次及以后</string>
     <string name="calendar_todo_deleted">待办已删除。</string>
+    <string name="calendar_error_mutation_unknown">操作结果尚未确认。请先刷新列表，再决定是否重试。</string>
 </resources>

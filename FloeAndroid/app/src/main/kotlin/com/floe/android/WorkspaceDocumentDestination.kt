@@ -75,7 +75,7 @@ import java.util.Locale
  * L172-180 exposes the explicit close and, on compact widths, keeps the tree
  * behind a drawer instead of a permanent column.
  *
- * Android has no separate preview surface yet, so the settled mapping is:
+ * Android uses the existing typed preview services with this mapping:
  * - text/code: the same [IdePresenter] editor that owns drafts/undo/save is
  *   presented full-window on a phone, and stays in the tablet inspector with
  *   an explicit "open full window" entry;
@@ -84,9 +84,10 @@ import java.util.Locale
  * - PDF/raster bitmap: the real READ-ONLY full-window preview over the
  *   existing verified workspace snapshot + isolated PDF renderer / bounded
  *   BitmapFactory decoder (G07.1);
- * - media/CAD/archive/binary and SVG/TIFF: a typed document surface that
- *   names the file and its type and says honestly that this build has no
- *   in-app viewer for it. Their bytes are never decoded as text.
+ * - media and supported CAD: their owned media preview and read-only C04
+ *   viewer; unsupported formats keep an explicit typed fallback;
+ * - archive/binary and unsupported image encodings: a typed fallback rather
+ *   than decoding arbitrary bytes as text.
  *
  * Nothing here is a second document authority: the request only carries the
  * already-owned task/workspace/path identity, and every byte and every draft

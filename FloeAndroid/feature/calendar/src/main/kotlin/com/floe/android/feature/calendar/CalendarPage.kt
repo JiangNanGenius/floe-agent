@@ -884,6 +884,7 @@ private fun reminderText(minutes: Int?): String = when (minutes) {
 
 @Composable
 private fun todoErrorText(code: String): String = when (code) {
+    "mutationUnknown" -> stringResource(R.string.calendar_error_mutation_unknown)
     "revisionConflict" -> stringResource(R.string.calendar_todo_conflict)
     "invalidDue" -> stringResource(R.string.calendar_reminder_requires_due)
     "invalidTitle" -> stringResource(R.string.calendar_todo_title_hint)
@@ -893,6 +894,7 @@ private fun todoErrorText(code: String): String = when (code) {
 
 @Composable
 private fun calendarErrorText(code: String): String = when (code) {
+    "mutationUnknown" -> stringResource(R.string.calendar_error_mutation_unknown)
     "permissionDenied" -> stringResource(R.string.calendar_error_permission)
     "writePermissionDenied" -> stringResource(R.string.calendar_error_write_permission)
     "readbackMismatch" -> stringResource(R.string.calendar_error_readback)
