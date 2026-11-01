@@ -266,6 +266,7 @@ struct CADMeshPanelView: View {
                             }
                         }
                     }
+                    .accessibilityElement(children: .contain)
                     .accessibilityIdentifier("CADMeshPending")
                 }
             }

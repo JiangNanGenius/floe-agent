@@ -226,6 +226,10 @@ public nonisolated struct CADAnimationExportStatus: Sendable, Equatable {
     public var result: CADAnimationExportResult?
     public var error: String?
     public var isCancelled: Bool
+    /// The typed failure that produced `error`, when the exporter knows it.
+    /// Additive: callers that only display `error` are unaffected, while an
+    /// actual encoder failure stays distinguishable from verification.
+    public var failure: CADAnimationExportError?
 
     public var isFinished: Bool { progress.isFinished }
 
@@ -233,12 +237,25 @@ public nonisolated struct CADAnimationExportStatus: Sendable, Equatable {
                 progress: CADAnimationExportProgress,
                 result: CADAnimationExportResult? = nil,
                 error: String? = nil,
-                isCancelled: Bool = false) {
+                isCancelled: Bool = false,
+                failure: CADAnimationExportError? = nil) {
         self.id = id
         self.progress = progress
         self.result = result
         self.error = error
         self.isCancelled = isCancelled
+        self.failure = failure
+    }
+}
+
+extension CADAnimationExportStatus {
+    /// The error a convenience caller receives for this terminal status.
+    /// Never collapse a real writer/encoding/stale failure into
+    /// `.verification`: that hid the actual encoder state on native 146.
+    var failureError: CADAnimationExportError {
+        if isCancelled { return .cancelled }
+        if let failure { return failure }
+        return .verification(error ?? "The export did not produce a file.")
     }
 }
 
@@ -290,7 +307,7 @@ public nonisolated enum CADAnimationImageFormat: String, Sendable, CaseIterable 
     case jpeg
 }
 
-public nonisolated enum CADAnimationExportError: Error, LocalizedError, Sendable {
+public nonisolated enum CADAnimationExportError: Error, LocalizedError, Sendable, Equatable {
     case invalidSettings(String)
     case invalidDestination(String)
     case destinationExists
@@ -601,9 +618,7 @@ public extension FloeCADDocument {
             }
         }
         if let result = status.result { return result }
-        if status.isCancelled { throw CADAnimationExportError.cancelled }
-        throw CADAnimationExportError.verification(
-            status.error ?? "The export did not produce a file.")
+        throw status.failureError
     }
 
     /// Historical MP4 convenience. See `startAnimationExportMP4`.
@@ -1029,6 +1044,10 @@ public extension FloeCADDocument {
         var frameSequence: CADAnimationFrameSequenceBuilder?
         var stagingDirectory: URL?
         var renderSession: CADAnimationRenderSession?
+        // Frames actually appended before a failure/cancel. Hoisted out of the
+        // do-block so the terminal status reports where the export stopped
+        // instead of resetting progress to zero and hiding the stall frame.
+        var completed = 0
         defer { renderSession?.release() }
 
         func checkLifecycle() throws {
@@ -1189,7 +1208,6 @@ public extension FloeCADDocument {
                 kCVPixelBufferIOSurfacePropertiesKey as String: [:] as [String: Any],
             ]
 
-            var completed = 0
             while completed < totalFrames {
                 try checkLifecycle()
                 guard UIApplication.shared.applicationState != .background else {
@@ -1306,7 +1324,8 @@ public extension FloeCADDocument {
                         throw CADAnimationExportError.encoding(
                             "The rendered frame could not be converted to video pixels.")
                     }
-                    try await Self.waitUntilReady(input)
+                    try await Self.waitUntilReady(
+                        input, writer: writer, frameIndex: completed)
                     try checkLifecycle()
                     let presentationTime = CMTime(
                         value: Int64(completed), timescale: CMTimeScale(settings.frameRate))
@@ -1437,6 +1456,14 @@ public extension FloeCADDocument {
                     totalFrames: totalFrames, timeSeconds: clip.duration),
                 result: result)
         } catch is CancellationError {
+            // Capture the writer's terminal state BEFORE cancelWriting changes
+            // it, so the log names the encoder state that actually ended the
+            // job. `cancelWriting()` blocks until AVFoundation has torn the
+            // session down (and deletes its staged file), so cleanup runs after
+            // this observation, never before it.
+            #if DEBUG
+            let writerState = Self.animationWriterDebugState(writer)
+            #endif
             writer?.cancelWriting()
             let cleanupFailure = await Self.removeAnimationStaging(stagingDirectory)
             stagingDirectory = nil
@@ -1447,22 +1474,31 @@ public extension FloeCADDocument {
             let message = cleanupFailure.map {
                 "\(cancelledMessage) \($0)"
             } ?? cancelledMessage
+            #if DEBUG
+            Self.logAnimationExportTerminal(
+                job: id, writer: writerState, completedFrames: completed,
+                totalFrames: totalFrames, cancelled: true,
+                cleanupFailed: cleanupFailure != nil)
+            #endif
             let progress = CADAnimationExportProgress(
-                phase: .cancelled, completedFrames: 0,
+                phase: .cancelled, completedFrames: completed,
                 totalFrames: totalFrames, timeSeconds: 0)
             return CADAnimationExportStatus(
                 id: id, progress: progress, error: message,
-                isCancelled: true)
+                isCancelled: true, failure: .cancelled)
         } catch {
             // Close/background/lease revocation surfaces the typed
             // `.cancelled` error (not only CancellationError); report it as a
             // cancellation rather than a failed export with no cancelled flag.
+            #if DEBUG
+            let writerState = Self.animationWriterDebugState(writer)
+            #endif
             writer?.cancelWriting()
             let cleanupFailure = await Self.removeAnimationStaging(stagingDirectory)
             stagingDirectory = nil
+            let exportError = error as? CADAnimationExportError
             let wasCancelled: Bool
-            if let exportError = error as? CADAnimationExportError,
-               case .cancelled = exportError {
+            if let typedError = exportError, case .cancelled = typedError {
                 wasCancelled = true
             } else {
                 wasCancelled = false
@@ -1472,13 +1508,19 @@ public extension FloeCADDocument {
                                       "Frame export was cancelled.")
                 : error.localizedDescription
             if let cleanupFailure { message += " \(cleanupFailure)" }
+            #if DEBUG
+            Self.logAnimationExportTerminal(
+                job: id, writer: writerState, completedFrames: completed,
+                totalFrames: totalFrames, cancelled: wasCancelled,
+                cleanupFailed: cleanupFailure != nil)
+            #endif
             let progress = CADAnimationExportProgress(
                 phase: wasCancelled ? .cancelled : .failed,
-                completedFrames: 0,
+                completedFrames: completed,
                 totalFrames: totalFrames, timeSeconds: 0)
             return CADAnimationExportStatus(
                 id: id, progress: progress, error: message,
-                isCancelled: wasCancelled)
+                isCancelled: wasCancelled, failure: exportError)
         }
     }
 
@@ -1606,18 +1648,85 @@ public extension FloeCADDocument {
         return pixelBuffer
     }
 
-    private static func waitUntilReady(_ input: AVAssetWriterInput) async throws {
+    /// Wait for the encoder to accept the next frame. Readiness alone is not
+    /// enough: a writer that has failed, been cancelled or already completed is
+    /// terminal, and polling `isReadyForMoreMediaData` would keep hiding its
+    /// real error for the rest of the budget. The caller therefore passes the
+    /// writer and frame identity, and the existing 5,000-wait (~10 s nominal)
+    /// budget is unchanged. The DEBUG observation reports the actual status,
+    /// frame, readiness, elapsed time and underlying AVFoundation error.
+    /// Internal for the deterministic writer-readiness tests; not public API.
+    internal static func waitUntilReady(
+        _ input: AVAssetWriterInput,
+        writer: AVAssetWriter,
+        frameIndex: Int
+    ) async throws {
+        let clock = ContinuousClock()
+        let started = clock.now
         var waits = 0
-        while !input.isReadyForMoreMediaData {
+        while true {
             try Task.checkCancellation()
-            if waits >= 5_000 {
-                throw CADAnimationExportError.writer(
-                    "The video encoder stayed busy for too long.")
+            let elapsedMilliseconds = Self.elapsedMilliseconds(
+                since: started, clock: clock)
+            let snapshot = CADAnimationWriterReadinessSnapshot(
+                writer: writer, input: input)
+            switch CADAnimationWriterReadinessPolicy.decide(
+                snapshot, frameIndex: frameIndex, waits: waits) {
+            case .proceed:
+                return
+            case .wait:
+                try await Task.sleep(for: .milliseconds(2))
+                waits += 1
+            case .stop(let message):
+                #if DEBUG
+                NSLog("[CADAnimationExport] %@", "writer-readiness-stop "
+                    + CADAnimationWriterReadinessPolicy.observation(
+                        snapshot, frameIndex: frameIndex, waits: waits,
+                        elapsedMilliseconds: elapsedMilliseconds))
+                #endif
+                throw CADAnimationExportError.writer(message)
             }
-            try await Task.sleep(for: .milliseconds(2))
-            waits += 1
         }
     }
+
+    private static func elapsedMilliseconds(
+        since start: ContinuousClock.Instant,
+        clock: ContinuousClock
+    ) -> Int {
+        let components = (clock.now - start).components
+        return Int(components.seconds * 1_000
+            + components.attoseconds / 1_000_000_000_000_000)
+    }
+
+    #if DEBUG
+    /// One line that identifies which writer ended the job and whether its
+    /// staging tree was removed. No paths, frame pixels or user content.
+    private static func animationWriterDebugState(
+        _ writer: AVAssetWriter?
+    ) -> String {
+        guard let writer else { return "writer=none error=none" }
+        let bridged = writer.error.map { $0 as NSError }
+        let summary = CADAnimationWriterReadinessPolicy.errorSummary(
+            domain: bridged?.domain, code: bridged?.code,
+            description: bridged?.localizedDescription)
+        return "writer=\(CADAnimationWriterReadinessPolicy.statusName(writer.status)) "
+            + "error=\(summary.isEmpty ? "none" : summary)"
+    }
+
+    private static func logAnimationExportTerminal(
+        job: UUID,
+        writer: String,
+        completedFrames: Int,
+        totalFrames: Int,
+        cancelled: Bool,
+        cleanupFailed: Bool
+    ) {
+        NSLog("[CADAnimationExport] %@", "terminal job=\(job.uuidString) "
+            + "cancelled=\(cancelled) "
+            + "frames=\(completedFrames)/\(totalFrames) \(writer) "
+            + "cleanup=\(cleanupFailed ? "failed" : "ok")")
+    }
+    #endif
 
     private static func finishWriting(_ writer: AVAssetWriter) async {
         await withCheckedContinuation { continuation in
@@ -1889,6 +1998,170 @@ private final class CADAnimationFrameSequenceBuilder {
                 source.draw(in: rect)
             }
         return rendered.pngData()
+    }
+}
+
+// MARK: - Writer readiness (deterministic, no encoder required)
+
+/// One value snapshot of the two AVFoundation objects the frame loop waits
+/// on. Only the fields needed for the decision are copied, so the policy can
+/// be tested against terminal states without creating a real encoder.
+nonisolated struct CADAnimationWriterReadinessSnapshot: Equatable {
+    var status: AVAssetWriter.Status
+    var errorDomain: String?
+    var errorCode: Int?
+    var errorDescription: String?
+    var isReadyForMoreMediaData: Bool
+
+    init(status: AVAssetWriter.Status,
+         errorDomain: String? = nil,
+         errorCode: Int? = nil,
+         errorDescription: String? = nil,
+         isReadyForMoreMediaData: Bool) {
+        self.status = status
+        self.errorDomain = errorDomain
+        self.errorCode = errorCode
+        self.errorDescription = errorDescription
+        self.isReadyForMoreMediaData = isReadyForMoreMediaData
+    }
+
+    init(writer: AVAssetWriter, input: AVAssetWriterInput) {
+        let bridged = writer.error.map { $0 as NSError }
+        self.init(
+            status: writer.status,
+            errorDomain: bridged?.domain,
+            errorCode: bridged?.code,
+            errorDescription: bridged?.localizedDescription,
+            isReadyForMoreMediaData: input.isReadyForMoreMediaData)
+    }
+
+    var errorSummary: String {
+        CADAnimationWriterReadinessPolicy.errorSummary(
+            domain: errorDomain, code: errorCode,
+            description: errorDescription)
+    }
+}
+
+nonisolated enum CADAnimationWriterReadinessDecision: Equatable {
+    case proceed
+    case wait
+    case stop(String)
+}
+
+/// The single readiness rule for the MP4 writer. It deliberately keeps the
+/// exporter's existing budget (5,000 × ~2 ms, about ten seconds nominal) and
+/// never treats a terminal writer as busy or as ready.
+nonisolated enum CADAnimationWriterReadinessPolicy {
+    static let maximumWaits = 5_000
+
+    static func decide(
+        _ snapshot: CADAnimationWriterReadinessSnapshot,
+        frameIndex: Int,
+        waits: Int
+    ) -> CADAnimationWriterReadinessDecision {
+        if let terminal = terminalFailure(snapshot, frameIndex: frameIndex) {
+            return .stop(terminal)
+        }
+        if snapshot.isReadyForMoreMediaData { return .proceed }
+        guard waits < maximumWaits else {
+            // Product copy stays concise. The frame is useful to the user;
+            // status/readiness/elapsed/error belong in the DEBUG observation
+            // below, not in the visible failure string.
+            return .stop(
+                "The video encoder stayed busy for too long while writing "
+                + "frame \(frameIndex + 1).")
+        }
+        return .wait
+    }
+
+    /// A writer that is no longer writing cannot become ready for another
+    /// frame. Return the exact reason instead of polling until the busy
+    /// ceiling and reporting a misleading "stayed busy".
+    static func terminalFailure(
+        _ snapshot: CADAnimationWriterReadinessSnapshot,
+        frameIndex: Int
+    ) -> String? {
+        let frame = frameIndex + 1
+        switch snapshot.status {
+        case .writing:
+            return nil
+        case .failed:
+            // Include the encoder's own message (the same information other
+            // writer failures already surface) but keep the AVFoundation
+            // domain/code in the DEBUG observation.
+            let description = snapshot.errorDescription.map {
+                sanitized($0)
+            } ?? ""
+            let detail = description.isEmpty ? "" : ": \(description)"
+            return "The video encoder failed while writing frame \(frame)\(detail)."
+        case .cancelled:
+            return "The video encoder was cancelled before writing frame \(frame)."
+        case .completed:
+            return "The video encoder finished before writing frame \(frame)."
+        case .unknown:
+            return "The video encoder is not ready to write frame \(frame)."
+        @unknown default:
+            return "The video encoder cannot write frame \(frame)."
+        }
+    }
+
+    /// One bounded diagnostic line for the DEBUG log. This is the observation
+    /// Root reads to distinguish a terminal writer from a live-but-starved
+    /// one; it is deliberately not part of the visible error copy.
+    static func observation(
+        _ snapshot: CADAnimationWriterReadinessSnapshot,
+        frameIndex: Int,
+        waits: Int,
+        elapsedMilliseconds: Int
+    ) -> String {
+        "frame=\(frameIndex + 1) waits=\(waits) "
+            + "elapsedMs=\(elapsedMilliseconds) "
+            + "status=\(statusName(snapshot.status)) "
+            + "ready=\(snapshot.isReadyForMoreMediaData) "
+            + "error=\(snapshot.errorSummary.isEmpty ? "none" : snapshot.errorSummary)"
+    }
+
+    static func statusName(_ status: AVAssetWriter.Status) -> String {
+        switch status {
+        case .unknown: return "unknown"
+        case .writing: return "writing"
+        case .failed: return "failed"
+        case .cancelled: return "cancelled"
+        case .completed: return "completed"
+        @unknown default: return "status-\(status.rawValue)"
+        }
+    }
+
+    /// `domain code: description` with newlines collapsed and the description
+    /// bounded. Diagnostics only: no file paths, pixels or user content are
+    /// added here.
+    static func errorSummary(
+        domain: String?,
+        code: Int?,
+        description: String?
+    ) -> String {
+        var parts: [String] = []
+        if let domain, let code {
+            parts.append("\(domain) \(code)")
+        } else if let code {
+            parts.append("code \(code)")
+        }
+        if let description, !description.isEmpty {
+            parts.append(sanitized(description))
+        }
+        return parts.joined(separator: ": ")
+    }
+
+    static func sanitized(_ text: String) -> String {
+        let singleLine = text
+            .split(whereSeparator: { $0.isNewline })
+            .joined(separator: " ")
+        var trimmed = singleLine.trimmingCharacters(in: .whitespaces)
+        while trimmed.hasSuffix(".") || trimmed.hasSuffix(",") {
+            trimmed.removeLast()
+        }
+        guard trimmed.count > 160 else { return trimmed }
+        return String(trimmed.prefix(160)) + "..."
     }
 }
 

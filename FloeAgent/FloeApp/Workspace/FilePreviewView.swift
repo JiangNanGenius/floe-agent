@@ -599,6 +599,14 @@ struct FilePreviewView: View {
             .padding(.horizontal, 14)
             .padding(.vertical, 10)
             .background(.bar)
+            // Keep the banner identity on an explicit accessibility CONTAINER.
+            // Applied to a plain layout container, the identifier is copied
+            // onto every descendant instead of identifying the banner, so the
+            // real Apply/Discard buttons and the source/limit text stopped
+            // answering to their own identifiers. Children stay individually
+            // reachable with their own identifiers here, exactly like the
+            // recovery sheet's container identity.
+            .accessibilityElement(children: .contain)
             .accessibilityIdentifier("cad.native.proposalBanner")
         }
     }

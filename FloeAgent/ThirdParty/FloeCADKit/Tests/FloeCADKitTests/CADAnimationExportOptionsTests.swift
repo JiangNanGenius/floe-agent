@@ -29,6 +29,7 @@ import SwiftUI
 import RealityKit
 import UIKit
 import AVFoundation
+import UniformTypeIdentifiers
 import CryptoKit
 import simd
 
@@ -249,6 +250,212 @@ final class CADAnimationExportOptionsMappingTests: XCTestCase {
         let loaded = CADAnimationExportOptions.load(from: defaults)
         XCTAssertEqual(loaded.format, .mp4)
         XCTAssertEqual(loaded.alpha, .opaque)
+    }
+}
+
+// MARK: - Writer readiness (deterministic; no encoder required)
+
+/// The MP4 readiness rule must distinguish a terminal writer from a merely
+/// busy one. These tests never create a video encoder; the real-writer probe
+/// at the end only proves AVFoundation reports a cancelled writer as
+/// terminal. They are the regression for native 146, where a writer that had
+/// already stopped looked like an encoder that was "busy" for 10 s.
+@MainActor
+final class CADAnimationWriterReadinessTests: XCTestCase {
+    private func snapshot(
+        _ status: AVAssetWriter.Status,
+        ready: Bool,
+        error: NSError? = nil
+    ) -> CADAnimationWriterReadinessSnapshot {
+        CADAnimationWriterReadinessSnapshot(
+            status: status,
+            errorDomain: error?.domain,
+            errorCode: error?.code,
+            errorDescription: error?.localizedDescription,
+            isReadyForMoreMediaData: ready)
+    }
+
+    func testFailedWriterStopsWithTheActualEncoderErrorBeforeTheBusyCeiling() {
+        let encoderError = NSError(
+            domain: "AVFoundationErrorDomain", code: -11800,
+            userInfo: [NSLocalizedDescriptionKey: "The encoder failed."])
+        let state = snapshot(.failed, ready: false, error: encoderError)
+        let decision = CADAnimationWriterReadinessPolicy.decide(
+            state, frameIndex: 4, waits: 0)
+        guard case .stop(let message) = decision else {
+            return XCTFail("a failed writer must stop the wait, got \(decision)")
+        }
+        XCTAssertTrue(message.contains("frame 5"))
+        XCTAssertTrue(message.contains("The encoder failed"))
+        XCTAssertFalse(message.contains("stayed busy"),
+                       "a terminal writer must not be reported as busy")
+        // The code is diagnostic, not user copy; the DEBUG observation keeps it.
+        XCTAssertTrue(state.errorSummary.contains("AVFoundationErrorDomain -11800"))
+        let observation = CADAnimationWriterReadinessPolicy.observation(
+            state, frameIndex: 4, waits: 0, elapsedMilliseconds: 7)
+        XCTAssertTrue(observation.contains("status=failed"))
+        XCTAssertTrue(observation.contains("AVFoundationErrorDomain -11800"))
+    }
+
+    func testReadyWriterProceedsOnlyWhileStillWriting() {
+        XCTAssertEqual(
+            CADAnimationWriterReadinessPolicy.decide(
+                snapshot(.writing, ready: true),
+                frameIndex: 0, waits: 5_000),
+            .proceed)
+        XCTAssertEqual(
+            CADAnimationWriterReadinessPolicy.decide(
+                snapshot(.writing, ready: false),
+                frameIndex: 3, waits: 1),
+            .wait)
+    }
+
+    func testCancelledCompletedAndUnknownWritersAreTerminal() {
+        let cancelled = CADAnimationWriterReadinessPolicy.decide(
+            snapshot(.cancelled, ready: true), frameIndex: 1, waits: 0)
+        guard case .stop(let cancelledMessage) = cancelled else {
+            return XCTFail("cancelled writer must stop, got \(cancelled)")
+        }
+        XCTAssertTrue(cancelledMessage.contains("cancelled"))
+        XCTAssertTrue(cancelledMessage.contains("frame 2"))
+
+        let completed = CADAnimationWriterReadinessPolicy.decide(
+            snapshot(.completed, ready: true), frameIndex: 2, waits: 0)
+        guard case .stop(let completedMessage) = completed else {
+            return XCTFail("completed writer must stop, got \(completed)")
+        }
+        XCTAssertTrue(completedMessage.contains("finished"))
+
+        let unknown = CADAnimationWriterReadinessPolicy.decide(
+            snapshot(.unknown, ready: true), frameIndex: 0, waits: 0)
+        guard case .stop = unknown else {
+            return XCTFail("an unstarted writer must not be treated as ready")
+        }
+    }
+
+    func testBusyCeilingKeepsTheExistingBudgetAndNamesTheFrameState() {
+        XCTAssertEqual(CADAnimationWriterReadinessPolicy.maximumWaits, 5_000)
+        XCTAssertEqual(
+            CADAnimationWriterReadinessPolicy.decide(
+                snapshot(.writing, ready: false),
+                frameIndex: 11, waits: 4_999),
+            .wait,
+            "the existing 10 s budget must not be increased or shortened")
+        let busy = snapshot(.writing, ready: false)
+        let decision = CADAnimationWriterReadinessPolicy.decide(
+            busy, frameIndex: 11, waits: 5_000)
+        guard case .stop(let message) = decision else {
+            return XCTFail("the busy ceiling must stop, got \(decision)")
+        }
+        XCTAssertEqual(
+            message,
+            "The video encoder stayed busy for too long while writing frame 12.",
+            "visible copy stays concise and names the frame")
+        let observation = CADAnimationWriterReadinessPolicy.observation(
+            busy, frameIndex: 11, waits: 5_000,
+            elapsedMilliseconds: 10_007)
+        XCTAssertTrue(observation.contains("frame=12"))
+        XCTAssertTrue(observation.contains("waits=5000"))
+        XCTAssertTrue(observation.contains("elapsedMs=10007"))
+        XCTAssertTrue(observation.contains("status=writing"))
+        XCTAssertTrue(observation.contains("ready=false"))
+        XCTAssertTrue(observation.contains("error=none"))
+    }
+
+    func testErrorSummaryStaysSingleLineAndBounded() {
+        let long = "first line\nsecond line "
+            + String(repeating: "x", count: 300)
+        let summary = CADAnimationWriterReadinessPolicy.errorSummary(
+            domain: "AVFoundationErrorDomain", code: -11800, description: long)
+        XCTAssertFalse(summary.contains("\n"))
+        XCTAssertTrue(summary.hasPrefix("AVFoundationErrorDomain -11800: "))
+        XCTAssertLessThanOrEqual(summary.count, 200)
+        XCTAssertTrue(summary.hasSuffix("..."))
+    }
+
+    func testStatusFailureKeepsItsRealClassification() {
+        let progress = CADAnimationExportProgress(
+            phase: .failed, totalFrames: 12)
+        let writerFailure = CADAnimationExportError.writer(
+            "The video encoder failed before writing frame 12.")
+        let writerStatus = CADAnimationExportStatus(
+            id: UUID(), progress: progress,
+            error: writerFailure.localizedDescription, failure: writerFailure)
+        guard case .writer = writerStatus.failureError else {
+            return XCTFail(
+                "writer failure collapsed into \(writerStatus.failureError)")
+        }
+        let staleStatus = CADAnimationExportStatus(
+            id: UUID(), progress: progress, error: "stale",
+            failure: .stale)
+        guard case .stale = staleStatus.failureError else {
+            return XCTFail("stale failure collapsed into \(staleStatus.failureError)")
+        }
+        let cancelledStatus = CADAnimationExportStatus(
+            id: UUID(), progress: progress, isCancelled: true)
+        guard case .cancelled = cancelledStatus.failureError else {
+            return XCTFail(
+                "cancellation collapsed into \(cancelledStatus.failureError)")
+        }
+        let untyped = CADAnimationExportStatus(
+            id: UUID(), progress: progress, error: "could not verify")
+        guard case .verification = untyped.failureError else {
+            return XCTFail("untyped failure must stay verification")
+        }
+    }
+
+    /// Real AVFoundation probe: cancelling a started writer is terminal. The
+    /// old polling loop would either append to a cancelled writer (if it were
+    /// ready) or spin the whole busy budget; the fixed loop stops at once.
+    func testRealCancelledWriterIsRejectedBeforeTheBusyCeiling() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(
+                "CADWriterReadiness-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let url = directory.appendingPathComponent("probe.mp4")
+        let writer = try AVAssetWriter(outputURL: url, fileType: .mp4)
+        let input = AVAssetWriterInput(
+            mediaType: .video,
+            outputSettings: [
+                AVVideoCodecKey: AVVideoCodecType.h264,
+                AVVideoWidthKey: 64,
+                AVVideoHeightKey: 64,
+            ])
+        input.expectsMediaDataInRealTime = false
+        guard writer.canAdd(input) else {
+            throw XCTSkip("The test host has no H.264 writer input.")
+        }
+        writer.add(input)
+        guard writer.startWriting() else {
+            throw XCTSkip("The test host has no H.264 encoder: "
+                + (writer.error?.localizedDescription ?? "unknown"))
+        }
+        writer.startSession(atSourceTime: .zero)
+        writer.cancelWriting()
+        XCTAssertEqual(writer.status, .cancelled)
+
+        let clock = ContinuousClock()
+        let started = clock.now
+        do {
+            try await FloeCADDocument.waitUntilReady(
+                input, writer: writer, frameIndex: 0)
+            XCTFail("a cancelled writer must never be treated as ready")
+        } catch let error as CADAnimationExportError {
+            guard case .writer(let message) = error else {
+                return XCTFail("expected .writer, got \(error)")
+            }
+            XCTAssertTrue(
+                message.localizedCaseInsensitiveContains("cancelled"))
+            XCTAssertFalse(message.contains("stayed busy"))
+        }
+        let duration = clock.now - started
+        let seconds = Double(duration.components.seconds)
+            + Double(duration.components.attoseconds) / 1e18
+        XCTAssertLessThan(
+            seconds, 5,
+            "a terminal writer must be rejected at once, not after the busy ceiling")
     }
 }
 
@@ -737,6 +944,23 @@ final class CADAnimationExportReadbackTests: XCTestCase {
                              "the camera animation must move the real model pixels")
         try assertNoStagingRemains(in: fixture.directory)
         XCTAssertTrue(FileManager.default.fileExists(atPath: destination.path))
+
+        // Keep the exact verified bundle and PNG bytes before fixture cleanup.
+        // Root archives these originals with the actual run's source receipt.
+        let bundleAttachment = XCTAttachment(
+            data: zipData, uniformTypeIdentifier: UTType.zip.identifier)
+        bundleAttachment.name = "Actual ordered PNG frame bundle"
+        bundleAttachment.lifetime = .keepAlways
+        add(bundleAttachment)
+        for entry in [try XCTUnwrap(manifest.frames.first),
+                      try XCTUnwrap(manifest.frames.last)] {
+            let attachment = XCTAttachment(
+                data: try XCTUnwrap(entries[entry.file]),
+                uniformTypeIdentifier: UTType.png.identifier)
+            attachment.name = "Actual PNG frame " + String(entry.index)
+            attachment.lifetime = .keepAlways
+            add(attachment)
+        }
     }
 
     /// Part-motion witness: one real assembly instance moves while its source

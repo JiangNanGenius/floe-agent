@@ -42,8 +42,22 @@ final class CADIGESSurfaceImportExportUITests: XCTestCase {
         app.launch()
         defer { app.terminate() }
         let apply = app.buttons["cad.native.apply"]
-        XCTAssertTrue(apply.waitForExistence(timeout: 120),
-                      "the shipped import proposal banner must appear before Apply")
+        // Same 120 s contract, but a fixture that failed to prepare reports its
+        // own error instead of surfacing as an unrelated control timeout, and a
+        // banner whose controls are not addressable by their own identifiers
+        // says so explicitly. The assertion itself is unchanged: the shipped
+        // banner's real Apply control must exist before anything is tapped.
+        switch waitForImportBanner(apply, in: app, timeout: 120) {
+        case .ready:
+            break
+        case .fixtureFailed(let detail):
+            XCTFail("the E26 fixture could not present its pending import: \(detail)")
+            return
+        case .timedOut:
+            XCTFail("the shipped import proposal banner must appear before Apply"
+                + bannerDiagnosis(in: app))
+            return
+        }
         let detail = app.staticTexts["cad.native.importDetail"]
         XCTAssertTrue(detail.waitForExistence(timeout: 20))
         let detailText = detail.label
@@ -311,5 +325,58 @@ final class CADIGESSurfaceImportExportUITests: XCTestCase {
             .replacingOccurrences(of: ".igs", with: "")
         guard digest.count == 12 else { return nil }
         return (name, digest)
+    }
+
+    // MARK: - Import banner diagnostics
+
+    private enum ImportBannerState {
+        case ready
+        /// The DEBUG harness reported its own preparation error. The exact
+        /// message travels with the failure so the next run diagnoses the
+        /// launch instead of waiting out the control timeout.
+        case fixtureFailed(String)
+        case timedOut
+    }
+
+    /// Wait for the shipped Apply control while distinguishing "the fixture
+    /// never prepared" from "the shipped banner is not addressable". This does
+    /// not relax the contract or convert a failure into a pass.
+    private func waitForImportBanner(_ apply: XCUIElement, in app: XCUIApplication,
+                                     timeout: TimeInterval) -> ImportBannerState {
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            if apply.exists { return .ready }
+            if let detail = fixtureFailure(in: app) { return .fixtureFailed(detail) }
+            RunLoop.current.run(until: Date().addingTimeInterval(0.25))
+        }
+        return apply.exists ? .ready : .timedOut
+    }
+
+    /// The DEBUG harness presents `CAD fixture failed` plus the exact error
+    /// when `CADIGESSurfaceUIFixture.prepare` throws. Read those two shipped
+    /// labels (they are stable and already asserted elsewhere) rather than
+    /// inventing a test-only failure channel.
+    private func fixtureFailure(in app: XCUIApplication) -> String? {
+        let heading = "CAD fixture failed"
+        guard app.staticTexts[heading].exists else { return nil }
+        let labels = app.staticTexts.allElementsBoundByIndex.map(\.label)
+        guard let index = labels.firstIndex(of: heading) else { return heading }
+        return labels.dropFirst(index + 1).first { $0 != heading } ?? heading
+    }
+
+    /// Appended to a timed-out Apply wait so the run states which real
+    /// boundary failed: the fixture never reached the preview, or the shipped
+    /// banner exists but its children answer only to the container identifier
+    /// (the accessibility-identifier shadowing regression).
+    private func bannerDiagnosis(in app: XCUIApplication) -> String {
+        var parts: [String] = []
+        if app.staticTexts["Preparing CAD fixture…"].exists {
+            parts.append("the fixture was still preparing")
+        }
+        if app.buttons["cad.native.proposalBanner"].exists {
+            parts.append("the shipped proposal banner is present but its controls answer only "
+                + "to cad.native.proposalBanner instead of their own identifiers")
+        }
+        return parts.isEmpty ? "" : " (\(parts.joined(separator: "; ")))"
     }
 }
