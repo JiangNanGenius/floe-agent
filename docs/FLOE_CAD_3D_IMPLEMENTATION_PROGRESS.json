@@ -2155,15 +2155,37 @@
       "package": "mechanical",
       "implementation": {
         "stage": "C",
-        "status": "planned",
-        "source_changes": [],
-        "verification": [],
-        "limitations": []
+        "status": "partial",
+        "source_changes": [
+          "806beb9e0799a8bd1c0f8d4bc2fbe4beacc15606",
+          "9df3e771dffa46f1b9441221f159a9bdb7baf433"
+        ],
+        "verification": [
+          {
+            "kind": "Swift6_actual_App_build_for_testing",
+            "source": "9df3e771dffa46f1b9441221f159a9bdb7baf433",
+            "passed": true,
+            "elapsed_seconds": 130.304
+          },
+          {
+            "kind": "actual_App_native_geometry_editor_and_material_tests",
+            "source": "9df3e771dffa46f1b9441221f159a9bdb7baf433",
+            "passed": 28,
+            "failed": 0,
+            "skipped": 0,
+            "prior_6_failures_preserved": true,
+            "observed": "柱面开口、1/2mm实际壁厚、完整曲面点选、原始面身份、一次撤销/重做/重开、失败原体保留、旋转缩放后的半圆柱识别及相关变量/材质回归通过。"
+          }
+        ],
+        "limitations": [
+          "多区域壁厚仍待；现有引用不能表达任意非平面／非柱面开口。",
+          "规范iPad模拟器中的真实App测试，不作实体设备性能声明。"
+        ]
       },
       "alignment_review": {
-        "disposition": "planned",
+        "disposition": "qualified_slice",
         "existing": "基线已有：真实BRep抽壳处理曲壁，正负厚度，开口列表可保存，失败不转mesh；无BRep时保留mesh算法。",
-        "remaining": "补非平面开口抽壳及多区域壁厚；独立曲面加厚另验，不把现有单厚度实体shell当作完整覆盖。",
+        "remaining": "多区域壁厚及现有引用尚不能表达的曲面开口仍待。",
         "evidence": [
           {
             "path": "docs/FLOE_CAD_3D_IMPLEMENTATION_PROGRESS.json",
@@ -2188,8 +2210,8 @@
         ],
         "notes": [],
         "evidence_level": "baseline_plus_verified_delta",
-        "verified_delta": "本轮没有该原始缺口的新运行通过声明；现有功能仍按基线保留。",
-        "acceptance_pending": "在曲面开口抽壳并量测壁厚，失效时保留原体；开口选择/厚度更新可重建重开。"
+        "verified_delta": "柱面开口及实际壁厚通过原生命令与Editor点选/历史入口验证；修正半圆柱中心轴识别和输入面身份表丢失。",
+        "acceptance_pending": "柱面开口部分已通过；本项多区域壁厚仍未闭环。"
       }
     },
     {
@@ -8373,7 +8395,7 @@
     "license_delta": "GLTFKit2 ownMIT/cgltfMIT do notclear precompiled libktx4.2.1 etcdec exception; prefer existing O3DV+same-r176 localGLTFLoader qualification"
   },
   "current_integration_verification": {
-    "source": "b7e93e32614a5ed0a6f55b89284a52716114eb03",
+    "source": "9df3e771dffa46f1b9441221f159a9bdb7baf433",
     "all_106_retained": true,
     "all_106_accepted": false,
     "release_ready": false,
@@ -8464,6 +8486,18 @@
         "cacheReadTokens": 938240,
         "outputTokens": 17789,
         "aggregate": 1134645
+      }
+    },
+    "latest_shell_batch": {
+      "source": "9df3e771dffa46f1b9441221f159a9bdb7baf433",
+      "passed": 28,
+      "failed": 0,
+      "skipped": 0,
+      "scope": "Exact cylindrical opening and shared fitter/editor identity recovery; M22 multi-region thickness remains open.",
+      "original_failed_batch": {
+        "passed": 19,
+        "failed": 6,
+        "skipped": 0
       }
     }
   }
