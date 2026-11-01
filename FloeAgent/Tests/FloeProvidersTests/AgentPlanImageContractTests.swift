@@ -138,6 +138,29 @@ struct AgentPlanImageContractTests {
         }
     }
 
+    @Test("User-configured plan image models do not require catalog or account verification")
+    func unlistedPlanModelRemainsCallable() throws {
+        let provider = planProvider()
+        let custom = model("user-configured-future-image-model", providerID: provider.id)
+        let contract = ImageGenerationPresetResolver.parameterContract(
+            provider: provider, model: custom, operation: .generate)
+        #expect(!contract.verifiedModel)
+        #expect(contract.verificationBasis == .unreviewed)
+        #expect(contract.accountUsability == "notChecked")
+        #expect(ImageGenerationPresetResolver.isEligible(
+            provider: provider, model: custom, operation: .generate))
+        let selection = ImageGenerationPresetResolver.applyingDefaults(
+            .init(), provider: provider, model: custom, operation: .generate)
+        try ImageGenerationPresetResolver.validateSelection(
+            selection, provider: provider, model: custom, operation: .generate,
+            count: 1, referenceCount: 0)
+        try ImageGenerationPresetResolver.validateSelection(
+            .init(nativeSizeOverride: "1024x1024"), provider: provider, model: custom,
+            operation: .generate, count: 1, referenceCount: 0)
+        #expect(ImageProviderAdapterFactory().adapter(for: provider) is VolcengineImageAdapter)
+        #expect(custom.remoteModelID == "user-configured-future-image-model")
+    }
+
     @Test("Fallback is exact-only disabled and stays on the same billing channel")
     func fallbackPolicy() {
         let initial = planProvider()

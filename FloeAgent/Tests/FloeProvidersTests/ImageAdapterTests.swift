@@ -371,6 +371,46 @@ struct ImageAdapterTests {
         #expect(images.allSatisfy { $0.hasPrefix("data:image/png;base64,") })
     }
 
+    @Test("An unlisted plan model reaches its configured service and preserves the actual error")
+    func unlistedAgentPlanModelUsesItsOwnWireRoute() async throws {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [ImageAdapterURLProtocol.self]
+        let session = URLSession(configuration: configuration)
+        defer { session.invalidateAndCancel() }
+        ImageAdapterURLProtocol.prepare([
+            .init(statusCode: 404, body: Data(
+                #"{"error":{"code":"UnsupportedModel","message":"Account has no access to this model"}}"#.utf8))
+        ])
+        let profile = ProviderProfile(kind: .custom, wireProtocol: .openAIChatCompletions,
+            baseURL: URL(string: "https://ark.cn-beijing.volces.com/api/plan/v3")!)
+        let model = ModelProfile(providerID: profile.id,
+            remoteModelID: "user-configured-future-image-model", displayName: "My image model",
+            limits: .init(contextTokens: 0, maxOutputTokens: 0), capabilities: [.imageGeneration])
+        #expect(ImageGenerationPresetResolver.isEligible(
+            provider: profile, model: model, operation: .generate))
+        let selection = ImageGenerationPresetResolver.applyingDefaults(
+            .init(), provider: profile, model: model, operation: .generate)
+        try ImageGenerationPresetResolver.validateSelection(
+            selection, provider: profile, model: model, operation: .generate,
+            count: 1, referenceCount: 0)
+        do {
+            _ = try await VolcengineImageAdapter(session: session).perform(
+                RemoteImageRequest(operation: .generate, prompt: "synthetic contract request",
+                                   modelRemoteID: model.remoteModelID, selection: selection),
+                provider: profile, credentials: ProviderCredentials(apiKey: "test-key"))
+            Issue.record("The actual provider error must surface")
+        } catch {
+            #expect(error.localizedDescription.contains("Account has no access to this model"))
+        }
+        let requests = ImageAdapterURLProtocol.snapshotRequests()
+        #expect(requests.count == 1, "No account check, model discovery or fallback request")
+        let request = try #require(requests.first)
+        #expect(request.url?.path == "/api/plan/v3/images/generations")
+        let body = try #require(JSONSerialization.jsonObject(
+            with: try #require(request.httpBody)) as? [String: Any])
+        #expect(body["model"] as? String == model.remoteModelID)
+    }
+
     @Test("OpenAI exposes one excess output to the service cardinality gate")
     func openAIExcessOutputObservationContract() async throws {
         let configuration = URLSessionConfiguration.ephemeral

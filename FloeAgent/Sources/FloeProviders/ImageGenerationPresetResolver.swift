@@ -76,13 +76,13 @@ public enum ImageGenerationPresetResolver {
         // authority; this branch supplies only the documented family limits.
         // It must run before the PAYG-descriptor lookup because a plan
         // connection has custom kind and therefore no media family.
-        if ProviderBillingEndpoint.resolve(provider.baseURL) == .volcengineAgentPlan {
-            guard let planFamily = Seedream5ImageFamily.resolve(model.remoteModelID),
-                  planFamily.isAvailableOnAgentPlan else {
-                // Lite (and any unreviewed plan identifier) is not a plan
-                // model. Return an explicitly unsupported contract so callers
-                // cannot mistake a recognised Seedream family name for a
-                // verified candidate.
+        if ProviderBillingEndpoint.resolve(provider.baseURL) == .volcengineAgentPlan,
+           let planFamily = Seedream5ImageFamily.resolve(model.remoteModelID) {
+            guard planFamily.isAvailableOnAgentPlan else {
+                // Lite has an actual UnsupportedModel response on this
+                // channel. An unknown user-configured id is different: it
+                // falls through to the generic adapter contract below and
+                // must not be disabled just because our catalog lacks it.
                 return ParameterContract(
                     verifiedModel: false,
                     verificationBasis: .officialAgentPlanVisualModels,
