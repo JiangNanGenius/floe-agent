@@ -46,6 +46,13 @@ nonisolated struct PatternSpec: Codable, Hashable, Sendable {
     var spacing: Double           // linear: adjacent-center distance
     var totalAngle: Double        // circular: first->last sweep in RADIANS
     var rotateInstances: Bool
+    /// M08: the associative construction axis a circular pattern spins about.
+    /// When present, replay resolves that axis's CURRENT line through the
+    /// document resolver and `axis`/`center` become only the last resolved
+    /// cache — the same relationship a construction-plane consumer already
+    /// keeps. Nil keeps every document written before this field byte-
+    /// identical and keeps spinning about the stored absolute line.
+    var axisRef: ConstructionAxisRef?
 
     init(
         kind: Kind = .linear,
@@ -54,7 +61,8 @@ nonisolated struct PatternSpec: Codable, Hashable, Sendable {
         count: Int = 1,
         spacing: Double = 0,
         totalAngle: Double = 2 * .pi,
-        rotateInstances: Bool = true
+        rotateInstances: Bool = true,
+        axisRef: ConstructionAxisRef? = nil
     ) {
         self.kind = kind
         self.axis = axis
@@ -63,10 +71,11 @@ nonisolated struct PatternSpec: Codable, Hashable, Sendable {
         self.spacing = spacing
         self.totalAngle = totalAngle
         self.rotateInstances = rotateInstances
+        self.axisRef = axisRef
     }
 
     private enum CodingKeys: String, CodingKey {
-        case kind, axis, center, count, spacing, totalAngle, rotateInstances
+        case kind, axis, center, count, spacing, totalAngle, rotateInstances, axisRef
     }
 
     /// Hand-written because a synthesized `init(from:)` ignores property
@@ -81,6 +90,9 @@ nonisolated struct PatternSpec: Codable, Hashable, Sendable {
         spacing = try c.decode(Double.self, forKey: .spacing)
         totalAngle = try c.decode(Double.self, forKey: .totalAngle)
         rotateInstances = try c.decode(Bool.self, forKey: .rotateInstances)
+        // A present but unreadable axis reference THROWS (Codable) rather than
+        // silently dropping the relationship and leaving a decorative pattern.
+        axisRef = try c.decodeIfPresent(ConstructionAxisRef.self, forKey: .axisRef)
     }
 }
 
@@ -493,6 +505,28 @@ nonisolated extension FeatureNode {
         return ids
     }
 
+    /// Every construction axis this node consumes — the M08 consumer contract.
+    /// A circular pattern stores the axis IDENTITY; the replay resolves its
+    /// current line, so the consumer must be fingerprinted by that resolution.
+    /// A revolve does the same (M08 R2): the kernel spins about the axis's
+    /// CURRENT line projected into the revolve plane, so the node's memo entry
+    /// must change when that resolution changes.
+    var referencedConstructionAxisIDs: Set<ConstructionAxisID> {
+        var ids = Set<ConstructionAxisID>()
+        func add(_ ref: AxisRef) {
+            if case let .constructionAxis(id) = ref.source { ids.insert(id) }
+        }
+        switch kind {
+        case let .pattern(_, spec):
+            if let ref = spec.axisRef { ids.insert(ref.axisID) }
+        case let .revolve(_, _, axis, _, _):
+            add(axis)
+        default:
+            break
+        }
+        return ids
+    }
+
     /// Every body this node CONSUMES, read straight off its refs — the
     /// identity layer the memoised replay stamps. A node whose output could
     /// depend on a body NOT listed here must add it, or be evaluated uncached;
@@ -575,6 +609,10 @@ nonisolated struct EvalResult: Sendable {
     /// Pure derived-coordinate proposals; only the rebuild transaction applies them.
     var resolvedPlaneUpdates: [ConstructionPlaneID: SketchPlane]
     var resolvedSketchSupportUpdates: [SketchID: SketchPlane]
+    /// M08 derived-coordinate proposals for associative axes and datum points.
+    /// Display caches only; the definition stays the source of truth.
+    var resolvedAxisUpdates: [ConstructionAxisID: ResolvedAxisGeometry]
+    var resolvedDatumPointUpdates: [DatumPointID: ResolvedDatumPointGeometry]
     var referenceErrors: [AssociativeReferenceKey: AssociativeReferenceError]
     /// Actual successful live PUT writers; independent of BodyRef provenance.
     var lastBodyWriters: [BodyID: FeatureID]
@@ -589,6 +627,8 @@ nonisolated struct EvalResult: Sendable {
         errors: [FeatureID: FeatureError] = [:],
         resolvedPlaneUpdates: [ConstructionPlaneID: SketchPlane] = [:],
         resolvedSketchSupportUpdates: [SketchID: SketchPlane] = [:],
+        resolvedAxisUpdates: [ConstructionAxisID: ResolvedAxisGeometry] = [:],
+        resolvedDatumPointUpdates: [DatumPointID: ResolvedDatumPointGeometry] = [:],
         referenceErrors: [AssociativeReferenceKey: AssociativeReferenceError] = [:],
         lastBodyWriters: [BodyID: FeatureID] = [:],
         geometryVersions: [GeometryVersionRef: GeometryVersionSnapshot] = [:]
@@ -600,6 +640,8 @@ nonisolated struct EvalResult: Sendable {
         self.errors = errors
         self.resolvedPlaneUpdates = resolvedPlaneUpdates
         self.resolvedSketchSupportUpdates = resolvedSketchSupportUpdates
+        self.resolvedAxisUpdates = resolvedAxisUpdates
+        self.resolvedDatumPointUpdates = resolvedDatumPointUpdates
         self.referenceErrors = referenceErrors
         self.lastBodyWriters = lastBodyWriters
         self.geometryVersions = geometryVersions
@@ -640,6 +682,8 @@ nonisolated extension FeatureGraph {
         naming: TopoNaming,
         variables: [String: Double] = [:],
         requestedVersions: Set<GeometryVersionRef> = [],
+        axes: [ConstructionAxis] = [],
+        datumPoints: [DatumPoint] = [],
         nextRevision: () -> UInt64
     ) -> EvalResult {
         // Uncached: every node runs. The behaviour from before the memo, and
@@ -648,7 +692,8 @@ nonisolated extension FeatureGraph {
         var scratch = EvalCache()
         return evaluate(sketches: sketches, planes: planes, naming: naming,
                         nextRevision: nextRevision, cache: &scratch,
-                        variables: variables, requestedVersions: requestedVersions)
+                        variables: variables, requestedVersions: requestedVersions,
+                        axes: axes, datumPoints: datumPoints)
     }
 
     /// Memoised replay (docs/INCREMENTAL_EVAL_DESIGN.md).
@@ -670,18 +715,23 @@ nonisolated extension FeatureGraph {
         nextRevision: () -> UInt64,
         cache: inout EvalCache,
         variables: [String: Double] = [:],
-        requestedVersions: Set<GeometryVersionRef> = []
+        requestedVersions: Set<GeometryVersionRef> = [],
+        axes: [ConstructionAxis] = [],
+        datumPoints: [DatumPoint] = []
     ) -> EvalResult {
         var state = EvalState(
             sketches: sketches, planes: planes, naming: naming,
             associative: AssociativeGeometryResolver(
                 graph: self, sketches: sketches, planes: planes,
+                axes: axes, datumPoints: datumPoints,
                 variables: variables, requestedVersions: requestedVersions))
         // Input hashes once per replay, not once per node.
         let sketchHash = Dictionary(sketches.map { ($0.id, EvalFingerprint.hash($0)) },
                                     uniquingKeysWith: { first, _ in first })
         let planeHash = Dictionary(planes.map { ($0.id, EvalFingerprint.hash($0)) },
                                    uniquingKeysWith: { first, _ in first })
+        let axisHash = Dictionary(axes.map { ($0.id, EvalFingerprint.hash($0)) },
+                                  uniquingKeysWith: { first, _ in first })
         var next = EvalCache()
 
         // Replay only the active prefix: nodes at/after the rollback marker are not
@@ -691,8 +741,10 @@ nonisolated extension FeatureGraph {
             state.associative.begin(node)
             let prepared = state.associative.prepare(node)
             let fingerprint = Self.fingerprint(
-                of: node, sketchHash: sketchHash, planeHash: planeHash, stamps: state.stamps,
-                resolvedSketchHash: prepared.sketches, resolvedPlaneHash: prepared.planes)
+                of: node, sketchHash: sketchHash, planeHash: planeHash,
+                axisHash: axisHash, stamps: state.stamps,
+                resolvedSketchHash: prepared.sketches, resolvedPlaneHash: prepared.planes,
+                resolvedAxisHash: prepared.axes)
             let delta: EvalNodeDelta
             if let hit = cache.entries[node.id], hit.fingerprint == fingerprint {
                 state.apply(hit.delta, for: node.id)
@@ -740,6 +792,8 @@ nonisolated extension FeatureGraph {
             errors: state.errors,
             resolvedPlaneUpdates: state.associative.resolvedPlaneUpdates,
             resolvedSketchSupportUpdates: state.associative.resolvedSketchSupportUpdates,
+            resolvedAxisUpdates: state.associative.resolvedAxisUpdates,
+            resolvedDatumPointUpdates: state.associative.resolvedDatumPointUpdates,
             referenceErrors: state.associative.referenceErrors,
             lastBodyWriters: state.associative.lastBodyWriters,
             geometryVersions: state.associative.snapshots
@@ -751,9 +805,11 @@ nonisolated extension FeatureGraph {
         of node: FeatureNode,
         sketchHash: [SketchID: UInt64],
         planeHash: [ConstructionPlaneID: UInt64],
+        axisHash: [ConstructionAxisID: UInt64],
         stamps: [BodyID: UInt64],
         resolvedSketchHash: [SketchID: UInt64],
-        resolvedPlaneHash: [ConstructionPlaneID: UInt64]
+        resolvedPlaneHash: [ConstructionPlaneID: UInt64],
+        resolvedAxisHash: [ConstructionAxisID: UInt64]
     ) -> UInt64 {
         var f = EvalFingerprint()
         if let kind = EvalFingerprint.json(node.kind) {
@@ -768,6 +824,9 @@ nonisolated extension FeatureGraph {
         }
         for cid in node.referencedConstructionPlaneIDs.sorted(by: { $0.raw.uuidString < $1.raw.uuidString }) {
             f.combine(resolvedPlaneHash[cid] ?? planeHash[cid] ?? 0)
+        }
+        for aid in node.referencedConstructionAxisIDs.sorted(by: { $0.raw.uuidString < $1.raw.uuidString }) {
+            f.combine(resolvedAxisHash[aid] ?? axisHash[aid] ?? 0)
         }
         for bid in node.consumedBodyIDs.sorted(by: { $0.raw.uuidString < $1.raw.uuidString }) {
             f.combine(stamps[bid] ?? 0)
@@ -2498,8 +2557,17 @@ nonisolated extension FeatureGraph {
             state.errors[node.id] = .brokenRef("revolve profile unresolved")
             return
         }
-        guard let axis = state.resolveAxis(axisRef) else {
-            state.errors[node.id] = .brokenRef("revolve axis unresolved")
+        // M08 R2: a construction-axis revolve resolves that axis's CURRENT
+        // line through the document resolver on every replay and converts it
+        // into this plane's basis. A broken source or a non-coplanar axis
+        // refuses the feature; it must never reuse the line the axis had when
+        // the revolve was authored (that would silently keep old geometry).
+        let axis: RevolveAxis
+        switch state.resolveAxis(axisRef, plane: plane) {
+        case let .success(resolved):
+            axis = resolved
+        case let .failure(error):
+            state.errors[node.id] = .brokenRef("revolve axis unresolved: \(error.message)")
             return
         }
         // KernelOps.revolve returns an EMPTY mesh when the profile crosses/collapses
@@ -3101,16 +3169,29 @@ nonisolated extension FeatureGraph {
             state.errors[node.id] = .brokenRef("pattern body unresolved")
             return
         }
+        // M08: an associative pattern resolves its axis's CURRENT line from the
+        // document resolver on every replay. A broken/missing source refuses
+        // explicitly and emits no copy — it never falls back to the cached
+        // `spec.axis`/`spec.center`, which would silently keep spinning about a
+        // stale line after the user moved the axis source.
+        var line = (direction: spec.axis, center: spec.center)
+        if let ref = spec.axisRef {
+            guard let resolved = try? state.associative.axis(ref.axisID) else {
+                state.errors[node.id] = .brokenRef("pattern axis unresolved")
+                return
+            }
+            line = (resolved.geometry.direction, resolved.geometry.origin)
+        }
         // Instance transforms; element 0 is identity (the original / source body,
         // which is NOT re-emitted). Matches EditorViewModel.patternTransforms.
         let transforms: [Transform3D]
         switch spec.kind {
         case .linear:
             transforms = PatternKit.linearTransforms(
-                direction: spec.axis, spacing: spec.spacing, count: max(1, spec.count))
+                direction: line.direction, spacing: spec.spacing, count: max(1, spec.count))
         case .circular:
             transforms = PatternKit.circularTransforms(
-                center: spec.center, axis: spec.axis, count: max(1, spec.count),
+                center: line.center, axis: line.direction, count: max(1, spec.count),
                 totalAngle: spec.totalAngle, rotateInstances: spec.rotateInstances)
         }
 
@@ -3306,18 +3387,52 @@ private nonisolated struct EvalState {
     /// An `AxisRef` → a plane-local `RevolveAxis`. `.explicit` passes through;
     /// `.sketchLine` finds the named `.line` entity in the referenced sketch and
     /// builds an axis from its endpoints: point = a, direction = b − a.
-    mutating func resolveAxis(_ ref: AxisRef) -> RevolveAxis? {
+    ///
+    /// `.constructionAxis` resolves the axis IDENTITY through the document
+    /// resolver on THIS replay and converts the real world line into the
+    /// revolve plane's basis. A missing/broken source, or a line that is not in
+    /// the plane, is an explicit failure — never the line the axis had when the
+    /// revolve was created.
+    mutating func resolveAxis(
+        _ ref: AxisRef, plane: SketchPlane
+    ) -> Result<RevolveAxis, AssociativeReferenceError> {
         switch ref.source {
         case let .explicit(axis):
-            return axis
+            return .success(axis)
         case let .sketchLine(sid, entityID):
-            guard let sketch = sketch(sid) else { return nil }
+            guard let sketch = sketch(sid) else {
+                return .failure(.invalidDefinition("the revolve axis sketch is missing"))
+            }
             for entity in sketch.entities {
                 if case let .line(id, a, b) = entity, id == entityID {
-                    return RevolveAxis(point: a, direction: b - a)
+                    return .success(RevolveAxis(point: a, direction: b - a))
                 }
             }
-            return nil
+            return .failure(.invalidDefinition("the revolve axis sketch line is missing"))
+        case let .constructionAxis(id):
+            let resolved: ResolvedAssociativeAxis
+            do {
+                resolved = try associative.axis(id)
+            } catch let error as AssociativeReferenceError {
+                return .failure(error)
+            } catch {
+                return .failure(.invalidDefinition(error.localizedDescription))
+            }
+            do {
+                return .success(try RevolveAxisBinding.planeLocal(
+                    resolved.geometry, plane: plane))
+            } catch let error as AssociativeAxisPointError {
+                switch error {
+                case let .axisNotInPlane(reason):
+                    return .failure(.degenerateAxis(reason))
+                case let .degenerateDirection(reason), let .degenerateReference(reason):
+                    return .failure(.degenerateAxis(reason))
+                default:
+                    return .failure(.invalidDefinition(error.localizedDescription))
+                }
+            } catch {
+                return .failure(.invalidDefinition(error.localizedDescription))
+            }
         }
     }
 

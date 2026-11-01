@@ -693,6 +693,12 @@ nonisolated enum OCCTKernel {
         let normal: SIMD3<Double>
         let centroid: SIMD3<Double>
         let area: Double
+        /// Cylindrical faces only: the cylinder's OWN analytic axis placement
+        /// point (body-local). A partial cylindrical face has no other exact
+        /// point on its axis — the centroid is off the line and a bbox centre
+        /// lies on a different line — so this is the only value a construction
+        /// axis may be built from. Nil for planar/other faces.
+        let axisPoint: SIMD3<Double>?
     }
 
     /// Per-kernel-face geometry in the shared 1-based numbering. Planar
@@ -729,29 +735,41 @@ nonisolated enum OCCTKernel {
         let values: [Double] = data.withUnsafeBytes {
             Array($0.bindMemory(to: Double.self))
         }
+        // 13 doubles per face: index, kind, normal xyz, centroid xyz, area,
+        // extra (plane offset / radius), axis point xyz (cylinders only).
+        let rowWidth = 13
         var out: [KernelFaceInfo] = []
-        out.reserveCapacity(values.count / 10)
-        for base in stride(from: 0, to: (values.count / 10) * 10, by: 10) {
+        out.reserveCapacity(values.count / rowWidth)
+        for base in stride(from: 0, to: (values.count / rowWidth) * rowWidth, by: rowWidth) {
             let normal = SIMD3(values[base + 2], values[base + 3], values[base + 4])
             let centroid = SIMD3(values[base + 5], values[base + 6], values[base + 7])
             let area = values[base + 8]
+            let rawAxisPoint = SIMD3(values[base + 10], values[base + 11], values[base + 12])
+            let axisPoint: SIMD3<Double>?
             let signature: FaceSignature?
             switch values[base + 1] {
             case 0:
                 signature = FaceSignature(kind: .planar, normal: normal,
                                           centroid: centroid, area: area,
                                           planeOffset: values[base + 9])
+                axisPoint = nil
             case 1:
                 signature = FaceSignature(kind: .cylindrical(radius: values[base + 9]),
                                           normal: normal, centroid: centroid,
                                           area: area,
                                           planeOffset: simd_dot(normal, centroid))
+                // A non-finite point is a corrupt row, not an axis: surface
+                // nil rather than a NaN the resolver would later reject.
+                axisPoint = (rawAxisPoint.x.isFinite && rawAxisPoint.y.isFinite
+                             && rawAxisPoint.z.isFinite) ? rawAxisPoint : nil
             default:
                 signature = nil
+                axisPoint = nil
             }
             out.append(KernelFaceInfo(index: Int(values[base]),
                                       signature: signature, normal: normal,
-                                      centroid: centroid, area: area))
+                                      centroid: centroid, area: area,
+                                      axisPoint: axisPoint))
         }
         return out
     }

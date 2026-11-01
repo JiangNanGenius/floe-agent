@@ -209,6 +209,9 @@ struct CADDocumentRecord: Codable, Sendable {
     /// Keyframe animation (`CADAnimationDocument`). Additive optional key;
     /// absent on every document that never animated. Older builds ignore it.
     var animation: Data?
+    /// M08 associative datum points, one blob record each (mirrors `axes`).
+    /// Additive optional key: absent on every document that never made one.
+    var datumPoints: [CADBlobRecord]? = nil
 }
 
 /// Everything a commit needs, in a `Sendable` value: cheap to build on the
@@ -641,6 +644,11 @@ final class FileCADDocumentStore: CADDocumentStore, @unchecked Sendable {
             axis.project = project
             project.axes.append(axis)
         }
+        for record in document.datumPoints ?? [] {
+            let point = PersistedDatumPoint(pointID: record.blobID, pointData: record.data)
+            point.project = project
+            project.datumPoints.append(point)
+        }
         for record in document.images {
             let imageData = record.imageBlob.flatMap { blobs[$0] } ?? Data()
             let image = PersistedImage(imageID: record.imageID,
@@ -693,7 +701,11 @@ final class FileCADDocumentStore: CADDocumentStore, @unchecked Sendable {
             scripts: project.scriptsData,
             sceneSettings: project.sceneSettingsData,
             materials: project.materialsData,
-            animation: project.animationData
+            animation: project.animationData,
+            datumPoints: project.datumPoints.isEmpty ? nil : project.datumPoints.map {
+                CADBlobRecord(blobID: $0.pointID, data: $0.pointData,
+                              sha256: Self.sha256($0.pointData))
+            }
         )
         var blobs: [String: Data] = [:]
 

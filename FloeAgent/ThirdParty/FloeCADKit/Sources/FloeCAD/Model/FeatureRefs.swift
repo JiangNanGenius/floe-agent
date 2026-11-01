@@ -68,6 +68,17 @@ nonisolated struct AxisRef: Codable, Hashable, Sendable {
     nonisolated enum Source: Codable, Hashable, Sendable {
         case sketchLine(SketchID, UUID)
         case explicit(RevolveAxis)
+        /// M08: revolve about an associative construction axis.
+        ///
+        /// The persisted value is the axis IDENTITY, never the line it had at
+        /// creation. Every replay resolves the axis's CURRENT world line
+        /// through the document resolver and converts it into this feature's
+        /// sketch-plane basis (the kernel's `RevolveAxis` is plane-local). A
+        /// broken/missing source or a non-coplanar axis refuses the feature;
+        /// there is deliberately no fallback to a cached line. An older build
+        /// that does not know this case rejects the feature row instead of
+        /// revolving about a stale axis.
+        case constructionAxis(ConstructionAxisID)
     }
     var source: Source
 }

@@ -24,6 +24,8 @@ final class Project {
     var sketches: [PersistedSketch] = []
     var planes: [PersistedPlane] = []
     var axes: [PersistedAxis] = []
+    /// M08 associative datum points, one additive blob row each (mirrors axes).
+    var datumPoints: [PersistedDatumPoint] = []
     var images: [PersistedImage] = []
     var symbols: [PersistedSymbol] = []
     var features: [PersistedFeature] = []
@@ -196,6 +198,20 @@ final class PersistedAxis {
 }
 
 /// One node of the parametric feature graph, persisted.
+/// M08 datum point, one JSON-encoded `DatumPoint` per row — the same additive
+/// row shape as `PersistedAxis`, so a document without points gains no columns.
+final class PersistedDatumPoint {
+    var pointID: UUID = UUID()
+    /// JSON-encoded DatumPoint (tiny).
+    var pointData: Data = Data()
+    weak var project: Project?
+
+    init(pointID: UUID, pointData: Data) {
+        self.pointID = pointID
+        self.pointData = pointData
+    }
+}
+
 final class PersistedFeature {
     var featureID: UUID = UUID()
     var orderIndex: Int = 0

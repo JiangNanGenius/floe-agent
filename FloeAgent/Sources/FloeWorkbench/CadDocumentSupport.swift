@@ -295,6 +295,8 @@ public enum CadNativeEditActions {
         "datum.anglePlane.create", "datum.anglePlane.update", "datum.anglePlane.delete",
         "datum.threePointPlane.create", "datum.threePointPlane.update",
         "datum.threePointPlane.delete",
+        "datum.axis.create", "datum.axis.update", "datum.axis.delete",
+        "datum.point.create", "datum.point.update", "datum.point.delete",
         "sketch.setSupport", "sketch.clearSupport",
         "undo", "redo",
     ]

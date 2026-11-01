@@ -212,10 +212,31 @@ public final class CADParameterService {
                 "datum.threePointPlane.create": "{points:[{sketch_id,entity_id,role:endpointA|endpointB|center}, ...three distinct], size?}",
                 "datum.threePointPlane.update": "{plane_id, points? (exactly three), point_index?+point?, expected_points?, size?}",
                 "datum.threePointPlane.delete": "{plane_id}",
+                "datum.axis.create": "{kind: face|edge|cylinder|twoPoints|twoPlanes, "
+                    + "face: body_id + face_index + query_token; "
+                    + "edge: body_id + edge_index + query_token; "
+                    + "cylinder: body_id + face_index + query_token (the face's analytic axis); "
+                    + "twoPoints: points:[{sketch_id,entity_id,role} or {point_id}] exactly two distinct; "
+                    + "twoPlanes: plane_ids:[two construction plane ids]; "
+                    + "offset? (mm, face/edge kinds only), size? (display length mm)}",
+                "datum.axis.update": "{axis_id, offset?, expected_offset?, size?, "
+                    + "or the complete kind-specific source fields to reselect}",
+                "datum.axis.delete": "{axis_id}",
+                "datum.point.create": "{kind: faceCenter|edgePoint|twoPointMidpoint|axisPoint|axisPlane, "
+                    + "faceCenter: body_id + face_index + query_token; "
+                    + "edgePoint: body_id + edge_index + query_token + offset?; "
+                    + "twoPointMidpoint: points:[two distinct sources]; "
+                    + "axisPoint: axis_id + offset?; "
+                    + "axisPlane: axis_id + plane_id}",
+                "datum.point.update": "{point_id, offset?, expected_offset?, "
+                    + "or the complete kind-specific source fields to reselect}",
+                "datum.point.delete": "{point_id}",
                 "sketch.setSupport": "{sketch_id, plane_id}",
                 "sketch.clearSupport": "{sketch_id}",
             ],
             "datum_planes": CADDatumService.planeRows(document: document),
+            "datum_axes": CADDatumService.axisRows(document: document),
+            "datum_points": CADDatumService.datumPointRows(document: document),
             "expression_update": [
                 "action": "feature.setExpression",
                 "fields": ["feature_id", "parameter", "expression", "expected_expression?"],
@@ -260,16 +281,35 @@ public final class CADParameterService {
             return Self.fail("missing_changes",
                              "update needs changes: an object of parameter -> value (units per the feature descriptor).")
         }
+        // M08 R2: `axis_id` is a RELATIONSHIP, not a scalar. Take it out of the
+        // numeric edit so the kind validation below sees only real parameters,
+        // then apply it here — detaching has to freeze the axis's CURRENT
+        // resolved line, which needs the document.
+        var scalarChanges = changes
+        let axisChange = scalarChanges.removeValue(forKey: "axis_id")
         // Hole edits validate the pilot relation before mutation; other kinds
         // pay no sketch-resolution cost here (the helper short-circuits).
-        let edited: FeatureKind
-        switch Self.updated(node.kind, changes: changes,
-                            pilotDiameter: Self.placementPilotDiameter(
-                                node, document: document.session.document)) {
-        case .failure(let error):
-            return Self.fail("bad_parameter", error.message)
-        case .success(let kind):
-            edited = kind
+        var edited: FeatureKind = node.kind
+        if !scalarChanges.isEmpty {
+            switch Self.updated(node.kind, changes: scalarChanges,
+                                pilotDiameter: Self.placementPilotDiameter(
+                                    node, document: document.session.document)) {
+            case .failure(let error):
+                return Self.fail("bad_parameter", error.message)
+            case .success(let kind):
+                edited = kind
+            }
+        }
+        if let axisChange {
+            switch applyAxisAssociation(axisChange, to: edited) {
+            case .failure(let error):
+                return Self.fail(error.code, error.message)
+            case .success(let kind):
+                edited = kind
+            }
+        }
+        guard edited != node.kind else {
+            return Self.fail("no_change", "The feature already has those values.")
         }
         let beforeErrors = document.session.lastEvalErrors
         let beforeChangeCount = document.session.changeCount
@@ -326,6 +366,119 @@ public final class CADParameterService {
             "can_undo": document.session.undoStack.canUndo,
             "can_redo": document.session.undoStack.canRedo,
         ])
+    }
+
+    /// A typed refusal from an axis-relationship edit, keeping the public error
+    /// code specific (unknown_axis / axis_unresolved / axis_not_in_plane).
+    private struct AxisAssociationFailure: Error {
+        var code: String
+        var message: String
+    }
+
+    /// Apply `changes.axis_id` to a pattern or revolve.
+    ///
+    /// - A UUID attaches the feature to that construction axis IDENTITY. The
+    ///   axis must exist and resolve on the CURRENT document; a revolve must
+    ///   also be coplanar with its profile plane, or the attach is refused
+    ///   instead of committing a feature that immediately fails.
+    /// - NSNull DETACHES: the axis's CURRENT resolved line is frozen into the
+    ///   feature's explicit form, so the geometry at the moment of detaching is
+    ///   kept and a later source edit no longer moves it. A broken source
+    ///   refuses (there is no valid current line to freeze) rather than falling
+    ///   back to the creation-time cache.
+    private func applyAxisAssociation(
+        _ raw: Any, to kind: FeatureKind
+    ) -> Result<FeatureKind, AxisAssociationFailure> {
+        let model = document.session.document
+        let requested: ConstructionAxisRef?
+        if raw is NSNull {
+            requested = nil
+        } else if let text = raw as? String, let uuid = UUID(uuidString: text) {
+            requested = ConstructionAxisRef(ConstructionAxisID(raw: uuid))
+        } else {
+            return .failure(AxisAssociationFailure(
+                code: "bad_axis_id",
+                message: "axis_id must be a construction axis UUID or null."))
+        }
+        if let requested, !model.axes.contains(where: { $0.id == requested.axisID }) {
+            return .failure(AxisAssociationFailure(
+                code: "unknown_axis",
+                message: "axis_id must name an existing construction axis in this document."))
+        }
+        switch kind {
+        case let .pattern(body, spec):
+            if requested == spec.axisRef { return .success(kind) }
+            var newSpec = spec
+            if let requested {
+                newSpec.axisRef = requested
+            } else {
+                guard let current = spec.axisRef else { return .success(kind) }
+                guard let line = document.session.currentResolvedAxis(current.axisID) else {
+                    return .failure(AxisAssociationFailure(
+                        code: "axis_unresolved",
+                        message: "The pattern's axis source does not resolve right now; "
+                            + "fix or repoint the axis before detaching."))
+                }
+                newSpec.axis = line.direction
+                newSpec.center = line.origin
+                newSpec.axisRef = nil
+            }
+            return .success(.pattern(body: body, spec: newSpec))
+        case let .revolve(profile, planeRef, axisRef, angle, boolean):
+            guard let plane = model.currentRevolvePlane(profile: profile, plane: planeRef) else {
+                return .failure(AxisAssociationFailure(
+                    code: "revolve_plane_unresolved",
+                    message: "The revolve plane does not resolve; fix the sketch/plane first."))
+            }
+            if let requested {
+                if case let .constructionAxis(existing) = axisRef.source,
+                   existing == requested.axisID {
+                    return .success(kind)
+                }
+                guard let line = document.session.currentResolvedAxis(requested.axisID) else {
+                    return .failure(AxisAssociationFailure(
+                        code: "axis_unresolved",
+                        message: "That construction axis does not resolve right now; "
+                            + "fix its source before associating it."))
+                }
+                do {
+                    _ = try RevolveAxisBinding.planeLocal(line, plane: plane)
+                } catch {
+                    return .failure(AxisAssociationFailure(
+                        code: "axis_not_in_plane",
+                        message: "A revolve axis must lie in the revolve plane. "
+                            + "This axis does not; pick another axis or move the profile plane."))
+                }
+                return .success(.revolve(
+                    profile: profile, plane: planeRef,
+                    axis: AxisRef(source: .constructionAxis(requested.axisID)),
+                    angle: angle, boolean: boolean))
+            }
+            guard case let .constructionAxis(existing) = axisRef.source else { return .success(kind) }
+            guard let line = document.session.currentResolvedAxis(existing) else {
+                return .failure(AxisAssociationFailure(
+                    code: "axis_unresolved",
+                    message: "The revolve's construction axis does not resolve right now; "
+                        + "fix or repoint it before detaching."))
+            }
+            let projected: RevolveAxis
+            do {
+                projected = try RevolveAxisBinding.planeLocal(line, plane: plane)
+            } catch {
+                return .failure(AxisAssociationFailure(
+                    code: "axis_not_in_plane",
+                    message: "The revolve's axis no longer lies in the revolve plane; "
+                        + "fix the axis or the plane before detaching."))
+            }
+            return .success(.revolve(
+                profile: profile, plane: planeRef,
+                axis: AxisRef(source: .explicit(projected)),
+                angle: angle, boolean: boolean))
+        default:
+            return .failure(AxisAssociationFailure(
+                code: "unsupported_axis_owner",
+                message: "Only a pattern or a revolve stores a construction axis."))
+        }
     }
 
     // MARK: - Existing-sketch geometry
@@ -3809,6 +3962,8 @@ public final class CADParameterService {
             case let .plane(id): row["plane_id"] = id.raw.uuidString
             case let .sketch(id): row["sketch_id"] = id.raw.uuidString
             case let .feature(id): row["feature_id"] = id.raw.uuidString
+            case let .axis(id): row["axis_id"] = id.raw.uuidString
+            case let .datumPoint(id): row["point_id"] = id.raw.uuidString
             }
             return row
         }
@@ -4236,9 +4391,24 @@ public final class CADParameterService {
             add("taper_angle", "deg", taperAngle.value, minimum: -89, maximum: 89)
             add("symmetric", "unitless", symmetric)
             unit = "mm"
-        case let .revolve(_, _, _, angle, _):
+        case let .revolve(_, _, axis, angle, _):
             kindName = "revolve"
             add("angle", "deg", angle.value, minimum: 0.0001, maximum: 360)
+            switch axis.source {
+            case let .constructionAxis(id):
+                add("axis_source", "unitless", "construction", editable: false)
+                add("axis_id", "unitless", id.raw.uuidString,
+                    note: "Construction axis identity. Null detaches at the CURRENT line; "
+                        + "another id repoints the revolve.")
+            case .sketchLine:
+                add("axis_source", "unitless", "sketchLine", editable: false)
+                add("axis_id", "unitless", NSNull(),
+                    note: "Set an axis id to make this revolve follow a construction axis.")
+            case .explicit:
+                add("axis_source", "unitless", "fixed", editable: false)
+                add("axis_id", "unitless", NSNull(),
+                    note: "Set an axis id to make this revolve follow a construction axis.")
+            }
             unit = "deg"
         case let .hole(_, profileRef, _, spec):
             kindName = "hole"
@@ -4315,6 +4485,13 @@ public final class CADParameterService {
             add("rotate_instances", "unitless", spec.rotateInstances)
             vector("axis", spec.axis, "unitless")
             vector("center", spec.center, "mm")
+            if let ref = spec.axisRef {
+                add("axis_id", "unitless", ref.axisID.raw.uuidString,
+                    note: "Construction axis identity. Null detaches at the CURRENT line.")
+            } else {
+                add("axis_id", "unitless", NSNull(),
+                    note: "No construction axis; set an axis id to drive this pattern.")
+            }
         case let .pushPull(_, distance, _):
             kindName = "pushPull"
             add("distance", "mm", distance.value)
@@ -4638,9 +4815,11 @@ public final class CADParameterService {
             return .success(.revolve(profile: profile, plane: plane, axis: axis,
                                      angle: Expr(value: a, formula: nil), boolean: boolean))
         case let .pattern(body, spec):
-            guard changes.keys.allSatisfy({
-                ["count", "spacing", "total_angle", "rotate_instances"].contains($0)
-            }) else { return unknown(["count", "spacing", "total_angle", "rotate_instances"]) }
+            // `axis_id` is handled by `update(_:)` before this typed edit: it is
+            // a relationship that must resolve/freeze from the document, not a
+            // scalar. This branch stays strictly numeric.
+            let allowed = ["count", "spacing", "total_angle", "rotate_instances"]
+            guard changes.keys.allSatisfy({ allowed.contains($0) }) else { return unknown(allowed) }
             let count = value("count").map { Int($0.rounded()) } ?? spec.count
             let spacing = value("spacing") ?? spec.spacing
             let totalAngleDegrees = value("total_angle").map { $0 } ?? (spec.totalAngle * 180 / .pi)
@@ -4648,9 +4827,7 @@ public final class CADParameterService {
             didChange = count != spec.count || spacing != spec.spacing
                 || abs(totalAngleDegrees - spec.totalAngle * 180 / .pi) > 1e-9
                 || rotate != spec.rotateInstances
-            guard didChange else {
-                return unknown(["count", "spacing", "total_angle", "rotate_instances"])
-            }
+            guard didChange else { return unknown(allowed) }
             guard count >= 1, count <= 10_000 else { return fail("count", "count must be 1…10000 (total instances).") }
             guard spacing.isFinite, spacing >= 0 else { return fail("spacing", "spacing must be >= 0 mm.") }
             guard totalAngleDegrees.isFinite, totalAngleDegrees >= 0, totalAngleDegrees <= 360 else {

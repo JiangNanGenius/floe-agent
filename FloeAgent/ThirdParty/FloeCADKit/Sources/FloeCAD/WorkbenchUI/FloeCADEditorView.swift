@@ -2770,6 +2770,26 @@ struct FloeCADEditorView: View {
                 ThreePointPlaneSheet(viewModel: viewModel)
             }
             .sheet(isPresented: Binding(
+                get: { viewModel.showDatumAxisCreateSheet },
+                set: { viewModel.showDatumAxisCreateSheet = $0 }
+            )) {
+                DatumAxisCreateSheet(viewModel: viewModel)
+            }
+            .sheet(isPresented: Binding(
+                get: { viewModel.showDatumAxisSheet },
+                set: { if !$0 { viewModel.closeDatumAxisSheet() } }
+            )) {
+                if let id = viewModel.datumAxisSheetID {
+                    DatumAxisEditSheet(viewModel: viewModel, axisID: id)
+                }
+            }
+            .sheet(isPresented: Binding(
+                get: { viewModel.showDatumPointSheet },
+                set: { if !$0 { viewModel.closeDatumPointSheet() } }
+            )) {
+                DatumPointSheet(viewModel: viewModel, pointID: viewModel.datumPointSheetID)
+            }
+            .sheet(isPresented: Binding(
                 get: { viewModel.showConstraintSettings },
                 set: { viewModel.showConstraintSettings = $0 }
             )) {

@@ -2460,6 +2460,15 @@ final class EditorViewModel {
             scene.sketchLines.append(SketchLineBatch(
                 segments: Self.axisSegments(axis), color: axisColor))
         }
+        // M08 datum points: a small cross in the same reference family, accent
+        // when selected. The marker is display-only and never affects geometry.
+        let markerSize = max(axisLength * 0.02, 0.1)
+        for point in session.document.datumPoints where !point.isHidden {
+            let selected = point.id == selectedDatumPointID
+            scene.sketchLines.append(SketchLineBatch(
+                segments: Self.datumPointSegments(position: point.position, size: markerSize),
+                color: selected ? SIMD4(0.0, 0.52, 1.0, 0.98) : axisColor))
+        }
         // Live preview of the axis being defined, in the accent colour.
         if let pending = pendingAxisPreview {
             scene.sketchLines.append(SketchLineBatch(
@@ -6754,6 +6763,11 @@ final class EditorViewModel {
     func patternAxisLine(_ state: PatternState) -> (direction: SIMD3<Double>, center: SIMD3<Double>) {
         if let id = state.constructionAxisID,
            let axis = session.document.axes.first(where: { $0.id == id }) {
+            // The document's axis frame is the resolver's last RESOLVED line for
+            // an associative axis, so the live ghost preview already follows the
+            // current source. An unresolved/broken axis keeps that last valid
+            // frame for the preview; the commit stores the identity and the
+            // rebuild reports the break.
             return (axis.direction, axis.origin)
         }
         return (state.axis.direction, .zero)
@@ -12283,6 +12297,37 @@ final class EditorViewModel {
 
     private(set) var axisPicks: [AxisPick] = []
 
+    /// The exact kernel identity captured WITH each pick — the body, 1-based
+    /// kernel face/edge index and generation token an associative datum needs.
+    /// Kept parallel to `axisPicks`; nil for a pick with no exact identity
+    /// (a mesh-only body), which keeps the absolute axis available.
+    nonisolated struct DatumPickSource: Equatable, Sendable {
+        /// Which exact face surface the pick captured. A planar face feeds the
+        /// Face kinds; a cylindrical face feeds the Cylinder axis kind (its
+        /// analytic axis line). The service re-verifies the kind at commit.
+        nonisolated enum Surface: String, Equatable, Sendable {
+            case planar
+            case cylindrical
+        }
+        var bodyID: BodyID
+        var faceIndex: Int?
+        var edgeIndex: Int?
+        var surface: Surface?
+        var queryToken: String
+    }
+    private(set) var axisPickSources: [DatumPickSource?] = []
+
+    /// What the current axis-pick session will create. The Add Axis tool
+    /// defaults to `.axisCreate`; the datum sheets arm the same picker for a
+    /// source reselect or a face/edge datum point, so there is ONE pick path.
+    nonisolated enum DatumPickIntent: Equatable, Sendable {
+        case axisCreate
+        case axisReselect(ConstructionAxisID)
+        case pointCreate(String)     // DatumPointDefinition.Kind raw value
+        case pointReselect(DatumPointID)
+    }
+    private(set) var datumPickIntent: DatumPickIntent = .axisCreate
+
     /// Display extent of the axis being defined — the spec's Length parameter.
     /// Never affects the math, only how long the drawn line is.
     var axisLength: Double = 100 {
@@ -12314,19 +12359,36 @@ final class EditorViewModel {
     func beginAxisTool() {
         cancelTransientPicks()
         axisPicks = []
+        axisPickSources = []
         pendingAxisPreview = nil
         axisLength = Self.defaultAxisLength(for: session.document)
         mode = .pickingAxisReferences
     }
 
+    /// Arm the shared reference picker for a datum operation. The next Apply
+    /// creates/moves the datum through the same service the assistant uses.
+    @discardableResult
+    func beginDatumPick(_ intent: DatumPickIntent) -> Bool {
+        guard !session.isReadOnly, session.writeBlock == nil else {
+            errorMessage = FloeCADStrings.text("cad.datum.readOnly",
+                "This document is read-only; reopen it to edit reference geometry.")
+            return false
+        }
+        datumPickIntent = intent
+        beginAxisTool()
+        return true
+    }
+
     func cancelAxisTool() {
         resetAxisState()
+        datumPickIntent = .axisCreate
         if case .pickingAxisReferences = mode { mode = .idle }
     }
 
     /// State only — never writes `selection` (gotcha 7).
     func resetAxisState() {
         axisPicks = []
+        axisPickSources = []
         pendingAxisPreview = nil
     }
 
@@ -12362,7 +12424,8 @@ final class EditorViewModel {
         if let edge = nearestStraightEdge(on: body, worldHit: hit.worldPoint) {
             appendAxisPick(.edge(
                 start: world(SIMD3<Double>(edge.start)),
-                end: world(SIMD3<Double>(edge.end))))
+                end: world(SIMD3<Double>(edge.end))),
+                source: edgePickSource(body: body, edge: edge))
             return
         }
 
@@ -12370,11 +12433,15 @@ final class EditorViewModel {
         if let cylinder = FaceTopology.cylindricalFace(
             in: body.render, seedTriangle: hit.triangleIndex
         ) {
+            // M08 R2: a cylindrical face DOES carry an exact analytic axis
+            // point in the extended kernel face query, so the pick can create
+            // an associative Cylinder axis. A body without a current naming
+            // table keeps the absolute axis this tool always built.
             appendAxisPick(.cylindrical(
                 origin: world(cylinder.axisPoint),
                 direction: worldDirection(cylinder.axisDir),
                 length: max(cylinder.height, 1e-6)
-            ))
+            ), source: cylinderPickSource(body: body, triangle: hit.triangleIndex))
             return
         }
         if let face = FaceTopology.planarFace(
@@ -12383,7 +12450,7 @@ final class EditorViewModel {
             appendAxisPick(.planarFace(
                 origin: world(face.origin),
                 normal: worldDirection(SIMD3<Double>(face.normal))
-            ))
+            ), source: facePickSource(body: body, triangle: hit.triangleIndex))
             return
         }
         errorMessage = "Tap a flat face, a round face, or an edge to define an axis."
@@ -12433,16 +12500,64 @@ final class EditorViewModel {
 
     /// Picks are capped at two: every construction the tool derives needs one
     /// reference or two, so a third tap starts over rather than silently
-    /// ignoring the user.
-    private func appendAxisPick(_ pick: AxisPick) {
-        if axisPicks.contains(pick) {
-            axisPicks.removeAll { $0 == pick }
+    /// ignoring the user. The kernel identity travels with its pick.
+    private func appendAxisPick(_ pick: AxisPick, source: DatumPickSource?) {
+        if let index = axisPicks.firstIndex(of: pick) {
+            axisPicks.remove(at: index)
+            if index < axisPickSources.count { axisPickSources.remove(at: index) }
         } else if axisPicks.count >= 2 {
             axisPicks = [pick]
+            axisPickSources = [source]
         } else {
             axisPicks.append(pick)
+            axisPickSources.append(source)
         }
         recomputeAxisPreview()
+    }
+
+    /// The exact kernel identity of a tapped planar face: its unique stable
+    /// kernel name's index plus a generation-proof token. Nil when the body
+    /// has no current naming table (a mesh-only or stale body).
+    private func facePickSource(body: Body, triangle: Int) -> DatumPickSource? {
+        facePickSource(body: body, triangle: triangle, surface: .planar)
+    }
+
+    /// The exact kernel identity of a tapped CYLINDRICAL face: the same
+    /// name/index/token capture, tagged so the service creates a cylinder axis
+    /// (the face's analytic axis) instead of a planar-normal axis.
+    private func cylinderPickSource(body: Body, triangle: Int) -> DatumPickSource? {
+        facePickSource(body: body, triangle: triangle, surface: .cylindrical)
+    }
+
+    private func facePickSource(
+        body: Body, triangle: Int, surface: DatumPickSource.Surface
+    ) -> DatumPickSource? {
+        guard let name = mintElementName(body: body, triangle: triangle),
+              let names = session.lastKernelNames[body.id],
+              let index = names.first(where: { $0.value == name })?.key,
+              let revision = datumQueryRevision?() else { return nil }
+        let generation = CADGeometryQueryGeneration(
+            scope: "faces", bodyID: body.id.raw, documentRevision: revision,
+            changeCount: session.changeCount, meshRevision: body.meshRevision)
+        return DatumPickSource(bodyID: body.id, faceIndex: index, edgeIndex: nil,
+                               surface: surface, queryToken: generation.token)
+    }
+
+    /// The exact kernel identity of a tapped straight edge, for the same
+    /// reason. The persisted datum stores the edge signature/name, never this
+    /// index — the index only addresses the pick that minted it.
+    private func edgePickSource(body: Body, edge: SelectableEdge) -> DatumPickSource? {
+        guard let brep = body.brep,
+              let revision = datumQueryRevision?(),
+              let index = OCCTKernel.nearestEdgeIndex(
+                brep, to: SIMD3(Double(edge.midpoint.x), Double(edge.midpoint.y),
+                                Double(edge.midpoint.z)),
+                tolerance: OCCTKernel.matchTolerance(for: brep)) else { return nil }
+        let generation = CADGeometryQueryGeneration(
+            scope: "edges", bodyID: body.id.raw, documentRevision: revision,
+            changeCount: session.changeCount, meshRevision: body.meshRevision)
+        return DatumPickSource(bodyID: body.id, faceIndex: nil, edgeIndex: index,
+                               surface: nil, queryToken: generation.token)
     }
 
     private func recomputeAxisPreview() {
@@ -12484,10 +12599,110 @@ final class EditorViewModel {
 
     func commitAxis() {
         guard case .pickingAxisReferences = mode, var axis = pendingAxisPreview else { return }
+        // M08: a single planar face / single straight edge commits an
+        // ASSOCIATIVE axis through the same service the assistant uses; its
+        // source, offset and length stay editable and survive reopen. Picks
+        // with no exact kernel identity (a cylindrical face, two faces, a
+        // mesh-only body) keep the absolute axis this tool always created.
+        let intent = datumPickIntent
+        let firstSource = axisPickSources.count == 1 ? axisPickSources.first ?? nil : nil
+        if let args = associativeAxisArguments(intent: intent, picks: firstSource) {
+            // This pick CAN address an associative source, so the datum path is
+            // the only acceptable outcome: a failure surfaces and keeps the tool
+            // armed instead of quietly adding an unrelated absolute axis.
+            guard performDatumAction(args.action, args: args.fields) != nil else { return }
+            resetAxisState()
+            datumPickIntent = .axisCreate
+            mode = .idle
+            session.save()
+            return
+        }
+        guard intent == .axisCreate else {
+            // A datum reselect/point-create that could not use this pick must
+            // not silently fall back to adding an unrelated absolute axis.
+            errorMessage = FloeCADStrings.text("cad.datum.pickUnsupported",
+                "That pick has no exact source for this reference. Tap a straight edge or a flat face.")
+            return
+        }
         axis.name = "Axis \(session.document.axes.count + 1)"
         session.perform(AddConstructionAxisCommand(axis: axis))
         resetAxisState()
         mode = .idle
+    }
+
+    /// The service call implied by the armed pick session, or nil when this
+    /// pick cannot address an associative source.
+    private func associativeAxisArguments(
+        intent: DatumPickIntent, picks: DatumPickSource?
+    ) -> (action: String, fields: [String: Any])? {
+        guard let source = picks else { return nil }
+        var fields: [String: Any] = [
+            "body_id": source.bodyID.raw.uuidString,
+            "query_token": source.queryToken,
+        ]
+        let kind: String
+        if let face = source.faceIndex {
+            kind = source.surface == .cylindrical ? "cylinder" : "face"
+            fields["face_index"] = face
+        } else if let edge = source.edgeIndex {
+            kind = "edge"
+            fields["edge_index"] = edge
+        } else {
+            return nil
+        }
+        fields["kind"] = kind
+        switch intent {
+        case .axisCreate:
+            fields["size"] = axisLength
+            return ("datum.axis.create", fields)
+        case let .axisReselect(id):
+            fields["axis_id"] = id.raw.uuidString
+            fields["size"] = axisLength
+            return ("datum.axis.update", fields)
+        case let .pointCreate(pointKind):
+            guard kind != "cylinder" else { return nil }
+            guard pointKind == (kind == "face"
+                                ? DatumPointDefinition.Kind.faceCenter.rawValue
+                                : DatumPointDefinition.Kind.edgePoint.rawValue) else { return nil }
+            fields["kind"] = pointKind
+            if kind == "edge" { fields["offset"] = "0" }
+            return ("datum.point.create", fields)
+        case let .pointReselect(id):
+            guard kind != "cylinder" else { return nil }
+            guard pointKindMatches(kind: kind, point: id) else { return nil }
+            fields["point_id"] = id.raw.uuidString
+            return ("datum.point.update", fields)
+        }
+    }
+
+    /// Whether a face/edge pick is the right source kind for an existing
+    /// datum point (a face-centre point reselects from a face, etc.).
+    private func pointKindMatches(kind: String, point id: DatumPointID) -> Bool {
+        guard let definition = session.document.datumPoints.first(where: { $0.id == id })?.definition
+        else { return false }
+        switch definition {
+        case .faceCenter: return kind == "face"
+        case .edgePoint: return kind == "edge"
+        default: return false
+        }
+    }
+
+    /// Three short world segments forming a cross at a datum point. Sized by
+    /// the caller; a point never has an orientation of its own to display.
+    nonisolated static func datumPointSegments(
+        position: SIMD3<Double>, size: Double
+    ) -> [SIMD3<Float>] {
+        let half = max(size, 1e-6) / 2
+        let p = SIMD3<Float>(Float(position.x), Float(position.y), Float(position.z))
+        let axes: [SIMD3<Float>] = [SIMD3(1, 0, 0), SIMD3(0, 1, 0), SIMD3(0, 0, 1)]
+        var out: [SIMD3<Float>] = []
+        out.reserveCapacity(6)
+        for axis in axes {
+            let offset = axis * Float(half)
+            out.append(p - offset)
+            out.append(p + offset)
+        }
+        return out
     }
 
     /// Dashed world segments for a drawn axis — dashed so a construction axis
@@ -12503,6 +12718,299 @@ final class EditorViewModel {
             out.append(SIMD3<Float>(simd_mix(start, end, SIMD3(repeating: t1))))
         }
         return out
+    }
+
+    // MARK: - M08 datum axes / points (UI)
+
+    /// Sheet state only — the sheets own a draft, never a second geometry or
+    /// undo store; every edit goes through `datumActionHandler` (the same
+    /// `CADDatumService` the assistant uses).
+    var showDatumAxisSheet = false
+    var showDatumPointSheet = false
+    var showDatumAxisCreateSheet = false
+    private(set) var datumAxisSheetID: ConstructionAxisID?
+    private(set) var datumPointSheetID: DatumPointID?
+    private(set) var selectedDatumPointID: DatumPointID?
+
+    func openDatumAxisSheet(_ id: ConstructionAxisID? = nil) {
+        datumAxisSheetID = id
+        showDatumAxisSheet = true
+    }
+
+    func closeDatumAxisSheet() {
+        showDatumAxisSheet = false
+        datumAxisSheetID = nil
+    }
+
+    func openDatumPointSheet(_ id: DatumPointID? = nil) {
+        datumPointSheetID = id
+        showDatumPointSheet = true
+    }
+
+    func closeDatumPointSheet() {
+        showDatumPointSheet = false
+        datumPointSheetID = nil
+    }
+
+    func selectDatumPoint(_ id: DatumPointID?) {
+        selectedDatumPointID = id
+    }
+
+    /// Construction planes offered as a two-plane axis source, named the way
+    /// the Items panel names them.
+    struct DatumPlaneChoice: Identifiable, Equatable {
+        var id: ConstructionPlaneID
+        var label: String
+    }
+
+    var constructionPlaneChoices: [DatumPlaneChoice] {
+        session.document.planes.enumerated().map { index, plane in
+            DatumPlaneChoice(id: plane.id, label: "Plane \(index + 1)")
+        }
+    }
+
+    /// Every point identity a two-point axis / midpoint may name: the live
+    /// solver anchors plus the document's datum points.
+    struct DatumPointChoice: Identifiable {
+        var id: String
+        var label: String
+        var source: DatumPointSource
+    }
+
+    var datumPointChoices: [DatumPointChoice] {
+        var choices: [DatumPointChoice] = threePointAnchorCandidates.map { candidate in
+            DatumPointChoice(id: candidate.id, label: candidate.label,
+                             source: .sketchAnchor(candidate.ref))
+        }
+        for point in session.document.datumPoints {
+            choices.append(DatumPointChoice(
+                id: "datum:\(point.id.raw.uuidString)",
+                label: point.name,
+                source: .datumPoint(point.id)))
+        }
+        return choices
+    }
+
+    /// The current offset formula text of an associative axis (empty when the
+    /// kind has no offset slot), for the sheet's expected-value fence.
+    func datumAxisOffsetText(_ id: ConstructionAxisID) -> String {
+        session.document.axes.first { $0.id == id }?
+            .definition?.expressionSlots.first(where: { $0.name == "offset" })?
+            .expr.formula ?? ""
+    }
+
+    func datumPointOffsetText(_ id: DatumPointID) -> String {
+        session.document.datumPoints.first { $0.id == id }?
+            .definition?.expressionSlots.first(where: { $0.name == "offset" })?
+            .expr.formula ?? ""
+    }
+
+    @discardableResult
+    func createDatumAxisFromPlanes(_ planeIDs: [ConstructionPlaneID], length: Double? = nil) -> Bool {
+        guard planeIDs.count == 2 else { return false }
+        var args: [String: Any] = ["kind": "twoPlanes",
+                                   "plane_ids": planeIDs.map { $0.raw.uuidString }]
+        if let length { args["size"] = length }
+        guard let reply = performDatumAction("datum.axis.create", args: args) else { return false }
+        if let id = (reply["axis_id"] as? String).flatMap(UUID.init(uuidString:)) {
+            openDatumAxisSheet(ConstructionAxisID(raw: id))
+        }
+        session.save()
+        return true
+    }
+
+    @discardableResult
+    func createDatumAxisFromPoints(_ sources: [DatumPointSource], length: Double? = nil) -> Bool {
+        guard let args = Self.pointSourceArguments(sources) else { return false }
+        var fields = args
+        fields["kind"] = "twoPoints"
+        if let length { fields["size"] = length }
+        guard let reply = performDatumAction("datum.axis.create", args: fields) else { return false }
+        if let id = (reply["axis_id"] as? String).flatMap(UUID.init(uuidString:)) {
+            openDatumAxisSheet(ConstructionAxisID(raw: id))
+        }
+        session.save()
+        return true
+    }
+
+    @discardableResult
+    func updateDatumAxisOffset(_ id: ConstructionAxisID, offset: String,
+                               expectedOffset: String) -> Bool {
+        guard let reply = performDatumAction("datum.axis.update", args: [
+            "axis_id": id.raw.uuidString, "offset": offset,
+            "expected_offset": expectedOffset,
+        ], allowNoChange: true) else { return false }
+        if reply["mutated"] as? Bool == true { session.save() }
+        return true
+    }
+
+    @discardableResult
+    func updateDatumAxisLength(_ id: ConstructionAxisID, length: Double) -> Bool {
+        guard length.isFinite, length > 0 else { return false }
+        guard let reply = performDatumAction("datum.axis.update", args: [
+            "axis_id": id.raw.uuidString, "size": length,
+        ], allowNoChange: true) else { return false }
+        if reply["mutated"] as? Bool == true { session.save() }
+        return true
+    }
+
+    @discardableResult
+    func deleteDatumAxis(_ id: ConstructionAxisID) -> Bool {
+        guard performDatumAction("datum.axis.delete", args: [
+            "axis_id": id.raw.uuidString,
+        ]) != nil else { return false }
+        if datumAxisSheetID == id { closeDatumAxisSheet() }
+        session.save()
+        return true
+    }
+
+    @discardableResult
+    func createDatumPointFromAxis(_ axisID: ConstructionAxisID, offset: String) -> Bool {
+        let args: [String: Any] = ["kind": "axisPoint",
+                                   "axis_id": axisID.raw.uuidString,
+                                   "offset": offset]
+        guard let reply = performDatumAction("datum.point.create", args: args) else { return false }
+        if let id = (reply["point_id"] as? String).flatMap(UUID.init(uuidString:)) {
+            openDatumPointSheet(DatumPointID(raw: id))
+        }
+        session.save()
+        return true
+    }
+
+    @discardableResult
+    func createDatumPointFromAxisPlane(axis: ConstructionAxisID,
+                                       plane: ConstructionPlaneID) -> Bool {
+        let args: [String: Any] = ["kind": "axisPlane",
+                                   "axis_id": axis.raw.uuidString,
+                                   "plane_id": plane.raw.uuidString]
+        guard let reply = performDatumAction("datum.point.create", args: args) else { return false }
+        if let id = (reply["point_id"] as? String).flatMap(UUID.init(uuidString:)) {
+            openDatumPointSheet(DatumPointID(raw: id))
+        }
+        session.save()
+        return true
+    }
+
+    @discardableResult
+    func createDatumPointMidpoint(_ sources: [DatumPointSource]) -> Bool {
+        guard var args = Self.pointSourceArguments(sources) else { return false }
+        args["kind"] = "twoPointMidpoint"
+        guard let reply = performDatumAction("datum.point.create", args: args) else { return false }
+        if let id = (reply["point_id"] as? String).flatMap(UUID.init(uuidString:)) {
+            openDatumPointSheet(DatumPointID(raw: id))
+        }
+        session.save()
+        return true
+    }
+
+    /// Arm the shared reference picker to create a face-centre / edge datum
+    /// point from the next tap.
+    @discardableResult
+    func beginDatumPointFromPick(face: Bool) -> Bool {
+        beginDatumPick(.pointCreate(face ? DatumPointDefinition.Kind.faceCenter.rawValue
+                                         : DatumPointDefinition.Kind.edgePoint.rawValue))
+    }
+
+    /// Arm the shared reference picker to reselect a datum's source.
+    @discardableResult
+    func beginDatumAxisReselect(_ id: ConstructionAxisID) -> Bool {
+        beginDatumPick(.axisReselect(id))
+    }
+
+    @discardableResult
+    func beginDatumPointReselect(_ id: DatumPointID) -> Bool {
+        beginDatumPick(.pointReselect(id))
+    }
+
+    @discardableResult
+    func updateDatumPointOffset(_ id: DatumPointID, offset: String,
+                                expectedOffset: String) -> Bool {
+        guard let reply = performDatumAction("datum.point.update", args: [
+            "point_id": id.raw.uuidString, "offset": offset,
+            "expected_offset": expectedOffset,
+        ], allowNoChange: true) else { return false }
+        if reply["mutated"] as? Bool == true { session.save() }
+        return true
+    }
+
+    @discardableResult
+    func deleteDatumPoint(_ id: DatumPointID) -> Bool {
+        guard performDatumAction("datum.point.delete", args: [
+            "point_id": id.raw.uuidString,
+        ]) != nil else { return false }
+        if datumPointSheetID == id { closeDatumPointSheet() }
+        if selectedDatumPointID == id { selectedDatumPointID = nil }
+        session.save()
+        return true
+    }
+
+    func renameDatumPoint(_ id: DatumPointID, to name: String) {
+        guard let point = session.document.datumPoints.first(where: { $0.id == id }) else { return }
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, trimmed != point.name else { return }
+        session.perform(RenameDatumPointCommand(pointID: id, before: point.name, after: trimmed))
+        session.save()
+    }
+
+    func setDatumPointHidden(_ id: DatumPointID, hidden: Bool) {
+        guard let point = session.document.datumPoints.first(where: { $0.id == id }),
+              point.isHidden != hidden else { return }
+        session.perform(SetDatumPointHiddenCommand(pointID: id, before: point.isHidden, after: hidden))
+        session.save()
+    }
+
+    /// Point-source arguments for the service: sketch anchors keep their
+    /// sketch/entity/role identity; datum points are named by id.
+    static func pointSourceArguments(_ sources: [DatumPointSource]) -> [String: Any]? {
+        guard !sources.isEmpty else { return nil }
+        let points: [[String: Any]] = sources.map { source in
+            switch source {
+            case let .sketchAnchor(anchor):
+                return ["sketch_id": anchor.sketchID.raw.uuidString,
+                        "entity_id": anchor.entityID.uuidString,
+                        "role": anchor.role.rawValue]
+            case let .datumPoint(id):
+                return ["point_id": id.raw.uuidString]
+            }
+        }
+        return ["points": points]
+    }
+
+    /// Short, user-facing kind label for an axis row/sheet.
+    func datumAxisKindLabel(_ id: ConstructionAxisID) -> String {
+        guard let definition = session.document.axes.first(where: { $0.id == id })?.definition else {
+            return FloeCADStrings.text("cad.datum.kind.absolute", "Fixed Axis")
+        }
+        switch definition {
+        case .face: return FloeCADStrings.text("cad.datum.kind.axisFace", "From Face")
+        case .edge: return FloeCADStrings.text("cad.datum.kind.axisEdge", "Along Edge")
+        case .twoPoints: return FloeCADStrings.text("cad.datum.kind.axisTwoPoints", "Two Points")
+        case .twoPlanes: return FloeCADStrings.text("cad.datum.kind.axisTwoPlanes", "Two Planes")
+        case .cylinder: return FloeCADStrings.text("cad.datum.kind.axisCylinder", "Cylinder Axis")
+        }
+    }
+
+    /// Short, user-facing kind label for a point row/sheet.
+    func datumPointKindLabel(_ id: DatumPointID) -> String {
+        guard let definition = session.document.datumPoints.first(where: { $0.id == id })?.definition else {
+            return FloeCADStrings.text("cad.datum.kind.absolutePoint", "Fixed Point")
+        }
+        switch definition {
+        case .faceCenter: return FloeCADStrings.text("cad.datum.kind.faceCenter", "Face Center")
+        case .edgePoint: return FloeCADStrings.text("cad.datum.kind.edgePoint", "On Edge")
+        case .twoPointMidpoint: return FloeCADStrings.text("cad.datum.kind.midpoint", "Midpoint")
+        case .axisPoint: return FloeCADStrings.text("cad.datum.kind.onAxis", "On Axis")
+        case .axisPlane: return FloeCADStrings.text("cad.datum.kind.axisPlane", "Axis and Plane")
+        }
+    }
+
+    /// Whether a datum of this id currently reports a broken source.
+    func datumAxisStatus(_ id: ConstructionAxisID) -> String? {
+        session.lastReferenceErrors[.axis(id)]?.message
+    }
+
+    func datumPointStatus(_ id: DatumPointID) -> String? {
+        session.lastReferenceErrors[.datumPoint(id)]?.message
     }
 
     // MARK: - Offset Edge (sketch, spec §1.9)
@@ -17880,6 +18388,22 @@ final class EditorViewModel {
     }
 
     func deleteAxis(_ id: ConstructionAxisID) {
+        // M08: an associative or consumed axis deletes through the datum
+        // service so the dependency guard and the resolved-cache cleanup are
+        // the SAME path the axis sheet and the assistant use. A plain unused
+        // absolute axis keeps the direct command (no service round-trip).
+        let model = session.document
+        let hasDefinition = model.axes.first { $0.id == id }?.definition != nil
+        let isConsumed = model.features.nodes.contains { node in
+            if case let .pattern(_, spec) = node.kind { return spec.axisRef?.axisID == id }
+            if case let .revolve(_, _, ref, _, _) = node.kind,
+               case let .constructionAxis(axisID) = ref.source { return axisID == id }
+            return false
+        } || model.datumPoints.contains { $0.definition?.axisID == id }
+        if hasDefinition || isConsumed {
+            _ = deleteDatumAxis(id)
+            return
+        }
         guard let command = DeleteAxisCommand(id: id, document: session.document) else { return }
         session.perform(command)
     }
@@ -18287,9 +18811,11 @@ final class EditorViewModel {
     /// circular transform call (always true). Used both when recording a pattern
     /// commit and — via the panel edit API — when rebuilding a spec field-by-field.
     private func patternSpec(from state: PatternState) -> PatternSpec {
-        // Resolve the construction axis HERE rather than storing its id: the
-        // spec is replayed by the feature graph, which has no view model, and
-        // baking the line keeps a rebuild working after the axis is deleted.
+        // M08: a chosen construction axis is persisted as an IDENTITY, not as
+        // the line it currently has. The replay resolves the axis's current
+        // frame, so moving/editing the axis (or its source) carries the pattern
+        // and the relationship survives save/reopen. `axis`/`center` remain the
+        // last resolved display cache — and the only line for a world axis.
         let line = patternAxisLine(state)
         return PatternSpec(
             kind: state.kind == .linear ? .linear : .circular,
@@ -18298,7 +18824,8 @@ final class EditorViewModel {
             count: state.count,
             spacing: state.spacing,
             totalAngle: state.totalAngle * .pi / 180,
-            rotateInstances: true
+            rotateInstances: true,
+            axisRef: state.constructionAxisID.map { ConstructionAxisRef($0) }
         )
     }
 
@@ -18418,6 +18945,14 @@ final class EditorViewModel {
         /// The node's editable options — Bool toggles (symmetric, keep
         /// original) and choices (a boolean's type) — empty when it has none.
         var options: [FeatureOption] = []
+        /// The construction-axis IDENTITY this feature consumes, when it has
+        /// one (a pattern or a revolve). Nil means "own/fixed axis".
+        var constructionAxisRef: ConstructionAxisID? = nil
+        /// True for the two kinds that can carry a construction axis, so the
+        /// row can offer re-select/detach through the same `feature.update`.
+        var supportsAxisAssociation: Bool = false
+        /// Short label of the axis the feature actually uses now, for the row.
+        var axisSourceLabel: String? = nil
 
         /// True when this row edits a linear/circular pattern.
         var isPattern: Bool { patternSpec != nil }
@@ -18896,6 +19431,31 @@ final class EditorViewModel {
             let error = session.lastEvalErrors[node.id]
             let patternSpec: PatternSpec?
             if case let .pattern(_, spec) = node.kind { patternSpec = spec } else { patternSpec = nil }
+            var axisRef: ConstructionAxisID?
+            var supportsAxis = false
+            var axisSourceLabel: String?
+            switch node.kind {
+            case let .pattern(_, spec):
+                supportsAxis = true
+                axisRef = spec.axisRef?.axisID
+                axisSourceLabel = axisRef.flatMap { id in
+                    session.document.axes.first { $0.id == id }?.name
+                } ?? FloeCADStrings.text("cad.feature.axisFixed", "Fixed axis")
+            case let .revolve(_, _, ref, _, _):
+                supportsAxis = true
+                switch ref.source {
+                case let .constructionAxis(id):
+                    axisRef = id
+                    axisSourceLabel = session.document.axes.first { $0.id == id }?.name
+                        ?? FloeCADStrings.text("cad.feature.axisMissing", "Missing axis")
+                case .sketchLine:
+                    axisSourceLabel = FloeCADStrings.text("cad.feature.axisOwn", "Sketch line")
+                case .explicit:
+                    axisSourceLabel = FloeCADStrings.text("cad.feature.axisFixed", "Fixed axis")
+                }
+            default:
+                break
+            }
             return FeatureRow(
                 id: node.id,
                 name: node.name,
@@ -18906,7 +19466,10 @@ final class EditorViewModel {
                 isRolledBack: index >= cut,
                 patternSpec: patternSpec,
                 scalars: Self.scalars(of: node.kind),
-                options: Self.options(of: node.kind)
+                options: Self.options(of: node.kind),
+                constructionAxisRef: axisRef,
+                supportsAxisAssociation: supportsAxis,
+                axisSourceLabel: axisSourceLabel
             )
         }
     }
@@ -19217,6 +19780,84 @@ final class EditorViewModel {
         prepareForHistoryChange()
         session.editPatternFeature(id, spec: spec)
         session.save()
+    }
+
+    /// Construction axes offered by a feature row's axis menu, named the way
+    /// the Items panel names them.
+    struct FeatureAxisChoice: Identifiable, Equatable {
+        var id: ConstructionAxisID
+        var label: String
+    }
+
+    var featureAxisChoices: [FeatureAxisChoice] {
+        session.document.axes.enumerated().map { index, axis in
+            FeatureAxisChoice(id: axis.id, label: axis.name.isEmpty ? "Axis \(index + 1)" : axis.name)
+        }
+    }
+
+    /// History-panel edit: make a pattern or revolve follow a construction axis
+    /// IDENTITY, or detach it (`nil`) at the line the axis resolves to NOW.
+    ///
+    /// One `feature.update` call: the service resolves/validates the axis,
+    /// freezes the current line on detach, and the session rebuilds every
+    /// dependent body in the same undo step. A refusal leaves the document
+    /// untouched and reports the specific reason.
+    @discardableResult
+    func setFeatureConstructionAxis(_ id: FeatureID, axis: ConstructionAxisID?) -> Bool {
+        guard let node = session.document.features.node(id) else { return false }
+        switch node.kind {
+        case .pattern, .revolve:
+            break
+        default:
+            return false
+        }
+        let value: Any = axis.map { $0.raw.uuidString } ?? NSNull()
+        guard let reply = performFeatureUpdate(id, changes: ["axis_id": value]) else {
+            return false
+        }
+        if reply["mutated"] as? Bool == true { session.save() }
+        return true
+    }
+
+    /// One `feature.update` through the document's bound parameter service
+    /// (the same path the assistant uses). Specific association failures keep
+    /// their user-facing reason instead of a generic message.
+    private func performFeatureUpdate(
+        _ id: FeatureID, changes: [String: Any]
+    ) -> [String: Any]? {
+        guard let datumActionHandler else {
+            errorMessage = FloeCADStrings.text("cad.feature.editUnavailable",
+                "Reopen the document before editing a feature.")
+            return nil
+        }
+        let reply = datumActionHandler("update", [
+            "feature_id": id.raw.uuidString, "changes": changes,
+        ])
+        if reply["ok"] as? Bool == true {
+            errorMessage = nil
+            return reply
+        }
+        // Re-selecting the value a row already shows is not an error: the
+        // service correctly reports no change, and the menu must stay quiet.
+        if reply["error"] as? String == "no_change" {
+            errorMessage = nil
+            return reply
+        }
+        switch reply["error"] as? String {
+        case "axis_not_in_plane":
+            errorMessage = FloeCADStrings.text("cad.feature.axisNotInPlane",
+                "That axis does not lie in the sketch plane, so it cannot drive this revolve.")
+        case "axis_unresolved":
+            errorMessage = FloeCADStrings.text("cad.feature.axisUnresolved",
+                "That construction axis cannot resolve from its source right now.")
+        case "unknown_axis":
+            errorMessage = FloeCADStrings.text("cad.feature.axisUnknown",
+                "That construction axis no longer exists.")
+        default:
+            errorMessage = FloeCADStrings.text("cad.feature.editRejected",
+                "Couldn't change the feature axis. Check the axis source and the sketch plane.")
+        }
+        return nil
     }
 
     /// Short label for a feature kind (History panel row subtitle).

@@ -92,6 +92,11 @@ nonisolated enum CADDocumentFormat {
         var requiredVersion = legacyVersion
         var opaquePlanes: Set<UUID> = []
         var opaqueSketches: Set<UUID> = []
+        /// M08 rows whose present axis/point definition this build cannot
+        /// read. Cached display geometry is preserved and the document opens
+        /// view-only; no replay consumes a guessed definition.
+        var opaqueAxes: Set<UUID> = []
+        var opaqueDatumPoints: Set<UUID> = []
         /// Feature rows whose KNOWN kind carries a future semantic version or
         /// an unknown future kind. Their cached body geometry is preserved and
         /// the whole document opens view-only; no replay consumes guessed data.
@@ -101,8 +106,9 @@ nonisolated enum CADDocumentFormat {
         /// the whole document opens read-only; no writer may overwrite them.
         var opaqueDrawings = false
         var isOpaqueReadOnly: Bool {
-            !opaquePlanes.isEmpty || !opaqueSketches.isEmpty || !opaqueFeatures.isEmpty
-                || opaqueDrawings
+            !opaquePlanes.isEmpty || !opaqueSketches.isEmpty
+                || !opaqueAxes.isEmpty || !opaqueDatumPoints.isEmpty
+                || !opaqueFeatures.isEmpty || opaqueDrawings
         }
     }
 
@@ -121,8 +127,22 @@ nonisolated enum CADDocumentFormat {
         }) {
             required = max(required, holeVersion)
         }
+        // M08 intent is the REFERENCE, not only the source definition. A
+        // pattern's `axisRef` or a revolve's `AxisRef.constructionAxis` can
+        // point at a LEGACY absolute axis (`definition == nil`), and a datum
+        // point row is a new top-level entity even when its own `definition`
+        // is nil. A released format-1 writer ignores `axisRef`, rejects the
+        // unknown revolve source, and knows no `datumPoints` column at all, so
+        // leaving the floor at 1 lets it stay writable and drop the new
+        // relationship. Ordinary legacy absolute axes, old explicit revolve
+        // lines, absolute patterns and an EMPTY datum-point list keep floor 1.
         if document.planes.contains(where: { $0.definition != nil })
-            || document.sketches.contains(where: { $0.support != nil }) {
+            || document.sketches.contains(where: { $0.support != nil })
+            || document.axes.contains(where: { $0.definition != nil })
+            || !document.datumPoints.isEmpty
+            || document.features.nodes.contains(where: {
+                !$0.referencedConstructionAxisIDs.isEmpty
+            }) {
             required = max(required, associativeVersion)
         }
         return required
@@ -420,6 +440,31 @@ nonisolated enum CADDocumentFormat {
             }
             _ = try encoder.encode(plane)
         }
+        for axis in document.axes {
+            guard let definition = axis.definition else { continue }
+            guard definition.isSupportedSemanticVersion else {
+                throw CADDocumentFormatError.opaqueAssociations
+            }
+            // A non-encodable definition (non-finite scalar) must FAIL the
+            // transaction, never be dropped by a try? row update.
+            guard (try? encoder.encode(axis)) != nil else {
+                throw CADDocumentFormatError.malformedAssociation("construction-axis")
+            }
+        }
+        for point in document.datumPoints {
+            guard let definition = point.definition else {
+                guard (try? encoder.encode(point)) != nil else {
+                    throw CADDocumentFormatError.malformedAssociation("datum-point")
+                }
+                continue
+            }
+            guard definition.isSupportedSemanticVersion else {
+                throw CADDocumentFormatError.opaqueAssociations
+            }
+            guard (try? encoder.encode(point)) != nil else {
+                throw CADDocumentFormatError.malformedAssociation("datum-point")
+            }
+        }
         for sketch in document.sketches where sketch.support != nil { _ = try encoder.encode(sketch) }
         // A hole is the first non-additive feature kind: its semantic version,
         // every stored scalar and the actual pilot relation are validated
@@ -451,6 +496,8 @@ nonisolated enum CADDocumentFormat {
     /// Legacy undecodable rows with no identifiable association keep the
     /// existing unreadable-row preservation contract.
     static func assess(planes: [CADBlobRecord], sketches: [CADBlobRecord],
+                       axes: [CADBlobRecord] = [],
+                       datumPoints: [CADBlobRecord] = [],
                        features: [CADFeatureRecord] = [],
                        assembly: Data? = nil,
                        drawings: Data? = nil) throws -> Assessment {
@@ -479,6 +526,37 @@ nonisolated enum CADDocumentFormat {
                 throw CADDocumentFormatError.malformedAssociation("construction-plane")
             }
         }
+        for row in axes {
+            guard let object = try? JSONSerialization.jsonObject(with: row.data) as? [String: Any],
+                  let definition = object["definition"], !(definition is NSNull) else { continue }
+            result.requiredVersion = max(result.requiredVersion, associativeVersion)
+            do {
+                _ = try JSONDecoder().decode(ConstructionAxis.self, from: row.data)
+            } catch let error as AssociativeAxisPointError where error.requiresOpaqueReadOnlyDocument {
+                _ = try cachedAxis(from: row.data)
+                result.opaqueAxes.insert(row.blobID)
+            } catch {
+                throw CADDocumentFormatError.malformedAssociation("construction-axis")
+            }
+        }
+        for row in datumPoints {
+            // Every datum-point row is a new top-level entity to a released
+            // format-1 writer, even when the point itself is ABSOLUTE
+            // (`definition == nil`). Only an EMPTY list is legacy. The row is
+            // still inspected below so a present future definition opens
+            // opaque/read-only with its original bytes.
+            result.requiredVersion = max(result.requiredVersion, associativeVersion)
+            guard let object = try? JSONSerialization.jsonObject(with: row.data) as? [String: Any],
+                  let definition = object["definition"], !(definition is NSNull) else { continue }
+            do {
+                _ = try JSONDecoder().decode(DatumPoint.self, from: row.data)
+            } catch let error as AssociativeAxisPointError where error.requiresOpaqueReadOnlyDocument {
+                _ = try cachedDatumPoint(from: row.data)
+                result.opaqueDatumPoints.insert(row.blobID)
+            } catch {
+                throw CADDocumentFormatError.malformedAssociation("datum-point")
+            }
+        }
         let knownSupportCases: Set<String> = ["sketch", "construction", "ground", "explicit"]
         for row in sketches {
             guard let object = try? JSONSerialization.jsonObject(with: row.data) as? [String: Any],
@@ -499,10 +577,15 @@ nonisolated enum CADDocumentFormat {
         }
         for row in features {
             // A raw/unknown payload stays on the existing unreadable-feature
-            // path (skip + preserve). Only a row that IS a hole feature is
-            // inspected for the non-additive format 3 contract.
-            guard let object = try? JSONSerialization.jsonObject(with: row.kind) as? [String: Any],
-                  let hole = object["hole"], !(hole is NSNull) else { continue }
+            // path (skip + preserve). Known pattern/revolve rows are inspected
+            // for the M08 consumer identity BEFORE the hole contract below.
+            guard let object = try? JSONSerialization.jsonObject(with: row.kind) as? [String: Any] else {
+                continue
+            }
+            if try featureConsumesConstructionAxis(object) {
+                result.requiredVersion = max(result.requiredVersion, associativeVersion)
+            }
+            guard let hole = object["hole"], !(hole is NSNull) else { continue }
             result.requiredVersion = max(result.requiredVersion, holeVersion)
             guard let hole = hole as? [String: Any],
                   let spec = hole["spec"] as? [String: Any] else {
@@ -545,8 +628,55 @@ nonisolated enum CADDocumentFormat {
 
     static func assess(_ record: CADDocumentRecord) throws -> Assessment {
         try assess(planes: record.planes, sketches: record.sketches,
+                   axes: record.axes, datumPoints: record.datumPoints ?? [],
                    features: record.features, assembly: record.assembly,
                    drawings: record.drawings)
+    }
+
+    /// RAW twin of `FeatureNode.referencedConstructionAxisIDs`: true only when
+    /// a persisted pattern actually stores `spec.axisRef`, or a persisted
+    /// revolve actually stores `AxisRef.Source.constructionAxis`.
+    ///
+    /// The REFERENCE is the intent, so a legacy absolute axis
+    /// (`definition == nil`) still raises the coordinated floor: a released
+    /// format-1 reader ignores the pattern field or rejects the unknown revolve
+    /// source, so it must not stay writable over the relationship. An
+    /// ordinary explicit/sketch-line revolve and an absolute pattern stay
+    /// legacy. A present but unreadable reference on a KNOWN row is corruption
+    /// (reported, bytes preserved), while an unknown/future feature kind is
+    /// left on the existing unreadable-row path.
+    private static func featureConsumesConstructionAxis(_ object: [String: Any]) throws -> Bool {
+        if let raw = object["pattern"] {
+            guard let payload = raw as? [String: Any],
+                  let spec = payload["spec"] as? [String: Any] else {
+                throw CADDocumentFormatError.malformedAssociation("pattern-feature")
+            }
+            guard let rawReference = spec["axisRef"], !(rawReference is NSNull) else {
+                return false
+            }
+            guard let object = rawReference as? [String: Any],
+                  let data = try? JSONSerialization.data(withJSONObject: object),
+                  (try? JSONDecoder().decode(ConstructionAxisRef.self, from: data)) != nil else {
+                throw CADDocumentFormatError.malformedAssociation("pattern-axis-reference")
+            }
+            return true
+        }
+        if let raw = object["revolve"] {
+            guard let payload = raw as? [String: Any],
+                  let axis = payload["axis"] as? [String: Any],
+                  let source = axis["source"] as? [String: Any] else {
+                throw CADDocumentFormatError.malformedAssociation("revolve-feature")
+            }
+            guard let rawSource = source["constructionAxis"] else { return false }
+            guard !(rawSource is NSNull),
+                  let data = try? JSONSerialization.data(withJSONObject: axis),
+                  let reference = try? JSONDecoder().decode(AxisRef.self, from: data),
+                  case .constructionAxis = reference.source else {
+                throw CADDocumentFormatError.malformedAssociation("revolve-axis-reference")
+            }
+            return true
+        }
+        return false
     }
 
     static func validateWrite(_ payload: CADWritePayload, storedSchema: Int? = nil) throws {
@@ -574,6 +704,15 @@ nonisolated enum CADDocumentFormat {
     }
     static func cachedSketch(from data: Data) throws -> Sketch {
         try cachedValue(Sketch.self, data: data, removing: "support")
+    }
+    /// Display-only copy of an unreadable associative axis: the cached line
+    /// survives, the definition does not. The original row bytes stay intact
+    /// and the document is read-only.
+    static func cachedAxis(from data: Data) throws -> ConstructionAxis {
+        try cachedValue(ConstructionAxis.self, data: data, removing: "definition")
+    }
+    static func cachedDatumPoint(from data: Data) throws -> DatumPoint {
+        try cachedValue(DatumPoint.self, data: data, removing: "definition")
     }
     private static func cachedValue<T: Decodable>(_ type: T.Type, data: Data, removing key: String) throws -> T {
         guard var object = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {

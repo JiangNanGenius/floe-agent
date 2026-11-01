@@ -47,7 +47,9 @@ struct HistoryPanelView: View {
                         onSetOptionChoice: { viewModel.setFeatureOption(row.id, key: $0, choice: $1) },
                         onEditPatternCount: { viewModel.editPatternCount(row.id, $0) },
                         onEditPatternSpacing: { viewModel.editPatternSpacing(row.id, $0) },
-                        onEditPatternAngle: { viewModel.editPatternAngle(row.id, $0) }
+                        onEditPatternAngle: { viewModel.editPatternAngle(row.id, $0) },
+                        axisChoices: viewModel.featureAxisChoices,
+                        onEditAxis: { viewModel.setFeatureConstructionAxis(row.id, axis: $0) }
                     )
                     // Drag-to-reorder: the payload is the node's UUID; dropping it
                     // onto another row moves it to that row's position. Replaying
@@ -185,6 +187,10 @@ private struct HistoryRowView: View {
     let onEditPatternCount: (Int) -> Void
     let onEditPatternSpacing: (Double) -> Void
     let onEditPatternAngle: (Double) -> Void
+    /// M08 R2: the construction axes a pattern/revolve row may follow, and the
+    /// callback that persists the choice (nil detaches at the current line).
+    let axisChoices: [EditorViewModel.FeatureAxisChoice]
+    let onEditAxis: (ConstructionAxisID?) -> Void
 
     @State private var draft = ""
     @State private var scalarTexts: [EditorViewModel.FeatureScalarKey: String] = [:]
@@ -393,6 +399,37 @@ private struct HistoryRowView: View {
                             }
                         }
                     }
+                }
+                .font(.caption.weight(.semibold))
+                .padding(.horizontal, 6)
+                .padding(.vertical, 3)
+                .background(.quaternary, in: RoundedRectangle(cornerRadius: 6))
+                .padding(.leading, 32)
+                .disabled(row.isRolledBack)
+            }
+
+            if row.supportsAxisAssociation {
+                HStack(spacing: 4) {
+                    Text(FloeCADStrings.label("cad.ui.history.axis", "Axis"))
+                        .font(.caption2)
+                        .foregroundStyle(.barLabel)
+                    Picker(FloeCADStrings.label("cad.ui.history.axis", "Axis"), selection: Binding(
+                        get: { row.constructionAxisRef },
+                        set: { onEditAxis($0) })) {
+                        Text(row.axisSourceLabel
+                             ?? FloeCADStrings.text("cad.feature.axisFixed", "Fixed axis"))
+                            .tag(ConstructionAxisID?.none)
+                        Divider()
+                        ForEach(axisChoices) { choice in
+                            Text(choice.label).tag(Optional(choice.id))
+                        }
+                    }
+                    .pickerStyle(.menu)
+                    .labelsHidden()
+                    .fixedSize()
+                    .help(FloeCADStrings.text("cad.feature.axisMenuHelp",
+                        "Follow a construction axis, or detach at its current line."))
+                    .accessibilityIdentifier("HistoryAxisMenu-\(row.name)")
                 }
                 .font(.caption.weight(.semibold))
                 .padding(.horizontal, 6)

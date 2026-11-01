@@ -540,16 +540,20 @@ typedef NS_ENUM(NSInteger, OCCTOpCode) {
                                  status:(nullable OCCTOpStatus *)status
                                 history:(nullable OCCTShapeHistory *)history;
 
-/// Per-kernel-face geometry, straight from the shape: packed doubles, 10
-/// per face — `index, kindCode, normal xyz, centroid xyz, area, extra` —
-/// in 1-based indexed-map order. `kindCode`: 0 planar (`extra` = plane
-/// offset n·centroid), 1 cylindrical (`normal` = axis direction, `extra` =
-/// radius), 2 other (`extra` = 0). Face-orientation is honoured, so a
-/// planar normal points OUT of the solid. This is the identity source for
-/// bodies whose RENDER is not the kernel tessellation (revolve/sweep/loft
-/// assign their brep) — the mesh-table channel votes garbage against a
-/// different tessellation, and /v1/faces served duplicate indices for a
-/// revolved washer exactly that way (measured 2026-09-01).
+/// Per-kernel-face geometry, straight from the shape: packed doubles, 13
+/// per face — `index, kindCode, normal xyz, centroid xyz, area, extra,
+/// axisPoint xyz` — in 1-based indexed-map order. `kindCode`: 0 planar
+/// (`extra` = plane offset n·centroid), 1 cylindrical (`normal` = axis
+/// direction, `extra` = radius, `axisPoint` = the cylinder's OWN analytic
+/// axis placement point), 2 other (`extra` = 0, `axisPoint` = 0,0,0).
+/// Face-orientation is honoured, so a planar normal points OUT of the solid.
+/// This is the identity source for bodies whose RENDER is not the kernel
+/// tessellation (revolve/sweep/loft assign their brep) — the mesh-table
+/// channel votes garbage against a different tessellation, and /v1/faces
+/// served duplicate indices for a revolved washer exactly that way (measured
+/// 2026-09-01). `axisPoint` exists because a cylinder's direction alone is
+/// not its axis on a partial face: it is the exact point a construction axis
+/// must be built on (M08 R2), never a centroid/bbox substitute.
 + (nullable NSData *)faceInfoOfShape:(OCCTShape *)shape;
 
 /// The plane's intersection with the shape (`BRepAlgoAPI_Section`), as

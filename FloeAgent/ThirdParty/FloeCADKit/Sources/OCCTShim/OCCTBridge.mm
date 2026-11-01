@@ -2860,7 +2860,7 @@ static double OS3DSpanExactArea(const TopoDS_Face &face) {
         TopTools_IndexedMapOfShape faceMap;
         TopExp::MapShapes(shape->_shape, TopAbs_FACE, faceMap);
         std::vector<double> rows;
-        rows.reserve((size_t)faceMap.Extent() * 10);
+        rows.reserve((size_t)faceMap.Extent() * 13);
         for (Standard_Integer i = 1; i <= faceMap.Extent(); ++i) {
             const TopoDS_Face face = TopoDS::Face(faceMap(i));
             BRepAdaptor_Surface surf(face);
@@ -2886,6 +2886,7 @@ static double OS3DSpanExactArea(const TopoDS_Face &face) {
                 if (exact > 0.0) area = exact;
             }
             double kind = 2.0, extra = 0.0;
+            gp_Pnt axisPoint(0.0, 0.0, 0.0);
             gp_Dir normal(0.0, 0.0, 1.0);
             if (surf.GetType() == GeomAbs_Plane) {
                 kind = 0.0;
@@ -2912,16 +2913,22 @@ static double OS3DSpanExactArea(const TopoDS_Face &face) {
                       + normal.Z() * centroid.Z();
             } else if (surf.GetType() == GeomAbs_Cylinder) {
                 kind = 1.0;
+                // The cylinder's OWN axis line: direction AND a placement
+                // point that lies on it exactly. A partial cylindrical face
+                // has no other exact axis point — the centroid is off the
+                // line, and a bbox centre is a different line entirely.
                 normal = surf.Cylinder().Axis().Direction();
+                axisPoint = surf.Cylinder().Axis().Location();
                 extra = surf.Cylinder().Radius();
             }
-            const double row[10] = {
+            const double row[13] = {
                 (double)i, kind,
                 normal.X(), normal.Y(), normal.Z(),
                 centroid.X(), centroid.Y(), centroid.Z(),
                 area, extra,
+                axisPoint.X(), axisPoint.Y(), axisPoint.Z(),
             };
-            rows.insert(rows.end(), row, row + 10);
+            rows.insert(rows.end(), row, row + 13);
         }
         return [NSData dataWithBytes:rows.data()
                               length:rows.size() * sizeof(double)];

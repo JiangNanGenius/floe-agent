@@ -1341,6 +1341,21 @@ targets:
       - path: ThirdParty/FloeCADKit/Tests/FloeCADKitTests/CADAssociativeAngleThreePointValueTests.swift
       - path: ThirdParty/FloeCADKit/Tests/FloeCADKitTests/CADAssociativePlaneKindsServiceTests.swift
       - path: ThirdParty/FloeCADKit/Tests/FloeCADKitTests/CADDatumPlaneKindsEditorTests.swift
+      # M08 associative construction-axis/datum-point source, service and
+      # native UI tests. Explicit membership; regenerate the Xcode project with
+      # scripts/gen_project.sh after applying this file.
+      - path: ThirdParty/FloeCADKit/Tests/FloeCADKitTests/CADAssociativeAxisPointValueTests.swift
+      - path: ThirdParty/FloeCADKit/Tests/FloeCADKitTests/CADAssociativeAxisPointServiceTests.swift
+      - path: ThirdParty/FloeCADKit/Tests/FloeCADKitTests/CADDatumAxisPointEditorTests.swift
+      # M08 R2 cylinder-axis + real revolve-consumer source, service and native
+      # UI tests. Explicit membership; regenerate with scripts/gen_project.sh.
+      - path: ThirdParty/FloeCADKit/Tests/FloeCADKitTests/CADAssociativeCylinderAxisValueTests.swift
+      - path: ThirdParty/FloeCADKit/Tests/FloeCADKitTests/CADAssociativeCylinderAxisServiceTests.swift
+      - path: ThirdParty/FloeCADKit/Tests/FloeCADKitTests/CADAssociativeRevolveAxisServiceTests.swift
+      - path: ThirdParty/FloeCADKit/Tests/FloeCADKitTests/CADAssociativeRevolveAxisEditorTests.swift
+      # M08 R3 format-floor regression: a new consumer reference (even to a
+      # legacy absolute axis) or a datum-point row raises the coordinated floor.
+      - path: ThirdParty/FloeCADKit/Tests/FloeCADKitTests/CADAssociativeAxisFormatFloorTests.swift
       - path: ThirdParty/FloeCADKit/Tests/FloeCADKitTests/CADHoleFeatureTests.swift
       - path: ThirdParty/FloeCADKit/Tests/FloeCADKitTests/CADThreadEngineProbeTests.swift
       - path: ThirdParty/FloeCADKit/Tests/FloeCADKitTests/CADPresentationUITests.swift

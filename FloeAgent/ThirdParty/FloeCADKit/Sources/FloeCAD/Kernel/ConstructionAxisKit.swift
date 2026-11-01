@@ -38,6 +38,12 @@ nonisolated struct ConstructionAxis: Identifiable, Codable, Equatable, Sendable 
     var name: String
     /// Items Manager visibility (spec §11).
     var isHidden: Bool
+    /// M08 associative definition. When present it is the SOURCE OF TRUTH:
+    /// `origin`/`direction` are then only the last resolved display cache and
+    /// must not be used as solve input. Nil keeps the legacy absolute axis
+    /// exactly as before, including its encoding (the optional field is omitted
+    /// rather than written as null).
+    var definition: ConstructionAxisDefinition?
 
     /// Nil when `direction` is degenerate — callers surface "can't build an axis
     /// from this selection" rather than propagating NaNs.
@@ -47,7 +53,8 @@ nonisolated struct ConstructionAxis: Identifiable, Codable, Equatable, Sendable 
         direction: SIMD3<Double>,
         length: Double = 100,
         name: String = "Axis",
-        isHidden: Bool = false
+        isHidden: Bool = false,
+        definition: ConstructionAxisDefinition? = nil
     ) {
         let n = simd_length(direction)
         guard n > 1e-9, n.isFinite else { return nil }
@@ -62,12 +69,17 @@ nonisolated struct ConstructionAxis: Identifiable, Codable, Equatable, Sendable 
         self.length = length
         self.name = name
         self.isHidden = isHidden
+        self.definition = definition
     }
 
     private enum CodingKeys: String, CodingKey {
-        case id, origin, direction, length, name, isHidden
+        case id, origin, direction, length, name, isHidden, definition
     }
 
+    /// A present but unsupported `definition` THROWS out of
+    /// `ConstructionAxisDefinition.init(from:)`; it is never swallowed into
+    /// nil, which would silently turn an associative axis back into an absolute
+    /// cached line.
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         id = try c.decode(ConstructionAxisID.self, forKey: .id)
@@ -76,6 +88,8 @@ nonisolated struct ConstructionAxis: Identifiable, Codable, Equatable, Sendable 
         length = try c.decode(Double.self, forKey: .length)
         name = try c.decodeIfPresent(String.self, forKey: .name) ?? "Axis"
         isHidden = try c.decodeIfPresent(Bool.self, forKey: .isHidden) ?? false
+        definition = try c.decodeIfPresent(
+            ConstructionAxisDefinition.self, forKey: .definition)
     }
 
     /// The drawn segment, centred on `origin`.

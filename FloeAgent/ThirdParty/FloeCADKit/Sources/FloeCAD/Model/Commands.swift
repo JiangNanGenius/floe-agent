@@ -1620,6 +1620,139 @@ struct DeleteAxisCommand: DocumentCommand {
     }
 }
 
+// MARK: - M08 associative construction axes and datum points
+
+/// Install an associative axis definition on an existing axis, or clear it.
+/// The cached origin/direction are left alone: the rebuild's derived-coordinate
+/// command updates them in the same undo step.
+struct EditConstructionAxisDefinitionCommand: DocumentCommand {
+    let title = "Edit Construction Axis"
+    let axisID: ConstructionAxisID
+    let before: ConstructionAxisDefinition?
+    let after: ConstructionAxisDefinition?
+
+    private func set(_ definition: ConstructionAxisDefinition?, in document: inout DesignDocument) {
+        guard let index = document.axes.firstIndex(where: { $0.id == axisID }) else { return }
+        document.axes[index].definition = definition
+    }
+    func apply(to document: inout DesignDocument) { set(after, in: &document) }
+    func revert(in document: inout DesignDocument) { set(before, in: &document) }
+}
+
+/// Coordinate cache only. Never overwrites a definition installed by an
+/// earlier command in the same rebuild transaction.
+struct UpdateResolvedConstructionAxisCommand: DocumentCommand {
+    let title = "Update Construction Axis"
+    let axisID: ConstructionAxisID
+    let beforeOrigin: SIMD3<Double>
+    let beforeDirection: SIMD3<Double>
+    let afterOrigin: SIMD3<Double>
+    let afterDirection: SIMD3<Double>
+
+    private func set(_ origin: SIMD3<Double>, _ direction: SIMD3<Double>,
+                     in document: inout DesignDocument) {
+        guard let index = document.axes.firstIndex(where: { $0.id == axisID }) else { return }
+        document.axes[index].origin = origin
+        document.axes[index].direction = direction
+    }
+    func apply(to document: inout DesignDocument) {
+        set(afterOrigin, afterDirection, in: &document)
+    }
+    func revert(in document: inout DesignDocument) {
+        set(beforeOrigin, beforeDirection, in: &document)
+    }
+}
+
+struct AddDatumPointCommand: DocumentCommand {
+    let title = "Add Point"
+    let point: DatumPoint
+
+    func apply(to document: inout DesignDocument) {
+        document.datumPoints.append(point)
+    }
+
+    func revert(in document: inout DesignDocument) {
+        document.datumPoints.removeAll { $0.id == point.id }
+    }
+}
+
+struct EditDatumPointDefinitionCommand: DocumentCommand {
+    let title = "Edit Point"
+    let pointID: DatumPointID
+    let before: DatumPointDefinition?
+    let after: DatumPointDefinition?
+
+    private func set(_ definition: DatumPointDefinition?, in document: inout DesignDocument) {
+        guard let index = document.datumPoints.firstIndex(where: { $0.id == pointID }) else { return }
+        document.datumPoints[index].definition = definition
+    }
+    func apply(to document: inout DesignDocument) { set(after, in: &document) }
+    func revert(in document: inout DesignDocument) { set(before, in: &document) }
+}
+
+/// Coordinate cache only, exactly like `UpdateResolvedConstructionAxisCommand`.
+struct UpdateResolvedDatumPointCommand: DocumentCommand {
+    let title = "Update Point"
+    let pointID: DatumPointID
+    let before: SIMD3<Double>
+    let after: SIMD3<Double>
+
+    private func set(_ position: SIMD3<Double>, in document: inout DesignDocument) {
+        guard let index = document.datumPoints.firstIndex(where: { $0.id == pointID }) else { return }
+        document.datumPoints[index].position = position
+    }
+    func apply(to document: inout DesignDocument) { set(after, in: &document) }
+    func revert(in document: inout DesignDocument) { set(before, in: &document) }
+}
+
+struct SetDatumPointHiddenCommand: DocumentCommand {
+    let title = "Show/Hide Point"
+    let pointID: DatumPointID
+    let before: Bool
+    let after: Bool
+
+    private func set(_ hidden: Bool, in document: inout DesignDocument) {
+        guard let index = document.datumPoints.firstIndex(where: { $0.id == pointID }) else { return }
+        document.datumPoints[index].isHidden = hidden
+    }
+    func apply(to document: inout DesignDocument) { set(after, in: &document) }
+    func revert(in document: inout DesignDocument) { set(before, in: &document) }
+}
+
+struct RenameDatumPointCommand: DocumentCommand {
+    let title = "Rename Point"
+    let pointID: DatumPointID
+    let before: String
+    let after: String
+
+    private func set(_ name: String, in document: inout DesignDocument) {
+        guard let index = document.datumPoints.firstIndex(where: { $0.id == pointID }) else { return }
+        document.datumPoints[index].name = name
+    }
+    func apply(to document: inout DesignDocument) { set(after, in: &document) }
+    func revert(in document: inout DesignDocument) { set(before, in: &document) }
+}
+
+struct DeleteDatumPointCommand: DocumentCommand {
+    let title = "Delete Point"
+    let index: Int
+    let point: DatumPoint
+
+    init?(id: DatumPointID, document: DesignDocument) {
+        guard let index = document.datumPoints.firstIndex(where: { $0.id == id }) else { return nil }
+        self.index = index
+        self.point = document.datumPoints[index]
+    }
+
+    func apply(to document: inout DesignDocument) {
+        document.datumPoints.removeAll { $0.id == point.id }
+    }
+
+    func revert(in document: inout DesignDocument) {
+        document.datumPoints.insert(point, at: min(index, document.datumPoints.count))
+    }
+}
+
 struct SetAxisHiddenCommand: DocumentCommand {
     let title: String
     let id: ConstructionAxisID

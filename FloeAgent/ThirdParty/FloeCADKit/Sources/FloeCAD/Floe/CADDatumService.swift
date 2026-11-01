@@ -11,6 +11,8 @@ public final class CADDatumService {
         "datum.anglePlane.create", "datum.anglePlane.update", "datum.anglePlane.delete",
         "datum.threePointPlane.create", "datum.threePointPlane.update",
         "datum.threePointPlane.delete",
+        "datum.axis.create", "datum.axis.update", "datum.axis.delete",
+        "datum.point.create", "datum.point.update", "datum.point.delete",
         "sketch.setSupport", "sketch.clearSupport",
     ]
     private let document: FloeCADDocument
@@ -42,6 +44,22 @@ public final class CADDatumService {
             fields = ["plane_id", "points", "point_index", "point", "expected_points", "size"]
         case "datum.threePointPlane.delete":
             fields = ["plane_id"]
+        case "datum.axis.create":
+            fields = ["kind", "body_id", "face_index", "edge_index", "query_token",
+                      "plane_ids", "points", "offset", "size"]
+        case "datum.axis.update":
+            fields = ["axis_id", "kind", "body_id", "face_index", "edge_index", "query_token",
+                      "plane_ids", "points", "offset", "expected_offset", "size"]
+        case "datum.axis.delete":
+            fields = ["axis_id"]
+        case "datum.point.create":
+            fields = ["kind", "body_id", "face_index", "edge_index", "query_token",
+                      "points", "axis_id", "plane_id", "offset"]
+        case "datum.point.update":
+            fields = ["point_id", "kind", "body_id", "face_index", "edge_index", "query_token",
+                      "points", "axis_id", "plane_id", "offset", "expected_offset"]
+        case "datum.point.delete":
+            fields = ["point_id"]
         case "sketch.setSupport":
             fields = ["sketch_id", "plane_id"]
         case "sketch.clearSupport":
@@ -71,6 +89,12 @@ public final class CADDatumService {
         case "datum.threePointPlane.create": return createThreePoint(args)
         case "datum.threePointPlane.update": return updateThreePoint(args)
         case "datum.threePointPlane.delete": return delete(args)
+        case "datum.axis.create": return createAxis(args)
+        case "datum.axis.update": return updateAxis(args)
+        case "datum.axis.delete": return deleteAxis(args)
+        case "datum.point.create": return createPoint(args)
+        case "datum.point.update": return updatePoint(args)
+        case "datum.point.delete": return deletePoint(args)
         case "sketch.setSupport": return support(args, clear: false)
         case "sketch.clearSupport": return support(args, clear: true)
         default: return fail("unknown_action", "Unknown datum action.")
@@ -188,6 +212,9 @@ public final class CADDatumService {
         var face: SourceFaceGeometry
         var bodyTransform: Transform3D
         var planeAtZero: SketchPlane
+        /// Display extent derived from the frozen face's area (mm). Never
+        /// affects the axis math — it sizes the drawn segment.
+        var faceExtent: Double
     }
     private func source(_ args: [String: Any]) throws -> Source {
         guard let id = uuid(args["body_id"]), let index = integer(args["face_index"]), index > 0,
@@ -238,7 +265,84 @@ public final class CADDatumService {
                                             offsetMM: 0)
         return Source(reference: reference, version: acquired.version, frame: frame,
                       face: sourceFace, bodyTransform: acquired.snapshot.body.transform,
-                      planeAtZero: plane)
+                      planeAtZero: plane,
+                      faceExtent: max(signature.area.squareRoot(), 1e-6))
+    }
+
+    private struct CylinderSource {
+        var reference: FaceRef
+        var version: GeometryVersionRef
+        var cylinder: SourceCylinderGeometry
+        var bodyTransform: Transform3D
+    }
+
+    /// The exact named CYLINDRICAL kernel face the axis will follow.
+    ///
+    /// Same identity discipline as `source(_:)`: the stable NAME crosses the
+    /// boundary (never the live index), the frozen writer's snapshot is the
+    /// geometry source, the query token must still match, and a non-cylindrical
+    /// face/absent axis point refuses. The analytic axis point is read from the
+    /// exact face, so a partial cylinder resolves its true centre line.
+    private func cylinderSource(_ args: [String: Any]) throws -> CylinderSource {
+        guard let id = uuid(args["body_id"]), let index = integer(args["face_index"]), index > 0,
+              let body = document.session.document.body(with: BodyID(raw: id)), let brep = body.brep else {
+            throw Failure(code: "invalid_source",
+                          message: "Use body_id and the 1-based OCCT kernel face_index from query scope=faces.")
+        }
+        guard let token = args["query_token"] as? String, let generation = CADGeometryQueryGeneration.parse(token),
+              generation.scope == "faces", generation.matches(documentRevision: document.revision,
+                changeCount: document.session.changeCount, bodyID: id, meshRevision: body.meshRevision) else {
+            throw Failure(code: "stale_query",
+                          message: "Re-query scope=faces for this body and use its current query_token.")
+        }
+        guard document.session.lastNamingRevisions[body.id] == body.meshRevision,
+              let name = document.session.lastKernelNames[body.id]?[index], Self.isStable(name),
+              document.session.lastKernelNames[body.id]?.values.filter({ $0 == name }).count == 1,
+              let liveFace = OCCTKernel.faceInfo(brep).first(where: { $0.index == index }),
+              Self.isCylindrical(liveFace.signature),
+              liveFace.axisPoint != nil, liveFace.area.isFinite, liveFace.area > 0 else {
+            throw Failure(code: "named_cylinder_source_required",
+                          message: "This face is not a current, uniquely named cylindrical kernel face. "
+                            + "Select a round face, or re-query the body after the edit.")
+        }
+        guard let acquired = document.session.associativeSource(for: body.id),
+              let snapshotBRep = acquired.snapshot.body.brep else {
+            throw Failure(code: "feature_source_required",
+                          message: "An associative axis needs a successful feature-owned exact source.")
+        }
+        // Names cross the boundary; indices NEVER do.
+        let matches = acquired.snapshot.kernelNames.filter { $0.value == name }
+        guard matches.count == 1, let snapshotIndex = matches.first?.key,
+              let face = OCCTKernel.faceInfo(snapshotBRep).first(where: { $0.index == snapshotIndex }),
+              Self.isCylindrical(face.signature),
+              let axisPoint = face.axisPoint,
+              face.area.isFinite, face.area > 0,
+              let signature = face.signature else {
+            throw Failure(code: "named_cylinder_source_required",
+                          message: "The selected stable face name is absent, ambiguous or no longer "
+                            + "cylindrical in its actual writer snapshot.")
+        }
+        let producer = document.session.document.features.nodes.first {
+            $0.outputBodyIDs.contains(body.id)
+        }?.id ?? name.creator
+        let reference = FaceRef(body: BodyRef(producer: producer, bodyID: body.id), creator: name.creator,
+                                role: Self.role(name, index: snapshotIndex),
+                                signature: signature, elementName: name)
+        let radius: Double
+        if case let .cylindrical(value) = signature.kind { radius = value } else { radius = 0 }
+        let cylinder = SourceCylinderGeometry(
+            bodyID: body.id, centroid: face.centroid, axisPoint: axisPoint,
+            axisDirection: face.normal, radius: radius,
+            extent: max(2 * radius, face.area.squareRoot()))
+        return CylinderSource(reference: reference, version: acquired.version,
+                              cylinder: cylinder, bodyTransform: acquired.snapshot.body.transform)
+    }
+
+    /// The exact cylinder test: a signature AND a finite analytic axis point.
+    /// A planar/other kind is never coerced into a cylinder.
+    private static func isCylindrical(_ signature: FaceSignature?) -> Bool {
+        guard let signature, case .cylindrical = signature.kind else { return false }
+        return true
     }
 
     private static func isStable(_ name: ElementName) -> Bool {
@@ -254,6 +358,23 @@ public final class CADDatumService {
     }
     private func error(_ error: Error) -> [String: Any] {
         if let failure = error as? Failure { return fail(failure.code, failure.message) }
+        if let geometry = error as? AssociativeAxisPointError {
+            switch geometry {
+            case .coincidentPoints:
+                return fail("coincident_points", geometry.localizedDescription)
+            case .parallelSources:
+                return fail("parallel_sources", geometry.localizedDescription)
+            case .degenerateDirection, .degenerateReference:
+                return fail("degenerate_source", geometry.localizedDescription)
+            case .sourceVersionBodyMismatch, .sourceBodyMismatch:
+                return fail("source_body_mismatch", geometry.localizedDescription)
+            case .unsupportedDefinitionKind, .unsupportedSemanticVersion:
+                return fail("unsupported_definition", geometry.localizedDescription)
+            case .invalidDefinitionShape, .invalidAttachmentFrame, .invalidBodyTransform,
+                 .nonFiniteValue, .axisNotInPlane:
+                return fail("invalid_definition", geometry.localizedDescription)
+            }
+        }
         return fail("invalid_definition", error.localizedDescription)
     }
     private func commit(_ commands: [DocumentCommand], title: String, action: String,
@@ -265,6 +386,8 @@ public final class CADDatumService {
                 case let .plane(id): row["plane_id"] = id.raw.uuidString
                 case let .sketch(id): row["sketch_id"] = id.raw.uuidString
                 case let .feature(id): row["feature_id"] = id.raw.uuidString
+                case let .axis(id): row["axis_id"] = id.raw.uuidString
+                case let .datumPoint(id): row["point_id"] = id.raw.uuidString
                 }
                 return row
             }
@@ -281,6 +404,14 @@ public final class CADDatumService {
         if let id = extra["plane_id"] as? String,
            let descriptor = Self.planeRows(document: document).first(where: { ($0["plane_id"] as? String) == id }) {
             reply["plane"] = descriptor
+        }
+        if let id = extra["axis_id"] as? String,
+           let descriptor = Self.axisRows(document: document).first(where: { ($0["axis_id"] as? String) == id }) {
+            reply["axis"] = descriptor
+        }
+        if let id = extra["point_id"] as? String,
+           let descriptor = Self.datumPointRows(document: document).first(where: { ($0["point_id"] as? String) == id }) {
+            reply["point"] = descriptor
         }
         return reply
     }
@@ -596,7 +727,8 @@ public final class CADDatumService {
             let current = document.session.document
             let result = current.features.evaluate(sketches: current.sketches, planes: current.planes,
                 naming: document.session.naming, nextRevision: { revision &+= 1; return revision },
-                cache: &scratch, variables: document.session.variableValues())
+                cache: &scratch, variables: document.session.variableValues(),
+                axes: current.axes, datumPoints: current.datumPoints)
             guard result.referenceErrors[.sketch(sketch.id)] == nil,
                   let frame = result.resolvedSketchSupportUpdates[sketch.id] else {
                 return fail("unresolved_support", "The current support cannot be resolved. Rehost this sketch to a valid construction plane first.")
@@ -617,6 +749,674 @@ public final class CADDatumService {
         return commit([command], title: clear ? "Detach Sketch Support" : "Set Sketch Support",
                       action: clear ? "sketch.clearSupport" : "sketch.setSupport",
                       extra: ["sketch_id": sketch.id.raw.uuidString])
+    }
+
+    // MARK: - M08 associative construction axes
+
+    private struct EdgeSource {
+        var reference: EdgeRef
+        var version: GeometryVersionRef
+        /// Frozen-writer snapshot geometry, body-local.
+        var geometry: SourceAxisGeometry
+        var bodyTransform: Transform3D
+        /// Body-local direction used to choose the offset's perpendicular.
+        var referenceDirection: SIMD3<Double>
+    }
+
+    /// One persisted straight edge source from the same generation-proof
+    /// address `query scope=edges` returns: body_id + 1-based kernel
+    /// edge_index + its query_token. The PERSISTED reference is the edge
+    /// signature/name, never the index.
+    private func edgeSource(_ args: [String: Any]) throws -> EdgeSource {
+        guard let id = uuid(args["body_id"]), let index = integer(args["edge_index"]), index > 0,
+              let body = document.session.document.body(with: BodyID(raw: id)),
+              let brep = body.brep else {
+            throw Failure(code: "invalid_source",
+                          message: "Use body_id and the 1-based kernel edge_index from query scope=edges.")
+        }
+        guard let token = args["query_token"] as? String,
+              let generation = CADGeometryQueryGeneration.parse(token),
+              generation.scope == "edges",
+              generation.matches(documentRevision: document.revision,
+                                 changeCount: document.session.changeCount,
+                                 bodyID: id, meshRevision: body.meshRevision) else {
+            throw Failure(code: "stale_query",
+                          message: "Re-query scope=edges for this body and use its current query_token.")
+        }
+        guard document.session.lastNamingRevisions[body.id] == body.meshRevision else {
+            throw Failure(code: "source_revision_required",
+                          message: "Rebuild this body before creating an associative edge source.")
+        }
+        guard let kernelMidpoint = OCCTKernel.edgeMidpoints(brep)[index] else {
+            throw Failure(code: "invalid_source",
+                          message: "edge_index must name a current kernel edge of this body.")
+        }
+        let liveEdges = EdgeTopology.selectableEdges(from: body.render)
+        let tolerance = OCCTKernel.matchTolerance(for: brep)
+        func midpoint(_ edge: SelectableEdge) -> SIMD3<Double> {
+            SIMD3<Double>(Double(edge.midpoint.x), Double(edge.midpoint.y), Double(edge.midpoint.z))
+        }
+        guard let picked = liveEdges.min(by: {
+            simd_distance(midpoint($0), kernelMidpoint) < simd_distance(midpoint($1), kernelMidpoint)
+        }), simd_distance(midpoint(picked), kernelMidpoint) <= tolerance else {
+            throw Failure(code: "ambiguous_edge_source",
+                          message: "That kernel edge has no unique current mesh edge. Re-pick the edge.")
+        }
+        guard EdgeTopology.smoothChain(containing: picked, in: liveEdges).count == 1 else {
+            throw Failure(code: "straight_edge_source_required",
+                          message: "An associative edge source must be one straight edge, not a curved chain.")
+        }
+        guard let acquired = document.session.associativeSource(for: body.id) else {
+            throw Failure(code: "feature_source_required",
+                          message: "An associative datum needs a successful feature-owned exact source.")
+        }
+        guard let producer = document.session.document.features.nodes.first(where: {
+            $0.outputBodyIDs.contains(body.id)
+        })?.id else {
+            throw Failure(code: "feature_source_required",
+                          message: "An associative datum needs a feature-owned body.")
+        }
+        let liveNames = document.session.lastKernelNames[body.id] ?? [:]
+        let edgeName = liveNames.isEmpty ? nil : ElementNaming.edgeNames(
+            adjacency: OCCTKernel.edgeFaceAdjacency(brep), names: liveNames)[index]
+        let signature = EdgeTopology.signature(of: picked)
+        let reference = EdgeRef(
+            body: BodyRef(producer: producer, bodyID: body.id),
+            signature: signature, faceNames: edgeName)
+        // The definition resolves against the FROZEN writer's snapshot, so the
+        // creation preview must read the same body, not the live render.
+        let snapshotEdges = EdgeTopology.selectableEdges(from: acquired.snapshot.body.render)
+        let aabb = acquired.snapshot.body.render.localAABB
+        let scale = Double(simd_length(aabb.max - aabb.min))
+        guard let resolved = EdgeTopology.resolve(signature, in: snapshotEdges, sizeScale: scale) else {
+            throw Failure(code: "ambiguous_source",
+                          message: "The picked edge is absent from its writer snapshot. Rebuild and re-pick.")
+        }
+        func d(_ v: SIMD3<Float>) -> SIMD3<Double> {
+            SIMD3<Double>(Double(v.x), Double(v.y), Double(v.z))
+        }
+        let geometry = SourceAxisGeometry.alongEdge(
+            bodyID: body.id, start: d(resolved.start), end: d(resolved.end))
+        let direction = simd_normalize(geometry.direction)
+        var referenceDirection = d(resolved.normalA)
+        referenceDirection -= direction * simd_dot(referenceDirection, direction)
+        if simd_length(referenceDirection) <= 1e-6 {
+            referenceDirection = d(resolved.normalB)
+            referenceDirection -= direction * simd_dot(referenceDirection, direction)
+        }
+        if simd_length(referenceDirection) <= 1e-6 {
+            referenceDirection = Self.anyPerpendicular(to: direction)
+        }
+        return EdgeSource(reference: reference, version: acquired.version,
+                          geometry: geometry, bodyTransform: acquired.snapshot.body.transform,
+                          referenceDirection: simd_normalize(referenceDirection))
+    }
+
+    /// Any unit vector perpendicular to `d` (stable smallest-component choice).
+    private static func anyPerpendicular(to d: SIMD3<Double>) -> SIMD3<Double> {
+        let axis: SIMD3<Double> = abs(d.x) < abs(d.y)
+            ? (abs(d.x) < abs(d.z) ? SIMD3(1, 0, 0) : SIMD3(0, 0, 1))
+            : (abs(d.y) < abs(d.z) ? SIMD3(0, 1, 0) : SIMD3(0, 0, 1))
+        return simd_normalize(simd_cross(d, axis))
+    }
+
+    /// The current derived frames of every associative datum, from one scratch
+    /// replay: creation/update previews use the SAME resolution the next
+    /// rebuild will, never a stale cached plane/axis/point.
+    private func currentDerived() -> (
+        planes: [ConstructionPlaneID: SketchPlane],
+        sketchPlanes: [SketchID: SketchPlane],
+        axes: [ConstructionAxisID: ResolvedAxisGeometry],
+        points: [DatumPointID: ResolvedDatumPointGeometry]
+    ) {
+        var scratch = EvalCache()
+        var revision: UInt64 = 0
+        let model = document.session.document
+        let result = model.features.evaluate(
+            sketches: model.sketches, planes: model.planes,
+            naming: document.session.naming,
+            nextRevision: { revision &+= 1; return revision },
+            cache: &scratch, variables: document.session.variableValues(),
+            axes: model.axes, datumPoints: model.datumPoints)
+        return (result.resolvedPlaneUpdates, result.resolvedSketchSupportUpdates,
+                result.resolvedAxisUpdates, result.resolvedDatumPointUpdates)
+    }
+
+    private func planeFrames(_ ids: [ConstructionPlaneID])
+        throws -> [(plane: SketchPlane, size: Double)] {
+        let derived = currentDerived()
+        return try ids.map { id in
+            guard let record = document.session.document.planes.first(where: { $0.id == id }) else {
+                throw Failure(code: "unknown_plane", message: "plane_ids must name existing construction planes.")
+            }
+            return (derived.planes[id] ?? record.plane, record.size)
+        }
+    }
+
+    /// One point source from the service surface: either the solver's semantic
+    /// sketch anchor or another persisted datum point.
+    private func pointSources(_ value: Any?) throws -> [DatumPointSource] {
+        guard let rows = value as? [[String: Any]], !rows.isEmpty else {
+            throw Failure(code: "invalid_points",
+                          message: "points must be a non-empty array of {sketch_id,entity_id,role} or {point_id} objects.")
+        }
+        return try rows.map { row in
+            if let rawPoint = row["point_id"] {
+                guard let id = uuid(rawPoint),
+                      document.session.document.datumPoints.contains(where: { $0.id.raw == id }) else {
+                    throw Failure(code: "unknown_point", message: "point_id must name an existing datum point.")
+                }
+                guard row.keys.allSatisfy({ $0 == "point_id" }) else {
+                    throw Failure(code: "contradictory_source",
+                                  message: "A point entry names either point_id or a sketch anchor, never both.")
+                }
+                return .datumPoint(DatumPointID(raw: id))
+            }
+            guard let anchor = try? self.anchor(row) else {
+                throw Failure(code: "invalid_points",
+                              message: "Each point must name {sketch_id,entity_id,role} or {point_id}.")
+            }
+            guard anchor.role == .endpointA || anchor.role == .endpointB || anchor.role == .center else {
+                throw Failure(code: "invalid_points",
+                              message: "A datum point source must be an endpoint or centre, not a whole entity.")
+            }
+            return .sketchAnchor(anchor)
+        }
+    }
+
+    private func validatePointSources(_ sources: [DatumPointSource], count: Int, label: String) throws {
+        guard sources.count == count else {
+            throw Failure(code: "invalid_points", message: "\(label) needs exactly \(count) distinct points.")
+        }
+        guard Set(sources.map(\.diagnosticKey)).count == count else {
+            throw Failure(code: "invalid_points", message: "\(label) must name distinct points.")
+        }
+        for source in sources {
+            switch source {
+            case let .sketchAnchor(anchor):
+                guard let sketch = document.session.document.sketches.first(where: { $0.id == anchor.sketchID }) else {
+                    throw Failure(code: "unknown_sketch", message: "The anchor's sketch no longer exists.")
+                }
+                guard let entity = sketch.entities.first(where: { $0.id == anchor.entityID }),
+                      entity.anchorPoint(for: anchor.role) != nil else {
+                    throw Failure(code: "invalid_points",
+                                  message: "The anchor's entity/role is not a persisted semantic point.")
+                }
+            case .datumPoint:
+                break
+            }
+        }
+    }
+
+    private func worldPoint(_ source: DatumPointSource) throws -> SIMD3<Double> {
+        switch source {
+        case let .sketchAnchor(anchor):
+            guard let sketch = document.session.document.sketches.first(where: { $0.id == anchor.sketchID }),
+                  let entity = sketch.entities.first(where: { $0.id == anchor.entityID }),
+                  let local = entity.anchorPoint(for: anchor.role) else {
+                throw Failure(code: "invalid_points",
+                              message: "The anchor's entity/role is no longer a persisted semantic point.")
+            }
+            let derived = currentDerived()
+            let plane = derived.sketchPlanes[anchor.sketchID] ?? sketch.plane
+            return plane.toWorld(local)
+        case let .datumPoint(id):
+            let derived = currentDerived()
+            if let resolved = derived.points[id] { return resolved.position }
+            guard let record = document.session.document.datumPoints.first(where: { $0.id == id }) else {
+                throw Failure(code: "unknown_point", message: "The referenced datum point no longer exists.")
+            }
+            return record.position
+        }
+    }
+
+    private func offsetExpression(_ value: Any?) throws -> Expr? {
+        guard let value else { return nil }
+        return try distanceExpression(value)
+    }
+
+    private func axisDefinition(_ args: [String: Any]) throws -> ConstructionAxisDefinition {
+        guard let kind = (args["kind"] as? String)?.trimmingCharacters(in: .whitespaces) else {
+            throw Failure(code: "missing_kind",
+                          message: "kind must be face, edge, cylinder, twoPoints or twoPlanes.")
+        }
+        let offset = try offsetExpression(args["offset"])
+        switch kind {
+        case ConstructionAxisDefinition.Kind.face.rawValue:
+            let selected = try source(args)
+            let definition = FaceAxisDefinition(
+                source: selected.reference, sourceVersion: selected.version,
+                attachment: selected.frame,
+                offset: offset ?? Expr(value: 0))
+            try definition.validate()
+            return .face(definition)
+        case ConstructionAxisDefinition.Kind.edge.rawValue:
+            let selected = try edgeSource(args)
+            let definition = EdgeAxisDefinition(
+                source: selected.reference, sourceVersion: selected.version,
+                reference: selected.referenceDirection,
+                offset: offset ?? Expr(value: 0))
+            try definition.validate()
+            return .edge(definition)
+        case ConstructionAxisDefinition.Kind.cylinder.rawValue:
+            guard offset == nil else {
+                throw Failure(code: "offset_unsupported",
+                              message: "A cylinder axis is the face's own centre line; it has no offset.")
+            }
+            let selected = try cylinderSource(args)
+            let definition = CylinderAxisDefinition(
+                source: selected.reference, sourceVersion: selected.version)
+            try definition.validate()
+            return .cylinder(definition)
+        case ConstructionAxisDefinition.Kind.twoPoints.rawValue:
+            guard offset == nil else {
+                throw Failure(code: "offset_unsupported",
+                              message: "A two-point axis follows its points; it has no offset.")
+            }
+            let sources = try pointSources(args["points"])
+            try validatePointSources(sources, count: 2, label: "A two-point axis")
+            let definition = TwoPointAxisDefinition(points: sources)
+            try definition.validate()
+            return .twoPoints(definition)
+        case ConstructionAxisDefinition.Kind.twoPlanes.rawValue:
+            guard offset == nil else {
+                throw Failure(code: "offset_unsupported",
+                              message: "A two-plane axis follows the plane intersection; it has no offset.")
+            }
+            guard let raw = args["plane_ids"] as? [Any], raw.count == 2 else {
+                throw Failure(code: "invalid_planes",
+                              message: "plane_ids must carry exactly two construction plane ids.")
+            }
+            let ids = try raw.map { value -> ConstructionPlaneID in
+                guard let id = uuid(value),
+                      document.session.document.planes.contains(where: { $0.id.raw == id }) else {
+                    throw Failure(code: "unknown_plane",
+                                  message: "plane_ids must name existing construction planes.")
+                }
+                return ConstructionPlaneID(raw: id)
+            }
+            let definition = TwoPlaneAxisDefinition(planes: ids)
+            try definition.validate()
+            return .twoPlanes(definition)
+        default:
+            throw Failure(code: "unknown_kind",
+                          message: "kind must be face, edge, cylinder, twoPoints or twoPlanes.")
+        }
+    }
+
+    /// Preview the EXACT frame a definition resolves to right now, from the
+    /// same source values the resolver will read on the next rebuild.
+    private func previewAxis(
+        _ definition: ConstructionAxisDefinition, args: [String: Any]
+    ) throws -> ResolvedAxisGeometry {
+        switch definition {
+        case let .face(payload):
+            let selected = try source(args)
+            let extent = max(selected.faceExtent * selected.bodyTransform.scale, 1e-6)
+            return try payload.resolvedAxis(
+                face: selected.face, bodyTransform: selected.bodyTransform, extent: extent)
+        case let .edge(payload):
+            let selected = try edgeSource(args)
+            return try payload.resolvedAxis(
+                edge: selected.geometry, bodyTransform: selected.bodyTransform,
+                scale: selected.bodyTransform.scale)
+        case let .cylinder(payload):
+            let selected = try cylinderSource(args)
+            return try payload.resolvedAxis(
+                cylinder: selected.cylinder, bodyTransform: selected.bodyTransform,
+                scale: selected.bodyTransform.scale)
+        case let .twoPoints(payload):
+            let world = try payload.points.map(worldPoint)
+            return try payload.resolvedAxis(worldPoints: world)
+        case let .twoPlanes(payload):
+            let frames = try planeFrames(payload.planes)
+            return try payload.resolvedAxis(
+                planes: frames.map(\.plane), sizes: frames.map(\.size))
+        }
+    }
+
+    private func createAxis(_ args: [String: Any]) -> [String: Any] {
+        do {
+            let definition = try axisDefinition(args)
+            let displaySize = try size(args["size"])
+            let geometry = try previewAxis(definition, args: args)
+            guard let axis = ConstructionAxis(
+                origin: geometry.origin, direction: geometry.direction,
+                length: displaySize ?? max(geometry.extent, 1e-6),
+                name: "Axis \(document.session.document.axes.count + 1)",
+                definition: definition)
+            else {
+                throw Failure(code: "degenerate_source",
+                              message: "That source does not define a usable axis direction.")
+            }
+            return commit([AddConstructionAxisCommand(axis: axis)], title: "Add Axis",
+                          action: "datum.axis.create",
+                          extra: ["axis_id": axis.id.raw.uuidString])
+        } catch { return self.error(error) }
+    }
+
+    private func updateAxis(_ args: [String: Any]) -> [String: Any] {
+        guard let id = uuid(args["axis_id"]),
+              let axis = document.session.document.axes.first(where: { $0.id.raw == id }),
+              let current = axis.definition else {
+            return fail("unknown_associative_axis",
+                        "axis_id must name an existing associative construction axis.")
+        }
+        if let raw = args["expected_offset"] {
+            guard let expected = raw as? String else {
+                return fail("bad_expected_offset",
+                            "expected_offset must be the current exact stored formula string (empty when absent).")
+            }
+            guard expected == (current.expressionSlots.first(where: { $0.name == "offset" })?.expr.formula ?? "") else {
+                return fail("offset_mismatch",
+                            "The axis offset changed. Re-query scope=axes before editing.")
+            }
+        }
+        do {
+            let newSize = try size(args["size"])
+            let offset = try offsetExpression(args["offset"])
+            if let offset {
+                guard current.expressionSlots.contains(where: { $0.name == "offset" }) else {
+                    throw Failure(code: "offset_unsupported",
+                                  message: "This axis kind follows its sources and has no offset.")
+                }
+                guard let edited = current.settingExpression(named: "offset", to: offset) else {
+                    throw Failure(code: "offset_unsupported",
+                                  message: "This axis kind has no offset slot.")
+                }
+                var commands: [DocumentCommand] = []
+                if edited != current {
+                    commands.append(EditConstructionAxisDefinitionCommand(
+                        axisID: axis.id, before: current, after: edited))
+                }
+                if let newSize, newSize != axis.length {
+                    commands.append(SetAxisLengthCommand(axisID: axis.id,
+                                                         before: axis.length, after: newSize))
+                }
+                guard !commands.isEmpty else {
+                    return fail("no_change", "The axis already has those values.")
+                }
+                return commit(commands, title: "Edit Construction Axis",
+                              action: "datum.axis.update",
+                              extra: ["axis_id": axis.id.raw.uuidString])
+            }
+            let reselect = ["kind", "body_id", "face_index", "edge_index", "query_token",
+                            "plane_ids", "points"].contains { args[$0] != nil }
+            guard reselect else {
+                var commands: [DocumentCommand] = []
+                if let newSize, newSize != axis.length {
+                    commands.append(SetAxisLengthCommand(axisID: axis.id,
+                                                         before: axis.length, after: newSize))
+                }
+                guard !commands.isEmpty else {
+                    return fail("no_change", "The axis already has those values.")
+                }
+                return commit(commands, title: "Edit Construction Axis",
+                              action: "datum.axis.update",
+                              extra: ["axis_id": axis.id.raw.uuidString])
+            }
+            let definition = try axisDefinition(args)
+            guard definition.kind == current.kind else {
+                return fail("kind_mismatch", "Reselect the source with the axis's own kind (\(current.kind.rawValue)).")
+            }
+            var commands: [DocumentCommand] = []
+            if definition != current {
+                commands.append(EditConstructionAxisDefinitionCommand(
+                    axisID: axis.id, before: current, after: definition))
+            }
+            if let newSize, newSize != axis.length {
+                commands.append(SetAxisLengthCommand(axisID: axis.id,
+                                                     before: axis.length, after: newSize))
+            }
+            guard !commands.isEmpty else { return fail("no_change", "The axis already has that source.") }
+            return commit(commands, title: "Reselect Axis Source",
+                          action: "datum.axis.update",
+                          extra: ["axis_id": axis.id.raw.uuidString])
+        } catch { return self.error(error) }
+    }
+
+    private func deleteAxis(_ args: [String: Any]) -> [String: Any] {
+        guard let id = uuid(args["axis_id"]),
+              let axis = document.session.document.axes.first(where: { $0.id.raw == id }) else {
+            return fail("unknown_axis", "axis_id must name an existing construction axis.")
+        }
+        let model = document.session.document
+        let patterns = model.features.nodes.filter {
+            if case let .pattern(_, spec) = $0.kind, spec.axisRef?.axisID == axis.id { return true }
+            return false
+        }
+        // M08 R2: a revolve that stores this axis identity is a consumer too,
+        // so deleting the axis would orphan it on the next replay.
+        let revolves = model.features.nodes.filter { node in
+            guard case let .revolve(_, _, ref, _, _) = node.kind,
+                  case let .constructionAxis(id) = ref.source else { return false }
+            return id == axis.id
+        }
+        let points = model.datumPoints.filter { $0.definition?.axisID == axis.id }
+        guard patterns.isEmpty, revolves.isEmpty, points.isEmpty else {
+            return fail("axis_in_use",
+                        "Repoint the dependent patterns/revolves/datum points before deleting this axis.",
+                        fields: ["axis_id": axis.id.raw.uuidString,
+                                 "dependent_feature_ids": (patterns + revolves)
+                                    .map { $0.id.raw.uuidString }.sorted(),
+                                 "dependent_pattern_feature_ids": patterns.map { $0.id.raw.uuidString },
+                                 "dependent_revolve_feature_ids": revolves.map { $0.id.raw.uuidString },
+                                 "dependent_point_ids": points.map { $0.id.raw.uuidString }])
+        }
+        guard let command = DeleteAxisCommand(id: axis.id, document: model) else {
+            return fail("unknown_axis", "The axis no longer exists.")
+        }
+        let kind = axis.definition?.kind.rawValue ?? "explicit"
+        return commit([command], title: "Delete Axis", action: "datum.axis.delete",
+                      extra: ["axis_id": axis.id.raw.uuidString, "deleted_kind": kind])
+    }
+
+    // MARK: - M08 associative datum points
+
+    private func pointDefinition(_ args: [String: Any]) throws -> DatumPointDefinition {
+        guard let kind = (args["kind"] as? String)?.trimmingCharacters(in: .whitespaces) else {
+            throw Failure(code: "missing_kind",
+                          message: "kind must be faceCenter, edgePoint, twoPointMidpoint, axisPoint or axisPlane.")
+        }
+        let offset = try offsetExpression(args["offset"])
+        switch kind {
+        case DatumPointDefinition.Kind.faceCenter.rawValue:
+            guard offset == nil else {
+                throw Failure(code: "offset_unsupported",
+                              message: "A face-centre point follows the face; it has no offset.")
+            }
+            let selected = try source(args)
+            let definition = FaceCenterPointDefinition(
+                source: selected.reference, sourceVersion: selected.version)
+            try definition.validate()
+            return .faceCenter(definition)
+        case DatumPointDefinition.Kind.edgePoint.rawValue:
+            let selected = try edgeSource(args)
+            let definition = EdgePointDefinition(
+                source: selected.reference, sourceVersion: selected.version,
+                offset: offset ?? Expr(value: 0))
+            try definition.validate()
+            return .edgePoint(definition)
+        case DatumPointDefinition.Kind.twoPointMidpoint.rawValue:
+            guard offset == nil else {
+                throw Failure(code: "offset_unsupported",
+                              message: "A midpoint follows its points; it has no offset.")
+            }
+            let sources = try pointSources(args["points"])
+            try validatePointSources(sources, count: 2, label: "A midpoint")
+            let definition = TwoPointMidpointDefinition(points: sources)
+            try definition.validate()
+            return .twoPointMidpoint(definition)
+        case DatumPointDefinition.Kind.axisPoint.rawValue:
+            guard let rawAxis = args["axis_id"], let axisID = uuid(rawAxis),
+                  document.session.document.axes.contains(where: { $0.id.raw == axisID }) else {
+                throw Failure(code: "unknown_axis", message: "axis_id must name an existing construction axis.")
+            }
+            let definition = AxisPointDefinition(
+                axis: ConstructionAxisID(raw: axisID),
+                offset: offset ?? Expr(value: 0))
+            try definition.validate()
+            return .axisPoint(definition)
+        case DatumPointDefinition.Kind.axisPlane.rawValue:
+            guard offset == nil else {
+                throw Failure(code: "offset_unsupported",
+                              message: "An axis/plane point follows both sources; it has no offset.")
+            }
+            guard let rawAxis = args["axis_id"], let axisID = uuid(rawAxis),
+                  document.session.document.axes.contains(where: { $0.id.raw == axisID }) else {
+                throw Failure(code: "unknown_axis", message: "axis_id must name an existing construction axis.")
+            }
+            guard let rawPlane = args["plane_id"], let planeID = uuid(rawPlane),
+                  document.session.document.planes.contains(where: { $0.id.raw == planeID }) else {
+                throw Failure(code: "unknown_plane", message: "plane_id must name an existing construction plane.")
+            }
+            let definition = AxisPlanePointDefinition(
+                axis: ConstructionAxisID(raw: axisID),
+                plane: ConstructionPlaneID(raw: planeID))
+            try definition.validate()
+            return .axisPlane(definition)
+        default:
+            throw Failure(code: "unknown_kind",
+                          message: "kind must be faceCenter, edgePoint, twoPointMidpoint, axisPoint or axisPlane.")
+        }
+    }
+
+    private func previewPoint(
+        _ definition: DatumPointDefinition, args: [String: Any]
+    ) throws -> ResolvedDatumPointGeometry {
+        switch definition {
+        case let .faceCenter(payload):
+            let selected = try source(args)
+            return try payload.resolvedPoint(
+                face: selected.face, bodyTransform: selected.bodyTransform)
+        case let .edgePoint(payload):
+            let selected = try edgeSource(args)
+            return try payload.resolvedPoint(
+                edge: selected.geometry, bodyTransform: selected.bodyTransform)
+        case let .twoPointMidpoint(payload):
+            let world = try payload.points.map(worldPoint)
+            return try payload.resolvedPoint(worldPoints: world)
+        case let .axisPoint(payload):
+            let derived = currentDerived()
+            guard let frame = derived.axes[payload.axis] else {
+                throw Failure(code: "unresolved_axis",
+                              message: "The referenced axis cannot be resolved right now.")
+            }
+            return try payload.resolvedPoint(axis: frame)
+        case let .axisPlane(payload):
+            let derived = currentDerived()
+            guard let frame = derived.axes[payload.axis] else {
+                throw Failure(code: "unresolved_axis",
+                              message: "The referenced axis cannot be resolved right now.")
+            }
+            guard let plane = derived.planes[payload.plane]
+                    ?? document.session.document.planes.first(where: { $0.id == payload.plane })?.plane else {
+                throw Failure(code: "unknown_plane",
+                              message: "The referenced construction plane no longer exists.")
+            }
+            return try payload.resolvedPoint(axis: frame, plane: plane)
+        }
+    }
+
+    private func createPoint(_ args: [String: Any]) -> [String: Any] {
+        do {
+            let definition = try pointDefinition(args)
+            let geometry = try previewPoint(definition, args: args)
+            let point = DatumPoint(
+                position: geometry.position,
+                name: "Point \(document.session.document.datumPoints.count + 1)",
+                definition: definition)
+            return commit([AddDatumPointCommand(point: point)], title: "Add Point",
+                          action: "datum.point.create",
+                          extra: ["point_id": point.id.raw.uuidString])
+        } catch { return self.error(error) }
+    }
+
+    private func updatePoint(_ args: [String: Any]) -> [String: Any] {
+        guard let id = uuid(args["point_id"]),
+              let point = document.session.document.datumPoints.first(where: { $0.id.raw == id }),
+              let current = point.definition else {
+            return fail("unknown_associative_point",
+                        "point_id must name an existing associative datum point.")
+        }
+        if let raw = args["expected_offset"] {
+            guard let expected = raw as? String else {
+                return fail("bad_expected_offset",
+                            "expected_offset must be the current exact stored formula string (empty when absent).")
+            }
+            guard expected == (current.expressionSlots.first(where: { $0.name == "offset" })?.expr.formula ?? "") else {
+                return fail("offset_mismatch",
+                            "The point offset changed. Re-query scope=datumPoints before editing.")
+            }
+        }
+        do {
+            let offset = try offsetExpression(args["offset"])
+            if let offset {
+                guard current.expressionSlots.contains(where: { $0.name == "offset" }) else {
+                    throw Failure(code: "offset_unsupported",
+                                  message: "This point kind follows its sources and has no offset.")
+                }
+                guard let edited = current.settingExpression(named: "offset", to: offset) else {
+                    throw Failure(code: "offset_unsupported",
+                                  message: "This point kind has no offset slot.")
+                }
+                // An offset-only edit keeps the source kind and every other
+                // field. Mixing both in one call is ambiguous, so it refuses
+                // instead of silently dropping the source fields.
+                let sourceFields = ["kind", "body_id", "face_index", "edge_index",
+                                    "query_token", "points", "axis_id", "plane_id"]
+                if sourceFields.contains(where: { args[$0] != nil }) {
+                    throw Failure(code: "ambiguous_update",
+                                  message: "Send either offset or the complete source fields, not both.")
+                }
+                return commit([EditDatumPointDefinitionCommand(
+                    pointID: point.id, before: current, after: edited)],
+                    title: "Edit Point", action: "datum.point.update",
+                    extra: ["point_id": point.id.raw.uuidString])
+            }
+            let reselect = ["kind", "body_id", "face_index", "edge_index", "query_token",
+                            "points", "axis_id", "plane_id"].contains { args[$0] != nil }
+            guard reselect else { return fail("no_change", "The point already has those values.") }
+            let definition = try pointDefinition(args)
+            guard definition.kind == current.kind else {
+                return fail("kind_mismatch",
+                            "Reselect the source with the point's own kind (\(current.kind.rawValue)).")
+            }
+            guard definition != current else { return fail("no_change", "The point already has that source.") }
+            return commit([EditDatumPointDefinitionCommand(
+                pointID: point.id, before: current, after: definition)],
+                title: "Reselect Point Source", action: "datum.point.update",
+                extra: ["point_id": point.id.raw.uuidString])
+        } catch { return self.error(error) }
+    }
+
+    private func deletePoint(_ args: [String: Any]) -> [String: Any] {
+        guard let id = uuid(args["point_id"]),
+              let point = document.session.document.datumPoints.first(where: { $0.id.raw == id }) else {
+            return fail("unknown_point", "point_id must name an existing datum point.")
+        }
+        let model = document.session.document
+        let axes = model.axes.filter {
+            guard case let .twoPoints(definition)? = $0.definition else { return false }
+            return definition.points.contains { if case let .datumPoint(pid) = $0 { return pid == point.id } else { return false } }
+        }
+        let points = model.datumPoints.filter { other in
+            guard other.id != point.id, case let .twoPointMidpoint(definition)? = other.definition else { return false }
+            return definition.points.contains { if case let .datumPoint(pid) = $0 { return pid == point.id } else { return false } }
+        }
+        guard axes.isEmpty, points.isEmpty else {
+            return fail("point_in_use",
+                        "Repoint the dependent axes/points before deleting this point.",
+                        fields: ["point_id": point.id.raw.uuidString,
+                                 "dependent_axis_ids": axes.map { $0.id.raw.uuidString },
+                                 "dependent_point_ids": points.map { $0.id.raw.uuidString }])
+        }
+        guard let command = DeleteDatumPointCommand(id: point.id, document: model) else {
+            return fail("unknown_point", "The point no longer exists.")
+        }
+        let kind = point.definition?.kind.rawValue ?? "explicit"
+        return commit([command], title: "Delete Point", action: "datum.point.delete",
+                      extra: ["point_id": point.id.raw.uuidString, "deleted_kind": kind])
     }
 
     // MARK: - Query rows
@@ -701,6 +1501,292 @@ public final class CADDatumService {
         }
     }
 
+    /// One query row per construction axis, including its associative
+    /// definition and the consumers that keep the relationship alive.
+    static func axisRows(document: FloeCADDocument) -> [[String: Any]] {
+        let model = document.session.document
+        var patternUsers: [ConstructionAxisID: [String]] = [:]
+        for node in model.features.nodes {
+            guard case let .pattern(_, spec) = node.kind, let ref = spec.axisRef else { continue }
+            patternUsers[ref.axisID, default: []].append(node.id.raw.uuidString)
+        }
+        var pointUsers: [ConstructionAxisID: [String]] = [:]
+        for point in model.datumPoints {
+            guard let id = point.definition?.axisID else { continue }
+            pointUsers[id, default: []].append(point.id.raw.uuidString)
+        }
+        var revolveUsers: [ConstructionAxisID: [String]] = [:]
+        for node in model.features.nodes {
+            guard case let .revolve(_, _, ref, _, _) = node.kind,
+                  case let .constructionAxis(id) = ref.source else { continue }
+            revolveUsers[id, default: []].append(node.id.raw.uuidString)
+        }
+        func vector(_ v: SIMD3<Double>) -> [Double] { [v.x, v.y, v.z] }
+
+        return model.axes.map { axis in
+            var row: [String: Any] = [
+                "id": axis.id.raw.uuidString,
+                "axis_id": axis.id.raw.uuidString,
+                "name": axis.name,
+                "kind": "explicit",
+                "length": axis.length,
+                "unit": "mm",
+                "hidden": axis.isHidden,
+                "origin": vector(axis.origin),
+                "direction": vector(axis.direction),
+                "frame": ["origin": vector(axis.origin), "direction": vector(axis.direction)],
+                "frame_status": "cached",
+                "editable": document.session.writeBlock == nil,
+                "supported_operations": ["datum.axis.update", "datum.axis.delete"],
+            ]
+            if let consumers = patternUsers[axis.id] { row["used_by_pattern_feature_ids"] = consumers.sorted() }
+            if let consumers = revolveUsers[axis.id] { row["used_by_revolve_feature_ids"] = consumers.sorted() }
+            if let consumers = pointUsers[axis.id] { row["used_by_point_ids"] = consumers.sorted() }
+            let consumers = (patternUsers[axis.id] ?? []) + (revolveUsers[axis.id] ?? [])
+                + (pointUsers[axis.id] ?? [])
+            if !consumers.isEmpty { row["used_by_feature_ids"] = consumers.sorted() }
+            if let definition = axis.definition {
+                row["definition_version"] = definition.semanticVersion
+                row["supported_definition_version"] = definition.supportedSemanticVersion
+                row["offset_supported"] = definition.expressionSlots.contains { $0.name == "offset" }
+                switch definition {
+                case let .face(payload):
+                    row["kind"] = "face"
+                    row["surface_mode"] = "planar"
+                    row["source_body_id"] = payload.sourceVersion.bodyID.raw.uuidString
+                    row["source_writer_id"] = payload.sourceVersion.writer.raw.uuidString
+                    row["source_producer_id"] = payload.source.body.producer.raw.uuidString
+                    row["kernel_element_name"] = payload.source.elementName.flatMap(json) ?? NSNull()
+                    row["hinge_frame"] = [
+                        "normal": vector(payload.attachment.normal),
+                        "xAxis": vector(payload.attachment.xAxis),
+                    ]
+                case let .cylinder(payload):
+                    row["kind"] = "cylinder"
+                    row["surface_mode"] = "cylinder"
+                    row["source_body_id"] = payload.sourceVersion.bodyID.raw.uuidString
+                    row["source_writer_id"] = payload.sourceVersion.writer.raw.uuidString
+                    row["source_producer_id"] = payload.source.body.producer.raw.uuidString
+                    row["kernel_element_name"] = payload.source.elementName.flatMap(json) ?? NSNull()
+                    // The FaceRef signature's radius is persisted IDENTITY, not
+                    // the current size; the current line is `frame` above.
+                    if case let .cylindrical(radius) = payload.source.signature.kind {
+                        row["frozen_source_radius"] = radius
+                    }
+                    row["definition_semantics"] = "analytic-cylinder-axis"
+                case let .edge(payload):
+                    row["kind"] = "edge"
+                    row["source_body_id"] = payload.sourceVersion.bodyID.raw.uuidString
+                    row["source_writer_id"] = payload.sourceVersion.writer.raw.uuidString
+                    row["source_producer_id"] = payload.source.body.producer.raw.uuidString
+                    row["edge_midpoint"] = vector(payload.source.signature.midpoint)
+                    row["edge_direction"] = vector(payload.source.signature.direction)
+                    row["edge_length"] = payload.source.signature.length
+                case let .twoPoints(payload):
+                    row["kind"] = "twoPoints"
+                    row["points"] = payload.points.map {
+                        pointSourceRow($0, document: document)
+                    }
+                    row["source_sketch_ids"] = Array(Set(payload.points.compactMap {
+                        if case let .sketchAnchor(anchor) = $0 { return anchor.sketchID.raw.uuidString }
+                        return nil
+                    })).sorted()
+                    row["source_point_ids"] = payload.points.compactMap {
+                        if case let .datumPoint(id) = $0 { return id.raw.uuidString }
+                        return nil
+                    }
+                case let .twoPlanes(payload):
+                    row["kind"] = "twoPlanes"
+                    row["plane_ids"] = payload.planes.map { $0.raw.uuidString }
+                }
+                if let slot = definition.expressionSlots.first(where: { $0.name == "offset" }) {
+                    row["expression"] = slot.expr.formula ?? String(slot.expr.value)
+                    row["formula"] = slot.expr.formula ?? NSNull()
+                    row["expression_unit"] = slot.unit
+                    row["value"] = slot.expr.value
+                }
+                row["update_action"] = "datum.axis.update"
+                row["delete_action"] = "datum.axis.delete"
+            }
+            if document.isReadOnly {
+                row["status"] = "read_only"
+                if document.project.hasOpaqueAssociations, axis.definition != nil {
+                    row["kind"] = "unsupported"
+                    row["semantics"] = "opaque"
+                    row.removeValue(forKey: "origin")
+                    row.removeValue(forKey: "direction")
+                }
+                row.removeValue(forKey: "update_action")
+                row.removeValue(forKey: "delete_action")
+            } else if let block = document.session.writeBlock {
+                row["status"] = block.code
+                row["write_block"] = ["code": block.code, "message": block.message]
+                row.removeValue(forKey: "update_action")
+                row.removeValue(forKey: "delete_action")
+            } else if let error = document.session.lastReferenceErrors[.axis(axis.id)] {
+                row["status"] = "error"
+                row["error"] = error.message
+            } else if axis.definition == nil {
+                row["status"] = "explicit"
+            } else {
+                row["status"] = "resolved"
+                row["frame_status"] = "resolved"
+            }
+            return row
+        }
+    }
+
+    /// One query row per datum point, with its definition and consumers.
+    static func datumPointRows(document: FloeCADDocument) -> [[String: Any]] {
+        let model = document.session.document
+        var axisUsers: [DatumPointID: [String]] = [:]
+        for axis in model.axes {
+            guard case let .twoPoints(definition)? = axis.definition else { continue }
+            for source in definition.points {
+                if case let .datumPoint(id) = source {
+                    axisUsers[id, default: []].append(axis.id.raw.uuidString)
+                }
+            }
+        }
+        var pointUsers: [DatumPointID: [String]] = [:]
+        for point in model.datumPoints {
+            guard case let .twoPointMidpoint(definition)? = point.definition else { continue }
+            for source in definition.points {
+                if case let .datumPoint(id) = source, id != point.id {
+                    pointUsers[id, default: []].append(point.id.raw.uuidString)
+                }
+            }
+        }
+        func vector(_ v: SIMD3<Double>) -> [Double] { [v.x, v.y, v.z] }
+
+        return model.datumPoints.map { point in
+            var row: [String: Any] = [
+                "id": point.id.raw.uuidString,
+                "point_id": point.id.raw.uuidString,
+                "name": point.name,
+                "kind": "explicit",
+                "unit": "mm",
+                "hidden": point.isHidden,
+                "position": vector(point.position),
+                "frame_status": "cached",
+                "editable": document.session.writeBlock == nil,
+                "supported_operations": ["datum.point.update", "datum.point.delete"],
+            ]
+            if let consumers = axisUsers[point.id] { row["used_by_axis_ids"] = consumers.sorted() }
+            if let consumers = pointUsers[point.id] { row["used_by_point_ids"] = consumers.sorted() }
+            if let definition = point.definition {
+                row["definition_version"] = definition.semanticVersion
+                row["supported_definition_version"] = definition.supportedSemanticVersion
+                row["offset_supported"] = definition.expressionSlots.contains { $0.name == "offset" }
+                switch definition {
+                case let .faceCenter(payload):
+                    row["kind"] = "faceCenter"
+                    row["source_body_id"] = payload.sourceVersion.bodyID.raw.uuidString
+                    row["source_writer_id"] = payload.sourceVersion.writer.raw.uuidString
+                    row["source_producer_id"] = payload.source.body.producer.raw.uuidString
+                    row["kernel_element_name"] = payload.source.elementName.flatMap(json) ?? NSNull()
+                case let .edgePoint(payload):
+                    row["kind"] = "edgePoint"
+                    row["source_body_id"] = payload.sourceVersion.bodyID.raw.uuidString
+                    row["source_writer_id"] = payload.sourceVersion.writer.raw.uuidString
+                    row["source_producer_id"] = payload.source.body.producer.raw.uuidString
+                    row["edge_midpoint"] = vector(payload.source.signature.midpoint)
+                    row["edge_direction"] = vector(payload.source.signature.direction)
+                    row["edge_length"] = payload.source.signature.length
+                case let .twoPointMidpoint(payload):
+                    row["kind"] = "twoPointMidpoint"
+                    row["points"] = payload.points.map {
+                        pointSourceRow($0, document: document)
+                    }
+                case let .axisPoint(payload):
+                    row["kind"] = "axisPoint"
+                    row["axis_id"] = payload.axis.raw.uuidString
+                case let .axisPlane(payload):
+                    row["kind"] = "axisPlane"
+                    row["axis_id"] = payload.axis.raw.uuidString
+                    row["plane_id"] = payload.plane.raw.uuidString
+                }
+                if let slot = definition.expressionSlots.first(where: { $0.name == "offset" }) {
+                    row["expression"] = slot.expr.formula ?? String(slot.expr.value)
+                    row["formula"] = slot.expr.formula ?? NSNull()
+                    row["expression_unit"] = slot.unit
+                    row["value"] = slot.expr.value
+                }
+                row["update_action"] = "datum.point.update"
+                row["delete_action"] = "datum.point.delete"
+            }
+            if document.isReadOnly {
+                row["status"] = "read_only"
+                if document.project.hasOpaqueAssociations, point.definition != nil {
+                    row["kind"] = "unsupported"
+                    row["semantics"] = "opaque"
+                    row.removeValue(forKey: "position")
+                }
+                row.removeValue(forKey: "update_action")
+                row.removeValue(forKey: "delete_action")
+            } else if let block = document.session.writeBlock {
+                row["status"] = block.code
+                row["write_block"] = ["code": block.code, "message": block.message]
+                row.removeValue(forKey: "update_action")
+                row.removeValue(forKey: "delete_action")
+            } else if let error = document.session.lastReferenceErrors[.datumPoint(point.id)] {
+                row["status"] = "error"
+                row["error"] = error.message
+            } else if point.definition == nil {
+                row["status"] = "explicit"
+            } else {
+                row["status"] = "resolved"
+                row["frame_status"] = "resolved"
+            }
+            return row
+        }
+    }
+
+    /// One point source as a query row: its persisted identity plus (for a
+    /// sketch anchor) the current plane-local position for selection display.
+    /// The world position is a read-only convenience, never persisted.
+    private static func pointSourceRow(
+        _ source: DatumPointSource, document: FloeCADDocument
+    ) -> [String: Any] {
+        switch source {
+        case let .sketchAnchor(anchor):
+            var row: [String: Any] = [
+                "source_kind": "sketchAnchor",
+                "sketch_id": anchor.sketchID.raw.uuidString,
+                "entity_id": anchor.entityID.uuidString,
+                "role": anchor.role.rawValue,
+            ]
+            if let sketch = document.session.document.sketches.first(where: { $0.id == anchor.sketchID }) {
+                row["sketch_name"] = sketch.name
+                if let entity = sketch.entities.first(where: { $0.id == anchor.entityID }),
+                   let local = entity.anchorPoint(for: anchor.role) {
+                    row["point_local"] = [local.x, local.y]
+                    let world = sketch.plane.toWorld(local)
+                    row["point_world"] = [world.x, world.y, world.z]
+                    row["resolved"] = true
+                } else {
+                    row["resolved"] = false
+                }
+            } else {
+                row["resolved"] = false
+            }
+            return row
+        case let .datumPoint(id):
+            var row: [String: Any] = [
+                "source_kind": "datumPoint",
+                "point_id": id.raw.uuidString,
+            ]
+            if let record = document.session.document.datumPoints.first(where: { $0.id == id }) {
+                row["name"] = record.name
+                row["point_world"] = [record.position.x, record.position.y, record.position.z]
+                row["resolved"] = document.session.lastReferenceErrors[.datumPoint(id)] == nil
+            } else {
+                row["resolved"] = false
+            }
+            return row
+        }
+    }
+
     private static func anchorRow(_ ref: SketchAnchorRef, document: FloeCADDocument) -> [String: Any] {
         var row: [String: Any] = ["sketch_id": ref.sketchID.raw.uuidString,
                                   "entity_id": ref.entityID.uuidString,
@@ -752,6 +1838,7 @@ public final class CADDatumService {
     /// per body. Native face rows then perform O(1) descriptor lookup.
     static func sourceDescriptors(document: FloeCADDocument, body: Body,
         planarIndices: Set<Int>,
+        cylindricalIndices: Set<Int> = [],
         acquired: (version: GeometryVersionRef, snapshot: GeometryVersionSnapshot)?) -> [Int: [String: Any]] {
         guard document.session.writeBlock == nil, document.session.lastNamingRevisions[body.id] == body.meshRevision,
               let liveNames = document.session.lastKernelNames[body.id] else { return [:] }
@@ -759,12 +1846,18 @@ public final class CADDatumService {
         for name in liveNames.values { liveCounts[name, default: 0] += 1 }
         var snapshotIndices: [ElementName: [Int]] = [:]
         var snapshotPlanarIndices: Set<Int> = []
+        var snapshotCylindricalIndices: Set<Int> = []
         if let acquired {
             for (index, name) in acquired.snapshot.kernelNames { snapshotIndices[name, default: []].append(index) }
             if let brep = acquired.snapshot.body.brep {
-                snapshotPlanarIndices = Set(OCCTKernel.faceInfo(brep).filter {
-                    $0.signature?.kind == .planar && $0.area.isFinite && $0.area > 0
-                }.map(\.index))
+                for face in OCCTKernel.faceInfo(brep) {
+                    guard face.area.isFinite, face.area > 0,
+                          let signature = face.signature else { continue }
+                    switch signature.kind {
+                    case .planar: snapshotPlanarIndices.insert(face.index)
+                    case .cylindrical: snapshotCylindricalIndices.insert(face.index)
+                    }
+                }
             }
         }
         var descriptors: [Int: [String: Any]] = [:]
@@ -779,6 +1872,19 @@ public final class CADDatumService {
                     row["datum_action"] = "datum.offsetPlane.create"
                     row["datum_actions"] = ["datum.offsetPlane.create", "datum.anglePlane.create"]
                     row["face_index_space"] = "occt_kernel_1_based"
+                } else if cylindricalIndices.contains(index),
+                          let matched = snapshotIndices[name], matched.count == 1,
+                          snapshotCylindricalIndices.contains(matched[0]) {
+                    // M08 R2: a cylindrical face is a valid CONSTRUCTION AXIS
+                    // source (its analytic axis), not a plane source. The
+                    // action says exactly which, so a caller cannot send a
+                    // cylinder index to a face-plane action.
+                    row["datum_source_supported"] = true
+                    row["source_body_id"] = acquired.version.bodyID.raw.uuidString
+                    row["datum_action"] = "datum.axis.create"
+                    row["datum_actions"] = ["datum.axis.create"]
+                    row["datum_axis_kind"] = "cylinder"
+                    row["face_index_space"] = "occt_kernel_1_based"
                 }
             }
             descriptors[index] = row
@@ -789,6 +1895,23 @@ public final class CADDatumService {
 
 /// Field-only adapter; changing display size never replaces the definition or
 /// other plane fields installed by earlier commands in the same transaction.
+/// Field-only adapter; changing an axis's display length never replaces its
+/// definition or other fields installed by earlier commands in the same
+/// transaction (the same contract as `SetDatumSizeCommand`).
+private struct SetAxisLengthCommand: DocumentCommand {
+    let title = "Resize Construction Axis"
+    let axisID: ConstructionAxisID
+    let before: Double
+    let after: Double
+
+    private func set(_ value: Double, in document: inout DesignDocument) {
+        guard let index = document.axes.firstIndex(where: { $0.id == axisID }) else { return }
+        document.axes[index].length = value
+    }
+    func apply(to document: inout DesignDocument) { set(after, in: &document) }
+    func revert(in document: inout DesignDocument) { set(before, in: &document) }
+}
+
 private struct SetDatumSizeCommand: DocumentCommand {
     let title = "Resize Construction Plane"
     let planeID: ConstructionPlaneID

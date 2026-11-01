@@ -139,6 +139,55 @@ struct ItemsPanelView: View {
                 ForEach(looseAxes) { axis in
                     itemRow(.axis(axis.id), depth: 0, tree: tree)
                 }
+                if !viewModel.session.isReadOnly, viewModel.session.writeBlock == nil {
+                    Button {
+                        viewModel.showDatumAxisCreateSheet = true
+                    } label: {
+                        Label(FloeCADStrings.text("cad.datum.addAxis", "Add Axis"),
+                              systemImage: "line.diagonal.arrow")
+                            .font(.caption)
+                    }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal, 8)
+                    .accessibilityIdentifier("ItemsAddAxis")
+                }
+
+                sectionHeader(FloeCADStrings.text("cad.ui.items.points", "Points"))
+                if document.datumPoints.isEmpty {
+                    emptyRow(FloeCADStrings.text("cad.ui.items.noPoints", "No points yet"))
+                }
+                ForEach(document.datumPoints) { point in
+                    ItemRowView(
+                        icon: "smallcircle.filled.circle",
+                        name: point.name,
+                        isHidden: point.isHidden,
+                        renameable: true,
+                        isSelected: viewModel.selectedDatumPointID == point.id,
+                        depth: 0,
+                        onEdit: point.definition != nil && !viewModel.session.isReadOnly
+                            ? { viewModel.openDatumPointSheet(point.id) } : nil,
+                        onSelect: { viewModel.selectDatumPoint(point.id) },
+                        onToggleVisibility: {
+                            viewModel.setDatumPointHidden(point.id, hidden: !point.isHidden)
+                        },
+                        onRename: { viewModel.renameDatumPoint(point.id, to: $0) },
+                        onZoom: {},
+                        onDelete: { _ = viewModel.deleteDatumPoint(point.id) })
+                }
+                if !viewModel.session.isReadOnly, viewModel.session.writeBlock == nil {
+                    Button {
+                        viewModel.openDatumPointSheet(nil)
+                    } label: {
+                        Label(FloeCADStrings.text("cad.datum.addPoint", "Add Point"),
+                              systemImage: "smallcircle.filled.circle")
+                            .font(.caption)
+                    }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal, 8)
+                    .accessibilityIdentifier("ItemsAddDatumPoint")
+                }
 
                 sectionHeader(FloeCADStrings.text("cad.ui.items.symbols", "Symbols"), dropsToTopLevel: false)
                 if document.symbols.isEmpty {
@@ -320,6 +369,8 @@ struct ItemsPanelView: View {
                 icon: "line.diagonal.arrow", name: axis.name, isHidden: axis.isHidden, renameable: true,
                 depth: depth, dragPayload: payload, moveTargets: targets,
                 onMove: onMove, onNewFolder: onNewFolder,
+                onEdit: !viewModel.session.isReadOnly
+                    ? { viewModel.openDatumAxisSheet(id) } : nil,
                 onSelect: {},
                 onToggleVisibility: { viewModel.setAxisHidden(id, hidden: !axis.isHidden) },
                 onRename: { viewModel.renameAxis(id, to: $0) },

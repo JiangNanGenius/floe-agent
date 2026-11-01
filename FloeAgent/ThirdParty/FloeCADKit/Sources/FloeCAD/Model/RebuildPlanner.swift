@@ -33,6 +33,8 @@ struct RebuildPlan {
     var resultBodyIDs: [BodyID]
     var resolvedPlaneUpdates: [ConstructionPlaneID: SketchPlane]
     var resolvedSketchSupportUpdates: [SketchID: SketchPlane]
+    var resolvedAxisUpdates: [ConstructionAxisID: ResolvedAxisGeometry]
+    var resolvedDatumPointUpdates: [DatumPointID: ResolvedDatumPointGeometry]
     var referenceErrors: [AssociativeReferenceKey: AssociativeReferenceError]
     var lastBodyWriters: [BodyID: FeatureID]
 }
@@ -56,6 +58,8 @@ enum RebuildPlanner {
         document: DesignDocument,
         sketches: [Sketch],
         planes: [ConstructionPlane],
+        axes: [ConstructionAxis] = [],
+        datumPoints: [DatumPoint] = [],
         naming: TopoNaming,
         cache: inout EvalCache,
         nextRevision: () -> UInt64,
@@ -73,6 +77,8 @@ enum RebuildPlanner {
         // definition/support transactions pass the complete preview explicitly.
         let inputSketches = previewDocument?.sketches ?? sketches
         let inputPlanes = previewDocument?.planes ?? planes
+        let inputAxes = previewDocument?.axes ?? axes
+        let inputDatumPoints = previewDocument?.datumPoints ?? datumPoints
         let values = variables ?? VariableTable.resolve(
             (previewDocument ?? postLeading).variables).values
         // Memoised replay: nodes whose inputs are unchanged are spliced from
@@ -83,7 +89,9 @@ enum RebuildPlanner {
             naming: naming,
             nextRevision: nextRevision,
             cache: &cache,
-            variables: values
+            variables: values,
+            axes: inputAxes,
+            datumPoints: inputDatumPoints
         )
 
         // Every BodyID any node owns — the pre-edit graph too, so a node removed
@@ -115,6 +123,24 @@ enum RebuildPlanner {
                   let after = result.resolvedSketchSupportUpdates[id], before != after else { continue }
             commands.append(UpdateResolvedSketchPlaneCommand(
                 sketchID: id, before: before, after: after))
+        }
+        // M08 derived axis/point frames: the same field-only cache contract as
+        // a resolved plane. A datum with a broken source contributes no update,
+        // so its last valid frame and its consumer geometry are preserved.
+        for id in result.resolvedAxisUpdates.keys.sorted(by: { $0.raw.uuidString < $1.raw.uuidString }) {
+            guard let record = postLeading.axes.first(where: { $0.id == id }),
+                  let after = result.resolvedAxisUpdates[id],
+                  record.origin != after.origin || record.direction != after.direction else { continue }
+            commands.append(UpdateResolvedConstructionAxisCommand(
+                axisID: id, beforeOrigin: record.origin, beforeDirection: record.direction,
+                afterOrigin: after.origin, afterDirection: after.direction))
+        }
+        for id in result.resolvedDatumPointUpdates.keys.sorted(by: { $0.raw.uuidString < $1.raw.uuidString }) {
+            guard let record = postLeading.datumPoints.first(where: { $0.id == id }),
+                  let after = result.resolvedDatumPointUpdates[id],
+                  record.position != after.position else { continue }
+            commands.append(UpdateResolvedDatumPointCommand(
+                pointID: id, before: record.position, after: after.position))
         }
 
         // Replace bodies that still exist; add ones the graph newly produced.
@@ -177,6 +203,8 @@ enum RebuildPlanner {
             resultBodyIDs: result.bodies.map(\.id),
             resolvedPlaneUpdates: result.resolvedPlaneUpdates,
             resolvedSketchSupportUpdates: result.resolvedSketchSupportUpdates,
+            resolvedAxisUpdates: result.resolvedAxisUpdates,
+            resolvedDatumPointUpdates: result.resolvedDatumPointUpdates,
             referenceErrors: result.referenceErrors,
             lastBodyWriters: result.lastBodyWriters)
     }

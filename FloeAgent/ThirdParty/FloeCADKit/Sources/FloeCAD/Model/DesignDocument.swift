@@ -15,6 +15,12 @@ nonisolated struct DesignDocument: Sendable {
     /// Construction axes (spec §6.2). Reference geometry only — they feed
     /// Revolve, circular patterns and rotates, and never produce a body.
     var axes: [ConstructionAxis] = []
+    /// M08 associative datum points. Reference geometry like an axis: a point
+    /// never produces a body, and its `position` is only the last resolved
+    /// display cache when `definition` is present. Persisted as its own
+    /// additive record list so undo/save/merge keep ordinary document
+    /// semantics.
+    var datumPoints: [DatumPoint] = []
     var images: [InsertedImage] = []
     var symbols: [Symbol] = []
 
@@ -122,5 +128,34 @@ nonisolated struct DesignDocument: Sendable {
         var n = 1
         while existing.contains("\(base) \(n)") { n += 1 }
         return "\(base) \(n)"
+    }
+
+    /// The document's CURRENT frame for a plane reference, or nil when the
+    /// named sketch/plane no longer exists.
+    ///
+    /// The rebuild writes an associative plane/support's resolved frame back
+    /// into the row (`ConstructionPlane.plane`, `Sketch.plane`) only after a
+    /// successful replay, so this reads that last successful resolution — it
+    /// never re-derives naming or geometry here. A revolve uses it to convert
+    /// a construction axis's world line into the same plane basis the kernel
+    /// already revolves in.
+    func currentPlane(_ ref: PlaneRef) -> SketchPlane? {
+        switch ref.source {
+        case let .sketch(id):
+            return sketches.first { $0.id == id }?.plane
+        case let .construction(id):
+            return planes.first { $0.id == id }?.plane
+        case .ground:
+            return .ground
+        case let .explicit(plane):
+            return plane
+        }
+    }
+
+    /// The current frame of the sketch that owns a revolve's profile, which is
+    /// the plane the kernel actually uses when the graph was authored by the
+    /// tool (`.sketch(profile.sketchID)`). Falls back to `currentPlane`.
+    func currentRevolvePlane(profile: ProfileRef, plane: PlaneRef) -> SketchPlane? {
+        currentPlane(plane) ?? sketches.first { $0.id == profile.sketchID }?.plane
     }
 }

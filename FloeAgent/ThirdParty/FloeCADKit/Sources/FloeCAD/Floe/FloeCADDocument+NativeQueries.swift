@@ -295,6 +295,19 @@ public extension FloeCADDocument {
             return ok(["ok": true, "scope": scope, "total": rows.count, "rows": window(rows),
                        "actions": session.writeBlock == nil ? CADDatumService.actions : [], "revision": revision, "change_count": session.changeCount])
 
+        case "axes":
+            // M08 associative construction axes: the persisted definition plus
+            // its last resolved line, the current consumers (patterns, datum
+            // points) and the exact update/delete actions.
+            let rows = CADDatumService.axisRows(document: self)
+            return ok(["ok": true, "scope": scope, "total": rows.count, "rows": window(rows),
+                       "actions": session.writeBlock == nil ? CADDatumService.actions : [], "revision": revision, "change_count": session.changeCount])
+
+        case "datumPoints":
+            let rows = CADDatumService.datumPointRows(document: self)
+            return ok(["ok": true, "scope": scope, "total": rows.count, "rows": window(rows),
+                       "actions": session.writeBlock == nil ? CADDatumService.actions : [], "revision": revision, "change_count": session.changeCount])
+
         case "constraints":
             // Only rows with a real typed mutation carry `editable: true`:
             // the geometric constraints are read-only here, while a driving
@@ -406,8 +419,13 @@ public extension FloeCADDocument {
                     documentRevision: revision, changeCount: session.changeCount,
                     meshRevision: body.meshRevision)
                 let faces = OCCTKernel.faceInfo(brep)
+                let planarIndices = Set(faces.filter { $0.signature?.kind == .planar }.map(\.index))
+                var cylindricalIndices: Set<Int> = []
+                for face in faces {
+                    if case .cylindrical = face.signature?.kind { cylindricalIndices.insert(face.index) }
+                }
                 let descriptors = CADDatumService.sourceDescriptors(document: self, body: body,
-                    planarIndices: Set(faces.filter { $0.signature?.kind == .planar }.map(\.index)),
+                    planarIndices: planarIndices, cylindricalIndices: cylindricalIndices,
                     acquired: sources[body.id])
                 for face in faces {
                     var row: [String: Any] = [
@@ -483,6 +501,9 @@ public extension FloeCADDocument {
                 "contentSHA256": contentSHA256,
                 "bodies": document.bodies.count,
                 "sketches": document.sketches.count,
+                "planes": document.planes.count,
+                "axes": document.axes.count,
+                "datumPoints": document.datumPoints.count,
                 "features": document.features.nodes.count,
                 "variables": document.variables.count,
                 "material_library_entries": CADMaterialLibraryCodec.decode(document.materialLibraryData).entries.count,
@@ -496,7 +517,8 @@ public extension FloeCADDocument {
         default:
             return fail("unsupported_scope",
                         "Scope '\(scope)' is not served by the model query; use bodies, sketches, "
-                        + "planes, constraints, features, edges, faces, variables, materials, assembly, drawings, detail or snapshot.")
+                        + "planes, axes, datumPoints, constraints, features, edges, faces, variables, "
+                        + "materials, assembly, drawings, detail or snapshot.")
         }
     }
 

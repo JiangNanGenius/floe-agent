@@ -37,6 +37,9 @@ nonisolated enum ProjectMergeKit {
         var featureIDs: [FeatureID]
         var bodyIDs: [BodyID]
         var sketchIDs: [SketchID]
+        /// M08 reference geometry that travelled with the insert.
+        var axisIDs: [ConstructionAxisID] = []
+        var datumPointIDs: [DatumPointID] = []
     }
 
     /// Insert `guest` into `host`, offsetting the incoming geometry by
@@ -54,8 +57,12 @@ nonisolated enum ProjectMergeKit {
     ) throws -> Insertion {
         let associative = guest.planes.contains { $0.definition != nil }
             || guest.sketches.contains { $0.support != nil }
+            || guest.axes.contains { $0.definition != nil }
+            || guest.datumPoints.contains { $0.definition != nil }
         let hostAssociative = host.planes.contains { $0.definition != nil }
             || host.sketches.contains { $0.support != nil }
+            || host.axes.contains { $0.definition != nil }
+            || host.datumPoints.contains { $0.definition != nil }
         // One ordered rollback prefix cannot represent two independently
         // active histories. In particular, adding the guest count to a host
         // marker would activate the host's formerly rolled-back suffix.
@@ -81,6 +88,34 @@ nonisolated enum ProjectMergeKit {
                 case let .threePoints(payload): try payload.validate()
                 }
             }
+            for axis in guest.axes {
+                guard let definition = axis.definition else { continue }
+                guard definition.isSupportedSemanticVersion else {
+                    throw MergeError.missingAssociativeReferences(
+                        ["axis-definition-version:\(axis.id.raw.uuidString)"])
+                }
+                switch definition {
+                case let .face(payload): try payload.validate()
+                case let .edge(payload): try payload.validate()
+                case let .cylinder(payload): try payload.validate()
+                case let .twoPoints(payload): try payload.validate()
+                case let .twoPlanes(payload): try payload.validate()
+                }
+            }
+            for point in guest.datumPoints {
+                guard let definition = point.definition else { continue }
+                guard definition.isSupportedSemanticVersion else {
+                    throw MergeError.missingAssociativeReferences(
+                        ["point-definition-version:\(point.id.raw.uuidString)"])
+                }
+                switch definition {
+                case let .faceCenter(payload): try payload.validate()
+                case let .edgePoint(payload): try payload.validate()
+                case let .twoPointMidpoint(payload): try payload.validate()
+                case let .axisPoint(payload): try payload.validate()
+                case let .axisPlane(payload): try payload.validate()
+                }
+            }
             try validateAssociativeExpressions(in: guest)
         }
         let map = IDMap(guest, rejectUnknownReferences: associative)
@@ -92,6 +127,20 @@ nonisolated enum ProjectMergeKit {
         }
         for plane in guest.planes {
             merged.planes.append(map.remap(plane, translation: translation))
+        }
+        // M08 reference geometry travels with the insert (absolute axes used to
+        // be dropped here); identities are re-minted like every other record.
+        var axisIDs = [ConstructionAxisID]()
+        for axis in guest.axes {
+            let remapped = try map.remap(axis, translation: translation)
+            axisIDs.append(remapped.id)
+            merged.axes.append(remapped)
+        }
+        var datumPointIDs = [DatumPointID]()
+        for point in guest.datumPoints {
+            let remapped = map.remap(point, translation: translation)
+            datumPointIDs.append(remapped.id)
+            merged.datumPoints.append(remapped)
         }
         merged.images += guest.images
         merged.symbols += guest.symbols
@@ -131,7 +180,9 @@ nonisolated enum ProjectMergeKit {
             document: merged,
             featureIDs: featureIDs,
             bodyIDs: map.bodies.values.map { $0 },
-            sketchIDs: map.sketches.values.map { $0 })
+            sketchIDs: map.sketches.values.map { $0 },
+            axisIDs: axisIDs,
+            datumPointIDs: datumPointIDs)
     }
 
     /// Names in `guest` that clash with a host variable and are therefore
@@ -168,6 +219,20 @@ nonisolated enum ProjectMergeKit {
                          label: "plane:\(plane.id.raw.uuidString):\(slot.name)")
             }
         }
+        for axis in guest.axes {
+            guard let definition = axis.definition else { continue }
+            for slot in definition.expressionSlots {
+                validate(slot.expr.formula,
+                         label: "axis:\(axis.id.raw.uuidString):\(slot.name)")
+            }
+        }
+        for point in guest.datumPoints {
+            guard let definition = point.definition else { continue }
+            for slot in definition.expressionSlots {
+                validate(slot.expr.formula,
+                         label: "point:\(point.id.raw.uuidString):\(slot.name)")
+            }
+        }
         for sketch in guest.sketches {
             for dimension in sketch.dimensions {
                 validate(dimension.formula, label: "sketch:\(sketch.id.raw.uuidString):\(dimension.id.uuidString)")
@@ -187,6 +252,8 @@ nonisolated enum ProjectMergeKit {
         var bodies = [BodyID: BodyID]()
         var sketches = [SketchID: SketchID]()
         var planes = [ConstructionPlaneID: ConstructionPlaneID]()
+        var axes = [ConstructionAxisID: ConstructionAxisID]()
+        var datumPoints = [DatumPointID: DatumPointID]()
         var entities = [UUID: UUID]()
 
         let rejectUnknownReferences: Bool
@@ -206,6 +273,8 @@ nonisolated enum ProjectMergeKit {
                 for entity in sketch.entities { entities[entity.id] = UUID() }
             }
             for plane in guest.planes { planes[plane.id] = ConstructionPlaneID() }
+            for axis in guest.axes { axes[axis.id] = ConstructionAxisID() }
+            for point in guest.datumPoints { datumPoints[point.id] = DatumPointID() }
         }
 
         // Legacy absolute documents retain the old broken-reference behavior.
@@ -232,6 +301,14 @@ nonisolated enum ProjectMergeKit {
         }
         func newEntity(_ id: UUID) -> UUID {
             guard let result = entities[id] else { missing("entity", id); return id }
+            return result
+        }
+        func newAxis(_ id: ConstructionAxisID) -> ConstructionAxisID {
+            guard let result = axes[id] else { missing("axis", id.raw); return id }
+            return result
+        }
+        func newDatumPoint(_ id: DatumPointID) -> DatumPointID {
+            guard let result = datumPoints[id] else { missing("point", id.raw); return id }
             return result
         }
 
@@ -280,6 +357,122 @@ nonisolated enum ProjectMergeKit {
                 id: newPlane(plane.id), plane: moved(plane.plane, by: translation),
                 size: plane.size, isHidden: plane.isHidden,
                 definition: plane.definition.map { remap($0, translation: translation) })
+        }
+
+        // MARK: M08 reference geometry
+
+        /// `ConstructionAxis` validates its direction/length, so a corrupt
+        /// guest row refuses the whole insert instead of being published with
+        /// invented geometry.
+        func remap(_ axis: ConstructionAxis, translation: SIMD3<Double>) throws -> ConstructionAxis {
+            guard let remapped = ConstructionAxis(
+                id: newAxis(axis.id),
+                origin: axis.origin + translation,
+                direction: axis.direction,
+                length: axis.length,
+                name: axis.name,
+                isHidden: axis.isHidden,
+                definition: axis.definition.map { remap($0, translation: translation) })
+            else {
+                throw MergeError.missingAssociativeReferences(
+                    ["axis-geometry:\(axis.id.raw.uuidString)"])
+            }
+            return remapped
+        }
+
+        func remap(_ point: DatumPoint, translation: SIMD3<Double>) -> DatumPoint {
+            DatumPoint(
+                id: newDatumPoint(point.id),
+                position: point.position + translation,
+                name: point.name,
+                isHidden: point.isHidden,
+                definition: point.definition.map { remap($0, translation: translation) })
+        }
+
+        func remap(_ source: DatumPointSource) -> DatumPointSource {
+            switch source {
+            case let .sketchAnchor(anchor):
+                return .sketchAnchor(SketchAnchorRef(
+                    sketchID: newSketch(anchor.sketchID),
+                    entityID: newEntity(anchor.entityID),
+                    role: anchor.role))
+            case let .datumPoint(id):
+                return .datumPoint(newDatumPoint(id))
+            }
+        }
+
+        func remap(_ definition: ConstructionAxisDefinition,
+                   translation: SIMD3<Double>) -> ConstructionAxisDefinition {
+            switch definition {
+            case let .face(face):
+                return .face(FaceAxisDefinition(
+                    version: face.version,
+                    source: remap(face.source, translation: translation),
+                    sourceVersion: GeometryVersionRef(
+                        bodyID: newBody(face.sourceVersion.bodyID),
+                        writer: newFeature(face.sourceVersion.writer)),
+                    attachment: face.attachment,
+                    offset: face.offset))
+            case let .edge(edge):
+                return .edge(EdgeAxisDefinition(
+                    version: edge.version,
+                    source: remap(edge.source, translation: translation),
+                    sourceVersion: GeometryVersionRef(
+                        bodyID: newBody(edge.sourceVersion.bodyID),
+                        writer: newFeature(edge.sourceVersion.writer)),
+                    reference: edge.reference,
+                    offset: edge.offset))
+            case let .cylinder(cylinder):
+                return .cylinder(CylinderAxisDefinition(
+                    version: cylinder.version,
+                    source: remap(cylinder.source, translation: translation),
+                    sourceVersion: GeometryVersionRef(
+                        bodyID: newBody(cylinder.sourceVersion.bodyID),
+                        writer: newFeature(cylinder.sourceVersion.writer))))
+            case let .twoPoints(twoPoint):
+                return .twoPoints(TwoPointAxisDefinition(
+                    version: twoPoint.version,
+                    points: twoPoint.points.map(remap)))
+            case let .twoPlanes(twoPlane):
+                return .twoPlanes(TwoPlaneAxisDefinition(
+                    version: twoPlane.version,
+                    planes: twoPlane.planes.map(newPlane)))
+            }
+        }
+
+        func remap(_ definition: DatumPointDefinition,
+                   translation: SIMD3<Double>) -> DatumPointDefinition {
+            switch definition {
+            case let .faceCenter(face):
+                return .faceCenter(FaceCenterPointDefinition(
+                    version: face.version,
+                    source: remap(face.source, translation: translation),
+                    sourceVersion: GeometryVersionRef(
+                        bodyID: newBody(face.sourceVersion.bodyID),
+                        writer: newFeature(face.sourceVersion.writer))))
+            case let .edgePoint(edge):
+                return .edgePoint(EdgePointDefinition(
+                    version: edge.version,
+                    source: remap(edge.source, translation: translation),
+                    sourceVersion: GeometryVersionRef(
+                        bodyID: newBody(edge.sourceVersion.bodyID),
+                        writer: newFeature(edge.sourceVersion.writer)),
+                    offset: edge.offset))
+            case let .twoPointMidpoint(midpoint):
+                return .twoPointMidpoint(TwoPointMidpointDefinition(
+                    version: midpoint.version,
+                    points: midpoint.points.map(remap)))
+            case let .axisPoint(axisPoint):
+                return .axisPoint(AxisPointDefinition(
+                    version: axisPoint.version,
+                    axis: newAxis(axisPoint.axis),
+                    offset: axisPoint.offset))
+            case let .axisPlane(axisPlane):
+                return .axisPlane(AxisPlanePointDefinition(
+                    version: axisPlane.version,
+                    axis: newAxis(axisPlane.axis),
+                    plane: newPlane(axisPlane.plane)))
+            }
         }
 
         /// `Body.id` is `let`, so the remapped body is rebuilt around its
@@ -347,6 +540,11 @@ nonisolated enum ProjectMergeKit {
                 AxisRef(source: .sketchLine(newSketch(id), newEntity(entityID)))
             case .explicit:
                 ref
+            case let .constructionAxis(id):
+                // The axis row travels with the insert (re-minted above), so
+                // the revolve keeps following its own source instead of being
+                // rebound to an id that does not exist in the host.
+                AxisRef(source: .constructionAxis(newAxis(id)))
             }
         }
 
@@ -475,7 +673,13 @@ nonisolated enum ProjectMergeKit {
                                keepOriginal: keepOriginal)
             case let .pattern(body, spec):
                 var translated = spec
+                // The cached line moves with the insert; an ASSOCIATIVE axis
+                // reference is re-minted and resolves its own (already moved)
+                // source, so the cache is display-only there.
                 if translated.kind == .circular { translated.center += t }
+                if let ref = translated.axisRef {
+                    translated.axisRef = ConstructionAxisRef(newAxis(ref.axisID))
+                }
                 return .pattern(body: remap(body), spec: translated)
             case let .pushPull(face, distance, mode):
                 return .pushPull(face: remap(face, translation: t),

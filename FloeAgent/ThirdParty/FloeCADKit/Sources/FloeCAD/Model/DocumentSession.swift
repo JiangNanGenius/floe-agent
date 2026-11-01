@@ -366,6 +366,7 @@ final class DocumentSession {
         var sketches: Set<UUID> = []
         var planes: Set<UUID> = []
         var axes: Set<UUID> = []
+        var datumPoints: Set<UUID> = []
         var images: Set<UUID> = []
         var symbols: Set<UUID> = []
         var features: Set<UUID> = []
@@ -380,7 +381,7 @@ final class DocumentSession {
         /// Whole rows that could not be decoded (absent from the document).
         var rowCount: Int {
             bodies.count + sketches.count + planes.count + axes.count
-                + images.count + symbols.count + features.count
+                + datumPoints.count + images.count + symbols.count + features.count
         }
         /// Bodies present in the document but missing some detail.
         var partialBodyCount: Int {
@@ -716,7 +717,9 @@ final class DocumentSession {
             naming: naming,
             nextRevision: { counter &+= 1; return counter },
             cache: &scratch,
-            variables: variableValues()
+            variables: variableValues(),
+            axes: document.axes,
+            datumPoints: document.datumPoints
         )
         return result.bodies.first { $0.id == bodyID }
     }
@@ -914,6 +917,7 @@ final class DocumentSession {
         let plan = RebuildPlanner.plan(
             editedGraph: editedGraph, previousGraph: document.features,
             document: document, sketches: prospective.sketches, planes: prospective.planes,
+            axes: prospective.axes, datumPoints: prospective.datumPoints,
             naming: naming, cache: &plannedCache,
             nextRevision: { revisionDocument.nextRevision() },
             leadingCommands: leadingCommands, title: title,
@@ -925,9 +929,11 @@ final class DocumentSession {
             let baseline = document.features.evaluate(
                 sketches: document.sketches, planes: document.planes, naming: naming,
                 nextRevision: { counter &+= 1; return counter }, cache: &baselineCache,
-                variables: variableValues())
+                variables: variableValues(), axes: document.axes,
+                datumPoints: document.datumPoints)
             let captured = AssociativeDependencyGraph(
                 graph: document.features, sketches: document.sketches, planes: document.planes,
+                axes: document.axes, datumPoints: document.datumPoints,
                 featureDependencies: CADParameterService.bodyWriterDependencies(in: document.features.nodes))
             let beforeDependencies = captured.validationErrors(in: document.features)
             var newReferences = plan.referenceErrors.filter { baseline.referenceErrors[$0.key] != $0.value }
@@ -1010,7 +1016,7 @@ final class DocumentSession {
         let values = variableValues()
         let initial = document.features.evaluate(sketches: document.sketches, planes: document.planes,
             naming: naming, nextRevision: { revision &+= 1; return revision }, cache: &scratch,
-            variables: values)
+            variables: values, axes: document.axes, datumPoints: document.datumPoints)
         var requestedVersions: [BodyID: GeometryVersionRef] = [:]
         for bodyID in requestedBodies {
             guard let writer = initial.lastBodyWriters[bodyID] else { continue }
@@ -1019,7 +1025,8 @@ final class DocumentSession {
         guard !requestedVersions.isEmpty else { return [:] }
         let result = document.features.evaluate(sketches: document.sketches, planes: document.planes,
             naming: naming, nextRevision: { revision &+= 1; return revision }, cache: &scratch,
-            variables: values, requestedVersions: Set(requestedVersions.values))
+            variables: values, requestedVersions: Set(requestedVersions.values),
+            axes: document.axes, datumPoints: document.datumPoints)
         var sources: [BodyID: (version: GeometryVersionRef, snapshot: GeometryVersionSnapshot)] = [:]
         for (bodyID, version) in requestedVersions {
             guard result.errors[version.writer] == nil, let snapshot = result.geometryVersions[version] else { continue }
@@ -1028,8 +1035,43 @@ final class DocumentSession {
         return sources
     }
 
+    /// Resolve ONE construction axis through a discard-only replay of the
+    /// CURRENT document. Returns nil when the axis is missing or its source
+    /// does not resolve — it never returns the cached line of a broken
+    /// association.
+    ///
+    /// This is the same resolver the rebuild uses, run with a scratch cache and
+    /// a private revision counter, so it burns no live revisions, adopts no
+    /// bodies and writes no caches. It exists for explicit operations that must
+    /// freeze the CURRENT line (detaching a pattern/revolve from its axis),
+    /// where reusing the last cached frame would be a stale value.
+    func currentResolvedAxis(_ id: ConstructionAxisID) -> ResolvedAxisGeometry? {
+        guard let record = document.axes.first(where: { $0.id == id }) else { return nil }
+        // An absolute axis IS its line; no replay can change it.
+        guard record.definition != nil else { return record.resolvedLine }
+        var scratch = EvalCache()
+        var revision: UInt64 = 0
+        let result = document.features.evaluate(
+            sketches: document.sketches, planes: document.planes,
+            naming: naming, nextRevision: { revision &+= 1; return revision },
+            cache: &scratch, variables: variableValues(),
+            axes: document.axes, datumPoints: document.datumPoints)
+        guard result.referenceErrors[.axis(id)] == nil else { return nil }
+        return result.resolvedAxisUpdates[id] ?? record.resolvedLine
+    }
+
     private static func hasAssociations(_ document: DesignDocument) -> Bool {
-        document.planes.contains { $0.definition != nil } || document.sketches.contains { $0.support != nil }
+        document.planes.contains { $0.definition != nil }
+            || document.sketches.contains { $0.support != nil }
+            // M08: an associative axis/point is a replay input exactly like an
+            // associative plane, so the resolver path must be chosen for a
+            // document that carries one even when no plane is associative.
+            || document.axes.contains { $0.definition != nil }
+            || document.datumPoints.contains { $0.definition != nil }
+            // A CONSUMER that stores an axis identity is an association too: a
+            // broken reference must reject the edit that broke it, not silently
+            // drop the pattern copies.
+            || document.features.nodes.contains { !$0.referencedConstructionAxisIDs.isEmpty }
     }
 
     /// Domain seam for definition/support edits. Semantic edits and all derived
@@ -1044,8 +1086,11 @@ final class DocumentSession {
         preview.features = fanOut.graph
         preview.sketches = fanOut.sketches
         preview.planes = fanOut.planes
+        preview.axes = fanOut.axes
+        preview.datumPoints = fanOut.datumPoints
         return performRebuild(preview.features, leadingCommands: commands + fanOut.featureCommands
-                              + fanOut.sketchCommands + fanOut.planeCommands, title: title,
+                              + fanOut.sketchCommands + fanOut.planeCommands
+                              + fanOut.axisCommands + fanOut.datumPointCommands, title: title,
                               previewDocument: preview)
     }
 
@@ -1424,6 +1469,10 @@ final class DocumentSession {
         var sketches: [Sketch]
         var planes: [ConstructionPlane]
         var planeCommands: [DocumentCommand]
+        var axes: [ConstructionAxis]
+        var axisCommands: [DocumentCommand]
+        var datumPoints: [DatumPoint]
+        var datumPointCommands: [DocumentCommand]
     }
 
     /// Resolve the prospective variables, then plan every downstream feature
@@ -1502,9 +1551,33 @@ final class DocumentSession {
             planeCommands.append(EditConstructionPlaneDefinitionCommand(
                 planeID: planes[index].id, before: before, after: after))
         }
+
+        // M08 AXIS/POINT fan-out: axis offsets and point offsets are the same
+        // kind of formula slot, so a variable edit re-evaluates them in this
+        // same transaction instead of leaving a stale cached value behind.
+        var axes = document.axes
+        var axisCommands: [DocumentCommand] = []
+        for index in axes.indices {
+            guard let after = axes[index].definition?.reevaluated(with: values) else { continue }
+            let before = axes[index].definition
+            axes[index].definition = after
+            axisCommands.append(EditConstructionAxisDefinitionCommand(
+                axisID: axes[index].id, before: before, after: after))
+        }
+        var datumPoints = document.datumPoints
+        var datumPointCommands: [DocumentCommand] = []
+        for index in datumPoints.indices {
+            guard let after = datumPoints[index].definition?.reevaluated(with: values) else { continue }
+            let before = datumPoints[index].definition
+            datumPoints[index].definition = after
+            datumPointCommands.append(EditDatumPointDefinitionCommand(
+                pointID: datumPoints[index].id, before: before, after: after))
+        }
         return VariableFanOutPlan(graph: graph, featureCommands: featureCommands,
                                   sketchCommands: sketchCommands, sketches: sketches,
-                                  planes: planes, planeCommands: planeCommands)
+                                  planes: planes, planeCommands: planeCommands,
+                                  axes: axes, axisCommands: axisCommands,
+                                  datumPoints: datumPoints, datumPointCommands: datumPointCommands)
     }
 
     /// Apply one variable-add/edit/delete AND every dependent feature/sketch
@@ -1564,6 +1637,7 @@ final class DocumentSession {
         }
         let plan = Self.variableFanOutPlan(document: document, resolved: resolved)
         let leading = plan.featureCommands + plan.sketchCommands + plan.planeCommands
+            + plan.axisCommands + plan.datumPointCommands
         guard !leading.isEmpty else {
             if cacheChanged { didChange(autosave: false) }
             return
@@ -1572,6 +1646,8 @@ final class DocumentSession {
         preview.features = plan.graph
         preview.sketches = plan.sketches
         preview.planes = plan.planes
+        preview.axes = plan.axes
+        preview.datumPoints = plan.datumPoints
         performRebuild(plan.graph, leadingCommands: leading, title: "Variables",
                        previewDocument: preview)
     }
@@ -1784,6 +1860,10 @@ final class DocumentSession {
         let associationAssessment = try? CADDocumentFormat.assess(
             planes: project.planes.map { CADBlobRecord(blobID: $0.planeID, data: $0.planeData, sha256: "") },
             sketches: project.sketches.map { CADBlobRecord(blobID: $0.sketchID, data: $0.sketchData, sha256: "") },
+            axes: project.axes.map { CADBlobRecord(blobID: $0.axisID, data: $0.axisData, sha256: "") },
+            datumPoints: project.datumPoints.map {
+                CADBlobRecord(blobID: $0.pointID, data: $0.pointData, sha256: "")
+            },
             features: project.features.map {
                 CADFeatureRecord(featureID: $0.featureID, orderIndex: $0.orderIndex,
                                  name: $0.name, suppressed: $0.suppressed,
@@ -1891,10 +1971,26 @@ final class DocumentSession {
             }
         }
         for persisted in project.axes {
-            if let axis = try? JSONDecoder().decode(ConstructionAxis.self, from: persisted.axisData) {
-                loaded.axes.append(axis)
-            } else {
+            do {
+                loaded.axes.append(try JSONDecoder().decode(ConstructionAxis.self, from: persisted.axisData))
+            } catch {
                 unreadableRows.axes.insert(persisted.axisID)
+                if associationAssessment?.opaqueAxes.contains(persisted.axisID) == true,
+                   let cache = try? CADDocumentFormat.cachedAxis(from: persisted.axisData) {
+                    loaded.axes.append(cache) // display cache, never editable/solve input
+                }
+            }
+        }
+        for persisted in project.datumPoints {
+            do {
+                loaded.datumPoints.append(
+                    try JSONDecoder().decode(DatumPoint.self, from: persisted.pointData))
+            } catch {
+                unreadableRows.datumPoints.insert(persisted.pointID)
+                if associationAssessment?.opaqueDatumPoints.contains(persisted.pointID) == true,
+                   let cache = try? CADDocumentFormat.cachedDatumPoint(from: persisted.pointData) {
+                    loaded.datumPoints.append(cache) // display cache, never editable
+                }
             }
         }
         for persisted in project.images {
@@ -2038,6 +2134,8 @@ final class DocumentSession {
         let features = document.features
         let sketches = document.sketches
         let planes = document.planes
+        let axes = document.axes
+        let datumPoints = document.datumPoints
         let naming = naming
         let values = variableValues()
         let generation = changeCount
@@ -2049,7 +2147,8 @@ final class DocumentSession {
                 planes: planes,
                 naming: naming,
                 nextRevision: { counter &+= 1; return counter },
-                cache: &scratch, variables: values
+                cache: &scratch, variables: values,
+                axes: axes, datumPoints: datumPoints
             )
             await self?.adoptLoadEvalErrors(result.errors, referenceErrors: result.referenceErrors,
                                            writers: result.lastBodyWriters, generation: generation)
@@ -2093,7 +2192,9 @@ final class DocumentSession {
             naming: naming,
             nextRevision: { counter &+= 1; return counter },
             cache: &scratch,
-            variables: variableValues()
+            variables: variableValues(),
+            axes: document.axes,
+            datumPoints: document.datumPoints
         )
         lastEvalErrors = result.errors
         lastReferenceErrors = result.referenceErrors
@@ -2659,6 +2760,28 @@ final class DocumentSession {
         for persisted in project.axes
         where !liveAxisIDs.contains(persisted.axisID)
             && !unreadableRows.axes.contains(persisted.axisID) {
+            modelContext.delete(persisted)
+        }
+
+        var persistedPointByID = [UUID: PersistedDatumPoint]()
+        for persisted in project.datumPoints {
+            persistedPointByID[persisted.pointID] = persisted
+        }
+        var livePointIDs = Set<UUID>()
+        for point in document.datumPoints {
+            livePointIDs.insert(point.id.raw)
+            guard let data = try? JSONEncoder().encode(point) else { continue }
+            if let persisted = persistedPointByID[point.id.raw] {
+                persisted.pointData = data
+            } else {
+                let persisted = PersistedDatumPoint(pointID: point.id.raw, pointData: data)
+                persisted.project = project
+                modelContext.insert(persisted)
+            }
+        }
+        for persisted in project.datumPoints
+        where !livePointIDs.contains(persisted.pointID)
+            && !unreadableRows.datumPoints.contains(persisted.pointID) {
             modelContext.delete(persisted)
         }
 
