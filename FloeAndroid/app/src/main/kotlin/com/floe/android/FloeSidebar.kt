@@ -148,6 +148,14 @@ fun FloeSidebar(
                 selectionStyle = FloeSelectionStyle.GRAY,
                 modifier = Modifier.padding(horizontal = 12.dp),
             )
+            FloeSidebarRow(
+                icon = FloeIcons.Terminal,
+                label = stringResource(com.floe.android.feature.remote.R.string.remote_hosts_title),
+                selected = selection == SidebarSelection.More(MoreDestination.REMOTE),
+                onClick = { onSelect(SidebarSelection.More(MoreDestination.REMOTE)) },
+                selectionStyle = FloeSelectionStyle.GRAY,
+                modifier = Modifier.padding(horizontal = 12.dp),
+            )
 
             FloeSectionHeader(stringResource(R.string.projects))
             val defaultProjectName = stringResource(R.string.project_default_name)
@@ -264,9 +272,26 @@ fun FloeSidebar(
                 )
                 FloeChoiceMenu(
                     expanded = moreOpen, onDismissRequest = { moreOpen = false },
-                    options = listOf(FloeChoiceOption("network", stringResource(R.string.network_workbench))),
-                    selectedKey = if (selection == SidebarSelection.More(MoreDestination.NETWORK)) "network" else null,
-                    onSelect = { moreOpen = false; onSelect(SidebarSelection.More(MoreDestination.NETWORK)) },
+                    options = listOf(
+                        FloeChoiceOption("network", stringResource(R.string.network_workbench)),
+                        FloeChoiceOption(
+                            "remote",
+                            stringResource(com.floe.android.feature.remote.R.string.remote_hosts_title),
+                        ),
+                    ),
+                    selectedKey = when (selection) {
+                        SidebarSelection.More(MoreDestination.NETWORK) -> "network"
+                        SidebarSelection.More(MoreDestination.REMOTE) -> "remote"
+                        else -> null
+                    },
+                    onSelect = { key ->
+                        moreOpen = false
+                        onSelect(
+                            SidebarSelection.More(
+                                if (key == "remote") MoreDestination.REMOTE else MoreDestination.NETWORK
+                            )
+                        )
+                    },
                 )
             }
         }

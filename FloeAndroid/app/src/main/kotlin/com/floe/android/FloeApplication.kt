@@ -527,6 +527,10 @@ class FloeApplication : Application() {
                 // delete those snapshots and release the Swift session before
                 // Root retirement.
                 (runtimeHost?.prepareCadViewerForRootStop() != false) &&
+                // C05: every live SSH session, PTY, exec channel and
+                // loopback tunnel listener closes and joins before the
+                // native root retires.
+                (runtimeHost?.prepareC05RemoteForRootStop() != false) &&
                 // G08: the Full platform-tool pump/phone/ADB/Root extension
                 // fences and joins its own work before the root retires.
                 (runtimeHost?.preparePlatformForRootStop() != false) &&

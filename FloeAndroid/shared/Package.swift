@@ -31,6 +31,18 @@ let package = Package(
         // symlink so no product source points at personal cache paths).
         .package(url: "https://github.com/apple/swift-crypto.git",
                  revision: "95ba0316a9b733e92bb6b071255ff46263bbe7dc"),
+        // C05 SSH: the fixed iOS-proven Citadel/SwiftNIO graph. Exact
+        // revisions and transitive exact pins keep the Android product graph
+        // reproducible; licence lineage is in licenses/ssh/README.md.
+        .package(url: "https://github.com/orlandos-nl/Citadel.git",
+                 revision: "ae8562f895de06ccb86fdb1cbb65fd99c8976e12"),
+        .package(url: "https://github.com/apple/swift-nio.git", exact: "2.88.0"),
+        .package(url: "https://github.com/Wellz26/swift-nio-ssh.git", exact: "0.3.6"),
+        .package(url: "https://github.com/attaswift/BigInt.git", exact: "5.7.0"),
+        .package(url: "https://github.com/apple/swift-log.git", exact: "1.15.0"),
+        .package(url: "https://github.com/apple/swift-atomics.git", exact: "1.3.1"),
+        .package(url: "https://github.com/apple/swift-collections.git", exact: "1.6.0"),
+        .package(url: "https://github.com/apple/swift-system.git", exact: "1.8.0"),
     ],
     targets: [
         // Original value layer (69 of 75 files are links; the 6 patched
@@ -637,11 +649,25 @@ let package = Package(
             "FloePersistence", "FloeSecurity", "GRDB",
             .product(name: "Crypto", package: "swift-crypto"),
         ], swiftSettings: strictSettings),
+        // C05 SSH: the real Citadel/NIO transport, host-key trust chain,
+        // bounded exec and loopback forwarder. No SwiftTerm/Apple UI, no
+        // host `ssh` process. The framework-neutral protocols let the
+        // Android domain inject fake sessions in host-runnable tests.
+        .target(name: "FloeSSH", dependencies: [
+            "FloeCore", "FloeTools", "FloePersistence",
+            .product(name: "Citadel", package: "Citadel"),
+            .product(name: "NIOCore", package: "swift-nio"),
+            .product(name: "NIOPosix", package: "swift-nio"),
+            .product(name: "NIOSSH", package: "swift-nio-ssh"),
+            .product(name: "Crypto", package: "swift-crypto"),
+        ], swiftSettings: strictSettings),
         // Product bridge: v1 frozen operations + append-only v2 envelope
         // seam + fail-closed credential backend + real dependency anchors.
         .target(name: "FloeAndroidCore", dependencies: [
             "FloeCore", "FloeModels", "FloeProviders", "FloeSecurity",
             "FloeTools", "FloeSkills", "FloePersistence", "FloeAgentRuntime",
+            // C05 SSH transport/domain dependency (same native .so).
+            "FloeSSH",
             // D1 web closure: included in the actual native .so so the
             // qualified original tools/service link before the facade
             // registers them (dependency only; NO service registration here).
@@ -677,6 +703,9 @@ let package = Package(
             // already compiled into the product library through GRDB.
             "GRDB", "GRDBSQLite",
             .product(name: "Crypto", package: "swift-crypto"),
+        ], swiftSettings: strictSettings),
+        .testTarget(name: "FloeSSHTests", dependencies: [
+            "FloeSSH", "FloeCore", "FloePersistence",
         ], swiftSettings: strictSettings),
         .testTarget(name: "FloeAndroidLinuxAuthorityTests", dependencies: [
             "FloeAndroidLinuxAuthority", "FloeCore", "FloeEnvironments",
@@ -724,7 +753,7 @@ let package = Package(
             "FloeAndroidWorkbench", "FloeCore",
         ], swiftSettings: strictSettings),
         .testTarget(name: "FloeAndroidCoreTests", dependencies: [
-            "FloeBrowser", "FloeAndroidCore", "FloeCore", "FloeModels", "FloePersistence", "GRDB",
+            "FloeBrowser", "FloeAndroidCore", "FloeSSH", "FloeCore", "FloeModels", "FloePersistence", "GRDB",
             "FloeAndroidNetwork",
             "FloeWorkspace",
             // G02-P3 transport suites: the REAL incremental seam + provider

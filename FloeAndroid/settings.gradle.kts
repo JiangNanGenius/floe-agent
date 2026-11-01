@@ -68,6 +68,9 @@ include(":feature:canvas", ":feature:workbench")
 
 // G07 phone-native network measurements and shared workbench presentation.
 include(":core:network", ":feature:network")
+
+// C05 SSH remote-host screens (presentation only; App host owns transport).
+include(":feature:remote")
 include(":core:networkmonitor")
 include(":core:pcap")
 

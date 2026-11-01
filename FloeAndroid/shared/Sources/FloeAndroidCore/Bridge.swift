@@ -33,7 +33,8 @@ public enum AndroidBridge {
                 || requestVersion == BridgeV5.version
                 || requestVersion == BridgeV6.version
                 || requestVersion == BridgeV7.version
-                || requestVersion == BridgeV8.version else {
+                || requestVersion == BridgeV8.version
+                || requestVersion == BridgeV9.version else {
             return response(["ok": false, "error": "unsupportedVersion"])
         }
         if requestVersion == BridgeV2.version {
@@ -118,6 +119,22 @@ public enum AndroidBridge {
                                 stampVersion: BridgeV8.version)
             }
             return response(object, stampVersion: BridgeV8.version)
+        }
+        if requestVersion == BridgeV9.version {
+            // Additive C05 host-only SSH remote channel: profile/credential
+            // management, explicit host-key decisions, sessions, PTYs,
+            // bounded exec and loopback tunnels. No model tool, no V3
+            // command, no guest/local permission.
+            let object = C05RemoteBridge.handle(requestData: data,
+                                                fallbackRequestID: requestID)
+            let encoded = (try? JSONSerialization.data(withJSONObject: object,
+                                                       options: [.sortedKeys]))
+                ?? Data(#"{"ok":false,"error":"encoding"}"#.utf8)
+            guard encoded.count <= C05RemoteWire.maximumResponseBytes else {
+                return response(["ok": false, "error": "responseTooLarge"],
+                                stampVersion: BridgeV9.version)
+            }
+            return response(object, stampVersion: BridgeV9.version)
         }
         switch request["operation"] as? String {
         case "handshake":

@@ -13,6 +13,10 @@
 // `unsupportedVersion`; the App maps that to a typed needs-core-update state.
 import Foundation
 
+public enum BridgeV8 {
+    public static let version = C04CadWire.version
+}
+
 public enum C04CadBridge {
     public static func handle(requestData: Data,
                               fallbackRequestID: String?) -> [String: Any] {

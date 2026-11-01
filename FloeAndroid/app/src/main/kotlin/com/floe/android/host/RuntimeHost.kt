@@ -9,6 +9,7 @@ import com.floe.android.host.officeai.NativeOfficeAiTransport
 import com.floe.android.host.officeai.OfficeAiHostPump
 import com.floe.android.host.officeai.OfficeAiOoxmlVerifier
 import com.floe.android.host.cad.C04CadViewerController
+import com.floe.android.host.remote.C05RemoteHostController
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -121,6 +122,21 @@ class RuntimeHost internal constructor(
     }
     internal val cadViewer: C04CadViewerController
         get() = cadViewerDelegate.value
+    /**
+     * C05 Application-owned SSH remote-host controller. Created lazily on
+     * the first Remote screen use; it owns only the trusted-host bridge
+     * calls, PTY polling and bounded input lanes. The root-stop gate below
+     * closes every live SSH channel and loopback listener.
+     */
+    private val c05RemoteDelegate = lazy {
+        C05RemoteHostController(
+            scope = scope,
+            ioDispatcher = ioDispatcher,
+            currentNativeEpoch = ::nativeRootEpoch,
+        )
+    }
+    internal val c05Remote: C05RemoteHostController
+        get() = c05RemoteDelegate.value
     internal var workspaceGitTrust: G04GitTrustController? = null
     internal var workspaceTerminal: G04TerminalHostController? = null
 
@@ -360,6 +376,19 @@ class RuntimeHost internal constructor(
     internal suspend fun prepareCadViewerForRootStop(): Boolean =
         if (cadViewerDelegate.isInitialized()) {
             cadViewer.prepareForRootStop(CAD_VIEWER_STOP_WAIT_MS)
+        } else {
+            true
+        }
+
+    /**
+     * Root-stop gate for C05 SSH: close every live session, PTY, exec
+     * channel and loopback listener and await their owned shutdown before
+     * the native root retires. An unproven drain keeps the old generation
+     * pending; no remote session survives into a new epoch.
+     */
+    internal suspend fun prepareC05RemoteForRootStop(): Boolean =
+        if (c05RemoteDelegate.isInitialized()) {
+            c05Remote.prepareForRootStop(C05_REMOTE_STOP_WAIT_MS)
         } else {
             true
         }
@@ -672,6 +701,9 @@ class RuntimeHost internal constructor(
                 if (cadViewerDelegate.isInitialized()) {
                     cadViewer.onOwnedStoreReady()
                 }
+                if (c05RemoteDelegate.isInitialized()) {
+                    c05Remote.onOwnedStoreReady()
+                }
                 // Office AI host lane follows the ACTUAL accepted root epoch
                 // with bounded attempts (same doctrine as the browser lane).
                 startOfficeAiLane()
@@ -697,6 +729,7 @@ class RuntimeHost internal constructor(
                 }
                 g02ReadinessAdapter.reset()
                 if (cadViewerDelegate.isInitialized()) cadViewer.onRootStopped()
+                if (c05RemoteDelegate.isInitialized()) c05Remote.onRootStopped()
                 stopOfficeAiLane()
                 // Fence the flavour extension on the real retirement. The
                 // main pre-stop drain already ran prepareForRootStop(); this
@@ -1015,6 +1048,9 @@ class RuntimeHost internal constructor(
 
         /** Bounded join for the C04A viewer WebView/snapshot drain. */
         internal const val CAD_VIEWER_STOP_WAIT_MS = 8_000L
+
+        /** Bounded join for the C05 SSH session/PTY/tunnel drain. */
+        internal const val C05_REMOTE_STOP_WAIT_MS = 8_000L
 
         /** Bounded join for the exact active monitoring session on root stop. */
         internal const val NETWORK_MONITOR_STOP_WAIT_MS = 5_000L

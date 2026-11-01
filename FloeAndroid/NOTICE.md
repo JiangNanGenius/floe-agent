@@ -102,3 +102,11 @@ texts and source locations under `assets/cad_viewer/` and
 under `assets/legal/cad-viewer/`. Android-specific adapters do not change
 those upstream terms. Component source availability and final package
 contents remain part of release qualification.
+
+## C05 native SSH
+
+The Android SSH port reuses the fixed FloeSSH source and exact Citadel,
+SwiftNIO, NIOSSH, Crypto, BigInt and support-package revisions recorded in
+`licenses/ssh/`. Full upstream license/source notices are retained there and
+bundled under `assets/legal/ssh/`. No SwiftTerm or host ssh executable is
+used. Android-specific transport changes retain their source lineage.

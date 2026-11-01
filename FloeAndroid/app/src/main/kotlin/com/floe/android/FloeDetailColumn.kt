@@ -120,6 +120,13 @@ fun FloeDetailColumn(
                     onOpenDrawer = onOpenDrawer,
                     compact = compact,
                 )
+                MoreDestination.REMOTE -> com.floe.android.host.remote.C05RemoteDestination(
+                    host = runtimeHost,
+                    compact = compact,
+                    showSidebarToggle = showSidebarToggle,
+                    onExpandSidebar = onExpandSidebar,
+                    onOpenDrawer = onOpenDrawer,
+                )
                 // Skills opens the Settings sheet at the Skills section
                 // (handled in the shell's select); a direct route here shows
                 // the same honest pending surface as other later goals.
