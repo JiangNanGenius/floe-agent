@@ -30,12 +30,19 @@ if [ "${SWIFTPM_NO_SANDBOX:-0}" = "1" ]; then
     SANDBOX_FLAG="--disable-sandbox"
 fi
 
-# Pinned OCCT slices are untracked vendor binaries: fetch + SHA-256 verify them
-# before building whenever the bootstrap manifest is present. Idempotent no-op
-# when the exact bytes are already installed; macOS-only (the app/CAD stack).
+# Pinned OCCT base slices are untracked vendor binaries; the installed slices
+# additionally require the reviewed Standard_Type derivation (one object
+# compile + deterministic archive splice). Prepare/verify them before building
+# whenever the bootstrap manifest is present. Idempotent no-op when valid
+# derived bytes and receipts are already installed; macOS + full Xcode only
+# (the CLT-only path below explicitly excludes the iOS/CAD targets).
 if [ "$(uname -s)" = "Darwin" ] && [ -f ThirdParty/FloeCADKit/bootstrap.py ]; then
-    echo "== bootstrap pinned OCCT slices =="
-    python3 ThirdParty/FloeCADKit/bootstrap.py
+    if xcodebuild -version >/dev/null 2>&1; then
+        echo "== prepare/verify FloeCADKit OCCT slices =="
+        python3 ThirdParty/FloeCADKit/bootstrap.py
+    else
+        echo "== FloeCADKit OCCT preparation skipped: full Xcode required; CLT-only build excludes iOS/CAD targets =="
+    fi
 fi
 
 echo "== swift build (all SPM targets) =="

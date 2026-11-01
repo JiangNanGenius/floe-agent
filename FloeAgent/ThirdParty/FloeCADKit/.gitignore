@@ -9,3 +9,9 @@ xcuserdata/
 # ordinary Git block-push limit and must not be committed as blobs; the OCCT
 # headers and Info.plist stay Git-tracked.
 Vendor/OCCT.xcframework/**/*.a
+
+# Generated derivation provenance and staging files for the reviewed
+# Standard_Type backport. The tracked recipe/source/patch live under
+# relink/derivations/; receipts record the actual produced bytes/toolchain.
+Vendor/OCCT.xcframework/**/*.derivation.json
+Vendor/OCCT.xcframework/**/.floecad-*

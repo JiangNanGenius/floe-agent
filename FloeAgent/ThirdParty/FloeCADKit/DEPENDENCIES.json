@@ -1,8 +1,9 @@
 {
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "package": "FloeCADKit",
-  "manifestPurpose": "Pinned native OCCT static slices for FloeCADKit. The .a files are too large for ordinary Git block push, so they are NOT committed as Git blobs: bootstrap.py fetches the exact, content-addressed Git-LFS objects from the pinned upstream repository and installs them only after size and SHA-256 verification. Header files remain Git-tracked and are not managed here.",
+  "manifestPurpose": "Pinned native OCCT static slices for FloeCADKit. The .a files are too large for ordinary Git block push, so they are NOT committed as Git blobs: bootstrap.py fetches the exact, content-addressed Git-LFS base objects from the pinned upstream repository and verifies size and SHA-256. Each artifact also declares a required source derivation: the reviewed Standard_Type lifetime backport is reconstructed locally from that exact base archive plus the tracked recipe/source/patch. A valid derivation receipt is required; the pinned upstream base alone is reported UNPREPARED because it contains the known-crashing registry lifetime. Header files remain Git-tracked and are not managed here.",
   "lastVerified": "2026-10-10",
+  "lastDerivationIntegrated": "2026-11-01 (Root actual two-slice artifacts qualified; App121 relink identity recorded; App125 normal STEP/exit gate pending)",
   "installRoot": ".",
   "artifacts": [
     {
@@ -17,6 +18,16 @@
         "upstreamPath": "ThirdParty/OCCT.xcframework/ios-arm64/libOCCT-OS64.a",
         "oid": "b4abdbf22f704cfad0be3e67a686f727cc9bb0429d09dbef2153728b81850b50",
         "oidAlgorithm": "sha256"
+      },
+      "derivation": {
+        "id": "occt-standard-type-lifetime-v1",
+        "recipe": "relink/derivations/standard-type-lifetime.v1.json",
+        "recipeSha256": "d375d63871a53c2efb72047d8ebc2864c834b53c9d686da6943cab23968992f8",
+        "receiptPath": "Vendor/OCCT.xcframework/ios-arm64/libOCCT-OS64.a.derivation.json",
+        "expectedResult": {
+          "size": 149038056,
+          "sha256": "bb43f464af9162fde65b667414ba340dfd79b170cff7287688ec97d44db9b067"
+        }
       }
     },
     {
@@ -31,6 +42,16 @@
         "upstreamPath": "ThirdParty/OCCT.xcframework/ios-arm64-simulator/libOCCT-SIMULATORARM64.a",
         "oid": "a46899cb51e03fcf57c159bfca2b99e2931b2fdfbd457fd2e1074c19c2b4b087",
         "oidAlgorithm": "sha256"
+      },
+      "derivation": {
+        "id": "occt-standard-type-lifetime-v1",
+        "recipe": "relink/derivations/standard-type-lifetime.v1.json",
+        "recipeSha256": "d375d63871a53c2efb72047d8ebc2864c834b53c9d686da6943cab23968992f8",
+        "receiptPath": "Vendor/OCCT.xcframework/ios-arm64-simulator/libOCCT-SIMULATORARM64.a.derivation.json",
+        "expectedResult": {
+          "size": 147188808,
+          "sha256": "06a284928c1fe1c7c516e8eb629ee9b022b3505403045d29f346ffdcb1c0ed7e"
+        }
       }
     }
   ],
@@ -50,17 +71,21 @@
   "trackedButNotBootstrapped": {
     "headers": "Vendor/OCCT.xcframework/ios-arm64/Headers/** (7,963 flat OCCT 7.8.1 headers) and the ios-arm64-simulator/Headers symlink remain Git-tracked; they are platform-independent and are not downloaded by bootstrap.py.",
     "xcframeworkInfo": "Vendor/OCCT.xcframework/Info.plist remains Git-tracked.",
-    "excludedSlice": "The upstream ios-arm64-maccatalyst slice is intentionally not vendored; see UPSTREAM.md."
+    "excludedSlice": "The upstream ios-arm64-maccatalyst slice is intentionally not vendored; see UPSTREAM.md.",
+    "derivationReceipts": "Vendor/OCCT.xcframework/**/*.derivation.json are generated provenance records for locally reconstructed slices; they are not committed. The tracked recipe/source/patch under relink/derivations/ and the base pins above are the reviewable integrity inputs."
   },
   "relink": {
     "guide": "OCCT_RELINK.md",
     "kit": "relink/",
-    "status": "Pinned relink inputs are available (OCCT source, upstream build program, toolchain). Floe has NOT independently rebuilt OCCT and claims no byte-identical reproduction; local replacement of the pinned slices is an explicit opt-in (FLOECAD_LOCAL_RELINK=1 / --local-relink) and is never performed for official builds.",
+    "status": "Pinned relink inputs are available (OCCT source, upstream build program, toolchain). Floe does NOT claim a full 47-toolkit byte-identical rebuild. The shipped base bytes remain the pinned upstream OpenShape3D Git-LFS objects; each installed OCCT slice additionally carries one surgical source derivation (Standard_Type lifetime) reconstructed from that base with the tracked recipe, source, patch and a declared Apple toolchain. A bare pinned base is not accepted as prepared: bootstrap reports it UNPREPARED. bootstrap --check validates the derivation receipt and archive invariants read-only; bootstrap --release-check additionally requires the qualified Xcode/SDK and the tracked expectedResult.",
     "occt": {
       "name": "Open CASCADE Technology",
       "version": "7.8.1",
       "license": "LGPL-2.1-only with Open CASCADE exception 1.0",
-      "licenseFiles": ["license.occt.txt", "OCCT_LGPL_EXCEPTION.txt"],
+      "licenseFiles": [
+        "license.occt.txt",
+        "OCCT_LGPL_EXCEPTION.txt"
+      ],
       "repositoryWeb": "https://github.com/Open-Cascade-SAS/OCCT",
       "repositoryClone": "https://github.com/Open-Cascade-SAS/OCCT.git",
       "tag": "V7_8_1",
@@ -69,7 +94,17 @@
       "commitDate": "2024-03-31T22:05:22Z",
       "commitResolution": "Resolved 2026-10-10: refs/tags/V7_8_1 is a lightweight tag, so git ls-remote and the GitHub ref API both report the commit bd2a789f15235755ce4d1a3b07379a2e062fdc2e directly (message 'Update version to 7.8.1').",
       "sourceArchive": "https://github.com/Open-Cascade-SAS/OCCT/archive/refs/tags/V7_8_1.tar.gz",
-      "sourceOffer": "relink/SOURCE_OFFER.md"
+      "sourceOffer": "relink/SOURCE_OFFER.md",
+      "floeSourceChanges": [
+        {
+          "path": "src/Standard/Standard_Type.cxx",
+          "recipe": "relink/derivations/standard-type-lifetime.v1.json",
+          "baseSha256": "5b3489f3d4ecb10a87d5963ce67fc61c5a48390c8c18f8b34f2cfc2438743442",
+          "overlaySha256": "54aed57c03ce3204c94c372c143f5dcab4b1362a2b07fc9f2579cb3926384846",
+          "patchSha256": "b4afd8174eec4b92bec3fd906059654952d1712f049728b9201723af5c794e8f",
+          "description": "Keep the Standard_Type type-registry allocation alive for the OCCT image/process lifetime so static Standard_Type handles in other translation units can be destroyed after the function-local registry without a use-after-destruction hash-table read. Public ABI and every other archive member are unchanged."
+        }
+      ]
     },
     "buildProgram": {
       "origin": "OpenShape3D scripts/build_occt_ios.sh",

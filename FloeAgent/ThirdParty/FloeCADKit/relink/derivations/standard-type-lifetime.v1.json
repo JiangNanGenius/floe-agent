@@ -1,0 +1,135 @@
+{
+  "schemaVersion": 1,
+  "id": "occt-standard-type-lifetime-v1",
+  "displayName": "OCCT Standard_Type registry lifetime backport",
+  "status": "required",
+  "approach": "single-object-surgical-reconstruction",
+  "purpose": "Keep the Standard_Type type registry allocation alive for the OCCT image/process lifetime so static Standard_Type handles in other translation units can be destroyed after the function-local registry without reading freed hash-table storage. This is the verified App116/App121 normal-static-teardown SIGSEGV repair.",
+  "occt": {
+    "name": "Open CASCADE Technology",
+    "version": "7.8.1",
+    "commit": "bd2a789f15235755ce4d1a3b07379a2e062fdc2e",
+    "repository": "https://github.com/Open-Cascade-SAS/OCCT",
+    "license": "LGPL-2.1-only with Open CASCADE exception 1.0",
+    "baseSource": {
+      "path": "relink/derivations/standard-type-lifetime/base/src/Standard/Standard_Type.cxx",
+      "size": 4409,
+      "sha256": "5b3489f3d4ecb10a87d5963ce67fc61c5a48390c8c18f8b34f2cfc2438743442"
+    },
+    "overlaySource": {
+      "path": "relink/derivations/standard-type-lifetime/overlay/src/Standard/Standard_Type.cxx",
+      "size": 4709,
+      "sha256": "54aed57c03ce3204c94c372c143f5dcab4b1362a2b07fc9f2579cb3926384846"
+    },
+    "patch": {
+      "path": "relink/derivations/standard-type-lifetime/minimal.patch",
+      "size": 1198,
+      "sha256": "b4afd8174eec4b92bec3fd906059654952d1712f049728b9201723af5c794e8f"
+    }
+  },
+  "member": {
+    "name": "Standard_Type.cxx.o",
+    "publicSymbolPattern": "^(__ZN13Standard_Type|__ZNK13Standard_Type|__ZT[ISV]13Standard_Type$)",
+    "expectedPublicSymbols": [
+      "__ZN13Standard_Type19get_type_descriptorEv",
+      "__ZN13Standard_Type8RegisterERKSt9type_infoPKcmRKN11opencascade6handleIS_EE",
+      "__ZN13Standard_TypeC1ERKSt9type_infoPKcmRKN11opencascade6handleIS_EE",
+      "__ZN13Standard_TypeC2ERKSt9type_infoPKcmRKN11opencascade6handleIS_EE",
+      "__ZN13Standard_TypeD0Ev",
+      "__ZN13Standard_TypeD1Ev",
+      "__ZN13Standard_TypeD2Ev",
+      "__ZNK13Standard_Type11DynamicTypeEv",
+      "__ZNK13Standard_Type5PrintERNSt3__113basic_ostreamIcNS0_11char_traitsIcEEEE",
+      "__ZNK13Standard_Type7SubTypeEPKc",
+      "__ZNK13Standard_Type7SubTypeERKN11opencascade6handleIS_EE",
+      "__ZTI13Standard_Type",
+      "__ZTS13Standard_Type",
+      "__ZTV13Standard_Type"
+    ],
+    "expectedPublicSymbolsSha256": "e07cc1222be0762f99233810ad7440cec6023c5518177dc4a8cd4119ae6a594f"
+  },
+  "archive": {
+    "format": "bsd-ar",
+    "indexMemberName": "__.SYMDEF",
+    "replacement": "single-object",
+    "indexRebuild": "ranlib",
+    "preserve": "member order and every non-index, non-target member record byte-for-byte"
+  },
+  "build": {
+    "headersPath": "Vendor/OCCT.xcframework/ios-arm64/Headers",
+    "sourceFileName": "Standard_Type.cxx",
+    "objectFileName": "Standard_Type.cxx.o",
+    "compiler": "clang++",
+    "indexTool": "ranlib",
+    "symbolTool": "nm",
+    "compileFlags": [
+      "-std=c++17",
+      "-O3",
+      "-DNDEBUG",
+      "-fvisibility=default",
+      "-fexceptions",
+      "-frtti",
+      "-Wall",
+      "-Wextra",
+      "-Werror"
+    ],
+    "headersTreeAlgorithm": "sha256-json-map-v1: SHA-256 of compact sorted JSON {relative path: file SHA-256} over the pinned device headers tree",
+    "headersTreeSha256": "e7287b86ec61dea2dc96b1f6c5bdf16eff822c6c39af3d12965c1dbab948ad2a",
+    "headersFileCount": 7963
+  },
+  "slices": {
+    "device": {
+      "installPath": "Vendor/OCCT.xcframework/ios-arm64/libOCCT-OS64.a",
+      "baseSize": 149038832,
+      "baseSha256": "b4abdbf22f704cfad0be3e67a686f727cc9bb0429d09dbef2153728b81850b50",
+      "baseMemberCount": 5412,
+      "baseMemberOrderSha256": "d152ffd0e16f316d3289e83d164e24f398dd8661b25b2ece3949242c8b4c6c1b",
+      "baseNonTargetMembersDigestSha256": "cc1e1b1be44948a84e8227b7452771d9e5e563da97e51467d6e51098bfc48a65",
+      "baseIndexMemberSize": 18165980,
+      "baseIndexPayloadSize": 18165960,
+      "baseIndexPayloadSha256": "d3637fd28a952ae5893b380096aec989cdc1d8827fa1674269d3bb11266025a8",
+      "baseTargetPayloadSize": 17600,
+      "baseTargetPayloadSha256": "9b410d8fba721daf9901d9372980cf8e6dd424fea86f037d8f43e826ac44e12f",
+      "arch": "arm64",
+      "machoPlatform": "IOS",
+      "minos": "16.0",
+      "target": "arm64-apple-ios16.0",
+      "sdk": "iphoneos",
+      "sdkVersionAtBaseBuild": "26.2"
+    },
+    "simulator": {
+      "installPath": "Vendor/OCCT.xcframework/ios-arm64-simulator/libOCCT-SIMULATORARM64.a",
+      "baseSize": 147189584,
+      "baseSha256": "a46899cb51e03fcf57c159bfca2b99e2931b2fdfbd457fd2e1074c19c2b4b087",
+      "baseMemberCount": 5412,
+      "baseMemberOrderSha256": "d152ffd0e16f316d3289e83d164e24f398dd8661b25b2ece3949242c8b4c6c1b",
+      "baseNonTargetMembersDigestSha256": "24f7e5a653fcf303a326d6ddbb9bb392dd55d26ae4c25b3a5f2079c51ea10647",
+      "baseIndexMemberSize": 18165980,
+      "baseIndexPayloadSize": 18165960,
+      "baseIndexPayloadSha256": "3a93032559ba7ba3a2381fc11dacbd261784f3d9c9ecdab318bacc12c22f4a9b",
+      "baseTargetPayloadSize": 17544,
+      "baseTargetPayloadSha256": "93c0cdab31a7660c8c49cbeb8a7c2cddab2a50a64d25de8e31fbc465091cbf91",
+      "arch": "arm64",
+      "machoPlatform": "IOSSIMULATOR",
+      "minos": "16.0",
+      "target": "arm64-apple-ios16.0-simulator",
+      "sdk": "iphonesimulator",
+      "sdkVersionAtBaseBuild": "26.2"
+    }
+  },
+  "qualifiedToolchain": {
+    "xcodeVersion": "27.1",
+    "xcodeBuild": "27A9275",
+    "sdkVersion": "27.1",
+    "clangVersionPrefix": "Apple clang version 21.0.0",
+    "note": "The release owner's local qualification toolchain. Other Xcode/SDK versions may derive a byte-different but ABI-compatible slice for CI or development; bootstrap --release-check rejects them as unqualified."
+  },
+  "limitations": [
+    "Single-object surgical reconstruction from the pinned merged archive, not a full 47-toolkit OCCT rebuild.",
+    "The base archive remains the upstream artifact pin; the derived slice intentionally differs from that pin and is identified by its receipt and the tracked expectedResult.",
+    "The receipt is a local derivation record bound to tracked hashes, not a cryptographic signature; release integrity relies on the tracked recipe/expectedResult and review.",
+    "Derivation verifies archive structure, member payload identity/order, object architecture/minOS/platform and the actual 14-symbol Standard_Type class API/vtable/typeinfo set shared by the pinned base and the derived object. It does not hardcode a compiler-dependent total symbol count.",
+    "Derivation does not prove a runtime outcome; Root must run the native probe and the App/XCTest process-exit gates.",
+    "A different Xcode/SDK produces different object bytes and is not the qualified release derivation; it remains useful for CI/development but must never be reported as the qualified artifact."
+  ]
+}

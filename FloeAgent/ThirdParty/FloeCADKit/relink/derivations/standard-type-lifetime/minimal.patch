@@ -1,0 +1,26 @@
+--- a/src/Standard/Standard_Type.cxx
++++ b/src/Standard/Standard_Type.cxx
+@@ -77,15 +77,18 @@
+   // Map of string to type
+   typedef std::unordered_map<Standard_CString, Standard_Type*, Standard_CStringHasher, Standard_CStringHasher> registry_type;
+ 
+-  // Registry is made static in the function to ensure that it gets
+-  // initialized by the time of first access
++  // The registry does not own its descriptors; their Handle instances do.
++  // Keep the registry allocation alive for the process lifetime because static
++  // handles in other translation units can be destroyed after a function-local
++  // registry. They must still unbind safely. This is one allocation per OCCT
++  // image, with storage bounded by the high-water count of distinct type names.
+   registry_type& GetRegistry() 
+   {
+-    static registry_type theRegistry;
+-    return theRegistry;
++    static registry_type* const theRegistry = new registry_type();
++    return *theRegistry;
+   }
+ 
+-  // To initialize theRegistry map as soon as possible to be destroyed the latest
++  // Initialize the registry eagerly during OCCT image initialization.
+   Handle(Standard_Type) theType = STANDARD_TYPE(Standard_Transient);
+ }
+ 

@@ -16,15 +16,28 @@ license texts themselves.
 
 Complete source for the exact linked version
 --------------------------------------------
-OCCT 7.8.1 is unmodified upstream source; Floe modifies no OCCT source file.
+The OCCT 7.8.1 base is unmodified upstream source:
   Project:  https://github.com/Open-Cascade-SAS/OCCT
   Tag:      V7_8_1 (lightweight tag)
   Commit:   bd2a789f15235755ce4d1a3b07379a2e062fdc2e
   Archive:  https://github.com/Open-Cascade-SAS/OCCT/archive/refs/tags/V7_8_1.tar.gz
 The source is public and requires no registration, request or contact.
 
-Linked slices, pinned by byte size and SHA-256
-----------------------------------------------
+Floe applies exactly one source change above that base, in
+src/Standard/Standard_Type.cxx (type-registry allocation lifetime). The
+complete modified source is the pinned upstream tree plus the retained patch,
+both shipped in the repository:
+  Base:     relink/derivations/standard-type-lifetime/base/src/Standard/Standard_Type.cxx
+            4,409 bytes; SHA-256 5b3489f3d4ecb10a87d5963ce67fc61c5a48390c8c18f8b34f2cfc2438743442
+  Overlay:  relink/derivations/standard-type-lifetime/overlay/src/Standard/Standard_Type.cxx
+            4,709 bytes; SHA-256 54aed57c03ce3204c94c372c143f5dcab4b1362a2b07fc9f2579cb3926384846
+  Patch:    relink/derivations/standard-type-lifetime/minimal.patch
+            1,198 bytes; SHA-256 b4afd8174eec4b92bec3fd906059654952d1712f049728b9201723af5c794e8f
+  Recipe:   relink/derivations/standard-type-lifetime.v1.json
+No other OCCT source file, header or public class layout is changed.
+
+Base slices, pinned by byte size and SHA-256
+-------------------------------------------
   Device (ios-arm64)
     ThirdParty/FloeCADKit/Vendor/OCCT.xcframework/ios-arm64/libOCCT-OS64.a
     149,038,832 bytes
@@ -34,8 +47,17 @@ Linked slices, pinned by byte size and SHA-256
     147,189,584 bytes
     SHA-256 a46899cb51e03fcf57c159bfca2b99e2931b2fdfbd457fd2e1074c19c2b4b087
 
-The pins live in ThirdParty/FloeCADKit/DEPENDENCIES.json and are re-obtainable
-by content hash with ThirdParty/FloeCADKit/bootstrap.py.
+These base pins live in ThirdParty/FloeCADKit/DEPENDENCIES.json and are
+re-obtainable by content hash with ThirdParty/FloeCADKit/bootstrap.py.
+
+Qualified reconstructed slices (current candidate)
+--------------------------------------------------
+Only Standard_Type.cxx.o is replaced; every other object payload equals the
+base pins above. Current expectedResult pins:
+  Device:     149,038,056 bytes; SHA-256 bb43f464af9162fde65b667414ba340dfd79b170cff7287688ec97d44db9b067
+  Simulator:  147,188,808 bytes; SHA-256 06a284928c1fe1c7c516e8eb629ee9b022b3505403045d29f346ffdcb1c0ed7e
+Root recorded an App121 relink identity; the App125 normal STEP/process-exit gate
+remains separate and pending. These pins are not a release-acceptance claim.
 
 Retained build inputs for rebuilding or relinking
 -------------------------------------------------
@@ -56,9 +78,10 @@ Retained build inputs for rebuilding or relinking
 
 Status and limits
 -----------------
-- This build links the reviewed upstream-built slices. Floe has not
-  independently rebuilt OCCT and claims no byte-identical reproduction of a
-  local build.
+- The linked slices are single-object reconstructions from the reviewed
+  upstream base, not a full 47-toolkit rebuild; only Standard_Type.cxx.o
+  changes and every other object payload is verified unchanged. Floe makes no
+  full-rebuild byte-identity claim.
 - The record above is the actual state of this source tree; it is an
   engineering fact sheet, not a legal opinion or certification. The release
   owner performs the final license review before distribution.

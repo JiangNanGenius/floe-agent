@@ -17,18 +17,29 @@ Safety guarantees
   lands in a temporary sibling file and is atomically renamed into place only
   after the full content verifies. A partial or wrong-hash download is deleted
   and the pre-existing file is left byte-for-byte untouched.
-* An existing file whose size and SHA-256 already match the manifest is kept
-  (no re-download, no rewrite).
+* A legacy artifact whose size and SHA-256 match its manifest is kept. A
+  derivation-bearing artifact is kept only with its valid derivation receipt;
+  the base pin alone still needs preparation.
 * Deliberate local rebuild/replacement is an explicit opt-in
   (`FLOECAD_LOCAL_RELINK=1` or `--local-relink`): existing bytes that differ
   from the pin are then never overwritten and are reported as `LOCAL`. Without
-  the opt-in (official path) a mismatching slice is repaired to the pinned
-  bytes, with an explicit `replace` log line.
+  the opt-in a legacy artifact is restored to its pin; a derivation-bearing
+  slice is rebuilt from the pinned base and verified recipe instead.
 * installPath entries are confined to the package directory; absolute paths
   and ".." escapes are refused.
 * `--check` is strictly read-only: it performs no network access and no
   writes, and exits non-zero if any artifact is absent or invalid. With
   `--local-relink` a present-but-unpinned slice is reported `LOCAL` (exit 0).
+* Artifacts may declare a required source derivation (currently the OCCT
+  `Standard_Type` lifetime backport).  The schema is bumped to 2 so older
+  bootstrap revisions refuse it instead of replacing a corrected slice with
+  the known-crashing pinned base.  A derived slice is accepted only with a
+  valid receipt bound to the pinned base, the tracked recipe/source/patch,
+  the declared toolchain and the actual archive member set.  The pinned base
+  alone is reported `UNPREPARED` and fails; a stale receipt fails `STALE`.
+  `--release-check` is the strict read-only release gate: it ignores the
+  local-relink opt-in and additionally requires the recipe's qualified
+  Xcode/SDK and a tracked `expectedResult` for each derived slice.
 * All network calls use explicit connect/read timeouts and an overall deadline.
   The Git-LFS batch response is size-bounded. Redirects are followed only
   under the same URL policy: an HTTPS request never downgrades to plain HTTP.
@@ -49,6 +60,8 @@ import http.client
 import json
 import os
 import re
+import shutil
+import subprocess
 import sys
 import tempfile
 import time
@@ -70,7 +83,11 @@ MAX_BATCH_RESPONSE_BYTES = 4 * 1024 * 1024
 MAX_ERROR_TEXT = 240
 
 MANIFEST_NAME = "DEPENDENCIES.json"
-SUPPORTED_SCHEMA_VERSION = 1
+# Schema 1 is the original legacy shape (exact pinned bytes only). Schema 2
+# adds optional per-artifact derivations. Older bootstrap.py revisions refuse
+# schema 2 rather than silently replacing a derived slice with the pinned base.
+SUPPORTED_SCHEMA_VERSIONS = (1, 2)
+CURRENT_SCHEMA_VERSION = 2
 _REQUIRED_SOURCE_KIND = "git-lfs"
 # Opt-in flag/env for a deliberate local rebuild/replacement of the slices.
 ENV_LOCAL_RELINK = "FLOECAD_LOCAL_RELINK"
@@ -98,6 +115,10 @@ class UnsupportedSourceError(BootstrapError):
 
 
 class FetchError(BootstrapError):
+    pass
+
+
+class DerivationError(BootstrapError):
     pass
 
 
@@ -154,16 +175,16 @@ def validate_manifest(data: dict) -> None:
     if isinstance(raw_version, bool) or not isinstance(raw_version, int):
         raise ManifestError(
             "%s has missing or non-integer schemaVersion %r; this bootstrap "
-            "supports schemaVersion %d"
-            % (MANIFEST_NAME, raw_version, SUPPORTED_SCHEMA_VERSION)
+            "supports schemaVersion 1 (legacy) and %d (derivation-aware)"
+            % (MANIFEST_NAME, raw_version, CURRENT_SCHEMA_VERSION)
         )
-    # Exact match: a newer/unknown schema may change field semantics, so it is
+    # Exact match: an unknown schema may change field semantics, so it is
     # refused rather than silently interpreted with this schema's rules.
-    if raw_version != SUPPORTED_SCHEMA_VERSION:
+    if raw_version not in SUPPORTED_SCHEMA_VERSIONS:
         raise ManifestError(
             "unsupported schemaVersion %r in %s; this bootstrap supports "
-            "schemaVersion %d"
-            % (raw_version, MANIFEST_NAME, SUPPORTED_SCHEMA_VERSION)
+            "schemaVersion 1 (legacy) and %d (derivation-aware)"
+            % (raw_version, MANIFEST_NAME, CURRENT_SCHEMA_VERSION)
         )
     artifacts = data.get("artifacts")
     if not isinstance(artifacts, list) or not artifacts:
@@ -193,6 +214,54 @@ def validate_manifest(data: dict) -> None:
             raise ManifestError(
                 "artifact %r: LFS oid does not match sha256" % art.get("name")
             )
+        derivation = art.get("derivation")
+        if derivation is not None:
+            if raw_version < 2:
+                raise ManifestError(
+                    "artifact %r declares a derivation but %s uses schemaVersion "
+                    "1; use schemaVersion %d"
+                    % (art.get("name"), MANIFEST_NAME, CURRENT_SCHEMA_VERSION)
+                )
+            if not isinstance(derivation, dict):
+                raise ManifestError(
+                    "artifact %r derivation must be an object" % art.get("name")
+                )
+            for key in ("id", "recipe", "recipeSha256", "receiptPath"):
+                if not isinstance(derivation.get(key), str) or not derivation[key].strip():
+                    raise ManifestError(
+                        "artifact %r derivation missing %r"
+                        % (art.get("name"), key)
+                    )
+            if not _is_hex(derivation["recipeSha256"], 64):
+                raise ManifestError(
+                    "artifact %r derivation has invalid recipeSha256"
+                    % art.get("name")
+                )
+            for key in ("recipe", "receiptPath"):
+                if os.path.isabs(derivation[key]) or derivation[key].startswith(("/", "\\")):
+                    raise ManifestError(
+                        "artifact %r derivation.%s must be relative"
+                        % (art.get("name"), key)
+                    )
+            expected = derivation.get("expectedResult")
+            if expected is not None:
+                if not isinstance(expected, dict):
+                    raise ManifestError(
+                        "artifact %r derivation.expectedResult must be an object"
+                        % art.get("name")
+                    )
+                if (isinstance(expected.get("size"), bool)
+                        or not isinstance(expected.get("size"), int)
+                        or expected["size"] < 0):
+                    raise ManifestError(
+                        "artifact %r derivation.expectedResult.size is invalid"
+                        % art.get("name")
+                    )
+                if not _is_hex(expected.get("sha256"), 64):
+                    raise ManifestError(
+                        "artifact %r derivation.expectedResult.sha256 is invalid"
+                        % art.get("name")
+                    )
 
 
 def _is_hex(value: object, length: int) -> bool:
@@ -269,15 +338,343 @@ def file_matches(path: str, size: int, sha256: str) -> bool:
     return sha256_file(path) == sha256.lower()
 
 
-def artifact_status(root: str, art: dict, local_relink: bool = False) -> str:
-    """Return one of: 'ok', 'missing', 'invalid' — or 'local' for a
-    present-but-unpinned artifact when the local-relink opt-in is active."""
+# --------------------------------------------------------------------------- #
+# Required source derivations (OCCT Standard_Type lifetime backport)
+# --------------------------------------------------------------------------- #
+# A derived artifact is not the pinned upstream binary: it is reconstructed
+# from the pinned base plus a tracked source patch.  The receipt binds the
+# produced bytes to the base pin, the tracked recipe/source/patch hashes, the
+# declared toolchain and the exact archive member set.  A missing, malformed or
+# stale receipt fails closed; the pinned base alone is reported UNPREPARED, not
+# accepted, because it is the known-crashing object.  `--local-relink` remains
+# an honest presence-only opt-in for a developer's own rebuilt slice, but it
+# can never satisfy `--release-check`.
+_DERIVATION_MODULES = None
+
+
+def _derivation_modules():
+    global _DERIVATION_MODULES
+    if _DERIVATION_MODULES is None:
+        directory = os.path.join(package_root(), "relink", "derivations")
+        if directory not in sys.path:
+            sys.path.insert(0, directory)
+        # A fresh --check must also stay read-only when Python imports these
+        # support modules for the first time. Do not create __pycache__ as a
+        # side effect of validating an otherwise unchanged native package.
+        previous_bytecode_policy = sys.dont_write_bytecode
+        sys.dont_write_bytecode = True
+        try:
+            import derivation_common  # type: ignore
+            import occt_archive  # type: ignore
+        except ImportError as exc:
+            raise DerivationError(
+                "derivation support modules are missing (%s); restore "
+                "FloeCADKit/relink/derivations" % exc
+            )
+        finally:
+            sys.dont_write_bytecode = previous_bytecode_policy
+        _DERIVATION_MODULES = (derivation_common, occt_archive)
+    return _DERIVATION_MODULES
+
+
+def _load_derivation(root: str, art: dict):
+    der = art["derivation"]
+    dc, oa = _derivation_modules()
+    recipe_path = safe_install_path(root, der["recipe"])
+    try:
+        recipe = dc.load_recipe(recipe_path, der["recipeSha256"], der["id"])
+        slice_name, slice_cfg = dc.slice_config(
+            recipe, install_path=art["installPath"]
+        )
+    except dc.DerivationError as exc:
+        raise DerivationError(str(exc))
+    if (slice_cfg["baseSize"] != art["size"]
+            or slice_cfg["baseSha256"].lower() != art["sha256"].lower()):
+        raise DerivationError(
+            "recipe base pin does not match the manifest artifact"
+        )
+    return dc, oa, recipe, slice_name, slice_cfg
+
+
+def _read_json_file(path: str, label: str) -> dict:
+    try:
+        with open(path, "r", encoding="utf-8") as fh:
+            return json.load(fh)
+    except FileNotFoundError:
+        raise DerivationError("%s not found: %s" % (label, path))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise DerivationError("cannot read %s %s: %s" % (label, path, exc))
+
+
+def _validate_derivation_paths(root: str, art: dict, archive_path: str,
+                               receipt_path: str, strict_toolchain: bool = False,
+                               require_expected: bool = False,
+                               warnings=None) -> dict:
+    dc, oa, recipe, slice_name, slice_cfg = _load_derivation(root, art)
+    receipt = _read_json_file(receipt_path, "derivation receipt")
+    installed_size = os.path.getsize(archive_path)
+    installed_sha = sha256_file(archive_path)
+    manifest_artifact = {
+        "installPath": art["installPath"],
+        "size": art["size"],
+        "sha256": art["sha256"],
+    }
+    problems, qualified = dc.validate_receipt(
+        recipe, manifest_artifact, receipt, installed_size, installed_sha
+    )
+    archive_problems, summary = dc.verify_installed_archive(
+        archive_path, recipe, slice_cfg, receipt
+    )
+    problems.extend(archive_problems)
+    expected = dc.expected_result(art["derivation"])
+    if expected is None:
+        if require_expected:
+            problems.append(
+                "no tracked expectedResult is recorded; after Root derives and "
+                "qualifies this slice, record its size/SHA-256 in DEPENDENCIES.json"
+            )
+    elif (installed_size != expected["size"]
+          or installed_sha != expected["sha256"]):
+        message = (
+            "installed bytes do not match the tracked expectedResult "
+            "(size %d/%d, sha256 %s/%s)"
+            % (installed_size, expected["size"], installed_sha, expected["sha256"])
+        )
+        if strict_toolchain or qualified:
+            problems.append(message)
+        elif warnings is not None:
+            warnings.append(message + "; this toolchain is not the qualified one")
+    if strict_toolchain and not qualified:
+        _matched, mismatches = dc.toolchain_matches_qualified(receipt, recipe)
+        problems.append(
+            "derivation toolchain is not the qualified release toolchain: %s"
+            % "; ".join(mismatches)
+        )
+    if strict_toolchain:
+        build = recipe.get("build") or {}
+        expected_headers = build.get("headersTreeSha256")
+        if expected_headers:
+            try:
+                actual_headers = dc.headers_identity(root, recipe)
+            except dc.DerivationError as exc:
+                problems.append("cannot verify pinned headers: %s" % exc)
+            else:
+                if (actual_headers["headersTreeSha256"] != expected_headers
+                        or actual_headers["headersFileCount"] != build.get("headersFileCount")):
+                    problems.append(
+                        "pinned OCCT headers tree does not match the recipe"
+                    )
+    if problems:
+        raise DerivationError(dc.describe_problems(problems))
+    return {
+        "receipt": receipt,
+        "summary": summary,
+        "qualified": qualified,
+        "toolchain": dc.toolchain_summary(receipt),
+        "expected": expected,
+    }
+
+
+def _artifact_status_detail(root: str, art: dict,
+                            local_relink: bool = False):
+    """Return (status, human-readable detail) for one artifact."""
     dest = safe_install_path(root, art["installPath"])
     if not os.path.exists(dest):
-        return "missing"
+        return "missing", "artifact file is absent"
+    der = art.get("derivation")
+    if not der:
+        if file_matches(dest, art["size"], art["sha256"]):
+            return "ok", "matches the pinned size and SHA-256"
+        return (
+            ("local" if local_relink else "invalid"),
+            "bytes do not match the pinned size/SHA-256",
+        )
     if file_matches(dest, art["size"], art["sha256"]):
-        return "ok"
-    return "local" if local_relink else "invalid"
+        return "unprepared", (
+            "installed bytes are the pinned upstream base and lack the required "
+            "derivation %s" % der["id"]
+        )
+    receipt_path = safe_install_path(root, der["receiptPath"])
+    if not os.path.exists(receipt_path):
+        return (
+            ("local" if local_relink else "underived"),
+            "no derivation receipt is installed",
+        )
+    warnings = []
+    try:
+        info = _validate_derivation_paths(root, art, dest, receipt_path,
+                                          warnings=warnings)
+    except DerivationError as exc:
+        return (("local-stale" if local_relink else "stale"), str(exc))
+    detail = "derivation %s; %s%s" % (
+        der["id"], info["toolchain"],
+        "" if info["qualified"] else " (unqualified toolchain)",
+    )
+    if warnings:
+        detail += "; WARNING: " + "; ".join(warnings)
+    return "derived", detail
+
+
+def artifact_status(root: str, art: dict, local_relink: bool = False) -> str:
+    """Return 'ok', 'missing', 'invalid' for legacy artifacts; derived
+    artifacts additionally use 'unprepared', 'underived', 'stale' and
+    'derived'.  'local'/'local-stale' are presence-only local-relink states."""
+    return _artifact_status_detail(root, art, local_relink)[0]
+
+
+def _fetch_verified_temp(dest_dir: str, art: dict, source: dict,
+                         deadline: float, log) -> str:
+    oid = art["source"]["oid"]
+    urls = resolve_lfs_urls(source, [{"oid": oid, "size": art["size"]}], deadline)
+    href = urls[oid]
+    os.makedirs(dest_dir, exist_ok=True)
+    fd, tmp_path = tempfile.mkstemp(
+        prefix=".floecad-base-", suffix=".a", dir=dest_dir
+    )
+    os.close(fd)
+    try:
+        log("fetch  %s verified base (%d bytes) for derivation"
+            % (art.get("name", art["installPath"]), art["size"]))
+        download_verified(href, tmp_path, art["size"], art["sha256"], deadline)
+    except BaseException:
+        _remove_quiet(tmp_path)
+        raise
+    return tmp_path
+
+
+def _run_derive_tool(root: str, art: dict, recipe: dict, slice_name: str,
+                     base_path: str, output_path: str, receipt_path: str, log):
+    tool = os.path.join(package_root(), "relink", "derivations",
+                        "derive_standard_type_slice.py")
+    if not os.path.isfile(tool):
+        raise DerivationError("derivation tool is missing: %s" % tool)
+    timeout = float(os.environ.get("FLOECAD_DERIVE_TIMEOUT", "1800"))
+    argv = [
+        sys.executable, tool, "derive",
+        "--package-root", package_root(),
+        "--recipe", recipe["_path"],
+        "--recipe-sha256", recipe["_sha256"],
+        "--slice", slice_name,
+        "--base", base_path,
+        "--output", output_path,
+        "--receipt", receipt_path,
+        "--timeout", str(int(timeout)),
+    ]
+    log("derive %s (single-object Standard_Type backport; %s)"
+        % (art.get("name", art["installPath"]),
+           os.environ.get("DEVELOPER_DIR", "system Xcode")))
+    try:
+        result = subprocess.run(
+            argv, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            timeout=timeout + 60,
+        )
+    except OSError as exc:
+        raise DerivationError("could not start the derivation tool: %s" % exc)
+    except subprocess.TimeoutExpired:
+        raise DerivationError("derivation timed out after %s seconds" % timeout)
+    if result.returncode != 0:
+        detail = result.stderr.decode("utf-8", "replace").strip()
+        if not detail:
+            detail = result.stdout.decode("utf-8", "replace").strip()
+        raise DerivationError(
+            "derivation failed (exit %d): %s"
+            % (result.returncode, redact(detail[-1500:]))
+        )
+
+
+def _install_receipt(source_path: str, receipt_path: str) -> None:
+    directory = os.path.dirname(receipt_path)
+    os.makedirs(directory, exist_ok=True)
+    fd, tmp_path = tempfile.mkstemp(
+        prefix=".floecad-receipt-", suffix=".json", dir=directory
+    )
+    os.close(fd)
+    try:
+        with open(source_path, "rb") as src, open(tmp_path, "wb") as dst:
+            for chunk in iter(lambda: src.read(READ_CHUNK), b""):
+                dst.write(chunk)
+        os.replace(tmp_path, receipt_path)
+    except BaseException:
+        _remove_quiet(tmp_path)
+        raise
+
+
+def install_derived_artifact(root: str, art: dict, source: dict, deadline: float,
+                             offline: bool, log, local_relink: bool = False) -> str:
+    """Prepare/keep one derived artifact without ever installing unchecked bytes."""
+    dest = safe_install_path(root, art["installPath"])
+    der = art["derivation"]
+    receipt_path = safe_install_path(root, der["receiptPath"])
+    name = art.get("name", art["installPath"])
+    kind, detail = _artifact_status_detail(root, art, local_relink)
+    if kind == "derived":
+        log("keep   %s (verified derivation %s; %s)" % (name, der["id"], detail))
+        return "kept-derived"
+    if kind in ("local", "local-stale") and local_relink:
+        log("keep   %s (local relink bytes are deliberately NOT overwritten)" % name)
+        if kind == "local-stale":
+            log("WARN   %s: local bytes do not satisfy the derivation receipt; "
+                "official verification will fail until the slice is re-derived"
+                % name)
+        return "kept-local"
+
+    dc, oa, recipe, slice_name, slice_cfg = _load_derivation(root, art)
+    temp_base = None
+    if kind == "unprepared":
+        base_path = dest
+        log("prepare %s: the pinned upstream base is present but lacks the "
+            "required repair; reconstructing the single Standard_Type object"
+            % name)
+    else:
+        if offline:
+            raise FetchError(
+                "--offline set and %s needs a verified pinned base before the "
+                "derivation can run" % name
+            )
+        temp_base = _fetch_verified_temp(
+            os.path.dirname(dest), art, source, deadline, log
+        )
+        base_path = temp_base
+
+    staging = tempfile.mkdtemp(
+        prefix=".floecad-derive-", dir=os.path.dirname(dest)
+    )
+    derived_tmp = os.path.join(staging, os.path.basename(dest) + ".derived")
+    receipt_tmp = os.path.join(staging, "receipt.json")
+    warnings = []
+    try:
+        _run_derive_tool(root, art, recipe, slice_name, base_path, derived_tmp,
+                         receipt_tmp, log)
+        info = _validate_derivation_paths(
+            root, art, derived_tmp, receipt_tmp, warnings=warnings
+        )
+        for warning in warnings:
+            log("WARN   %s: %s" % (name, warning))
+        if os.path.exists(receipt_path):
+            previous = _read_json_file(receipt_path, "existing derivation receipt")
+            previous_sha = ((previous.get("archive") or {}).get("sha256"))
+            new_sha = sha256_file(derived_tmp)
+            if previous_sha and previous_sha != new_sha:
+                raise DerivationError(
+                    "derivation is not reproducible on this toolchain: the "
+                    "existing receipt records %s but the new derivation produced "
+                    "%s; refusing to replace the installed slice"
+                    % (previous_sha, new_sha)
+                )
+        # Receipt first, then the archive: a crash between the two leaves a
+        # receipt that does not match the installed bytes, so --check fails
+        # closed instead of accepting an unverified archive.  Re-running
+        # bootstrap repairs it.
+        _install_receipt(receipt_tmp, receipt_path)
+        os.replace(derived_tmp, dest)
+        log("verify %s OK (derived slice installed; target object %s; %s)"
+            % (name, info["summary"]["targetPayloadSha256"][:12],
+               info["toolchain"]))
+        return "prepared"
+    finally:
+        if temp_base:
+            _remove_quiet(temp_base)
+        shutil.rmtree(staging, ignore_errors=True)
 
 
 # --------------------------------------------------------------------------- #
@@ -499,6 +896,9 @@ def _remove_quiet(path: str) -> None:
 def install_artifact(root: str, art: dict, source: dict, deadline: float,
                      offline: bool, log, local_relink: bool = False) -> str:
     """Ensure one artifact is present and verified. Returns the action taken."""
+    if art.get("derivation"):
+        return install_derived_artifact(root, art, source, deadline, offline,
+                                        log, local_relink=local_relink)
     dest = safe_install_path(root, art["installPath"])
     name = art.get("name", art["installPath"])
 
@@ -544,36 +944,98 @@ def install_artifact(root: str, art: dict, source: dict, deadline: float,
 
 
 def run(root: str, check: bool, offline: bool, log=print,
-        local_relink: bool = False) -> int:
+        local_relink: bool = False, release_check: bool = False) -> int:
     manifest = load_manifest(root)
     sources = resolve_sources(manifest)
     artifacts = manifest["artifacts"]
+
+    if release_check:
+        check = True
+        if local_relink:
+            log("NOTE: --release-check ignores the local-relink opt-in; only "
+                "exact pinned bytes or a qualified derived slice are accepted.")
+            local_relink = False
 
     if check:
         # Strictly read-only: no network, no writes.
         ok = True
         local_count = 0
+        derived_count = 0
+        labels = {
+            "ok": "OK    ", "missing": "MISS  ", "invalid": "BAD   ",
+            "unprepared": "UNPREP", "underived": "UNDERI", "stale": "STALE ",
+            "derived": "PREPD ", "local": "LOCAL ", "local-stale": "LOCAL*",
+        }
         for art in artifacts:
             safe_install_path(root, art["installPath"])  # surface escape errors
-            status = artifact_status(root, art, local_relink=local_relink)
-            label = {"ok": "OK    ", "missing": "MISS  ", "invalid": "BAD   ",
-                     "local": "LOCAL "}[status]
-            log("%s %s" % (label, art["installPath"]))
-            if status == "local":
-                local_count += 1
+            if art.get("derivation"):
+                safe_install_path(root, art["derivation"]["recipe"])
+                safe_install_path(root, art["derivation"]["receiptPath"])
+            status, detail = _artifact_status_detail(root, art, local_relink)
+            label = labels.get(status, "BAD   ")
+            if status == "derived":
+                if release_check:
+                    receipt_path = safe_install_path(
+                        root, art["derivation"]["receiptPath"]
+                    )
+                    try:
+                        _validate_derivation_paths(
+                            root, art,
+                            safe_install_path(root, art["installPath"]),
+                            receipt_path, strict_toolchain=True,
+                            require_expected=True,
+                        )
+                    except DerivationError as exc:
+                        ok = False
+                        log("REJECT %s (%s)" % (art["installPath"], exc))
+                        continue
+                    log("%s %s (%s; qualified)" % (label, art["installPath"], detail))
+                else:
+                    log("%s %s (%s)" % (label, art["installPath"], detail))
+                derived_count += 1
                 continue
-            if status != "ok":
-                ok = False
-        if ok and local_count:
-            log("%d of %d artifact(s) are deliberate local replacements accepted "
-                "by %s; they are NOT the pinned official bytes. Official/release "
-                "verification must run plain --check."
-                % (local_count, len(artifacts), ENV_LOCAL_RELINK))
-            return 0
+            if status == "ok":
+                log("%s %s (%s)" % (label, art["installPath"], detail))
+                continue
+            if status in ("local", "local-stale") and local_relink:
+                local_count += 1
+                log("%s %s (%s)" % (label, art["installPath"], detail))
+                if status == "local-stale":
+                    log("WARN   %s: local bytes are presence-only under %s and "
+                        "do not satisfy the derivation receipt"
+                        % (art["installPath"], ENV_LOCAL_RELINK))
+                continue
+            ok = False
+            log("%s %s (%s)" % (label, art["installPath"], detail))
+            if status == "unprepared":
+                log("       run: python3 bootstrap.py  (reconstruct the reviewed "
+                    "single object locally)")
+            elif status in ("stale", "underived"):
+                log("       run: python3 bootstrap.py  (re-derive or repair the "
+                    "derivation receipt)")
         if ok:
+            if derived_count and local_count:
+                log("%d artifact(s) are verified derivations and %d are "
+                    "presence-only local replacements; neither is the pinned "
+                    "upstream bytes. Release verification must run "
+                    "python3 bootstrap.py --release-check."
+                    % (derived_count, local_count))
+                return 0
+            if derived_count:
+                log("All %d artifact(s) prepared and verified (%d derived from the "
+                    "pinned base; these are NOT the pinned upstream bytes)."
+                    % (len(artifacts), derived_count))
+                return 0
+            if local_count:
+                log("%d of %d artifact(s) are deliberate local replacements accepted "
+                    "by %s; they are NOT the pinned official bytes. Official/release "
+                    "verification must run plain --check."
+                    % (local_count, len(artifacts), ENV_LOCAL_RELINK))
+                return 0
             log("All %d pinned artifact(s) present and verified." % len(artifacts))
             return 0
-        log("Some artifacts are missing or invalid. Run: python3 bootstrap.py")
+        log("Some artifacts are missing, unprepared or invalid. "
+            "Run: python3 bootstrap.py")
         return 2
 
     deadline = time.monotonic() + DEADLINE
@@ -594,17 +1056,34 @@ def run(root: str, check: bool, offline: bool, log=print,
         actions.append(install_artifact(root, art, source, deadline, offline, log,
                                         local_relink=local_relink))
 
-    # Post-install verification (defense in depth). Unpinned bytes only pass
-    # when the local-relink opt-in explicitly allows them.
+    # Post-install verification (defense in depth). Unpinned derived/local
+    # bytes only pass when the corresponding receipt validates, or when the
+    # local-relink opt-in explicitly allows a presence-only replacement.
+    derived_count = 0
     for art in artifacts:
-        if artifact_status(root, art, local_relink=local_relink) not in ("ok", "local"):
+        status = artifact_status(root, art, local_relink=local_relink)
+        if art.get("derivation"):
+            allowed = {"derived"}
+            derived_count += 1 if status == "derived" else 0
+        else:
+            allowed = {"ok"}
+        if local_relink:
+            allowed |= {"local", "local-stale"}
+        if status not in allowed:
             raise IntegrityError(
-                "post-install verification failed for %s" % art["installPath"]
+                "post-install verification failed for %s (status %s)"
+                % (art["installPath"], status)
             )
     if "kept-local" in actions:
         log("NOTE: %d artifact(s) kept as deliberate local replacements; the "
             "pinned official bytes were NOT restored. Official/release builds "
             "must run without %s." % (actions.count("kept-local"), ENV_LOCAL_RELINK))
+    if derived_count:
+        log("NOTE: %d derived artifact(s) are intentionally NOT the pinned "
+            "upstream bytes; their receipts bind them to the pinned base, tracked "
+            "recipe/source/patch and the recorded toolchain. Release verification "
+            "must run: python3 bootstrap.py --release-check"
+            % derived_count)
     log("Done. %d artifact(s) ready: %s."
         % (len(artifacts), ", ".join(sorted(set(actions)))))
     return 0
@@ -636,6 +1115,13 @@ def build_parser() -> argparse.ArgumentParser:
              "LOCAL and exit 0 (also enabled by %s=1)" % ENV_LOCAL_RELINK,
     )
     parser.add_argument(
+        "--release-check",
+        action="store_true",
+        help="read-only release gate: require a valid derived artifact, the "
+             "recipe's qualified Xcode/SDK toolchain and a tracked "
+             "expectedResult; ignores the local-relink opt-in",
+    )
+    parser.add_argument(
         "--root",
         default=None,
         help="package root containing DEPENDENCIES.json (default: this script's dir)",
@@ -650,10 +1136,12 @@ def main(argv=None) -> int:
     started = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     try:
         print("FloeCADKit bootstrap starting at %s (root=%s, check=%s, offline=%s, "
-              "local_relink=%s)"
-              % (started, root, args.check, args.offline, local_relink))
+              "local_relink=%s, release_check=%s)"
+              % (started, root, args.check, args.offline, local_relink,
+                 args.release_check))
         return run(root, check=args.check, offline=args.offline,
-                   local_relink=local_relink)
+                   local_relink=local_relink,
+                   release_check=args.release_check)
     except BootstrapError as exc:
         print("error: %s" % exc, file=sys.stderr)
         return 1

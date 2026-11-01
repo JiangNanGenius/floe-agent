@@ -503,7 +503,7 @@ class TestSchemaVersionStrict(BootstrapTestBase):
             json.dump(data, fh)
 
     def test_future_schema_version_refused(self):
-        self._rewrite(2)
+        self._rewrite(3)
         with self.assertRaises(bs.ManifestError) as ctx:
             bs.load_manifest(self.root)
         self.assertIn("schemaVersion", str(ctx.exception))

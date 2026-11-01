@@ -186,3 +186,25 @@ OCCT, changing its pin, using mesh volume or adding a custom integrator. Histori
 upstream spline acceptance is relative `1e-6`; new regression tests check relative
 `1e-7`. Runtime qualification and original failed assumptions remain in the progress
 and private evidence records.
+
+## 2026-11-01: OCCT Standard_Type registry lifetime (single-object backport)
+
+Floe applies exactly one OCCT source change to the pinned 7.8.1 base:
+`src/Standard/Standard_Type.cxx` keeps its non-owning type-registry allocation
+alive for the OCCT image/process lifetime. The existing handles still control
+descriptor lifetime; no destructor is skipped and no error is suppressed. This
+removes a verified normal-static-teardown use-after-destruction in which static
+`Standard_Type` handles in another translation unit outlive the function-local
+registry container.
+
+The pinned upstream base archives and every other object member are unchanged.
+`relink/derivations/standard-type-lifetime/` retains the exact base file, the
+patched overlay and the unified diff; `relink/derivations/standard-type-lifetime.v1.json`
+pins the source/patch hashes, member identity, compiler/SDK/target/flags and
+base-archive member digests. `bootstrap.py` reconstructs the single
+`Standard_Type.cxx.o` member from the pinned base and verifies that every
+non-index, non-target member record is byte-identical, that the regenerated
+symbol index is structurally valid, and that the object/platform/minOS and
+Standard_Type symbol set match the base. The public ABI, headers, OCCT version,
+license and relink route are unchanged. Live native/App qualification remains
+recorded separately; see `OCCT_RELINK.md` and `relink/README.md`.

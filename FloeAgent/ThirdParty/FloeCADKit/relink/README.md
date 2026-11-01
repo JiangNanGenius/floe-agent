@@ -17,15 +17,17 @@ The shipped slices are the upstream OpenShape3D Git-LFS objects.
 
 | Path | When it applies | Behaviour |
 | --- | --- | --- |
-| **Official pinned slices** (default) | CI, release builds, fresh checkouts | `python3 bootstrap.py` installs/repairs the exact upstream objects; `python3 bootstrap.py --check` exits non-zero unless both slices match the recorded size/SHA-256. |
-| **Deliberate local rebuild/replacement** (opt-in) | A developer intentionally relinks a locally built OCCT | Set `FLOECAD_LOCAL_RELINK=1` (or pass `--local-relink`). Existing slices are **never overwritten**; `--check --local-relink` reports them as `LOCAL` and exits 0. |
+| **Required derivation** (default) | CI, release builds, fresh checkouts | `python3 bootstrap.py` fetches and verifies the exact pinned base, reconstructs the reviewed single `Standard_Type.cxx.o` member from the tracked recipe/source/patch, verifies every other member and installs the derived slice atomically. `--check` reports `UNPREP` for the bare base and `STALE`/`UNDERI` for a missing/mismatched receipt; `--release-check` additionally requires the qualified Xcode/SDK and tracked `expectedResult`. |
+| **Deliberate local rebuild/replacement** (opt-in) | A developer intentionally relinks a locally built OCCT | Set `FLOECAD_LOCAL_RELINK=1` (or pass `--local-relink`). Differing existing slices are **never overwritten**; `--check --local-relink` reports them as `LOCAL` and exits 0. The bare pinned base is still `UNPREP` (it is not a local replacement), and `LOCAL` never satisfies `--release-check`. |
+| **Legacy pinned-only manifest** (schema 1) | Historical checkouts / older bootstrap revisions | Exact upstream slices only, no derivation. The new schema-2 official path does not use this mode. |
 
-Without the opt-in, bootstrap is in official mode: a present-but-mismatching
-slice is repaired to the pinned bytes (logged as `replace`). With the opt-in, a
-present-but-mismatching slice is kept and reported — bootstrap never silently
-restores the official binary over a deliberate local replacement. In opt-in
-mode a **missing** slice is still installed from the pinned upstream object
-(there is nothing to overwrite); only existing bytes are protected.
+Without the opt-in, bootstrap is in required-derivation mode: a
+present-but-mismatching slice is reconstructed from the pinned base and tracked
+recipe (logged as `prepare`) and installed only after receipt verification.
+With the opt-in, differing bytes are kept and reported `LOCAL` — bootstrap
+never overwrites a deliberate local replacement. In opt-in mode a **missing**
+slice is still prepared from the pinned base plus derivation (there is nothing
+to overwrite); only existing differing bytes are protected.
 
 ## Build-script integration (hook contract)
 
@@ -35,9 +37,11 @@ the hook must honor the same opt-in, exactly:
 
 ```sh
 # FLOECAD_LOCAL_RELINK=1 is set only by a developer deliberately using local
-# OCCT slices; official/CI/release builds must never set it.
+# OCCT slices; official/CI/release builds must never set it.  Without it,
+# bootstrap fetches the pinned base and reconstructs/verifies the required
+# Standard_Type derivation before the App builds.
 if [ "${FLOECAD_LOCAL_RELINK:-0}" = "1" ]; then
-    echo "FloeCADKit: local relink in effect; skipping pinned bootstrap"
+    echo "FloeCADKit: local relink in effect; skipping required derivation bootstrap"
 else
     python3 ThirdParty/FloeCADKit/bootstrap.py
 fi
@@ -51,7 +55,10 @@ Rules for the hook owner:
   directly will not overwrite a local replacement. The hook skip above only
   avoids the redundant network call.
 - Official verification gates must run plain `python3 bootstrap.py --check`
-  without the opt-in; that is what enforces the pinned hashes.
+  without the opt-in; that enforces the derivation receipt, the pinned base
+  binding and every unchanged archive member. The release gate additionally
+  runs `python3 bootstrap.py --release-check` (qualified toolchain and tracked
+  `expectedResult`).
 - `--local-relink` is the equivalent command-line flag when bootstrap is
   invoked directly rather than through the hook.
 
@@ -63,6 +70,10 @@ Rules for the hook owner:
 | `ios.toolchain.cmake` | leetal ios-cmake cross toolchain used by the build | tag `4.6.1`, commit `b36d5bce6f9a2d11d9f144bd5882ba31cfdca420`; 58,209 bytes; SHA-256 `8d17b77feb69999ebcf9aa4ce3e07babc3d39f9daa23151b1a4f05b825021f2e` |
 | `LICENSE-ios-cmake.txt` | BSD-3-Clause license for the toolchain file | copied from the pinned ios-cmake commit |
 | `SOURCE_OFFER.md` | Source-availability and rebuild-access statement for OCCT 7.8.1 | public pins + retained build inputs |
+| `derivations/standard-type-lifetime.v1.json` | Required single-object backport recipe | OCCT commit, base/overlay/patch hashes, member identity, per-slice base archive/member digests, declared flags, qualified toolchain |
+| `derivations/standard-type-lifetime/{base,overlay,minimal.patch}` | Exact modified source and diff | hashes recorded in the recipe (base `5b3489f3…`, overlay `54aed57c…`, patch `b4afd817…`) |
+| `derivations/{occt_archive,derivation_common,derive_standard_type_slice}.py` | Archive surgery, receipt contract and derivation producer (`record`/`verify`/`inspect` modes included) | reviewed with the FloeCADKit package; no network/service dependency |
+| `derivations/README.md` | Derivation contract, Root record workflow, honest limits | source packet |
 
 OCCT's own license texts live one directory up and are not duplicated here:
 
@@ -149,45 +160,55 @@ DETools and all optional third-party dependencies OFF; static libs; C++17;
    code and needs no change; its header search path points at
    `Vendor/OCCT.xcframework/ios-arm64/Headers`.
 3. Opt in for subsequent builds and verification:
-   `export FLOECAD_LOCAL_RELINK=1`. Do **not** run plain
-   `bootstrap.py` over the local slices — that is the official path and would
-   restore the pinned upstream bytes.
+   `export FLOECAD_LOCAL_RELINK=1`. Plain `bootstrap.py` is the required
+   derivation path and would replace a differing local slice; do not run it
+   over a deliberate local rebuild.
 4. Verify presence (read-only, no network):
 
    ```sh
    python3 ../bootstrap.py --check --local-relink
-   # -> a locally built slice normally differs from the official pin, so it is
-   #    reported LOCAL with exit code 0; a slice that still happens to match
-   #    the official pin is reported OK. LOCAL confirms the slice exists and is
-   #    explicitly NOT a hash check of the local build.
+   # -> a locally built slice normally differs from the pinned base, so it is
+   #    reported LOCAL with exit code 0. LOCAL confirms presence only and is
+   #    explicitly NOT a hash check of the local build. The bare pinned base is
+   #    still UNPREP and fails. LOCAL never satisfies the release gate.
    ```
 5. Rebuild the app with the normal `xcodebuild` flow; the static archive is
    relinked into the app binary. The OCCT version is also surfaced through the
    native `capabilities` action (`OCCTKernel.version`).
 
-### Restoring the official slices
+### Restoring the required repaired slices
 
-Unset the opt-in and run the official path:
+Unset the opt-in and run the default path:
 
 ```sh
 unset FLOECAD_LOCAL_RELINK
-python3 ../bootstrap.py        # fetches + verifies the pinned objects (network)
-python3 ../bootstrap.py --check  # both slices must report OK
+python3 ../bootstrap.py          # fetch/verify base + reconstruct derivation
+python3 ../bootstrap.py --check  # both slices must report PREPD
 ```
 
-This intentionally replaces local rebuilds with the pinned upstream bytes;
-back up locally built slices first if they matter.
+This intentionally replaces local rebuilds with the reviewed derived slices;
+back up locally built slices first if they matter. The bare pinned upstream
+base is never installed as a usable slice.
 
 ## Determinism and honest limits
 
 - Floe has **not** independently reproduced the upstream slices, and no
-  byte-equality is claimed or required for a local rebuild. The recorded
-  SHA-256 values identify the reviewed official slices shipped with Floe.
+  byte-equality is claimed or required for a local rebuild. The base SHA-256
+  values identify the reviewed upstream archives; `expectedResult` identifies
+  the qualified single-object reconstruction.
 - OCCT is a C/C++ build: compiler/Xcode version, CMake version, absolute build
   paths, timestamps, locale and `libtool` input order can all change archive
   bytes even from identical source. Upstream's exact build environment is not
   recorded here, so equality is not asserted.
 - A local rebuild substitutes the library only for local development. Official
-  releases keep the pinned upstream slices; official verification runs plain
-  `bootstrap.py --check` (no opt-in).
-- No Floe modification is made to any OCCT source file.
+  releases use the required derivation: the pinned base plus the reviewed
+  Standard_Type object replacement, identified by its receipt and (after Root
+  qualification) the tracked `expectedResult`. Official verification runs
+  plain `bootstrap.py --check`; the release gate runs
+  `bootstrap.py --release-check`.
+- Floe modifies exactly one OCCT source file, `src/Standard/Standard_Type.cxx`.
+  No other source, header or public ABI is changed.
+- The single-object derivation is deterministic for the same base archive,
+  replacement object and `ranlib`: member order and every non-index,
+  non-target record are preserved, and the index record header is normalised.
+  That is narrower than a full 47-toolkit rebuild reproducibility claim.

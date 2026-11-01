@@ -13,7 +13,7 @@ rebuild and relink the library.
 
 ## Complete source for the exact linked version
 
-OCCT 7.8.1 is unmodified upstream source (Floe modifies no OCCT source file):
+The upstream OCCT 7.8.1 base is unmodified:
 
 - Project: https://github.com/Open-Cascade-SAS/OCCT
 - Exact release tag: **`V7_8_1`** — a lightweight Git tag pointing directly at
@@ -24,6 +24,30 @@ OCCT 7.8.1 is unmodified upstream source (Floe modifies no OCCT source file):
   `https://github.com/Open-Cascade-SAS/OCCT/archive/refs/tags/V7_8_1.tar.gz`
 - The source is public; obtaining it requires no registration, request or
   contact.
+
+## Complete corresponding source of the linked (modified) library
+
+Floe applies exactly one source change above that base:
+`src/Standard/Standard_Type.cxx` keeps the non-owning type-registry allocation
+alive for the OCCT image/process lifetime. The complete modified source is the
+pinned upstream tree plus the retained patch, both shipped in this repository:
+
+- base file:
+  `relink/derivations/standard-type-lifetime/base/src/Standard/Standard_Type.cxx`
+  (4,409 bytes; SHA-256
+  `5b3489f3d4ecb10a87d5963ce67fc61c5a48390c8c18f8b34f2cfc2438743442`);
+- patched overlay:
+  `relink/derivations/standard-type-lifetime/overlay/src/Standard/Standard_Type.cxx`
+  (4,709 bytes; SHA-256
+  `54aed57c03ce3204c94c372c143f5dcab4b1362a2b07fc9f2579cb3926384846`);
+- unified diff:
+  `relink/derivations/standard-type-lifetime/minimal.patch`
+  (1,198 bytes; SHA-256
+  `b4afd8174eec4b92bec3fd906059654952d1712f049728b9201723af5c794e8f`);
+- build/target/recipe record:
+  `relink/derivations/standard-type-lifetime.v1.json`.
+
+No other OCCT source file, header or public class layout is changed.
 
 ## Build inputs for rebuilding / relinking
 
@@ -41,20 +65,30 @@ retained in this directory, pinned by content hash:
    (`LICENSE-ios-cmake.txt`).
 3. Step-by-step build/relink instructions: `README.md` in this directory and
    `../OCCT_RELINK.md`.
+4. Single-object derivation producer and archive/receipt verifier:
+   `derivations/derive_standard_type_slice.py`,
+   `derivations/derivation_common.py` and `derivations/occt_archive.py`.
 
-A recipient can download the pinned source and rebuild or replace the slices
-using these retained inputs. The relink kit also retains, one directory up, the
-pinned `bootstrap.py`/`DEPENDENCIES.json` pair that re-obtains the exact
-reviewed upstream slices by content hash.
+A recipient can download the pinned source, apply the retained patch, and
+rebuild or replace the slices using these retained inputs. The relink kit also
+retains, one directory up, the pinned `bootstrap.py`/`DEPENDENCIES.json` pair:
+it re-obtains the exact upstream base slices by content hash and reconstructs
+the reviewed single-object derivation, verifying every other archive member
+and the resulting receipt. The base archive alone is not accepted as a usable
+slice because it lacks the reviewed lifetime repair.
 
 ## Scope and status
 
 - This file records source-availability and rebuild-access facts only. It is
   **not a legal certification** and does not state or guarantee compliance for
   any particular distribution.
-- Floe has not independently rebuilt OCCT from these inputs and does not claim
-  a byte-identical reproduction of the shipped slices (see the Determinism
-  section of `README.md`).
+- Floe has not independently rebuilt all 47 OCCT toolkits and does not claim a
+  full byte-identical rebuild. The installed slices are single-object
+  reconstructions from the pinned upstream base: only `Standard_Type.cxx.o`
+  changes; every other object payload is verified byte-identical to the base.
+  The current qualified reconstruction results are pinned as `expectedResult`
+  in `DEPENDENCIES.json` (device 149,038,056 bytes / `bb43f464…`; simulator
+  147,188,808 bytes / `06a28492…`).
 - This checkout is an **unreleased implementation**: no tag, upload or
   distribution has been produced from it.
 - The release owner performs the final license review before distribution.
