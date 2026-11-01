@@ -67,6 +67,11 @@ struct CADTransientPreviewView: View {
             .frame(minHeight: 200, maxHeight: 260)
             .background(Color(uiColor: .systemBackground), in: RoundedRectangle(cornerRadius: 8))
             .overlay(RoundedRectangle(cornerRadius: 8).stroke(.quaternary))
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel(FloeCADStrings.text("cad.workbench.preview.transient",
+                                                   "Transient preview — not written"))
+            .accessibilityValue(FloeCADStrings.format("cad.workbench.preview.triangles", "%@ triangles", triangleCount))
+            .accessibilityAddTraits(.isImage)
             .accessibilityIdentifier("CADTransientPreview")
 
             HStack(spacing: 8) {
@@ -84,6 +89,7 @@ struct CADTransientPreviewView: View {
                     .foregroundStyle(.secondary)
             }
         }
+        .accessibilityElement(children: .contain)
         .accessibilityIdentifier("CADTransientPreviewContainer")
     }
 
