@@ -1831,7 +1831,7 @@ internal class C05RemoteHostController(
     }
 
     private fun ownerForEpoch(epoch: Long): C05RemoteOwner {
-        guard epoch > 0, currentNativeEpoch() == epoch else {
+        if (epoch <= 0 || currentNativeEpoch() != epoch) {
             throw C05RemoteFailure("staleEpoch", "nativeEpochUnavailable")
         }
         lastKnownEpoch = epoch

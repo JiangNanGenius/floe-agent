@@ -6,9 +6,9 @@
     <string name="mail_compose">Compose</string>
     <string name="mail_accounts">Accounts</string>
     <string name="mail_refresh">Refresh</string>
-    <string name="mail_unavailable">Mail storage or the secure transport is not ready in this App session. Restart the App after the update is installed.</string>
+    <string name="mail_unavailable">Mail is temporarily unavailable. Reopen the app and try again.</string>
     <string name="mail_empty_title">No mail account</string>
-    <string name="mail_empty_hint">Add an IMAP or POP3 account with its SMTP server. Passwords stay in the approved credential store.</string>
+    <string name="mail_empty_hint">Add an email account to view and send messages.</string>
     <string name="mail_add_account">Add account</string>
     <string name="mail_search">Search</string>
     <string name="mail_search_hint">Search subject or text</string>
@@ -24,7 +24,7 @@
     <string name="mail_close">Close</string>
     <string name="mail_from">From: %1$s</string>
     <string name="mail_to">To: %1$s</string>
-    <string name="mail_html_plain">This message is HTML. It is shown as inert plain text; no remote content is loaded.</string>
+    <string name="mail_html_plain">Shown as plain text. Remote images and scripts are blocked.</string>
     <string name="mail_empty_body">This message has no text body.</string>
     <string name="mail_load_more">Load more</string>
     <string name="mail_attachments">Attachments</string>
@@ -46,7 +46,7 @@
     <string name="mail_add_attachment">Add file</string>
     <string name="mail_remove_attachment">Remove attachment</string>
     <string name="mail_compose_locked">Delivery is unconfirmed. Check the Sent folder on the server; do not resend automatically.</string>
-    <string name="mail_accounts_detail">Non-secret settings are stored locally. Passwords are written only to the approved credential gateway.</string>
+    <string name="mail_accounts_detail">Account settings are saved on this device. Passwords are stored securely.</string>
     <string name="mail_edit">Edit</string>
     <string name="mail_test">Test</string>
     <string name="mail_delete">Delete</string>
@@ -80,7 +80,7 @@
     <string name="mail_error_storage">Mail settings storage is not ready. Restart the App after the update is installed.</string>
     <string name="mail_error_credentials">The saved mail password is missing or unavailable. Re-enter it in the account settings.</string>
     <string name="mail_error_auth">Mail authentication failed. Check the app password and provider policy.</string>
-    <string name="mail_error_tls">Secure connection failed. Certificate validation cannot be disabled.</string>
+    <string name="mail_error_tls">Secure connection failed. Check the server address and certificate.</string>
     <string name="mail_error_network">The mail server could not be reached. Check the server, port, encryption mode and network.</string>
     <string name="mail_error_server">The mail server rejected the operation or returned an invalid response.</string>
     <string name="mail_error_pop3">This operation requires IMAP. POP3 supports listing, downloading and sending only.</string>

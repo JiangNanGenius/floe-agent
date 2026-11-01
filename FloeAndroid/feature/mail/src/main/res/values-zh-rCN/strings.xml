@@ -6,9 +6,9 @@
     <string name="mail_compose">写邮件</string>
     <string name="mail_accounts">账户</string>
     <string name="mail_refresh">刷新</string>
-    <string name="mail_unavailable">本次 App 会话中的邮件存储或安全传输尚未就绪。安装更新后请重启 App。</string>
+    <string name="mail_unavailable">邮件暂时不可用，请重新打开应用后重试。</string>
     <string name="mail_empty_title">尚未添加邮件账户</string>
-    <string name="mail_empty_hint">添加 IMAP 或 POP3 账户及其 SMTP 服务器。密码只会保存在已批准的凭据存储中。</string>
+    <string name="mail_empty_hint">添加邮箱账户，即可查看和发送邮件。</string>
     <string name="mail_add_account">添加账户</string>
     <string name="mail_search">搜索</string>
     <string name="mail_search_hint">搜索主题或正文</string>
@@ -24,7 +24,7 @@
     <string name="mail_close">关闭</string>
     <string name="mail_from">发件人：%1$s</string>
     <string name="mail_to">收件人：%1$s</string>
-    <string name="mail_html_plain">此邮件为 HTML，已按纯文本显示；不会加载任何远程内容。</string>
+    <string name="mail_html_plain">以纯文本显示，不加载远程图片或脚本。</string>
     <string name="mail_empty_body">此邮件没有文本正文。</string>
     <string name="mail_load_more">加载更多</string>
     <string name="mail_attachments">附件</string>
@@ -46,7 +46,7 @@
     <string name="mail_add_attachment">添加文件</string>
     <string name="mail_remove_attachment">移除附件</string>
     <string name="mail_compose_locked">投递状态未确认。请到服务器的“已发送”中检查；不要自动重发。</string>
-    <string name="mail_accounts_detail">非机密设置保存在本机。密码只会写入已批准的凭据网关。</string>
+    <string name="mail_accounts_detail">账户设置保存在本机，密码安全保存。</string>
     <string name="mail_edit">编辑</string>
     <string name="mail_test">测试</string>
     <string name="mail_delete">删除</string>
@@ -80,7 +80,7 @@
     <string name="mail_error_storage">邮件设置存储尚未就绪。安装更新后请重启 App。</string>
     <string name="mail_error_credentials">已保存的邮件密码缺失或不可用。请在账户设置中重新输入。</string>
     <string name="mail_error_auth">邮件认证失败。请检查应用专用密码和服务商策略。</string>
-    <string name="mail_error_tls">安全连接失败。无法关闭证书校验。</string>
+    <string name="mail_error_tls">安全连接失败，请检查服务器地址和证书。</string>
     <string name="mail_error_network">无法连接邮件服务器。请检查服务器、端口、加密方式和网络。</string>
     <string name="mail_error_server">邮件服务器拒绝了操作或返回了无效响应。</string>
     <string name="mail_error_pop3">此操作需要 IMAP。POP3 仅支持列出、下载和发送。</string>
