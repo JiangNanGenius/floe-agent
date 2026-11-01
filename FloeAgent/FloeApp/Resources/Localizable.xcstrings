@@ -13158,6 +13158,40 @@
         }
       }
     },
+    "cad.error.faceSelectionChanged": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The selected faces have changed. Select them again."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "所选的面已发生变化，请重新选择。"
+          }
+        }
+      }
+    },
+    "cad.error.faceSourceUnavailable": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The original shape could not be reopened. Check the earlier steps and try again."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "无法重新打开原始形状，请检查先前的步骤后重试。"
+          }
+        }
+      }
+    },
     "cad.error.shellCurvedNeedsSolid": {
       "extractionState": "manual",
       "localizations": {

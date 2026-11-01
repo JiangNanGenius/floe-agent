@@ -2273,13 +2273,15 @@ nonisolated extension FeatureGraph {
 
         let table = state.faceTables[body.id]
         var points = [SIMD3<Double>]()
+        var upgrades = [(FaceRef, ResolvedFace)]()
         for ref in faceRefs {
-            guard let resolved = state.naming.resolve(ref, in: body, table: table),
-                  let point = Self.samplePoint(on: resolved) else {
+            guard ref.body.bodyID == bodyRef.bodyID,
+                  let resolved = state.naming.resolve(ref, in: body, table: table),
+                  let point = Self.pointOnFace(resolved, mesh: body.render) else {
                 state.errors[node.id] = .brokenRef("delete-face target did not resolve")
                 return
             }
-            proposeUpgrade(node, ref: ref, resolved: resolved, into: &state)
+            upgrades.append((ref, resolved))
             points.append(point)
         }
 
@@ -2318,6 +2320,9 @@ nonisolated extension FeatureGraph {
         }
         state.put(result, table: newTable)
         if !outNames.isEmpty { state.kernelNames[result.id] = outNames }
+        for (ref, resolved) in upgrades {
+            proposeUpgrade(node, ref: ref, resolved: resolved, into: &state)
+        }
     }
 
     // MARK: Replace Face (direct modeling, spec §4.12)
@@ -2419,29 +2424,6 @@ nonisolated extension FeatureGraph {
         case nil:
             return "replace face failed"
         }
-    }
-
-    /// A world point lying ON the resolved face — how OCCT is told which face
-    /// to remove. Planar faces use their outline centroid (always interior for
-    /// the convex outlines the picker produces); cylinders use a point at
-    /// mid-height on the surface itself, not on the axis.
-    private static func samplePoint(on face: ResolvedFace) -> SIMD3<Double>? {
-        if let planar = face.planar, !planar.outline.isEmpty {
-            let c = planar.outline.reduce(SIMD2<Double>.zero, +) / Double(planar.outline.count)
-            return planar.origin + planar.basisX * c.x + planar.basisY * c.y
-        }
-        if let cyl = face.cylinder {
-            let axis = simd_normalize(cyl.axisDir)
-            // Any unit vector perpendicular to the axis puts us on the surface.
-            let seed = abs(axis.x) < 0.9 ? SIMD3<Double>(1, 0, 0) : SIMD3<Double>(0, 1, 0)
-            let radial = simd_normalize(simd_cross(axis, seed))
-            let mid = (cyl.minT + cyl.maxT) / 2
-            // axisPoint is on the axis but at an arbitrary axial position;
-            // re-anchor it to the mid-height plane before stepping outward.
-            let onAxis = cyl.axisPoint + axis * (mid - simd_dot(cyl.axisPoint, axis))
-            return onAxis + radial * cyl.radius
-        }
-        return nil
     }
 
     // MARK: Revolve / Sweep / Loft (full-solid ops)

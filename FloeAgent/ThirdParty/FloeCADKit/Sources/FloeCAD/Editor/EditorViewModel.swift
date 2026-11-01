@@ -2053,8 +2053,7 @@ final class EditorViewModel {
         // drawn from the ORIGINAL mesh — the preview has already healed them
         // away, so this is the only thing showing what is selected. Red, not
         // the shell pick's blue: this one destroys geometry.
-        if case .pickingDeleteFaces = mode, let bodyID = deleteFaceBodyID,
-           let body = session.document.body(with: bodyID) {
+        if case .pickingDeleteFaces = mode, let body = deleteFaceSourceBody {
             let matrix = body.transform.matrixFloat
             var triangles: [SIMD3<Float>] = []
             for target in deleteFaceTargets {
@@ -5993,6 +5992,7 @@ final class EditorViewModel {
     private(set) var deleteFaceEditingFeature: FeatureID?
     private var deleteFaceEditBodyRef: BodyRef?
     private var deleteFaceEditSource: Body?
+    private var deleteFaceEditFaceTable: FaceTable?
     private var deleteFaceSourceBody: Body? {
         if let source = deleteFaceEditSource { return source }
         return deleteFaceBodyID.flatMap { session.document.body(with: $0) }
@@ -6026,23 +6026,32 @@ final class EditorViewModel {
         guard let node = session.document.features.node(id),
               case let .deleteFace(bodyRef, faces) = node.kind
         else { return false }
-        guard let source = session.inputBody(for: id, bodyID: bodyRef.bodyID) else {
-            errorMessage = "Couldn't rebuild the shape this delete started from."
+        guard let input = session.inputState(before: id), input.errors.isEmpty,
+              let source = input.bodies.first(where: { $0.id == bodyRef.bodyID }) else {
+            errorMessage = FloeCADStrings.text("cad.error.faceSourceUnavailable", "The original shape could not be reopened. Check the earlier steps and try again.")
             return false
         }
         if refuseExactSurface(source, operation: "Delete Face") { return false }
+        let naming = SignatureNaming()
+        let targets = faces.compactMap { ref -> DeleteFaceKit.Target? in
+            guard ref.body.bodyID == bodyRef.bodyID,
+                  let resolved = naming.resolve(ref, in: source, table: input.faceTables[bodyRef.bodyID]),
+                  var target = DeleteFaceKit.target(resolved: resolved, mesh: source.render)
+            else { return nil }
+            target.sourceReference = ref
+            return target
+        }
+        guard targets.count == faces.count else {
+            errorMessage = FloeCADStrings.text("cad.error.faceSelectionChanged", "The selected faces have changed. Select them again.")
+            return false
+        }
         cancelTransientPicks()
         cancelTool()
-        let naming = SignatureNaming()
-        deleteFaceTargets = faces.compactMap { ref in
-            guard let resolved = naming.resolve(ref, in: source, table: nil),
-                  let seed = resolved.planar?.triangles.first ?? resolved.cylinder?.triangles.first
-            else { return nil }
-            return DeleteFaceKit.target(in: source.render, seedTriangle: seed)
-        }
+        deleteFaceTargets = targets
         deleteFaceEditingFeature = id
         deleteFaceEditBodyRef = bodyRef
         deleteFaceEditSource = source
+        deleteFaceEditFaceTable = input.faceTables[bodyRef.bodyID]
         deleteFaceBodyID = bodyRef.bodyID
         deleteFacePreview = nil
         mode = .pickingDeleteFaces
@@ -6072,6 +6081,7 @@ final class EditorViewModel {
         deleteFaceEditingFeature = nil
         deleteFaceEditBodyRef = nil
         deleteFaceEditSource = nil
+        deleteFaceEditFaceTable = nil
         if case .pickingDeleteFaces = mode { mode = .idle }
     }
 
@@ -6114,11 +6124,14 @@ final class EditorViewModel {
             selectionState: SelectionStateNone.rawValue
         )])
         guard let originalHit = HitTester.pickBody(ray: ray, in: originalScene),
-              let target = DeleteFaceKit.target(
+              var target = DeleteFaceKit.target(
                   in: body.render, seedTriangle: originalHit.triangleIndex) else {
             showNotice("That surface isn't a face this tool can remove.")
             return
         }
+        target.elementName = editing
+            ? deleteFaceEditFaceTable?.entries.first { $0.triangles.contains(originalHit.triangleIndex) }?.elementName
+            : mintElementName(body: body, triangle: originalHit.triangleIndex)
         if let idx = deleteFaceTargets.firstIndex(of: target) {
             deleteFaceTargets.remove(at: idx)
         } else {
@@ -6180,9 +6193,9 @@ final class EditorViewModel {
         if let featureID = deleteFaceEditingFeature, let bodyRef = deleteFaceEditBodyRef,
            let input = deleteFaceEditSource {
             let faceRefs = deleteFaceTargets.map {
-                FaceRef(body: bodyRef, creator: bodyRef.producer,
+                $0.sourceReference ?? FaceRef(body: bodyRef, creator: bodyRef.producer,
                         role: .derived(index: 0), signature: $0.signature,
-                        elementName: mintElementName(body: input, triangle: $0.triangles.first))
+                        elementName: $0.elementName ?? mintElementName(body: input, triangle: $0.triangles.first))
             }
             prepareForHistoryChange()
             resetDeleteFaceState()
@@ -6215,7 +6228,7 @@ final class EditorViewModel {
             let faceRefs = deleteFaceTargets.map {
                 FaceRef(body: bodyRef, creator: owner.id,
                         role: .derived(index: 0), signature: $0.signature,
-                        elementName: mintElementName(
+                        elementName: $0.elementName ?? mintElementName(
                             body: source,
                             triangle: $0.triangles.first))
             }

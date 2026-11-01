@@ -10,7 +10,7 @@
 //  rest of the system needs, and nothing else.
 //
 //    1. A `samplePoint` — a body-local point lying ON that face, which is how
-//       OCCT is told which face to remove. Never a centroid-of-triangles: for
+//       OCCT is told which face to remove. Never the whole region's centroid: for
 //       a cylinder that lands on the AXIS, inside the solid, and OCCT would
 //       either remove nothing or remove the wrong face.
 //    2. A `FaceSignature`, minted by `SignatureNaming`'s own builders rather
@@ -36,6 +36,11 @@ nonisolated enum DeleteFaceKit {
         /// handing OCCT a world point for a moved body would miss.
         var samplePoint: SIMD3<Double>
         var signature: FaceSignature
+        var elementName: ElementName? = nil
+        /// History edits keep the original operand when it is still valid;
+        /// merely opening and accepting a pick must not remint its identity
+        /// from an approximate tessellation.
+        var sourceReference: FaceRef? = nil
 
         /// Two picks are the same face when they cover the same triangles —
         /// the same test the shell pick uses.
@@ -44,34 +49,20 @@ nonisolated enum DeleteFaceKit {
         }
     }
 
-    /// A planar face. The sample point is the outline centroid, which is
-    /// interior for the convex outlines the picker produces.
-    static func target(planar face: PlanarFace) -> Target? {
-        guard !face.triangles.isEmpty, !face.outline.isEmpty else { return nil }
-        let c = face.outline.reduce(SIMD2<Double>.zero, +) / Double(face.outline.count)
-        return Target(
-            triangles: face.triangles,
-            samplePoint: face.origin + face.basisX * c.x + face.basisY * c.y,
-            signature: SignatureNaming.signature(planar: face))
-    }
-
-    /// A cylindrical face — the wall of a hole, which is the whole point of
-    /// this tool. The sample point steps OUT from the axis at mid-height, so
-    /// it lands on the surface instead of inside the solid.
-    static func target(cylindrical cyl: CylindricalFace) -> Target? {
-        guard !cyl.triangles.isEmpty, cyl.radius > 1e-9 else { return nil }
-        let axis = simd_normalize(cyl.axisDir)
-        // Any unit vector perpendicular to the axis reaches the surface.
-        let seed = abs(axis.x) < 0.9 ? SIMD3<Double>(1, 0, 0) : SIMD3<Double>(0, 1, 0)
-        let radial = simd_normalize(simd_cross(axis, seed))
-        let mid = (cyl.minT + cyl.maxT) / 2
-        // `axisPoint` sits at an arbitrary axial position; re-anchor it to the
-        // mid-height plane before stepping outward.
-        let onAxis = cyl.axisPoint + axis * (mid - simd_dot(cyl.axisPoint, axis))
-        return Target(
-            triangles: cyl.triangles,
-            samplePoint: onAxis + radial * cyl.radius,
-            signature: SignatureNaming.signature(cylinder: cyl))
+    /// Replay and picking use the same interior surface-point helper as
+    /// Shell. Outline centroids may lie in holes, and an arbitrary cylinder
+    /// radial direction may lie on the missing half of a trimmed cylinder.
+    static func target(resolved face: ResolvedFace, mesh: RenderMesh) -> Target? {
+        guard !face.triangles.isEmpty,
+              let point = FeatureGraph.pointOnFace(face, mesh: mesh) else { return nil }
+        let signature: FaceSignature
+        if let planar = face.planar {
+            signature = SignatureNaming.signature(planar: planar)
+        } else if let cylinder = face.cylinder {
+            signature = SignatureNaming.signature(cylinder: cylinder)
+        } else { return nil }
+        return Target(triangles: face.triangles, samplePoint: point,
+                      signature: signature, elementName: face.elementName)
     }
 
     /// The face under a tap: a cylindrical wall wins over the coplanar sliver
@@ -79,11 +70,11 @@ nonisolated enum DeleteFaceKit {
     /// facets are coplanar and that sliver is never what the user meant.
     static func target(in mesh: RenderMesh, seedTriangle: Int) -> Target? {
         if let cyl = FaceTopology.cylindricalFace(in: mesh, seedTriangle: seedTriangle),
-           let target = target(cylindrical: cyl) {
+           let target = target(resolved: ResolvedFace(cylinder: cyl, confidence: 1), mesh: mesh) {
             return target
         }
         if let planar = FaceTopology.planarFace(in: mesh, seedTriangle: seedTriangle) {
-            return target(planar: planar)
+            return target(resolved: ResolvedFace(planar: planar, confidence: 1), mesh: mesh)
         }
         return nil
     }
