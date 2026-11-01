@@ -230,6 +230,10 @@ final class NativeExactImportSchedulingTests: XCTestCase {
         let step = try twoSolidSTEP()
         let document = try await makeDocument("Cancel")
         defer { if !document.isClosed { document.close() } }
+        // `DocumentSession.load()` advances changeCount once so observers
+        // rebuild the freshly loaded scene. The no-half-model contract is that
+        // the cancelled import adds NO mutation on top of that baseline.
+        let changeCountAfterLoad = document.session.changeCount
         let token = MeshImportCancellation()
         let gate = ExactGate(holdPhase: "body", atBody: 1)
         CADExactImportService.testCheckpoint = { checkpoint in
@@ -260,7 +264,8 @@ final class NativeExactImportSchedulingTests: XCTestCase {
         XCTAssertEqual((error as? CADDocumentError)?.code ?? "", "cancelled", error.localizedDescription)
         XCTAssertEqual(document.summary().bodyCount, 0,
                        "a cancel after the first prepared body must not leave a half model")
-        XCTAssertEqual(document.session.changeCount, 0)
+        XCTAssertEqual(document.session.changeCount, changeCountAfterLoad,
+                       "a cancelled exact import must not add any document mutation")
         XCTAssertFalse(document.session.undoStack.canUndo)
     }
 

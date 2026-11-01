@@ -289,6 +289,9 @@ final class NativeCADImportLimitsTests: XCTestCase {
 
         let document = try await FloeCAD3DBridge.shared.openDocument(at: documentURL)
         XCTAssertEqual(document.summary().bodyCount, 0)
+        // The open itself advances changeCount by one (DocumentSession.load):
+        // that is the fixture's baseline, not an import mutation.
+        let changeCountAfterLoad = document.session.changeCount
         let sampler = E31FootprintSampler()
         sampler.start()
         let heartbeat = E31Heartbeat()
@@ -303,7 +306,8 @@ final class NativeCADImportLimitsTests: XCTestCase {
         let message = outcome.message ?? ""
         XCTAssertTrue(message.contains("budget") || message.contains("MiB"), message)
         XCTAssertEqual(document.summary().bodyCount, 0)
-        XCTAssertEqual(document.session.changeCount, 0)
+        XCTAssertEqual(document.session.changeCount, changeCountAfterLoad,
+                       "a refused import must not add any document mutation")
         XCTAssertEqual(try Data(contentsOf: sourceURL), bomb, "the import source must be unchanged")
         XCTAssertEqual(FloeDigest.sha256Hex(try Data(contentsOf: sourceURL)), sourceSHA)
         let capturedAfter = await storedIdentity()
@@ -403,8 +407,15 @@ final class NativeCADImportLimitsTests: XCTestCase {
         try glb.write(to: workspace.appendingPathComponent("apply-cancel.glb"))
         let capturedIdentity = await storedIdentity()
         let identityBefore = try XCTUnwrap(capturedIdentity)
+        // The host re-authorizes an apply against the SAME propose-time access
+        // (environment, workspace, owner kind + id). The tool drafts under its
+        // own derived access, so the token-aware host apply must present that
+        // exact access; otherwise it is correctly refused as unauthorized
+        // before the parse can observe any cancellation.
+        let importContext = makeContext()
+        let importAccess = CadDocumentTool.access(for: importContext)
         let importReply = try await runToolImport(source: "apply-cancel.glb", format: "glb",
-                                                  context: makeContext())
+                                                  context: importContext)
         let proposalID = try XCTUnwrap(importReply.proposalID, importReply.summary)
         let grant = try await center.issueNativeCADGrant(proposalID: proposalID)
 
@@ -416,7 +427,7 @@ final class NativeCADImportLimitsTests: XCTestCase {
                 _ = try await self.center.threeDAction(
                     documentID: "Part.floecad",
                     requestJSON: try self.applyRequest(proposalID: proposalID, grant: grant),
-                    access: self.access(),
+                    access: importAccess,
                     cancellation: token)
                 return nil
             } catch {

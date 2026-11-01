@@ -392,7 +392,6 @@ final class NativeCADImportSchedulingTests: XCTestCase {
         let step = try twoSolidSTEP()
         let sourceURL = workspace.appendingPathComponent("switch.step")
         try step.write(to: sourceURL)
-        let identityBefore = try await requireStoredIdentity()
         let token = CancellationToken()
         let gate = E31SchedulingExactGate(hold: "body", atBody: 1)
         CADExactImportService.testCheckpoint = { gate.checkpoint($0) }
@@ -411,7 +410,15 @@ final class NativeCADImportSchedulingTests: XCTestCase {
             }
         }
         await gate.waitEntered()
-        await FloeCAD3DBridge.shared.releaseDocument(at: documentURL, expected: original)
+        // Release commits the clean session's package metadata as one new
+        // revision (the bridge always saves on release). That commit is the
+        // baseline for the reopened identity; the late exact parse must add
+        // no body and no further identity change.
+        let released = await FloeCAD3DBridge.shared.releaseDocumentOutcome(
+            at: documentURL, expected: original)
+        let release = try XCTUnwrap(released,
+                                    "the bridge must own the exact session it opened")
+        XCTAssertNil(release.error, release.error ?? "")
         let reopened = try await FloeCAD3DBridge.shared.openDocument(at: documentURL)
         gate.releaseGate()
         let error = await task.value
@@ -420,8 +427,9 @@ final class NativeCADImportSchedulingTests: XCTestCase {
         }
         XCTAssertEqual(reopened.summary().bodyCount, 0,
                        "a late exact parse must not commit into the newer session")
-        XCTAssertEqual(reopened.revision, identityBefore.revision)
-        XCTAssertEqual(reopened.contentSHA256, identityBefore.sha)
+        XCTAssertEqual(reopened.revision, release.revision,
+                       "the reopened session must match the release commit, not a late import")
+        XCTAssertEqual(reopened.contentSHA256, release.contentSHA256)
         let pendingAfterApply = await center.pendingNativeProposals(for: documentURL)
         XCTAssertTrue(pendingAfterApply.isEmpty)
         XCTAssertEqual(try Data(contentsOf: sourceURL), step)
@@ -443,8 +451,17 @@ final class NativeCADImportSchedulingTests: XCTestCase {
 
         let heartbeat = E31SchedulingHeartbeat()
         heartbeat.start()
+        // A sub-5 ms import cannot be proven live by counting only the ticks
+        // that happen to land inside it: the first heartbeat tick and the
+        // post-import tick are ordered explicitly so the max-gap sample spans
+        // the whole import instead of silently staying at zero samples.
+        await heartbeat.waitForTick()
+        let ticksBeforeImport = heartbeat.ticks
         let ok = await model.importExactOffMain(data: step, fileName: "manual.step",
                                                format: "step")
+        await heartbeat.waitForTick()
+        XCTAssertGreaterThan(heartbeat.ticks, ticksBeforeImport,
+                             "the MainActor heartbeat must still tick after the import")
         heartbeat.stop()
         XCTAssertTrue(ok)
         XCTAssertTrue(recorder.sawOffMain)
@@ -475,13 +492,15 @@ final class NativeCADImportSchedulingTests: XCTestCase {
         let probedValue = await model.probeMeshOffMain(data: glb, fileName: "manual.glb")
         let probe = try XCTUnwrap(probedValue)
         XCTAssertTrue(recorder.sawOffMain, "the manual mesh probe must parse off-main")
-        let parsesAfterProbe = recorder.chargeCount
+        // "start" is emitted once by a real parse; a budget charge also fires
+        // for the units-scale copy, so charges alone cannot prove "no reparse".
+        let parsesAfterProbe = recorder.parseCount
         XCTAssertGreaterThan(parsesAfterProbe, 0)
 
         await model.importMeshProbe(probe, unit: .millimetres)
         XCTAssertEqual(document.summary().bodyCount, 1)
         XCTAssertEqual(document.session.undoStack.undoCommands.count, 1)
-        XCTAssertEqual(recorder.chargeCount, parsesAfterProbe,
+        XCTAssertEqual(recorder.parseCount, parsesAfterProbe,
                        "applying the units prompt must not reparse the source")
         XCTAssertEqual(try Data(contentsOf: sourceURL), glb)
         await FloeCAD3DBridge.shared.releaseDocument(at: documentURL)
@@ -526,6 +545,9 @@ final class NativeCADImportSchedulingTests: XCTestCase {
         try step.write(to: sourceURL)
         let document = try await FloeCAD3DBridge.shared.openDocument(at: documentURL)
         let identityBefore = try await requireStoredIdentity()
+        // The open advances changeCount by one (DocumentSession.load); a
+        // refused parse must add nothing beyond that fixture baseline.
+        let changeCountAfterLoad = document.session.changeCount
         let tight = MeshImportLimits(maximumTriangles: 1,
                                      maximumParts: 4_096,
                                      maximumExpandedBytes: 256 * 1024 * 1024,
@@ -536,7 +558,8 @@ final class NativeCADImportSchedulingTests: XCTestCase {
         let memory = sampler.stop()
         XCTAssertFalse(ok)
         XCTAssertEqual(document.summary().bodyCount, 0)
-        XCTAssertEqual(document.session.changeCount, 0)
+        XCTAssertEqual(document.session.changeCount, changeCountAfterLoad,
+                       "a refused exact import must not add any document mutation")
         let identityAfterRefusal = await storedIdentity()
         XCTAssertEqual(identityAfterRefusal?.revision, identityBefore.revision)
         XCTAssertEqual(try Data(contentsOf: sourceURL), step)
@@ -687,6 +710,19 @@ private final class E31SchedulingHeartbeat {
         task?.cancel()
         task = nil
     }
+
+    /// Suspend until one more heartbeat tick has been observed. A very short
+    /// import otherwise finishes before the 5 ms sampler fires and `ticks`
+    /// stays zero even though the MainActor was never blocked. The deadline
+    /// prevents a dead sampler from hanging the test; the surrounding tick
+    /// assertions then fail with the real evidence.
+    func waitForTick(timeout: TimeInterval = 2) async {
+        let target = ticks + 1
+        let deadline = Date().addingTimeInterval(timeout)
+        while ticks < target, Date() < deadline {
+            try? await Task.sleep(nanoseconds: 1_000_000)
+        }
+    }
 }
 
 nonisolated private final class E31SchedulingFootprint: @unchecked Sendable {
@@ -785,16 +821,22 @@ nonisolated private final class MeshParseRecorder: @unchecked Sendable {
     private let lock = NSLock()
     private var offMain = false
     private var charges = 0
+    private var parses = 0
 
     func record(_ checkpoint: MeshImportCheckpoint) {
         lock.lock()
         if !checkpoint.ranOnMainThread { offMain = true }
         if checkpoint.phase == "charge" { charges += 1 }
+        if checkpoint.phase == "start" { parses += 1 }
         lock.unlock()
     }
 
     var sawOffMain: Bool { lock.lock(); defer { lock.unlock() }; return offMain }
     var chargeCount: Int { lock.lock(); defer { lock.unlock() }; return charges }
+    /// One per real `MeshImportKit.probe` entry. A units-scale copy charges
+    /// its own budget but never enters the parser, so this is the signal that
+    /// proves the source was not parsed twice.
+    var parseCount: Int { lock.lock(); defer { lock.unlock() }; return parses }
 }
 
 nonisolated private final class E31SchedulingExactGate: @unchecked Sendable {

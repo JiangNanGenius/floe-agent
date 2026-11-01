@@ -94,7 +94,8 @@ final class NativeImportSourceReadTests: XCTestCase {
         recorder.holdBegin()
 
         let task = Task { await CADImportSourceReader.read(url: url, lease: recorder.lease) }
-        XCTAssertTrue(recorder.waitForBegin(timeout: 20),
+        let reachedLease = await recorder.waitForBegin(timeout: 20)
+        XCTAssertTrue(reachedLease,
                       "the read must reach the injected lease")
         task.cancel()
         recorder.releaseBegin()
@@ -191,8 +192,17 @@ nonisolated final class LeaseRecorder: @unchecked Sendable {
         gate?.signal()
     }
 
-    func waitForBegin(timeout: TimeInterval) -> Bool {
-        beginEntered.wait(timeout: .now() + timeout) == .success
+    /// Waits on a background queue: the caller (`@MainActor` test) must stay
+    /// free so its `Task` can enter `CADImportSourceReader.read`. Waiting
+    /// synchronously here blocks the MainActor executor before the inherited
+    /// task body ever runs, so `read` never reaches the injected lease.
+    func waitForBegin(timeout: TimeInterval) async -> Bool {
+        await withCheckedContinuation { continuation in
+            DispatchQueue.global().async {
+                continuation.resume(
+                    returning: self.beginEntered.wait(timeout: .now() + timeout) == .success)
+            }
+        }
     }
 
     var lease: CADImportSourceLease {
