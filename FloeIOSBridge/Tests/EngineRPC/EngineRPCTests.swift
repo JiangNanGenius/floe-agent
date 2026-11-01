@@ -21,6 +21,7 @@ func allEngineTests() -> [EngineTestCase] {
         EngineTestCase(name: "inputPolicyMatrix", body: inputPolicyMatrix),
         EngineTestCase(name: "touchPolicyMatrix", body: touchPolicyMatrix),
         EngineTestCase(name: "touchGateNeverCallsDeniedBody", body: touchGateNeverCallsDeniedBody),
+        EngineTestCase(name: "ownerConfigurationNeverReceivesSyntheticInput", body: ownerConfigurationNeverReceivesSyntheticInput),
         EngineTestCase(name: "authorizationContextLifecycle", body: authorizationContextLifecycle),
         EngineTestCase(name: "lockStateClassifier", body: lockStateClassifier),
         EngineTestCase(name: "captureAdmissionPostStopLock", body: captureAdmissionPostStopLock),
@@ -808,6 +809,34 @@ func touchGateNeverCallsDeniedBody() throws {
         try expect(result != nil, "allowed gate runs the body")
     }
     try expectEqual(touches, allowed.count, "allowed decisions call the touch body")
+}
+
+func ownerConfigurationNeverReceivesSyntheticInput() throws {
+    var underlyingCalls = 0
+    for ownerID in [BridgeBuild.canonicalHostBundleIdentifier, "com.example.resigned-bridge"] {
+        for grant in [false, true] {
+            let authorization = BridgeEngineInvocationAuthorization(clientID: "controller",
+                                                                    operationID: "owner-ui-test",
+                                                                    sensitiveInputGranted: grant)
+            defer { authorization.invalidate() }
+            for secure in [false, true] {
+                let decision = BridgeEngineTouchPolicy.decide(
+                    authorization: authorization, screenLocked: false,
+                    authorizationSurfacePresent: false, bundleIdentifier: ownerID.uppercased(),
+                    ownerBundleIdentifier: ownerID, foregroundBundleIdentifier: ownerID.uppercased(),
+                    focusStateKnown: true, focusedSecure: secure)
+                let result: Void? = BridgeEngineTouchPolicy.authorize(decision) { underlyingCalls += 1 }
+                try expect(result == nil && !decision.allowed, "owner UI refuses even a sensitive-input grant")
+            }
+            let other = BridgeEngineTouchPolicy.decide(
+                authorization: authorization, screenLocked: false,
+                authorizationSurfacePresent: false, bundleIdentifier: "com.example.editor",
+                ownerBundleIdentifier: ownerID, foregroundBundleIdentifier: "com.example.editor",
+                focusStateKnown: true, focusedSecure: false)
+            try expect(other.allowed, "ordinary external-app control remains available")
+        }
+    }
+    try expectEqual(underlyingCalls, 0, "owner UI never reaches the SDK mutation body")
 }
 
 func authorizationContextLifecycle() throws {

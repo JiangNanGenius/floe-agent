@@ -80,6 +80,7 @@ public enum BridgeEngineTouchPolicy {
                               screenLocked: Bool,
                               authorizationSurfacePresent: Bool,
                               bundleIdentifier: String?,
+                              ownerBundleIdentifier: String = BridgeBuild.hostBundleIdentifier,
                               foregroundBundleIdentifier: String?,
                               focusStateKnown: Bool,
                               focusedSecure: Bool) -> BridgeEngineTouchDecision {
@@ -89,6 +90,7 @@ public enum BridgeEngineTouchPolicy {
         return decide(screenLocked: screenLocked,
                       authorizationSurfacePresent: authorizationSurfacePresent,
                       bundleIdentifier: bundleIdentifier,
+                      ownerBundleIdentifier: ownerBundleIdentifier,
                       foregroundBundleIdentifier: foregroundBundleIdentifier,
                       focusStateKnown: focusStateKnown,
                       focusedSecure: focusedSecure,
@@ -98,6 +100,7 @@ public enum BridgeEngineTouchPolicy {
     public static func decide(screenLocked: Bool,
                               authorizationSurfacePresent: Bool,
                               bundleIdentifier: String?,
+                              ownerBundleIdentifier: String = BridgeBuild.hostBundleIdentifier,
                               foregroundBundleIdentifier: String?,
                               focusStateKnown: Bool,
                               focusedSecure: Bool,
@@ -110,6 +113,15 @@ public enum BridgeEngineTouchPolicy {
         }
         guard let bundleIdentifier, !bundleIdentifier.isEmpty else {
             return deny("The target app could not be established; generic touch is refused.")
+        }
+        // Pairing approvals and permission changes must remain device-owner
+        // actions. A paired controller must not grant itself more access by
+        // opening Bridge and synthesizing touches on its configuration UI.
+        guard !ownerBundleIdentifier.isEmpty else {
+            return deny("The Bridge app identity is unavailable; input is refused.")
+        }
+        if bundleIdentifier.caseInsensitiveCompare(ownerBundleIdentifier) == .orderedSame {
+            return deny("Bridge controls and authorizations must be operated directly on the device.")
         }
         if BridgeEngineInputPolicy.isSystemAuthorizationSurface(bundleIdentifier: bundleIdentifier) {
             return deny("System authorization, passcode and SpringBoard input is never automated.")

@@ -7,7 +7,7 @@ import Foundation
 /// build system.
 public enum BridgeBuild {
     public static let marketingVersion = "1.0.0"
-    public static let buildNumber = "14"
+    public static let buildNumber = "15"
 
     public static let canonicalHostBundleIdentifier = "org.floeagent.iosbridge"
 

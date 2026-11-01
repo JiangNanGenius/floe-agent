@@ -42,6 +42,8 @@ For same-device Safari remote control, request pairing, switch to Bridge to appr
 
 Third-party app password input requires a separate sensitive-input grant for that client, disabled by default. This grant never permits device passcode entry or system authentication input.
 
+Bridge's own controls require direct interaction on the device. Paired automation cannot tap or type into Bridge to approve clients or change permissions.
+
 ## Optional local network access
 
 LAN access and same-network discovery are off by default. Enable them in Settings only when another device needs to connect. Discovery uses the same LAN and does not provide direct peer-to-peer nearby connections. New LAN clients also need approval on the device.

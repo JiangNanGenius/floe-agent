@@ -172,6 +172,7 @@ final class BridgeEngineRPCRuntime: BridgeRPCExecutor, BridgeScreenFrameProvider
             screenLocked: !lockState().permitsAutomation,
             authorizationSurfacePresent: authorizationSurfacePresent,
             bundleIdentifier: targetBundle,
+            ownerBundleIdentifier: BridgeBuild.hostBundleIdentifier,
             foregroundBundleIdentifier: targetIsForeground ? targetBundle : nil,
             focusStateKnown: focusStateKnown,
             focusedSecure: focusedSecure
