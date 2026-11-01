@@ -12,6 +12,7 @@ import com.floe.android.host.cad.C04CadViewerController
 import com.floe.android.host.mail.C06BrokerMailLanGate
 import com.floe.android.host.mail.C06MailHostController
 import com.floe.android.host.calendar.C06CalendarHostController
+import com.floe.android.host.systemservices.C06SystemServicesHostController
 import com.floe.android.host.dataexchange.C07DataExchangeHostController
 import com.floe.android.host.remote.C05BrokerLocalNetworkGate
 import com.floe.android.host.devicecommunication.C05BrokerDeviceLanGate
@@ -200,6 +201,25 @@ class RuntimeHost internal constructor(
     }
     internal val c06Calendar: C06CalendarHostController
         get() = c06CalendarDelegate.value
+
+    /**
+     * C06 Application-owned system-services controller. It owns the trusted
+     * bridge token, the real location/contacts/NFC/Health Connect platform
+     * clients, permission/ActivityResult routing, the foreground/NFC lifecycle
+     * and the reverse mailbox lane. App-scoped so a permission result or tag
+     * scan never belongs to a view; the root-stop gate closes it before
+     * retirement.
+     */
+    private val c06SystemServicesDelegate = lazy {
+        C06SystemServicesHostController(
+            context = appContext,
+            scope = scope,
+            ioDispatcher = ioDispatcher,
+            currentNativeEpoch = ::nativeRootEpoch,
+        )
+    }
+    internal val c06SystemServices: C06SystemServicesHostController
+        get() = c06SystemServicesDelegate.value
 
     /**
      * C07 Application-owned manual data exchange. It owns no archive bytes:
@@ -542,6 +562,20 @@ class RuntimeHost internal constructor(
         }
 
     /**
+     * Root-stop gate for C06 system services: cancel permission/refresh work,
+     * unregister capability receivers, disable NFC reader mode and drain the
+     * platform mailbox before the old Swift generation retires. An unproven
+     * drain keeps the old generation pending; an in-flight read is never
+     * reported as a success by this gate.
+     */
+    internal suspend fun prepareC06SystemServicesForRootStop(): Boolean =
+        if (c06SystemServicesDelegate.isInitialized()) {
+            c06SystemServices.prepareForRootStop(C06_SYSTEM_SERVICES_STOP_WAIT_MS)
+        } else {
+            true
+        }
+
+    /**
      * Root-stop gate for C07: cancel an in-flight SAF read/write and the
      * native job. Staged files are app-private; the durable restore journal
      * remains for the next generation's explicit recovery action.
@@ -879,6 +913,12 @@ class RuntimeHost internal constructor(
                 // not been opened (configured model calendar tools need it);
                 // it performs no provider query until work is requested.
                 c06Calendar.onOwnedStoreReady()
+                // C06: system services follow the ACTUAL accepted epoch so
+                // configured model tools work even when the screen was never
+                // opened. No permission prompt or platform read happens until
+                // an explicit tool or UI action; the capability push is the
+                // only startup work.
+                c06SystemServices.onOwnedStoreReady()
                 // C07 only reacts if the settings surface already created
                 // the controller; no backup/restore work starts implicitly.
                 if (c07DataExchangeDelegate.isInitialized()) {
@@ -913,6 +953,7 @@ class RuntimeHost internal constructor(
                 if (c05DevicesDelegate.isInitialized()) c05Devices.onRootStopped()
                 if (c06MailDelegate.isInitialized()) c06Mail.onRootStopped()
                 if (c06CalendarDelegate.isInitialized()) c06Calendar.onRootStopped()
+                if (c06SystemServicesDelegate.isInitialized()) c06SystemServices.onRootStopped()
                 if (c07DataExchangeDelegate.isInitialized()) c07DataExchange.onRootStopped()
                 stopOfficeAiLane()
                 // Fence the flavour extension on the real retirement. The
@@ -1244,6 +1285,9 @@ class RuntimeHost internal constructor(
 
         /** Bounded join for the C06 CalendarContract/reminder lane drain. */
         internal const val C06_CALENDAR_STOP_WAIT_MS = 8_000L
+
+        /** Bounded join for the C06 system-services platform mailbox drain. */
+        internal const val C06_SYSTEM_SERVICES_STOP_WAIT_MS = 6_000L
 
         /** Bounded join for the exact active monitoring session on root stop. */
         internal const val NETWORK_MONITOR_STOP_WAIT_MS = 5_000L

@@ -16,14 +16,14 @@ class PcapCaptureSinkTest {
     private class BlockingOutput : OutputStream() {
         val firstPayloadWritten = CountDownLatch(1)
         private val release = CountDownLatch(1)
-        var afterFirst = false
 
-        override fun write(b: Int) {
-            if (afterFirst) await()
-        }
+        override fun write(b: Int) = Unit
 
         override fun write(b: ByteArray, off: Int, len: Int) {
-            if (afterFirst && len == 20) {
+            // A single small packet can remain inside the sink's 64 KiB
+            // BufferedOutputStream, so only a real payload-sized write is a
+            // reliable "the writer is blocked here" signal.
+            if (len >= 1_000) {
                 firstPayloadWritten.countDown()
                 await()
             }
@@ -38,7 +38,6 @@ class PcapCaptureSinkTest {
         }
 
         fun release() {
-            afterFirst = true
             release.countDown()
         }
     }
@@ -48,25 +47,36 @@ class PcapCaptureSinkTest {
         val output = BlockingOutput()
         val sink = PcapCaptureSink(
             output = output,
-            maxBytes = 1_000_000,
+            maxBytes = 10_000_000,
             maxPackets = 100,
             queuePackets = 1,
-            queueBytes = 64,
+            queueBytes = 200_000,
         )
         sink.start()
-        assertTrue(sink.offer(ByteArray(20) { 0x45 }, 0, 20))
+        // Two bulk packets are needed to force the 64 KiB BufferedOutputStream
+        // to hand a payload-sized write to the underlying (blocking) owner.
+        assertTrue(sink.offer(ByteArray(60_000) { 0x45 }, 0, 60_000))
+        assertTrue(sink.offer(ByteArray(60_000) { 0x45 }, 0, 60_000))
         assertTrue(output.firstPayloadWritten.await(5, TimeUnit.SECONDS))
-        // The writer is blocked on the first payload, so the queue can now
-        // hold exactly one more packet and must reject the third copy.
-        assertTrue(sink.offer(ByteArray(20) { 0x45 }, 0, 20))
-        assertFalse(sink.offer(ByteArray(20) { 0x45 }, 0, 20))
+        // The writer is blocked on the second payload, so the queue can hold
+        // exactly one more packet and must reject the fourth copy.
+        assertTrue(sink.offer(ByteArray(60_000) { 0x45 }, 0, 60_000))
+        assertFalse(sink.offer(ByteArray(60_000) { 0x45 }, 0, 60_000))
         val stats = sink.stats()
-        assertEquals(2L, stats.capturedPackets)
+        assertEquals(3L, stats.capturedPackets)
         assertEquals(1L, stats.droppedPackets)
         output.release()
+        // Let the already-admitted third packet drain before closing; otherwise
+        // close's poison-marker admission would evict it and count another drop
+        // (a documented close policy, not the queue rule under test).
+        val deadline = System.nanoTime() + 5_000_000_000L
+        while (sink.stats().writtenPackets < 3L && System.nanoTime() < deadline) {
+            Thread.sleep(10L)
+        }
+        assertEquals(3L, sink.stats().writtenPackets)
         val summary = sink.closeAndDrain(5_000)
         assertTrue(summary.drained)
-        assertEquals(2L, summary.writtenPackets)
+        assertEquals(3L, summary.writtenPackets)
         assertEquals(1L, summary.droppedPackets)
     }
 

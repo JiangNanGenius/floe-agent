@@ -434,4 +434,18 @@
     <string name="network_capture_owner">App-private file · not uploaded</string>
     <string name="network_capture_icmp">ICMP (ping) is not forwarded in the no-root capture.</string>
     <string name="network_capture_cancelled">Capture cancelled.</string>
+    <string name="network_capture_raw_title">Saved raw captures</string>
+    <string name="network_capture_raw_intro">These app-private PCAP files stay on this device. Export saves a copy where you choose; nothing is uploaded.</string>
+    <string name="network_capture_raw_item">%1$s · %2$s · %3$s</string>
+    <string name="network_capture_raw_digest">SHA-256 %1$s…</string>
+    <string name="network_capture_raw_partial">Partial</string>
+    <string name="network_capture_raw_complete">Complete</string>
+    <string name="network_capture_raw_export">Export PCAP</string>
+    <string name="network_capture_raw_exporting">Exporting…</string>
+    <string name="network_capture_raw_cancel">Cancel export</string>
+    <string name="network_capture_raw_exported">Saved %1$s · SHA-256 %2$s</string>
+    <string name="network_capture_raw_exported_partial">Saved partial capture %1$s · SHA-256 %2$s</string>
+    <string name="network_capture_raw_agent_note">Raw packet bytes are never shared with the Agent automatically.</string>
+    <string name="network_capture_raw_empty">No saved raw captures yet.</string>
+    <string name="network_capture_raw_invalid">Some saved captures failed integrity checks and are hidden.</string>
 </resources>

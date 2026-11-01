@@ -419,6 +419,10 @@ android {
             rootProject.file("core/officeengine/payload-pins.json")) as Map<*, *>
         val officeLibraries = officePins["libraries"] as Map<*, *>
         jniLibs.keepDebugSymbols += officeLibraries.keys.map { "**/$it" }
+        // The Full root capture helper is an executable PIE staged as a jniLib.
+        // AGP must not strip/rewrite those exact bytes: RootCaptureHelper binds
+        // the installed SHA-256 to the packaged manifest.
+        jniLibs.keepDebugSymbols += "**/libfloecapture_helper.so"
         // Product-packaging boundary for the Swift SDK runtime staging: the
         // four test-only Swift runtime libraries are staged inside
         // core/swiftbridge jniLibs for host qualification and are byte-pinned
@@ -450,6 +454,40 @@ androidComponents.onVariants { variant ->
         "full" -> variant.packaging.jniLibs.useLegacyPackaging.set(true)
         "play" -> variant.packaging.jniLibs.useLegacyPackaging.set(false)
         else -> error("unexpected app distribution flavor: $distribution")
+    }
+}
+
+// Production only: a Full release must not package a missing or mismatched
+// root helper. The source lane does not run this task; Main's native batch
+// builds the pinned ELF and this gate verifies the exact bytes before merge.
+val verifyRootCaptureHelper = tasks.register("verifyRootCaptureHelper") {
+    val binary = file("src/full/jniLibs/arm64-v8a/libfloecapture_helper.so")
+    val manifest = file("src/full/assets/root-capture/helper.json")
+    doLast {
+        if (!binary.isFile || !manifest.isFile) {
+            throw GradleException(
+                "Full root capture helper is missing; run scripts/root-capture/build-helper.sh --stage",
+            )
+        }
+        val metadata = groovy.json.JsonSlurper().parse(manifest) as Map<*, *>
+        val expected = metadata["sha256"] as? String
+        val size = (metadata["sizeBytes"] as? Number)?.toLong()
+        val digest = java.security.MessageDigest.getInstance("SHA-256")
+            .digest(binary.readBytes()).joinToString("") { "%02x".format(it) }
+        if (expected == null || size == null || digest != expected || binary.length() != size) {
+            throw GradleException("Full root capture helper does not match its digest manifest")
+        }
+    }
+}
+androidComponents.onVariants { variant ->
+    val distribution = variant.productFlavors
+        .singleOrNull { it.first == "distribution" }?.second ?: return@onVariants
+    if (distribution != "full" || variant.buildType != "release") return@onVariants
+    val name = variant.name.replaceFirstChar { it.uppercase() }
+    listOf("merge${name}JniLibFolders", "merge${name}Assets").forEach { taskName ->
+        tasks.matching { it.name == taskName }.configureEach {
+            dependsOn(verifyRootCaptureHelper)
+        }
     }
 }
 
@@ -503,6 +541,13 @@ dependencies {
     // C06 system-calendar provider access and Calendar/Todo presentation.
     implementation(project(":core:calendar"))
     implementation(project(":feature:calendar"))
+    // C06 system services: real platform clients and the read-only capability
+    // screen. Health Connect resolves through the exact 1.1.0 pin in
+    // :core:systemservices; the destination also launches its permission
+    // contract, so the same exact client is kept on the App classpath.
+    implementation(project(":core:systemservices"))
+    implementation(project(":feature:systemservices"))
+    implementation("androidx.health.connect:connect-client:1.1.0")
     // C07 backup/restore and document-package presentation; the App-owned
     // data-exchange controller owns SAF and the trusted bridge.
     implementation(project(":feature:dataexchange"))

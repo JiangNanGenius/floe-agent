@@ -654,6 +654,14 @@ public final class G02InstalledComposition: @unchecked Sendable {
         await C06TodoDomain.shared.refreshAvailability(epoch: epoch)
         await C06CalendarDomain.shared.refreshAvailability(epoch: epoch)
 
+        // C06: register the four ordinary system-service tools over the SAME
+        // accepted generation/registry. Location, contacts, NFC and Health
+        // Connect discovery stays hidden until the trusted App host pushes an
+        // ACTUAL permission/provider/foreground projection; no tool prompt or
+        // developer-account gate exists here.
+        registerC06SystemServicesTools(registry: runComponents.registry)
+        await C06SystemServicesDomain.shared.refreshAvailability(epoch: epoch)
+
         // Close the REAL feed/lease cycle with the exact accepted domain
         // instance; until this line both sides answered fail-closed.
         if let (runDomain, _) = RunDomainFacade.current(epoch: epoch) {

@@ -25,6 +25,10 @@ class PcapRecordWriterTest {
             ((bytes[offset + 2].toInt() and 0xFF) shl 16) or
             ((bytes[offset + 3].toInt() and 0xFF) shl 24)
 
+    private fun shortLe(bytes: ByteArray, offset: Int): Int =
+        (bytes[offset].toInt() and 0xFF) or
+            ((bytes[offset + 1].toInt() and 0xFF) shl 8)
+
     @Test
     fun writesLittleEndianRawGlobalHeaderAndRecords() {
         val output = ByteArrayOutputStream()
@@ -41,8 +45,9 @@ class PcapRecordWriterTest {
         assertEquals(24 + 2 * (16 + 20), bytes.size)
         assertTrue(PcapFormatCheck.isValidGlobalHeader(bytes))
         assertEquals(0xA1B2C3D4.toInt(), intLe(bytes, 0))
-        assertEquals(2, intLe(bytes, 4))
-        assertEquals(4, intLe(bytes, 6))
+        // PCAP global header: 16-bit major/minor version at offsets 4 and 6.
+        assertEquals(2, shortLe(bytes, 4))
+        assertEquals(4, shortLe(bytes, 6))
         assertEquals(PcapLinkType.RAW.value, intLe(bytes, 20))
         assertEquals(1_700_000_000, intLe(bytes, 24))
         assertEquals(123_456, intLe(bytes, 28))

@@ -12,6 +12,7 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
@@ -63,6 +64,9 @@ class NetworkArtifactCallbacks(
     val onCaptureStart: (String, Boolean, Int) -> Unit,
     val onCaptureStop: (String) -> Unit,
     val onOpenCaptureAnalysis: (String) -> Unit,
+    val onRefreshRawCaptures: () -> Unit,
+    val onExportRawCapture: (String) -> Unit,
+    val onCancelRawExport: () -> Unit,
 )
 
 private enum class ArtifactTab { CAPTURES, COVERAGE }
@@ -80,6 +84,7 @@ fun NetworkArtifactWorkbench(
     callbacks: NetworkArtifactCallbacks,
     captureState: CaptureState = CaptureState(),
     captureAvailability: RootCaptureAvailability = RootCaptureAvailability.playBuild(),
+    rawCaptureState: RawCaptureLibraryUiState = RawCaptureLibraryUiState(),
     modifier: Modifier = Modifier,
 ) {
     var tab by rememberSaveable { mutableStateOf(ArtifactTab.CAPTURES.name) }
@@ -137,12 +142,14 @@ fun NetworkArtifactWorkbench(
             ArtifactTab.CAPTURES -> {
                 if (compact) {
                     if (pcapDetail) PcapDetail(state.pcap, callbacks)
-                    else PcapList(state.pcap, callbacks, captureState, captureAvailability)
+                    else PcapList(
+                        state.pcap, callbacks, captureState, captureAvailability, rawCaptureState,
+                    )
                 } else {
                     Row(Modifier.weight(1f)) {
                         PcapList(
                             state.pcap, callbacks, captureState, captureAvailability,
-                            Modifier.width(280.dp).fillMaxHeight(),
+                            rawCaptureState, Modifier.width(280.dp).fillMaxHeight(),
                         )
                         FloeVerticalDivider()
                         if (pcapDetail) PcapDetail(state.pcap, callbacks, Modifier.weight(1f))
@@ -180,6 +187,7 @@ private fun PcapList(
     callbacks: NetworkArtifactCallbacks,
     captureState: CaptureState,
     captureAvailability: RootCaptureAvailability,
+    rawCaptureState: RawCaptureLibraryUiState,
     modifier: Modifier = Modifier,
 ) {
     var detailed by rememberSaveable { mutableStateOf(false) }
@@ -194,6 +202,7 @@ private fun PcapList(
                     onStop = callbacks.onCaptureStop,
                     onOpenAnalysis = callbacks.onOpenCaptureAnalysis,
                 )
+                RawCaptureSection(rawCaptureState, callbacks)
                 FloeText(stringResource(R.string.network_artifact_capture_intro), style = Floe.typography.body)
                 FloeCheckboxRow(
                     label = stringResource(R.string.network_artifact_capture_detailed),
@@ -451,6 +460,126 @@ private fun PcapStatusPill(status: String) {
         else -> stringResource(R.string.network_artifact_status_failed) to FloeBadgeTone.DESTRUCTIVE
     }
     FloeBadgePill(text, tone)
+}
+
+@Composable
+private fun RawCaptureSection(
+    state: RawCaptureLibraryUiState,
+    callbacks: NetworkArtifactCallbacks,
+) {
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            FloeText(
+                stringResource(R.string.network_capture_raw_title),
+                style = Floe.typography.bodyEmphasized,
+                modifier = Modifier.weight(1f),
+            )
+            if (state.exporting) {
+                FloeActivityIndicator(
+                    description = stringResource(R.string.network_capture_raw_exporting),
+                )
+            }
+        }
+        FloeText(
+            stringResource(R.string.network_capture_raw_intro),
+            style = Floe.typography.metadata,
+            color = Floe.colors.secondaryLabel,
+        )
+        if (state.invalid > 0) {
+            FloeStatusLine(
+                FloeIcons.WarningTriangle,
+                stringResource(R.string.network_capture_raw_invalid),
+                Floe.colors.secondaryLabel,
+            )
+        }
+        if (state.captures.isEmpty()) {
+            FloeText(
+                stringResource(R.string.network_capture_raw_empty),
+                style = Floe.typography.metadata,
+                color = Floe.colors.secondaryLabel,
+            )
+        } else {
+            state.captures.forEach { item ->
+                val busy = state.exportingSessionId == item.sessionId
+                Column(
+                    Modifier.fillMaxWidth()
+                        .background(Floe.colors.fillTertiary, RoundedCornerShape(12.dp))
+                        .padding(12.dp),
+                    verticalArrangement = Arrangement.spacedBy(6.dp),
+                ) {
+                    Row(verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        IconGlyph(FloeIcons.Folder, Floe.colors.accent)
+                        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                            FloeText(
+                                stringResource(
+                                    R.string.network_capture_raw_item,
+                                    if (item.mode == CaptureMode.ROOT.wire) {
+                                        stringResource(R.string.network_capture_mode_root)
+                                    } else {
+                                        stringResource(R.string.network_capture_mode_vpn)
+                                    },
+                                    NetworkArtifactFormat.timestamp(item.createdAtMillis),
+                                    NetworkMeasureFormat.bytes(item.bytes),
+                                ),
+                                style = Floe.typography.bodyEmphasized,
+                            )
+                            FloeText(
+                                stringResource(
+                                    R.string.network_capture_raw_digest,
+                                    item.sha256.take(16),
+                                ),
+                                style = Floe.typography.metadata,
+                                color = Floe.colors.secondaryLabel,
+                            )
+                        }
+                        FloeBadgePill(
+                            stringResource(
+                                if (item.partial) R.string.network_capture_raw_partial
+                                else R.string.network_capture_raw_complete,
+                            ),
+                            if (item.partial) FloeBadgeTone.PENDING else FloeBadgeTone.SUCCESS,
+                        )
+                    }
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        FloeCapsuleButton(
+                            stringResource(
+                                if (busy) R.string.network_capture_raw_exporting
+                                else R.string.network_capture_raw_export,
+                            ),
+                            onClick = { callbacks.onExportRawCapture(item.sessionId) },
+                            enabled = !state.exporting,
+                            prominent = busy,
+                        )
+                        if (busy) {
+                            FloeCapsuleButton(
+                                stringResource(R.string.network_capture_raw_cancel),
+                                onClick = callbacks.onCancelRawExport,
+                            )
+                        }
+                    }
+                }
+            }
+        }
+        state.exported?.let { receipt ->
+            FloeStatusLine(
+                FloeIcons.Clock,
+                stringResource(
+                    if (receipt.partial) R.string.network_capture_raw_exported_partial
+                    else R.string.network_capture_raw_exported,
+                    NetworkMeasureFormat.bytes(receipt.bytes),
+                    receipt.sha256,
+                ),
+                Floe.colors.secondaryLabel,
+            )
+            FloeText(
+                stringResource(R.string.network_capture_raw_agent_note),
+                style = Floe.typography.metadata,
+                color = Floe.colors.secondaryLabel,
+            )
+        }
+        state.failure?.let { ArtifactFailureLine(it) }
+    }
 }
 
 @Composable

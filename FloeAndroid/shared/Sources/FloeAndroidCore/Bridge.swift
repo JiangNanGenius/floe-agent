@@ -40,6 +40,7 @@ public enum AndroidBridge {
                 || requestVersion == BridgeV12.version
                 || requestVersion == BridgeV13.version
                 || requestVersion == BridgeV14.version
+                || requestVersion == BridgeV15.version
                 || requestVersion == BridgeV16.version else {
             return response(["ok": false, "error": "unsupportedVersion"])
         }
@@ -224,6 +225,24 @@ public enum AndroidBridge {
                                 stampVersion: BridgeV14.version)
             }
             return response(object, stampVersion: BridgeV14.version)
+        }
+        if requestVersion == BridgeV15.version {
+            // Additive C06 host-services channel: real permission/provider/
+            // foreground projections and the closed system-service mailbox
+            // capability check. Platform data never crosses this JSON channel
+            // except bounded tickets/replies over the reverse mailbox; model
+            // tools use the ordinary registry. V1-V14 branches above are
+            // byte-identical; V16 remains below.
+            let object = C06SystemBridge.handle(requestData: data,
+                                                fallbackRequestID: requestID)
+            let encoded = (try? JSONSerialization.data(withJSONObject: object,
+                                                       options: [.sortedKeys]))
+                ?? Data(#"{"ok":false,"error":"encoding"}"#.utf8)
+            guard encoded.count <= C06SystemWire.maximumResponseBytes else {
+                return response(["ok": false, "error": "responseTooLarge"],
+                                stampVersion: BridgeV15.version)
+            }
+            return response(object, stampVersion: BridgeV15.version)
         }
         if requestVersion == BridgeV16.version {
             // Additive C07 host-only data-exchange channel: backup/restore

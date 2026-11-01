@@ -92,15 +92,19 @@ class PcapRecordWriter(
     @Synchronized
     fun finish(): PcapWriteSummary {
         if (!closed) closed = true
-        return PcapWriteSummary(
-            linkType = PcapLinkType.RAW,
-            packets = packetCount,
-            bytes = totalBytes,
-            truncatedPackets = truncatedPackets,
-            limitReason = limitReason,
-            closed = true,
-        )
+        return snapshot()
     }
+
+    /** Current state without closing the stream; used while a writer is late. */
+    @Synchronized
+    fun snapshot(): PcapWriteSummary = PcapWriteSummary(
+        linkType = PcapLinkType.RAW,
+        packets = packetCount,
+        bytes = totalBytes,
+        truncatedPackets = truncatedPackets,
+        limitReason = limitReason,
+        closed = closed,
+    )
 
     private fun writeGlobalHeader() {
         writeIntLe(MAGIC_LE)

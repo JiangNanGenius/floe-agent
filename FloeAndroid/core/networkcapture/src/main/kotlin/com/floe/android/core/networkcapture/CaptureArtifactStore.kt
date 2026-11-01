@@ -88,6 +88,7 @@ class CaptureArtifactStore(
     private val maxRetainedBytes: Long = CaptureLimits.MAX_RETAINED_RAW_BYTES,
 ) {
     private val stagingDirectory = File(rootDirectory, "staging")
+    private val liveStaging = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
 
     fun begin(
         sessionId: String,
@@ -106,7 +107,13 @@ class CaptureArtifactStore(
         pruneRetention()
         val staging = File(stagingDirectory, ".capture-$sessionId.part")
         if (staging.exists()) throw IOException("captureAlreadyExists")
-        val output = FileOutputStream(staging, false)
+        liveStaging.add(staging.name)
+        val output = try {
+            FileOutputStream(staging, false)
+        } catch (failure: Throwable) {
+            liveStaging.remove(staging.name)
+            throw failure
+        }
         val sink = PcapCaptureSink(
             output = output,
             maxBytes = maxBytes,
@@ -140,6 +147,12 @@ class CaptureArtifactStore(
         limitations: List<String>,
         stopProven: Boolean = true,
     ): CaptureArtifactResult {
+        // The store must never fsync/close/rename bytes while the sink writer
+        // still owns the output. The caller keeps the artifact/staging file
+        // and retries the same drain; no second capture is created.
+        if (artifact.sink.isWriterAlive()) {
+            throw IOException("captureWriterStillOwnsArtifact")
+        }
         // Preserve staging on a write/fsync failure; never publish a durable
         // success receipt after swallowing an I/O failure.
         try {
@@ -202,6 +215,7 @@ class CaptureArtifactStore(
             .put("limitations", JSONArray(limitations))
             .toString(2)
         writeAtomically(manifest, manifestText.toByteArray(Charsets.UTF_8))
+        liveStaging.remove(artifact.stagingFile.name)
         pruneRetention(keep = target.name)
         return CaptureArtifactResult(
             sessionId = artifact.sessionId,
@@ -227,12 +241,19 @@ class CaptureArtifactStore(
         pruneRetention()
         val staging = File(stagingDirectory, ".capture-$sessionId.part")
         if (staging.exists()) throw IOException("captureAlreadyExists")
+        liveStaging.add(staging.name)
+        val output = try {
+            FileOutputStream(staging, false)
+        } catch (failure: Throwable) {
+            liveStaging.remove(staging.name)
+            throw failure
+        }
         return RootCaptureArtifact(
             sessionId = sessionId,
             owner = owner,
             createdAtMillis = clock(),
             stagingFile = staging,
-            output = FileOutputStream(staging, false),
+            output = output,
             maxDurationMillis = maxDurationMillis,
         )
     }
@@ -245,13 +266,18 @@ class CaptureArtifactStore(
         endedAtMillis: Long,
         limitations: List<String>,
         stopProven: Boolean = true,
+        writerJoined: Boolean = true,
     ): CaptureArtifactResult {
+        // The App owns this stream. Finalizing while the root read/write
+        // coroutine is still appending would close a file under a live owner,
+        // so the caller must prove the writer joined first.
+        if (!writerJoined) throw IOException("captureWriterStillOwnsArtifact")
         try {
             artifact.output.fd.sync()
         } finally {
             artifact.output.close()
         }
-        val complete = stopProven && !progress.malformed &&
+        val complete = stopProven && progress.drainProven && !progress.malformed &&
             progress.bytes > PcapRecordWriter.GLOBAL_HEADER_BYTES &&
             progress.endReason !in setOf(
                 CaptureEndReason.STOP_TIMEOUT,
@@ -328,6 +354,7 @@ class CaptureArtifactStore(
             .put("limitations", JSONArray(limitations))
             .toString(2)
         writeAtomically(manifest, manifestText.toByteArray(Charsets.UTF_8))
+        liveStaging.remove(artifact.stagingFile.name)
         pruneRetention(keep = target.name)
         return CaptureArtifactResult(
             sessionId = artifact.sessionId,
@@ -342,13 +369,20 @@ class CaptureArtifactStore(
 
     fun abandonRoot(artifact: RootCaptureArtifact) {
         runCatching { artifact.output.close() }
-        runCatching { artifact.stagingFile.delete() }
+        if (runCatching { artifact.stagingFile.delete() }.getOrDefault(false)) {
+            liveStaging.remove(artifact.stagingFile.name)
+        }
     }
 
     fun abandon(artifact: CaptureArtifact) {
         runCatching { artifact.sink.closeAndDrain(250L) }
+        // Never close/unlink the staging file while its writer still owns it.
+        // The recoverable staging file is left for a real future drain.
+        if (artifact.sink.isWriterAlive()) return
         runCatching { artifact.output.close() }
-        runCatching { artifact.stagingFile.delete() }
+        if (runCatching { artifact.stagingFile.delete() }.getOrDefault(false)) {
+            liveStaging.remove(artifact.stagingFile.name)
+        }
     }
 
     fun list(): List<File> = rootDirectory.listFiles()
@@ -375,7 +409,9 @@ class CaptureArtifactStore(
         // silently published. Keep them for a bounded day, then prune.
         val old = clock() - 24L * 60L * 60L * 1000L
         stagingDirectory.listFiles()?.forEach { file ->
-            if (file.isFile && file.lastModified() < old) runCatching { file.delete() }
+            if (file.isFile && file.name !in liveStaging && file.lastModified() < old) {
+                runCatching { file.delete() }
+            }
         }
     }
 

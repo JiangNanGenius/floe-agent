@@ -537,6 +537,10 @@ class FloeApplication : Application() {
                 // C06: stop the calendar provider lane and acknowledge its
                 // mailbox closure before the native Root epoch retires.
                 (runtimeHost?.prepareC06CalendarForRootStop() != false) &&
+                // C06 system services: unregister capability receivers, disable
+                // NFC reader mode and drain the platform mailbox before the
+                // native Root epoch retires.
+                (runtimeHost?.prepareC06SystemServicesForRootStop() != false) &&
                 (runtimeHost?.prepareC07DataExchangeForRootStop() != false) &&
                 // C05 devices: close every App/tool TCP/Telnet/BLE/USB
                 // session and stop the trusted device tool mailbox before
@@ -758,16 +762,23 @@ class FloeApplication : Application() {
         activityForeground = active
         runtimeHost?.workspaceActions?.scene(active)
         runtimeHost?.onVoiceForeground(active)
+        if (active) {
+            runtimeHost?.c06SystemServices?.onAppForeground()
+        } else {
+            runtimeHost?.c06SystemServices?.onAppBackground()
+        }
         if (!active) runtimeHost?.browser?.flushPersistentState()
     }
 
     /** Channel flavour resume hook (FULL reconciles real phone/ADB status). */
     internal fun onPlatformActivityResumed(activity: android.app.Activity) {
         runCatching { runtimeHost?.platformExtension?.onActivityResumed(activity) }
+        runtimeHost?.c06SystemServices?.setCurrentActivity(activity)
     }
 
     internal fun onPlatformActivityPaused() {
         runCatching { runtimeHost?.platformExtension?.onActivityPaused() }
+        runtimeHost?.c06SystemServices?.setCurrentActivity(null)
     }
 
     private suspend fun startBrowserLane(epoch: Long) {

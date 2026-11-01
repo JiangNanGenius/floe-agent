@@ -134,10 +134,14 @@ paths, hashes and local compatibility patch lineage are recorded in
 `FloeAndroid/licenses/netbare/`. No NetBare HTTP/SSL injection, UID dumper,
 sample app, prebuilt JNI or Maven/JCenter artifact is linked.
 
-The Full-only root capture helper is **not** distributed by this App and is
-never downloaded by it. The App accepts only a pinned helper at a fixed
-root-owned path and records the source binding in the C06 private handoff for
-Main's later build/install qualification. Play contains no root adapter.
+The Full-only root capture helper is built from tcpdump 4.99.5 and libpcap
+1.10.5 under their BSD licenses. Exact upstream URLs, SHA-256 values, build
+flags and license texts are retained in `FloeAndroid/licenses/root-capture/`.
+The helper is packaged only in the Full APK as
+`lib/arm64-v8a/libfloecapture_helper.so` with
+`assets/root-capture/helper.json`; the root server verifies those bytes from
+the installed package before execution. It is never downloaded at runtime.
+Play contains no root adapter, helper asset or native helper library.
 
 ## C05 VNC
 
@@ -146,3 +150,7 @@ RoyalVNCKit is pinned to 92d4427c73817d8f849bb289ff190aa4b40c44ea, with the docu
 ## C05 device communication
 
 USB serial uses usb-serial-for-android3.11.0, fixed upstream8e694372dee4531d140766df7af3189d3d9531c5 and the pinned JitPack artifact. The MIT license and artifact/source hashes are retained under licenses/devicecommunication and packaged under assets/legal/devicecommunication. BLE GATT uses Android platform APIs; TCP/Telnet uses the JDK socket implementation.
+
+## C06 system services
+
+Read-only Android Health Connect uses the pinned AndroidX connect-client 1.1.0 under Apache-2.0. Exact direct artifact digests and provenance are recorded in FloeAndroid/licenses/systemservices/; the license and provenance are bundled in application legal assets. Location, contacts and foreground NDEF reading use Android platform APIs.

@@ -72,7 +72,7 @@ class CaptureStateMachineTest {
         )
         state = machine.requestStop(state, CaptureEndReason.USER_CANCELLED, 2_000L)
         assertEquals(CapturePhase.CANCELLED, state.phase)
-        assertTrue(state.isTerminal)
+        assertTrue(state.phase.isTerminal)
         assertTrue(state.stopRequested)
     }
 

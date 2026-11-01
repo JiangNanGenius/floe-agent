@@ -42,4 +42,13 @@ object CaptureLimits {
     /** Stop/drain budget. A timeout is reported, never treated as drained. */
     const val STOP_WAIT_MILLIS: Long = 5_000L
     const val DRAIN_WAIT_MILLIS: Long = 5_000L
+
+    /** Late resources are retried by the same owner, never silently released. */
+    const val DRAIN_RETRY_MILLIS: Long = 250L
+
+    /** SAF raw-PCAP copy chunk; bounded streaming, not whole-file buffering. */
+    const val RAW_EXPORT_CHUNK_BYTES: Int = 64 * 1024
+
+    /** Picker callbacks older than this generation are discarded. */
+    const val RAW_EXPORT_PICKER_TIMEOUT_MILLIS: Long = 5L * 60L * 1_000L
 }

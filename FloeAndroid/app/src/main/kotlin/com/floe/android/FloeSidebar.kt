@@ -180,6 +180,14 @@ fun FloeSidebar(
                 selectionStyle = FloeSelectionStyle.GRAY,
                 modifier = Modifier.padding(horizontal = 12.dp),
             )
+            FloeSidebarRow(
+                icon = FloeIcons.Gearshape,
+                label = stringResource(com.floe.android.feature.systemservices.R.string.system_services_title),
+                selected = selection == SidebarSelection.More(MoreDestination.SYSTEM_SERVICES),
+                onClick = { onSelect(SidebarSelection.More(MoreDestination.SYSTEM_SERVICES)) },
+                selectionStyle = FloeSelectionStyle.GRAY,
+                modifier = Modifier.padding(horizontal = 12.dp),
+            )
 
             FloeSectionHeader(stringResource(R.string.projects))
             val defaultProjectName = stringResource(R.string.project_default_name)
@@ -314,6 +322,10 @@ fun FloeSidebar(
                             "devices",
                             stringResource(com.floe.android.feature.devicecommunication.R.string.devices_title),
                         ),
+                        FloeChoiceOption(
+                            "system_services",
+                            stringResource(com.floe.android.feature.systemservices.R.string.system_services_title),
+                        ),
                     ),
                     selectedKey = when (selection) {
                         SidebarSelection.More(MoreDestination.NETWORK) -> "network"
@@ -321,6 +333,7 @@ fun FloeSidebar(
                         SidebarSelection.More(MoreDestination.MAIL) -> "mail"
                         SidebarSelection.More(MoreDestination.CALENDAR) -> "calendar"
                         SidebarSelection.More(MoreDestination.DEVICES) -> "devices"
+                        SidebarSelection.More(MoreDestination.SYSTEM_SERVICES) -> "system_services"
                         else -> null
                     },
                     onSelect = { key ->
@@ -332,6 +345,7 @@ fun FloeSidebar(
                                     "mail" -> MoreDestination.MAIL
                                     "calendar" -> MoreDestination.CALENDAR
                                     "devices" -> MoreDestination.DEVICES
+                                    "system_services" -> MoreDestination.SYSTEM_SERVICES
                                     else -> MoreDestination.NETWORK
                                 }
                             )

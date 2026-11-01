@@ -432,4 +432,18 @@
     <string name="network_capture_owner">应用私有文件 · 不会自动上传</string>
     <string name="network_capture_icmp">免 Root 抓包不转发 ICMP（ping）。</string>
     <string name="network_capture_cancelled">抓包已取消。</string>
+    <string name="network_capture_raw_title">已保存的原始抓包</string>
+    <string name="network_capture_raw_intro">这些 PCAP 文件保存在应用私有目录。只有你选择导出时才会复制到你指定的位置，不会自动上传。</string>
+    <string name="network_capture_raw_item">%1$s · %2$s · %3$s</string>
+    <string name="network_capture_raw_digest">SHA-256 %1$s…</string>
+    <string name="network_capture_raw_partial">不完整</string>
+    <string name="network_capture_raw_complete">完整</string>
+    <string name="network_capture_raw_export">导出 PCAP</string>
+    <string name="network_capture_raw_exporting">正在导出…</string>
+    <string name="network_capture_raw_cancel">取消导出</string>
+    <string name="network_capture_raw_exported">已保存 %1$s · SHA-256 %2$s</string>
+    <string name="network_capture_raw_exported_partial">已保存不完整抓包 %1$s · SHA-256 %2$s</string>
+    <string name="network_capture_raw_agent_note">原始数据包内容不会自动提供给 Agent。</string>
+    <string name="network_capture_raw_empty">还没有保存的原始抓包。</string>
+    <string name="network_capture_raw_invalid">部分抓包未通过完整性校验，已隐藏。</string>
 </resources>

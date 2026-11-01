@@ -90,6 +90,11 @@ include(":feature:mail")
 // CalendarContract client; :feature:calendar is presentation only.
 include(":core:calendar")
 include(":feature:calendar")
+// C06 system services: real one-shot location, read-only contacts, foreground
+// NDEF and read-only Health Connect platform clients plus the capability screen.
+// Main owns the App route, Gradle locks and manifest integration.
+include(":core:systemservices")
+include(":feature:systemservices")
 // C07 manual backup/restore and document-package exchange presentation. The
 // App host owns SAF and the Swift bridge; Main generates this module's lock.
 include(":feature:dataexchange")

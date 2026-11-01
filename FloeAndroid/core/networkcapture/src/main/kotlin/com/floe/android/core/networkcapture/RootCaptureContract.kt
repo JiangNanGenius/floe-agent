@@ -17,6 +17,7 @@ data class RootCaptureAvailability(
     val message: String? = null,
     val helperId: String? = null,
     val helperPath: String? = null,
+    val helperSha256: String? = null,
     val effectiveUid: Int? = null,
 ) {
     init {
@@ -24,6 +25,7 @@ data class RootCaptureAvailability(
         require(message == null || message.length <= CaptureLimits.MAX_FAILURE_MESSAGE_CHARS)
         require(helperId == null || helperId.length <= 64)
         require(helperPath == null || (helperPath.startsWith("/") && helperPath.length <= 256))
+        require(helperSha256 == null || helperSha256.matches(Regex("^[0-9a-f]{64}$")))
         require(effectiveUid == null || effectiveUid >= 0)
     }
 
@@ -57,10 +59,15 @@ data class RootCaptureProgress(
     val packets: Long,
     val malformed: Boolean,
     val endReason: CaptureEndReason? = null,
+    /** True only when the helper process exited and every byte owner closed. */
+    val drainProven: Boolean = false,
 )
 
 sealed interface RootCaptureStart {
     data object Started : RootCaptureStart
+
+    /** The helper reached a real end and the client/process/file owners settled. */
+    data class Completed(val progress: RootCaptureProgress) : RootCaptureStart
     data class Unavailable(val code: String) : RootCaptureStart
     data class Failed(val code: String) : RootCaptureStart
 }

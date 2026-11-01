@@ -131,23 +131,43 @@ data class CaptureStats(
 /** Proof that every owned resource has settled. No boolean is inferred. */
 data class CaptureStopProof(
     val stopRequested: Boolean,
-    val forwardersStopped: Boolean,
-    val dataPlaneThreadStopped: Boolean,
-    val sinkDrained: Boolean,
-    val vpnFdClosed: Boolean,
-    val foregroundServiceStopped: Boolean,
+    val forwardersStopped: Boolean = false,
+    val dataPlaneThreadStopped: Boolean = false,
+    val sinkDrained: Boolean = false,
+    val vpnFdClosed: Boolean = false,
+    val foregroundServiceStopped: Boolean = false,
+    val sinkWriterJoined: Boolean = true,
+    val mode: CaptureMode = CaptureMode.VPN,
+    val rootProcessExited: Boolean = false,
+    val rootFileOwnerClosed: Boolean = false,
+    val rootDrainProven: Boolean = false,
 ) {
     val isComplete: Boolean
-        get() = stopRequested && forwardersStopped && dataPlaneThreadStopped &&
-            sinkDrained && vpnFdClosed && foregroundServiceStopped
+        get() = when (mode) {
+            CaptureMode.VPN -> stopRequested && forwardersStopped &&
+                dataPlaneThreadStopped && sinkDrained && vpnFdClosed &&
+                foregroundServiceStopped && sinkWriterJoined
+            CaptureMode.ROOT -> stopRequested && rootProcessExited &&
+                rootFileOwnerClosed && rootDrainProven
+        }
 
     fun missing(): List<String> = buildList {
         if (!stopRequested) add("stopRequested")
-        if (!forwardersStopped) add("forwardersStopped")
-        if (!dataPlaneThreadStopped) add("dataPlaneThreadStopped")
-        if (!sinkDrained) add("sinkDrained")
-        if (!vpnFdClosed) add("vpnFdClosed")
-        if (!foregroundServiceStopped) add("foregroundServiceStopped")
+        when (mode) {
+            CaptureMode.VPN -> {
+                if (!forwardersStopped) add("forwardersStopped")
+                if (!dataPlaneThreadStopped) add("dataPlaneThreadStopped")
+                if (!sinkDrained) add("sinkDrained")
+                if (!vpnFdClosed) add("vpnFdClosed")
+                if (!foregroundServiceStopped) add("foregroundServiceStopped")
+                if (!sinkWriterJoined) add("sinkWriterJoined")
+            }
+            CaptureMode.ROOT -> {
+                if (!rootProcessExited) add("rootProcessExited")
+                if (!rootFileOwnerClosed) add("rootFileOwnerClosed")
+                if (!rootDrainProven) add("rootDrainProven")
+            }
+        }
     }
 }
 
@@ -218,13 +238,13 @@ data class CaptureConfig(
         require(maxBytes in 1..hardBytes) { "bytes out of bounds" }
         require(maxPackets in 1..CaptureLimits.MAX_PACKETS) { "packets out of bounds" }
         require(mtu in CaptureLimits.MIN_MTU..CaptureLimits.MAX_MTU) { "mtu out of bounds" }
-        require(vpnAddressPrefix == 32 && isIpv4Literal(vpnAddress)) { "vpn address" }
+        require(vpnAddressPrefix == 32 && isIpv4VpnAddressLiteral(vpnAddress)) { "vpn address" }
         require(sessionName.isNotBlank() && sessionName.length <= 64) { "session name" }
         require(!agentReadable) { "live capture is never granted to the Agent implicitly" }
     }
 }
 
-private fun isIpv4Literal(value: String): Boolean {
+private fun isIpv4VpnAddressLiteral(value: String): Boolean {
     val parts = value.split('.')
     if (parts.size != 4) return false
     return parts.all { part ->

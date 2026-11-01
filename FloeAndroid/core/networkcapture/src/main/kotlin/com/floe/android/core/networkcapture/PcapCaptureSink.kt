@@ -71,6 +71,9 @@ class PcapCaptureSink(
     private val started = AtomicBoolean(false)
     private val limitReason = AtomicReference<CaptureEndReason?>(null)
     private val failure = AtomicReference<CaptureFailure?>(null)
+    private val drainLock = Any()
+    private var closeSummary: CaptureSinkSummary? = null
+    @Volatile
     private var thread: Thread? = null
 
     fun start() {
@@ -125,50 +128,90 @@ class PcapCaptureSink(
         ipv6BypassedPackets = ipv6BypassedPackets.get(),
     )
 
+    fun isWriterAlive(): Boolean = thread?.isAlive == true
+
+    /**
+     * Close the input side and wait for the writer to settle. The call is
+     * repeatable: a timed-out owner stays the same writer thread, and a later
+     * call joins it without replaying the capture or closing its output while
+     * the writer is alive. A false [CaptureSinkSummary.drained] is a real
+     * result, not a success.
+     */
     fun closeAndDrain(timeoutMillis: Long): CaptureSinkSummary {
         require(timeoutMillis > 0) { "timeout" }
-        if (closed.compareAndSet(false, true)) {
-            // Leave room for the poison marker even when the queue is full.
-            val poison = ByteArray(0)
-            var offered = queue.offer(poison)
-            while (!offered) {
-                val evicted = queue.poll()
-                if (evicted != null) {
-                    queuedBytes.addAndGet(-evicted.size.toLong())
-                    recordDrop(evicted.size)
+        synchronized(drainLock) {
+            closeSummary?.let { return it }
+            if (closed.compareAndSet(false, true)) {
+                // Leave room for the poison marker even when the queue is full.
+                val poison = ByteArray(0)
+                var offered = queue.offer(poison)
+                while (!offered) {
+                    val evicted = queue.poll()
+                    if (evicted != null) {
+                        queuedBytes.addAndGet(-evicted.size.toLong())
+                        recordDrop(evicted.size)
+                    }
+                    offered = queue.offer(poison)
                 }
-                offered = queue.offer(poison)
             }
-        }
-        val worker = thread
-        if (worker != null) {
-            worker.join(timeoutMillis)
-            if (worker.isAlive) {
-                worker.interrupt()
-                worker.join(250L)
+            val worker = thread
+            if (worker != null) {
+                worker.join(timeoutMillis)
+                if (worker.isAlive) {
+                    worker.interrupt()
+                    worker.join(250L)
+                }
             }
+            val drained = worker?.isAlive != true
+            if (!drained) {
+                // The writer still owns the output. Do not flush/finish/close
+                // it; the next stop attempt joins this same thread.
+                //
+                // Do NOT call writer.snapshot() here: PcapRecordWriter.write
+                // is @Synchronized and may hold its monitor while blocked in
+                // the underlying output write. Calling snapshot() would make
+                // this "bounded" timeout wait for that stalled write and
+                // defeat the caller's stop budget. The sink's own atomics are
+                // the non-blocking view of the completed records.
+                return CaptureSinkSummary(
+                    writtenPackets = writtenPackets.get(),
+                    writtenBytes = writtenBytes.get(),
+                    capturedPackets = capturedPackets.get(),
+                    capturedBytes = capturedBytes.get(),
+                    droppedPackets = droppedPackets.get(),
+                    droppedBytes = droppedBytes.get(),
+                    truncatedPackets = truncatedPackets.get(),
+                    unsupportedPackets = unsupportedPackets.get(),
+                    ipv6BypassedPackets = ipv6BypassedPackets.get(),
+                    limitReason = limitReason.get(),
+                    drained = false,
+                    failure = failure.get(),
+                )
+            }
+            writer.flush()
+            stream.flush()
+            val summary = writer.finish()
+            val value = CaptureSinkSummary(
+                writtenPackets = writtenPackets.get(),
+                writtenBytes = writtenBytes.get(),
+                capturedPackets = capturedPackets.get(),
+                capturedBytes = capturedBytes.get(),
+                droppedPackets = droppedPackets.get(),
+                droppedBytes = droppedBytes.get(),
+                truncatedPackets = summary.truncatedPackets,
+                unsupportedPackets = unsupportedPackets.get(),
+                ipv6BypassedPackets = ipv6BypassedPackets.get(),
+                limitReason = limitReason.get() ?: summary.limitReason,
+                drained = true,
+                failure = failure.get(),
+            )
+            closeSummary = value
+            return value
         }
-        val drained = worker?.isAlive != true
-        writer.flush()
-        stream.flush()
-        val summary = writer.finish()
-        return CaptureSinkSummary(
-            writtenPackets = writtenPackets.get(),
-            writtenBytes = writtenBytes.get(),
-            capturedPackets = capturedPackets.get(),
-            capturedBytes = capturedBytes.get(),
-            droppedPackets = droppedPackets.get(),
-            droppedBytes = droppedBytes.get(),
-            truncatedPackets = summary.truncatedPackets,
-            unsupportedPackets = unsupportedPackets.get(),
-            ipv6BypassedPackets = ipv6BypassedPackets.get(),
-            limitReason = limitReason.get() ?: summary.limitReason,
-            drained = drained,
-            failure = failure.get(),
-        )
     }
 
     fun flushForTest() {
+        check(!isWriterAlive()) { "writer still owns the capture output" }
         writer.flush()
         stream.flush()
     }

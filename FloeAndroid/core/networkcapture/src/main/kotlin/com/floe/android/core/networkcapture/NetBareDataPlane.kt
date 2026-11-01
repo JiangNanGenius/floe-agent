@@ -125,6 +125,11 @@ class NetBareDataPlane(
         thread?.interrupt()
     }
 
+    /**
+     * Join the real data-plane thread and both forwarder threads. This is
+     * repeatable: a failed join keeps the same owner reference so the next
+     * stop attempt retries the actual thread, never a replacement capture.
+     */
     fun awaitStopped(timeoutMillis: Long): DataPlaneStopProof {
         require(timeoutMillis > 0) { "timeout" }
         val worker = thread
@@ -134,18 +139,31 @@ class NetBareDataPlane(
         }
         val joined = worker?.isAlive != true
         if (joined) threadStopped.set(true)
-        val tcpStopped = runCatching { tcpForwarder?.releaseAndJoin(2_000L) ?: true }
-            .getOrDefault(false)
-        val udpStopped = runCatching { udpForwarder?.releaseAndJoin(2_000L) ?: true }
-            .getOrDefault(false)
-        tcpForwarder = null
-        udpForwarder = null
+        val tcp = tcpForwarder
+        val udp = udpForwarder
+        val tcpStopped = if (tcp == null) {
+            true
+        } else {
+            runCatching { tcp.releaseAndJoin(2_000L) }.getOrDefault(false)
+        }
+        val udpStopped = if (udp == null) {
+            true
+        } else {
+            runCatching { udp.releaseAndJoin(2_000L) }.getOrDefault(false)
+        }
+        // Keep a forwarder reference when its thread is still alive: dropping
+        // it here would hide a real owner from the next drain attempt.
+        if (tcpStopped) tcpForwarder = null
+        if (udpStopped) udpForwarder = null
         return DataPlaneStopProof(
             forwardersStopped = tcpStopped && udpStopped,
             dataPlaneThreadStopped = joined,
             vpnFdClosed = vpnFdClosed.get(),
         )
     }
+
+    fun isThreadAlive(): Boolean = thread?.isAlive == true
+    fun isFdClosed(): Boolean = vpnFdClosed.get()
 
     fun forwardedPackets(): Long = forwardedPackets.get()
     fun forwardedBytes(): Long = forwardedBytes.get()
@@ -213,14 +231,25 @@ class NetBareDataPlane(
         udpForwarder = null
     }
 
+    @Synchronized
     private fun closeVpn() {
+        if (vpnFdClosed.get()) return
         runCatching { input?.close() }
         runCatching { output?.close() }
-        val descriptorClosed = runCatching { vpnDescriptor?.close() }.isSuccess
-        input = null
-        output = null
-        vpnDescriptor = null
-        vpnFdClosed.set(descriptorClosed)
+        val descriptor = vpnDescriptor
+        val descriptorClosed = if (descriptor == null) {
+            true
+        } else {
+            runCatching { descriptor.close() }.isSuccess
+        }
+        if (descriptorClosed) {
+            input = null
+            output = null
+            vpnDescriptor = null
+            // A failed close remains false; it is never inferred from a
+            // shutdown request. A later attempt retries the same descriptor.
+            vpnFdClosed.set(true)
+        }
     }
 
     /**

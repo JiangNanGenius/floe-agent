@@ -135,10 +135,18 @@ class RootPacketCaptureClient(
             value
         }
         val result = current.client.packetCaptureStop(current.claim, captureId)
-        synchronized(lock) {
-            if (active === current) {
-                active = null
-                runCatching { current.client.revokeGrant(current.grantId) }
+        val done = (result as? RootResult.Ok<*>)?.value
+            ?.let { it as? PacketCaptureChunk }
+            ?.done == true
+        // A stop that did not prove process/file completion keeps the exact
+        // client/grant so a later stop or tail read can continue. Releasing it
+        // here would hide a live helper and allow Root retirement.
+        if (done) {
+            synchronized(lock) {
+                if (active === current) {
+                    active = null
+                    runCatching { current.client.revokeGrant(current.grantId) }
+                }
             }
         }
         return result
