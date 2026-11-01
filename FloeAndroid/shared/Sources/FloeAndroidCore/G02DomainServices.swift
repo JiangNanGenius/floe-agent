@@ -681,16 +681,39 @@ public final class G02InstalledComposition: @unchecked Sendable {
         // EXACT owned FloeAgent directory of this generation
         // (`<owned root>/FloeAgent`), matching the runtime artifact reader.
         // No screenshot/input tool is advertised before that root exists.
-        // `typeCredential` stays hidden because Android's secure credential
-        // card resolver has no composition seam in this lane; the RDP/VNC
-        // session credentials themselves use the existing floe.rdp/floe.vnc
-        // gateway and are unaffected.
+        //
+        // The two real backends are now wired through the EXISTING services:
+        //  * text anchors run Tesseract inside the task's Linux environment
+        //    through the same LocalShellService as exec.shell (prepared on
+        //    connect, never a hidden cloud/model call);
+        //  * typeCredential resolves an approved secure card through the ONE
+        //    installed AndroidCredentialVault (original metadata + keystore).
+        // The RDP/VNC session credentials themselves still use the existing
+        // floe.rdp/floe.vnc gateway and are unaffected.
         registerC05RemoteDesktopTools(
-            environment: C05RemoteDesktopToolEnvironment(
-                artifactRoot: { cluster.identity.root.artifactStoreURL }
+            environment: C05DesktopAssistProduction.toolEnvironment(
+                vault: vault,
+                workspaceStore: workspace,
+                epoch: epoch,
+                artifactRootURL: cluster.identity.root.artifactStoreURL
             ),
             registry: runComponents.registry
         )
+
+        // C02: install generic tool-result retention over the SAME accepted
+        // artifact root and register the ordinary read-only `tools.readResult`
+        // runner on the SAME registry. This adds no database, session, job or
+        // interpreter authority. The bridge is host-only (`floe.results/20`);
+        // model access is the catalog runner whose task identity comes from
+        // the runtime's trusted ToolContext.
+        C02ToolResultIntegration.install(
+            epoch: epoch,
+            artifactRoot: cluster.identity.root.artifactStoreURL,
+            registry: runComponents.registry
+        )
+        // Bounded launch reconciliation of any deletion tombstone left by a
+        // previous process; idempotent and scoped to this generation's root.
+        _ = await C02ToolResultIntegration.reconcilePendingPurges()
 
         // Close the REAL feed/lease cycle with the exact accepted domain
         // instance; until this line both sides answered fail-closed.
@@ -764,6 +787,21 @@ public final class G02InstalledComposition: @unchecked Sendable {
                 context: request.context
             ))
         }
+        // C02 task continuity: recoverable storage pause and the canonical
+        // question/approval wait identity over the SAME database/root and the
+        // SAME live run services. Installed for this exact generation only;
+        // retirement uses the same epoch.
+        C02TaskContinuityProduction.install(
+            epoch: epoch,
+            database: database,
+            rootURL: URL(fileURLWithPath: cluster.identity.root.path,
+                         isDirectory: true),
+            recoveryDirectory: URL(fileURLWithPath: cluster.identity.root.path,
+                                   isDirectory: true)
+                .deletingLastPathComponent()
+                .appendingPathComponent("Recovery/TaskContinuity",
+                                        isDirectory: true),
+            liveEpoch: { G02NativeRootEpoch.readback() })
 
         var installed = G02InstalledComposition(
             epoch: epoch, cluster: cluster,

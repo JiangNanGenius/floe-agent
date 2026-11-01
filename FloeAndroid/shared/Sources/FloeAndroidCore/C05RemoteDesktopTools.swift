@@ -345,6 +345,69 @@ public struct C05RemoteToolEvidence: Sendable, Equatable {
     public let capturedAt: Date
     public let width: Int
     public let height: Int
+    /// Ownership stamped by the producing tool. A later coordinate/credential
+    /// action compares every field against the live handle, so evidence from
+    /// another task, session, endpoint or protocol cannot be replayed.
+    public let taskID: UUID?
+    public let sessionID: UUID?
+    public let protocolName: String?
+    public let profileID: UUID?
+    public let endpointID: UUID?
+    public let target: String?
+
+    public init(
+        screenshotSHA256: String,
+        revision: UInt64,
+        capturedAt: Date,
+        width: Int,
+        height: Int,
+        taskID: UUID? = nil,
+        sessionID: UUID? = nil,
+        protocolName: String? = nil,
+        profileID: UUID? = nil,
+        endpointID: UUID? = nil,
+        target: String? = nil
+    ) {
+        self.screenshotSHA256 = screenshotSHA256
+        self.revision = revision
+        self.capturedAt = capturedAt
+        self.width = width
+        self.height = height
+        self.taskID = taskID
+        self.sessionID = sessionID
+        self.protocolName = protocolName
+        self.profileID = profileID
+        self.endpointID = endpointID
+        self.target = target
+    }
+}
+
+/// Honest state of the structured-text pass for the current evidence. A
+/// recognizer failure is never flattened into an empty successful result.
+public enum C05RemoteRecognitionState: Sendable, Equatable {
+    case notConfigured
+    case failed(String)
+    case noText
+    case current(elementCount: Int)
+
+    public var status: String {
+        switch self {
+        case .notConfigured: return "notConfigured"
+        case .failed: return "failed"
+        case .noText: return "noText"
+        case .current: return "current"
+        }
+    }
+
+    public var elementsValid: Bool {
+        if case .current = self { return true }
+        return false
+    }
+
+    public var reason: String? {
+        if case .failed(let reason) = self { return reason }
+        return nil
+    }
 }
 
 public struct C05RemoteToolTextElement: Sendable, Equatable {
@@ -377,17 +440,29 @@ public struct C05RemoteDesktopToolEnvironment: Sendable {
     public let artifactRoot: @Sendable () -> URL?
     public let credentialResolver: (@Sendable (UUID) async throws -> Data)?
     public let textRecognizer: (any C05RemoteDesktopTextRecognizer)?
+    /// Real contextual OCR seam (Linux/Tesseract or a platform recognizer).
+    /// Takes precedence over the legacy digest-only seam.
+    public let contextualTextRecognizer: (any C05RemoteDesktopContextualTextRecognizing)?
+    /// Bounded, best-effort engine preparation invoked ONLY from an approved
+    /// connect/reconnect (never from the read-only observe).
+    public let textRecognitionPreparer: (any C05RemoteDesktopTextRecognitionPreparing)?
+    /// Approved secure credential-card resolver. Takes precedence over the
+    /// legacy closure; production sets this and never the legacy seam.
+    public let cardResolver: (any C05RemoteDesktopCredentialCardResolving)?
 
     public init(
         vncDomain: C05VNCDomain = .shared,
         rdpDomain: C05RDPDomain = .shared,
         profiles: any C05RDPProfileBridging = C05RemoteDomain.shared,
         currentEpoch: @escaping @Sendable () -> UInt64? = {
-            C05ProductionWiring.readiness().epoch
+            G02RuntimeComposition.shared.installedComposition?.epoch
         },
         artifactRoot: @escaping @Sendable () -> URL? = { nil },
         credentialResolver: (@Sendable (UUID) async throws -> Data)? = nil,
         textRecognizer: (any C05RemoteDesktopTextRecognizer)? = nil,
+        contextualTextRecognizer: (any C05RemoteDesktopContextualTextRecognizing)? = nil,
+        textRecognitionPreparer: (any C05RemoteDesktopTextRecognitionPreparing)? = nil,
+        cardResolver: (any C05RemoteDesktopCredentialCardResolving)? = nil,
         coordinator: C05RemoteDesktopToolCoordinator? = nil
     ) {
         self.vncDomain = vncDomain
@@ -397,6 +472,9 @@ public struct C05RemoteDesktopToolEnvironment: Sendable {
         self.artifactRoot = artifactRoot
         self.credentialResolver = credentialResolver
         self.textRecognizer = textRecognizer
+        self.contextualTextRecognizer = contextualTextRecognizer
+        self.textRecognitionPreparer = textRecognitionPreparer
+        self.cardResolver = cardResolver
         self.coordinator = coordinator ?? C05RemoteDesktopToolCoordinator(
             vncDomain: vncDomain,
             rdpDomain: rdpDomain,
@@ -413,7 +491,13 @@ public struct C05RemoteDesktopToolEnvironment: Sendable {
 
     public var hasArtifactRoot: Bool { artifactRoot() != nil }
 
-    public var hasCredentialResolver: Bool { credentialResolver != nil }
+    public var hasCredentialResolver: Bool {
+        cardResolver != nil || credentialResolver != nil
+    }
+
+    public var hasTextRecognizer: Bool {
+        contextualTextRecognizer != nil || textRecognizer != nil
+    }
 }
 
 public actor C05RemoteDesktopToolCoordinator {
@@ -421,6 +505,7 @@ public actor C05RemoteDesktopToolCoordinator {
         var handle: C05RemoteDesktopHandle?
         var evidence: C05RemoteToolEvidence?
         var elements: [C05RemoteToolTextElement]
+        var recognition: C05RemoteRecognitionState
     }
 
     private let vncDomain: C05VNCDomain
@@ -504,7 +589,7 @@ public actor C05RemoteDesktopToolCoordinator {
             states[storageKey] = nil
         }
         let handle = try await openHandle(protocolName: protocolName, owner: owner)
-        states[storageKey] = State(handle: handle, evidence: nil, elements: [])
+        states[storageKey] = State(handle: handle, evidence: nil, elements: [], recognition: .notConfigured)
         return handle
     }
 
@@ -518,7 +603,7 @@ public actor C05RemoteDesktopToolCoordinator {
             states[storageKey] = nil
         }
         let handle = try await openHandle(protocolName: protocolName, owner: owner)
-        states[storageKey] = State(handle: handle, evidence: nil, elements: [])
+        states[storageKey] = State(handle: handle, evidence: nil, elements: [], recognition: .notConfigured)
         return handle
     }
 
@@ -554,24 +639,35 @@ public actor C05RemoteDesktopToolCoordinator {
     public func remember(
         _ evidence: C05RemoteToolEvidence,
         elements: [C05RemoteToolTextElement],
+        recognition: C05RemoteRecognitionState,
         handle: C05RemoteDesktopHandle
     ) {
         let storageKey = key(handle.protocolName, handle.owner)
-        states[storageKey] = State(handle: handle, evidence: evidence, elements: elements)
+        states[storageKey] = State(
+            handle: handle,
+            evidence: evidence,
+            elements: elements,
+            recognition: recognition
+        )
     }
 
     public func evidence(
         handle: C05RemoteDesktopHandle
-    ) -> (evidence: C05RemoteToolEvidence?, elements: [C05RemoteToolTextElement]) {
+    ) -> (
+        evidence: C05RemoteToolEvidence?,
+        elements: [C05RemoteToolTextElement],
+        recognition: C05RemoteRecognitionState
+    ) {
         let storageKey = key(handle.protocolName, handle.owner)
         let state = states[storageKey]
-        return (state?.evidence, state?.elements ?? [])
+        return (state?.evidence, state?.elements ?? [], state?.recognition ?? .notConfigured)
     }
 
     public func resetEvidence(handle: C05RemoteDesktopHandle) {
         let storageKey = key(handle.protocolName, handle.owner)
         states[storageKey]?.evidence = nil
         states[storageKey]?.elements = []
+        states[storageKey]?.recognition = .notConfigured
     }
 
     /// Adopts an already-live, owner-fenced handle. Production uses
@@ -580,7 +676,12 @@ public actor C05RemoteDesktopToolCoordinator {
     /// registry.
     func adopt(handle: C05RemoteDesktopHandle) {
         let storageKey = key(handle.protocolName, handle.owner)
-        states[storageKey] = State(handle: handle, evidence: nil, elements: [])
+        states[storageKey] = State(
+            handle: handle,
+            evidence: nil,
+            elements: [],
+            recognition: .notConfigured
+        )
     }
 
     private func openHandle(
@@ -902,7 +1003,10 @@ private enum C05DesktopToolSupport {
         return root
     }
 
-    static func statusOutput(_ status: C05RemoteToolConnectionStatus) throws -> ToolExecutionOutput {
+    static func statusOutput(
+        _ status: C05RemoteToolConnectionStatus,
+        extras: [String: Any] = [:]
+    ) throws -> ToolExecutionOutput {
         var payload: [String: Any] = [
             "status": "ok",
             "connectionState": status.state.rawValue,
@@ -916,7 +1020,31 @@ private enum C05DesktopToolSupport {
         if let reason = status.reason {
             payload["failure"] = ["reason": reason]
         }
+        for (key, value) in extras { payload[key] = value }
         return try output(payload)
+    }
+
+    static func readinessJSON(_ readiness: C05TextRecognitionReadiness) -> [String: Any] {
+        var value: [String: Any] = [
+            "state": readiness.state.rawValue,
+            "engine": readiness.engine,
+            "languages": readiness.languages,
+            "version": readiness.version ?? NSNull(),
+            "reason": readiness.reason ?? NSNull(),
+        ]
+        if let command = readiness.preparationCommand {
+            value["preparationCommand"] = command
+        }
+        return value
+    }
+
+    static func preparedExtras(
+        environment: C05RemoteDesktopToolEnvironment,
+        context: ToolContext
+    ) async -> [String: Any] {
+        guard let preparer = environment.textRecognitionPreparer else { return [:] }
+        let readiness = await preparer.prepare(context: context)
+        return ["textRecognition": readinessJSON(readiness)]
     }
 
     static func output(
@@ -949,7 +1077,11 @@ private enum C05DesktopToolSupport {
     static func capture(
         handle: C05RemoteDesktopHandle,
         environment: C05RemoteDesktopToolEnvironment
-    ) throws -> (artifact: ToolArtifactReference, capture: C05RemoteScreenFrame) {
+    ) throws -> (
+        artifact: ToolArtifactReference,
+        capture: C05RemoteScreenFrame,
+        png: Data
+    ) {
         let frame = try handle.screen.captureFrame()
         let png = try C05PNGEncoder.encodeRGBA(frame.data, width: frame.width, height: frame.height)
         let artifact = try C05RemoteDesktopArtifacts.write(
@@ -957,20 +1089,65 @@ private enum C05DesktopToolSupport {
             protocolName: handle.protocolName,
             root: try artifactRoot(environment: environment)
         )
-        return (artifact, frame)
+        return (artifact, frame, png)
     }
 
     static func evidence(
         capture: C05RemoteScreenFrame,
-        artifact: ToolArtifactReference
+        artifact: ToolArtifactReference,
+        handle: C05RemoteDesktopHandle
     ) -> C05RemoteToolEvidence {
         C05RemoteToolEvidence(
             screenshotSHA256: artifact.sha256,
             revision: capture.revision,
             capturedAt: capture.capturedAt,
             width: capture.width,
-            height: capture.height
+            height: capture.height,
+            taskID: handle.owner.taskID,
+            sessionID: handle.sessionID,
+            protocolName: handle.protocolName,
+            profileID: handle.profileID,
+            endpointID: handle.endpointID,
+            target: handle.target
         )
+    }
+
+    /// Re-reads the exact live fence the evidence was stamped with. This is
+    /// called again AFTER every await in a coordinate/credential action, so a
+    /// disconnected/replaced session or a new native epoch can never receive
+    /// input based on stale evidence.
+    static func requireLiveHandle(
+        _ handle: C05RemoteDesktopHandle,
+        owner: C05RemoteOwner,
+        environment: C05RemoteDesktopToolEnvironment
+    ) throws {
+        guard handle.owner == owner,
+              handle.owner.taskID == owner.taskID,
+              handle.owner.nativeEpoch == owner.nativeEpoch else {
+            throw C05RemoteDesktopToolError.notConnected
+        }
+        guard let epoch = environment.currentEpoch(), epoch == owner.nativeEpoch else {
+            throw C05RemoteDesktopToolError.notConnected
+        }
+        guard handle.screen.isConnected else {
+            throw C05RemoteDesktopToolError.notConnected
+        }
+    }
+
+    static func validateOwnership(
+        _ evidence: C05RemoteToolEvidence,
+        handle: C05RemoteDesktopHandle
+    ) throws {
+        guard evidence.taskID == handle.owner.taskID,
+              evidence.sessionID == handle.sessionID,
+              evidence.protocolName == handle.protocolName,
+              evidence.profileID == handle.profileID,
+              evidence.endpointID == handle.endpointID,
+              evidence.target == handle.target else {
+            throw C05RemoteDesktopToolError.invalidArgument(
+                "The screenshot evidence belongs to a different remote session; call \(handle.protocolName).observe again"
+            )
+        }
     }
 
     static func validatePoint(
@@ -987,6 +1164,7 @@ private enum C05DesktopToolSupport {
                 "Call \(handle.protocolName).observe first and pass its fresh screenshotSHA256"
             )
         }
+        try validateOwnership(stored, handle: handle)
         guard Date().timeIntervalSince(stored.capturedAt) <= 15 else {
             throw C05RemoteDesktopToolError.invalidArgument(
                 "Screenshot evidence expired; call \(handle.protocolName).observe again"
@@ -1050,8 +1228,17 @@ private enum C05DesktopToolSupport {
                 before: before,
                 environment: environment
             )
-            let evidence = evidence(capture: post.capture, artifact: post.artifact)
-            await coordinator.remember(evidence, elements: [], handle: handle)
+            let evidence = evidence(
+                capture: post.capture,
+                artifact: post.artifact,
+                handle: handle
+            )
+            await coordinator.remember(
+                evidence,
+                elements: [],
+                recognition: .notConfigured,
+                handle: handle
+            )
             fields["status"] = "ok"
             fields["frameChanged"] = post.changed
             fields["frameUpdateReceived"] = post.capture.revision != before?.revision
@@ -1066,6 +1253,8 @@ private enum C05DesktopToolSupport {
             fields["coordinateSpace"] = "framebufferPixels"
             fields["structureSource"] = "none"
             fields["evidenceStatus"] = "current"
+            fields["recognizerStatus"] = "notRun"
+            fields["recognizerEvidenceValid"] = false
             fields["structuredElementCount"] = 0
             fields["elements"] = []
             fields["nextAction"] = "Use this result's screenshotSHA256 for the next coordinate action; observe again only when evidence is stale."
@@ -1103,11 +1292,11 @@ public struct C05DesktopStatusTool<P: C05RemoteDesktopProtocolKind>: AgentTool {
     public static var toolDescription: String {
         "Read the current \(P.displayName) connection state without opening a connection. Returns configured endpoint count, active tool-managed session and the latest failure when available."
     }
-    public static let parametersJSON = #"{"type":"object","properties":{},"additionalProperties":false}"#
-    public static let riskLabels: Set<RiskLabel> = []
-    public static let isSideEffecting = false
-    public static let toolEffect: ToolEffect = .readOnly
-    public static let requiresHostScope = false
+    public static var parametersJSON: String { #"{"type":"object","properties":{},"additionalProperties":false}"# }
+    public static var riskLabels: Set<RiskLabel> { [] }
+    public static var isSideEffecting: Bool { false }
+    public static var toolEffect: ToolEffect { .readOnly }
+    public static var requiresHostScope: Bool { false }
 
     private let environment: C05RemoteDesktopToolEnvironment
     public init(environment: C05RemoteDesktopToolEnvironment) { self.environment = environment }
@@ -1129,13 +1318,13 @@ public struct C05DesktopConnectTool<P: C05RemoteDesktopProtocolKind>: AgentTool 
     public struct Arguments: Decodable, Sendable { public init() {} }
     public static var name: String { "\(P.wireName).connect" }
     public static var toolDescription: String {
-        "Connect the single configured or previously selected \(P.displayName) endpoint and keep the tool-managed session alive for this task. Use \(P.wireName).status first when the connection is ambiguous."
+        "Connect the single configured or previously selected \(P.displayName) endpoint and keep the tool-managed session alive for this task. Use \(P.wireName).status first when the connection is ambiguous. The first connection may prepare the task's Linux text-recognition engine used by clickElement."
     }
-    public static let parametersJSON = #"{"type":"object","properties":{},"additionalProperties":false}"#
-    public static let riskLabels: Set<RiskLabel> = [.controlsGUI, .accessesCredentials]
-    public static let isSideEffecting = true
-    public static let toolEffect: ToolEffect = .mutating
-    public static let requiresHostScope = false
+    public static var parametersJSON: String { #"{"type":"object","properties":{},"additionalProperties":false}"# }
+    public static var riskLabels: Set<RiskLabel> { [.controlsGUI, .accessesCredentials] }
+    public static var isSideEffecting: Bool { true }
+    public static var toolEffect: ToolEffect { .mutating }
+    public static var requiresHostScope: Bool { false }
 
     private let environment: C05RemoteDesktopToolEnvironment
     public init(environment: C05RemoteDesktopToolEnvironment) { self.environment = environment }
@@ -1152,7 +1341,11 @@ public struct C05DesktopConnectTool<P: C05RemoteDesktopProtocolKind>: AgentTool 
             throw C05DesktopToolSupport.fail(error)
         }
         let status = await environment.coordinator.status(protocolName: P.wireName, owner: owner)
-        return try C05DesktopToolSupport.statusOutput(status)
+        let extras = await C05DesktopToolSupport.preparedExtras(
+            environment: environment,
+            context: context
+        )
+        return try C05DesktopToolSupport.statusOutput(status, extras: extras)
     }
 }
 
@@ -1162,11 +1355,11 @@ public struct C05DesktopReconnectTool<P: C05RemoteDesktopProtocolKind>: AgentToo
     public static var toolDescription: String {
         "Discard the tool-managed \(P.displayName) session and perform a fresh handshake. A non-retryable authentication or certificate failure remains blocked until the saved credential or trust decision is updated."
     }
-    public static let parametersJSON = #"{"type":"object","properties":{},"additionalProperties":false}"#
-    public static let riskLabels: Set<RiskLabel> = [.controlsGUI, .accessesCredentials]
-    public static let isSideEffecting = true
-    public static let toolEffect: ToolEffect = .mutating
-    public static let requiresHostScope = false
+    public static var parametersJSON: String { #"{"type":"object","properties":{},"additionalProperties":false}"# }
+    public static var riskLabels: Set<RiskLabel> { [.controlsGUI, .accessesCredentials] }
+    public static var isSideEffecting: Bool { true }
+    public static var toolEffect: ToolEffect { .mutating }
+    public static var requiresHostScope: Bool { false }
 
     private let environment: C05RemoteDesktopToolEnvironment
     public init(environment: C05RemoteDesktopToolEnvironment) { self.environment = environment }
@@ -1183,7 +1376,11 @@ public struct C05DesktopReconnectTool<P: C05RemoteDesktopProtocolKind>: AgentToo
             throw C05DesktopToolSupport.fail(error)
         }
         let status = await environment.coordinator.status(protocolName: P.wireName, owner: owner)
-        return try C05DesktopToolSupport.statusOutput(status)
+        let extras = await C05DesktopToolSupport.preparedExtras(
+            environment: environment,
+            context: context
+        )
+        return try C05DesktopToolSupport.statusOutput(status, extras: extras)
     }
 }
 
@@ -1193,11 +1390,11 @@ public struct C05DesktopDisconnectTool<P: C05RemoteDesktopProtocolKind>: AgentTo
     public static var toolDescription: String {
         "Close the tool-managed \(P.displayName) session. User-opened viewer sessions are left alone. Returns the resulting connection state."
     }
-    public static let parametersJSON = #"{"type":"object","properties":{},"additionalProperties":false}"#
-    public static let riskLabels: Set<RiskLabel> = [.controlsGUI]
-    public static let isSideEffecting = true
-    public static let toolEffect: ToolEffect = .mutating
-    public static let requiresHostScope = false
+    public static var parametersJSON: String { #"{"type":"object","properties":{},"additionalProperties":false}"# }
+    public static var riskLabels: Set<RiskLabel> { [.controlsGUI] }
+    public static var isSideEffecting: Bool { true }
+    public static var toolEffect: ToolEffect { .mutating }
+    public static var requiresHostScope: Bool { false }
 
     private let environment: C05RemoteDesktopToolEnvironment
     public init(environment: C05RemoteDesktopToolEnvironment) { self.environment = environment }
@@ -1219,13 +1416,13 @@ public struct C05DesktopObserveTool<P: C05RemoteDesktopProtocolKind>: AgentTool 
     public struct Arguments: Decodable, Sendable { public init() {} }
     public static var name: String { "\(P.wireName).observe" }
     public static var toolDescription: String {
-        "Capture the connected \(P.displayName) framebuffer before actions. Returns exact pixel bounds, screenshotSHA256, a verified PNG image artifact and any text regions produced by a configured recognizer. \(P.displayName) has no native DOM/accessibility tree, so never invent controls or roles."
+        "Capture the connected \(P.displayName) framebuffer before actions. Returns exact pixel bounds, screenshotSHA256, a verified PNG image artifact and text regions produced by the real \(P.displayName) text recognizer. \(P.displayName) has no native DOM/accessibility tree, so never invent controls or roles. If recognizerStatus is not current, text anchors are unavailable and only pixel coordinates may be used."
     }
-    public static let parametersJSON = #"{"type":"object","properties":{},"additionalProperties":false}"#
-    public static let riskLabels: Set<RiskLabel> = [.sendsDataToProvider]
-    public static let isSideEffecting = false
-    public static let toolEffect: ToolEffect = .readOnly
-    public static let requiresHostScope = false
+    public static var parametersJSON: String { #"{"type":"object","properties":{},"additionalProperties":false}"# }
+    public static var riskLabels: Set<RiskLabel> { [.sendsDataToProvider] }
+    public static var isSideEffecting: Bool { false }
+    public static var toolEffect: ToolEffect { .readOnly }
+    public static var requiresHostScope: Bool { false }
     public static var prerequisites: [ToolPrerequisite] {
         [ToolPrerequisite(
             state: "\(P.wireName).connected",
@@ -1247,28 +1444,114 @@ public struct C05DesktopObserveTool<P: C05RemoteDesktopProtocolKind>: AgentTool 
                 protocolName: P.wireName,
                 owner: owner
             )
+            try C05DesktopToolSupport.requireLiveHandle(
+                handle,
+                owner: owner,
+                environment: environment
+            )
             let captured = try C05DesktopToolSupport.capture(handle: handle, environment: environment)
             let evidence = C05DesktopToolSupport.evidence(
                 capture: captured.capture,
-                artifact: captured.artifact
+                artifact: captured.artifact,
+                handle: handle
+            )
+            let png = captured.png
+            let ownership = C05DesktopFrameOwnership(
+                taskID: owner.taskID ?? handle.sessionID,
+                sessionID: handle.sessionID,
+                protocolName: handle.protocolName,
+                profileID: handle.profileID,
+                endpointID: handle.endpointID,
+                target: handle.target,
+                frameRevision: captured.capture.revision,
+                capturedAt: captured.capture.capturedAt,
+                screenshotSHA256: captured.artifact.sha256,
+                isCurrent: {
+                    guard let epoch = environment.currentEpoch(),
+                          epoch == owner.nativeEpoch else { return false }
+                    return handle.owner == owner
+                        && handle.screen.isConnected
+                        && handle.screen.frameRevision == captured.capture.revision
+                }
             )
             var elements: [C05RemoteToolTextElement] = []
-            if let recognizer = environment.textRecognizer {
-                let png = try C05PNGEncoder.encodeRGBA(
-                    captured.capture.data,
-                    width: captured.capture.width,
-                    height: captured.capture.height
-                )
-                elements = (try? await recognizer.recognize(
-                    png: png,
-                    width: captured.capture.width,
-                    height: captured.capture.height
-                )) ?? []
+            var recognition: C05RemoteRecognitionState = .notConfigured
+            if let recognizer = environment.contextualTextRecognizer {
+                do {
+                    let raw = try await recognizer.recognize(C05DesktopTextRecognitionRequest(
+                        png: png,
+                        width: captured.capture.width,
+                        height: captured.capture.height,
+                        ownership: ownership,
+                        context: context
+                    ))
+                    let sanitized = Self.sanitizedElements(
+                        raw,
+                        width: captured.capture.width,
+                        height: captured.capture.height
+                    )
+                    if raw.isEmpty {
+                        recognition = .noText
+                    } else if sanitized.isEmpty {
+                        recognition = .failed(
+                            "The text recognizer returned no anchor inside the observed frame"
+                        )
+                    } else {
+                        elements = sanitized
+                        recognition = .current(elementCount: sanitized.count)
+                    }
+                } catch is CancellationError {
+                    throw CancellationError()
+                } catch let error as C05DesktopAssistError {
+                    recognition = .failed(error.localizedDescription)
+                } catch {
+                    recognition = .failed("Text recognition failed")
+                }
+            } else if let recognizer = environment.textRecognizer {
+                do {
+                    let raw = try await recognizer.recognize(
+                        png: png,
+                        width: captured.capture.width,
+                        height: captured.capture.height
+                    )
+                    let sanitized = Self.sanitizedElements(
+                        raw,
+                        width: captured.capture.width,
+                        height: captured.capture.height
+                    )
+                    if raw.isEmpty {
+                        recognition = .noText
+                    } else if sanitized.isEmpty {
+                        recognition = .failed(
+                            "The text recognizer returned no anchor inside the observed frame"
+                        )
+                    } else {
+                        elements = sanitized
+                        recognition = .current(elementCount: sanitized.count)
+                    }
+                } catch is CancellationError {
+                    throw CancellationError()
+                } catch {
+                    recognition = .failed("Text recognition failed")
+                }
             }
-            await environment.coordinator.remember(evidence, elements: elements, handle: handle)
+            await environment.coordinator.remember(
+                evidence,
+                elements: elements,
+                recognition: recognition,
+                handle: handle
+            )
+            let evidenceCurrent = handle.screen.frameRevision == captured.capture.revision
+                && handle.screen.isConnected
+                && handle.owner == owner
             var fields: [String: Any] = [
-                "status": "ok",
+                "status": recognition.reason == nil ? "ok" : "partialSuccess",
                 "sessionID": handle.sessionID.uuidString,
+                "taskID": owner.taskID?.uuidString ?? NSNull(),
+                "protocol": handle.protocolName,
+                "profileID": handle.profileID.uuidString,
+                "endpointID": handle.endpointID.uuidString,
+                "target": handle.target,
                 "pixelWidth": captured.capture.width,
                 "pixelHeight": captured.capture.height,
                 "revision": NSNumber(value: captured.capture.revision),
@@ -1276,8 +1559,13 @@ public struct C05DesktopObserveTool<P: C05RemoteDesktopProtocolKind>: AgentTool 
                 "screenshotPath": captured.artifact.relativePath,
                 "capturedAt": ISO8601DateFormatter().string(from: captured.capture.capturedAt),
                 "coordinateSpace": "framebufferPixels",
-                "structureSource": elements.isEmpty ? "none" : "onDeviceTextRecognizer",
-                "evidenceStatus": handle.screen.frameRevision == captured.capture.revision ? "current" : "stale",
+                "structureSource": recognition.elementsValid
+                    ? (environment.contextualTextRecognizer != nil
+                        ? "linuxTesseractTextRecognizer" : "onDeviceTextRecognizer")
+                    : "none",
+                "evidenceStatus": evidenceCurrent ? "current" : "stale",
+                "recognizerStatus": recognition.status,
+                "recognizerEvidenceValid": recognition.elementsValid,
                 "structuredElementCount": elements.count,
                 "elements": elements.map { element in
                     [
@@ -1294,13 +1582,54 @@ public struct C05DesktopObserveTool<P: C05RemoteDesktopProtocolKind>: AgentTool 
                     ] as [String: Any]
                 },
             ]
-            if elements.isEmpty {
-                fields["recognizerStatus"] = environment.textRecognizer == nil ? "notConfigured" : "noText"
+            if let reason = recognition.reason {
+                fields["recognizerFailure"] = reason
+                fields["recognizerPreparationCommand"] =
+                    C05LinuxTesseractConfiguration.preparationCommand
+                fields["nextAction"] =
+                    "Text anchors are unavailable. Use \(P.wireName).click with pixel coordinates, or prepare the Linux OCR engine and observe again."
+            } else if !recognition.elementsValid {
+                fields["nextAction"] =
+                    "No text anchor is available. Use \(P.wireName).click with pixel coordinates."
+            }
+            if !evidenceCurrent {
+                fields["nextAction"] =
+                    "The screenshot is already stale; call \(P.wireName).observe again before acting."
             }
             return try C05DesktopToolSupport.output(fields, artifacts: [captured.artifact])
         } catch {
             throw C05DesktopToolSupport.fail(error)
         }
+    }
+
+    /// Re-stamps references so a recognizer cannot supply model-chosen IDs and
+    /// drops anchors whose pixel bounds are not inside this exact frame.
+    static func sanitizedElements(
+        _ raw: [C05RemoteToolTextElement],
+        width: Int,
+        height: Int
+    ) -> [C05RemoteToolTextElement] {
+        var result: [C05RemoteToolTextElement] = []
+        for element in raw.prefix(C05RemoteDesktopToolLimits.maximumTextElements) {
+            let text = element.text.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !text.isEmpty, text.utf8.count <= 500,
+                  element.width > 0, element.height > 0,
+                  element.x >= 0, element.y >= 0,
+                  element.x + element.width <= width,
+                  element.y + element.height <= height,
+                  element.confidence.isFinite,
+                  (0...1).contains(element.confidence) else { continue }
+            result.append(C05RemoteToolTextElement(
+                reference: "text-\(result.count + 1)",
+                text: String(text.prefix(500)),
+                confidence: element.confidence,
+                x: element.x,
+                y: element.y,
+                width: element.width,
+                height: element.height
+            ))
+        }
+        return result
     }
 }
 
@@ -1315,11 +1644,11 @@ public struct C05DesktopClickTool<P: C05RemoteDesktopProtocolKind>: AgentTool {
     public static var toolDescription: String {
         "Click a framebuffer pixel from the latest \(P.wireName).observe or action result. Pass its exact screenshotSHA256. Returns a post-action PNG screenshot and reusable evidence; frameChanged alone is not proof of task success."
     }
-    public static let parametersJSON = #"{"type":"object","properties":{"x":{"type":"integer","minimum":0},"y":{"type":"integer","minimum":0},"screenshotSHA256":{"type":"string","pattern":"^[a-fA-F0-9]{64}$"},"clickCount":{"type":"integer","minimum":1,"maximum":2}},"required":["x","y","screenshotSHA256"],"additionalProperties":false}"#
-    public static let riskLabels: Set<RiskLabel> = [.controlsGUI, .executesRemoteCommand]
-    public static let isSideEffecting = true
-    public static let toolEffect: ToolEffect = .mutating
-    public static let requiresHostScope = false
+    public static var parametersJSON: String { #"{"type":"object","properties":{"x":{"type":"integer","minimum":0},"y":{"type":"integer","minimum":0},"screenshotSHA256":{"type":"string","pattern":"^[a-fA-F0-9]{64}$"},"clickCount":{"type":"integer","minimum":1,"maximum":2}},"required":["x","y","screenshotSHA256"],"additionalProperties":false}"# }
+    public static var riskLabels: Set<RiskLabel> { [.controlsGUI, .executesRemoteCommand] }
+    public static var isSideEffecting: Bool { true }
+    public static var toolEffect: ToolEffect { .mutating }
+    public static var requiresHostScope: Bool { false }
     public static var prerequisites: [ToolPrerequisite] { C05DesktopObserveTool<P>.prerequisites }
 
     private let environment: C05RemoteDesktopToolEnvironment
@@ -1347,6 +1676,17 @@ public struct C05DesktopClickTool<P: C05RemoteDesktopProtocolKind>: AgentTool {
                 handle: handle,
                 coordinator: environment.coordinator
             )
+            try context.cancellation.throwIfCancelled()
+            try C05DesktopToolSupport.requireLiveHandle(
+                handle,
+                owner: owner,
+                environment: environment
+            )
+            guard evidence.revision == handle.screen.frameRevision else {
+                throw C05RemoteDesktopToolError.invalidArgument(
+                    "The remote screen changed before the click; call \(P.wireName).observe again"
+                )
+            }
             var queued = 0
             let count = args.clickCount ?? 1
             do {
@@ -1383,13 +1723,13 @@ public struct C05DesktopClickElementTool<P: C05RemoteDesktopProtocolKind>: Agent
     }
     public static var name: String { "\(P.wireName).clickElement" }
     public static var toolDescription: String {
-        "Click the center of a recognized text reference from the latest \(P.wireName).observe result. This is a visual text anchor, not a native accessibility control. Requires a configured on-device text recognizer."
+        "Click the center of a recognized text reference from the latest \(P.wireName).observe result. This is a visual text anchor produced by a real text-recognition pass over the observed PNG, not a native accessibility control or a model-invented element. Requires a configured text recognizer and current evidence."
     }
-    public static let parametersJSON = #"{"type":"object","properties":{"reference":{"type":"string","pattern":"^text-[1-9][0-9]*$"},"screenshotSHA256":{"type":"string","pattern":"^[a-fA-F0-9]{64}$"},"clickCount":{"type":"integer","minimum":1,"maximum":2}},"required":["reference","screenshotSHA256"],"additionalProperties":false}"#
-    public static let riskLabels: Set<RiskLabel> = [.controlsGUI, .executesRemoteCommand]
-    public static let isSideEffecting = true
-    public static let toolEffect: ToolEffect = .mutating
-    public static let requiresHostScope = false
+    public static var parametersJSON: String { #"{"type":"object","properties":{"reference":{"type":"string","pattern":"^text-[1-9][0-9]*$"},"screenshotSHA256":{"type":"string","pattern":"^[a-fA-F0-9]{64}$"},"clickCount":{"type":"integer","minimum":1,"maximum":2}},"required":["reference","screenshotSHA256"],"additionalProperties":false}"# }
+    public static var riskLabels: Set<RiskLabel> { [.controlsGUI, .executesRemoteCommand] }
+    public static var isSideEffecting: Bool { true }
+    public static var toolEffect: ToolEffect { .mutating }
+    public static var requiresHostScope: Bool { false }
     public static var prerequisites: [ToolPrerequisite] { C05DesktopObserveTool<P>.prerequisites }
 
     private let environment: C05RemoteDesktopToolEnvironment
@@ -1405,9 +1745,9 @@ public struct C05DesktopClickElementTool<P: C05RemoteDesktopProtocolKind>: Agent
     public func execute(_ args: Arguments, context: ToolContext) async throws -> ToolExecutionOutput {
         try context.cancellation.throwIfCancelled()
         try C05DesktopToolSupport.requireApproval(context)
-        guard environment.textRecognizer != nil else {
+        guard environment.hasTextRecognizer else {
             throw FloeError.validationFailed(
-                "On-device text recognition is not configured; use \(P.wireName).observe and \(P.wireName).click with pixel coordinates"
+                "Text recognition is not configured; use \(P.wireName).observe and \(P.wireName).click with pixel coordinates"
             )
         }
         let owner = try C05DesktopToolSupport.owner(context, environment: environment)
@@ -1416,14 +1756,29 @@ public struct C05DesktopClickElementTool<P: C05RemoteDesktopProtocolKind>: Agent
                 protocolName: P.wireName,
                 owner: owner
             )
+            try C05DesktopToolSupport.requireLiveHandle(
+                handle,
+                owner: owner,
+                environment: environment
+            )
             let stored = await environment.coordinator.evidence(handle: handle)
             guard let evidence = stored.evidence,
                   evidence.screenshotSHA256.caseInsensitiveCompare(args.screenshotSHA256) == .orderedSame,
+                  stored.recognition.elementsValid,
                   Date().timeIntervalSince(evidence.capturedAt) <= 15,
                   evidence.revision == handle.screen.frameRevision,
                   let element = stored.elements.first(where: { $0.reference == args.reference }) else {
                 throw C05RemoteDesktopToolError.invalidArgument(
-                    "Structured \(P.displayName) evidence is missing, changed, or expired; call \(P.wireName).observe again"
+                    "Structured \(P.displayName) evidence is missing, changed, expired, or the recognizer failed; call \(P.wireName).observe again"
+                )
+            }
+            try C05DesktopToolSupport.validateOwnership(evidence, handle: handle)
+            guard element.width > 0, element.height > 0,
+                  element.x >= 0, element.y >= 0,
+                  element.x + element.width <= evidence.width,
+                  element.y + element.height <= evidence.height else {
+                throw C05RemoteDesktopToolError.invalidArgument(
+                    "The text anchor is outside the observed frame; call \(P.wireName).observe again"
                 )
             }
             let point = try await C05DesktopToolSupport.validatePoint(
@@ -1433,12 +1788,29 @@ public struct C05DesktopClickElementTool<P: C05RemoteDesktopProtocolKind>: Agent
                 handle: handle,
                 coordinator: environment.coordinator
             )
+            // Re-read the live fence after the actor hop: a disconnect,
+            // epoch change or frame change must not receive this click.
+            try context.cancellation.throwIfCancelled()
+            try C05DesktopToolSupport.requireLiveHandle(
+                handle,
+                owner: owner,
+                environment: environment
+            )
+            guard point.revision == handle.screen.frameRevision else {
+                throw C05RemoteDesktopToolError.invalidArgument(
+                    "The remote screen changed before the click; call \(P.wireName).observe again"
+                )
+            }
             let count = args.clickCount ?? 1
             for index in 0..<count {
                 try context.cancellation.throwIfCancelled()
                 try handle.screen.pointerMove(x: element.centerX, y: element.centerY)
-                try handle.screen.pointerButton(button: "left", down: true, x: element.centerX, y: element.centerY)
-                try handle.screen.pointerButton(button: "left", down: false, x: element.centerX, y: element.centerY)
+                try handle.screen.pointerButton(
+                    button: "left", down: true, x: element.centerX, y: element.centerY
+                )
+                try handle.screen.pointerButton(
+                    button: "left", down: false, x: element.centerX, y: element.centerY
+                )
                 if index + 1 < count { try await Task.sleep(nanoseconds: 100_000_000) }
             }
             return try await C05DesktopToolSupport.postActionOutput(
@@ -1449,6 +1821,8 @@ public struct C05DesktopClickElementTool<P: C05RemoteDesktopProtocolKind>: Agent
                 details: [
                     "reference": element.reference,
                     "recognizedText": element.text,
+                    "recognizedTextConfidence": element.confidence,
+                    "anchorKind": "recognizedText",
                     "x": element.centerX,
                     "y": element.centerY,
                     "clickCount": count,
@@ -1469,11 +1843,11 @@ public struct C05DesktopTypeTextTool<P: C05RemoteDesktopProtocolKind>: AgentTool
     public static var toolDescription: String {
         "Type bounded text into the current \(P.displayName) focus and optionally press Return. Returns a post-action PNG screenshot; verify visually that the focused field accepted the text."
     }
-    public static let parametersJSON = #"{"type":"object","properties":{"text":{"type":"string","maxLength":4096},"submit":{"type":"boolean"}},"required":["text"],"additionalProperties":false}"#
-    public static let riskLabels: Set<RiskLabel> = [.controlsGUI, .executesRemoteCommand, .sendsDataToProvider]
-    public static let isSideEffecting = true
-    public static let toolEffect: ToolEffect = .mutating
-    public static let requiresHostScope = false
+    public static var parametersJSON: String { #"{"type":"object","properties":{"text":{"type":"string","maxLength":4096},"submit":{"type":"boolean"}},"required":["text"],"additionalProperties":false}"# }
+    public static var riskLabels: Set<RiskLabel> { [.controlsGUI, .executesRemoteCommand, .sendsDataToProvider] }
+    public static var isSideEffecting: Bool { true }
+    public static var toolEffect: ToolEffect { .mutating }
+    public static var requiresHostScope: Bool { false }
     public static var prerequisites: [ToolPrerequisite] { C05DesktopObserveTool<P>.prerequisites }
 
     private let environment: C05RemoteDesktopToolEnvironment
@@ -1495,6 +1869,11 @@ public struct C05DesktopTypeTextTool<P: C05RemoteDesktopProtocolKind>: AgentTool
                 owner: owner
             )
             let before = await environment.coordinator.evidence(handle: handle).evidence
+            try C05DesktopToolSupport.requireLiveHandle(
+                handle,
+                owner: owner,
+                environment: environment
+            )
             try handle.screen.typeText(args.text, submit: args.submit == true)
             return try await C05DesktopToolSupport.postActionOutput(
                 handle: handle,
@@ -1518,13 +1897,13 @@ public struct C05DesktopTypeCredentialTool<P: C05RemoteDesktopProtocolKind>: Age
     public static var toolDescription: String {
         "Type a previously saved Floe secure credential card into the current \(P.displayName) focus. Pass credentialRef exactly as shown in context; plaintext is resolved only inside the approved executor and is never returned."
     }
-    public static let parametersJSON = #"{"type":"object","properties":{"credentialRef":{"type":"string","pattern":"^⟨credential:[0-9A-Fa-f-]{36}⟩$"},"submit":{"type":"boolean"}},"required":["credentialRef"],"additionalProperties":false}"#
-    public static let riskLabels: Set<RiskLabel> = [
+    public static var parametersJSON: String { #"{"type":"object","properties":{"credentialRef":{"type":"string","pattern":"^⟨credential:[0-9A-Fa-f-]{36}⟩$"},"submit":{"type":"boolean"}},"required":["credentialRef"],"additionalProperties":false}"# }
+    public static var riskLabels: Set<RiskLabel> { [
         .controlsGUI, .executesRemoteCommand, .sendsDataToProvider, .accessesCredentials
-    ]
-    public static let isSideEffecting = true
-    public static let toolEffect: ToolEffect = .mutating
-    public static let requiresHostScope = false
+    ] }
+    public static var isSideEffecting: Bool { true }
+    public static var toolEffect: ToolEffect { .mutating }
+    public static var requiresHostScope: Bool { false }
     public static var prerequisites: [ToolPrerequisite] { C05DesktopObserveTool<P>.prerequisites }
 
     private let environment: C05RemoteDesktopToolEnvironment
@@ -1539,21 +1918,120 @@ public struct C05DesktopTypeCredentialTool<P: C05RemoteDesktopProtocolKind>: Age
     public func execute(_ args: Arguments, context: ToolContext) async throws -> ToolExecutionOutput {
         try context.cancellation.throwIfCancelled()
         try C05DesktopToolSupport.requireApproval(context)
-        guard let credentialID = SecretIngressScanner.credentialID(from: args.credentialRef),
-              let resolver = environment.credentialResolver else {
-            throw FloeError.validationFailed("Saved credential resolution is unavailable")
-        }
-        var bytes = try await resolver(credentialID)
-        defer { bytes.resetBytes(in: bytes.indices) }
-        guard !bytes.isEmpty, bytes.count <= 4_096,
-              let text = String(data: bytes, encoding: .utf8) else {
-            throw FloeError.validationFailed("Saved credential is empty, too large, or not UTF-8 text")
+        guard let credentialID = SecretIngressScanner.credentialID(from: args.credentialRef) else {
+            throw FloeError.validationFailed("credentialRef must reference a Floe secure credential card")
         }
         let owner = try C05DesktopToolSupport.owner(context, environment: environment)
         do {
             let handle = try await environment.coordinator.requireHandle(
                 protocolName: P.wireName,
                 owner: owner
+            )
+            if let resolver = environment.cardResolver {
+                // Scoped card path. The real permission gate is the existing
+                // approval grant plus the runtime-issued authority for this
+                // exact approved call; the card scope/host/kind checks run in
+                // the resolver over the ORIGINAL credential metadata.
+                guard let authority = context.runtimeAuthority,
+                      authority.toolName == Self.name,
+                      authority.runID == context.runID,
+                      authority.taskID == context.conversationID,
+                      authority.approvalGrantID == context.approvalGrantID,
+                      authority.issuedAt <= Date(),
+                      Date() < authority.expiresAt else {
+                    throw FloeError.validationFailed(
+                        "This credential action has no current approved task authority"
+                    )
+                }
+                guard let approvalGrantID = context.approvalGrantID,
+                      let taskID = context.conversationID else {
+                    throw FloeError.validationFailed(
+                        "This credential action requires an approved task-owned run"
+                    )
+                }
+                try C05DesktopToolSupport.requireLiveHandle(
+                    handle,
+                    owner: owner,
+                    environment: environment
+                )
+                let request = C05DesktopCredentialCardRequest(
+                    credentialID: credentialID,
+                    taskID: taskID,
+                    runID: context.runID,
+                    protocolName: handle.protocolName,
+                    profileID: handle.profileID,
+                    endpointID: handle.endpointID,
+                    sessionID: handle.sessionID,
+                    target: handle.target,
+                    owner: owner,
+                    approvalGrantID: approvalGrantID,
+                    runtimeAuthorityID: authority.id,
+                    isCurrent: {
+                        guard let epoch = environment.currentEpoch(),
+                              epoch == owner.nativeEpoch else { return false }
+                        return handle.owner == owner && handle.screen.isConnected
+                    }
+                )
+                let resolution = try await resolver.resolveCredentialCard(request)
+                var bytes = resolution.secret
+                defer { bytes.resetBytes(in: bytes.indices) }
+                try context.cancellation.throwIfCancelled()
+                // Post-await fence: same task/owner/epoch/session/endpoint/
+                // target must still be live before the protocol write.
+                try C05DesktopToolSupport.requireLiveHandle(
+                    handle,
+                    owner: owner,
+                    environment: environment
+                )
+                guard handle.sessionID == request.sessionID,
+                      handle.endpointID == request.endpointID,
+                      handle.profileID == request.profileID,
+                      handle.protocolName == request.protocolName,
+                      handle.target == request.target else {
+                    throw C05DesktopAssistError.liveSessionChanged
+                }
+                guard authority.id == request.runtimeAuthorityID,
+                      Date() < authority.expiresAt else {
+                    throw FloeError.validationFailed(
+                        "The approved task authority expired before the credential could be typed"
+                    )
+                }
+                guard !bytes.isEmpty, bytes.count <= 4_096,
+                      let text = String(data: bytes, encoding: .utf8) else {
+                    throw FloeError.validationFailed(
+                        "Saved credential is empty, too large, or not UTF-8 text"
+                    )
+                }
+                try handle.screen.typeText(text, submit: args.submit == true)
+                return try C05DesktopToolSupport.output([
+                    "status": "ok",
+                    "sessionID": handle.sessionID.uuidString,
+                    "credentialCardID": resolution.credentialID.uuidString,
+                    "credentialKind": resolution.kind.rawValue,
+                    "credentialCardOwner": resolution.ownerKind,
+                    "credentialScopeVerified": true,
+                    "sessionRevalidated": true,
+                    "credentialDispatched": true,
+                    "inputStatus": "queued",
+                    "serverAcknowledged": false,
+                    "submitted": args.submit == true,
+                    "observationStatus": "suppressedForCredentialPrivacy",
+                    "nextAction": "Verify the remote focus safely before requesting new visual evidence. Do not replay credential input.",
+                ])
+            }
+            guard let legacy = environment.credentialResolver else {
+                throw FloeError.validationFailed("Saved credential resolution is unavailable")
+            }
+            var bytes = try await legacy(credentialID)
+            defer { bytes.resetBytes(in: bytes.indices) }
+            guard !bytes.isEmpty, bytes.count <= 4_096,
+                  let text = String(data: bytes, encoding: .utf8) else {
+                throw FloeError.validationFailed("Saved credential is empty, too large, or not UTF-8 text")
+            }
+            try C05DesktopToolSupport.requireLiveHandle(
+                handle,
+                owner: owner,
+                environment: environment
             )
             try handle.screen.typeText(text, submit: args.submit == true)
             return try C05DesktopToolSupport.output([
@@ -1583,11 +2061,11 @@ public struct C05DesktopScrollTool<P: C05RemoteDesktopProtocolKind>: AgentTool {
     public static var toolDescription: String {
         "Scroll at a point from the latest \(P.wireName).observe screenshot. Positive deltaY scrolls up; negative scrolls down. Returns a post-action PNG screenshot."
     }
-    public static let parametersJSON = #"{"type":"object","properties":{"x":{"type":"integer","minimum":0},"y":{"type":"integer","minimum":0},"deltaY":{"type":"integer","minimum":-20,"maximum":20},"screenshotSHA256":{"type":"string","pattern":"^[a-fA-F0-9]{64}$"}},"required":["x","y","deltaY","screenshotSHA256"],"additionalProperties":false}"#
-    public static let riskLabels: Set<RiskLabel> = [.controlsGUI]
-    public static let isSideEffecting = true
-    public static let toolEffect: ToolEffect = .mutating
-    public static let requiresHostScope = false
+    public static var parametersJSON: String { #"{"type":"object","properties":{"x":{"type":"integer","minimum":0},"y":{"type":"integer","minimum":0},"deltaY":{"type":"integer","minimum":-20,"maximum":20},"screenshotSHA256":{"type":"string","pattern":"^[a-fA-F0-9]{64}$"}},"required":["x","y","deltaY","screenshotSHA256"],"additionalProperties":false}"# }
+    public static var riskLabels: Set<RiskLabel> { [.controlsGUI] }
+    public static var isSideEffecting: Bool { true }
+    public static var toolEffect: ToolEffect { .mutating }
+    public static var requiresHostScope: Bool { false }
     public static var prerequisites: [ToolPrerequisite] { C05DesktopObserveTool<P>.prerequisites }
 
     private let environment: C05RemoteDesktopToolEnvironment
@@ -1615,6 +2093,17 @@ public struct C05DesktopScrollTool<P: C05RemoteDesktopProtocolKind>: AgentTool {
                 handle: handle,
                 coordinator: environment.coordinator
             )
+            try context.cancellation.throwIfCancelled()
+            try C05DesktopToolSupport.requireLiveHandle(
+                handle,
+                owner: owner,
+                environment: environment
+            )
+            guard evidence.revision == handle.screen.frameRevision else {
+                throw C05RemoteDesktopToolError.invalidArgument(
+                    "The remote screen changed before the scroll; call \(P.wireName).observe again"
+                )
+            }
             try handle.screen.wheel(steps: args.deltaY, x: args.x, y: args.y)
             return try await C05DesktopToolSupport.postActionOutput(
                 handle: handle,
@@ -1642,11 +2131,11 @@ public struct C05DesktopDragTool<P: C05RemoteDesktopProtocolKind>: AgentTool {
     public static var toolDescription: String {
         "Drag between two framebuffer pixels from the latest \(P.wireName).observe or action result. Returns a post-action PNG screenshot and reusable evidence; input dispatch is not proof that the intended item moved."
     }
-    public static let parametersJSON = #"{"type":"object","properties":{"fromX":{"type":"integer","minimum":0},"fromY":{"type":"integer","minimum":0},"toX":{"type":"integer","minimum":0},"toY":{"type":"integer","minimum":0},"screenshotSHA256":{"type":"string","pattern":"^[a-fA-F0-9]{64}$"},"durationMilliseconds":{"type":"integer","minimum":100,"maximum":3000}},"required":["fromX","fromY","toX","toY","screenshotSHA256"],"additionalProperties":false}"#
-    public static let riskLabels: Set<RiskLabel> = [.controlsGUI, .executesRemoteCommand]
-    public static let isSideEffecting = true
-    public static let toolEffect: ToolEffect = .mutating
-    public static let requiresHostScope = false
+    public static var parametersJSON: String { #"{"type":"object","properties":{"fromX":{"type":"integer","minimum":0},"fromY":{"type":"integer","minimum":0},"toX":{"type":"integer","minimum":0},"toY":{"type":"integer","minimum":0},"screenshotSHA256":{"type":"string","pattern":"^[a-fA-F0-9]{64}$"},"durationMilliseconds":{"type":"integer","minimum":100,"maximum":3000}},"required":["fromX","fromY","toX","toY","screenshotSHA256"],"additionalProperties":false}"# }
+    public static var riskLabels: Set<RiskLabel> { [.controlsGUI, .executesRemoteCommand] }
+    public static var isSideEffecting: Bool { true }
+    public static var toolEffect: ToolEffect { .mutating }
+    public static var requiresHostScope: Bool { false }
     public static var prerequisites: [ToolPrerequisite] { C05DesktopObserveTool<P>.prerequisites }
 
     private let environment: C05RemoteDesktopToolEnvironment
@@ -1687,6 +2176,17 @@ public struct C05DesktopDragTool<P: C05RemoteDesktopProtocolKind>: AgentTool {
                 handle: handle,
                 coordinator: environment.coordinator
             )
+            try context.cancellation.throwIfCancelled()
+            try C05DesktopToolSupport.requireLiveHandle(
+                handle,
+                owner: owner,
+                environment: environment
+            )
+            guard evidence.revision == handle.screen.frameRevision else {
+                throw C05RemoteDesktopToolError.invalidArgument(
+                    "The remote screen changed before the drag; call \(P.wireName).observe again"
+                )
+            }
             let steps = 12
             let duration = args.durationMilliseconds ?? 500
             try handle.screen.pointerMove(x: args.fromX, y: args.fromY)
@@ -1739,11 +2239,11 @@ public struct C05DesktopKeyPressTool<P: C05RemoteDesktopProtocolKind>: AgentTool
     public static var toolDescription: String {
         "Press one named remote key such as Return, Tab, Escape, arrows, PageUp/PageDown, Home/End, Backspace, Delete, or F1-F12. Returns a post-action PNG screenshot for verification."
     }
-    public static let parametersJSON = #"{"type":"object","properties":{"key":{"type":"string","enum":["Return","Tab","Escape","Space","Backspace","Delete","Left","Right","Up","Down","PageUp","PageDown","Home","End","Insert","F1","F2","F3","F4","F5","F6","F7","F8","F9","F10","F11","F12"]}},"required":["key"],"additionalProperties":false}"#
-    public static let riskLabels: Set<RiskLabel> = [.controlsGUI, .executesRemoteCommand]
-    public static let isSideEffecting = true
-    public static let toolEffect: ToolEffect = .mutating
-    public static let requiresHostScope = false
+    public static var parametersJSON: String { #"{"type":"object","properties":{"key":{"type":"string","enum":["Return","Tab","Escape","Space","Backspace","Delete","Left","Right","Up","Down","PageUp","PageDown","Home","End","Insert","F1","F2","F3","F4","F5","F6","F7","F8","F9","F10","F11","F12"]}},"required":["key"],"additionalProperties":false}"# }
+    public static var riskLabels: Set<RiskLabel> { [.controlsGUI, .executesRemoteCommand] }
+    public static var isSideEffecting: Bool { true }
+    public static var toolEffect: ToolEffect { .mutating }
+    public static var requiresHostScope: Bool { false }
     public static var prerequisites: [ToolPrerequisite] { C05DesktopObserveTool<P>.prerequisites }
 
     private let environment: C05RemoteDesktopToolEnvironment
@@ -1765,6 +2265,11 @@ public struct C05DesktopKeyPressTool<P: C05RemoteDesktopProtocolKind>: AgentTool
                 owner: owner
             )
             let before = await environment.coordinator.evidence(handle: handle).evidence
+            try C05DesktopToolSupport.requireLiveHandle(
+                handle,
+                owner: owner,
+                environment: environment
+            )
             try handle.screen.key(named: args.key)
             return try await C05DesktopToolSupport.postActionOutput(
                 handle: handle,
@@ -1778,11 +2283,13 @@ public struct C05DesktopKeyPressTool<P: C05RemoteDesktopProtocolKind>: AgentTool
         }
     }
 
-    private static let supportedKeys: Set<String> = [
-        "return", "tab", "escape", "space", "backspace", "delete", "left", "right", "up", "down",
-        "pageup", "pagedown", "home", "end", "insert", "f1", "f2", "f3", "f4", "f5", "f6", "f7",
-        "f8", "f9", "f10", "f11", "f12",
-    ]
+    private static var supportedKeys: Set<String> {
+        [
+            "return", "tab", "escape", "space", "backspace", "delete", "left", "right", "up", "down",
+            "pageup", "pagedown", "home", "end", "insert", "f1", "f2", "f3", "f4", "f5", "f6", "f7",
+            "f8", "f9", "f10", "f11", "f12",
+        ]
+    }
 }
 
 // MARK: - Registration
@@ -1816,8 +2323,8 @@ public func registerC05RemoteDesktopTools(
         registry.register(AnyAgentTool(tool).withAvailability {
             guard environment.isAvailable else { return false }
             if requiresArtifacts, !environment.hasArtifactRoot { return false }
-            if requiresRecognizer, environment.textRecognizer == nil { return false }
-            if requiresCredentialResolver, environment.credentialResolver == nil { return false }
+            if requiresRecognizer, !environment.hasTextRecognizer { return false }
+            if requiresCredentialResolver, !environment.hasCredentialResolver { return false }
             return true
         })
     }

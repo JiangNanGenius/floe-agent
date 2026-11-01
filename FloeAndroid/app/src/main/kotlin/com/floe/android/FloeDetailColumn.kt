@@ -11,6 +11,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -42,6 +43,10 @@ import com.floe.android.feature.conversation.FloeConversationHistoryDestination
 import com.floe.android.feature.conversation.FloeConversationPaneHost
 import com.floe.android.feature.executiontarget.ExecutionTargetButton
 import com.floe.android.feature.executiontarget.ExecutionTargetSheet
+import com.floe.android.feature.toolresults.LocalToolResultDetailSource
+import com.floe.android.feature.taskcontinuity.TaskContinuityBanner
+import com.floe.android.feature.taskcontinuity.TaskContinuityPresentation
+import com.floe.android.feature.taskcontinuity.TaskContinuitySheet
 import com.floe.android.host.RuntimeHost
 
 /**
@@ -307,17 +312,29 @@ private fun ConversationDestination(
         }
     }
     var targetSheetVisible by rememberSaveable(conversationId) { mutableStateOf(false) }
+    var continuitySheetVisible by rememberSaveable(conversationId) { mutableStateOf(false) }
     val targetState by runtimeHost.executionTargets.state.collectAsState()
+    val continuityState by runtimeHost.taskContinuity.state.collectAsState()
     LaunchedEffect(conversationId, temporary) {
         if (temporary == null) runtimeHost.executionTargets.load(conversationId)
     }
+    LaunchedEffect(conversationId, temporary) {
+        if (temporary == null) runtimeHost.taskContinuity.load(conversationId)
+    }
     Box(Modifier.fillMaxSize()) {
-        FloeConversationPaneHost(
-            holder = holder,
-            modifier = Modifier.fillMaxSize(),
-            onBack = if (compact) (onBackToOrigin ?: onOpenDrawer) else null,
-            onAttachmentDesign = onAttachmentDesign,
-        )
+        // C02: the existing tool card's retained-result reader resolves its
+        // source from the App-owned trusted client. No feature module opens
+        // the bridge, a file or a tool executor.
+        CompositionLocalProvider(
+            LocalToolResultDetailSource provides runtimeHost.toolResults,
+        ) {
+            FloeConversationPaneHost(
+                holder = holder,
+                modifier = Modifier.fillMaxSize(),
+                onBack = if (compact) (onBackToOrigin ?: onOpenDrawer) else null,
+                onAttachmentDesign = onAttachmentDesign,
+            )
+        }
         if (temporary == null) {
             ExecutionTargetButton(
                 state = targetState,
@@ -326,6 +343,15 @@ private fun ConversationDestination(
                     .align(Alignment.TopEnd)
                     .padding(top = 10.dp, end = 12.dp),
             )
+            if (TaskContinuityPresentation.shouldShowBanner(continuityState)) {
+                TaskContinuityBanner(
+                    state = continuityState,
+                    onClick = { continuitySheetVisible = true },
+                    modifier = Modifier
+                        .align(Alignment.TopStart)
+                        .padding(top = 10.dp, start = 12.dp),
+                )
+            }
         }
     }
     ExecutionTargetSheet(
@@ -350,6 +376,33 @@ private fun ConversationDestination(
         onDismissError = { runtimeHost.executionTargets.dismissError() },
         onDismissNotice = { runtimeHost.executionTargets.dismissNotice() },
         onRefresh = { runtimeHost.executionTargets.refresh() },
+    )
+    TaskContinuitySheet(
+        visible = continuitySheetVisible && temporary == null,
+        state = continuityState,
+        compact = compact,
+        onDismiss = { continuitySheetVisible = false },
+        onResumePause = { runtimeHost.taskContinuity.resume() },
+        // A durable wait without a live owner is resumed by the ORIGINAL
+        // Continue path (run.retry): it re-parks the question/approval under
+        // the real runtime instead of inventing a second answer route.
+        onResumeTask = { runID ->
+            // Resume the EXACT run that owns the durable wait; a task-level
+            // snapshot can surface waits from more than one recent run.
+            if (holder.snapshot.value?.selectedRunId != runID) {
+                holder.selectRun(runID)
+            }
+            holder.retry()
+        },
+        onReviewQuestion = { requestID ->
+            // Re-read the ORIGINAL question through the existing host
+            // command; its snapshot callback opens the existing question
+            // sheet. A late answer still goes through question.answer only.
+            runtimeHost.conversations.requestPendingQuestion(
+                holder.session, requestID)
+            continuitySheetVisible = false
+        },
+        onRefresh = { runtimeHost.taskContinuity.load(conversationId) },
     )
     designSession?.let { session ->
         DesignWorkflowSheet(

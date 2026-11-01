@@ -77,6 +77,7 @@ import com.floe.android.host.RuntimeHost
 import com.floe.android.host.SettingsHostPages
 import com.floe.android.host.WebSearchSettingsPage
 import com.floe.android.host.GitHubCredentialEditor
+import com.floe.android.feature.desktopassist.DesktopAssistSettingsPage
 import com.floe.android.host.voice.C03VoiceSettingsCard
 import io.github.robinpcrd.cupertino.section.SectionItem
 
@@ -648,6 +649,20 @@ private fun SettingsSectionContent(
                 HostPendingPage(R.string.settings_skills_pending)
             }
         }
+        FloeSettingsSection.DESKTOP_ASSIST -> {
+            if (runtimeHost != null) {
+                LaunchedEffect(runtimeHost.desktopAssist) {
+                    runtimeHost.desktopAssist.ensureLoaded()
+                }
+                val assistState by runtimeHost.desktopAssist.state.collectAsState()
+                DesktopAssistSettingsPage(
+                    state = assistState,
+                    actions = runtimeHost.desktopAssist,
+                )
+            } else {
+                HostPendingPage(R.string.settings_skills_pending)
+            }
+        }
         FloeSettingsSection.DIAGNOSTICS -> DiagnosticsSettingsPage(onOpenPreview)
     }
 }
@@ -842,6 +857,7 @@ private fun settingsIcon(section: FloeSettingsSection) = when (section) {
     FloeSettingsSection.USAGE -> FloeIcons.ChartBar
     FloeSettingsSection.PRIVACY -> FloeIcons.HandRaised
     FloeSettingsSection.WEB_SEARCH -> FloeIcons.Magnifier
+    FloeSettingsSection.DESKTOP_ASSIST -> FloeIcons.DeviceLocal
     FloeSettingsSection.DIAGNOSTICS -> FloeIcons.Stethoscope
 }
 
@@ -854,5 +870,6 @@ private fun settingsTitle(section: FloeSettingsSection): String = when (section)
     FloeSettingsSection.USAGE -> stringResource(R.string.settings_usage)
     FloeSettingsSection.PRIVACY -> stringResource(R.string.settings_privacy)
     FloeSettingsSection.WEB_SEARCH -> stringResource(R.string.settings_web_search)
+    FloeSettingsSection.DESKTOP_ASSIST -> stringResource(R.string.settings_desktop_assist)
     FloeSettingsSection.DIAGNOSTICS -> stringResource(R.string.settings_diagnostics)
 }

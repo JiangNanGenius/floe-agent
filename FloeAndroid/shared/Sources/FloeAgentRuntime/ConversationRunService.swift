@@ -580,6 +580,30 @@ public actor ConversationRunService {
         await runtime.cancel()
     }
 
+    /// C02 task continuity: storage-pressure park through the ORIGINAL
+    /// checkpoint path. The checkpoint contains the real pending tool calls
+    /// and their lifecycle, so a later explicit resume uses the existing
+    /// interrupted-dispatch policy instead of replaying a command. No
+    /// provider request, tool call or event poll runs after this returns
+    /// true. A failed checkpoint falls back to the original terminal cancel
+    /// so no further paid turn can start.
+    public func requestStoragePause() async -> Bool {
+        switch latestState {
+        case .idle, .completed, .failed, .checkpointed:
+            return false
+        default:
+            break
+        }
+        do {
+            try await runtime.checkpoint()
+            if case .checkpointed = latestState { return true }
+            return false
+        } catch {
+            await runtime.cancel()
+            return false
+        }
+    }
+
     /// Bounded snapshot of this run's in-memory approval grants (privacy
     /// clear adapter over the ACTUAL runtime state — never a second store).
     public func approvalGrantsSnapshot() async -> [ApprovalGrant] {

@@ -269,6 +269,7 @@
     <string name="send_failed_title">Message Not Sent</string>
     <string name="send_failed_message">The message could not be sent. Your draft is restored.</string>
     <string name="home_fresh_task_failed">The new task could not be created. Try again.</string>
+    <string name="settings_desktop_assist">Desktop Assist</string>
     <string name="settings_web_search">Web Search</string>
     <string name="websearch_providers">Providers</string>
     <string name="websearch_providers_footer">Enable the search services Floe may use. Credentials are stored securely and are never shown again.</string>

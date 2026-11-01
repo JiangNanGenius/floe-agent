@@ -564,6 +564,11 @@ public final class G02RuntimeComposition: @unchecked Sendable {
                 C02RemoteShellRouting.shared.clear(epoch: epoch)
             }
         }
+        // C02: drop this generation's result bridge binding. The method is
+        // epoch-guarded, so a stale retirement can never clear a newer graph;
+        // retained bytes stay under the task's owned root for ordinary
+        // restart/deletion handling.
+        C02ToolResultIntegration.uninstall(epoch: epoch)
 
         // 3. Cancel owned services. The run facade's retirement cascade is
         //    epoch-guarded; the process-lane uninstall runs ONLY for the
@@ -577,6 +582,7 @@ public final class G02RuntimeComposition: @unchecked Sendable {
         }
         AttachmentStagingFacade.retire(epoch: epoch)
         UserQuestionHostAPI.shared.retire(epoch: epoch)
+        C02TaskContinuityRuntimeHost.retire(epoch: epoch)
 
         // 4. Drop the installed pointer and generation-scoped fences last,
         //    owning epoch only.

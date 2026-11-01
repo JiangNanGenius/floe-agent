@@ -536,6 +536,9 @@ class FloeApplication : Application() {
                 // C05 RDP: every live FreeRDP session, frame lease and
                 // bounded input lane closes before the native root retires.
                 (runtimeHost?.prepareC05RDPForRootStop() != false) &&
+                // C05 Desktop Assist: drain any in-flight secure-card
+                // save/delete before the native Root epoch retires.
+                (runtimeHost?.prepareC05DesktopAssistForRootStop() != false) &&
                 // C06: close every platform mail TLS socket and acknowledge
                 // the lane closure before the native Root epoch retires.
                 (runtimeHost?.prepareC06MailForRootStop() != false) &&

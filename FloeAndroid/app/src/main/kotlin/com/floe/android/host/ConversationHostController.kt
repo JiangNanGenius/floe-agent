@@ -3144,6 +3144,18 @@ class ConversationHostController internal constructor(
     private fun surfaceError(entry: ConversationFlowHolderEntry, code: String) {
         entry.builder.actionError(code)
         entry.holder.applyHostSnapshot(entry.builder.build())
+        // C02 task continuity: a real store refusal triggers a bounded
+        // storage probe for THIS task/run. If storage is genuinely
+        // unavailable the native coordinator records the durable pause and
+        // parks the live run; if it is healthy no marker is created. This
+        // never resumes, answers or retries anything.
+        if (code == "persistenceUnavailable" && !entry.isTemporary) {
+            val runID = entry.holder.snapshot.value?.selectedRunId
+            if (!runID.isNullOrBlank()) {
+                taskContinuity.noteRunStorageFailure(
+                    entry.holder.conversationId, runID)
+            }
+        }
     }
 
     override fun cancelRun(session: ConversationSessionToken, runId: String): Boolean {

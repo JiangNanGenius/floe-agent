@@ -85,6 +85,11 @@ include(":feature:sftp")
 // certificate decisions and the credential gateway). Lockfile is regenerated
 // by Main's --write-locks stage before the first locked build.
 include(":feature:rdp")
+// C05 Desktop Assist settings: secure credential cards (original vault) and
+// the Linux text-recognition readiness summary. Presentation only; the App
+// host owns the trusted `floe.desktopassist/22` channel. Main regenerates the
+// module lockfile with --write-locks before the first locked build.
+include(":feature:desktopassist")
 // C05 real device communications: TCP/Telnet, BLE GATT and USB serial engine
 // plus presentation. Main owns the App route and lockfile regeneration; the
 // App host controller and trusted model-tool pump are App-owned sources.
@@ -107,6 +112,10 @@ include(":feature:dataexchange")
 // C02 durable task execution target: presentation only; the App host owns
 // the trusted `floe.target/19` client and the Swift domain owns the target.
 include(":feature:executiontarget")
+// C02 retained tool-result paging presentation; the App host owns the
+// trusted `floe.results/20` client, the Swift domain owns retention/bytes.
+include(":feature:toolresults")
+include(":feature:taskcontinuity")
 include(":core:networkmonitor")
 include(":core:pcap")
 // C06 live capture: bounded PCAP/sink/state core plus the pinned NetBare

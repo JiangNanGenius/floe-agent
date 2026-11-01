@@ -56,6 +56,7 @@ import com.floe.android.design.FloeIcons
 import com.floe.android.design.FloeLayout
 import com.floe.android.design.FloeText
 import com.floe.android.design.IconGlyph
+import com.floe.android.feature.toolresults.ToolResultDetailSection
 import androidx.compose.ui.graphics.vector.ImageVector
 import kotlinx.coroutines.delay
 
@@ -733,6 +734,17 @@ internal fun ToolRow(
             modifier = Modifier,
             onOpenArtifactPreview = { artifactId -> holder.openRichArtifactPreview(artifactId) },
         ) {
+            // C02: bounded readback of this call's actually captured result.
+            // The recorded summary above stays unchanged; a missing/legacy
+            // capture is reported honestly by the pane, never reconstructed.
+            if (status != "pending" && status != "running") {
+                ToolResultDetailSection(
+                    taskId = holder.conversationId,
+                    callId = tool.callId,
+                    temporary = holder.snapshot.value?.isTemporary == true,
+                    runId = event.runId,
+                )
+            }
             // Below-fold extras that the iOS card places inside details.
             if (childRun != null) {
                 DelegateCardRow(

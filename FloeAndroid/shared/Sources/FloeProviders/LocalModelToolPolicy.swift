@@ -87,7 +87,11 @@ public enum LocalModelToolPolicy {
         "web.search", "web.searchAI", "web.fetch",
         // Workspace read/lookup chain.
         "workspace.readFile", "workspace.listDirectory", "workspace.searchFiles",
-        "workspace.inspectFileMetadata"
+        "workspace.inspectFileMetadata",
+        // C02: bounded read-only paging of this task's already-redacted tool
+        // results. It grants no new filesystem/network access; it only lets a
+        // small model recover evidence that compaction hid. Not pinned.
+        "tools.readResult"
     ]
 
     /// Terms that name a **live web** target (excludes the generic words

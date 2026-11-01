@@ -1099,6 +1099,21 @@ public actor FacadeRunDomain {
         let effectiveConversation = conversationID
             ?? scheduledLaunch?.conversationID ?? query.conversationID
         let runID = scheduledLaunch?.runID ?? UUID()
+        // C02 task continuity: a storage-paused task admits no new work
+        // unless the trusted continuity coordinator authorized this exact
+        // resume (retry only). No coordinator installed => unchanged path.
+        if let decision = await C02TaskContinuityRuntimeHost.admissionDecision(
+            taskID: effectiveConversation,
+            runID: scheduledLaunch?.runID,
+            operation: .launch) {
+            switch decision {
+            case .paused:
+                return RunDomainReply(.rejected(RunDomainError(
+                    .persistenceUnavailable, .storeReadFailed)))
+            case .resumeAuthorized:
+                break
+            }
+        }
         // Frozen BEFORE the first await: execution identity (bundle),
         // conversation scope, minted runID, scoped fence token.
         let launchToken = issueFence(effectiveConversation)
@@ -2152,6 +2167,22 @@ public actor FacadeRunDomain {
             epoch: epoch, conversationID: query.conversationID) {
             return await retryTemporary(query: query, route: route,
                                         receipt: receipt, envelope: envelope)
+        }
+        // C02 task continuity: while a storage pause is active, only an
+        // explicit continuity resume may pass this gate. A plain Continue
+        // click is refused before any model/provider work so the UI shows
+        // the pause state instead of silently spending a new turn.
+        if let decision = await C02TaskContinuityRuntimeHost.admissionDecision(
+            taskID: query.conversationID,
+            runID: query.runID,
+            operation: .resume) {
+            switch decision {
+            case .paused:
+                return RunDomainReply(.rejected(RunDomainError(
+                    .persistenceUnavailable, .storeReadFailed)))
+            case .resumeAuthorized:
+                break
+            }
         }
         // A per-conversation delete guard refuses EVERY new run admission
         // (retry included) BEFORE the live-owner duplicate check: the fence
@@ -3749,6 +3780,17 @@ public actor FacadeRunDomain {
     }
 
     private func refuseLaunch(runID: UUID, error: RunDomainError) -> RunDomainReply {
+        // C02 task continuity: a proven store refusal records a durable,
+        // nonsecret pause marker before the owner is released. The original
+        // error/reply bytes are unchanged. Best-effort only: this path must
+        // never block or mask the real refusal.
+        if error.code == .persistenceUnavailable {
+            let taskID = owners[runID]?.conversationID
+            Task { @Sendable in
+                _ = await C02TaskContinuityRuntimeHost.notePersistenceUnavailable(
+                    taskID: taskID, runID: runID)
+            }
+        }
         if var ownership = owners[runID] {
             if let token = ownership.ownedTokens.removeValue(
                 forKey: RuntimeOwnedWorkKind.run.rawValue) {

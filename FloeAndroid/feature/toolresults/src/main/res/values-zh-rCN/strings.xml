@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="toolresult_open">查看完整结果</string>
+    <string name="toolresult_title">工具结果</string>
+    <string name="toolresult_close">关闭</string>
+    <string name="toolresult_loading">正在读取保留的输出…</string>
+    <string name="toolresult_meta">第 %1$d–%2$d 字节，共 %3$d 字节</string>
+    <string name="toolresult_capture_state">记录状态：%1$s</string>
+    <string name="toolresult_capture_complete">已完整记录</string>
+    <string name="toolresult_capture_retention">只保留了开头部分</string>
+    <string name="toolresult_capture_upstream">输出在保留前已被截断</string>
+    <string name="toolresult_capture_both">输出在保留前已被截断，保留副本也不完整</string>
+    <string name="toolresult_storage_state">存储：%1$s</string>
+    <string name="toolresult_storage_saved">已保存到该任务</string>
+    <string name="toolresult_storage_memory">未保存，仅在本次会话中保留</string>
+    <string name="toolresult_evicted">为将任务保留在存储上限内，已移除 %1$d 条较早的记录。</string>
+    <string name="toolresult_restored">已从该任务的持久记录恢复。</string>
+    <string name="toolresult_previous">上一页</string>
+    <string name="toolresult_next">下一页</string>
+    <string name="toolresult_retry">重试</string>
+    <string name="toolresult_legacy">只能显示已保存的摘要。该任务没有保留完整输出。</string>
+    <string name="toolresult_temporary">临时对话不会保留工具结果。</string>
+    <string name="toolresult_error">无法读取保留的结果。</string>
+</resources>

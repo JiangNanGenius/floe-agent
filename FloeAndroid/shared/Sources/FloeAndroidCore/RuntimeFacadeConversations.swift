@@ -4129,6 +4129,19 @@ public actor FacadeConversationDomain {
             }
             committed = true
 
+            // C02: remove this task's retained tool-result directory AFTER
+            // the durable conversation commit. A removal failure persists a
+            // retry tombstone inside the same owned root (the launch path
+            // reconciles it), so the deletion is never presented as a full
+            // wipe without evidence. No other task's records are touched.
+            if let toolResultPurge = await C02ToolResultIntegration
+                .purgeRetainedResults(conversationID: conversationID),
+               !toolResultPurge.succeeded {
+                FloeLogger(category: .runtime).error(
+                    "toolResultPurgeDeferred conversation=\(conversationID.uuidString) retryScheduled=\(toolResultPurge.retryScheduled)"
+                )
+            }
+
             // CH-R3: exact-token commit AFTER the durable commit. The DB
             // row is the source of truth; a failed guard release is reported
             // honestly and remains recoverable, never a second deletion.

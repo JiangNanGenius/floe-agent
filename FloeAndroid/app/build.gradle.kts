@@ -551,6 +551,7 @@ dependencies {
     implementation(project(":feature:remote"))
     implementation(project(":feature:sftp"))
     implementation(project(":feature:rdp"))
+    implementation(project(":feature:desktopassist"))
     implementation(project(":feature:mail"))
     implementation(project(":feature:devicecommunication"))
     // C06 system-calendar provider access and Calendar/Todo presentation.
@@ -569,6 +570,10 @@ dependencies {
     // C02 per-task execution target sheet; the App-owned controller owns the
     // trusted bridge and the Swift domain owns pinning/migration/CAS.
     implementation(project(":feature:executiontarget"))
+    // C02 retained result paging inside the existing tool card; the App host
+    // owns the `floe.results/20` client and the Swift domain owns bytes.
+    implementation(project(":feature:toolresults"))
+    implementation(project(":feature:taskcontinuity"))
     implementation(project(":core:credentials"))
     implementation(project(":core:designsystem"))
     implementation(project(":core:swiftbridge"))

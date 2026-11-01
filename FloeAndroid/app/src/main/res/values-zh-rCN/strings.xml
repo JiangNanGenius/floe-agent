@@ -269,6 +269,7 @@
     <string name="send_failed_title">发送失败</string>
     <string name="send_failed_message">消息未能发送，草稿已恢复。</string>
     <string name="home_fresh_task_failed">未能创建新任务，请重试。</string>
+    <string name="settings_desktop_assist">桌面协助</string>
     <string name="settings_web_search">网页搜索</string>
     <string name="websearch_providers">提供商</string>
     <string name="websearch_providers_footer">启用 Floe 可使用的搜索服务。凭证会安全保存，之后不会再次显示。</string>

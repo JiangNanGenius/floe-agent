@@ -1,0 +1,46 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="desktop_assist_title">Desktop Assist</string>
+    <string name="desktop_assist_cards">Secure credential cards</string>
+    <string name="desktop_assist_cards_footer">Cards live in the device credential vault. Only password and generic-token cards can be typed into a remote desktop, and only for the host they are scoped to. The model never receives the secret.</string>
+    <string name="desktop_assist_add">Add card</string>
+    <string name="desktop_assist_empty">No secure credential cards yet.</string>
+    <string name="desktop_assist_loading">Loading cards</string>
+    <string name="desktop_assist_retry">Retry</string>
+    <string name="desktop_assist_kind_password">Password</string>
+    <string name="desktop_assist_kind_token">Token</string>
+    <string name="desktop_assist_kind_other">Not usable for remote typing</string>
+    <string name="desktop_assist_host_any">Any host</string>
+    <string name="desktop_assist_host_title">Host scope</string>
+    <string name="desktop_assist_host_any_hint">This card can be typed into any remote desktop.</string>
+    <string name="desktop_assist_host_hint">This card can only be typed into the selected host.</string>
+    <string name="desktop_assist_reference">Reference</string>
+    <string name="desktop_assist_updated">Updated</string>
+    <string name="desktop_assist_editor_create">New secure card</string>
+    <string name="desktop_assist_editor_edit">Edit secure card</string>
+    <string name="desktop_assist_label">Label</string>
+    <string name="desktop_assist_secret">Secret</string>
+    <string name="desktop_assist_secret_keep">Leave empty to keep the saved secret</string>
+    <string name="desktop_assist_show">Show</string>
+    <string name="desktop_assist_hide">Hide</string>
+    <string name="desktop_assist_save">Save</string>
+    <string name="desktop_assist_cancel">Cancel</string>
+    <string name="desktop_assist_done">Done</string>
+    <string name="desktop_assist_delete">Delete</string>
+    <string name="desktop_assist_delete_title">Delete this card?</string>
+    <string name="desktop_assist_delete_message">The saved secret is removed from this device. Remote typing will fail until you add the card again.</string>
+    <string name="desktop_assist_notice_saved">Card saved</string>
+    <string name="desktop_assist_notice_deleted">Card deleted</string>
+    <string name="desktop_assist_notice_invalid">Enter a label and a secret between 1 and 4096 bytes</string>
+    <string name="desktop_assist_notice_unavailable">The runtime is not ready; try again</string>
+    <string name="desktop_assist_ocr_title">Text recognition</string>
+    <string name="desktop_assist_ocr_ready">Linux text recognition is available</string>
+    <string name="desktop_assist_ocr_pending">Text recognition is prepared on the first VNC or RDP connection in a task</string>
+    <string name="desktop_assist_ocr_body">Text anchors for clickElement come from Tesseract inside the task Linux environment. The screenshot never leaves the device and no cloud OCR model is called. If the engine is missing, Floe installs the free tesseract-ocr package through the task shell during connect.</string>
+    <string name="desktop_assist_missing_host">Unknown host</string>
+    <string name="desktop_assist_saving">Saving</string>
+    <string name="desktop_assist_not_typing_allowed">Not usable for remote typing</string>
+    <string name="desktop_assist_error">Could not load desktop assist settings</string>
+    <string name="desktop_assist_selected">Selected</string>
+    <string name="desktop_assist_copy_reference">Copy reference</string>
+</resources>

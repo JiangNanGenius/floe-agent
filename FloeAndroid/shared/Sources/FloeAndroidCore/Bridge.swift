@@ -36,6 +36,7 @@ public enum AndroidBridge {
                 || requestVersion == BridgeV8.version
                 || requestVersion == BridgeV9.version
                 || requestVersion == BridgeV19.version
+                || requestVersion == BridgeV20.version
                 || requestVersion == BridgeV10.version
                 || requestVersion == BridgeV11.version
                 || requestVersion == BridgeV12.version
@@ -44,7 +45,9 @@ public enum AndroidBridge {
                 || requestVersion == BridgeV15.version
                 || requestVersion == BridgeV16.version
                 || requestVersion == BridgeV17.version
-                || requestVersion == BridgeV18.version else {
+                || requestVersion == BridgeV18.version
+                || requestVersion == BridgeV22.version
+                || requestVersion == BridgeV21.version else {
             return response(["ok": false, "error": "unsupportedVersion"])
         }
         if requestVersion == BridgeV2.version {
@@ -152,8 +155,14 @@ public enum AndroidBridge {
             // approval. It is not a model tool and does not grant SSH/local
             // execution; model commands still use the ordinary exec.shell
             // authority and its remote approval.
-            let object = C02TargetBridge.handle(requestData: data,
-                                                fallbackRequestID: requestID)
+            guard let composition = G02RuntimeComposition.shared.installedComposition,
+                  composition.epoch == G02NativeRootEpoch.readback(),
+                  let target = composition.executionTargets else {
+                return response(["ok": false, "error": "notInstalled"],
+                                stampVersion: BridgeV19.version)
+            }
+            let object = target.bridge.handle(requestData: data,
+                                              fallbackRequestID: requestID)
             let encoded = (try? JSONSerialization.data(withJSONObject: object,
                                                        options: [.sortedKeys]))
                 ?? Data(#"{"ok":false,"error":"encoding"}"#.utf8)
@@ -162,6 +171,33 @@ public enum AndroidBridge {
                                 stampVersion: BridgeV19.version)
             }
             return response(object, stampVersion: BridgeV19.version)
+        }
+        if requestVersion == BridgeV20.version {
+            // Additive C02 host-only tool-result channel. It pages one task's
+            // already-redacted captured results for the existing tool-history
+            // detail entry; it is not a model tool, grants no permission and
+            // never accepts a path. Model retrieval uses the registered
+            // `tools.readResult` runner with its trusted ToolContext.
+            guard let runtime = C02ToolResultIntegration.current else {
+                let object: [String: Any] = [
+                    "ok": false,
+                    "code": "notInstalled",
+                    "message": "Tool result retention is not bound for this runtime generation.",
+                    "retryable": false,
+                    "schema": C02ToolResultWire.schema,
+                ]
+                return response(object, stampVersion: BridgeV20.version)
+            }
+            let object = runtime.handle(requestData: data,
+                                        fallbackRequestID: requestID)
+            let encoded = (try? JSONSerialization.data(withJSONObject: object,
+                                                       options: [.sortedKeys]))
+                ?? Data(#"{"ok":false,"error":"encoding"}"#.utf8)
+            guard encoded.count <= C02ToolResultWire.maximumResponseBytes else {
+                return response(["ok": false, "error": "responseTooLarge"],
+                                stampVersion: BridgeV20.version)
+            }
+            return response(object, stampVersion: BridgeV20.version)
         }
         if requestVersion == BridgeV10.version {
             // Additive C06 host-only live-capture contract: owner/limit
@@ -314,6 +350,39 @@ public enum AndroidBridge {
                                 stampVersion: BridgeV18.version)
             }
             return response(object, stampVersion: BridgeV18.version)
+        }
+        if requestVersion == BridgeV22.version {
+            // Additive C05 host-only desktop-assist channel: secret-free
+            // secure-credential-card metadata and the settings-side one-time
+            // card write/delete. Model typing stays on the ordinary
+            // vnc/rdp.typeCredential tool path; OCR stays inside the task's
+            // Linux environment. V1-V18 branches above remain byte-identical.
+            let object = C05DesktopAssistBridge.handle(requestData: data,
+                                                       fallbackRequestID: requestID)
+            let encoded = (try? JSONSerialization.data(withJSONObject: object,
+                                                       options: [.sortedKeys]))
+                ?? Data(#"{"ok":false,"error":"encoding"}"#.utf8)
+            guard encoded.count <= C05DesktopAssistWire.maximumResponseBytes else {
+                return response(["ok": false, "error": "responseTooLarge"],
+                                stampVersion: BridgeV22.version)
+            }
+            return response(object, stampVersion: BridgeV22.version)
+        }
+        if requestVersion == BridgeV21.version {
+            // Additive C02 host-only task-continuity channel: recoverable
+            // storage pause plus the canonical question/approval wait
+            // identity. It never answers a question or approval; those stay
+            // on their original commands. No model tool, no V3 command.
+            let object = C02TaskContinuityRuntimeHost.handle(
+                requestData: data, fallbackRequestID: requestID)
+            let encoded = (try? JSONSerialization.data(withJSONObject: object,
+                                                       options: [.sortedKeys]))
+                ?? Data(#"{"ok":false,"error":"encoding"}"#.utf8)
+            guard encoded.count <= C02TaskContinuityWire.maximumResponseBytes else {
+                return response(["ok": false, "error": "responseTooLarge"],
+                                stampVersion: BridgeV21.version)
+            }
+            return response(object, stampVersion: BridgeV21.version)
         }
         switch request["operation"] as? String {
         case "handshake":

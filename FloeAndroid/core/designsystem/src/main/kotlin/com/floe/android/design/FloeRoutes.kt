@@ -77,6 +77,7 @@ enum class FloeSettingsSection {
     USAGE,       // token/run usage aggregates
     PRIVACY,     // summary, typed clears with trusted confirmation
     WEB_SEARCH,  // web-search provider metadata + secure credential editor
+    DESKTOP_ASSIST, // secure credential cards + Linux text-recognition readiness
     DIAGNOSTICS, // real JNI handshake + debug-only component preview
 }
 

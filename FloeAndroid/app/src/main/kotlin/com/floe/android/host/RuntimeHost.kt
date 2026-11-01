@@ -15,6 +15,8 @@ import com.floe.android.host.calendar.C06CalendarHostController
 import com.floe.android.host.systemservices.C06SystemServicesHostController
 import com.floe.android.host.dataexchange.C07DataExchangeHostController
 import com.floe.android.host.executiontarget.ExecutionTargetHostController
+import com.floe.android.host.toolresults.ToolResultHostController
+import com.floe.android.host.taskcontinuity.TaskContinuityHostController
 import com.floe.android.host.remote.C05BrokerLocalNetworkGate
 import com.floe.android.host.devicecommunication.C05BrokerDeviceLanGate
 import com.floe.android.host.devicecommunication.C05DevicesHostController
@@ -23,6 +25,7 @@ import com.floe.android.host.sftp.C05SFTPHostController
 import com.floe.android.host.rdp.C05RDPClient
 import com.floe.android.host.rdp.C05RDPException
 import com.floe.android.host.rdp.C05RDPHostController
+import com.floe.android.host.desktopassist.C05DesktopAssistSettingsController
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -95,6 +98,19 @@ class RuntimeHost internal constructor(
      * replies. It never starts an SSH session or a target on construction.
      */
     val executionTargets = ExecutionTargetHostController(this)
+    /**
+     * C02 retained tool-result reader for the existing tool card. It pages
+     * only this task's already-redacted bytes through `floe.results/20`; it
+     * never re-runs a tool and never opens a workspace file.
+     */
+    internal val toolResults = ToolResultHostController()
+    /**
+     * C02 App-owned durable task continuity. The Swift coordinator owns the
+     * pause marker, storage probe and explicit resume validation; this
+     * controller only correlates trusted-host replies and never resumes,
+     * answers or retries automatically.
+     */
+    val taskContinuity = TaskContinuityHostController(this)
     /** Ordinary-task editor projections outlive Activity/inspector views. */
     internal val workspaceEditors = G04WorkspaceEditorController(this)
     internal val browser = BrowserHostController(this)
@@ -192,6 +208,21 @@ class RuntimeHost internal constructor(
     }
     internal val c05Rdp: C05RDPHostController
         get() = c05RdpDelegate.value
+
+    /**
+     * C05 Desktop Assist settings controller (secure credential cards and
+     * text-recognition readiness). App-scoped: a card save/delete is drained
+     * before Root retirement and never belongs to a Settings view lifetime.
+     */
+    private val c05DesktopAssistDelegate = lazy {
+        C05DesktopAssistSettingsController(
+            scope = scope,
+            ioDispatcher = ioDispatcher,
+            currentNativeEpoch = ::nativeRootEpoch,
+        )
+    }
+    internal val desktopAssist: C05DesktopAssistSettingsController
+        get() = c05DesktopAssistDelegate.value
 
     /**
      * C05 Application-owned real-device controller: TCP/Telnet sockets, BLE
@@ -582,6 +613,17 @@ class RuntimeHost internal constructor(
     }
 
     /**
+     * Root-stop gate for C05 Desktop Assist: drain any in-flight card
+     * save/delete before the native Root epoch retires. A controller that
+     * was never constructed is already drained.
+     */
+    internal suspend fun prepareC05DesktopAssistForRootStop(): Boolean {
+        if (!c05DesktopAssistDelegate.isInitialized()) return true
+        desktopAssist.stop()
+        return true
+    }
+
+    /**
      * Root-stop gate for C05 RDP: close every live FreeRDP session, release
      * pressed input and await the App/tool frame/input pump before the native
      * root retires. An unproven drain keeps the generation pending; no RDP
@@ -630,6 +672,7 @@ class RuntimeHost internal constructor(
      */
     internal suspend fun prepareC02ExecutionTargetsForRootStop(): Boolean {
         executionTargets.release()
+        taskContinuity.release()
         return true
     }
 
@@ -839,6 +882,7 @@ class RuntimeHost internal constructor(
         attachments.stop()
         settings.stop()
         webSearch.stop()
+        if (c05DesktopAssistDelegate.isInitialized()) desktopAssist.stop()
         home.stop()
         projects.stop()
         observationJob?.cancel()
@@ -1064,6 +1108,7 @@ class RuntimeHost internal constructor(
                 g02ReadinessAdapter.reset()
                 if (cadViewerDelegate.isInitialized()) cadViewer.onRootStopped()
                 executionTargets.release()
+                taskContinuity.release()
                 if (c05RemoteDelegate.isInitialized()) c05Remote.onRootStopped()
                 if (c05SFTPDelegate.isInitialized()) c05Sftp.onRootStopped()
                 if (c05RdpDelegate.isInitialized()) c05Rdp.onRootStopped()

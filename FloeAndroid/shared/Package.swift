@@ -589,6 +589,14 @@ let package = Package(
             "FloeCore", "FloeModels", "FloeTools", "FloePersistence", "FloeAndroidShellTools",
             .product(name: "Crypto", package: "swift-crypto"),
         ], swiftSettings: strictSettings),
+        // C02 generic tool-result retention/paging. Pure Foundation/Crypto
+        // over the ORIGINAL FloeTools value layer; bytes live under the
+        // existing app-owned artifact root. No database, session, job or
+        // interpreter authority is introduced here.
+        .target(name: "FloeAndroidToolResults", dependencies: [
+            "FloeCore", "FloeModels", "FloeTools",
+            .product(name: "Crypto", package: "swift-crypto"),
+        ], swiftSettings: strictSettings),
         // D1 minimal web.search/web.fetch closure (Main decisions
         // 2026-10-18; runtime-facade-contract D1/RB-6): exactly the five
         // ORIGINAL FloeExecution files — WebFetchTool, WebSearchTool,
@@ -665,6 +673,7 @@ let package = Package(
         .target(name: "FloeAgentRuntime", dependencies: [
             "FloeCore", "FloeModels", "FloeProviders", "FloeTools",
             "FloePersistence", "FloeSecurity", "GRDB",
+            "FloeAndroidToolResults",
             .product(name: "Crypto", package: "swift-crypto"),
         ], swiftSettings: strictSettings),
         // C05 SSH: the real Citadel/NIO transport, host-key trust chain,
@@ -727,6 +736,10 @@ let package = Package(
         .target(name: "FloeAndroidCore", dependencies: [
             "FloeCore", "FloeModels", "FloeProviders", "FloeSecurity",
             "FloeTools", "FloeSkills", "FloePersistence", "FloeAgentRuntime",
+            // C02 retained tool results + generic paging tool. Main binds the
+            // bridge/tool in composition; the runtime resolves the SAME store
+            // actor from the generation's artifact root.
+            "FloeAndroidToolResults",
             // C05 SSH/VNC/RDP transport/domain dependencies (same native .so).
             "FloeSSH",
             "FloeVNC",
@@ -838,9 +851,13 @@ let package = Package(
             "FloeAndroidDataExchange", "FloeNotes", "FloeCore", "ZIPFoundation",
             .product(name: "Crypto", package: "swift-crypto"),
         ], swiftSettings: strictSettings),
+        .testTarget(name: "FloeAndroidToolResultsTests", dependencies: [
+            "FloeAndroidToolResults", "FloeCore", "FloeModels", "FloeTools",
+            .product(name: "Crypto", package: "swift-crypto"),
+        ], swiftSettings: strictSettings),
         .testTarget(name: "FloeAndroidCoreTests", dependencies: [
             "FloeBrowser", "FloeAndroidCore", "FloeSSH", "FloeVNC", "FloeRDP", "FloeAndroidMail",
-            "FloeAndroidDataExchange",
+            "FloeAndroidDataExchange", "FloeAndroidToolResults",
             .product(name: "Crypto", package: "swift-crypto"),
             "FloeCore", "FloeModels", "FloePersistence", "GRDB",
             "FloeAndroidNetwork",

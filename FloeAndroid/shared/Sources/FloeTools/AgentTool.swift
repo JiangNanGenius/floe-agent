@@ -125,6 +125,22 @@ public extension AgentTool {
 /// Bounded execution output; the digest covers the full pre-truncation bytes.
 public struct ToolExecutionOutput: Sendable {
     public var summary: String
+    /// Already-sanitized capture for runtime retention/paging, separate from
+    /// the short display summary. Producers that intentionally bounded their
+    /// own output must set `capturedOutputTruncated`; the runtime never claims
+    /// bytes the producer already dropped are recoverable.
+    public var capturedOutput: String?
+    /// The producer bounded `capturedOutput` (or the summary projection
+    /// shortened it), so the retained text is not the complete execution
+    /// result.
+    public var capturedOutputTruncated: Bool
+    /// The summary passed to this initializer was shortened to fit its
+    /// display/model cap. The full admitted text remains in `capturedOutput`.
+    public var summaryTruncated: Bool
+    /// Hard transient cap for one capture. A producer that returns a larger
+    /// body keeps only this leading prefix and is reported as truncated; the
+    /// runtime never claims the dropped bytes are recoverable.
+    public static let maximumCapturedBytes = 8 * 1024 * 1024
     public var fullOutputSHA256: String
     public var exitStatus: Int32?
     public var artifacts: [ToolArtifactReference]
@@ -146,9 +162,26 @@ public struct ToolExecutionOutput: Sendable {
         artifacts: [ToolArtifactReference] = [],
         outputFiles: [RunOutputFile] = [],
         requiresUserAction: Bool = false,
-        maximumSummaryCharacters: Int = 4096
+        maximumSummaryCharacters: Int = 4096,
+        capturedOutput: String? = nil,
+        capturedOutputTruncated: Bool = false
     ) {
-        self.summary = String(summary.prefix(min(262_144, max(0, maximumSummaryCharacters))))
+        let preview = String(summary.prefix(min(262_144, max(0, maximumSummaryCharacters))))
+        let shortened = preview != summary
+        self.summary = preview
+        self.summaryTruncated = shortened
+        // The summary is a bounded UI projection, not the authoritative
+        // model result. Keep the producer's admitted text transiently when
+        // this projection shortens it; the runtime redacts and retains it
+        // before request budgeting. Explicit captures remain authoritative.
+        var capture = capturedOutput ?? (shortened ? summary : nil)
+        var captureTruncated = capturedOutputTruncated
+        if let value = capture, value.utf8.count > Self.maximumCapturedBytes {
+            capture = Self.utf8Prefix(value, maxBytes: Self.maximumCapturedBytes)
+            captureTruncated = true
+        }
+        self.capturedOutput = capture
+        self.capturedOutputTruncated = captureTruncated
         self.fullOutputSHA256 = fullOutputSHA256
         self.exitStatus = exitStatus
         self.artifacts = artifacts
@@ -164,7 +197,9 @@ public struct ToolExecutionOutput: Sendable {
         artifacts: [ToolArtifactReference] = [],
         outputFiles: [RunOutputFile] = [],
         requiresUserAction: Bool = false,
-        maximumSummaryCharacters: Int = 4096
+        maximumSummaryCharacters: Int = 4096,
+        capturedOutput: String? = nil,
+        capturedOutputTruncated: Bool = false
     ) {
         self.init(
             summary: summary,
@@ -173,7 +208,22 @@ public struct ToolExecutionOutput: Sendable {
             artifacts: artifacts,
             outputFiles: outputFiles,
             requiresUserAction: requiresUserAction,
-            maximumSummaryCharacters: maximumSummaryCharacters
+            maximumSummaryCharacters: maximumSummaryCharacters,
+            capturedOutput: capturedOutput,
+            capturedOutputTruncated: capturedOutputTruncated
         )
+    }
+
+    /// Whole-scalar UTF-8 prefix. Kept local because FloeTools cannot depend
+    /// on the Android result-paging module (which depends on FloeTools).
+    private static func utf8Prefix(_ text: String, maxBytes: Int) -> String {
+        guard maxBytes > 0 else { return "" }
+        guard text.utf8.count > maxBytes else { return text }
+        var bytes = Array(text.utf8.prefix(maxBytes))
+        while !bytes.isEmpty {
+            if let value = String(bytes: bytes, encoding: .utf8) { return value }
+            bytes.removeLast()
+        }
+        return ""
     }
 }
