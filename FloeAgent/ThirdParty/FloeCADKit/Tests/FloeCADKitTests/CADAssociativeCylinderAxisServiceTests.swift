@@ -95,10 +95,18 @@ final class CADAssociativeCylinderAxisServiceTests: XCTestCase {
         try XCTUnwrap(f.document.session.document.axes.first { $0.id == id })
     }
 
-    private func cylinderAxisArgs(_ f: Fixture, face: [String: Any]) throws -> [String: Any] {
-        ["kind": "cylinder", "body_id": f.body.raw.uuidString,
-         "face_index": try XCTUnwrap(face["index"]),
-         "query_token": try XCTUnwrap(face["query_token"])]
+    /// Creation args, or update args when `axis` is supplied.
+    ///
+    /// `datum.axis.update` identifies the row it edits with `axis_id`; a
+    /// source triple alone is a create, not an update of an existing axis.
+    private func cylinderAxisArgs(
+        _ f: Fixture, face: [String: Any], axis: ConstructionAxisID? = nil
+    ) throws -> [String: Any] {
+        var args: [String: Any] = ["kind": "cylinder", "body_id": f.body.raw.uuidString,
+                                   "face_index": try XCTUnwrap(face["index"]),
+                                   "query_token": try XCTUnwrap(face["query_token"])]
+        if let axis { args["axis_id"] = axis.raw.uuidString }
+        return args
     }
 
     private func distanceToLine(_ point: SIMD3<Double>, origin: SIMD3<Double>,
@@ -231,7 +239,7 @@ final class CADAssociativeCylinderAxisServiceTests: XCTestCase {
         // Re-selecting the SAME unchanged source is the service's explicit
         // no_change, not a silent rewrite.
         let refresh = try cylindricalFace(f)
-        let noChange = call(f, "datum.axis.update", try cylinderAxisArgs(f, face: refresh))
+        let noChange = call(f, "datum.axis.update", try cylinderAxisArgs(f, face: refresh, axis: id))
         XCTAssertEqual(noChange["ok"] as? Bool, false, "\(noChange)")
         XCTAssertEqual(noChange["error"] as? String, "no_change")
 
@@ -243,7 +251,7 @@ final class CADAssociativeCylinderAxisServiceTests: XCTestCase {
         ])
         XCTAssertEqual(resized["ok"] as? Bool, true, "\(resized)")
         let resizedFace = try cylindricalFace(f)
-        let reselect = call(f, "datum.axis.update", try cylinderAxisArgs(f, face: resizedFace))
+        let reselect = call(f, "datum.axis.update", try cylinderAxisArgs(f, face: resizedFace, axis: id))
         XCTAssertEqual(reselect["ok"] as? Bool, true, "\(reselect)")
         guard case let .cylinder(definition)? = try axis(f, id).definition else {
             return XCTFail("reselect must keep the cylinder kind")
@@ -256,7 +264,7 @@ final class CADAssociativeCylinderAxisServiceTests: XCTestCase {
         // A planar cap is NOT a cylinder source, and the refusal must not
         // silently create a planar-normal axis.
         let cap = try planarFace(f)
-        let refused = call(f, "datum.axis.update", try cylinderAxisArgs(f, face: cap))
+        let refused = call(f, "datum.axis.update", try cylinderAxisArgs(f, face: cap, axis: id))
         XCTAssertEqual(refused["ok"] as? Bool, false, "\(refused)")
         XCTAssertEqual(refused["error"] as? String, "named_cylinder_source_required")
         guard case .cylinder? = try axis(f, id).definition else {
@@ -272,7 +280,7 @@ final class CADAssociativeCylinderAxisServiceTests: XCTestCase {
         _ = call(f, "datum.axis.update", [
             "axis_id": id.raw.uuidString, "size": 42,
         ])
-        let stale = call(f, "datum.axis.update", try cylinderAxisArgs(f, face: face))
+        let stale = call(f, "datum.axis.update", try cylinderAxisArgs(f, face: face, axis: id))
         XCTAssertEqual(stale["ok"] as? Bool, false, "\(stale)")
         XCTAssertEqual(stale["error"] as? String, "stale_query")
     }

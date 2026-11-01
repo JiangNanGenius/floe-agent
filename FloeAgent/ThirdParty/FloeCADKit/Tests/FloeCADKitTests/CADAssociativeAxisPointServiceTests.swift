@@ -220,6 +220,10 @@ final class CADAssociativeAxisPointServiceTests: XCTestCase {
         XCTAssertEqual(row["update_action"] as? String, "datum.axis.update")
         XCTAssertEqual(row["delete_action"] as? String, "datum.axis.delete")
         XCTAssertEqual(row["value"] as? Double, 0)
+        // Creation stored the supplied offset as the exact formula "0"; the
+        // sheet's expected_offset CAS fences that stored text, not "absent".
+        let storedOffset = try XCTUnwrap(row["formula"] as? String)
+        XCTAssertEqual(storedOffset, "0")
 
         let pattern = try addCircularPattern(f, axisID: id)
         f.document.session.rebuildFrom(f.source.id)
@@ -235,7 +239,7 @@ final class CADAssociativeAxisPointServiceTests: XCTestCase {
         XCTAssertGreaterThan(abs(baseOrigin.x), 1e-6)
         let before = copies.map(\.transform.translation)
         let edited = call(f, "datum.axis.update", [
-            "axis_id": id.raw.uuidString, "offset": "20", "expected_offset": "",
+            "axis_id": id.raw.uuidString, "offset": "20", "expected_offset": storedOffset,
         ])
         XCTAssertEqual(edited["ok"] as? Bool, true, "\(edited)")
         XCTAssertEqual(try axis(f, id).origin.x, baseOrigin.x + 20, accuracy: 1e-6)
@@ -339,12 +343,23 @@ final class CADAssociativeAxisPointServiceTests: XCTestCase {
         XCTAssertEqual(simd_distance(formulaOrigin, baseOrigin), 4, accuracy: 1e-6)
 
         // Reselect the same edge kind with a fresh generation token (plus a
-        // real display-length change so the update is not a no-op).
+        // real display-length change so the update is not a no-op). The update
+        // must name the edited axis; a source triple alone is a create. It also
+        // omits the offset on purpose: a source reselect preserves the current
+        // offset formula (the same rule M07 plane reselect already follows).
         var reselectArgs = try edgeAxisArgs(f, offset: "axisGap * 2")
+        reselectArgs["axis_id"] = id.raw.uuidString
+        reselectArgs["expected_offset"] = "axisGap * 2"
         reselectArgs["size"] = 55
+        reselectArgs.removeValue(forKey: "offset")
         let reselect = call(f, "datum.axis.update", reselectArgs)
         XCTAssertEqual(reselect["ok"] as? Bool, true, "\(reselect)")
         XCTAssertEqual(try axis(f, id).length, 55, accuracy: 1e-9)
+        guard case let .edge(afterReselect)? = try axis(f, id).definition else {
+            return XCTFail("a reselect must keep the edge kind")
+        }
+        XCTAssertEqual(afterReselect.offset.formula, "axisGap * 2")
+        XCTAssertEqual(afterReselect.offset.value, 4, accuracy: 1e-12)
     }
 
     // MARK: - Two-plane and two-point axes
@@ -399,11 +414,14 @@ final class CADAssociativeAxisPointServiceTests: XCTestCase {
         XCTAssertEqual(duplicate["error"] as? String, "invalid_definition")
 
         // Two PARALLEL planes (top y = 10 and y = 15) have no unique line and
-        // must refuse instead of inventing one.
+        // must refuse instead of inventing one. The first two plane creates
+        // advanced the generation, so the original `top` token is stale:
+        // re-query the same face for this new named-source action.
+        let parallelTop = try topFace(f)
         let parallelPlane = call(f, "datum.offsetPlane.create", [
             "body_id": f.body.raw.uuidString,
-            "face_index": try XCTUnwrap(top["index"]),
-            "query_token": try XCTUnwrap(top["query_token"]),
+            "face_index": try XCTUnwrap(parallelTop["index"]),
+            "query_token": try XCTUnwrap(parallelTop["query_token"]),
             "expression": "5",
         ])
         XCTAssertEqual(parallelPlane["ok"] as? Bool, true, "\(parallelPlane)")
@@ -496,18 +514,24 @@ final class CADAssociativeAxisPointServiceTests: XCTestCase {
         XCTAssertEqual(simd_distance(try point(f, onEdge).position, edgeMidpointPosition), 5,
                        accuracy: 1e-6)
 
-        // Axis point: 7 mm along the face axis.
-        let faceAxis = try axisID(call(f, "datum.axis.create", try faceAxisArgs(f, face: top)))
+        // Axis point: 7 mm along the face axis. Each earlier point CREATE
+        // advanced the document generation, so ask for a NEW face row (and its
+        // current query_token) immediately before this named-source action.
+        let axisFace = try topFace(f)
+        let faceAxis = try axisID(call(f, "datum.axis.create", try faceAxisArgs(f, face: axisFace)))
         let onAxis = try pointID(call(f, "datum.point.create", [
             "kind": "axisPoint", "axis_id": faceAxis.raw.uuidString, "offset": "7",
         ]))
         XCTAssertEqual(try point(f, onAxis).position.y, 17, accuracy: 1e-6)
 
-        // Axis × plane: the same axis crossing the bottom datum plane.
+        // Axis × plane: the same axis crossing the bottom datum plane. The
+        // axis create above advanced the generation again; re-query the face
+        // for this second independent named-source action.
+        let planeFace = try topFace(f)
         let plane = call(f, "datum.offsetPlane.create", [
             "body_id": f.body.raw.uuidString,
-            "face_index": try XCTUnwrap(top["index"]),
-            "query_token": try XCTUnwrap(top["query_token"]),
+            "face_index": try XCTUnwrap(planeFace["index"]),
+            "query_token": try XCTUnwrap(planeFace["query_token"]),
             "expression": "-10",
         ])
         XCTAssertEqual(plane["ok"] as? Bool, true, "\(plane)")

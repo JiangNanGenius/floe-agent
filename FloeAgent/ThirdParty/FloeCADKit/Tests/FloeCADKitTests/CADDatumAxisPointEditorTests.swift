@@ -89,17 +89,25 @@ final class CADDatumAxisPointEditorTests: XCTestCase {
         // face axis starts at the CURRENT face centroid, so the offset moves
         // the line from THAT origin (it is not the world origin).
         let baseOrigin = axis.origin
+        let baseLength = axis.length
         XCTAssertTrue(model.updateDatumAxisOffset(axis.id, offset: "15", expectedOffset: ""))
         XCTAssertEqual(try onlyAxis(f.document).origin.x, baseOrigin.x + 15, accuracy: 1e-6)
         XCTAssertTrue(model.updateDatumAxisLength(axis.id, length: 42))
         XCTAssertEqual(try onlyAxis(f.document).length, 42, accuracy: 1e-9)
         XCTAssertEqual(model.datumAxisOffsetText(axis.id), "15")
 
-        // Undo restores the axis frame; redo re-applies it.
+        // Offset and length are two ordinary sheet edits, so each is its own
+        // undo step: undo the length first (the offset stays), then the offset;
+        // redo re-applies them in that order.
+        f.document.session.undo()
+        XCTAssertEqual(try onlyAxis(f.document).length, baseLength, accuracy: 1e-9)
+        XCTAssertEqual(try onlyAxis(f.document).origin.x, baseOrigin.x + 15, accuracy: 1e-6)
         f.document.session.undo()
         XCTAssertEqual(try onlyAxis(f.document).origin.x, baseOrigin.x, accuracy: 1e-6)
         f.document.session.redo()
         XCTAssertEqual(try onlyAxis(f.document).origin.x, baseOrigin.x + 15, accuracy: 1e-6)
+        f.document.session.redo()
+        XCTAssertEqual(try onlyAxis(f.document).length, 42, accuracy: 1e-9)
     }
 
     func testSharedPickerReselectsTheAxisSource() async throws {

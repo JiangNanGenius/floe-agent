@@ -6863,7 +6863,11 @@ final class EditorViewModel {
                 transform: Self.composedPatternTransform(transform, base: body.transform),
                 primitive: body.primitive,
                 render: body.render,
-                revision: document.nextRevision()
+                // A copy owned by the pattern node must use the LIVE counter:
+                // the local `document` is a naming scratch copy whose counter
+                // is discarded, and a later replay would mint the same
+                // revision and skip replacing a moved copy.
+                revision: session.mintBodyRevision()
             )
             copy.euclid = body.euclid
             // Same reasoning as `FeatureGraph.evalPattern`: a copy is the same

@@ -295,6 +295,11 @@ final class CADModelContext {
         case let record as PersistedAxis:
             guard record.project === project else { return }
             if !project.axes.contains(where: { $0 === record }) { project.axes.append(record) }
+        case let record as PersistedDatumPoint:
+            guard record.project === project else { return }
+            if !project.datumPoints.contains(where: { $0 === record }) {
+                project.datumPoints.append(record)
+            }
         case let record as PersistedImage:
             guard record.project === project else { return }
             if !project.images.contains(where: { $0 === record }) { project.images.append(record) }
@@ -322,6 +327,8 @@ final class CADModelContext {
             project.planes.removeAll { $0 === record }
         case let record as PersistedAxis:
             project.axes.removeAll { $0 === record }
+        case let record as PersistedDatumPoint:
+            project.datumPoints.removeAll { $0 === record }
         case let record as PersistedImage:
             project.images.removeAll { $0 === record }
         case let record as PersistedSymbol:

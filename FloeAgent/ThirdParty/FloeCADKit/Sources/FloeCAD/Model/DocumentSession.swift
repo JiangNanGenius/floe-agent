@@ -754,6 +754,18 @@ final class DocumentSession {
         performRebuild(editedGraph, leadingCommands: appends + extra, title: title)
     }
 
+    /// Mint a body revision from the LIVE document's monotonic counter.
+    ///
+    /// A tool that creates a node-owned body outside `performRebuild` must take
+    /// its revision here. Minting from a throwaway `DesignDocument` copy leaves
+    /// the session counter unchanged, so the next replay can mint the SAME
+    /// revision for that body; `RebuildPlanner` then treats a genuinely changed
+    /// body as unchanged and skips its `ReplaceBodyCommand` (the live pattern
+    /// copies stopped following their axis exactly this way).
+    func mintBodyRevision() -> UInt64 {
+        document.nextRevision()
+    }
+
     /// Suppress / un-suppress a node and rebuild everything downstream in one
     /// undo step (History panel eye toggle). No-op if the flag is unchanged.
     func setSuppressed(_ id: FeatureID, _ value: Bool) {

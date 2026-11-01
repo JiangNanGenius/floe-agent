@@ -1155,9 +1155,27 @@ public final class CADDatumService {
                               action: "datum.axis.update",
                               extra: ["axis_id": axis.id.raw.uuidString])
             }
-            let definition = try axisDefinition(args)
+            // A fresh-source reselect keeps the axis's own kind. The source
+            // triple alone cannot tell a planar face from a cylindrical one,
+            // and the axis already owns that semantic; requiring the caller to
+            // restate it made a valid "reselect the other face" fail as
+            // missing_kind. An explicitly supplied kind still goes through the
+            // kind_mismatch guard below, so this never switches the definition.
+            var reselectArgs = args
+            if reselectArgs["kind"] == nil {
+                reselectArgs["kind"] = current.kind.rawValue
+            }
+            var definition = try axisDefinition(reselectArgs)
             guard definition.kind == current.kind else {
                 return fail("kind_mismatch", "Reselect the source with the axis's own kind (\(current.kind.rawValue)).")
+            }
+            // Reselecting the SOURCE must not reset an independently authored
+            // offset (value and formula). This is the same contract the M07
+            // plane update uses; only an explicit offset argument replaces it.
+            if args["offset"] == nil,
+               let slot = current.expressionSlots.first(where: { $0.name == "offset" }),
+               let preserved = definition.settingExpression(named: "offset", to: slot.expr) {
+                definition = preserved
             }
             var commands: [DocumentCommand] = []
             if definition != current {
@@ -1377,10 +1395,23 @@ public final class CADDatumService {
             let reselect = ["kind", "body_id", "face_index", "edge_index", "query_token",
                             "points", "axis_id", "plane_id"].contains { args[$0] != nil }
             guard reselect else { return fail("no_change", "The point already has those values.") }
-            let definition = try pointDefinition(args)
+            // Same kind-preserving reselect as axes: the point already owns its
+            // kind, and an explicit contradicting kind still refuses.
+            var reselectArgs = args
+            if reselectArgs["kind"] == nil {
+                reselectArgs["kind"] = current.kind.rawValue
+            }
+            var definition = try pointDefinition(reselectArgs)
             guard definition.kind == current.kind else {
                 return fail("kind_mismatch",
                             "Reselect the source with the point's own kind (\(current.kind.rawValue)).")
+            }
+            // A source reselect keeps an authored offset; only an explicit
+            // offset argument replaces it (the axis and M07 rules are the same).
+            if args["offset"] == nil,
+               let slot = current.expressionSlots.first(where: { $0.name == "offset" }),
+               let preserved = definition.settingExpression(named: "offset", to: slot.expr) {
+                definition = preserved
             }
             guard definition != current else { return fail("no_change", "The point already has that source.") }
             return commit([EditDatumPointDefinitionCommand(
