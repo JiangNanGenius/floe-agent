@@ -84,25 +84,64 @@ static BOOL BRCallBool2(id target, NSString *selectorName, id first, id second) 
     return value;
 }
 
-static id BRAllocAndInit(id target, NSString *selectorName,
-                         void (^configure)(NSInvocation *invocation)) {
-    if (!target) { return nil; }
-    SEL selector = NSSelectorFromString(selectorName);
-    if (![target respondsToSelector:selector]) { return nil; }
-    NSMethodSignature *signature = [target methodSignatureForSelector:selector];
-    if (!signature) { return nil; }
-    NSInvocation *invocation = [NSInvocation invocationWithMethodSignature:signature];
-    invocation.target = target;
-    invocation.selector = selector;
-    if (configure) { configure(invocation); }
-    @try {
-        [invocation invoke];
-    } @catch (__unused NSException *exception) {
-        return nil;
+// NSInvocation does not tell ARC that an initializer consumes its receiver
+// and returns a +1 object. Pairing a strong alloc local with bridge_transfer of
+// that untracked result over-releases a self-returning initializer. These
+// checked IMP types carry both parts of the actual initializer ownership ABI.
+typedef id __attribute__((ns_returns_retained)) (*BRInit0IMP)(id __attribute__((ns_consumed)), SEL);
+typedef id __attribute__((ns_returns_retained)) (*BRInitObjectIMP)(id __attribute__((ns_consumed)), SEL, id);
+typedef id __attribute__((ns_returns_retained)) (*BRInitPointIMP)(id __attribute__((ns_consumed)), SEL, CGPoint, double);
+
+static BOOL BRInitSignature(NSMethodSignature *signature, NSArray<NSString *> *arguments) {
+    if (!signature || signature.numberOfArguments != arguments.count + 2
+        || signature.methodReturnType[0] != '@' || signature.methodReturnLength != sizeof(id)) { return NO; }
+    for (NSUInteger index = 0; index < arguments.count; index++) {
+        if (strcmp([signature getArgumentTypeAtIndex:index + 2], arguments[index].UTF8String) != 0) { return NO; }
     }
-    void *raw = NULL;
-    [invocation getReturnValue:&raw];
-    return (__bridge_transfer id)raw;
+    return YES;
+}
+
+static id BRInitialize0(Class cls, NSString *name) {
+    // Keep the strong allocation outside the try scope: its cleanup must also
+    // run on the caught-exception path without relying on ARC EH cleanups.
+    id allocated = nil;
+    @try {
+        allocated = [cls alloc];
+        SEL selector = NSSelectorFromString(name);
+        if (![allocated respondsToSelector:selector]
+            || !BRInitSignature([allocated methodSignatureForSelector:selector], @[])) { return nil; }
+        BRInit0IMP initialize = (BRInit0IMP)[allocated methodForSelector:selector];
+        return initialize(allocated, selector);
+    } @catch (__unused NSException *exception) { return nil; }
+}
+
+static id BRInitializeObject(Class cls, NSString *name, id argument) {
+    // Keep the strong allocation outside the try scope: its cleanup must also
+    // run on the caught-exception path without relying on ARC EH cleanups.
+    id allocated = nil;
+    @try {
+        allocated = [cls alloc];
+        SEL selector = NSSelectorFromString(name);
+        if (![allocated respondsToSelector:selector]
+            || !BRInitSignature([allocated methodSignatureForSelector:selector], @[@"@"])) { return nil; }
+        BRInitObjectIMP initialize = (BRInitObjectIMP)[allocated methodForSelector:selector];
+        return initialize(allocated, selector, argument);
+    } @catch (__unused NSException *exception) { return nil; }
+}
+
+static id BRInitializePoint(Class cls, NSString *name, CGPoint point, double offset) {
+    // Keep the strong allocation outside the try scope: its cleanup must also
+    // run on the caught-exception path without relying on ARC EH cleanups.
+    id allocated = nil;
+    @try {
+        allocated = [cls alloc];
+        SEL selector = NSSelectorFromString(name);
+        if (![allocated respondsToSelector:selector]
+            || !BRInitSignature([allocated methodSignatureForSelector:selector],
+                                @[@(@encode(CGPoint)), @(@encode(double))])) { return nil; }
+        BRInitPointIMP initialize = (BRInitPointIMP)[allocated methodForSelector:selector];
+        return initialize(allocated, selector, point, offset);
+    } @catch (__unused NSException *exception) { return nil; }
 }
 
 #pragma mark - Redacted typing
@@ -137,8 +176,7 @@ BOOL BRRedactedTypingAvailable(void) {
 BOOL BRTypeTextRedacted(NSString *text, NSError **error) {
     if (error) { *error = nil; }
     if (!BRRedactedTypingAvailable()) { return NO; }
-    id allocedPath = [BRPointerPathClass() alloc];
-    id path = BRAllocAndInit(allocedPath, @"initForTextInput", nil);
+    id path = BRInitialize0(BRPointerPathClass(), @"initForTextInput");
     if (!path) { return NO; }
     SEL typeSelector = NSSelectorFromString(@"typeText:atOffset:typingSpeed:shouldRedact:");
     NSMethodSignature *typeSignature = [path methodSignatureForSelector:typeSelector];
@@ -166,23 +204,7 @@ BOOL BRTypeTextRedacted(NSString *text, NSError **error) {
         return NO;
     }
 
-    NSString *name = @"FloeType";
-    id allocedRecord = [BREventRecordClass() alloc];
-    SEL recordInit = NSSelectorFromString(@"initWithName:");
-    NSMethodSignature *recordSignature = [allocedRecord methodSignatureForSelector:recordInit];
-    if (!recordSignature) { return NO; }
-    NSInvocation *recordInvocation = [NSInvocation invocationWithMethodSignature:recordSignature];
-    recordInvocation.target = allocedRecord;
-    recordInvocation.selector = recordInit;
-    [recordInvocation setArgument:&name atIndex:2];
-    @try {
-        [recordInvocation invoke];
-    } @catch (__unused NSException *exception) {
-        return NO;
-    }
-    void *rawRecord = NULL;
-    [recordInvocation getReturnValue:&rawRecord];
-    id record = (__bridge_transfer id)rawRecord;
+    id record = BRInitializeObject(BREventRecordClass(), @"initWithName:", @"FloeType");
     if (!record) { return NO; }
 
     SEL addSelector = NSSelectorFromString(@"addPointerEventPath:");
@@ -279,24 +301,7 @@ BOOL BRContinuousDrag(NSArray<NSValue *> *points, NSTimeInterval duration, NSErr
 
     CGPoint first = CGPointZero;
     [points.firstObject getValue:&first];
-    id allocedPath = [BRPointerPathClass() alloc];
-    SEL initSelector = NSSelectorFromString(@"initForTouchAtPoint:offset:");
-    NSMethodSignature *initSignature = [allocedPath methodSignatureForSelector:initSelector];
-    if (!initSignature) { return NO; }
-    NSInvocation *initInvocation = [NSInvocation invocationWithMethodSignature:initSignature];
-    initInvocation.target = allocedPath;
-    initInvocation.selector = initSelector;
-    double zero = 0;
-    [initInvocation setArgument:&first atIndex:2];
-    [initInvocation setArgument:&zero atIndex:3];
-    @try {
-        [initInvocation invoke];
-    } @catch (__unused NSException *exception) {
-        return NO;
-    }
-    void *rawPath = NULL;
-    [initInvocation getReturnValue:&rawPath];
-    id path = (__bridge_transfer id)rawPath;
+    id path = BRInitializePoint(BRPointerPathClass(), @"initForTouchAtPoint:offset:", first, 0);
     if (!path) { return NO; }
 
     if (!BRInvokeDouble(path, @"pressDownAtOffset:", 0)) { return NO; }
@@ -309,23 +314,7 @@ BOOL BRContinuousDrag(NSArray<NSValue *> *points, NSTimeInterval duration, NSErr
     }
     if (!BRInvokeDouble(path, @"liftUpAtOffset:", duration)) { return NO; }
 
-    id allocedRecord = [BREventRecordClass() alloc];
-    NSString *name = @"FloeDrag";
-    SEL recordInit = NSSelectorFromString(@"initWithName:");
-    NSMethodSignature *recordSignature = [allocedRecord methodSignatureForSelector:recordInit];
-    if (!recordSignature) { return NO; }
-    NSInvocation *recordInvocation = [NSInvocation invocationWithMethodSignature:recordSignature];
-    recordInvocation.target = allocedRecord;
-    recordInvocation.selector = recordInit;
-    [recordInvocation setArgument:&name atIndex:2];
-    @try {
-        [recordInvocation invoke];
-    } @catch (__unused NSException *exception) {
-        return NO;
-    }
-    void *rawRecord = NULL;
-    [recordInvocation getReturnValue:&rawRecord];
-    id record = (__bridge_transfer id)rawRecord;
+    id record = BRInitializeObject(BREventRecordClass(), @"initWithName:", @"FloeDrag");
     if (!record) { return NO; }
 
     SEL addSelector = NSSelectorFromString(@"addPointerEventPath:");
@@ -474,23 +463,7 @@ NSInteger BRAppStateForBundleIdentifier(NSString *bundleIdentifier) {
     if (bundleIdentifier.length == 0) { return 0; }
     Class appClass = NSClassFromString(@"XCUIApplication");
     if (!appClass) { return 0; }
-    id alloced = [appClass alloc];
-    SEL selector = NSSelectorFromString(@"initWithBundleIdentifier:");
-    if (![alloced respondsToSelector:selector]) { return 0; }
-    NSMethodSignature *signature = [alloced methodSignatureForSelector:selector];
-    NSInvocation *invocation = [NSInvocation invocationWithMethodSignature:signature];
-    invocation.target = alloced;
-    invocation.selector = selector;
-    NSString *argument = bundleIdentifier;
-    [invocation setArgument:&argument atIndex:2];
-    @try {
-        [invocation invoke];
-    } @catch (__unused NSException *exception) {
-        return 0;
-    }
-    void *rawApp = NULL;
-    [invocation getReturnValue:&rawApp];
-    id app = (__bridge_transfer id)rawApp;
+    id app = BRInitializeObject(appClass, @"initWithBundleIdentifier:", bundleIdentifier);
     if (!app) { return 0; }
     return BRCallInteger(app, @"state");
 }
