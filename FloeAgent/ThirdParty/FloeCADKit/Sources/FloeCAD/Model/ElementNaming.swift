@@ -23,8 +23,10 @@ nonisolated struct ElementName: Codable, Hashable, Sendable {
         /// A primitive's face — for primitives the role IS the identity
         /// (`boxFace(.top)`, `cylinderCap(top:)`, …).
         case primitiveFace(FaceRole)
-        /// An extrude wall generated from one sketch entity. `occurrence`
-        /// separates multiple walls owned by the same entity (a rect entity
+        /// The author-owned boundary that generates a wall. New physical
+        /// faces qualify this root through operationFace; old documents used
+        /// it directly, including the unsafe first sibling of a sweep.
+        /// `occurrence` separates boundaries owned by the same entity (a rect entity
         /// owns four), counted in wire order from the profile's own
         /// boundary arrays — deterministic per profile shape.
         case profileWall(entity: UUID, occurrence: Int)
@@ -199,12 +201,10 @@ nonisolated enum ElementNaming {
             names[face] = name
         }
 
-        // One wire edge can generate SEVERAL result faces — a sweep makes
-        // one wall per spine segment from the same profile edge. Stamping
-        // them all with the wall name would duplicate it, so the FIRST face
-        // (lowest result index — deterministic) inherits the wall identity
-        // and its siblings mint as opFace children of it.
-        var wallSiblings: [ElementName: Int] = [:]
+        // A boundary may generate several physical walls. No sibling owns
+        // the boundary root merely because it has the lowest native index.
+        // Deduplicate history rows first; repeated ancestry is not a split.
+        var wallFaces: [ElementName: Set<Int>] = [:]
 
         for row in ancestry.rows.sorted(by: {
             ($0.inputOrdinal, $0.inputSubshape, $0.resultFace)
@@ -228,16 +228,15 @@ nonisolated enum ElementNaming {
                     creator: creator,
                     source: .profileWall(entity: identity.entity,
                                          occurrence: identity.occurrence))
-                if let sibling = wallSiblings[wall] {
-                    claim(row.resultFace, ElementName(
-                        creator: creator,
-                        source: .opFace(operation: creator, parents: [wall],
-                                        index: sibling)))
-                    wallSiblings[wall] = sibling + 1
-                } else {
-                    claim(row.resultFace, wall)
-                    wallSiblings[wall] = 0
-                }
+                wallFaces[wall, default: []].insert(row.resultFace)
+            }
+        }
+        for (wall, faces) in wallFaces {
+            for (index, face) in faces.sorted().enumerated() {
+                let source: ElementName.Source = faces.count == 1
+                    ? .operationFace(version: 1, operation: creator, parents: [wall], neighbors: [])
+                    : .opFace(operation: creator, parents: [wall], index: index)
+                claim(face, ElementName(creator: creator, source: source))
             }
         }
         for face in ambiguous { names.removeValue(forKey: face) }

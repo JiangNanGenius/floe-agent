@@ -1,5 +1,7 @@
 import Foundation
 import XCTest
+import Euclid
+import OCCTShim
 import simd
 @testable import FloeCAD
 
@@ -391,5 +393,78 @@ final class CADDeleteFaceHistoryTests: XCTestCase {
         ]), inputNames: [input])
         XCTAssertTrue(try XCTUnwrap(unknown[1]).requiresExactSignature,
                       "A sole output with no named ancestor is still not an identity")
+    }
+
+    func testProfileBoundaryNeverGivesItsFirstGeneratedSiblingAQualifiedFaceName() throws {
+        let sketch = Sketch(plane: .ground, entities: [.rect(id: UUID(), min: SIMD2(-2, -2), max: SIMD2(2, 2))])
+        let profile = try XCTUnwrap(ProfileDetector.detectProfiles(in: sketch).first)
+        let creator = FeatureID()
+        var rows = (1...4).map {
+            ShapeAncestry.Row(resultFace: $0, inputOrdinal: 0, inputKind: .edge,
+                             inputSubshape: $0, relation: .generated)
+        }
+        rows += [rows[1], .init(resultFace: 5, inputOrdinal: 0, inputKind: .edge, inputSubshape: 1, relation: .generated)]
+        let initial = ElementNaming.extrudeNames(creator: creator, ancestry: ShapeAncestry(rows: rows),
+                                                outer: profile, holes: [])
+        XCTAssertTrue(try XCTUnwrap(initial[1]).requiresExactSignature)
+        XCTAssertTrue(try XCTUnwrap(initial[5]).requiresExactSignature)
+        XCTAssertFalse(try XCTUnwrap(initial[2]).requiresExactSignature,
+                       "A repeated history row is not another physical wall")
+        XCTAssertFalse(initial.values.contains { if case .profileWall = $0.source { return true }; return false })
+        let changed = ElementNaming.extrudeNames(creator: creator,
+            ancestry: ShapeAncestry(rows: rows.filter { $0.resultFace != 1 }), outer: profile, holes: [])
+        XCTAssertFalse(try XCTUnwrap(changed[5]).requiresExactSignature)
+        XCTAssertNotEqual(initial[1], changed[5], "Deleting the first sibling must not hand its identity to the last one")
+        let reversed = ElementNaming.extrudeNames(creator: creator,
+            ancestry: ShapeAncestry(rows: Array(rows.reversed())), outer: profile, holes: [])
+        XCTAssertEqual(initial, reversed)
+    }
+
+    func testRealBentSweepCannotTransferARemovedSegmentWallToTheRemainingSegment() throws {
+        let sketch = Sketch(plane: .ground, entities: [.rect(id: UUID(), min: SIMD2(-2, -2), max: SIMD2(2, 2))])
+        let profile = try XCTUnwrap(ProfileDetector.detectProfiles(in: sketch).first)
+        let creator = FeatureID(), bodyID = BodyID()
+        let spine = [SIMD3<Double>(0, 0, 0), SIMD3(0, 12, 0), SIMD3(12, 24, 0)]
+        let history = OCCTShapeHistory()
+        let original = try XCTUnwrap(OCCTKernel.sweepSolid(outer: profile, holes: [], plane: .ground,
+                                                         spine: spine, helix: nil, history: history))
+        XCTAssertTrue(OCCTKernel.healthReport(for: original).isValid)
+        let ancestry = ShapeAncestry(history)
+        let names = ElementNaming.extrudeNames(creator: creator, ancestry: ancestry, outer: profile, holes: [])
+        let families = Dictionary(grouping: ancestry.rows.filter { $0.inputKind == .edge && $0.relation == .generated },
+                                  by: { $0.inputSubshape }).mapValues { Set($0.map(\.resultFace)) }
+        let family = try XCTUnwrap(families.values.first { $0.count > 1 },
+                                  "The real bent pipe must generate multiple walls from one profile boundary")
+        for index in family { XCTAssertTrue(try XCTUnwrap(names[index]).requiresExactSignature) }
+        let originalFaces = OCCTKernel.faceInfo(original)
+        let removed = try XCTUnwrap(originalFaces.filter { family.contains($0.index) }.min { $0.centroid.y < $1.centroid.y })
+        let name = try XCTUnwrap(names[removed.index])
+        let reference = FaceRef(body: BodyRef(producer: creator, bodyID: bodyID), creator: creator,
+            role: .derived(index: removed.index), signature: try XCTUnwrap(removed.signature), elementName: name)
+        func body(_ brep: BRepHandle) throws -> Body {
+            var value = Body(id: bodyID, name: "Actual swept wall", euclidMesh: Euclid.Mesh([]), revision: 1)
+            XCTAssertTrue(value.adoptBRep(brep)); return value
+        }
+        let before = try body(original)
+        let beforeTable = ElementNaming.attach(names, to: SignatureNaming().faceTable(for: before, createdBy: creator, scheme: .generic),
+                                               channel: OCCTKernel.renderMeshFaceChannel(from: original))
+        XCTAssertNotNil(SignatureNaming().resolve(reference, in: before, table: beforeTable))
+        var moved = SketchPlane.ground
+        moved.origin = spine[1]
+        let nextHistory = OCCTShapeHistory()
+        let next = try XCTUnwrap(OCCTKernel.sweepSolid(outer: profile, holes: [], plane: moved,
+            spine: Array(spine.dropFirst()), helix: nil, history: nextHistory))
+        XCTAssertTrue(OCCTKernel.healthReport(for: next).isValid)
+        let nextNames = ElementNaming.extrudeNames(creator: creator, ancestry: ShapeAncestry(nextHistory), outer: profile, holes: [])
+        XCTAssertFalse(nextNames.values.contains(name))
+        XCTAssertFalse(OCCTKernel.faceInfo(next).contains { simd_distance($0.centroid, removed.centroid) < 1e-5 })
+        let after = try body(next)
+        let afterTable = ElementNaming.attach(nextNames, to: SignatureNaming().faceTable(for: after, createdBy: creator, scheme: .generic),
+                                              channel: OCCTKernel.renderMeshFaceChannel(from: next))
+        XCTAssertNil(SignatureNaming().resolve(reference, in: after, table: afterTable))
+        let attachment = XCTAttachment(string: "Actual bent native sweep: original multi-wall family=\(family.sorted()), selected centroid=\(removed.centroid); first spine segment removed, old name absent=\(!nextNames.values.contains(name)), original volume=\(OCCTKernel.volume(original)), remaining volume=\(OCCTKernel.volume(next)).")
+        attachment.name = "actual-sweep-first-sibling-identity"
+        attachment.lifetime = .keepAlways
+        add(attachment)
     }
 }

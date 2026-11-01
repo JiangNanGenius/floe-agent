@@ -113,7 +113,9 @@ final class CADAssociativeSessionTests: XCTestCase {
         let brep = try XCTUnwrap(original.brep)
         let side = try XCTUnwrap(OCCTKernel.faceInfo(brep).first { $0.normal.x > 0.99 })
         let name = try XCTUnwrap(session.lastKernelNames[f.sourceBody]?[side.index])
-        guard case .profileWall = name.source else {
+        guard case let .operationFace(1, operation, parents, neighbors) = name.source,
+              operation == f.source.id, neighbors.isEmpty, parents.count == 1,
+              case .profileWall = parents[0].source else {
             return XCTFail("The fixture must select a real profile-owned wall")
         }
         let reference = FaceRef(

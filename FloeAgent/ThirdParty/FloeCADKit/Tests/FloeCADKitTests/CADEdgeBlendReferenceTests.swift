@@ -448,6 +448,18 @@ final class CADEdgeBlendReferenceTests: XCTestCase {
         for version in [nil, 1, 999] as [Int?] {
             var reference = f.edges[0].reference
             reference.faceNames?.schemeVersion = version
+            if version == nil {
+                // A genuinely old wire has old profile-root faces too, not
+                // a new operation-face identity hidden in an unversioned edge.
+                func legacyRoot(_ name: ElementName) -> ElementName {
+                    if case let .operationFace(1, _, parents, neighbors) = name.source,
+                       parents.count == 1, neighbors.isEmpty,
+                       case .profileWall = parents[0].source { return parents[0] }
+                    return name
+                }
+                reference.faceNames?.faceA = legacyRoot(try XCTUnwrap(reference.faceNames?.faceA))
+                reference.faceNames?.faceB = legacyRoot(try XCTUnwrap(reference.faceNames?.faceB))
+            }
             let node = blend(f, refs: [reference], fillet: true)
             var document = DesignDocument()
             document.sketches = [f.sketch]

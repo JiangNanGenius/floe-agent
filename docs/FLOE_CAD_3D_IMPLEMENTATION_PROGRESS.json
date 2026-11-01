@@ -2567,6 +2567,18 @@
         "evidence_level": "baseline_plus_verified_delta",
         "verified_delta": "真实双边族及复合裁切面序号错绑均保留原失败并修复；85/85原生回归通过，包含升级时机、原体／原操作数、正常尺寸跟随、基准消费者与撤销重开。",
         "acceptance_pending": "变更上游尺寸/分裂/删面后下游只能命中原意图或明确失效；绝不绑定相似面；撤销/重开恢复同ID。"
+      },
+      "operation_region_verification": {
+        "source": "5604c80165a66dcd3d4161598cf1c18c85ea0f48",
+        "full_app_object_build_passed": true,
+        "native": {
+          "passed": 89,
+          "failed": 0,
+          "skipped": 0
+        },
+        "scope": "Actual compound/sequential split faces follow source width60to80; disappearance rejects old ordinal and unnamed survivor. New-name format, future opaque bytes and recursive merge checked. Whole M26 remains open.",
+        "canonical_simulator_shutdown": true,
+        "new_paid_calls": 0
       }
     },
     {
@@ -8427,7 +8439,7 @@
     "license_delta": "GLTFKit2 ownMIT/cgltfMIT do notclear precompiled libktx4.2.1 etcdec exception; prefer existing O3DV+same-r176 localGLTFLoader qualification"
   },
   "current_integration_verification": {
-    "source": "0ecb73e9c61de2f60779dd4b8cd2ea3d93ff6875",
+    "source": "5604c80165a66dcd3d4161598cf1c18c85ea0f48",
     "all_106_retained": true,
     "all_106_accepted": false,
     "release_ready": false,
@@ -8543,6 +8555,18 @@
         "skipped": 0
       },
       "scope": "Delete-face history and interior samples; wholeM26 remains open."
+    },
+    "operation_region_identity": {
+      "source": "5604c80165a66dcd3d4161598cf1c18c85ea0f48",
+      "full_app_object_build_passed": true,
+      "native": {
+        "passed": 89,
+        "failed": 0,
+        "skipped": 0
+      },
+      "scope": "Actual compound/sequential split faces follow source width60to80; disappearance rejects old ordinal and unnamed survivor. New-name format, future opaque bytes and recursive merge checked. Whole M26 remains open.",
+      "canonical_simulator_shutdown": true,
+      "new_paid_calls": 0
     }
   }
 }
