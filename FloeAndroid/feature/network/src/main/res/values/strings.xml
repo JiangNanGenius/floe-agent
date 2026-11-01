@@ -406,7 +406,7 @@
     <string name="network_artifact_failure_point_limit">This session has reached 250 samples.</string>
     <string name="network_artifact_failure_input">Check the requested values.</string>
     <string name="network_capture_title">Live capture</string>
-    <string name="network_capture_intro">Capture ordinary IPv4 traffic through a local VPN while it keeps forwarding. TLS stays encrypted; only packet metadata and plaintext DNS/HTTP are visible.</string>
+    <string name="network_capture_intro">Capture IPv4 traffic through a local VPN while it keeps forwarding. TLS is not decrypted; captures may contain unencrypted payloads.</string>
     <string name="network_capture_mode_vpn">VPN (no root)</string>
     <string name="network_capture_mode_root">Root (Full)</string>
     <string name="network_capture_detailed">Keep addresses and hosts in the analysis</string>

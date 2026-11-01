@@ -76,6 +76,10 @@ class CaptureArtifactStoreTest {
         assertEquals(24 + 16 + 20, result.bytes.toInt())
         val manifest = JSONObject(result.manifestFile.readText())
         assertTrue(manifest.getBoolean("complete"))
+        assertFalse(manifest.getBoolean("encryptedTrafficOnly"))
+        assertFalse(manifest.getBoolean("tlsDecryption"))
+        assertTrue(manifest.getBoolean("mayContainPlaintextPayloads"))
+        assertTrue(manifest.getBoolean("ipv6Bypass"))
         assertEquals(PcapLinkType.RAW.value, result.file.readBytes()[20].toInt() and 0xFF)
         assertEquals(sessionId, manifest.getString("sessionId"))
 

@@ -889,8 +889,9 @@ public enum C06CalendarBridge {
         // one bounded call per request.
         let semaphore = DispatchSemaphore(value: 0)
         let box = ResultBox()
-        Task {
+        let operationTask = Task {
             do {
+                try Task.checkCancellation()
                 box.set(.success(try await operation()))
             } catch let error as C06CalendarError {
                 box.set(.failure(error))
@@ -906,8 +907,15 @@ public enum C06CalendarBridge {
             semaphore.signal()
         }
         if semaphore.wait(timeout: .now() + .seconds(20)) == .timedOut {
-            return failure(C06CalendarError(.timedOut, "operationTimedOut", retryable: false),
-                           operation: name)
+            operationTask.cancel()
+            // A database write may already have committed. Cancellation is
+            // not rollback proof; callers must reload rather than replay it.
+            let mutation = ["c06.todo.save", "c06.todo.complete", "c06.todo.delete",
+                            "c06.todo.markReminderShown"].contains(name)
+            return failure(C06CalendarError(
+                mutation ? .mutationUnknown : .timedOut,
+                mutation ? "todoMutationOutcomeUnknown" : "operationTimedOut",
+                retryable: false), operation: name)
         }
         switch box.get() {
         case .success(let value):

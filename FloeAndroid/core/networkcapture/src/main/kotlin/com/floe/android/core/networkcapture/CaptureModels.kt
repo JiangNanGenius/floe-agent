@@ -186,8 +186,9 @@ data class CaptureState(
     val endReason: CaptureEndReason? = null,
     val failure: CaptureFailure? = null,
     val limitations: List<String> = emptyList(),
-    val ipv6Bypass: Boolean = true,
-    val encryptedTrafficOnly: Boolean = true,
+    val ipv6Bypass: Boolean = mode == CaptureMode.VPN,
+    // Capture preserves plaintext protocols too; TLS is never decrypted.
+    val encryptedTrafficOnly: Boolean = false,
 ) {
     init {
         require(limitations.size <= CaptureLimits.MAX_LIMITATIONS) { "too many limitations" }

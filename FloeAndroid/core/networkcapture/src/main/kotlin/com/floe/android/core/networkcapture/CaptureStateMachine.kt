@@ -29,8 +29,8 @@ class CaptureStateMachine {
             owner = owner,
             mode = mode,
             phase = if (requiresConsent) CapturePhase.CONSENT_REQUIRED else CapturePhase.STARTING,
-            ipv6Bypass = true,
-            encryptedTrafficOnly = true,
+            ipv6Bypass = mode == CaptureMode.VPN,
+            encryptedTrafficOnly = false,
         )
     }
 

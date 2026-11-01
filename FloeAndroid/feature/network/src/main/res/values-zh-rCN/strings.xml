@@ -404,7 +404,7 @@
     <string name="network_artifact_failure_point_limit">此会话已达到 250 个采样点。</string>
     <string name="network_artifact_failure_input">请检查输入值。</string>
     <string name="network_capture_title">实时抓包</string>
-    <string name="network_capture_intro">通过本地 VPN 捕获普通 IPv4 流量，同时保持正常转发。TLS 保持加密；只能看到数据包元数据和明文 DNS/HTTP。</string>
+    <string name="network_capture_intro">通过本地 VPN 捕获 IPv4 流量并保持转发。不解密 TLS；抓包文件可能包含未加密的传输内容。</string>
     <string name="network_capture_mode_vpn">VPN（免 Root）</string>
     <string name="network_capture_mode_root">Root（Full）</string>
     <string name="network_capture_detailed">在分析中保留地址和主机名</string>

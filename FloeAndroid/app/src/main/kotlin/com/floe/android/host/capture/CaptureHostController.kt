@@ -1131,7 +1131,7 @@ class CaptureHostController internal constructor(
     }
 
     private fun limitationsFor(stats: CaptureStats, sink: CaptureSinkSummary): List<String> = buildList {
-        add("Encrypted TLS/QUIC traffic is forwarded unchanged; only packet metadata and plaintext DNS/HTTP are visible.")
+        add("TLS/QUIC is forwarded unchanged without decryption; captures may contain unencrypted protocol payloads.")
         add("IPv6 traffic bypasses this VPN because no IPv6 route is installed; IPv4 is captured.")
         add("ICMP is not forwarded; ping is outside this capture.")
         add("The Floe app's own traffic is excluded from the VPN.")
