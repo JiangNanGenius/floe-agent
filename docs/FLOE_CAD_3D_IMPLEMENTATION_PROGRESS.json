@@ -2479,7 +2479,9 @@
           "FloeAgent/ThirdParty/FloeCADKit/Tests/FloeCADKitTests/CADParameterCorrectnessTests.swift",
           "c8140f9c6f56eca73d01a5929256bf036879705e",
           "0ecb73e9c61de2f60779dd4b8cd2ea3d93ff6875",
-          "50c0bb71173d2f734c012f2b2b1c976eeefbf6f7"
+          "50c0bb71173d2f734c012f2b2b1c976eeefbf6f7",
+          "7f5a44b5",
+          "5902ea4da4c6d8871c8edaf0f4158ea0d87b6ce4"
         ],
         "verification": [
           {
@@ -2510,16 +2512,25 @@
             "skipped": 0,
             "original_failed_tests_retained": 2,
             "observed": "真实双边族删边错绑改为brokenRef并保留原体积；旧格式精确核对后成功升级，新身份跟随尺寸、原操作数／无空撤销／同ID重开；删面、抽壳、变量、基准及格式回归通过。"
+          },
+          {
+            "kind": "actual_App_original_compound_face_ordinal_and_consumers",
+            "source": "5902ea4da4c6d8871c8edaf0f4158ea0d87b6ce4",
+            "passed": 85,
+            "failed": 0,
+            "skipped": 0,
+            "original_failed_assertions_retained": 4,
+            "observed": "原始复合裁切器三块面变两块的错误命中及历史选错已复现并修复；严格序号签名／原体／原操作数／升级时机／撤销／同摘要重开通过，正常尺寸与基准面、轴、圆柱等回归通过。"
           }
         ],
         "limitations": [
-          "更广的面拆分、旧面编号与源历史命名矩阵仍待；不以边引用修复替代整项验收。"
+          "签名核对是必要条件，非任意几何完全相同的证明；旧未命名引用、多段生成壁面、对称同签名区域及材质绑定仍待核查。"
         ]
       },
       "alignment_review": {
         "disposition": "qualified_slice",
         "existing": "基线已有：稳定FeatureID/BodyID、按顺序重放、抑制/删除/排序有依赖检查；原子参数编辑有checkpoint回滚；拓扑命名有内核history+几何签名后备及歧义门控。不是从零缺失历史。",
-        "remaining": "更广的面拆分、旧面编号与源历史命名矩阵仍待。",
+        "remaining": "旧未命名引用、多段生成壁面、同签名不同形状及材质绑定仍待。",
         "evidence": [
           {
             "path": "docs/FLOE_CAD_3D_IMPLEMENTATION_PROGRESS.json",
@@ -2554,7 +2565,7 @@
         ],
         "notes": [],
         "evidence_level": "baseline_plus_verified_delta",
-        "verified_delta": "真实双边族错误圆角已保留失败并修复，51/51原生回归通过；历史恢复原操作数，新旧边身份、无空撤销、参数跟随、撤销重开与关联消费者已验。",
+        "verified_delta": "真实双边族及复合裁切面序号错绑均保留原失败并修复；85/85原生回归通过，包含升级时机、原体／原操作数、正常尺寸跟随、基准消费者与撤销重开。",
         "acceptance_pending": "变更上游尺寸/分裂/删面后下游只能命中原意图或明确失效；绝不绑定相似面；撤销/重开恢复同ID。"
       }
     },
