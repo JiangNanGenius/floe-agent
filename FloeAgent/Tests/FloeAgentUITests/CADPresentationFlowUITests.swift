@@ -799,6 +799,34 @@ private enum CADSheetProbe {
         return control.exists ? control : any(app, identifier)
     }
 
+    /// A SwiftUI Toggle inside a Form exposes its whole labeled row as the
+    /// Switch element (the provider-picker, interference and task-environment
+    /// drivers pin the same native behavior). A synthesized tap at the row's
+    /// midpoint lands on the label rather than the switch control, so flip the
+    /// real control at its trailing edge and require the published value.
+    static func setToggle(_ toggle: XCUIElement, _ value: String,
+                          timeout: TimeInterval = 20) -> Bool {
+        if (toggle.value as? String) == value { return true }
+        toggle.coordinate(withNormalizedOffset: CGVector(dx: 0.92, dy: 0.5)).tap()
+        return waitForValue(toggle, value, timeout: timeout)
+    }
+
+    /// A Form `LabeledContent` row is one semantic element. Depending on the
+    /// platform, its accessible text is published as a combined label
+    /// ("Objects, 2 / 2") or as a separate `value`; read the row's own text
+    /// instead of assuming a bare value-only static text.
+    static func labeledRow(_ label: String, in app: XCUIApplication) -> XCUIElement {
+        app.descendants(matching: .any).matching(
+            NSPredicate(format: "label == %@ OR label BEGINSWITH %@ "
+                        + "OR (label BEGINSWITH %@ AND label CONTAINS %@)",
+                        label, label + ", ", label, " / ")
+        ).firstMatch
+    }
+
+    static func labeledText(_ row: XCUIElement) -> String {
+        ([row.label] + [(row.value as? String) ?? ""]).joined(separator: " ")
+    }
+
     /// Poll while scrolling the presented Form upward. Used for rows that the
     /// sheet creates below the fold only after its real preflight finishes,
     /// so existence and the async work are waited for together.
@@ -1171,20 +1199,22 @@ final class CADMeshExportOptionsNativeSheetUITests: XCTestCase {
         // "Separate File per Body" is a stable native choice.
         let perBody = CADSheetProbe.toggle("ExportPerBodyToggle", in: app)
         CADSheetProbe.reveal(perBody, in: app, sheet: "OBJ Export")
-        perBody.tap()
-        XCTAssertTrue(CADSheetProbe.waitForValue(perBody, "1"))
+        XCTAssertTrue(CADSheetProbe.waitForValue(perBody, "0"),
+                      "the OBJ bundle must start as one file per export")
+        XCTAssertTrue(CADSheetProbe.setToggle(perBody, "1"),
+                      "the native Separate File per Body switch must turn on")
         XCTAssertTrue(CADSheetProbe.waitForEnabled(confirm, timeout: 90))
         XCTAssertTrue(CADSheetProbe.scrollReveal(summary, in: app, sheet: "OBJ Export"))
         CADSheetProbe.reveal(perBody, in: app, sheet: "OBJ Export")
-        perBody.tap()
-        XCTAssertTrue(CADSheetProbe.waitForValue(perBody, "0"))
+        XCTAssertTrue(CADSheetProbe.setToggle(perBody, "0"),
+                      "the native Separate File per Body switch must turn off")
         XCTAssertTrue(CADSheetProbe.waitForEnabled(confirm, timeout: 90))
         XCTAssertTrue(CADSheetProbe.scrollReveal(summary, in: app, sheet: "OBJ Export"))
 
         // Materials OFF is one real .obj: the bundle summary must retire.
         CADSheetProbe.reveal(materials, in: app, sheet: "OBJ Export")
-        materials.tap()
-        XCTAssertTrue(CADSheetProbe.waitForValue(materials, "0"))
+        XCTAssertTrue(CADSheetProbe.setToggle(materials, "0"),
+                      "the native Materials & Textures switch must turn off")
         XCTAssertTrue(CADSheetProbe.waitForAbsence(summary, timeout: 20),
                       "a single .obj must not keep a stale .zip summary")
         let geometryNote = app.staticTexts.matching(Self.geometryOnlyNote).firstMatch
@@ -1227,16 +1257,21 @@ final class CADMeshExportOptionsNativeSheetUITests: XCTestCase {
         CADSheetProbe.openOBJOptions(app, compact: false)
         let materials = CADSheetProbe.toggle("ExportIncludeMaterialsToggle", in: app)
         XCTAssertTrue(materials.waitForExistence(timeout: 15))
+        XCTAssertTrue(CADSheetProbe.waitForValue(materials, "1"),
+                      "the shared coverage receipt must be reviewed with materials included")
+        // The Objects row is above the warning rows, so assert its own native
+        // `LabeledContent` text before any downward Form walk.
+        let objectsRow = CADSheetProbe.labeledRow("Objects", in: app)
+        XCTAssertTrue(objectsRow.waitForExistence(timeout: 20),
+                      "the shared coverage receipt must expose its included/total Objects row")
+        let objectsText = CADSheetProbe.labeledText(objectsRow)
+        XCTAssertTrue(objectsText.contains("2 / 2"),
+                      "both real bodies must stay included in the shared receipt: \(objectsText)")
         let faceWarning = app.staticTexts["A face material needs reassignment."]
         XCTAssertTrue(CADSheetProbe.scrollReveal(faceWarning, in: app, sheet: "OBJ Export",
                                                  timeout: 30),
                       "the shared coverage receipt must name the malformed face material")
         XCTAssertTrue(app.staticTexts["Material warnings"].exists)
-        let objectsValue = app.descendants(matching: .any)
-            .matching(NSPredicate(format: "label == %@", "2 / 2")).firstMatch
-        CADSheetProbe.reveal(objectsValue, in: app, sheet: "OBJ Export")
-        XCTAssertTrue(objectsValue.exists,
-                      "both real bodies must stay included in the shared receipt")
 
         let confirm = app.buttons["MeshExportConfirm"]
         XCTAssertTrue(confirm.waitForExistence(timeout: 15))
@@ -1256,8 +1291,8 @@ final class CADMeshExportOptionsNativeSheetUITests: XCTestCase {
         // Geometry-only OBJ carries no face materials, so the same document is
         // complete there: no partial label and no stale bundle summary.
         CADSheetProbe.reveal(materials, in: app, sheet: "OBJ Export")
-        materials.tap()
-        XCTAssertTrue(CADSheetProbe.waitForValue(materials, "0"))
+        XCTAssertTrue(CADSheetProbe.setToggle(materials, "0"),
+                      "the native Materials & Textures switch must turn off")
         XCTAssertTrue(CADSheetProbe.waitForAbsence(summary, timeout: 20))
         XCTAssertTrue(CADSheetProbe.waitForLabelEquals(confirm, "Export"))
         XCTAssertTrue(CADSheetProbe.waitForEnabled(confirm, timeout: 20))
@@ -1295,8 +1330,8 @@ final class CADMeshExportOptionsNativeSheetUITests: XCTestCase {
 
         // The same geometry stays a complete single .obj without materials.
         CADSheetProbe.reveal(materials, in: app, sheet: "OBJ Export")
-        materials.tap()
-        XCTAssertTrue(CADSheetProbe.waitForValue(materials, "0"))
+        XCTAssertTrue(CADSheetProbe.setToggle(materials, "0"),
+                      "the native Materials & Textures switch must turn off")
         XCTAssertTrue(CADSheetProbe.waitForAbsence(refusal, timeout: 20))
         XCTAssertTrue(CADSheetProbe.waitForLabelEquals(confirm, "Export"))
         XCTAssertTrue(CADSheetProbe.waitForEnabled(confirm, timeout: 20))
