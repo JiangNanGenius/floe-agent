@@ -411,7 +411,7 @@ final class NativeCADImportLimitsTests: XCTestCase {
         let gate = E31ParseGate()
         MeshImportKit.testParseCheckpoint = { checkpoint in gate.checkpoint(checkpoint) }
         let token = CancellationToken()
-        let task = Task { @MainActor in
+        let task = Task<Error?, Never> { @MainActor in
             do {
                 _ = try await self.center.threeDAction(
                     documentID: "Part.floecad",
@@ -471,7 +471,7 @@ final class NativeCADImportLimitsTests: XCTestCase {
         let gate = E31ParseGate()
         MeshImportKit.testParseCheckpoint = { checkpoint in gate.checkpoint(checkpoint) }
 
-        let task = Task { @MainActor in
+        let task = Task<Error?, Never> { @MainActor in
             do {
                 _ = try await self.center.threeDAction(
                     documentID: "Part.floecad",
@@ -511,7 +511,7 @@ final class NativeCADImportLimitsTests: XCTestCase {
         MeshImportKit.testParseCheckpoint = { checkpoint in gate.checkpoint(checkpoint) }
         let token = CancellationToken()
 
-        let task = Task { @MainActor in
+        let task = Task<Error?, Never> { @MainActor in
             do {
                 _ = try await self.center.threeDAction(
                     documentID: "Part.floecad",
@@ -545,7 +545,7 @@ final class NativeCADImportLimitsTests: XCTestCase {
         let token = CancellationToken()
         let document = try await FloeCAD3DBridge.shared.openDocument(at: documentURL)
 
-        let task = Task { @MainActor in
+        let task = Task<Error?, Never> { @MainActor in
             do {
                 _ = try await self.center.threeDAction(
                     documentID: "Part.floecad",
