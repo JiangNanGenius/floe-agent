@@ -165,7 +165,7 @@ final class CADAssociativeCylinderAxisValueTests: XCTestCase {
         let line = try cylinderDefinition().resolvedAxis(
             cylinder: cylinder(), bodyTransform: .identity, scale: 1)
         // The line is the analytic axis line.
-        assertVector(line.direction, SIMD3(0, 1, 0), 1e-12, "axis direction")
+        assertVector(line.direction, SIMD3(0, 1, 0), accuracy: 1e-12, "axis direction")
         XCTAssertEqual(distanceToLine(SIMD3(7.5, -2, 3.25), line), 0, accuracy: 1e-9,
                        "the resolved line must pass through the exact axis point")
         // The anchor is slid ALONG the same line to the face centroid's height,
@@ -190,7 +190,7 @@ final class CADAssociativeCylinderAxisValueTests: XCTestCase {
         XCTAssertEqual(distanceToLine(expectedPoint, line), 0, accuracy: 1e-9,
                        "the transformed exact axis point stays on the resolved line")
         assertVector(line.direction, simd_normalize(rotation.act(SIMD3(0, 1, 0))),
-                     1e-9, "rotated axis direction")
+                     accuracy: 1e-9, "rotated axis direction")
         XCTAssertEqual(line.extent, 30, accuracy: 1e-9,
                        "the display extent is scaled exactly once")
     }

@@ -137,6 +137,16 @@ final class CADAssociativeAxisPointServiceTests: XCTestCase {
         try XCTUnwrap(f.document.session.document.datumPoints.first { $0.id == id })
     }
 
+    /// Per-component vector comparison: XCTest's accuracy overload only accepts
+    /// scalar FloatingPoint values, never a SIMD vector.
+    private func assertVector(_ actual: SIMD3<Double>, _ expected: SIMD3<Double>,
+                              accuracy: Double = 1e-6, _ label: String = "",
+                              file: StaticString = #filePath, line: UInt = #line) {
+        XCTAssertEqual(actual.x, expected.x, accuracy: accuracy, "\(label) x", file: file, line: line)
+        XCTAssertEqual(actual.y, expected.y, accuracy: accuracy, "\(label) y", file: file, line: line)
+        XCTAssertEqual(actual.z, expected.z, accuracy: accuracy, "\(label) z", file: file, line: line)
+    }
+
     private func faceAxisArgs(_ f: Fixture, face: [String: Any], offset: String = "0") throws
         -> [String: Any] {
         XCTAssertEqual(face["datum_source_supported"] as? Bool, true, "\(face)")
@@ -435,7 +445,7 @@ final class CADAssociativeAxisPointServiceTests: XCTestCase {
         XCTAssertEqual(definition.points.count, 2)
         // The fixture's line is (10,30)-(90,30) in the GROUND sketch, whose
         // v axis maps to -worldZ: origin (10, 0, -30), direction +X.
-        XCTAssertEqual(record.origin, SIMD3(10, 0, -30), accuracy: SIMD3(1e-6, 1e-6, 1e-6))
+        assertVector(record.origin, SIMD3(10, 0, -30), "two-point axis origin")
         XCTAssertEqual(abs(record.direction.x), 1, accuracy: 1e-9)
 
         // Parent sketch edit: move the line's endpoints; the axis follows.
@@ -445,8 +455,8 @@ final class CADAssociativeAxisPointServiceTests: XCTestCase {
             "a": [20, 40], "b": [80, 40],
         ])
         XCTAssertEqual(moved["ok"] as? Bool, true, "\(moved)")
-        XCTAssertEqual(try axis(f, id).origin, SIMD3(20, 0, -40),
-                       accuracy: SIMD3(1e-6, 1e-6, 1e-6))
+        assertVector(try axis(f, id).origin, SIMD3(20, 0, -40),
+                     "two-point axis origin follows the sketch")
     }
 
     // MARK: - Datum points
@@ -461,8 +471,8 @@ final class CADAssociativeAxisPointServiceTests: XCTestCase {
         ]))
         // Top-face centroid: x 50, y 10, and z = -30 (the ground sketch's v
         // axis maps to -worldZ).
-        XCTAssertEqual(try point(f, center).position, SIMD3(50, 10, -30),
-                       accuracy: SIMD3(1e-6, 1e-6, 1e-6))
+        assertVector(try point(f, center).position, SIMD3(50, 10, -30),
+                     "top-face centroid")
         let centerRow = try XCTUnwrap(rows(f.document, "datumPoints").first {
             ($0["point_id"] as? String) == center.raw.uuidString
         })
@@ -479,17 +489,17 @@ final class CADAssociativeAxisPointServiceTests: XCTestCase {
         ]))
         let edgeMidpoint = try XCTUnwrap(edge["midpoint"] as? [Double])
         XCTAssertEqual(edgeMidpoint.count, 3)
-        let midpoint = SIMD3(edgeMidpoint[0], edgeMidpoint[1], edgeMidpoint[2])
+        let edgeMidpointPosition = SIMD3(edgeMidpoint[0], edgeMidpoint[1], edgeMidpoint[2])
         XCTAssertEqual(try point(f, onEdge).position.y, 10, accuracy: 1e-6)
         // 5 mm ALONG the edge from its midpoint: the edge's own direction may
         // be +X or -X, so assert the distance, not a signed coordinate.
-        XCTAssertEqual(simd_distance(try point(f, onEdge).position, midpoint), 5,
+        XCTAssertEqual(simd_distance(try point(f, onEdge).position, edgeMidpointPosition), 5,
                        accuracy: 1e-6)
 
         // Axis point: 7 mm along the face axis.
-        let axis = try axisID(call(f, "datum.axis.create", try faceAxisArgs(f, face: top)))
+        let faceAxis = try axisID(call(f, "datum.axis.create", try faceAxisArgs(f, face: top)))
         let onAxis = try pointID(call(f, "datum.point.create", [
-            "kind": "axisPoint", "axis_id": axis.raw.uuidString, "offset": "7",
+            "kind": "axisPoint", "axis_id": faceAxis.raw.uuidString, "offset": "7",
         ]))
         XCTAssertEqual(try point(f, onAxis).position.y, 17, accuracy: 1e-6)
 
@@ -504,7 +514,7 @@ final class CADAssociativeAxisPointServiceTests: XCTestCase {
         let planeID = ConstructionPlaneID(raw: try XCTUnwrap(
             (plane["plane_id"] as? String).flatMap(UUID.init(uuidString:))))
         let crossing = try pointID(call(f, "datum.point.create", [
-            "kind": "axisPlane", "axis_id": axis.raw.uuidString,
+            "kind": "axisPlane", "axis_id": faceAxis.raw.uuidString,
             "plane_id": planeID.raw.uuidString,
         ]))
         XCTAssertEqual(try point(f, crossing).position.y, 0, accuracy: 1e-6)
@@ -515,9 +525,9 @@ final class CADAssociativeAxisPointServiceTests: XCTestCase {
             "points": [["point_id": center.raw.uuidString],
                        ["point_id": crossing.raw.uuidString]],
         ]))
-        XCTAssertEqual(try point(f, midpoint).position,
-                       (try point(f, center).position + point(f, crossing).position) / 2,
-                       accuracy: SIMD3(1e-6, 1e-6, 1e-6))
+        assertVector(try point(f, midpoint).position,
+                     (try point(f, center).position + point(f, crossing).position) / 2,
+                     "two-point midpoint")
 
         // Parent edit: thickness 10 → 25 moves every face/axis-derived point in
         // the same rebuild; the two-point midpoint follows both.
@@ -536,8 +546,8 @@ final class CADAssociativeAxisPointServiceTests: XCTestCase {
 
     func testBrokenSourcesRefuseAtomicallyAndPreserveThePreviousDocument() async throws {
         let f = try await fixture()
-        let axis = try axisID(call(f, "datum.axis.create", try faceAxisArgs(f, face: topFace(f))))
-        XCTAssertEqual(try axis(f, axis).origin.y, 10, accuracy: 1e-6)
+        let faceAxis = try axisID(call(f, "datum.axis.create", try faceAxisArgs(f, face: topFace(f))))
+        XCTAssertEqual(try axis(f, faceAxis).origin.y, 10, accuracy: 1e-6)
         let revision = f.document.revision
         let count = f.document.session.document.axes.count
 
@@ -547,7 +557,7 @@ final class CADAssociativeAxisPointServiceTests: XCTestCase {
         XCTAssertEqual(delete["ok"] as? Bool, false, "\(delete)")
         XCTAssertEqual(f.document.revision, revision)
         XCTAssertEqual(f.document.session.document.axes.count, count)
-        XCTAssertEqual(try axis(f, axis).origin.y, 10, accuracy: 1e-6)
+        XCTAssertEqual(try axis(f, faceAxis).origin.y, 10, accuracy: 1e-6)
 
         // Suppressing it is also refused while the definition needs the writer.
         let suppress = call(f, "feature.suppress",
@@ -567,11 +577,11 @@ final class CADAssociativeAxisPointServiceTests: XCTestCase {
 
     func testDeleteRefusesWhileConsumedAndPatternAxisIDCanBeReplaced() async throws {
         let f = try await fixture()
-        let axis = try axisID(call(f, "datum.axis.create", try faceAxisArgs(f, face: topFace(f))))
-        let pattern = try addCircularPattern(f, axisID: axis)
+        let firstAxis = try axisID(call(f, "datum.axis.create", try faceAxisArgs(f, face: topFace(f))))
+        let pattern = try addCircularPattern(f, axisID: firstAxis)
         f.document.session.rebuildFrom(f.source.id)
 
-        let refused = call(f, "datum.axis.delete", ["axis_id": axis.raw.uuidString])
+        let refused = call(f, "datum.axis.delete", ["axis_id": firstAxis.raw.uuidString])
         XCTAssertEqual(refused["ok"] as? Bool, false, "\(refused)")
         XCTAssertEqual(refused["error"] as? String, "axis_in_use")
         XCTAssertEqual(refused["dependent_feature_ids"] as? [String], [pattern.raw.uuidString])
@@ -586,7 +596,7 @@ final class CADAssociativeAxisPointServiceTests: XCTestCase {
             return XCTFail("pattern node disappeared")
         }
         XCTAssertEqual(spec.axisRef?.axisID, second)
-        let removed = call(f, "datum.axis.delete", ["axis_id": axis.raw.uuidString])
+        let removed = call(f, "datum.axis.delete", ["axis_id": firstAxis.raw.uuidString])
         XCTAssertEqual(removed["ok"] as? Bool, true, "\(removed)")
 
         // Clearing the reference FREEZES the axis's current resolved line (M08
@@ -611,21 +621,21 @@ final class CADAssociativeAxisPointServiceTests: XCTestCase {
 
     func testSaveReopenKeepsAxisAndPointRelationshipsAndConsumers() async throws {
         let f = try await fixture()
-        let axis = try axisID(call(f, "datum.axis.create", try faceAxisArgs(f, face: topFace(f))))
+        let subjectAxis = try axisID(call(f, "datum.axis.create", try faceAxisArgs(f, face: topFace(f))))
         let offset = call(f, "datum.axis.update", [
-            "axis_id": axis.raw.uuidString, "offset": "12",
+            "axis_id": subjectAxis.raw.uuidString, "offset": "12",
         ])
         XCTAssertEqual(offset["ok"] as? Bool, true, "\(offset)")
-        let point = try pointID(call(f, "datum.point.create", [
-            "kind": "axisPoint", "axis_id": axis.raw.uuidString, "offset": "3",
+        let subjectPoint = try pointID(call(f, "datum.point.create", [
+            "kind": "axisPoint", "axis_id": subjectAxis.raw.uuidString, "offset": "3",
         ]))
-        let pattern = try addCircularPattern(f, axisID: axis)
+        let pattern = try addCircularPattern(f, axisID: subjectAxis)
         f.document.session.rebuildFrom(f.source.id)
         let copiesBefore = patternCopies(f, try patternNode(f)).map(\.transform.translation)
         // The resolved offset line (display origin = face centroid + 12 mm), so
         // the reopen comparison is anchored on the actual frame.
-        let originBefore = try axis(f, axis).origin
-        let directionBefore = try axis(f, axis).direction
+        let originBefore = try axis(f, subjectAxis).origin
+        let directionBefore = try axis(f, subjectAxis).direction
 
         let saved = await f.document.save()
         XCTAssertTrue(saved.succeeded, saved.error ?? "save must succeed")
@@ -637,7 +647,7 @@ final class CADAssociativeAxisPointServiceTests: XCTestCase {
             try await Task.sleep(for: .milliseconds(10))
         }
 
-        let reopenedAxis = try XCTUnwrap(reopened.session.document.axes.first { $0.id == axis })
+        let reopenedAxis = try XCTUnwrap(reopened.session.document.axes.first { $0.id == subjectAxis })
         guard case let .face(definition)? = reopenedAxis.definition else {
             return XCTFail("the face definition must survive reopen")
         }
@@ -648,11 +658,11 @@ final class CADAssociativeAxisPointServiceTests: XCTestCase {
         XCTAssertEqual(reopenedAxis.direction.x, directionBefore.x, accuracy: 1e-9)
         XCTAssertEqual(reopenedAxis.direction.y, directionBefore.y, accuracy: 1e-9)
         XCTAssertEqual(reopenedAxis.direction.z, directionBefore.z, accuracy: 1e-9)
-        let reopenedPoint = try XCTUnwrap(reopened.session.document.datumPoints.first { $0.id == point })
+        let reopenedPoint = try XCTUnwrap(reopened.session.document.datumPoints.first { $0.id == subjectPoint })
         guard case let .axisPoint(pointDefinition)? = reopenedPoint.definition else {
             return XCTFail("the axis point must survive reopen")
         }
-        XCTAssertEqual(pointDefinition.axis, axis)
+        XCTAssertEqual(pointDefinition.axis, subjectAxis)
         XCTAssertEqual(pointDefinition.offset.value, 3, accuracy: 1e-12)
         XCTAssertEqual(reopenedPoint.position.y, 13, accuracy: 1e-6)
 
@@ -662,7 +672,7 @@ final class CADAssociativeAxisPointServiceTests: XCTestCase {
         guard case let .pattern(_, spec) = reopenedPattern.kind else {
             return XCTFail("the pattern node must survive reopen")
         }
-        XCTAssertEqual(spec.axisRef?.axisID, axis,
+        XCTAssertEqual(spec.axisRef?.axisID, subjectAxis,
                        "the pattern must still store the axis identity, not a baked line")
         let copiesAfter = patternCopies(
             Fixture(document: reopened, source: f.source, body: f.body, sketch: f.sketch),

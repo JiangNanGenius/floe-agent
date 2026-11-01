@@ -309,7 +309,7 @@ nonisolated private final class ExactGate: @unchecked Sendable {
     private let lock = NSLock()
     private let holdPhase: String
     private let holdBody: Int
-    private var enteredCount = 0
+    private var enteredTotal = 0
     private var offMain = false
     private var released = false
     private var active = true
@@ -324,7 +324,7 @@ nonisolated private final class ExactGate: @unchecked Sendable {
               holdBody == 0 || checkpoint.bodyIndex == holdBody else { return }
         lock.lock()
         guard active else { lock.unlock(); return }
-        enteredCount += 1
+        enteredTotal += 1
         offMain = !checkpoint.ranOnMainThread
         let shouldHold = !released
         released = true
@@ -354,7 +354,7 @@ nonisolated private final class ExactGate: @unchecked Sendable {
     var enteredCountValue: Int {
         lock.lock()
         defer { lock.unlock() }
-        return enteredCount
+        return enteredTotal
     }
 
     var enteredCount: Int { enteredCountValue }
