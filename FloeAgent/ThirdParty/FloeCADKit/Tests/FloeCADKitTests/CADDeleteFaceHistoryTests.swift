@@ -185,6 +185,35 @@ final class CADDeleteFaceHistoryTests: XCTestCase {
         try await assertRemovedFaceRegionDoesNotRebind(compoundCutter: true)
     }
 
+    func testFailedLegacyFaceEditCannotPersistAnUpgradeBeforeTheKernelSucceeds() async throws {
+        let f = try await fixture()
+        let body = try XCTUnwrap(f.document.session.document.body(with: f.body))
+        let brep = try XCTUnwrap(body.brep)
+        let top = try XCTUnwrap(OCCTKernel.faceInfo(brep).first { $0.normal.y > 0.99 })
+        let ref = FaceRef(body: BodyRef(producer: f.source.id, bodyID: f.body), creator: f.source.id,
+            role: .derived(index: 0), signature: try XCTUnwrap(top.signature), elementName: nil)
+        let originalVolume = abs(OCCTKernel.volume(brep))
+        var revision: UInt64 = 0
+        for distance in [1.0, -10.0] {
+            let node = FeatureNode(name: "Legacy push", kind: .pushPull(face: ref,
+                distance: Expr(value: distance), mode: .planarAxial), outputBodyIDs: [f.body])
+            let graph = FeatureGraph(nodes: f.document.session.document.features.nodes + [node])
+            let result = graph.evaluate(sketches: [], planes: [], naming: SignatureNaming()) {
+                revision += 1
+                return revision
+            }
+            if distance > 0 {
+                XCTAssertTrue(result.errors.isEmpty, "\(result.errors)")
+                XCTAssertNotNil(result.proposedUpgrades[node.id], "A successful stable named cap may upgrade the legacy operand")
+                XCTAssertGreaterThan(abs(OCCTKernel.volume(try XCTUnwrap(result.bodies.first { $0.id == f.body }?.brep))), originalVolume)
+            } else {
+                XCTAssertNotNil(result.errors[node.id], "Collapsing the full thickness must fail")
+                XCTAssertNil(result.proposedUpgrades[node.id], "Kernel failure must not persist the proposed identity")
+                XCTAssertEqual(abs(OCCTKernel.volume(try XCTUnwrap(result.bodies.first { $0.id == f.body }?.brep))), originalVolume, accuracy: 1e-4)
+            }
+        }
+    }
+
     private func assertRemovedFaceRegionDoesNotRebind(compoundCutter: Bool) async throws {
         let bodyID = BodyID(), firstSlotID = BodyID(), secondSlotID = BodyID(), removalID = BodyID()
         let source = FeatureNode(name: "Plate", kind: .primitive(
@@ -256,6 +285,15 @@ final class CADDeleteFaceHistoryTests: XCTestCase {
         documents.append(document)
         document.session.recordAndRebuild(prefix, title: "Two regions")
         let deletion = FeatureNode(name: "Original region operation", kind: .deleteFace(body: reference.body, faces: [reference]), outputBodyIDs: [bodyID])
+        let failed = evaluate(prefix + [deletion])
+        switch failed.errors[deletion.id] {
+        case .brokenRef?: break
+        default: XCTFail("The lost ordinal must fail resolution before any native healing: \(failed.errors)")
+        }
+        let retainedVolume = abs(OCCTKernel.volume(try XCTUnwrap(surviving.brep)))
+        XCTAssertEqual(abs(OCCTKernel.volume(try XCTUnwrap(failed.bodies.first { $0.id == bodyID }?.brep))),
+                       retainedVolume, accuracy: 1e-4)
+        XCTAssertNil(failed.proposedUpgrades[deletion.id])
         document.session.record(deletion)
         let undo = document.session.undoStack.undoCommands.count
         let model = document.viewModel()
@@ -263,5 +301,24 @@ final class CADDeleteFaceHistoryTests: XCTestCase {
         XCTAssertTrue(model.deleteFaceTargets.isEmpty)
         XCTAssertNotNil(model.errorMessage)
         XCTAssertEqual(document.session.undoStack.undoCommands.count, undo)
+        document.session.undo()
+        XCTAssertEqual(document.session.document.features.nodes.last?.id, cut.id)
+        document.session.redo()
+        XCTAssertEqual(document.session.document.features.nodes.last?.id, deletion.id)
+        guard case let .deleteFace(_, retained)? = document.session.document.features.node(deletion.id)?.kind else {
+            return XCTFail("The original failed operation must remain available for repair")
+        }
+        XCTAssertEqual(retained, [reference])
+        let saved = await document.save()
+        XCTAssertTrue(saved.succeeded, saved.error ?? "")
+        let identity = document.modelSHA256
+        document.close()
+        let reopened = try await FloeCADDocument.open(at: document.url)
+        documents.append(reopened)
+        XCTAssertEqual(reopened.modelSHA256, identity)
+        XCTAssertEqual(reopened.session.document.features.nodes.last?.id, deletion.id)
+        XCTAssertFalse(reopened.viewModel().beginDeleteFaceEdit(deletion.id))
+        XCTAssertEqual(abs(OCCTKernel.volume(try XCTUnwrap(reopened.session.document.body(with: bodyID)?.brep))),
+                       retainedVolume, accuracy: 1e-4)
     }
 }

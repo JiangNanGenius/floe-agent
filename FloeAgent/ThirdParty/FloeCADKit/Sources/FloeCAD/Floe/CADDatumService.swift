@@ -247,7 +247,8 @@ public final class CADDatumService {
         guard matches.count == 1, let snapshotIndex = matches.first?.key,
               let face = OCCTKernel.faceInfo(snapshotBRep).first(where: { $0.index == snapshotIndex }),
               let signature = face.signature, signature.kind == .planar,
-              face.area.isFinite, face.area > 0 else {
+              face.area.isFinite, face.area > 0, let liveSignature = liveFace.signature,
+              SignatureNaming.acceptsNamedSignature(name, current: signature, reference: liveSignature) else {
             throw Failure(code: "ambiguous_source",
                           message: "The selected stable face name is absent or ambiguous in its actual writer snapshot.")
         }
@@ -317,7 +318,8 @@ public final class CADDatumService {
               Self.isCylindrical(face.signature),
               let axisPoint = face.axisPoint,
               face.area.isFinite, face.area > 0,
-              let signature = face.signature else {
+              let signature = face.signature, let liveSignature = liveFace.signature,
+              SignatureNaming.acceptsNamedSignature(name, current: signature, reference: liveSignature) else {
             throw Failure(code: "named_cylinder_source_required",
                           message: "The selected stable face name is absent, ambiguous or no longer "
                             + "cylindrical in its actual writer snapshot.")

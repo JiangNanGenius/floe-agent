@@ -219,19 +219,24 @@ nonisolated struct SignatureNaming: TopoNaming {
         // newly created face happens to have identical geometry.
         if let name = ref.elementName {
             guard let table else { return nil }
-            for (index, entry) in table.entries.enumerated()
-            where entry.elementName == name {
-                guard index < faces.count else { break }
-                let face = faces[index]
-                guard face.triangles == entry.triangles,
-                      Self.kindCompatible(face.signature.kind, ref.signature.kind)
-                else { break }
-                return ResolvedFace(planar: face.planar,
-                                    cylinder: face.cylinder,
-                                    confidence: 1,
-                                    elementName: name)
+            let matches = table.entries.enumerated().filter { $0.element.elementName == name }
+            guard matches.count == 1, let match = matches.first, match.offset < faces.count else { return nil }
+            let entry = match.element, face = faces[match.offset]
+            guard face.triangles == entry.triangles,
+                  Self.kindCompatible(face.signature.kind, ref.signature.kind) else { return nil }
+            if name.requiresExactSignature,
+               !Self.exactSignature(face.signature, ref.signature) {
+                // Commands mint analytic signatures; UI picks mint render
+                // signatures. An unchanged legacy face may prove either, but
+                // only at the SAME uniquely named/channel-mapped candidate.
+                guard let brep = body.brep,
+                      let index = ElementNaming.kernelFace(of: entry,
+                        channel: OCCTKernel.renderMeshFaceChannel(from: brep)),
+                      let signature = OCCTKernel.faceInfo(brep).first(where: { $0.index == index })?.signature,
+                      Self.exactSignature(signature, ref.signature) else { return nil }
             }
-            return nil
+            return ResolvedFace(planar: face.planar, cylinder: face.cylinder,
+                                confidence: 1, elementName: name)
         }
 
         var best: (score: Double, index: Int, face: EnumeratedFace)?
@@ -335,6 +340,38 @@ nonisolated struct SignatureNaming: TopoNaming {
         case (.cylindrical, .cylindrical): return true
         default: return false
         }
+    }
+
+    /// Necessary fingerprint check for an ordinal reference, not a similarity
+    /// score or a new stable identity. The body size never widens the position
+    /// tolerance. Semantic primitive/profile names may follow parameter edits.
+    static func exactSignature(_ a: FaceSignature, _ b: FaceSignature) -> Bool {
+        func finite(_ p: SIMD3<Double>) -> Bool { p.x.isFinite && p.y.isFinite && p.z.isFinite }
+        func near(_ x: Double, _ y: Double) -> Bool {
+            x.isFinite && y.isFinite && abs(x - y) <= max(1e-6, max(abs(x), abs(y)) * 1e-6)
+        }
+        guard finite(a.centroid), finite(b.centroid), finite(a.normal), finite(b.normal),
+              a.area.isFinite, b.area.isFinite, a.area > 0, b.area > 0,
+              simd_length(a.normal) > 1e-8, simd_length(b.normal) > 1e-8,
+              near(a.area, b.area), simd_distance(a.centroid, b.centroid) <= 1e-5 else { return false }
+        let alignment = simd_dot(simd_normalize(a.normal), simd_normalize(b.normal))
+        switch (a.kind, b.kind) {
+        case (.planar, .planar):
+            return alignment >= 1 - 1e-8 && near(a.planeOffset, b.planeOffset)
+        case let (.cylindrical(radiusA), .cylindrical(radiusB)):
+            return radiusA > 0 && radiusB > 0 && near(radiusA, radiusB)
+                && abs(alignment) >= 1 - 1e-8
+        default: return false
+        }
+    }
+
+    /// Native frozen-writer consumers use the same policy as History. An
+    /// ordinal match needs the full current signature; a semantic name needs
+    /// the same surface kind and its unique native identity.
+    static func acceptsNamedSignature(_ name: ElementName, current: FaceSignature,
+                                      reference: FaceSignature) -> Bool {
+        kindCompatible(current.kind, reference.kind)
+            && (!name.requiresExactSignature || exactSignature(current, reference))
     }
 
     /// The role the `table` assigns to `face`: its own row when the table

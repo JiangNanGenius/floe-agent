@@ -898,6 +898,9 @@ nonisolated struct AssociativeGeometryResolver: Sendable {
               let signature = face.signature, case .planar = signature.kind else {
             throw AssociativeReferenceError.exactNamedPlaneRequired(version)
         }
+        guard SignatureNaming.acceptsNamedSignature(name, current: signature, reference: source.signature) else {
+            throw AssociativeReferenceError.missingNamedFace(version)
+        }
         return (SourceFaceGeometry(bodyID: version.bodyID, centroid: face.centroid,
                                    normal: face.normal),
                 face.area)
@@ -937,6 +940,9 @@ nonisolated struct AssociativeGeometryResolver: Sendable {
               radius.isFinite, radius > 0,
               let axisPoint = face.axisPoint else {
             throw AssociativeReferenceError.exactNamedCylinderRequired(version)
+        }
+        guard SignatureNaming.acceptsNamedSignature(name, current: signature, reference: source.signature) else {
+            throw AssociativeReferenceError.missingNamedFace(version)
         }
         // Display-only axial size: a cylinder face's own bounded extent is not
         // part of the face contract, so keep the R1 rule (sqrt area, which is

@@ -54,6 +54,16 @@ nonisolated struct ElementName: Codable, Hashable, Sendable {
 
     var creator: FeatureID
     var source: Source
+
+    /// Result ordinals are retained for old documents and current geometric
+    /// selection, but they are not identities across a structural edit. An
+    /// operation can renumber a surviving fragment after deleting a sibling.
+    var requiresExactSignature: Bool {
+        switch source {
+        case .opFace, .kernelFace, .primitiveFace(.derived): return true
+        case .primitiveFace, .profileWall, .profileCap, .holeFace: return false
+        }
+    }
 }
 
 /// One crease between two uniquely named faces. A pair that meets at several
@@ -111,7 +121,11 @@ nonisolated enum ElementNaming {
                           names: [Int: ElementName]) -> [Int: EdgeName] {
         let pairs = edgeFacePairs(adjacency: adjacency, names: names)
         let counts = Dictionary(grouping: pairs.values, by: { $0 }).mapValues(\.count)
-        return pairs.filter { counts[$0.value] == 1 }
+        return pairs.filter {
+            counts[$0.value] == 1
+                && !$0.value.faceA.requiresExactSignature
+                && !$0.value.faceB.requiresExactSignature
+        }
     }
 
     /// The edge index carrying `name` on a shape — the resolve-side
@@ -420,6 +434,7 @@ nonisolated enum ElementNaming {
     static func upgraded(_ ref: FaceRef, from resolved: ResolvedFace) -> FaceRef? {
         guard ref.elementName == nil,
               let name = resolved.elementName,
+              !name.requiresExactSignature,
               resolved.confidence >= SignatureNaming.upgradeConfidence,
               (resolved.margin ?? .infinity) >= SignatureNaming.nameMissMargin
         else { return nil }

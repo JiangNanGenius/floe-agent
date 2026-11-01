@@ -789,7 +789,10 @@ nonisolated extension FeatureGraph {
             bodies: state.order.compactMap { state.bodies[$0] },
             faceTables: state.faceTables,
             kernelNames: state.kernelNames,
-            proposedUpgrades: state.proposedUpgrades,
+            // A signature seen before a failed kernel operation did not earn
+            // a persistent identity. Apply this to every face/edge consumer,
+            // including the older operations that propose before execution.
+            proposedUpgrades: state.proposedUpgrades.filter { state.errors[$0.key] == nil },
             errors: state.errors,
             resolvedPlaneUpdates: state.associative.resolvedPlaneUpdates,
             resolvedSketchSupportUpdates: state.associative.resolvedSketchSupportUpdates,
