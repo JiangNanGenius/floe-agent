@@ -1140,8 +1140,37 @@ final class EngineeringSceneResourceWitnessTests: XCTestCase {
                 let blue = Int(pixels.rgba[index + 2])
                 if red > 120 && red > green * 2 && red > blue * 2 { redPixels += 1 }
             }
-            XCTAssertGreaterThan(redPixels, 16,
-                                 "\(expectedMode) must draw actual coloured pixels, not an empty scene")
+            if mode == 0 {
+                // POINTS uses subpixel antialiasing: counting only saturated
+                // red pixels discarded 33 of the 49 visible marks in actual111.
+                // Require a coloured mark in EVERY grid cell instead, which
+                // detects omitted points without depending on subpixel phase.
+                let bounds = pixels.foreground(threshold: 8)
+                XCTAssertGreaterThan(bounds.width, 100)
+                XCTAssertGreaterThan(bounds.height, 100)
+                for row in 0...6 {
+                    for column in 0...6 {
+                        let centerX = bounds.minimumX + Int((Double(column)
+                            * Double(bounds.maximumX - bounds.minimumX) / 6).rounded())
+                        let centerY = bounds.minimumY + Int((Double(row)
+                            * Double(bounds.maximumY - bounds.minimumY) / 6).rounded())
+                        var found = false
+                        for y in max(0, centerY - 2)...min(pixels.height - 1, centerY + 2) {
+                            for x in max(0, centerX - 2)...min(pixels.width - 1, centerX + 2) {
+                                let colour = pixels.rgb(x, y)
+                                if colour.0 > colour.1 + 12 && colour.0 > colour.2 + 12 {
+                                    found = true
+                                }
+                            }
+                        }
+                        XCTAssertTrue(found,
+                                      "POINTS omitted grid point [\(column),\(row)]")
+                    }
+                }
+            } else {
+                XCTAssertGreaterThan(redPixels, 16,
+                                     "\(expectedMode) must draw actual coloured pixels, not an empty scene")
+            }
             XCTAssertEqual(try Data(contentsOf: root.appendingPathComponent("\(name).gltf")), source)
             XCTAssertEqual(try Data(contentsOf: root.appendingPathComponent("\(name).bin")), binary)
             attachPNG(png, name: "scene-nontriangle-\(name)")

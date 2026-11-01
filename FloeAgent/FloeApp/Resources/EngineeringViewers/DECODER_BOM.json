@@ -48,5 +48,10 @@
     "basis_transcoder.js": "8478b5b6d6b74e7d3082b89f6417321d8d1dc0307f2b30d4484bb11b441696a1",
     "basis_transcoder.wasm": "6cf17dc889352c42e9acf8897107978d127005fe3386c36a0e3845e27967630a"
   },
-  "sceneBundleSHA256": "f11cdd7daa5e100022a413a9712374d20de2a1557d208e09f49389015a26e727"
+  "ktx2WorkerGuard": {
+    "source": "FloeAgent/ThirdParty/EngineeringViewers/ktx2-worker-guard.js",
+    "sourceSHA256": "8b6bfbc43b79f60967f7cd1efa12f291f3365b5082fc162ba0a828825835d330",
+    "adaptation": "CSP-safe embind closures and bounded owned-worker lifecycle; upstream decoder files unchanged"
+  },
+  "sceneBundleSHA256": "27533ec361d645660d1ef01ffd727998e76564bb817c3c7db77b21b099fb3726"
 }

@@ -8,6 +8,7 @@ import {KTX2Loader} from 'three/examples/jsm/loaders/KTX2Loader.js';
 import {MeshoptDecoder} from 'three/examples/jsm/libs/meshopt_decoder.module.js';
 import {OrbitControls} from 'three/examples/jsm/controls/OrbitControls.js';
 import {RoomEnvironment} from 'three/examples/jsm/environments/RoomEnvironment.js';
+import {installGuardedKTX2Loader} from './ktx2-worker-guard.js';
 
 const MAX_NODES = 200;
 const MAX_CAPTURE_FRAMES = 8;
@@ -199,19 +200,16 @@ export function createEngineeringScene({container, package: pkg, config = {}, sa
   let ktx2 = null;
   try {
     ktx2 = new KTX2Loader(manager).setTranscoderPath('./').detectSupport(renderer);
-    // r176's pool handles message replies only. A worker startup/decoding
-    // exception otherwise leaves its texture promise pending until the page
-    // times out, hiding the real failure from the native error bridge.
-    const pool = ktx2.workerPool;
-    const setCreator = pool.setWorkerCreator.bind(pool);
-    pool.setWorkerCreator = (factory) => setCreator(() => {
-      const worker = factory();
-      const report = (message) => {
+    // r176's WorkerPool never rejects: a transcoder worker that dies (or whose
+    // embind init is blocked by the page CSP) leaves the texture promise
+    // pending until the page timeout. The guarded loader keeps the pinned
+    // transcoder and protocol, removes embind's blocked runtime code
+    // generation, and turns any residual worker failure into one bounded,
+    // sanitized error through the existing scene-error bridge.
+    installGuardedKTX2Loader(ktx2, {
+      onFailure: (message) => {
         if (!disposed) onError?.(new Error(`Texture decoder: ${message}`));
-      };
-      worker.addEventListener('error', (event) => report(event.message || 'worker failed'), {once: true});
-      worker.addEventListener('messageerror', () => report('invalid worker response'), {once: true});
-      return worker;
+      }
     });
     loader.setKTX2Loader(ktx2);
   } catch {
@@ -949,9 +947,9 @@ export function createEngineeringScene({container, package: pkg, config = {}, sa
     if (unsupported.length) runtimeWarnings.push(say
       ? say(`未支持的扩展：${unsupported.join(', ')}`, `Unsupported extensions: ${unsupported.join(', ')}`)
       : `Unsupported extensions: ${unsupported.join(', ')}`);
-    if (pkg.diagnostics?.sparseAccessorCount > 0) runtimeWarnings.push(say
-      ? '稀疏访问器由查看器解码，不代表 CAD 导入无损。'
-      : 'Sparse accessors are decoded by the viewer; CAD import remains lossy.');
+    // Sparse accessors are decoded by this viewer. Their informational
+    // preflight count stays in diagnostics, not in runtime omissions. CAD
+    // import capabilities are reported by the separate import path.
     if (animations.length) setupClip(0);
     fit();
     ready = true;

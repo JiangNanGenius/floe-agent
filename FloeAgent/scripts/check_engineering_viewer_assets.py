@@ -22,6 +22,11 @@ assert cad['sha256'] == '6298485f7afd00af7880f285f01ab387143a1fbb20c42f9048830c9
 assert (root / 'floe_cad_engine_bg.wasm').read_bytes().startswith(b'\x00asm')
 assert (root / 'CAD_NOTICES.txt').stat().st_size > 1000
 assert "'wasm-unsafe-eval'" in html
+assert "'unsafe-eval'" not in html, 'Decoder integration must preserve the script code-generation boundary'
+bom = json.loads((root / 'DECODER_BOM.json').read_text())
+guard_source = Path(__file__).resolve().parents[1] / 'ThirdParty/EngineeringViewers/ktx2-worker-guard.js'
+assert bom['ktx2WorkerGuard']['sourceSHA256'] == hashlib.sha256(guard_source.read_bytes()).hexdigest()
+assert bom['sceneBundleSHA256'] == hashlib.sha256((root / 'scene.js').read_bytes()).hexdigest()
 occt = json.loads((root / 'OCCT_SOURCES.json').read_text())
 assert hashlib.sha256((root / 'occt-import-js.wasm').read_bytes()).hexdigest() == occt['bundledWASMSHA256']
 assert (root / 'OCCT_LGPL_EXCEPTION.txt').stat().st_size > 100

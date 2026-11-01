@@ -53,12 +53,27 @@ Supported at source/package level (not device-qualified here):
   buffers fail explicitly; missing optional textures produce a partial-scene
   warning and are never fetched from a remote URL.
 
+KTX2/Basis uses `ktx2-worker-guard.js` to adapt the pinned embind runtime to
+the existing CSP without JavaScript string evaluation. The guard preserves
+upstream initialization/disposal, owns worker ports and Blob URLs, and bounds
+initialization and decoding failures. `DECODER_BOM.json` binds the adapter's
+source hash as well as the unchanged upstream JS/WASM and shipped scene bundle.
+The component probes exercise real Basis pixels with string code generation
+blocked; actual WKWebView decoding remains a separate App qualification gate.
+
 Not supported / not claimed: glTF extensions outside the conservative
 preflight allowlist, arbitrary texture codecs, remote resources, animation
 authoring or lossless CAD import. `GLTFKit2` and prebuilt `libktx` are not used
 because the optional `lib/etcdec.cxx` terms remain unresolved.
 
-Current limits: 20 MiB total preview input, 32 referenced files, and the existing workspace per-file read cap. Only explicit OBJ/MTL/glTF dependencies under the selected folder are read. Remote previews currently contain the selected file only. Some MTL options, texture formats, DXF dimension/line-style/layout features and compressed model decoders are unavailable. Imports do not establish dimensionally exact engineering validation or CAD editing. See `docs/FLOE_ENGINEERING_VIEWERS.md` for the evidence and pending decoder work.
+Default preview limits are 20 MiB total and 32 files; an explicit observation
+can request at most 64 MiB and 128 files. Existing per-file and bridge payload
+limits still apply. Only declared OBJ/MTL/glTF dependencies under the selected
+folder are read; remote previews currently contain the selected file only.
+Some MTL options, texture formats, DXF dimension/line-style/layout features and
+extensions outside the decoder allowlist remain unavailable. Imports do not
+establish dimensional validation or lossless CAD editing. See
+`docs/FLOE_ENGINEERING_VIEWERS.md` for the evidence and remaining qualification.
 
 ## Open CASCADE source and replacement
 

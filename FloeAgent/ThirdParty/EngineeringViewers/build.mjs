@@ -73,6 +73,11 @@ const bom={
     zstddec:{license:'MIT AND BSD-3-Clause',source:'three@0.176.0/examples/jsm/libs/zstddec.module.js',bundledInto:'scene.js'}
   },
   sha256,
+  ktx2WorkerGuard:{
+    source:'FloeAgent/ThirdParty/EngineeringViewers/ktx2-worker-guard.js',
+    sourceSHA256:await hashFile(path.join(root,'ktx2-worker-guard.js')),
+    adaptation:'CSP-safe embind closures and bounded owned-worker lifecycle; upstream decoder files unchanged'
+  },
   sceneBundleSHA256:await hashFile(path.join(out,'scene.js'))
 };
 await writeFile(path.join(out,'DECODER_BOM.json'),JSON.stringify(bom,null,2)+'\n');
