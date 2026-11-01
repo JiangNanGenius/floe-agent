@@ -286,6 +286,16 @@ class ConversationHistoryHolder(
             ConversationFlowResult.Rejected(ConversationRejectedReason.HOST_UNAVAILABLE)
         }
 
+    /** ⇄ row menu Pin/Unpin: durable per-row state through the existing
+     * conversation metadata CAS. No optimistic flag: the row moves only when
+     * the host publishes the reloaded native order. */
+    fun setPinned(id: String, pinned: Boolean): ConversationFlowResult =
+        if (host.setConversationPinned(id, pinned)) ConversationFlowResult.Accepted
+        else {
+            applyActionError("runtime_unavailable")
+            ConversationFlowResult.Rejected(ConversationRejectedReason.HOST_UNAVAILABLE)
+        }
+
     /* --------------------------------- bulk ops --------------------------------- */
 
     /** ⇄ perform(operation, targets): uses the FROZEN set, never the live

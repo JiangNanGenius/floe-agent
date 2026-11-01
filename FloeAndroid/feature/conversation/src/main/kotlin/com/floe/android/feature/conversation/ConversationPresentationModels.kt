@@ -997,6 +997,10 @@ data class ConversationListItemUi(
     val projectedStateName: String?,
     val isArchived: Boolean,
     val archivedAtLabel: String?,
+    /** ⇄ ConversationRecord.pinnedAt != nil (schema v50 row column). The host
+     * delivers rows in the native pinned-first order; this flag is the durable
+     * state, never an optimistic UI-only marker. */
+    val isPinned: Boolean = false,
 )
 
 /** ⇄ ConversationTaskBulkService.runningCount(among:) input. */

@@ -287,6 +287,9 @@
     <string name="history_filter_tasks">任务</string>
     <string name="history_filter_archive">已归档</string>
     <string name="history_archive_action">归档</string>
+    <string name="history_pin_action">置顶</string>
+    <string name="history_unpin_action">取消置顶</string>
+    <string name="history_pinned_badge">已置顶</string>
     <string name="history_restore_action">恢复</string>
     <string name="history_delete_forever">永久删除</string>
     <string name="history_delete_confirm_title">删除任务</string>

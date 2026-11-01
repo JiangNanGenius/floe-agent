@@ -93,6 +93,10 @@ public struct ProviderSaveCandidate: Sendable, Equatable {
     public let baseURLString: String
     public let displayName: String
     public let presetID: String?
+    /// Optional durable provider region. ABSENT means "keep the persisted
+    /// column"; an explicit non-empty value is the user-selected region and
+    /// is committed verbatim. Never inferred from the endpoint or a preset.
+    public let region: String?
     public let nonSecretHeaders: [String: String]
     public let isEnabled: Bool
     public let allowsPlainHTTP: Bool
@@ -118,7 +122,7 @@ public struct ProviderSaveCandidate: Sendable, Equatable {
     /// (ConfigJSON.closed), so a smuggled field can never widen the draft.
     static let allowedKeys: Set<String> = [
         "id", "kind", "wireProtocol", "baseURL", "displayName", "presetID",
-        "nonSecretHeaders", "isEnabled", "allowsPlainHTTP",
+        "region", "nonSecretHeaders", "isEnabled", "allowsPlainHTTP",
         "toolNameCompatibility", "syncEnabled", "selectedModels",
         "modelSetRef", "managedCapabilities", "serviceRoleIsConversation",
         "defaultModelID", "createIntent",
@@ -180,6 +184,21 @@ public struct ProviderSaveCandidate: Sendable, Equatable {
             presetID = preset
         default:
             throw ConfigDomainError(code: .invalidEnvelope, reason: "candidate.presetID")
+        }
+        var region: String?
+        switch dictionary["region"] {
+        case .none, is NSNull:
+            // Older clients omit the key: the persisted row value wins in
+            // makeDraft, so a name-only edit can never erase the region.
+            region = nil
+        case let raw as String:
+            guard !raw.isEmpty, raw.utf8.count <= 128 else {
+                throw ConfigDomainError(code: .invalidEnvelope,
+                                        reason: "candidate.region")
+            }
+            region = raw
+        default:
+            throw ConfigDomainError(code: .invalidEnvelope, reason: "candidate.region")
         }
         var headers: [String: String] = [:]
         switch dictionary["nonSecretHeaders"] {
@@ -261,6 +280,7 @@ public struct ProviderSaveCandidate: Sendable, Equatable {
             baseURLString: baseURLString,
             displayName: displayName,
             presetID: presetID,
+            region: region,
             nonSecretHeaders: headers,
             isEnabled: isEnabled,
             allowsPlainHTTP: allowsPlainHTTP,
@@ -289,6 +309,7 @@ public struct ProviderSaveCandidate: Sendable, Equatable {
             baseURLString: baseURLString,
             displayName: displayName,
             presetID: presetID,
+            region: region,
             nonSecretHeaders: nonSecretHeaders,
             isEnabled: isEnabled,
             allowsPlainHTTP: allowsPlainHTTP,
@@ -331,7 +352,10 @@ public struct ProviderSaveCandidate: Sendable, Equatable {
             existingCreatedAt: existingRow?.createdAt,
             existingSyncRevision: existingRow?.syncRevision ?? 0,
             existingBaseURL: existingRow?.baseURL,
-            existingKind: existingRow?.kind
+            existingKind: existingRow?.kind,
+            // Explicit wire region wins; an absent key preserves the ACTUAL
+            // persisted region instead of silently clearing it.
+            region: region ?? existingRow?.region
         )
     }
 }

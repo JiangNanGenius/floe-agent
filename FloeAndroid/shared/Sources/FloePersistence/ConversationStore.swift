@@ -24,6 +24,13 @@ public struct ConversationRecord: Sendable, Hashable, Identifiable {
     public var titleOrigin: ConversationTitleOrigin
     public var archivedAt: Date?
     public var purpose: ConversationPurpose
+    /// Optional durable sidebar pin (schema v50). `nil` for every row written
+    /// before pinning existed and for ordinary unpinned rows. The moment a
+    /// row moved INTO the pinned group; the column lives on the conversation
+    /// row itself (never a parallel per-device UI store), so rename, archive,
+    /// restore and workspace moves preserve it. Pinning never touches
+    /// `updated_at`, so it cannot fake activity.
+    public var pinnedAt: Date?
 
     public init(
         id: UUID,
@@ -32,7 +39,8 @@ public struct ConversationRecord: Sendable, Hashable, Identifiable {
         updatedAt: Date,
         titleOrigin: ConversationTitleOrigin = .autoPending,
         archivedAt: Date? = nil,
-        purpose: ConversationPurpose = .ordinary
+        purpose: ConversationPurpose = .ordinary,
+        pinnedAt: Date? = nil
     ) {
         self.id = id
         self.title = title
@@ -41,7 +49,14 @@ public struct ConversationRecord: Sendable, Hashable, Identifiable {
         self.titleOrigin = titleOrigin
         self.archivedAt = archivedAt
         self.purpose = purpose
+        self.pinnedAt = pinnedAt
     }
+}
+
+public extension ConversationRecord {
+    /// Durable pin presence. Pinning is presentation metadata on the SAME
+    /// durable row, so it survives relaunch/reopen and every ordinary edit.
+    var isPinned: Bool { pinnedAt != nil }
 }
 
 /// A persisted message with its ordered typed content parts.
@@ -132,6 +147,12 @@ public protocol ConversationStore: Sendable {
     @discardableResult
     func deleteConversationIfVerifiedEmpty(id: UUID) async throws -> Bool
     func setArchived(id: UUID, archived: Bool) async throws
+    /// Durable sidebar pin (schema v50). Writes ONLY the `pinned_at` column —
+    /// never `updated_at` — so pinning an old chat does not fake activity and
+    /// unpinning restores the plain recency ordering. A missing row and a
+    /// non-ordinary (Notes/temporary) row are ACTIONABLE errors, never a
+    /// silent zero-row UPDATE reported as success.
+    func setPinned(id: UUID, pinnedAt: Date?) async throws
 
     func appendMessage(_ message: PersistedMessage) async throws
     func messages(conversationID: UUID) async throws -> [PersistedMessage]
@@ -160,6 +181,13 @@ public extension ConversationStore {
 
     func setArchived(id: UUID, archived: Bool) async throws {
         throw FloeError.invalidConfiguration("This conversation store does not support archives")
+    }
+
+    /// Stores without a durable conversations row (for example the RAM-only
+    /// temporary-chat store) refuse pinning instead of silently persisting:
+    /// a temporary chat must be Kept (promoted) before it can be pinned.
+    func setPinned(id: UUID, pinnedAt: Date?) async throws {
+        throw FloeError.invalidConfiguration("This conversation store does not support pinning")
     }
 
     func recentMessages(conversationID: UUID, limit: Int) async throws -> [PersistedMessage] {
@@ -201,10 +229,16 @@ public actor SQLiteConversationStore: ConversationStore {
 
     public func saveConversation(_ conversation: ConversationRecord) async throws {
         try await database.writer { db in
+            // The FIRST INSERT carries `pinned_at` so a supplied new record
+            // round-trips its public field. The ON CONFLICT update
+            // deliberately NEVER writes `pinned_at`: a save from a
+            // reconstructed record whose pin was not loaded (nil) therefore
+            // cannot erase an existing pin. User-driven pin changes go
+            // through `setPinned`, the only UPDATE that touches the column.
             try db.execute(
                 sql: """
-                    INSERT INTO conversations (id, title, created_at, updated_at, purpose)
-                    VALUES (?, ?, ?, ?, ?)
+                    INSERT INTO conversations (id, title, created_at, updated_at, purpose, pinned_at)
+                    VALUES (?, ?, ?, ?, ?, ?)
                     ON CONFLICT(id) DO UPDATE SET
                         title = excluded.title,
                         updated_at = excluded.updated_at
@@ -214,7 +248,8 @@ public actor SQLiteConversationStore: ConversationStore {
                     conversation.title,
                     PersistenceCodec.encode(conversation.createdAt),
                     PersistenceCodec.encode(conversation.updatedAt),
-                    conversation.purpose.rawValue
+                    conversation.purpose.rawValue,
+                    conversation.pinnedAt.map { PersistenceCodec.encode($0) }
                 ]
             )
         }
@@ -226,11 +261,15 @@ public actor SQLiteConversationStore: ConversationStore {
 
     public func conversations(includeArchived: Bool) async throws -> [ConversationRecord] {
         try await database.reader { db in
+            // Pinned rows first within their existing group, most recent pin
+            // first (schema v50); everything else keeps the established
+            // `updated_at DESC, id` recency order. Archived rows are only
+            // included when explicitly requested, and keep their pin.
             try Row.fetchAll(
                 db,
                 sql: includeArchived
-                    ? "SELECT * FROM conversations WHERE purpose = 'ordinary' ORDER BY updated_at DESC, id"
-                    : "SELECT * FROM conversations WHERE purpose = 'ordinary' AND archived_at IS NULL ORDER BY updated_at DESC, id"
+                    ? "SELECT * FROM conversations WHERE purpose = 'ordinary' ORDER BY (pinned_at IS NULL), pinned_at DESC, updated_at DESC, id"
+                    : "SELECT * FROM conversations WHERE purpose = 'ordinary' AND archived_at IS NULL ORDER BY (pinned_at IS NULL), pinned_at DESC, updated_at DESC, id"
             ).map(Self.conversation(from:))
         }
     }
@@ -299,8 +338,8 @@ public actor SQLiteConversationStore: ConversationStore {
     /// assistant (`purpose = 'notes'`), a manually named chat, an automatic
     /// title, or an archived task must never be deleted and restored as a
     /// blank ordinary row. Only `purpose = 'ordinary'` + empty title +
-    /// `title_origin = 'autoPending'` + not archived (and no child resource)
-    /// is eligible.
+    /// `title_origin = 'autoPending'` + not archived + not pinned (and no
+    /// child resource) is eligible.
     ///
     /// A hit, ineligible metadata or a missing row returns `false`: the
     /// caller must treat the conversation as owning durable state (or as
@@ -314,7 +353,7 @@ public actor SQLiteConversationStore: ConversationStore {
             guard let row = try Row.fetchOne(
                 db,
                 sql: """
-                    SELECT title, title_origin, purpose, archived_at
+                    SELECT title, title_origin, purpose, archived_at, pinned_at
                     FROM conversations WHERE id = ?
                     """,
                 arguments: [conversationID]
@@ -323,10 +362,15 @@ public actor SQLiteConversationStore: ConversationStore {
             let titleOrigin = row["title_origin"] as String? ?? "autoPending"
             let purpose = row["purpose"] as String? ?? "ordinary"
             let archivedAt = row["archived_at"] as String?
+            // A durable pin is explicit user metadata: converting a pinned
+            // blank row in place would silently erase it, so such a row is
+            // ineligible for the verified-empty removal.
+            let pinnedAt = row["pinned_at"] as String?
             guard purpose == "ordinary",
                   title.isEmpty,
                   titleOrigin == "autoPending",
-                  archivedAt == nil
+                  archivedAt == nil,
+                  pinnedAt == nil
             else { return false }
             // (table, predicate) — every conversation-scoped durable table.
             let probes: [(table: String, predicate: String)] = [
@@ -384,6 +428,32 @@ public actor SQLiteConversationStore: ConversationStore {
                     PersistenceCodec.encode(Date()),
                     id.uuidString
                 ]
+            )
+        }
+    }
+
+    public func setPinned(id: UUID, pinnedAt: Date?) async throws {
+        try await database.writer { db in
+            // One transaction: the eligibility read and the write commit
+            // together, so a missing or non-ordinary row is an ACTIONABLE
+            // error, never a zero-row UPDATE reported as success. Pins
+            // persist only on durable ordinary conversations — Notes
+            // assistants are refused, and a RAM-only temporary chat never has
+            // a durable row at all (its ephemeral store also rejects
+            // `setPinned` through the protocol default).
+            guard let row = try Row.fetchOne(
+                db,
+                sql: "SELECT purpose FROM conversations WHERE id = ?",
+                arguments: [id.uuidString]
+            ) else {
+                throw FloeError.notFound("conversation \(id.uuidString)")
+            }
+            guard (row["purpose"] as String?) == ConversationPurpose.ordinary.rawValue else {
+                throw FloeError.validationFailed("Only ordinary conversations can be pinned")
+            }
+            try db.execute(
+                sql: "UPDATE conversations SET pinned_at = ? WHERE id = ?",
+                arguments: [pinnedAt.map { PersistenceCodec.encode($0) }, id.uuidString]
             )
         }
     }
@@ -770,7 +840,8 @@ public actor SQLiteConversationStore: ConversationStore {
             titleOrigin: ConversationTitleOrigin(rawValue: row["title_origin"] as String? ?? "autoPending")
                 ?? .autoPending,
             archivedAt: (row["archived_at"] as String?).flatMap { try? PersistenceCodec.decodeDate($0) },
-            purpose: ConversationPurpose(rawValue: row["purpose"]) ?? .ordinary
+            purpose: ConversationPurpose(rawValue: row["purpose"]) ?? .ordinary,
+            pinnedAt: (row["pinned_at"] as String?).flatMap { try? PersistenceCodec.decodeDate($0) }
         )
     }
 

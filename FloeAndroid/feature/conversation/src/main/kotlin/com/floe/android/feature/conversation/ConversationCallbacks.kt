@@ -617,6 +617,11 @@ interface ConversationUiCallbacks {
     fun restoreConversation(conversationId: String): Boolean
     fun deleteConversation(conversationId: String): Boolean
 
+    /** ⇄ setConversationPinned(id:pinned:) — durable schema-v50 row column
+     * through the existing conversation metadata CAS. False means the host
+     * could not dispatch; a real refusal arrives through [applyActionError]. */
+    fun setConversationPinned(conversationId: String, pinned: Boolean): Boolean
+
     /** Existing native conversation.rename CAS; no optimistic title change. */
     fun renameConversation(conversationId: String, title: String, requestToken: Long): Boolean = false
 

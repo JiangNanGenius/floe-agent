@@ -5331,11 +5331,12 @@ class ConversationHostController internal constructor(
                 is HostOperationOutcome.Completed -> {
                     val page = outcome.value?.let { ConversationWire.decodeConversationList(it) }
                     if (page != null) {
+                        val pinned = ConversationPinProjection.pinnedConversationIDs(outcome.value)
                         historyHolder.applyHostState(
                             HistoryListUiState(
                                 isLoading = false,
-                                items = page.active,
-                                archivedItems = page.archived,
+                                items = page.active.map { it.copy(isPinned = it.id in pinned) },
+                                archivedItems = page.archived.map { it.copy(isPinned = it.id in pinned) },
                                 contentSnippets = emptyMap(),
                                 searchEpoch = historyHolder.state.value?.searchEpoch ?: 0,
                                 isSearching = false,
@@ -5642,6 +5643,26 @@ class ConversationHostController internal constructor(
         return true
     }
 
+    /**
+     * Durable sidebar pin (schema v50) through the EXISTING conversation
+     * metadata envelope/CAS: `conversation.archive` with the closed
+     * `{"pinned": Bool}` payload discriminator. The host re-reads the CURRENT
+     * row digest immediately before dispatch, so a pin after any run/message
+     * commit is admitted under the real revision; a stale row surfaces the
+     * typed `staleRevision` and the native UPDATE writes nothing. Success
+     * reloads the native pinned-first list — no optimistic local flag.
+     */
+    override fun setConversationPinned(conversationId: String, pinned: Boolean): Boolean {
+        if (!conversationAdmitted()) return false
+        mutateConversation(
+            conversationId,
+            command = ConversationPinProjection.COMMAND,
+            payload = ConversationPinProjection.payload(pinned),
+            correlationPrefix = "cpin",
+        )
+        return true
+    }
+
     override fun deleteConversation(conversationId: String): Boolean {
         if (!conversationAdmitted()) return false
         mutateConversation(
@@ -5742,10 +5763,11 @@ class ConversationHostController internal constructor(
                 is HostOperationOutcome.Completed -> {
                     val results = outcome.value?.let { ConversationWire.decodeSearch(it) }
                         ?: emptyList()
+                    val pinned = ConversationPinProjection.pinnedConversationIDs(outcome.value)
                     historyHolder.applyHostState(
                         HistoryListUiState(
                             isLoading = false,
-                            items = results,
+                            items = results.map { it.copy(isPinned = it.id in pinned) },
                             archivedItems = emptyList(),
                             contentSnippets = emptyMap(),
                             searchEpoch = epoch,
@@ -6392,3 +6414,37 @@ internal class QueueSettleRerun(
     val fact: QueueSettleFact?,
     val resync: Boolean,
 )
+
+/**
+ * Durable conversation pin projection (schema v50).
+ *
+ * The pin is an ordinary conversation-row column. Android sends it through
+ * the EXISTING frozen `conversation.archive` metadata envelope with a closed
+ * `{"pinned": Bool}` discriminator (the native facade parses exactly one of
+ * `archived`/`pinned`), so no new v3 command rule, handler registration or
+ * readiness key is fabricated. Rows still arrive in the native pinned-first
+ * order; this projection only reads the durable boolean the host/reply
+ * already carries — it never invents or caches a UI-only pin state.
+ */
+internal object ConversationPinProjection {
+    const val COMMAND = "conversation.archive"
+
+    fun payload(pinned: Boolean): JsonObject =
+        JsonObject(mapOf("pinned" to JsonPrimitive(pinned)))
+
+    /** Ids whose projected row carries `pinned == true`. Unknown/absent
+     * values are unpinned (the schema default); malformed rows are skipped. */
+    fun pinnedConversationIDs(value: JsonElement?): Set<String> {
+        val rows = ((value as? JsonObject)?.get("rows") as? JsonArray) ?: return emptySet()
+        val pinnedIds = LinkedHashSet<String>()
+        for (element in rows) {
+            val obj = element as? JsonObject ?: continue
+            val id = (obj["conversationID"] as? JsonPrimitive)?.contentOrNull
+                ?: (obj["id"] as? JsonPrimitive)?.contentOrNull
+                ?: continue
+            val pinned = (obj["pinned"] as? JsonPrimitive)?.booleanOrNull ?: false
+            if (pinned) pinnedIds.add(id)
+        }
+        return pinnedIds
+    }
+}

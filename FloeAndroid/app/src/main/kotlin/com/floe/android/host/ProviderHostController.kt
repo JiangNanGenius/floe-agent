@@ -890,6 +890,7 @@ class ProviderHostController internal constructor(
             supplier = supplier,
             protocol = protocol,
             baseUrl = row.endpointSummary,
+            region = extras?.region,
             nonSecretHeaders = extras?.nonSecretHeaders ?: "",
             allowsPlainHttp = extras?.allowsPlainHTTP ?: false,
             toolNameCompatibility = extras?.toolNameCompatibility ?: false,
@@ -1965,6 +1966,10 @@ internal object ProviderWire {
         val displayName: String?,
         val presetID: String? = null,
         val nonSecretHeaders: String = "",
+        /** Persisted `region` column (ConfigProviderSummary). Carried back into
+         * the editor draft so a name-only endpoint edit re-emits the exact
+         * value; it is never derived from the endpoint or a preset. */
+        val region: String? = null,
     )
 
     /** Persisted preset → supplier selection (display only; an explicit
@@ -2143,6 +2148,7 @@ internal object ProviderWire {
                     // older producers (absent = nil/empty).
                     presetID = obj.string("presetID"),
                     nonSecretHeaders = headerLines(obj["nonSecretHeaders"] as? JsonObject),
+                    region = obj.string("region"),
                 )
             }
             val secret = obj["secret"] as? JsonObject
@@ -2482,6 +2488,12 @@ internal object ProviderWire {
             "createIntent" to JsonPrimitive(createIntent),
         )
         draft.supplier?.let { members["presetID"] = JsonPrimitive(it.presetId) }
+        // Optional durable region, carried from the SEEDED persisted row.
+        // The current form exposes no region picker, so a name-only or
+        // endpoint edit re-emits the exact value it opened with; an absent
+        // key (new provider / older caller) lets the native draft preserve
+        // the persisted column instead of choosing a default.
+        draft.region?.takeIf { it.isNotEmpty() }?.let { members["region"] = JsonPrimitive(it) }
         members["nonSecretHeaders"] = nonSecretHeadersJson(draft.nonSecretHeaders)
         if (defaultDraftID != null) {
             members["defaultModelID"] = JsonPrimitive(modelUUID(defaultDraftID))

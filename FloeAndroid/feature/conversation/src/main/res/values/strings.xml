@@ -288,6 +288,9 @@
     <string name="history_filter_tasks">Tasks</string>
     <string name="history_filter_archive">Archived</string>
     <string name="history_archive_action">Archive</string>
+    <string name="history_pin_action">Pin</string>
+    <string name="history_unpin_action">Unpin</string>
+    <string name="history_pinned_badge">Pinned</string>
     <string name="history_restore_action">Restore</string>
     <string name="history_delete_forever">Delete permanently</string>
     <string name="history_delete_confirm_title">Delete task</string>

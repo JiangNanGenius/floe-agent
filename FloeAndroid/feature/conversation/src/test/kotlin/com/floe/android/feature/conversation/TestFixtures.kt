@@ -266,6 +266,12 @@ class RecordingHost : ConversationUiCallbacks {
         record("deleteConversation", conversationId); return true
     }
 
+    var setPinnedAccepted = true
+
+    override fun setConversationPinned(conversationId: String, pinned: Boolean): Boolean {
+        record("setConversationPinned", conversationId, pinned); return setPinnedAccepted
+    }
+
     override fun renameConversation(conversationId: String, title: String, requestToken: Long): Boolean {
         record("renameConversation", conversationId, title, requestToken); return true
     }

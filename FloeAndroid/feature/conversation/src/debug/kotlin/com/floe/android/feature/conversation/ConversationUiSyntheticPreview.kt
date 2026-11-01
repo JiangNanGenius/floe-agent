@@ -317,6 +317,7 @@ private class SyntheticConversationHost(
     override fun archiveConversation(conversationId: String) = true
     override fun restoreConversation(conversationId: String) = true
     override fun deleteConversation(conversationId: String) = true
+    override fun setConversationPinned(conversationId: String, pinned: Boolean) = true
     override fun requestContentSearch(query: String, epoch: Long) = true
     override fun requestBulk(operation: TaskBulkOperationUi, conversationIds: List<String>, token: Long) = true
     override fun cancelBulk(token: Long) = Unit

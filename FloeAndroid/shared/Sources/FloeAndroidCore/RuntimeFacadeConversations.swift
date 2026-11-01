@@ -4,7 +4,7 @@
 // (private source candidate; NOT compiled, NOT executed, NOT registered).
 //
 // Authority chain (READ FIRST):
-// * Local/Private/android-g02-20261018/RB3_CONVERSATION_HISTORY_SOURCE_ADMISSION_20261019.json
+// Source admission evidence retained in the private coordinator record.
 //   — Main opaque conversation-revision clarification: the canonical
 //   `floe.conversation-row.v1` FULL RAW-ROW digest replaces the historical
 //   updatedAt-only revision sketch for the stateful metadata commands.
@@ -1304,8 +1304,25 @@ public struct ConversationRenameQuery: Sendable, Equatable {
     }
 }
 
+/// One ordinary conversation metadata mutation carried by the existing
+/// `conversation.archive` lifecycle envelope. Two disjoint operations share
+/// that ONE frozen command/authority: archive/unarchive (`archived`) and the
+/// durable sidebar pin (`pinned`). Adding a second command would require
+/// widening the frozen v3 command matrix and its host/client readiness sets;
+/// the payload discriminator keeps the same CAS, idempotency and one-writer
+/// transaction guarantees without a parallel authority. Exactly one key is
+/// accepted; mixing both or an unknown key is a typed refusal before any
+/// database read.
 public struct ConversationArchiveQuery: Sendable, Equatable {
-    public var archived: Bool
+    public enum Mode: Sendable, Equatable {
+        case archived(Bool)
+        case pinned(Bool)
+    }
+
+    public var mode: Mode
+
+    public init(archived: Bool) { self.mode = .archived(archived) }
+    public init(pinned: Bool) { self.mode = .pinned(pinned) }
 
     public static func parse(_ payload: SettingsDomainV1.JSONValue?) throws
         -> ConversationArchiveQuery
@@ -1316,13 +1333,27 @@ public struct ConversationArchiveQuery: Sendable, Equatable {
         guard case .object(let root) = payload else {
             throw ConversationDomainError.invalidEnvelope("invalidPayload")
         }
-        for key in root.keys where key != "archived" {
+        for key in root.keys where !["archived", "pinned"].contains(key) {
             throw ConversationDomainError.invalidEnvelope("unknownArchiveField")
         }
-        guard case .boolean(let flag)? = root["archived"] else {
-            throw ConversationDomainError.invalidEnvelope("missingPayloadField:archived")
+        let archivedValue = root["archived"]
+        let pinnedValue = root["pinned"]
+        if archivedValue != nil && pinnedValue != nil {
+            throw ConversationDomainError.invalidEnvelope("conflictingMetadataMutation")
         }
-        return ConversationArchiveQuery(archived: flag)
+        if let value = archivedValue {
+            guard case .boolean(let flag) = value else {
+                throw ConversationDomainError.invalidEnvelope("invalidPayloadField:archived")
+            }
+            return ConversationArchiveQuery(archived: flag)
+        }
+        if let value = pinnedValue {
+            guard case .boolean(let flag) = value else {
+                throw ConversationDomainError.invalidEnvelope("invalidPayloadField:pinned")
+            }
+            return ConversationArchiveQuery(pinned: flag)
+        }
+        throw ConversationDomainError.invalidEnvelope("missingPayloadField:archivedOrPinned")
     }
 }
 
@@ -1373,7 +1404,14 @@ public enum ConversationWireDate {
 enum ConversationCursorCodec {
     static let prefix = "k1."
 
-    struct ListPayload: Codable { let updatedAt: String; let id: String }
+    /// `pinnedAt` is OPTIONAL so a cursor minted before pinning existed
+    /// still decodes (treated as the unpinned group). New cursors always
+    /// carry the real raw `pinned_at` of the last row.
+    struct ListPayload: Codable {
+        let updatedAt: String
+        let id: String
+        var pinnedAt: String? = nil
+    }
     struct MessagePayload: Codable { let createdAt: String; let id: String }
 
     static func encodeList(_ payload: ListPayload) throws -> String {
@@ -1437,15 +1475,23 @@ public struct ConversationListRow: Sendable, Equatable {
     public let updatedAtRaw: String
     public let archivedAtRaw: String?
     public let revision: String?
+    /// RAW persisted `pinned_at` (nil = unpinned). It is part of the keyset
+    /// ordering token but is NOT exposed as a timestamp on the wire: the UI
+    /// only needs the boolean state.
+    public let pinnedAtRaw: String?
 
     public init(conversationID: UUID, title: String, updatedAtRaw: String,
-                archivedAtRaw: String?, revision: String?) {
+                archivedAtRaw: String?, revision: String?,
+                pinnedAtRaw: String? = nil) {
         self.conversationID = conversationID
         self.title = title
         self.updatedAtRaw = updatedAtRaw
         self.archivedAtRaw = archivedAtRaw
         self.revision = revision
+        self.pinnedAtRaw = pinnedAtRaw
     }
+
+    public var isPinned: Bool { pinnedAtRaw != nil }
 
     public var wireObject: [String: Any] {
         var object: [String: Any] = [
@@ -1453,6 +1499,7 @@ public struct ConversationListRow: Sendable, Equatable {
             "title": title,
             "updatedAt": updatedAtRaw,
             "archived": archivedAtRaw != nil,
+            "pinned": isPinned,
         ]
         object["revision"] = revision ?? NSNull()
         return object
@@ -1488,15 +1535,21 @@ public struct ConversationSearchRow: Sendable, Equatable {
     public let conversationTitle: String
     public let snippet: String
     public let createdAtRaw: String
+    /// Durable pin state of the OWNING conversation, read from the SAME
+    /// `conversations` row in the same reply so the search surface agrees
+    /// with the list/archive surfaces (never a UI-only or cached flag).
+    public let pinned: Bool
 
     public init(conversationID: UUID, messageID: UUID, workspaceID: UUID?,
-                conversationTitle: String, snippet: String, createdAtRaw: String) {
+                conversationTitle: String, snippet: String, createdAtRaw: String,
+                pinned: Bool = false) {
         self.conversationID = conversationID
         self.messageID = messageID
         self.workspaceID = workspaceID
         self.conversationTitle = conversationTitle
         self.snippet = snippet
         self.createdAtRaw = createdAtRaw
+        self.pinned = pinned
     }
 
     /// Native hits preview via FTS `snippet(...,24)` / `substr(...,180)` /
@@ -1511,6 +1564,7 @@ public struct ConversationSearchRow: Sendable, Equatable {
             "conversationTitle": conversationTitle,
             "snippet": snippet,
             "createdAt": createdAtRaw,
+            "pinned": pinned,
         ]
         // Explicit JSON null when the row carries no workspace (never a
         // boxed Optional.none: strict G02DomainBinder.designValue refuses
@@ -2519,7 +2573,7 @@ public enum ConversationDomainHandlerPlan {
                 scope: .conversationLifecycle,
                 configurationScope: nil,
                 serviceMethod: "FacadeConversationDomain.archive",
-                integrationNote: "same CAS; NEVER touches run/fence services (ordinary archive is not a cancel)"
+                integrationNote: "same CAS; payload-discriminated {archived} archive/unarchive OR {pinned} durable sidebar pin; pin writes only pinned_at and never cancels runs"
             ),
             Binding(
                 handlerKey: BridgeV3.handlerKey(scope: .conversationLifecycle,
@@ -2713,9 +2767,11 @@ public actor FacadeConversationDomain {
     // MARK: - conversation.list
 
     /// Bounded keyset paging over the ORIGINAL `conversations` table with
-    /// the EXACT native predicate/order (ConversationStore.swift:231-233:
+    /// the EXACT native predicate/order (ConversationStore.swift):
     /// `purpose = 'ordinary'`, optional `archived_at IS NULL`,
-    /// `ORDER BY updated_at DESC, id`). The public store method returns the
+    /// `ORDER BY (pinned_at IS NULL), pinned_at DESC, updated_at DESC, id`
+    /// — pinned rows first within their existing group, everything else in
+    /// the established recency order. The public store method returns the
     /// whole table, so this narrow mirror exists purely for bounded SQL
     /// pagination; equivalence against BOTH public forms
     /// (conversations() / conversations(includeArchived: true)) is pinned by
@@ -2730,7 +2786,9 @@ public actor FacadeConversationDomain {
             guard let decoded = try ConversationCursorCodec.decodeList(cursor),
                   !decoded.updatedAt.isEmpty, !decoded.id.isEmpty,
                   ConversationWireDate.decode(decoded.updatedAt) != nil,
-                  UUID(uuidString: decoded.id) != nil else {
+                  UUID(uuidString: decoded.id) != nil,
+                  decoded.pinnedAt.map({ ConversationWireDate.decode($0) != nil }) ?? true
+            else {
                 throw ConversationDomainError.invalidEnvelope("invalidCursor")
             }
             keyset = decoded
@@ -2747,20 +2805,40 @@ public actor FacadeConversationDomain {
         }
         let fetched: Fetched = try await database.reader { db in
             var sql = """
-                SELECT id, title, updated_at, archived_at
+                SELECT id, title, updated_at, archived_at, pinned_at
                 FROM conversations
                 WHERE purpose = 'ordinary'
                 """
             if !includeArchived { sql += " AND archived_at IS NULL" }
             var arguments: StatementArguments = []
             if let keyset = keysetForQuery {
-                // Native order (updated_at DESC, id ASC): the strict
-                // successor keyset. `id` compares as the same TEXT the
-                // ORDER BY uses (uuidString spelling), so no reinterpretation.
-                sql += " AND (updated_at < ? OR (updated_at = ? AND id > ?))"
-                arguments += [keyset.updatedAt, keyset.updatedAt, keyset.id]
+                // Native order (pinned first, then `pinned_at DESC,
+                // updated_at DESC, id ASC`): the strict successor keyset.
+                // A pinned cursor is followed by the REST of the pinned
+                // group and then every unpinned row; an unpinned cursor is
+                // followed only by unpinned rows. `id` compares as the same
+                // TEXT the ORDER BY uses (uuidString spelling).
+                if let pinnedAt = keyset.pinnedAt {
+                    sql += """
+                         AND (
+                            pinned_at IS NULL
+                            OR pinned_at < ?
+                            OR (pinned_at = ? AND (
+                                updated_at < ? OR (updated_at = ? AND id > ?)
+                            ))
+                         )
+                        """
+                    arguments += [pinnedAt, pinnedAt,
+                                  keyset.updatedAt, keyset.updatedAt, keyset.id]
+                } else {
+                    sql += """
+                         AND pinned_at IS NULL
+                         AND (updated_at < ? OR (updated_at = ? AND id > ?))
+                        """
+                    arguments += [keyset.updatedAt, keyset.updatedAt, keyset.id]
+                }
             }
-            sql += " ORDER BY updated_at DESC, id LIMIT ?"
+            sql += " ORDER BY (pinned_at IS NULL), pinned_at DESC, updated_at DESC, id LIMIT ?"
             arguments += [query.limit + 1]
             let rows = try Row.fetchAll(db, sql: sql, arguments: arguments)
             let hasMore = rows.count > query.limit
@@ -2772,6 +2850,7 @@ public actor FacadeConversationDomain {
                 }
                 let updated: String = row["updated_at"]
                 let archived: String? = row["archived_at"]
+                let pinned: String? = row["pinned_at"]
                 var revision: String?
                 if includeRevision {
                     // Actual producer read inside this SAME reader
@@ -2783,7 +2862,8 @@ public actor FacadeConversationDomain {
                     title: row["title"],
                     updatedAtRaw: updated,
                     archivedAtRaw: archived,
-                    revision: revision
+                    revision: revision,
+                    pinnedAtRaw: pinned
                 ))
             }
             return Fetched(rows: out, hasMore: hasMore)
@@ -2815,7 +2895,8 @@ public actor FacadeConversationDomain {
     private static func listCursor(for rows: [ConversationListRow], hasMore: Bool) -> String? {
         guard hasMore, let last = rows.last else { return nil }
         return try? ConversationCursorCodec.encodeList(
-            .init(updatedAt: last.updatedAtRaw, id: last.conversationID.uuidString))
+            .init(updatedAt: last.updatedAtRaw, id: last.conversationID.uuidString,
+                  pinnedAt: last.pinnedAtRaw))
     }
 
     private static func listPageBytes(rows: [ConversationListRow],
@@ -2843,6 +2924,33 @@ public actor FacadeConversationDomain {
     public func search(payload: SettingsDomainV1.JSONValue?) async throws -> ConversationSearchReply {
         let query = try ConversationSearchQuery.parse(payload)
         let hits = try await intelligenceStore.search(query.request)
+        // Pin state comes from the SAME durable `conversations` rows, read in
+        // ONE bounded statement so the search surface can never disagree with
+        // the list/archive surfaces or invent a per-device flag.
+        let database = self.database
+        let pinnedIDs: Set<UUID> = try await database.reader { db in
+            let ids = Array(Set(hits.map(\.conversationID)))
+            guard !ids.isEmpty else { return [] }
+            var result: Set<UUID> = []
+            for chunkStart in stride(from: 0, to: ids.count, by: 400) {
+                let chunk = Array(ids[chunkStart..<min(chunkStart + 400, ids.count)])
+                let placeholders = Array(repeating: "?", count: chunk.count)
+                    .joined(separator: ",")
+                let rows = try Row.fetchAll(
+                    db,
+                    sql: """
+                        SELECT id FROM conversations
+                        WHERE id IN (\(placeholders)) AND pinned_at IS NOT NULL
+                        """,
+                    arguments: StatementArguments(chunk.map(\.uuidString)))
+                for row in rows {
+                    guard let raw: String = row["id"],
+                          let id = UUID(uuidString: raw) else { continue }
+                    result.insert(id)
+                }
+            }
+            return result
+        }
         var rows = hits.map { hit in
             ConversationSearchRow(
                 conversationID: hit.conversationID,
@@ -2850,7 +2958,8 @@ public actor FacadeConversationDomain {
                 workspaceID: hit.workspaceID,
                 conversationTitle: hit.conversationTitle,
                 snippet: hit.snippet,
-                createdAtRaw: ConversationWireDate.encode(hit.createdAt)
+                createdAtRaw: ConversationWireDate.encode(hit.createdAt),
+                pinned: pinnedIDs.contains(hit.conversationID)
             )
         }
         // The store already applied its own limit; the tail it never
@@ -3623,19 +3732,43 @@ public actor FacadeConversationDomain {
                                          revision: newDigest)
     }
 
-    // MARK: - conversation.archive (CAS)
+    // MARK: - conversation.archive / conversation pin (CAS)
 
     /// Same single-writer CAS as rename, applying the EXACT original
     /// setArchived statement (`UPDATE conversations SET archived_at = ?,
-    /// updated_at = ? WHERE id = ?` — ConversationStore.swift:381-387):
-    /// archive stamps the write-time codec value, unarchive stores NULL.
+    /// updated_at = ? WHERE id = ?` — ConversationStore.swift): archive
+    /// stamps the write-time codec value, unarchive stores NULL, and neither
+    /// branch touches `pinned_at` (archive/unarchive PRESERVE the pin).
     /// Archive is ORDINARY navigation metadata only: this path never calls
     /// the lifecycle port and never cancels anything (an ordinary run keeps
     /// running under its service owner — admission rule).
+    ///
+    /// The SAME frozen `conversation.archive` envelope also carries the
+    /// durable `{"pinned": Bool}` metadata mutation (see
+    /// `ConversationArchiveQuery`): a pin writes ONLY `pinned_at`, never
+    /// `updated_at`, so pinning an old chat cannot fake activity and
+    /// unpinning restores the plain recency order. Both mutations use the
+    /// identical full-row digest CAS and per-conversation mutation scope.
     public func archive(conversationID: UUID,
                         revision: BaseRevision,
                         payload: SettingsDomainV1.JSONValue?) async throws -> ConversationMutationReply {
         let query = try ConversationArchiveQuery.parse(payload)
+        switch query.mode {
+        case .archived(let archived):
+            return try await setArchived(conversationID: conversationID,
+                                         revision: revision,
+                                         archived: archived)
+        case .pinned(let pinned):
+            return try await setPinned(conversationID: conversationID,
+                                       revision: revision,
+                                       pinned: pinned)
+        }
+    }
+
+    /// Archive/unarchive metadata CAS. Unchanged from the published behavior.
+    private func setArchived(conversationID: UUID,
+                             revision: BaseRevision,
+                             archived: Bool) async throws -> ConversationMutationReply {
         try Self.requireRevisionShape(revision, conversationID: conversationID)
         try beginScope(conversationID, .metadata)
         defer { endScope(conversationID, .metadata) }
@@ -3657,7 +3790,7 @@ public actor FacadeConversationDomain {
             }
             try db.execute(
                 sql: "UPDATE conversations SET archived_at = ?, updated_at = ? WHERE id = ?",
-                arguments: [query.archived ? ConversationWireDate.encode(clock()) : nil,
+                arguments: [archived ? ConversationWireDate.encode(clock()) : nil,
                             ConversationWireDate.encode(clock()),
                             conversationID.uuidString]
             )
@@ -3670,6 +3803,56 @@ public actor FacadeConversationDomain {
                 arguments: [conversationID.uuidString]
             ) else {
                 throw ConversationDomainError.persistenceUnavailable("archiveReadbackMissing")
+            }
+            return ConversationRowRevision.digest(of: after)
+        }
+        return ConversationMutationReply(conversationID: conversationID,
+                                         resourceID: revision.resourceID,
+                                         revision: newDigest)
+    }
+
+    /// Durable sidebar pin CAS (schema v50). Writes ONLY `pinned_at`; the
+    /// row's `updated_at`/title/archive state/ownership are untouched, so
+    /// the plain recency ordering is restored exactly on unpin. A missing or
+    /// non-ordinary row is typed notFound, and a stale digest refuses with
+    /// zero effect. Temporary conversations have no durable row and are
+    /// rejected by the store-level authority; they must be Kept first.
+    public func setPinned(conversationID: UUID,
+                          revision: BaseRevision,
+                          pinned: Bool) async throws -> ConversationMutationReply {
+        try Self.requireRevisionShape(revision, conversationID: conversationID)
+        try beginScope(conversationID, .metadata)
+        defer { endScope(conversationID, .metadata) }
+
+        let database = self.database
+        let clock = self.clock
+        let newDigest: String = try await database.writer { db in
+            guard let row = try Row.fetchOne(
+                db,
+                sql: "SELECT * FROM conversations WHERE id = ?",
+                arguments: [conversationID.uuidString]
+            ) else { throw ConversationDomainError.notFound }
+            guard (row["purpose"] as String) == ConversationPurpose.ordinary.rawValue else {
+                throw ConversationDomainError.notFound
+            }
+            let current = ConversationRowRevision.digest(of: row)
+            guard current == revision.version else {
+                throw ConversationDomainError.staleRevision
+            }
+            try db.execute(
+                sql: "UPDATE conversations SET pinned_at = ? WHERE id = ?",
+                arguments: [pinned ? ConversationWireDate.encode(clock()) : nil,
+                            conversationID.uuidString]
+            )
+            guard db.changesCount > 0 else {
+                throw ConversationDomainError.staleRevision
+            }
+            guard let after = try Row.fetchOne(
+                db,
+                sql: "SELECT * FROM conversations WHERE id = ?",
+                arguments: [conversationID.uuidString]
+            ) else {
+                throw ConversationDomainError.persistenceUnavailable("pinReadbackMissing")
             }
             return ConversationRowRevision.digest(of: after)
         }
