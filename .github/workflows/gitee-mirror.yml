@@ -264,7 +264,7 @@ jobs:
 
   release-assets:
     name: mirror release metadata and assets to Gitee
-    if: ${{ github.event_name == 'release' || github.event_name == 'repository_dispatch' || github.event_name == 'workflow_run' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}
+    if: ${{ (github.event_name == 'release' || github.event_name == 'repository_dispatch' || github.event_name == 'workflow_run' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && !(github.event_name == 'release' && startsWith(github.event.release.tag_name, 'floe-ios-bridge-v')) }}
     runs-on: ubuntu-latest
     # Bounded by the largest asset class (an app IPA is ~750 MB: download,
     # upload and verify are sequential streams, never held in RAM).
@@ -334,7 +334,7 @@ jobs:
               "https://api.github.com/repos/${REPO}/releases?per_page=30" \
               | python3 -c '
           import json, sys
-          releases = [r for r in json.load(sys.stdin) if not r.get("draft")]
+          releases = [r for r in json.load(sys.stdin) if not r.get("draft") and not str(r.get("tag_name", "")).startswith("floe-ios-bridge-v")]
           print(releases[0]["tag_name"] if releases else "")
           ')"
           fi
