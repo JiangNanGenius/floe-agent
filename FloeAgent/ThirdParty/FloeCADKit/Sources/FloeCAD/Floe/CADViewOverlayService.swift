@@ -146,15 +146,15 @@ public final class CADViewOverlayService {
     // MARK: - Mutations
 
     private func setSection(_ args: [String: Any]) -> [String: Any] {
-        guard let origin = vector(args["origin"] ?? args["origin_mm"]) else {
+        guard let origin = Self.vector(args["origin"] ?? args["origin_mm"]) else {
             return Self.fail("invalid_section",
                              "setSection requires origin [x,y,z] in model millimetres.")
         }
         var section: CADSectionView
-        if let xAxis = vector(args["x_axis"] ?? args["xAxis"]),
-           let yAxis = vector(args["y_axis"] ?? args["yAxis"]) {
+        if let xAxis = Self.vector(args["x_axis"] ?? args["xAxis"]),
+           let yAxis = Self.vector(args["y_axis"] ?? args["yAxis"]) {
             section = CADSectionView(origin: origin, xAxis: xAxis, yAxis: yAxis)
-        } else if let normal = vector(args["normal"] ?? args["normal_mm"]),
+        } else if let normal = Self.vector(args["normal"] ?? args["normal_mm"]),
                   simd_length(normal) > 1e-9 {
             let n = simd_normalize(normal)
             // Stable tangent frame whose cross product is the requested
@@ -183,7 +183,7 @@ public final class CADViewOverlayService {
         }
         let beforeChange = document.liveChangeCount
         guard document.setSectionView(section) else {
-            return Self.refusalForWriteFailure()
+            return refusalForWriteFailure()
         }
         return mutationReply(action: "setSection", beforeChange: beforeChange)
     }
@@ -197,7 +197,7 @@ public final class CADViewOverlayService {
         }
         let beforeChange = document.liveChangeCount
         guard document.setSectionEnabled(enabled) else {
-            return Self.refusalForWriteFailure()
+            return refusalForWriteFailure()
         }
         return mutationReply(action: "setSectionEnabled", beforeChange: beforeChange)
     }
@@ -208,7 +208,7 @@ public final class CADViewOverlayService {
         }
         let beforeChange = document.liveChangeCount
         guard document.flipSectionView() else {
-            return Self.refusalForWriteFailure()
+            return refusalForWriteFailure()
         }
         return mutationReply(action: "flipSection", beforeChange: beforeChange)
     }
@@ -216,7 +216,7 @@ public final class CADViewOverlayService {
     private func removeSection(_ args: [String: Any]) -> [String: Any] {
         let beforeChange = document.liveChangeCount
         guard document.removeSectionView() else {
-            return Self.refusalForWriteFailure()
+            return refusalForWriteFailure()
         }
         return mutationReply(action: "removeSection", beforeChange: beforeChange)
     }
@@ -227,14 +227,14 @@ public final class CADViewOverlayService {
         }
         let beforeChange = document.liveChangeCount
         guard document.setMeasurementGuidesVisible(visible) else {
-            return Self.refusalForWriteFailure()
+            return refusalForWriteFailure()
         }
         return mutationReply(action: "setMeasurementsVisible", beforeChange: beforeChange)
     }
 
     private func addMeasurement(_ args: [String: Any]) -> [String: Any] {
-        guard let start = vector(args["start"] ?? args["start_mm"]),
-              let end = vector(args["end"] ?? args["end_mm"]) else {
+        guard let start = Self.vector(args["start"] ?? args["start_mm"]),
+              let end = Self.vector(args["end"] ?? args["end_mm"]) else {
             return Self.fail("invalid_measurement",
                              "addMeasurement requires start and end [x,y,z] in model millimetres.")
         }
@@ -248,7 +248,7 @@ public final class CADViewOverlayService {
         } catch let error as CADViewOverlayError {
             switch error {
             case .readOnly, .closed:
-                return Self.refusalForWriteFailure(error)
+                return refusalForWriteFailure(error)
             case .limitReached(let maximum):
                 return Self.fail("measurement_limit",
                                  "This document already has the maximum of \(maximum) measurement guides.")
@@ -274,7 +274,7 @@ public final class CADViewOverlayService {
         }
         let beforeChange = document.liveChangeCount
         guard document.removeMeasurementAnnotation(id: id) else {
-            return Self.refusalForWriteFailure()
+            return refusalForWriteFailure()
         }
         return mutationReply(action: "removeMeasurement", beforeChange: beforeChange)
     }
@@ -282,7 +282,7 @@ public final class CADViewOverlayService {
     private func clearMeasurements(_ args: [String: Any]) -> [String: Any] {
         let beforeChange = document.liveChangeCount
         guard document.clearMeasurementAnnotations() else {
-            return Self.refusalForWriteFailure()
+            return refusalForWriteFailure()
         }
         return mutationReply(action: "clearMeasurements", beforeChange: beforeChange)
     }

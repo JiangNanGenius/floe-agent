@@ -1015,6 +1015,7 @@ final class CADViewOverlayCaptureTests: XCTestCase {
 
         let baseline = try document.captureViewportPNG(
             width: 512, height: 384, camera: camera)
+        retainPNG(baseline.pngData, name: "X22 engineering baseline")
         XCTAssertFalse(baseline.sectionCutIncluded)
         XCTAssertEqual(baseline.measurementGuideCount, 0)
         let baselinePixels = try XCTUnwrap(rgbaPixels(baseline.pngData))
@@ -1026,6 +1027,7 @@ final class CADViewOverlayCaptureTests: XCTestCase {
             yAxis: SIMD3(0, 0, 1))))
         let sectionCapture = try document.captureViewportPNG(
             width: 512, height: 384, camera: camera)
+        retainPNG(sectionCapture.pngData, name: "X22 engineering section")
         XCTAssertTrue(sectionCapture.sectionCutIncluded)
         XCTAssertTrue(sectionCapture.note.contains("section cut"))
         let sectionPixels = try XCTUnwrap(rgbaPixels(sectionCapture.pngData))
@@ -1039,6 +1041,7 @@ final class CADViewOverlayCaptureTests: XCTestCase {
         XCTAssertNotNil(annotation.sanitized)
         let guideCapture = try document.captureViewportPNG(
             width: 512, height: 384, camera: camera)
+        retainPNG(guideCapture.pngData, name: "X22 engineering section with guide")
         XCTAssertEqual(guideCapture.measurementGuideCount, 1)
         XCTAssertEqual(guideCapture.measurementLengthsMM.count, 1)
         XCTAssertEqual(guideCapture.measurementLengthsMM.first ?? 0, 30,
@@ -1051,6 +1054,7 @@ final class CADViewOverlayCaptureTests: XCTestCase {
         XCTAssertTrue(document.setMeasurementGuidesVisible(false))
         let hiddenCapture = try document.captureViewportPNG(
             width: 512, height: 384, camera: camera)
+        retainPNG(hiddenCapture.pngData, name: "X22 engineering guide hidden")
         XCTAssertEqual(hiddenCapture.measurementGuideCount, 0)
         let hiddenPixels = try XCTUnwrap(rgbaPixels(hiddenCapture.pngData))
         XCTAssertEqual(differingPixels(sectionPixels, hiddenPixels), 0,
@@ -1068,9 +1072,17 @@ final class CADViewOverlayCaptureTests: XCTestCase {
         XCTAssertFalse(reopened.viewOverlayState.showsMeasurements)
         let reopenedCapture = try reopened.captureViewportPNG(
             width: 512, height: 384, camera: camera)
+        retainPNG(reopenedCapture.pngData, name: "X22 engineering reopened section")
         XCTAssertTrue(reopenedCapture.sectionCutIncluded)
         XCTAssertEqual(reopenedCapture.measurementGuideCount, 0)
         XCTAssertTrue(reopenedCapture.measurementLengthsMM.isEmpty)
+    }
+
+    private func retainPNG(_ png: Data, name: String) {
+        let attachment = XCTAttachment(data: png, uniformTypeIdentifier: "public.png")
+        attachment.name = name
+        attachment.lifetime = .keepAlways
+        add(attachment)
     }
 
     private func rgbaPixels(_ png: Data) -> (width: Int, height: Int,
@@ -1247,6 +1259,11 @@ final class CADViewOverlayPresentCaptureTests: XCTestCase {
         let service = CADPresentationSnapshotService()
         let baseline = try await service.capture(
             handle: mounted.0, document: document, targetWidth: 256)
+        let baselineImage = XCTAttachment(data: baseline.pngData,
+                                          uniformTypeIdentifier: "public.png")
+        baselineImage.name = "X22 Present baseline"
+        baselineImage.lifetime = .keepAlways
+        add(baselineImage)
         XCTAssertFalse(baseline.sectionCutIncluded)
         XCTAssertEqual(baseline.measurementGuideCount, 0)
 
@@ -1261,6 +1278,11 @@ final class CADViewOverlayPresentCaptureTests: XCTestCase {
 
         let snapshot = try await service.capture(
             handle: mounted.0, document: document, targetWidth: 256)
+        let sectionImage = XCTAttachment(data: snapshot.pngData,
+                                         uniformTypeIdentifier: "public.png")
+        sectionImage.name = "X22 Present immediate section"
+        sectionImage.lifetime = .keepAlways
+        add(sectionImage)
         XCTAssertTrue(snapshot.sectionCutIncluded)
         XCTAssertEqual(snapshot.sceneBuildKey, expected.buildKey)
         XCTAssertEqual(snapshot.measurementGuideCount, 0)
