@@ -705,6 +705,14 @@ final class DocumentSession {
     /// blend on it, and re-picking edges against it would pick the edges of the
     /// result rather than of the input.
     func inputBody(for featureID: FeatureID, bodyID: BodyID) -> Body? {
+        inputState(before: featureID)?.bodies.first { $0.id == bodyID }
+    }
+
+    /// Face-editing tools need the consumed body's matching identity tables
+    /// as well as its geometry. A result-body table cannot identify input
+    /// faces removed by that feature. This is the same read-only replay used
+    /// by `inputBody`, with its local revision counter and disposable cache.
+    func inputState(before featureID: FeatureID) -> EvalResult? {
         guard !isReadOnly else { return nil }
         var graph = document.features
         guard let index = graph.index(of: featureID) else { return nil }
@@ -721,7 +729,7 @@ final class DocumentSession {
             axes: document.axes,
             datumPoints: document.datumPoints
         )
-        return result.bodies.first { $0.id == bodyID }
+        return result
     }
 
     func rebuildFrom(_ id: FeatureID, edit: EditFeatureCommand? = nil,

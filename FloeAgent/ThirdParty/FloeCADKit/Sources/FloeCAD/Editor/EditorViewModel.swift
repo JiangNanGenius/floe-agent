@@ -2077,8 +2077,7 @@ final class EditorViewModel {
         // Picked open faces (Shell): vivid-blue fills over the faces the shell
         // will cut open, drawn from the ORIGINAL body's mesh so the user sees
         // the selection even after the preview removes those faces.
-        if case .pickingShellFaces = mode, let bodyID = shellBodyID,
-           let body = session.document.body(with: bodyID) {
+        if case .pickingShellFaces = mode, let body = shellSourceBody {
             let matrix = body.transform.matrixFloat
             var triangles: [SIMD3<Float>] = []
             for face in shellSelectedFaces {
@@ -5641,15 +5640,16 @@ final class EditorViewModel {
 
     /// The body the current shell pick hollows (single-body, like blends).
     var shellBodyID: BodyID?
-    /// Planar faces (body-LOCAL space) the user has toggled OPEN. Empty is
+    /// Resolved faces (body-LOCAL space) the user has toggled OPEN. Empty is
     /// valid: Shapr3D's whole-body Shell yields an enclosed hollow.
-    var shellSelectedFaces: [PlanarFace] = []
+    var shellSelectedFaces: [ResolvedFace] = []
     /// Editing an existing shell node (History "Edit Faces"): the node, its
     /// consumed-body ref, and the replayed INPUT body the pick and preview
     /// run against — the document's copy is already hollow.
     private(set) var shellEditingFeature: FeatureID?
     private var shellEditBodyRef: BodyRef?
     private var shellEditSource: Body?
+    private var shellEditFaceTable: FaceTable?
     /// The body the shell pick previews from: the replayed input while
     /// editing, else the live document body.
     private var shellSourceBody: Body? {
@@ -5665,7 +5665,7 @@ final class EditorViewModel {
     var shellPreview: Body?
     private var shellPreviewRevision: UInt64 = 0
 
-    /// Arm Shell from the Modify palette: the next taps toggle planar faces
+    /// Arm Shell from the Modify palette: the next taps toggle faces
     /// open; the shell bar drives the wall thickness.
     func beginShell() {
         cancelTransientPicks()
@@ -5695,19 +5695,27 @@ final class EditorViewModel {
         guard let node = session.document.features.node(id),
               case let .shell(bodyRef, openFaces, thickness) = node.kind
         else { return false }
-        guard let source = session.inputBody(for: id, bodyID: bodyRef.bodyID) else {
+        guard let input = session.inputState(before: id), input.errors.isEmpty,
+              let source = input.bodies.first(where: { $0.id == bodyRef.bodyID }) else {
             errorMessage = "Couldn't rebuild the shape this shell started from."
             return false
         }
         if refuseExactSurface(source, operation: "Shell") { return false }
+        let naming = SignatureNaming()
+        let resolved = openFaces.compactMap {
+            naming.resolve($0, in: source, table: input.faceTables[bodyRef.bodyID])
+        }
+        guard resolved.count == openFaces.count else {
+            errorMessage = FloeCADStrings.text("cad.error.shellOpeningMissing", "An opening has changed. Select its face again.")
+            return false
+        }
         cancelTransientPicks()
         cancelTool()
-        // Unresolvable faces are dropped, not fatal: re-picking is the repair.
-        let naming = SignatureNaming()
-        shellSelectedFaces = openFaces.compactMap { naming.resolve($0, in: source, table: nil)?.planar }
+        shellSelectedFaces = resolved
         shellEditingFeature = id
         shellEditBodyRef = bodyRef
         shellEditSource = source
+        shellEditFaceTable = input.faceTables[bodyRef.bodyID]
         shellBodyID = bodyRef.bodyID
         shellThickness = thickness.value
         shellPreview = nil
@@ -5750,10 +5758,11 @@ final class EditorViewModel {
         shellEditingFeature = nil
         shellEditBodyRef = nil
         shellEditSource = nil
+        shellEditFaceTable = nil
         if case .pickingShellFaces = mode { mode = .idle }
     }
 
-    /// Tap while Shell is armed: pick the body, toggle the tapped planar face
+    /// Tap while Shell is armed: pick the body, toggle the tapped face
     /// open/closed. Switching bodies restarts the pick on the new body.
     private func handleShellFaceTap(ray: Ray) {
         guard let hit = HitTester.pickBody(ray: ray, in: scene) else { return }
@@ -5787,11 +5796,18 @@ final class EditorViewModel {
             selectionState: SelectionStateNone.rawValue
         )])
         guard let originalHit = HitTester.pickBody(ray: ray, in: originalScene),
-              let face = FaceTopology.planarFace(
+              var face = Self.shellPickedFace(
                   in: body.render, seedTriangle: originalHit.triangleIndex) else {
-            errorMessage = FloeCADStrings.text("cad.error.shellPlanarOnly", "Only flat faces can be opened — tap a planar face.")
+            errorMessage = FloeCADStrings.text("cad.error.shellPlanarOnly", "Select a flat or cylindrical face.")
             return
         }
+        guard body.brep != nil || face.cylinder == nil else {
+            errorMessage = FloeCADStrings.text("cad.error.shellCurvedNeedsSolid", "This curved opening needs an exact solid.")
+            return
+        }
+        face.elementName = editing
+            ? shellEditFaceTable?.entries.first { $0.triangles.contains(originalHit.triangleIndex) }?.elementName
+            : mintElementName(body: body, triangle: originalHit.triangleIndex)
         // Toggle: same triangle set already picked → close it again.
         let key = Set(face.triangles)
         if let idx = shellSelectedFaces.firstIndex(where: { Set($0.triangles) == key }) {
@@ -5802,6 +5818,17 @@ final class EditorViewModel {
         updateShellPreview()
     }
 
+    nonisolated static func shellPickedFace(in mesh: RenderMesh, seedTriangle: Int) -> ResolvedFace? {
+        // Prefer the real curved region over the one-facet planar sliver.
+        if let cylinder = FaceTopology.cylindricalFace(in: mesh, seedTriangle: seedTriangle) {
+            return ResolvedFace(cylinder: cylinder, confidence: 1)
+        }
+        if let planar = FaceTopology.planarFace(in: mesh, seedTriangle: seedTriangle) {
+            return ResolvedFace(planar: planar, confidence: 1)
+        }
+        return nil
+    }
+
     /// The point each open face is handed to OCCT by: a point ON the face,
     /// from the same helper the evaluator uses, so the live preview and the
     /// feature it commits pick the same faces. It used to be the centroid of
@@ -5810,9 +5837,10 @@ final class EditorViewModel {
     /// stayed empty with Apply disabled on any holed face, while the same
     /// shell built fine over the bridge and on History replay (2026-09-16).
     nonisolated static func shellOpenPoints(
-        for faces: [FaceTopology.PlanarFace], mesh: RenderMesh
-    ) -> [SIMD3<Double>] {
-        faces.map { FeatureGraph.pointOnPlanarFace($0, mesh: mesh) }
+        for faces: [ResolvedFace], mesh: RenderMesh
+    ) -> [SIMD3<Double>]? {
+        let points = faces.compactMap { FeatureGraph.pointOnFace($0, mesh: mesh) }
+        return points.count == faces.count ? points : nil
     }
 
     /// Recompute the live shell preview (face toggles and thickness edits call
@@ -5829,8 +5857,8 @@ final class EditorViewModel {
     /// stays for brep-less bodies. Nil = invalid.
     private func shelledBody(source: Body, revision: UInt64) -> Body? {
         if OCCTKernel.useOCCTAsSourceOfTruth, let brep = source.brep {
-            let openPoints = Self.shellOpenPoints(for: shellSelectedFaces, mesh: source.render)
-            guard let hollow = try? OCCTKernel.shellResult(
+            guard let openPoints = Self.shellOpenPoints(for: shellSelectedFaces, mesh: source.render),
+                  let hollow = try? OCCTKernel.shellResult(
                 brep, openingAt: openPoints, thickness: shellThickness,
                 tolerance: OCCTKernel.matchTolerance(for: brep)).get() else {
                 return nil
@@ -5840,9 +5868,11 @@ final class EditorViewModel {
                 primitive: nil, euclidMesh: source.euclidMesh(), revision: revision)
             return result.adoptBRep(hollow) ? result : nil
         }
+        let planarFaces = shellSelectedFaces.compactMap(\.planar)
+        guard planarFaces.count == shellSelectedFaces.count else { return nil }
         let mesh = KernelOps.shell(
             mesh: source.euclidMesh(), thickness: shellThickness,
-            openFaces: shellSelectedFaces)
+            openFaces: planarFaces)
         guard !mesh.polygons.isEmpty else { return nil }
         return Body(
             id: source.id, name: source.name, transform: source.transform,
@@ -5853,7 +5883,7 @@ final class EditorViewModel {
         guard case .pickingShellFaces = mode,
               shellBodyID != nil,
               let source = shellSourceBody,
-              shellThickness > 1e-6
+              shellThickness.isFinite, shellThickness > 1e-6
         else {
             shellPreview = nil
             return
@@ -5867,7 +5897,7 @@ final class EditorViewModel {
     /// and a live (non-empty) result.
     var canCommitShell: Bool {
         if case .pickingShellFaces = mode {
-            return shellBodyID != nil && shellThickness > 1e-6 && shellPreview != nil
+            return shellBodyID != nil && shellThickness.isFinite && shellThickness > 1e-6 && shellPreview != nil
         }
         return false
     }
@@ -5879,7 +5909,7 @@ final class EditorViewModel {
         guard case .pickingShellFaces = mode,
               let bodyID = shellBodyID,
               let source = session.document.body(with: bodyID),
-              shellThickness > 1e-6
+              shellThickness.isFinite, shellThickness > 1e-6
         else { return }
         guard !refuseExactSurface(source, operation: "Shell") else {
             cancelShell()
@@ -5892,10 +5922,11 @@ final class EditorViewModel {
         // shell node on top of the first.
         if let featureID = shellEditingFeature, let bodyRef = shellEditBodyRef,
            let input = shellEditSource {
-            let faceRefs = shellSelectedFaces.map {
+            let faceRefs = shellSelectedFaces.compactMap {
                 Self.shellFaceRef(face: $0, bodyRef: bodyRef, creator: bodyRef.producer,
                                   elementName: mintElementName(body: input, triangle: $0.triangles.first))
             }
+            guard faceRefs.count == shellSelectedFaces.count else { return }
             let after = FeatureKind.shell(
                 body: bodyRef, openFaces: faceRefs, thickness: Expr(value: shellThickness))
             prepareForHistoryChange()
@@ -5925,12 +5956,13 @@ final class EditorViewModel {
         // Parametric node only for a feature-owned body (same rule as blends).
         if let owner = featureNode(owning: bodyID) {
             let bodyRef = BodyRef(producer: owner.id, bodyID: bodyID)
-            let faceRefs = shellSelectedFaces.map {
+            let faceRefs = shellSelectedFaces.compactMap {
                 Self.shellFaceRef(face: $0, bodyRef: bodyRef, creator: owner.id,
                                   elementName: mintElementName(
                                       body: source,
                                       triangle: $0.triangles.first))
             }
+            guard faceRefs.count == shellSelectedFaces.count else { return }
             let node = FeatureNode(
                 name: "Shell",
                 kind: .shell(
@@ -6467,20 +6499,21 @@ final class EditorViewModel {
     /// A `FaceRef` pinning an open face by geometric signature in body-local
     /// space (mirrors `pushPullFaceRef`; role is only a resolve tiebreak).
     private static func shellFaceRef(
-        face: PlanarFace, bodyRef: BodyRef, creator: FeatureID,
+        face: ResolvedFace, bodyRef: BodyRef, creator: FeatureID,
         elementName: ElementName? = nil
-    ) -> FaceRef {
-        let n = SIMD3<Double>(
-            Double(face.normal.x), Double(face.normal.y), Double(face.normal.z))
-        var area = abs(Profile.signedArea(face.outline))
-        for hole in face.holes { area -= abs(Profile.signedArea(hole)) }
-        let signature = FaceSignature(
-            kind: .planar, normal: n, centroid: face.origin,
-            area: max(area, 0), planeOffset: simd_dot(n, face.origin))
+    ) -> FaceRef? {
+        let signature: FaceSignature
+        if let planar = face.planar {
+            signature = SignatureNaming.signature(planar: planar)
+        } else if let cylinder = face.cylinder {
+            signature = SignatureNaming.signature(cylinder: cylinder)
+        } else {
+            return nil
+        }
         return FaceRef(
             body: bodyRef, creator: creator,
             role: .derived(index: 0), signature: signature,
-            elementName: elementName)
+            elementName: face.elementName ?? elementName)
     }
 
     /// Distance from a point to a segment (both body-local).

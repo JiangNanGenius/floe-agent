@@ -13158,6 +13158,23 @@
         }
       }
     },
+    "cad.error.shellCurvedNeedsSolid": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This curved opening needs an exact solid."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "此曲面开口需要精确实体。"
+          }
+        }
+      }
+    },
     "cad.error.shellNoGeometry": {
       "extractionState": "manual",
       "localizations": {
@@ -13175,19 +13192,36 @@
         }
       }
     },
+    "cad.error.shellOpeningMissing": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "An opening has changed. Select its face again."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "开口已发生变化，请重新选择对应的面。"
+          }
+        }
+      }
+    },
     "cad.error.shellPlanarOnly": {
       "extractionState": "manual",
       "localizations": {
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Only flat faces can be opened — tap a planar face."
+            "value": "Select a flat or cylindrical face."
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "只能对平面抽壳 — 请轻点一个平面。"
+            "value": "请选择平面或圆柱面。"
           }
         }
       }

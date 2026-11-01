@@ -398,7 +398,8 @@ nonisolated enum FeatureKind: Codable, Sendable {
     /// Phase E: round the referenced convex edges of `body` to `radius`.
     case fillet(body: BodyRef, edges: [EdgeRef], radius: Expr)
     /// Phase E: hollow `body` to a wall of `thickness`, cutting the referenced
-    /// planar faces open (empty = fully enclosed hollow).
+    /// faces open (empty = fully enclosed hollow). Exact solids support flat
+    /// and cylindrical openings; the mesh approximation remains planar.
     case shell(body: BodyRef, openFaces: [FaceRef], thickness: Expr)
     /// Spec §4.16: remove the referenced faces and HEAL the surrounding
     /// surfaces back together, deleting the feature (hole, pocket, boss) they
@@ -1826,7 +1827,7 @@ nonisolated extension FeatureGraph {
     /// cylindrical face the centroid of its facets pushed radially onto the
     /// true surface (the facet centroid itself sits a hair inside the
     /// cylinder, and a whole-wall centroid would sit on the axis).
-    private static func pointOnFace(_ resolved: ResolvedFace, mesh: RenderMesh) -> SIMD3<Double>? {
+    static func pointOnFace(_ resolved: ResolvedFace, mesh: RenderMesh) -> SIMD3<Double>? {
         if let planar = resolved.planar {
             return pointOnPlanarFace(planar, mesh: mesh)
         }
@@ -2133,8 +2134,8 @@ nonisolated extension FeatureGraph {
         next nextRevision: () -> UInt64
     ) {
         // Signed: positive hollows inward, negative grows the wall outward.
-        guard abs(thickness) > 1e-6 else {
-            state.errors[node.id] = .kernelFailure("shell thickness must be non-zero")
+        guard thickness.isFinite, abs(thickness) > 1e-6 else {
+            state.errors[node.id] = .kernelFailure("shell thickness must be finite and non-zero")
             return
         }
         guard let body = state.bodies[bodyRef.bodyID] else {
@@ -2143,15 +2144,19 @@ nonisolated extension FeatureGraph {
         }
         if refuseExactSurface(node, "Shell", body: body, into: &state) { return }
         let table = state.faceTables[body.id]
-        var openFaces = [FaceTopology.PlanarFace]()
+        var openFaces = [ResolvedFace]()
+        var upgrades = [(FaceRef, ResolvedFace)]()
         for ref in openFaceRefs {
-            guard let resolved = state.naming.resolve(ref, in: body, table: table),
-                  let planar = resolved.planar else {
+            guard ref.body.bodyID == bodyRef.bodyID,
+                  let resolved = state.naming.resolve(ref, in: body, table: table),
+                  !resolved.triangles.isEmpty else {
                 state.errors[node.id] = .brokenRef("shell open face did not resolve")
                 return
             }
-            proposeUpgrade(node, ref: ref, resolved: resolved, into: &state)
-            openFaces.append(planar)
+            upgrades.append((ref, resolved))
+            if !openFaces.contains(where: { Set($0.triangles) == Set(resolved.triangles) }) {
+                openFaces.append(resolved)
+            }
         }
         // B-rep shell: when the body is analytic, hollow it with
         // BRepOffsetAPI_MakeThickSolid so CURVED walls are correct — the mesh
@@ -2169,8 +2174,12 @@ nonisolated extension FeatureGraph {
             // outline centroid lies in its hole or outside it, and the shell
             // of every ring-topped hub was refused with "no face within
             // tolerance of the pick" (Level 13 practice sheets, 2026-09-04).
-            let openPoints: [SIMD3<Double>] = openFaces.map {
-                Self.pointOnPlanarFace($0, mesh: body.render)
+            let openPoints = openFaces.compactMap {
+                Self.pointOnFace($0, mesh: body.render)
+            }
+            guard openPoints.count == openFaces.count else {
+                state.errors[node.id] = .brokenRef("shell opening has no point on its surface")
+                return
             }
             switch OCCTKernel.shellResultWithAncestry(
                 brep, openingAt: openPoints, thickness: thickness,
@@ -2198,14 +2207,22 @@ nonisolated extension FeatureGraph {
                 }
                 state.put(result, table: newTable)
                 if !outNames.isEmpty { state.kernelNames[result.id] = outNames }
+                for (ref, resolved) in upgrades {
+                    proposeUpgrade(node, ref: ref, resolved: resolved, into: &state)
+                }
             case let .failure(error):
                 state.errors[node.id] = .kernelFailure("shell: \(error.message)")
             }
             return
         }
 
+        let planarFaces = openFaces.compactMap(\.planar)
+        guard planarFaces.count == openFaces.count else {
+            state.errors[node.id] = .kernelFailure("curved shell openings require an analytic solid")
+            return
+        }
         let mesh = KernelOps.shell(
-            mesh: body.euclidMesh(), thickness: thickness, openFaces: openFaces)
+            mesh: body.euclidMesh(), thickness: thickness, openFaces: planarFaces)
         guard !mesh.polygons.isEmpty else {
             state.errors[node.id] = .emptyGeometry
             return
@@ -2216,6 +2233,9 @@ nonisolated extension FeatureGraph {
         // Shelling rebuilds every face; relabel by geometry like the blends.
         let newTable = state.naming.faceTable(for: result, createdBy: node.id, scheme: .generic)
         state.put(result, table: newTable)
+        for (ref, resolved) in upgrades {
+            proposeUpgrade(node, ref: ref, resolved: resolved, into: &state)
+        }
     }
 
     // MARK: Delete Face (direct modeling, spec §4.16)

@@ -63,6 +63,7 @@ nonisolated struct ResolvedFace: Sendable {
     var planar: FaceTopology.PlanarFace?
     var cylinder: FaceTopology.CylindricalFace?
     var confidence: Double
+    var triangles: [Int] { planar?.triangles ?? cylinder?.triangles ?? [] }
     /// The matched table entry's kernel-history name, when the table has one
     /// for the matched face — what the step-5b opportunistic upgrade writes
     /// back onto legacy refs. Nil is normal (no table, unnamed face).

@@ -112,7 +112,7 @@ enum EditorMode: Equatable {
     /// Chamfer/Fillet armed (spec §4.3): taps toggle convex edges of a body
     /// into `EditorViewModel.blendSelectedEdges`; the blend bar sets the size.
     case pickingBlendEdges(BlendKind)
-    /// Shell armed (spec §4.4): taps toggle the planar faces to cut open in
+    /// Shell armed (spec §4.4): taps toggle the faces to cut open in
     /// `EditorViewModel.shellSelectedFaces`; the shell bar sets the wall
     /// thickness. Zero open faces is valid — a fully enclosed hollow.
     case pickingShellFaces
