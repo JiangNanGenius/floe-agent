@@ -393,4 +393,6 @@
     <string name="user_question_multiple">Choose one or more</string>
     <string name="user_question_optional">Optional: Floe can keep working while you decide.</string>
     <string name="user_question_waiting">Waiting for your answer</string>
+    <string name="history_results_cleanup_pending">Task deleted. Some saved results are still being cleaned up.</string>
+    <string name="history_results_cleanup_failed">Task deleted. Some saved results could not be removed.</string>
 </resources>

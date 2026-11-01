@@ -391,4 +391,6 @@
     <string name="user_question_multiple">可多选</string>
     <string name="user_question_optional">可选：你考虑时 Floe 可以继续其他工作。</string>
     <string name="user_question_waiting">等待你的回答</string>
+    <string name="history_results_cleanup_pending">任务已删除，部分已保存结果仍待清理。</string>
+    <string name="history_results_cleanup_failed">任务已删除，部分已保存结果未能移除。</string>
 </resources>

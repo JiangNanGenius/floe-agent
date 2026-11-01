@@ -332,6 +332,8 @@ fun FloeConversationHistoryDestination(
  * generic line — nothing is ever presented as success here. */
 @Composable
 private fun historyActionErrorText(code: String): String = when (code) {
+    "toolResultCleanupPending" -> stringResource(R.string.history_results_cleanup_pending)
+    "toolResultCleanupFailed" -> stringResource(R.string.history_results_cleanup_failed)
     "staleRevision" -> stringResource(R.string.history_action_failed_stale)
     "revision_unavailable", "runtime_unavailable", "runtimeUnavailable",
     "exchangeUnavailable" -> stringResource(R.string.history_action_failed_unavailable)

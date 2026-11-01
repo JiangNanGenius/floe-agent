@@ -145,6 +145,7 @@ import FloeCore
 import FloeModels
 import FloePersistence
 import FloeAgentRuntime
+import FloeAndroidToolResults
 // D04 (job-3135f83ef97c4a21): the durable run-output cleanup queue and the
 // exact trusted deletion order live in the shared core (FloeTools) next to
 // the snapshot store they protect.
@@ -2416,6 +2417,7 @@ public struct ConversationDeleteReply: Sendable, Equatable {
     /// D04 additive truth of the run-output cleanup ordering (see
     /// `ConversationRunOutputCleanupStatus`).
     public let runOutputCleanup: ConversationRunOutputCleanupStatus
+    public let toolResultCleanup: ToolResultCapturePurgeResult?
 
     public init(conversationID: UUID, quiescence: ConversationQuiescenceReport,
                 workspaceCleanup: ConversationDeleteCleanupStatus,
@@ -2423,7 +2425,8 @@ public struct ConversationDeleteReply: Sendable, Equatable {
                 contentHandlesReleased: Int,
                 fenceSettlement: ConversationDeletionFenceSettlement,
                 runtimeCleanup: ConversationRuntimeCleanupHandoff = .notApplicable,
-                runOutputCleanup: ConversationRunOutputCleanupStatus = .notApplicable) {
+                runOutputCleanup: ConversationRunOutputCleanupStatus = .notApplicable,
+                toolResultCleanup: ToolResultCapturePurgeResult? = nil) {
         self.conversationID = conversationID
         self.quiescence = quiescence
         self.workspaceCleanup = workspaceCleanup
@@ -2432,6 +2435,7 @@ public struct ConversationDeleteReply: Sendable, Equatable {
         self.fenceSettlement = fenceSettlement
         self.runtimeCleanup = runtimeCleanup
         self.runOutputCleanup = runOutputCleanup
+        self.toolResultCleanup = toolResultCleanup
     }
 
     public var wireObject: [String: Any] {
@@ -2482,6 +2486,13 @@ public struct ConversationDeleteReply: Sendable, Equatable {
             object["runtimeCleanupReason"] = reason
         case .notApplicable:
             break
+        }
+        if let cleanup = toolResultCleanup {
+            object["toolResultCleanup"] = cleanup.succeeded ? "removed"
+                : (cleanup.retryScheduled ? "deferredQueueRetained" : "failed")
+            object["toolResultCleanupRetryScheduled"] = cleanup.retryScheduled
+        } else {
+            object["toolResultCleanup"] = "notApplicable"
         }
         // D04 additive run-output cleanup truth.
         switch runOutputCleanup {
@@ -4134,9 +4145,9 @@ public actor FacadeConversationDomain {
             // retry tombstone inside the same owned root (the launch path
             // reconciles it), so the deletion is never presented as a full
             // wipe without evidence. No other task's records are touched.
-            if let toolResultPurge = await C02ToolResultIntegration
-                .purgeRetainedResults(conversationID: conversationID, epoch: hostEpoch),
-               !toolResultPurge.succeeded {
+            let toolResultPurge = await C02ToolResultIntegration
+                .purgeRetainedResults(conversationID: conversationID, epoch: hostEpoch)
+            if let toolResultPurge, !toolResultPurge.succeeded {
                 FloeLogger(category: .runtime).error(
                     "toolResultPurgeDeferred conversation=\(conversationID.uuidString) retryScheduled=\(toolResultPurge.retryScheduled)"
                 )
@@ -4179,7 +4190,8 @@ public actor FacadeConversationDomain {
                                            contentHandlesReleased: released,
                                            fenceSettlement: fenceSettlement,
                                            runtimeCleanup: runtimeCleanup,
-                                           runOutputCleanup: runOutputCleanup)
+                                           runOutputCleanup: runOutputCleanup,
+                                           toolResultCleanup: toolResultPurge)
         } catch {
             // CH-R3: every pre-commit exit (throw, cancellation, stale,
             // drain failure, expected-row CAS refusal) settles the EXACT

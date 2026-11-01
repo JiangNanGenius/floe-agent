@@ -5619,11 +5619,20 @@ class ConversationHostController internal constructor(
                          // A fresh single-row success replaces the last real
                          // settlement failure on this surface (the bulk lane
                          // reports per-item truth through the receipt).
-                         if (correlationPrefix != "blk") {
+                         val resultCleanup = if (command == "conversation.delete")
+                             (outcome.value as? JsonObject)?.string("toolResultCleanup") else null
+                         val cleanupNotice = when (resultCleanup) {
+                             "deferredQueueRetained" -> "toolResultCleanupPending"
+                             "failed" -> "toolResultCleanupFailed"
+                             else -> null
+                         }
+                         if (cleanupNotice != null) {
+                             historyHolder.applyActionError(cleanupNotice)
+                         } else if (correlationPrefix != "blk") {
                              historyHolder.dismissActionError()
                          }
                          refreshHistory()
-                         onSettled(true, null)
+                         onSettled(true, cleanupNotice)
                     }
                     is HostOperationOutcome.Rejected -> {
                         // A stale revision means the row advanced after the
