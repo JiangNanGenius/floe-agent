@@ -83,6 +83,16 @@ final class CADAssociativePlaneKindsServiceTests: XCTestCase {
         })
     }
 
+    /// A vertical profile wall (normal along X). Unlike an extrude cap, the
+    /// wall's ElementName carries the source sketch entity UUID, so replacing
+    /// that entity is a real named-face loss rather than a feature-stable cap.
+    private func sideWallFace(_ f: Fixture) throws -> [String: Any] {
+        try XCTUnwrap(rows(f.document, "faces").first {
+            ($0["bodyID"] as? String) == f.body.raw.uuidString
+                && abs(($0["normal"] as? [Double])?[0] ?? 0) > 0.99
+        })
+    }
+
     private func sourceArgs(_ face: [String: Any], expression: String,
                             body: BodyID) throws -> [String: Any] {
         XCTAssertEqual(face["datum_source_supported"] as? Bool, true, "\(face)")
@@ -655,15 +665,31 @@ final class CADAssociativePlaneKindsServiceTests: XCTestCase {
 
     func testThreePointSameCoordinateReplacementAndAngleSourceFaceLossAreBroken() async throws {
         let f = try await fixture()
-        let (id, _) = try createAngle(f, expression: "30")
+        // An extrude CAP is named by (creator feature, profileCap(end:)), so
+        // replacing the sketch entity at identical coordinates leaves that
+        // name intact and is a valid source edit. A profile WALL is named by
+        // the source sketch entity UUID. Bind the angle datum to that real
+        // entity-scoped face, so the replacement below is an actual named
+        // face loss rather than a coordinate-based rebind.
+        let (id, _) = try createAngle(f, expression: "30", face: try sideWallFace(f))
         let before = try plane(f, id)
-        // Replacing the source profile identity while keeping every dimension
-        // leaves no named face; the angle datum must not fall back to its
-        // cached absolute plane.
+        let source = try angleDefinition(f, id).source
+        guard let sourceName = source.elementName,
+              case let .profileWall(entity, _) = sourceName.source else {
+            return XCTFail("the angle datum must bind an entity-scoped profile wall")
+        }
         guard case let .extrude(profile, planeRef, distance, symmetric, boolean, extras) =
                 f.source.kind else { return XCTFail("expected extrude") }
         let oldSketch = try XCTUnwrap(f.document.session.document.sketches
             .first { $0.id == profile.sketchID })
+        XCTAssertEqual(oldSketch.entities.first?.id, entity,
+                       "the wall name must come from the current source sketch entity")
+        let beforeUndoCount = f.document.session.undoStack.undoCommands.count
+
+        // Replace the source profile identity while keeping every dimension
+        // and coordinate identical. The old named wall no longer exists; the
+        // angle datum must refuse atomically, not fall back to its cached
+        // absolute plane or bind another face at the same coordinates.
         var newSketch = oldSketch
         let replacement = UUID()
         newSketch.entities = [.rect(id: replacement, min: SIMD2(0, 0), max: SIMD2(100, 60))]
@@ -678,6 +704,26 @@ final class CADAssociativePlaneKindsServiceTests: XCTestCase {
             EditFeatureCommand(featureID: f.source.id, before: f.source.kind, after: newKind),
         ], title: "Replace source"))
         XCTAssertNotNil(f.document.session.lastRebuildRejection[.plane(id)])
+        if case .missingNamedFace(_)? = f.document.session.lastRebuildRejection[.plane(id)] {
+            // Exact identity loss: no signature, nearest or same-coordinate
+            // fallback resolved the replacement.
+        } else {
+            XCTFail("expected missingNamedFace, got \(String(describing: f.document.session.lastRebuildRejection[.plane(id)]))")
+        }
+        XCTAssertEqual(f.document.session.undoStack.undoCommands.count, beforeUndoCount)
         XCTAssertEqual(try plane(f, id), before)
+
+        // A valid source shape edit with the SAME persisted entity identity
+        // must still re-resolve and keep the datum id and named face.
+        var resized = oldSketch
+        resized.entities = [.rect(id: entity, min: SIMD2(0, 0), max: SIMD2(120, 80))]
+        XCTAssertTrue(f.document.session.performAssociativeTransaction([
+            ReplaceSketchGeometryCommand(title: "Resize source",
+                                          before: oldSketch, after: resized),
+        ], title: "Resize source"))
+        let resizedPlane = try plane(f, id)
+        XCTAssertEqual(resizedPlane.id, id)
+        XCTAssertEqual(try angleDefinition(f, id).source.elementName, sourceName)
+        XCTAssertNotEqual(resizedPlane.plane.origin, before.plane.origin)
     }
 }

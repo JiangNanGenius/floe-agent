@@ -88,10 +88,17 @@ final class CADDatumPlaneKindsEditorTests: XCTestCase {
         XCTAssertEqual(plane.plane.normal.y, cos(30 * .pi / 180), accuracy: 1e-9)
         let planeID = plane.id
 
-        // The Items edit sheet calls this same view-model method; it must
-        // commit the angle formula + hinge as one ordinary undo step.
+        // The Items edit sheet calls this same view-model method and pins
+        // the definition's exact stored formula (DatumPlaneSheets passes
+        // `definition.angle.formula`). The native angle bar commits
+        // `String(angle)`, so this datum's stored formula is "30.0", not
+        // the integer spelling "30"; a mismatched fence is the intended
+        // stale-CAS refusal, not an edit.
+        let storedFormula = try XCTUnwrap(definition.angle.formula)
+        XCTAssertEqual(storedFormula, "30.0")
         XCTAssertTrue(model.updateDatumPlane(planeID, action: "datum.anglePlane.update",
-            args: ["expression": "45", "expected_expression": "30", "hinge_x": 1, "hinge_y": 0]))
+            args: ["expression": "45", "expected_expression": storedFormula,
+                   "hinge_x": 1, "hinge_y": 0]))
         XCTAssertEqual(try XCTUnwrap(anglePlane(f.document)).plane.normal.y,
                        cos(45 * .pi / 180), accuracy: 1e-9)
         model.undo()
