@@ -136,7 +136,9 @@ public nonisolated struct CADAnimationExportResult: Sendable, Equatable {
     public var codec: String
     public var hasAudio: Bool
     public var byteCount: Int64
-    /// Actual first frame of the exported clip as PNG, when enabled.
+    /// Actual first frame of the exported clip as PNG, when enabled. When a
+    /// saved view frames the export, this is that saved shot (the content
+    /// placed inside the user's video container), not the letterboxed canvas.
     public var posterPNG: Data?
 
     public init(url: URL, width: Int, height: Int, frameRate: Double,
@@ -224,6 +226,10 @@ public nonisolated enum CADAnimationExportError: Error, LocalizedError, Sendable
     case writer(String)
     case verification(String)
     case encoding(String)
+    /// The selected saved shot cannot be contained in the user's video shape
+    /// without an unsupported transient lens. Refusing is deliberate: the
+    /// alternative would silently clip the shot.
+    case framingUnsupported(String)
 
     public var errorDescription: String? {
         switch self {
@@ -245,7 +251,8 @@ public nonisolated enum CADAnimationExportError: Error, LocalizedError, Sendable
             return "The document changed during export; the video was discarded."
         case .cancelled:
             return "Video export was cancelled."
-        case .writer(let message), .verification(let message), .encoding(let message):
+        case .writer(let message), .verification(let message),
+             .encoding(let message), .framingUnsupported(let message):
             return message
         }
     }
@@ -965,7 +972,7 @@ public extension FloeCADDocument {
             let generation = session.generation
             let model = CADAnimationPlaybackModel()
             model.attach(document: self, handle: session.handle, clipID: clip.id)
-            guard model.exportFrame(at: 0) != nil else {
+            guard let firstFrame = model.exportFrame(at: 0) else {
                 throw CADAnimationExportError.noClip
             }
             // X21 camera rule, pinned BEFORE any frame moves the live camera:
@@ -976,6 +983,39 @@ public extension FloeCADDocument {
             let exportProjection = selectedExportCamera?.projection
                 ?? controller.currentCamera.projection
             let savedViewCamera = selectedExportCamera.map { $0.presentationCamera }
+            // X21-R2 framing rule: a saved shot is a FRAME, not only a pose.
+            // A camera track keeps its authored pose/FOV (actual motion), but
+            // the selected view's aspect owns the framing window. Without a
+            // track the saved shot itself is the frame. The user's X28 video
+            // container is never changed; the saved frame is contained inside
+            // it with honest bars when the aspects differ.
+            let savedFrameAspect = selectedExportCamera?.frameAspect
+            func resolvedExportCamera(
+                _ frameCamera: CADPresentationCamera?
+            ) -> CADPresentationCamera? {
+                if var camera = frameCamera {
+                    camera.projection = exportProjection
+                    return camera
+                }
+                return savedViewCamera
+            }
+            if let savedFrameAspect {
+                // Refuse before any frame or staging artifact exists if the
+                // selected shot cannot be contained in this video shape.
+                guard let viewport = controller.currentFrameAspect else {
+                    throw CADAnimationExportError.rendererUnavailable
+                }
+                guard let probeCamera = resolvedExportCamera(firstFrame.camera),
+                      CADExportFraming.plan(
+                        savedAspect: savedFrameAspect,
+                        viewportAspect: viewport,
+                        fovYDegrees: Double(probeCamera.fovYDegrees),
+                        projection: probeCamera.projection,
+                        targetWidth: settings.width) != nil else {
+                    throw CADAnimationExportError.framingUnsupported(
+                        CADPresentationError.framingUnsupported.localizedDescription)
+                }
+            }
 
             let fileManager = FileManager.default
             let parent = destination.deletingLastPathComponent()
@@ -1050,11 +1090,27 @@ public extension FloeCADDocument {
                 // The track (if any) owns the pose; the selected projection
                 // wins over the frame's default perspective. No track -> the
                 // selected saved shot, or nil to keep the live camera.
-                var exportCamera = frame.camera
-                if exportCamera != nil {
-                    exportCamera?.projection = exportProjection
-                } else {
-                    exportCamera = savedViewCamera
+                var exportCamera = resolvedExportCamera(frame.camera)
+                var framingPlan: CADExportFraming?
+                if let savedFrameAspect {
+                    guard let camera = exportCamera,
+                          let viewport = controller.currentFrameAspect,
+                          let plan = CADExportFraming.plan(
+                            savedAspect: savedFrameAspect,
+                            viewportAspect: viewport,
+                            fovYDegrees: Double(camera.fovYDegrees),
+                            projection: camera.projection,
+                            targetWidth: settings.width) else {
+                        throw CADAnimationExportError.framingUnsupported(
+                            CADPresentationError.framingUnsupported.localizedDescription)
+                    }
+                    // Widen only the transient lens. The authored FOV, pose
+                    // and distance (and therefore the perspective/parallax)
+                    // stay exactly as the camera track authored them.
+                    var transient = camera
+                    transient.transientHalfHeightScale = Float(plan.transientScale)
+                    exportCamera = transient
+                    framingPlan = plan
                 }
                 guard controller.applyAnimation(
                     camera: exportCamera,
@@ -1072,7 +1128,20 @@ public extension FloeCADDocument {
                         isClosed: isClosed)
                     throw CADAnimationExportError.stale
                 }
-                let image = try await controller.snapshotImage(targetWidth: settings.width)
+                // Raw pixels when the saved frame must be cropped; the
+                // existing target-width resize stays for the live path.
+                let rawImage = try await controller.snapshotImage(
+                    targetWidth: framingPlan == nil ? settings.width : nil)
+                let image: UIImage
+                if let framingPlan {
+                    guard let cropped = CADExportFrame.croppedSavedFrame(
+                        rawImage, plan: framingPlan) else {
+                        throw CADAnimationExportError.stale
+                    }
+                    image = cropped
+                } else {
+                    image = rawImage
+                }
                 try checkLifecycle()
                 if completed == 0, settings.posterEnabled {
                     posterPNG = image.pngData()

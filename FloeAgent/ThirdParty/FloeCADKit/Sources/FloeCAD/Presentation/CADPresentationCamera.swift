@@ -31,6 +31,11 @@ nonisolated struct CADPresentationCamera: Equatable, Sendable {
     /// keeps the model the same on-screen size (the same relation the
     /// engineering `TurntableCamera` uses).
     var projection: CADCameraProjection = .perspective
+    /// Transient export framing zoom: multiplies the visible half-height (and
+    /// therefore the horizontal frustum) without changing the authored pose,
+    /// distance or persisted FOV. It is set only while rendering a saved shot
+    /// into a differently-shaped viewport and is never written to a document.
+    var transientHalfHeightScale: Float = 1
 
     static let minimumDistance: Float = 0.002
     static let maximumDistance: Float = 500
@@ -97,25 +102,39 @@ nonisolated struct CADPresentationCamera: Equatable, Sendable {
         return max(distance * tan(fov * .pi / 360), 0.0005)
     }
 
+    /// Vertical FOV the perspective component actually renders with. Equal to
+    /// `fovYDegrees` unless a transient framing scale is active. This is the
+    /// camera-side equivalent of multiplying the orthographic half-height: the
+    /// authored FOV, distance and pose stay untouched.
+    var effectiveFovYDegrees: Float {
+        let scale = transientHalfHeightScale
+        guard scale.isFinite, scale > 1.000001 else { return fovYDegrees }
+        let half = min(max(fovYDegrees, 10), 150) * .pi / 360
+        return 2 * atan(tan(half) * min(scale, 1_000)) * 180 / .pi
+    }
+
     /// RealityKit projection component for this camera. Exactly one camera
     /// component is installed on the camera entity; `applyCamera` removes the
     /// other one.
     var perspectiveCameraComponent: PerspectiveCameraComponent {
         PerspectiveCameraComponent(
             near: 0.01, far: .infinity,
-            fieldOfViewInDegrees: fovYDegrees,
+            fieldOfViewInDegrees: effectiveFovYDegrees,
             fieldOfViewOrientation: .vertical)
     }
 
     /// `OrthographicCameraComponent.scale` is the half-height of the framed
     /// area when `scaleDirection` is `.vertical`. `near`/`far` bracket the
     /// model at the orbit distance, using the same proportional convention as
-    /// the engineering camera.
+    /// the engineering camera. A transient saved-shot render multiplies the
+    /// half-height, never the distance.
     var orthographicCameraComponent: OrthographicCameraComponent {
         var component = OrthographicCameraComponent()
         component.near = max(0.0005, distance * 0.01)
         component.far = max(100, distance * 40)
-        component.scale = halfHeightAtTarget
+        let scale = transientHalfHeightScale
+        let boundedScale = scale.isFinite ? min(max(scale, 1), 1_000) : 1
+        component.scale = halfHeightAtTarget * boundedScale
         component.scaleDirection = .vertical
         return component
     }

@@ -28,6 +28,10 @@ nonisolated enum CADPresentationError: Error, LocalizedError, Sendable {
     case snapshotStale
     case snapshotFailed
     case snapshotCancelled
+    /// The saved frame cannot be contained in the current viewport at a
+    /// supported transient lens. Refusing is deliberate: fitting the clipped
+    /// viewport would silently lose part of the saved shot.
+    case framingUnsupported
 
     var errorDescription: String? {
         switch self {
@@ -51,6 +55,10 @@ nonisolated enum CADPresentationError: Error, LocalizedError, Sendable {
             return FloeCADStrings.text(
                 "cad.present.error.cancelled",
                 "The capture was cancelled.")
+        case .framingUnsupported:
+            return FloeCADStrings.text(
+                "cad.present.error.framing",
+                "This view doesn’t fit the current window. Rotate the screen or resize the window and try again.")
         }
     }
 }
@@ -278,6 +286,9 @@ final class CADPresentationRenderController: NSObject, UIGestureRecognizerDelega
         hasher.combine(camera.elevationRadians)
         hasher.combine(camera.fovYDegrees)
         hasher.combine(camera.projection)
+        // A transient saved-shot render widens the lens without changing the
+        // pose; pixels taken under it must never share a live-view cache key.
+        hasher.combine(camera.transientHalfHeightScale)
         hasher.combine(currentScene?.environment.stableKey)
         hasher.combine(buildKey)
         hasher.combine(animationToken)
@@ -880,8 +891,11 @@ final class CADPresentationRenderController: NSObject, UIGestureRecognizerDelega
     // MARK: Camera
 
     func restoreCamera(_ saved: CADPresentationCamera) {
-        guard saved.isValid else { return }
-        camera = saved
+        var camera = saved
+        // A live camera is never a transient export lens.
+        camera.transientHalfHeightScale = 1
+        guard camera.isValid else { return }
+        self.camera = camera
         cameraRestored = true
         applyCamera()
     }
@@ -889,13 +903,16 @@ final class CADPresentationRenderController: NSObject, UIGestureRecognizerDelega
     /// Show a saved view. This changes only the live camera; the bookmark is
     /// written by the document command the caller already performed.
     func showCamera(_ saved: CADPresentationCamera) {
-        guard saved.isValid else { return }
+        var camera = saved
+        // A live camera is never a transient export lens.
+        camera.transientHalfHeightScale = 1
+        guard camera.isValid else { return }
         interactionGeneration &+= 1
         // A document selection/undo can arrive while a transient frame owns
         // the stage. Stopping that frame must restore the newly selected view,
         // rather than resurrecting the camera from before the document edit.
-        if animationRestoreCamera != nil { animationRestoreCamera = saved }
-        camera = saved
+        if animationRestoreCamera != nil { animationRestoreCamera = camera }
+        self.camera = camera
         cameraRestored = true
         applyCamera()
     }
@@ -1385,31 +1402,53 @@ final class CADPresentationRenderController: NSObject, UIGestureRecognizerDelega
         }
     }
 
-    /// Actual ARView pixels of one saved camera, applied transiently under an
-    /// exclusive render lease and restored with the document baseline before
-    /// returning. Playback must already be stopped and no export lease may be
-    /// held; the caller fences the document identity around the await. This
-    /// never writes the document or the saved camera.
+    /// Actual ARView pixels of one saved shot, rendered transiently so the
+    /// WHOLE saved frustum exists in the current viewport and then centre-
+    /// cropped to the saved frame. Applied under an exclusive render lease and
+    /// restored with the document baseline before returning. Playback must
+    /// already be stopped and no export lease may be held; the caller fences
+    /// the document identity around the await. This never writes the document
+    /// or the saved camera, and it never resizes the on-screen UI.
+    ///
+    /// The perspective lens is widened by `tan(fov/2)`, the orthographic by
+    /// its half-height; the eye distance is never moved. A combination that
+    /// would need an unsupported lens refuses instead of clipping.
     func framedSnapshotImage(camera exportCamera: CADPresentationCamera,
-                             targetWidth: Int?) async throws -> UIImage {
+                             savedAspect: Double,
+                             targetWidth: Int) async throws
+    -> (image: UIImage, width: Int, height: Int) {
         guard arView.window != nil else { throw CADPresentationError.notAttached }
-        guard stage != nil else { throw CADPresentationError.renderingUnavailable }
+        guard stage != nil, let viewport = viewportAspect else {
+            throw CADPresentationError.renderingUnavailable
+        }
         guard animationLease == nil else {
             throw CADPresentationError.renderingUnavailable
         }
         guard exportCamera.isValid,
-              let lease = beginAnimationLease() else {
+              let plan = CADExportFraming.plan(
+                savedAspect: savedAspect,
+                viewportAspect: Double(viewport),
+                fovYDegrees: Double(exportCamera.fovYDegrees),
+                projection: exportCamera.projection,
+                targetWidth: targetWidth) else {
+            throw CADPresentationError.framingUnsupported
+        }
+        var transientCamera = exportCamera
+        transientCamera.transientHalfHeightScale = Float(plan.transientScale)
+        guard let lease = beginAnimationLease() else {
             throw CADPresentationError.renderingUnavailable
         }
         let generation = renderGeneration
         let token = String(
-            format: "camera-frame|%@|%.6f|%.6f|%.4f",
+            format: "camera-frame|%@|%.6f|%.6f|%.4f|%.4f|%.6f",
             exportCamera.projection.rawValue,
             exportCamera.distance,
             exportCamera.fovYDegrees,
-            exportCamera.azimuthRadians)
+            exportCamera.azimuthRadians,
+            exportCamera.elevationRadians,
+            plan.transientScale)
         let applied = applyAnimation(
-            camera: exportCamera, instanceTransforms: [:],
+            camera: transientCamera, instanceTransforms: [:],
             token: token, expectedGeneration: generation, lease: lease)
         guard applied else {
             endAnimationLease(lease)
@@ -1419,12 +1458,17 @@ final class CADPresentationRenderController: NSObject, UIGestureRecognizerDelega
             endAnimationLease(lease)
             clearAnimation()
         }
-        let image = try await snapshotImage(targetWidth: targetWidth)
+        // Raw pixels: the crop must be derived from the resolution the ARView
+        // actually produced, not from an image already resized to the target.
+        let image = try await snapshotImage(targetWidth: nil)
         guard animationToken == token,
-              renderGeneration == generation else {
+              renderGeneration == generation,
+              let capturedViewport = viewportAspect,
+              abs(Double(capturedViewport) - Double(viewport)) <= 1e-3,
+              let framed = CADExportFrame.framedStill(image, plan: plan) else {
             throw CADPresentationError.snapshotStale
         }
-        return image
+        return framed
     }
 }
 
@@ -1598,19 +1642,23 @@ final class CADPresentationSnapshotService {
         let result: (png: Data, width: Int, height: Int)
         let note: String
         if let savedView {
-            let image = try await controller.framedSnapshotImage(
-                camera: savedView.presentationCamera, targetWidth: targetWidth)
-            guard let composed = CADExportFrame.composited(
-                image, aspect: savedView.frameAspect,
-                background: Self.exportBackground(for: document.viewAppearance)),
-                  let png = composed.image.pngData() else {
+            // Render the complete saved frustum in the current viewport, then
+            // crop the saved frame out of those real pixels. Fitting an
+            // already-clipped viewport into the saved aspect would lose the
+            // geometry outside the current window.
+            let framed = try await controller.framedSnapshotImage(
+                camera: savedView.presentationCamera,
+                savedAspect: savedView.frameAspect,
+                targetWidth: targetWidth)
+            guard let png = framed.image.pngData() else {
                 throw CADPresentationError.snapshotFailed
             }
-            result = (png, composed.width, composed.height)
+            result = (png, framed.width, framed.height)
             note = "Actual live RealityKit render of saved view "
                 + "“\(savedView.name)” "
                 + "(\(savedView.projection.rawValue), \(savedView.frameLabel)), "
-                + "bound to the open document revision."
+                + "framed from the complete saved shot and bound to the open "
+                + "document revision."
         } else {
             result = try await controller.snapshotPNG(targetWidth: targetWidth)
             note = "Actual current RealityKit presentation render bound to the open document revision."
@@ -1663,15 +1711,6 @@ final class CADPresentationSnapshotService {
             store(snapshot, key: keyAfter)
         }
         return snapshot
-    }
-
-    /// Presentation background colour for the framed-export bars, from the
-    /// same environment the stage renders with.
-    private static func exportBackground(for appearance: CADViewAppearance) -> UIColor {
-        let environment = CADPresentationSceneBuilder.environment(from: appearance)
-        let color = environment.backgroundColor
-        return UIColor(red: CGFloat(color.x), green: CGFloat(color.y),
-                       blue: CGFloat(color.z), alpha: 1)
     }
 
     private func store(_ snapshot: CADPresentationSnapshot, key: String) {

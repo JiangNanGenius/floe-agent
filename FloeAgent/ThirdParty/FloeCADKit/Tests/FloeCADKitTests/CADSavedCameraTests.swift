@@ -516,6 +516,102 @@ final class CADSavedCameraTests: XCTestCase {
         XCTAssertEqual(portrait.minX, 175, accuracy: 0.5)
     }
 
+    // MARK: - Transient saved-shot framing (X21-R2)
+
+    func testFramingPlanWidensAWideShotToFitASquareViewport() throws {
+        let plan = try XCTUnwrap(CADExportFraming.plan(
+            savedAspect: 16.0 / 9, viewportAspect: 1, fovYDegrees: 60,
+            projection: .perspective, targetWidth: 2_048))
+        XCTAssertEqual(plan.width, 2_048)
+        XCTAssertEqual(plan.height, 1_152)
+        XCTAssertEqual(Double(plan.width) / Double(plan.height), 16.0 / 9,
+                       accuracy: 0.001)
+        XCTAssertGreaterThan(plan.transientScale, 16.0 / 9,
+                             "a square viewport must widen to contain a 16:9 frustum")
+        XCTAssertLessThan(plan.transientScale, 1.79)
+        XCTAssertGreaterThan(plan.transientFovYDegrees, 60)
+        XCTAssertLessThanOrEqual(plan.transientFovYDegrees,
+                                 CADExportFraming.maximumTransientFovYDegrees)
+        let crop = try XCTUnwrap(plan.cropRect(renderedAspect: 1))
+        XCTAssertEqual(crop.midX, 0.5, accuracy: 1e-9)
+        XCTAssertEqual(crop.midY, 0.5, accuracy: 1e-9)
+        XCTAssertGreaterThan(crop.height, 0.55)
+        XCTAssertLessThan(crop.height, 0.57)
+        XCTAssertGreaterThan(crop.width, 0.99)
+        XCTAssertLessThanOrEqual(crop.maxX, 1)
+        XCTAssertLessThanOrEqual(crop.maxY, 1)
+        XCTAssertEqual(crop.width / crop.height, 16.0 / 9, accuracy: 0.002)
+    }
+
+    func testFramingPlanCropsAPortraitShotWithoutWideningAWiderViewport() throws {
+        let plan = try XCTUnwrap(CADExportFraming.plan(
+            savedAspect: 9.0 / 16, viewportAspect: 1, fovYDegrees: 60,
+            projection: .orthographic, targetWidth: 720))
+        XCTAssertEqual(plan.transientScale, 1, accuracy: 1e-12)
+        XCTAssertEqual(plan.transientFovYDegrees, 60, accuracy: 1e-12)
+        XCTAssertEqual(plan.width, 720)
+        XCTAssertEqual(plan.height, 1_280)
+        let crop = try XCTUnwrap(plan.cropRect(renderedAspect: 1))
+        XCTAssertEqual(crop.width, 9.0 / 16, accuracy: 1e-9)
+        XCTAssertEqual(crop.height, 1, accuracy: 1e-9)
+        XCTAssertEqual(crop.midX, 0.5, accuracy: 1e-9)
+        XCTAssertEqual(crop.midY, 0.5, accuracy: 1e-9)
+    }
+
+    func testFramingPlanRefusesAnUnsupportedTransientLens() {
+        XCTAssertNil(CADExportFraming.plan(
+            savedAspect: 5, viewportAspect: 0.2, fovYDegrees: 150,
+            projection: .perspective, targetWidth: 1_024),
+            "a 178° transient lens must be refused rather than clip the shot")
+        let orthographic = CADExportFraming.plan(
+            savedAspect: 5, viewportAspect: 0.2, fovYDegrees: 150,
+            projection: .orthographic, targetWidth: 1_024)
+        XCTAssertNotNil(orthographic,
+                        "an orthographic camera has no angle to explode")
+        XCTAssertEqual(orthographic?.transientScale ?? 0, 25.05, accuracy: 0.02)
+    }
+
+    func testFramingCropRefusesWhenTheRenderedViewportBecameNarrower() throws {
+        let plan = try XCTUnwrap(CADExportFraming.plan(
+            savedAspect: 16.0 / 9, viewportAspect: 1, fovYDegrees: 60,
+            projection: .perspective, targetWidth: 1_024))
+        XCTAssertNotNil(plan.cropRect(renderedAspect: 1))
+        XCTAssertNil(plan.cropRect(renderedAspect: 0.9),
+                     "a viewport that shrank mid-capture must discard the frame")
+        XCTAssertNil(plan.cropRect(renderedAspect: .nan))
+    }
+
+#if canImport(SwiftUI) && canImport(RealityKit) && canImport(UIKit)
+    func testTransientFramingScaleChangesOnlyTheLens() throws {
+        var camera = CADPresentationCamera(
+            target: SIMD3(1, 2, 3), distance: 2.5,
+            azimuthRadians: 0.4, elevationRadians: 0.2, fovYDegrees: 60,
+            projection: .perspective)
+        let target = camera.target
+        let distance = camera.distance
+        let fov = camera.fovYDegrees
+        let azimuth = camera.azimuthRadians
+        camera.transientHalfHeightScale = 2
+        XCTAssertEqual(camera.target, target)
+        XCTAssertEqual(camera.distance, distance)
+        XCTAssertEqual(camera.fovYDegrees, fov)
+        XCTAssertEqual(camera.azimuthRadians, azimuth)
+        let expected = Float(2 * atan(tan(60.0 * Double.pi / 360) * 2)
+                             * 180 / Double.pi)
+        XCTAssertEqual(camera.effectiveFovYDegrees, expected, accuracy: 1e-4)
+        XCTAssertEqual(camera.perspectiveCameraComponent.fieldOfViewInDegrees,
+                       expected, accuracy: 1e-4)
+        camera.projection = .orthographic
+        XCTAssertEqual(camera.orthographicCameraComponent.scale,
+                       camera.halfHeightAtTarget * 2, accuracy: 1e-5)
+        // Clearing the transient scale restores the authored lens exactly.
+        camera.transientHalfHeightScale = 1
+        XCTAssertEqual(camera.effectiveFovYDegrees, fov)
+        XCTAssertEqual(camera.orthographicCameraComponent.scale,
+                       camera.halfHeightAtTarget, accuracy: 1e-6)
+    }
+#endif
+
     // MARK: - Helpers
 
     private func ndc(_ viewProjection: simd_float4x4,

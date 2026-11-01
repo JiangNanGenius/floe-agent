@@ -15365,6 +15365,23 @@
         }
       }
     },
+    "cad.present.error.framing": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This view doesn’t fit the current window. Rotate the screen or resize the window and try again."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "当前窗口无法完整显示此视角。请旋转屏幕或调整窗口大小后重试。"
+          }
+        }
+      }
+    },
     "cad.present.error.notActive": {
       "extractionState": "manual",
       "localizations": {
