@@ -457,6 +457,9 @@ nonisolated enum HelixKit {
     /// (negative pitch descends). `clockwise` reverses the coil direction
     /// as seen looking down the plane normal. Returns turns × segmentsPerTurn
     /// segments (+1 point), with the final point exactly at the helix end.
+    /// Non-finite parameters, or a request beyond
+    /// `HelixSamplingLimits.maximumSpineSegments`, return an empty path instead
+    /// of converting an out-of-range count or reserving an unbounded buffer.
     static func path(
         radius: Double,
         pitch: Double,
@@ -467,10 +470,21 @@ nonisolated enum HelixKit {
         in plane: SketchPlane,
         segmentsPerTurn: Int = 48
     ) -> [SIMD3<Double>] {
-        guard radius > 1e-12, turns > 1e-9, segmentsPerTurn >= 3 else {
+        guard radius.isFinite, radius > 1e-12,
+              pitch.isFinite,
+              turns.isFinite, turns > 1e-9,
+              startAngle.isFinite,
+              segmentsPerTurn >= 3 else {
             return []
         }
-        let steps = max(1, Int((turns * Double(segmentsPerTurn)).rounded(.up)))
+        // Same checked arithmetic/budget as HelixSpec.sampledSpine: this path
+        // never converts an unbounded `turns × segmentsPerTurn` to Int and
+        // never reserves an unbounded point buffer. A request outside the
+        // safety budget refuses like the existing invalid-parameter cases.
+        guard let steps = HelixSamplingLimits.checkedSegmentCount(
+            turns: turns, perTurn: segmentsPerTurn, rounding: .up) else {
+            return []
+        }
         let normal = simd_normalize(plane.normal)
         var points = [SIMD3<Double>]()
         points.reserveCapacity(steps + 1)
@@ -480,7 +494,11 @@ nonisolated enum HelixKit {
             let t = min(Double(i) / Double(segmentsPerTurn), turns)
             let angle = startAngle + (clockwise ? -1 : 1) * t * 2 * .pi
             let q = center + radius * SIMD2(cos(angle), sin(angle))
-            points.append(plane.toWorld(q) + normal * (pitch * t))
+            let point = plane.toWorld(q) + normal * (pitch * t)
+            guard point.x.isFinite, point.y.isFinite, point.z.isFinite else {
+                return []
+            }
+            points.append(point)
         }
         return points
     }

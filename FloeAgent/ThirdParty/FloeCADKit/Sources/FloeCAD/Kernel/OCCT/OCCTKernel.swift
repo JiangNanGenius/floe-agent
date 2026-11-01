@@ -412,6 +412,11 @@ nonisolated enum OCCTKernel {
                            spine: [SIMD3<Double>], helix: HelixSpec? = nil,
                            history: OCCTShapeHistory? = nil) -> BRepHandle? {
         guard spine.count >= 2 else { return nil }
+        // Last hard stop before OS3DHelixWire builds a B-spline/sweep from the
+        // raw turns. The evaluator and parser already refuse an unsafe spec;
+        // this keeps a direct kernel caller on the same refusal contract
+        // instead of handing an unrepresentable turn count to OCCT.
+        if let helix, helix.samplingError() != nil { return nil }
         let p = packedProfile(outer, holes: holes)
         var flat = [Double](); flat.reserveCapacity(spine.count * 3)
         for point in spine { flat.append(point.x); flat.append(point.y); flat.append(point.z) }

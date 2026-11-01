@@ -128,13 +128,195 @@ nonisolated struct HelixSpec: Codable, Hashable, Sendable {
     }
 
     /// Sampled polyline from `startAngle` over `turns`, `perTurn` chords each.
-    func sampledSpine(perTurn: Int = 36) -> [SIMD3<Double>] {
-        let count = max(1, Int((turns * Double(perTurn)).rounded()))
-        return (0...count).map { point(at: startAngle + 2 * .pi * turns * Double($0) / Double(count)) }
+    ///
+    /// This is the legacy convenience form: a request that would trap in
+    /// `Int(turns × perTurn)` or allocate an unbounded buffer returns an empty
+    /// path instead. Valid requests are byte-identical to the previous
+    /// implementation. Callers that must explain a refusal use
+    /// `checkedSampledSpine(perTurn:)` or `samplingError(perTurn:)`.
+    func sampledSpine(
+        perTurn: Int = HelixSamplingLimits.defaultSamplesPerTurn
+    ) -> [SIMD3<Double>] {
+        (try? checkedSampledSpine(perTurn: perTurn)) ?? []
+    }
+
+    /// The reason one sampling request is unsafe, or nil when it fits the
+    /// explicit sampling budget. This validates every value and the
+    /// `turns × perTurn` arithmetic BEFORE an `Int` conversion, buffer
+    /// allocation or kernel call. It does not clamp or truncate anything.
+    func samplingError(
+        perTurn: Int = HelixSamplingLimits.defaultSamplesPerTurn
+    ) -> HelixSamplingError? {
+        guard Self.isFinite(axisPoint) else {
+            return .invalid("helix.axisPoint must be finite.")
+        }
+        guard Self.isFinite(axisDirection) else {
+            return .invalid("helix.axisDirection must be finite.")
+        }
+        let axisLength = simd_length(axisDirection)
+        guard axisLength.isFinite, axisLength > 1e-9 else {
+            return .invalid("helix.axisDirection must be non-zero.")
+        }
+        let n = simd_normalize(axisDirection)
+        guard Self.isFinite(referenceDirection) else {
+            return .invalid("helix.referenceDirection must be finite.")
+        }
+        let projected = referenceDirection - simd_dot(referenceDirection, n) * n
+        let referenceLength = simd_length(projected)
+        guard referenceLength.isFinite, referenceLength > 1e-9 else {
+            return .invalid("helix.referenceDirection must not be parallel to axisDirection.")
+        }
+        guard radius.isFinite, radius > 0 else {
+            return .invalid("helix.radius must be a finite positive number.")
+        }
+        guard turns.isFinite, turns > 0 else {
+            return .invalid("helix.turns must be a finite positive number.")
+        }
+        guard pitch.isFinite, abs(pitch) > 1e-9 else {
+            return .invalid("helix.pitch must be finite and non-zero.")
+        }
+        guard startAngle.isFinite else {
+            return .invalid("helix.startAngle must be finite.")
+        }
+        guard perTurn > 0 else { return .invalidPerTurn }
+        guard HelixSamplingLimits.checkedSegmentCount(turns: turns, perTurn: perTurn) != nil else {
+            let requested = turns * Double(perTurn)
+            return requested.isFinite
+                ? .sampleLimit(requestedSegments: requested,
+                               maximumSegments: HelixSamplingLimits.maximumSpineSegments)
+                : .invalid("helix turns are too large to sample safely.")
+        }
+        // A modest segment count does not make a huge radius/pitch/axis point
+        // safe: the point arithmetic below can still overflow a finite Double.
+        // Bound the worst-case reach once, before generating any point.
+        let sweepAngle = abs(startAngle) + 2 * Double.pi * turns
+        let lift = abs(pitch) * sweepAngle / (2 * Double.pi)
+        let reach = abs(radius) + lift
+        let axisReach = max(abs(axisPoint.x), abs(axisPoint.y), abs(axisPoint.z))
+        guard sweepAngle.isFinite, lift.isFinite, reach.isFinite, axisReach.isFinite,
+              axisReach <= Double.greatestFiniteMagnitude - reach else {
+            return .invalid("helix parameters overflow the coordinate range.")
+        }
+        return nil
+    }
+
+    /// Checked sampling. A valid request returns exactly the points the
+    /// original `sampledSpine` expression produced (same chord count, angle
+    /// expression and `point(at:)`). An invalid request throws before the
+    /// `Int` conversion or `reserveCapacity`, and every generated point is
+    /// checked for finiteness before it enters the returned buffer.
+    func checkedSampledSpine(
+        perTurn: Int = HelixSamplingLimits.defaultSamplesPerTurn
+    ) throws -> [SIMD3<Double>] {
+        if let error = samplingError(perTurn: perTurn) { throw error }
+        guard let count = HelixSamplingLimits.checkedSegmentCount(
+            turns: turns, perTurn: perTurn) else {
+            throw HelixSamplingError.sampleLimit(
+                requestedSegments: turns * Double(perTurn),
+                maximumSegments: HelixSamplingLimits.maximumSpineSegments)
+        }
+        var points = [SIMD3<Double>]()
+        points.reserveCapacity(count + 1)   // `count` is checked and bounded above.
+        for i in 0...count {
+            let point = self.point(
+                at: startAngle + 2 * .pi * turns * Double(i) / Double(count))
+            guard Self.isFinite(point) else { throw HelixSamplingError.nonFiniteSample }
+            points.append(point)
+        }
+        return points
+    }
+
+    private static func isFinite(_ value: SIMD3<Double>) -> Bool {
+        value.x.isFinite && value.y.isFinite && value.z.isFinite
     }
 
     /// True helix length: turns × √((2πr)² + pitch²).
     var length: Double { turns * ((2 * .pi * radius) * (2 * .pi * radius) + pitch * pitch).squareRoot() }
+}
+
+/// Why a helix sampling request was refused. The messages are agent-facing:
+/// they name the invalid value or the exceeded budget and the next action.
+nonisolated enum HelixSamplingError: Error, Equatable, Sendable {
+    case invalid(String)
+    case invalidPerTurn
+    case sampleLimit(requestedSegments: Double, maximumSegments: Int)
+    case nonFiniteSample
+
+    var message: String {
+        switch self {
+        case .invalid(let reason):
+            return reason
+        case .invalidPerTurn:
+            return "helix sampling needs a positive samples-per-turn count."
+        case let .sampleLimit(requested, maximum):
+            return "helix requests \(requested) sampled segments; the safety limit is "
+                 + "\(maximum). Reduce turns or split the sweep."
+        case .nonFiniteSample:
+            return "helix sampling produced a non-finite point; check radius, pitch, "
+                 + "turns and axis values."
+        }
+    }
+}
+
+/// Explicit safety bounds for a helix's generated polyline and swept render
+/// mesh. These are NOT modelling tolerances, tessellation quality settings or a
+/// clamp: a valid request keeps its requested radius/pitch/turns/start angle and
+/// its exact analytic B-rep unchanged; a request outside the budget is refused
+/// with an actionable message. ShapeScript's triangle cap, CADMeshService's
+/// mesh-input cap and the presentation scene budget are different scopes and
+/// are deliberately not reused here.
+nonisolated enum HelixSamplingLimits {
+    /// The existing parser density; callers that do not name a density have
+    /// always used 36 chords per turn.
+    static let defaultSamplesPerTurn = 36
+
+    /// One generated spine may contain at most this many chords. At the
+    /// default density that is ~2,777 turns; the qualified thread fixtures use
+    /// 10 turns at 16 samples/turn. The sample buffer is therefore bounded at
+    /// 100,001 points (~2.4 MB at 24 B/point) before any mesh exists.
+    static let maximumSpineSegments = 100_000
+
+    /// A swept render mesh emits one wall quad per (spine segment × profile or
+    /// hole vertex). Capping that product at 250,000 quads (≈500,000 triangles
+    /// before the two caps) bounds the intermediate `Euclid.Polygon` array to
+    /// one body's share of the 8M-triangle presentation scene. The renderer
+    /// budget alone does not bound these transient polygons, which carry their
+    /// own vertices/planes and are built before the final mesh.
+    static let maximumSweepMeshQuads = 250_000
+
+    /// The checked chord count for one sampling request, or nil when the
+    /// arithmetic is non-finite or the rounded result is outside
+    /// `maximumSpineSegments`. No `Int` conversion occurs until the Double has
+    /// been compared to the integer budget, so neither an out-of-range value
+    /// nor a huge-but-representable value can trap or over-allocate.
+    static func checkedSegmentCount(
+        turns: Double,
+        perTurn: Int,
+        rounding rule: FloatingPointRoundingRule = .toNearestOrAwayFromZero
+    ) -> Int? {
+        guard turns.isFinite, turns > 0, perTurn > 0 else { return nil }
+        let scaled = turns * Double(perTurn)
+        guard scaled.isFinite else { return nil }
+        let rounded = scaled.rounded(rule)
+        guard rounded.isFinite, rounded >= 0,
+              rounded <= Double(maximumSpineSegments) else { return nil }
+        // Preserve the legacy `max(1, ...)` floor for tiny positive requests.
+        return max(1, Int(rounded))
+    }
+
+    /// Why a helix sweep's wall mesh does not fit
+    /// `maximumSweepMeshQuads`, or nil when it fits. Division (not
+    /// multiplication) keeps the check itself from overflowing.
+    static func sweepMeshError(spinePointCount: Int, loopVertexCount: Int) -> String? {
+        let segments = max(spinePointCount - 1, 0)
+        guard loopVertexCount > 0 else { return nil }   // downstream reports empty geometry
+        guard segments <= maximumSweepMeshQuads / loopVertexCount else {
+            return "it would generate \(segments) × \(loopVertexCount) wall quads; "
+                 + "the safety limit is \(maximumSweepMeshQuads). Reduce turns or use a "
+                 + "simpler profile."
+        }
+        return nil
+    }
 }
 
 // MARK: - Feature kinds / nodes / graph (frozen contract)
@@ -2517,6 +2699,16 @@ nonisolated extension FeatureGraph {
         into state: inout EvalState,
         next nextRevision: () -> UInt64
     ) {
+        // The saved-document path. A store, merge or import can hand the
+        // evaluator any helix values without passing through `parseHelix`;
+        // reject a malformed/oversized spec HERE, before resolving geometry,
+        // sampling or calling the exact-helix kernel. The existing per-node
+        // error/checkpoint path then keeps the original body/history intact.
+        if let helix, let helixError = helix.samplingError() {
+            state.errors[node.id] = .kernelFailure(
+                "sweep helix refused: \(helixError.message)")
+            return
+        }
         guard let plane = state.resolvePlane(planeRef) else {
             state.errors[node.id] = .brokenRef("sweep plane unresolved")
             return
@@ -2525,9 +2717,22 @@ nonisolated extension FeatureGraph {
             state.errors[node.id] = .brokenRef("sweep profile unresolved")
             return
         }
-        let spinePts = spine.map(\.point)   // WORLD-space 3D points
         // The render mesh follows the sampled polyline either way; the B-rep
         // follows the EXACT helix when the node carries one (`HelixSpec`).
+        // Check the profile × spine multiplication before copying/deduplicating
+        // the spine or building any polygon: a short helix can still generate
+        // an unusable wall mesh for a dense profile.
+        if helix != nil {
+            let loopVertices = outer.loop.count
+                + holes.reduce(0) { $0 + $1.loop.count }
+            if let meshError = HelixSamplingLimits.sweepMeshError(
+                spinePointCount: spine.count, loopVertexCount: loopVertices) {
+                state.errors[node.id] = .kernelFailure(
+                    "sweep helix refused: \(meshError)")
+                return
+            }
+        }
+        let spinePts = spine.map(\.point)   // WORLD-space 3D points
         let mesh = SweepLoftKit.sweep(profile: outer, holes: holes, in: plane, alongPath: spinePts)
         var brep: BRepHandle? = nil
         var names: [Int: ElementName] = [:]

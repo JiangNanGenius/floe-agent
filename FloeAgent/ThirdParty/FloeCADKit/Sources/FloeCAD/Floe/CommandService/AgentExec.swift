@@ -600,7 +600,11 @@ nonisolated enum AgentExec {
                 }
                 spine = raw.map { SIMD3($0[0], $0[1], $0[2]) }
             } else if let helix {
-                spine = helix.sampledSpine()
+                do {
+                    spine = try helix.checkedSampledSpine()
+                } catch let error as HelixSamplingError {
+                    throw agentError(for: error)
+                }
             } else {
                 return .failure(.init(code: "missing_spine",
                                       message: "args.spine must be ≥2 world-space "
@@ -616,6 +620,11 @@ nonisolated enum AgentExec {
     /// referenceDirection?, startAngle?}` — an EXACT helical spine. Positive
     /// pitch is right-handed about `axisDirection`; `referenceDirection` is
     /// where angle 0 points (any perpendicular when omitted).
+    ///
+    /// Validates the whole sampling request before the caller converts
+    /// `turns × perTurn` to `Int` or allocates the spine. The checks run even
+    /// when the caller also supplies a literal render spine: the exact helix
+    /// still consumes the same turns in the kernel.
     private static func parseHelix(_ raw: Any?) throws -> HelixSpec? {
         guard let raw else { return nil }
         guard let h = raw as? [String: Any] else {
@@ -625,25 +634,54 @@ nonisolated enum AgentExec {
         }
         let axisPoint = try vector3(h, "axisPoint", default: .zero)
         let axisDirection = try vector3(h, "axisDirection", default: SIMD3(0, 1, 0))
-        guard simd_length(axisDirection) > 1e-9 else {
-            throw AgentExecError(code: "bad_helix", message: "helix.axisDirection must be non-zero.")
+        // `simd_length` overflows to infinity for huge finite components, so
+        // check it as well as the zero-length case before normalizing.
+        let axisLength = simd_length(axisDirection)
+        guard axisLength.isFinite, axisLength > 1e-9 else {
+            throw AgentExecError(code: "bad_helix",
+                                 message: "helix.axisDirection must be finite and non-zero.")
         }
         let n = simd_normalize(axisDirection)
         var reference = try vector3(h, "referenceDirection", default: .zero)
         reference -= simd_dot(reference, n) * n
-        if simd_length(reference) < 1e-9 {
+        let referenceLength = simd_length(reference)
+        guard referenceLength.isFinite else {
+            throw AgentExecError(code: "bad_helix",
+                                 message: "helix.referenceDirection is too large to normalize.")
+        }
+        if referenceLength < 1e-9 {
             let pick: SIMD3<Double> = abs(n.x) < 0.9 ? SIMD3(1, 0, 0) : SIMD3(0, 1, 0)
             reference = simd_cross(n, pick)
         }
         let radius = try double(h, "radius"), pitch = try double(h, "pitch"), turns = try double(h, "turns")
-        guard radius > 0, turns > 0, abs(pitch) > 1e-9 else {
+        guard radius.isFinite, radius > 0,
+              turns.isFinite, turns > 0,
+              pitch.isFinite, abs(pitch) > 1e-9 else {
             throw AgentExecError(code: "bad_helix",
-                                 message: "helix.radius and helix.turns must be > 0 and helix.pitch non-zero.")
+                                 message: "helix.radius and helix.turns must be finite and > 0, "
+                                 + "and helix.pitch finite and non-zero.")
         }
         let startAngle = try optionalDouble(h, "startAngle") ?? 0
-        return HelixSpec(axisPoint: axisPoint, axisDirection: n,
-                         referenceDirection: simd_normalize(reference),
-                         radius: radius, pitch: pitch, turns: turns, startAngle: startAngle)
+        let spec = HelixSpec(axisPoint: axisPoint, axisDirection: n,
+                             referenceDirection: simd_normalize(reference),
+                             radius: radius, pitch: pitch, turns: turns,
+                             startAngle: startAngle)
+        if let error = spec.samplingError() { throw agentError(for: error) }
+        return spec
+    }
+
+    /// Map the model-level sampling refusal to the exec error contract:
+    /// parameter errors keep the existing `bad_helix` code, while an
+    /// unrepresentable/over-budget sample count is its own actionable code.
+    private static func agentError(for error: HelixSamplingError) -> AgentExecError {
+        switch error {
+        case .sampleLimit:
+            return AgentExecError(code: "helix_sampling_limit", message: error.message)
+        case .nonFiniteSample:
+            return AgentExecError(code: "non_finite", message: error.message)
+        case .invalid, .invalidPerTurn:
+            return AgentExecError(code: "bad_helix", message: error.message)
+        }
     }
 
     private static func parseLoft(_ a: [String: Any]) -> Result<AgentExecOp, AgentExecError> {
