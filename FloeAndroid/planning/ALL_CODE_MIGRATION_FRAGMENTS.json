@@ -1,0 +1,23 @@
+{
+  "schema": 1,
+  "owner": "Main integration only",
+  "registeredSchemaVersion": 51,
+  "nextCoordinatedSchemaVersion": 52,
+  "status": "declarative fragments only; register once after all code fields are known, before final APK",
+  "preserve": [
+    "v1-v51 registry",
+    "G09-R2 selected_at",
+    "mail_accounts"
+  ],
+  "fragments": [
+    {
+      "feature": "C06 independent todos",
+      "path": "planning/all-code-migrations/calendar_todos.sql",
+      "sha256": "08c89e3043e9e91b41b179e09ec03ecc3ba581cec06d811f5c2016d4fb3c9953"
+    }
+  ],
+  "pendingInputs": [
+    "C02 continuity/target persistent fields if required",
+    "C07 data exchange state if required"
+  ]
+}

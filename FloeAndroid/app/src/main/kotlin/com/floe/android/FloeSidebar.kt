@@ -164,6 +164,14 @@ fun FloeSidebar(
                 selectionStyle = FloeSelectionStyle.GRAY,
                 modifier = Modifier.padding(horizontal = 12.dp),
             )
+            FloeSidebarRow(
+                icon = FloeIcons.Clock,
+                label = stringResource(com.floe.android.feature.calendar.R.string.calendar_title),
+                selected = selection == SidebarSelection.More(MoreDestination.CALENDAR),
+                onClick = { onSelect(SidebarSelection.More(MoreDestination.CALENDAR)) },
+                selectionStyle = FloeSelectionStyle.GRAY,
+                modifier = Modifier.padding(horizontal = 12.dp),
+            )
 
             FloeSectionHeader(stringResource(R.string.projects))
             val defaultProjectName = stringResource(R.string.project_default_name)
@@ -290,11 +298,16 @@ fun FloeSidebar(
                             "mail",
                             stringResource(com.floe.android.feature.mail.R.string.mail_title),
                         ),
+                        FloeChoiceOption(
+                            "calendar",
+                            stringResource(com.floe.android.feature.calendar.R.string.calendar_title),
+                        ),
                     ),
                     selectedKey = when (selection) {
                         SidebarSelection.More(MoreDestination.NETWORK) -> "network"
                         SidebarSelection.More(MoreDestination.REMOTE) -> "remote"
                         SidebarSelection.More(MoreDestination.MAIL) -> "mail"
+                        SidebarSelection.More(MoreDestination.CALENDAR) -> "calendar"
                         else -> null
                     },
                     onSelect = { key ->
@@ -304,6 +317,7 @@ fun FloeSidebar(
                                 when (key) {
                                     "remote" -> MoreDestination.REMOTE
                                     "mail" -> MoreDestination.MAIL
+                                    "calendar" -> MoreDestination.CALENDAR
                                     else -> MoreDestination.NETWORK
                                 }
                             )

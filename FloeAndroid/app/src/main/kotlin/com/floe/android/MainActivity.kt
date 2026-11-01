@@ -64,6 +64,7 @@ class MainActivity : ComponentActivity() {
         // SAME request id is ignored by the one-shot owner.
         admitGenerationReturn(intent)
         PacketCaptureNavigation.submitFromIntent(intent, packageName)
+        admitCalendarRoute(intent)
         lifecycleScope.launch {
             repeatOnLifecycle(Lifecycle.State.STARTED) {
                 (application as FloeApplication).runtimeHost
@@ -96,6 +97,7 @@ class MainActivity : ComponentActivity() {
         setIntent(intent)
         admitGenerationReturn(intent)
         PacketCaptureNavigation.submitFromIntent(intent, packageName)
+        admitCalendarRoute(intent)
     }
 
     /**
@@ -113,6 +115,25 @@ class MainActivity : ComponentActivity() {
                 GenerationReturnNavigation.EXTRA_RETURN_REQUEST_ID),
             token = incoming.getStringExtra(
                 GenerationReturnNavigation.EXTRA_RETURN_TOKEN),
+        )
+    }
+
+    /**
+     * C06 local reminder route. Only the explicit same-app action and opaque
+     * todo id/revision are forwarded; the destination re-reads the live todo.
+     */
+    private fun admitCalendarRoute(intent: Intent?) {
+        val incoming = intent ?: return
+        com.floe.android.host.calendar.C06CalendarNavigation.submitFromIntent(
+            action = incoming.action,
+            componentPackage = incoming.component?.packageName,
+            ownPackage = packageName,
+            todoID = incoming.getStringExtra(
+                com.floe.android.host.calendar.C06CalendarNavigation.EXTRA_TODO_ID),
+            revision = incoming.getIntExtra(
+                com.floe.android.host.calendar.C06CalendarNavigation.EXTRA_TODO_REVISION,
+                0,
+            ),
         )
     }
 }

@@ -74,6 +74,10 @@ include(":feature:remote")
 // C06 generic mail screens (presentation only; App host owns the platform
 // TLS lane, credential gateway, journals and SAF streaming).
 include(":feature:mail")
+// C06 system calendar + App-local todos: :core:calendar owns the real
+// CalendarContract client; :feature:calendar is presentation only.
+include(":core:calendar")
+include(":feature:calendar")
 include(":core:networkmonitor")
 include(":core:pcap")
 // C06 live capture: bounded PCAP/sink/state core plus the pinned NetBare

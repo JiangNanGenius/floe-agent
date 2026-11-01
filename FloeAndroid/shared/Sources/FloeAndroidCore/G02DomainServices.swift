@@ -643,6 +643,17 @@ public final class G02InstalledComposition: @unchecked Sendable {
         registerC06MailTools(registry: runComponents.registry)
         await C06MailDomain.shared.refreshAvailability(epoch: epoch)
 
+        // C06: register the two ordinary calendar tools and the four local
+        // todo tools over the SAME accepted generation/registry. Calendar
+        // discovery stays hidden until the App host pushes an actual provider
+        // + read grant; writes additionally need the write grant and a
+        // writable calendar. No account, subscription or developer calendar
+        // is invented here.
+        registerC06CalendarTools(registry: runComponents.registry)
+        registerC06TodoTools(registry: runComponents.registry)
+        await C06TodoDomain.shared.refreshAvailability(epoch: epoch)
+        await C06CalendarDomain.shared.refreshAvailability(epoch: epoch)
+
         // Close the REAL feed/lease cycle with the exact accepted domain
         // instance; until this line both sides answered fail-closed.
         if let (runDomain, _) = RunDomainFacade.current(epoch: epoch) {

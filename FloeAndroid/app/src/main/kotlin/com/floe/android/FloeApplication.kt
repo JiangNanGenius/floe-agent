@@ -534,6 +534,9 @@ class FloeApplication : Application() {
                 // C06: close every platform mail TLS socket and acknowledge
                 // the lane closure before the native Root epoch retires.
                 (runtimeHost?.prepareC06MailForRootStop() != false) &&
+                // C06: stop the calendar provider lane and acknowledge its
+                // mailbox closure before the native Root epoch retires.
+                (runtimeHost?.prepareC06CalendarForRootStop() != false) &&
                 // G08: the Full platform-tool pump/phone/ADB/Root extension
                 // fences and joins its own work before the root retires.
                 (runtimeHost?.preparePlatformForRootStop() != false) &&

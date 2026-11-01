@@ -39,6 +39,11 @@
          Exact timing requires the user's Alarms & reminders special access. -->
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
     <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM" />
+    <!-- C06 system calendar: read shows the user's real CalendarContract
+         events; write is requested only for an explicit create/edit after the
+         user chose a writable calendar. The App never invents an account. -->
+    <uses-permission android:name="android.permission.READ_CALENDAR" />
+    <uses-permission android:name="android.permission.WRITE_CALENDAR" />
     <!-- G07: normal state permissions and explicit foreground Wi-Fi analysis.
          Location/Nearby permission requests happen only after the user's action. -->
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
@@ -68,6 +73,27 @@
                 <action android:name="android.intent.action.TIMEZONE_CHANGED" />
                 <action android:name="android.app.action.SCHEDULE_EXACT_ALARM_PERMISSION_STATE_CHANGED" />
                 <action android:name="com.floe.android.schedule.REARM" />
+            </intent-filter>
+        </receiver>
+        <!-- C06 local todo reminder delivery. The alarm carries only an
+             opaque todo id + occurrence; the worker re-reads the live original
+             store and never starts an Agent run or model inference. -->
+        <receiver
+            android:name="com.floe.android.host.calendar.TodoReminderReceiver"
+            android:exported="false" />
+        <!-- C06 bounded re-arm after boot, package replacement, clock or
+             timezone changes and an exact-alarm grant change. It stores no
+             todo body/title in unprotected boot storage. -->
+        <receiver
+            android:name="com.floe.android.host.calendar.TodoReminderWakeReceiver"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+                <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
+                <action android:name="android.intent.action.TIME_SET" />
+                <action android:name="android.intent.action.TIMEZONE_CHANGED" />
+                <action android:name="android.app.action.SCHEDULE_EXACT_ALARM_PERMISSION_STATE_CHANGED" />
+                <action android:name="com.floe.android.calendar.REARM_TODO_REMINDERS" />
             </intent-filter>
         </receiver>
         <service

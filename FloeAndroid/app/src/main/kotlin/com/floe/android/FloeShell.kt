@@ -73,6 +73,7 @@ import com.floe.android.design.InspectorContent
 import com.floe.android.design.InspectorRoute
 import com.floe.android.design.MoreDestination
 import com.floe.android.host.capture.PacketCaptureNavigation
+import com.floe.android.host.calendar.C06CalendarNavigation
 import com.floe.android.design.SidebarSelection
 import com.floe.android.design.WorkbenchSelection
 import com.floe.android.feature.canvas.CreativeAvailability
@@ -590,6 +591,24 @@ private fun FloeShellContent(
 
         val select: (SidebarSelection) -> Unit = { target ->
             navigateTo(target, openSchedules = false)
+        }
+
+        // C06 local reminder route. This is the shell's ONE calendar route
+        // authority: the destination re-reads the exact todo and never opens a
+        // different task/root. A temporary-chat fence refusal dismisses the
+        // request instead of committing a partial navigation.
+        val calendarReminderRoute by C06CalendarNavigation.pending.collectAsState()
+        LaunchedEffect(calendarReminderRoute?.requestID) {
+            val request = calendarReminderRoute ?: return@LaunchedEffect
+            if (C06CalendarNavigation.isExpired(request)) {
+                C06CalendarNavigation.dismiss(request.requestID)
+                return@LaunchedEffect
+            }
+            navigateTo(
+                target = SidebarSelection.More(MoreDestination.CALENDAR),
+                openSchedules = false,
+                onRefused = { C06CalendarNavigation.dismiss(request.requestID) },
+            )
         }
 
         // Generation notification return. This is the shell's single route

@@ -11,6 +11,7 @@ import com.floe.android.host.officeai.OfficeAiOoxmlVerifier
 import com.floe.android.host.cad.C04CadViewerController
 import com.floe.android.host.mail.C06BrokerMailLanGate
 import com.floe.android.host.mail.C06MailHostController
+import com.floe.android.host.calendar.C06CalendarHostController
 import com.floe.android.host.remote.C05BrokerLocalNetworkGate
 import com.floe.android.host.remote.C05RemoteHostController
 import kotlinx.coroutines.CoroutineDispatcher
@@ -159,6 +160,24 @@ class RuntimeHost internal constructor(
     }
     internal val c06Mail: C06MailHostController
         get() = c06MailDelegate.value
+
+    /**
+     * C06 Application-owned calendar/todo controller. It owns the trusted
+     * bridge token, the real CalendarContract backend, the reverse provider
+     * lane and the local reminder transport. App-scoped so a provider write
+     * or reminder rearm never belongs to a view; the root-stop gate closes
+     * the lane before retirement.
+     */
+    private val c06CalendarDelegate = lazy {
+        C06CalendarHostController(
+            context = appContext,
+            scope = scope,
+            ioDispatcher = ioDispatcher,
+            currentNativeEpoch = ::nativeRootEpoch,
+        )
+    }
+    internal val c06Calendar: C06CalendarHostController
+        get() = c06CalendarDelegate.value
     internal var workspaceGitTrust: G04GitTrustController? = null
     internal var workspaceTerminal: G04TerminalHostController? = null
 
@@ -452,6 +471,19 @@ class RuntimeHost internal constructor(
     internal suspend fun prepareC06MailForRootStop(): Boolean =
         if (c06MailDelegate.isInitialized()) {
             c06Mail.prepareForRootStop(C06_MAIL_STOP_WAIT_MS)
+        } else {
+            true
+        }
+
+    /**
+     * Root-stop gate for C06 calendar/todo: stop admitting provider tickets,
+     * join the App lane and acknowledge `laneClosed` before the old Swift
+     * mailbox retires. An unproven drain keeps the generation pending; a
+     * calendar write is never reported as a success by this gate.
+     */
+    internal suspend fun prepareC06CalendarForRootStop(): Boolean =
+        if (c06CalendarDelegate.isInitialized()) {
+            c06Calendar.prepareForRootStop(C06_CALENDAR_STOP_WAIT_MS)
         } else {
             true
         }
@@ -772,6 +804,12 @@ class RuntimeHost internal constructor(
                 // been opened (configured model mail tools need it). It does
                 // not open a socket until an operation is requested.
                 c06Mail.onOwnedStoreReady()
+                // C06: the calendar/todo controller owns the real provider
+                // lane and the local reminder transport. It starts on the
+                // accepted store generation even when the Calendar screen has
+                // not been opened (configured model calendar tools need it);
+                // it performs no provider query until work is requested.
+                c06Calendar.onOwnedStoreReady()
                 // Office AI host lane follows the ACTUAL accepted root epoch
                 // with bounded attempts (same doctrine as the browser lane).
                 startOfficeAiLane()
@@ -799,6 +837,7 @@ class RuntimeHost internal constructor(
                 if (cadViewerDelegate.isInitialized()) cadViewer.onRootStopped()
                 if (c05RemoteDelegate.isInitialized()) c05Remote.onRootStopped()
                 if (c06MailDelegate.isInitialized()) c06Mail.onRootStopped()
+                if (c06CalendarDelegate.isInitialized()) c06Calendar.onRootStopped()
                 stopOfficeAiLane()
                 // Fence the flavour extension on the real retirement. The
                 // main pre-stop drain already ran prepareForRootStop(); this
@@ -1123,6 +1162,9 @@ class RuntimeHost internal constructor(
 
         /** Bounded join for the C06 platform TLS lane / mail transport drain. */
         internal const val C06_MAIL_STOP_WAIT_MS = 8_000L
+
+        /** Bounded join for the C06 CalendarContract/reminder lane drain. */
+        internal const val C06_CALENDAR_STOP_WAIT_MS = 8_000L
 
         /** Bounded join for the exact active monitoring session on root stop. */
         internal const val NETWORK_MONITOR_STOP_WAIT_MS = 5_000L

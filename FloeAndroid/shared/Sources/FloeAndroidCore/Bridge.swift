@@ -37,7 +37,8 @@ public enum AndroidBridge {
                 || requestVersion == BridgeV9.version
                 || requestVersion == BridgeV10.version
                 || requestVersion == BridgeV11.version
-                || requestVersion == BridgeV12.version else {
+                || requestVersion == BridgeV12.version
+                || requestVersion == BridgeV13.version else {
             return response(["ok": false, "error": "unsupportedVersion"])
         }
         if requestVersion == BridgeV2.version {
@@ -186,6 +187,24 @@ public enum AndroidBridge {
                                 stampVersion: BridgeV12.version)
             }
             return response(object, stampVersion: BridgeV12.version)
+        }
+        if requestVersion == BridgeV13.version {
+            // Additive C06 system-calendar/todo channel: real permission and
+            // provider state pushed by the trusted App host, plus App-local
+            // todo CRUD/reminder plans over the ONE original database. The
+            // CalendarContract write itself travels the reverse provider
+            // mailbox; model tools use the ordinary registry. V1-V12 branches
+            // above are byte-identical.
+            let object = C06CalendarBridge.handle(requestData: data,
+                                                  fallbackRequestID: requestID)
+            let encoded = (try? JSONSerialization.data(withJSONObject: object,
+                                                       options: [.sortedKeys]))
+                ?? Data(#"{"ok":false,"error":"encoding"}"#.utf8)
+            guard encoded.count <= C06CalendarWire.maximumResponseBytes else {
+                return response(["ok": false, "error": "responseTooLarge"],
+                                stampVersion: BridgeV13.version)
+            }
+            return response(object, stampVersion: BridgeV13.version)
         }
         switch request["operation"] as? String {
         case "handshake":

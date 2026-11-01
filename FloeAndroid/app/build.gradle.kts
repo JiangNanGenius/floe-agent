@@ -497,6 +497,9 @@ dependencies {
     implementation(project(":feature:network"))
     implementation(project(":feature:remote"))
     implementation(project(":feature:mail"))
+    // C06 system-calendar provider access and Calendar/Todo presentation.
+    implementation(project(":core:calendar"))
+    implementation(project(":feature:calendar"))
     implementation(project(":core:credentials"))
     implementation(project(":core:designsystem"))
     implementation(project(":core:swiftbridge"))
