@@ -430,7 +430,10 @@ struct TypedMutationTargetContractTests {
         let target = root.appendingPathComponent("part.floecad").path
         for operation in ["variable.create", "variable.update", "variable.delete",
                           "feature.setExpression", "datum.offsetPlane.create", "datum.offsetPlane.update",
-                          "datum.offsetPlane.delete", "sketch.setSupport", "sketch.clearSupport"] {
+                          "datum.offsetPlane.delete", "datum.anglePlane.create", "datum.anglePlane.update",
+                          "datum.anglePlane.delete", "datum.threePointPlane.create",
+                          "datum.threePointPlane.update", "datum.threePointPlane.delete",
+                          "sketch.setSupport", "sketch.clearSupport"] {
             let payload = String(decoding: try JSONSerialization.data(
                 withJSONObject: ["action": operation]), as: UTF8.self)
             let arguments = String(decoding: try JSONSerialization.data(withJSONObject: [

@@ -292,6 +292,9 @@ public enum CadNativeEditActions {
         "variable.create", "variable.update", "variable.delete",
         "feature.setExpression",
         "datum.offsetPlane.create", "datum.offsetPlane.update", "datum.offsetPlane.delete",
+        "datum.anglePlane.create", "datum.anglePlane.update", "datum.anglePlane.delete",
+        "datum.threePointPlane.create", "datum.threePointPlane.update",
+        "datum.threePointPlane.delete",
         "sketch.setSupport", "sketch.clearSupport",
         "undo", "redo",
     ]

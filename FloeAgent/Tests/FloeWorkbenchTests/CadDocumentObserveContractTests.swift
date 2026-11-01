@@ -380,9 +380,10 @@ struct CadDocumentObserveContractTests {
 
     @Test("tool description and payload schema advertise the native observation contract")
     func discoveryAdvertisesNativePins() throws {
-        #expect(CadDocumentTool.toolDescription.contains("expectedRevision"))
-        #expect(CadDocumentTool.toolDescription.contains("expectedChangeCount"))
-        #expect(CadDocumentTool.toolDescription.contains("renderer=engineering"))
+        let payloadHelp = try #require(CadDocumentHelp.fullText(for: "payloads"))
+        #expect(payloadHelp.contains("expectedRevision"))
+        #expect(payloadHelp.contains("expectedChangeCount"))
+        #expect(payloadHelp.contains("renderer=engineering"))
         let data = Data(CadDocumentTool.parametersJSON.utf8)
         let object = try #require(try JSONSerialization.jsonObject(with: data) as? [String: Any])
         let properties = try #require(object["properties"] as? [String: Any])

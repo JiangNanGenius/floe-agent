@@ -2942,7 +2942,7 @@ public struct LocalProviderAdapter: ProviderAdapter {
                 parts.append("AVAILABLE TOOL NAMES (authoritative): \(boundedNames)")
                 if deferredCount > 0 {
                     if isAppleModel {
-                        parts.append("APPLE TOOL CHANNEL: one native Foundation Models tool is presented per turn; \(deferredCount) more authorized tool(s) are not presented in this request. Do not invent a tool name or call; use only the offered native tool.")
+                        parts.append("APPLE TOOL CHANNEL: \(selected.count) native Foundation Models tool definition(s) are offered for this turn; \(deferredCount) more authorized tool definition(s) were deferred whole because this window cannot carry every schema. Do not invent a tool name or call; use only an offered native tool, with at most one call per turn.")
                     } else if fallbackToolsForBuild.contains(where: { $0.name == "tools.search" }) {
                         parts.append("LOCAL PROMPT SCHEMA BUDGET: \(selected.count) complete tool definition(s) fit this model window; \(deferredCount) more were deferred rather than sliced. They remain installed. Load one exact name with tools.search when needed; its complete schema enters the next request.")
                     } else {
@@ -3106,10 +3106,11 @@ public struct LocalProviderAdapter: ProviderAdapter {
             sections.append(contentsOf: postResultSections)
             let transcript = sections.joined(separator: "\n\n")
             let system = makeSystem(selected: selected)
-            // Charge only schemas the chat template actually renders. Apple
-            // Foundation Models use their own tool channel and are excluded;
-            // the Qwen envelope's complete schemas are already inside `system`.
-            let nativeTokens = (!isAppleModel && usesNativeToolSchemas)
+            // Charge the complete schemas this turn actually carries, including
+            // Apple Foundation Models' native definitions: their tool channel
+            // consumes the same model window. The Foundation runtime still
+            // re-measures exact tokens and refuses an over-window request.
+            let nativeTokens = usesNativeToolSchemas
                 ? LocalPromptPressure.heuristicTokens(
                     in: selected.map {
                         $0.name + "\n" + $0.description + "\n" + $0.parametersJSON
@@ -3135,22 +3136,21 @@ public struct LocalProviderAdapter: ProviderAdapter {
             ? 0
             : max(0, windowPromptTokenBudget - baseline.estimated - 128)
 
-        var selectedTools: [ToolSchemaDescriptor]
-        if isAppleModel {
-            // The measured one-schema protocol is retained regardless of the
-            // schema budget: Foundation Models has its own channel and window.
-            selectedTools = isAppleToolFollowUp ? [] : Array(candidateTools.prefix(1))
-        } else {
-            let maximumCount = inventoryRequested
-                ? budgets.inventoryToolCount : budgets.actionToolCount
-            selectedTools = selectTools(
-                candidateTools,
-                maximumCount: maximumCount,
-                tokenBudget: schemaBudget,
-                usesNativeToolSchemas: usesNativeToolSchemas,
-                includesEnvelopeSchemas: includesEnvelopeSchemas
-            )
-        }
+        // One complete-schema admission path for every provider. Foundation
+        // Models are no longer reduced to a single apple.* definition: the
+        // same caller/task-authorized candidates are ordered, budgeted and
+        // offered whole, and the Foundation runtime bridges the selected
+        // definitions through DynamicToolSchema. Its own exact token
+        // preflight remains the final window gate.
+        let maximumCount = inventoryRequested
+            ? budgets.inventoryToolCount : budgets.actionToolCount
+        var selectedTools: [ToolSchemaDescriptor] = isAppleToolFollowUp ? [] : selectTools(
+            candidateTools,
+            maximumCount: maximumCount,
+            tokenBudget: schemaBudget,
+            usesNativeToolSchemas: usesNativeToolSchemas,
+            includesEnvelopeSchemas: includesEnvelopeSchemas
+        )
         // Final offer check: a search turn is truthful when web.search is not
         // in the presented set — whether it was absent from the request's
         // capability set or deferred by this window's schema budget.
@@ -3288,17 +3288,16 @@ public struct LocalProviderAdapter: ProviderAdapter {
     /// frozen catalog have already been applied. The adapter therefore does
     /// NOT impose a second curated-name fence (the old whitelist hid
     /// browser.*, exec.shell and Linux environment tools even when the task
-    /// permitted them). Model/parser guards remain: Apple Foundation Models
-    /// are limited to their own native channel, and Qwen-family schemas still
-    /// use the bounded JSON envelope.
+    /// permitted them), and it does NOT filter Foundation Models to apple.*:
+    /// Foundation receives exactly the same caller/task-authorized set as MLX
+    /// and cloud. The provider bridge and the ordinary runtime still enforce
+    /// permissions, approval, context admission and execution boundaries;
+    /// Qwen-family schemas still use the bounded JSON envelope.
     static func admissibleTools(
         _ tools: [ToolSchemaDescriptor],
         modelRemoteID: String
     ) -> [ToolSchemaDescriptor] {
-        if modelRemoteID == AppleFoundationModelIdentity.remoteModelID {
-            return tools.filter { $0.name.hasPrefix("apple.") }
-        }
-        return tools
+        tools
     }
 
     /// The old CAD annotation stripper was removed with the static schema
@@ -3316,26 +3315,27 @@ public struct LocalProviderAdapter: ProviderAdapter {
     /// parsing lives in `toolCalls(from:offeredToolNames:)`.
     static let qwenFamilyPrefixes = ["qwen3.5", "qwen3.8", "qwen3-next", "qwen3next"]
 
-    /// True when `modelRemoteID` renders native tool schemas through its MLX
-    /// chat template. False for Apple Foundation Models (native Foundation
-    /// Models channel) and for every Qwen-family snapshot (JSON envelope).
+    /// True when `modelRemoteID` carries complete native tool definitions
+    /// through its provider channel. False for every Qwen-family snapshot
+    /// (their bounded JSON envelope is the tool channel). Apple Foundation
+    /// Models also use complete native definitions, bridged by the same
+    /// DynamicToolSchema/deferred-call path; the adapter simply never hands
+    /// them the MLX chat-template schema array.
     static func usesNativeToolSchemas(modelRemoteID: String) -> Bool {
         let lower = modelRemoteID.lowercased()
         guard !qwenFamilyPrefixes.contains(where: { lower.hasPrefix($0) }) else { return false }
         return true
     }
 
-    /// The app runtime supplies this already-intersected capability set. Keep
-    /// only the Apple native-channel restriction; the MLX path uses the same
-    /// task-authorized set as cloud rather than a second curated whitelist.
+    /// The app runtime supplies this already-intersected capability set. Every
+    /// local provider, including Foundation Models, forwards exactly that set;
+    /// there is no provider-specific name whitelist. Execution still uses the
+    /// ordinary tool runtime, permissions and approval checks.
     public static func admissibleToolNames(
         from names: Set<String>,
         modelRemoteID: String
     ) -> Set<String> {
-        if modelRemoteID == AppleFoundationModelIdentity.remoteModelID {
-            return Set(names.filter { $0.hasPrefix("apple.") })
-        }
-        return names
+        names
     }
 
     /// Weak local models occasionally emit an older/alternate tool spelling.

@@ -512,14 +512,14 @@ struct LocalModelCatalogTests {
             messages: [("user", "我的当前位置是哪里？")],
             toolSchemas: tools
         ))
-        #expect(build.selectedTools.map(\.name) == ["apple.location.current"])
+        #expect(build.selectedTools.contains { $0.name == "apple.location.current" })
         #expect(build.requiresToolCall)
         #expect(build.systemInstructions.contains("native Foundation Models tools"))
     }
 
-    @Test("Apple Foundation Model exposes only one Apple-owned tool")
+    @Test("Foundation Models receive the task-authorized tool set through the generic bridge")
     @available(macOS 15.4, *)
-    func appleModelRejectsThirdPartyFloeTools() {
+    func foundationReceivesTaskAuthorizedTools() {
         let provider = LocalProviderAdapter.providerProfile
         let model = ModelProfile(
             providerID: provider.id,
@@ -538,8 +538,13 @@ struct LocalModelCatalogTests {
                 ToolSchemaDescriptor(name: "web.search", description: "Search the web")
             ]
         ))
-        #expect(build.fallbackTools.map(\.name) == ["apple.location.current"])
-        #expect(build.selectedTools.map(\.name) == ["apple.location.current"])
+        // The adapter no longer applies an apple.* name filter. The selected
+        // subset is still intent-ordered and context-bounded, while every
+        // authorized definition stays in the authoritative fallback set.
+        #expect(Set(build.fallbackTools.map(\.name))
+            == ["apple.location.current", "workspace.readFile", "web.search"])
+        #expect(build.selectedTools.contains { $0.name == "apple.location.current" })
+        #expect(build.selectedTools.contains { $0.name == "workspace.readFile" })
     }
 
     @Test("Constrained local context admits a bounded schema set from the authorized catalog")
@@ -796,12 +801,13 @@ struct LocalModelCatalogTests {
             modelRemoteID: "qwen3.5-4b-mlx4"
         ) == narrowed)
 
-        // Apple Foundation Models keep their real native-channel restriction.
+        // Apple Foundation Models now forward the same authorized set; the
+        // provider bridge and ordinary runtime still enforce execution.
         let apple = LocalProviderAdapter.admissibleToolNames(
             from: offered,
             modelRemoteID: AppleFoundationModelIdentity.remoteModelID
         )
-        #expect(apple == ["apple.location.current"])
+        #expect(apple == offered)
     }
 
     @Test("Authorized Git, history, notes, shell, browser and CAD schemas reach MLX together")
@@ -1020,9 +1026,9 @@ struct LocalModelCatalogTests {
         }
     }
 
-    @Test("Apple weather questions do not expose third-party web tools")
+    @Test("Apple weather questions receive task-authorized web tools")
     @available(macOS 15.4, *)
-    func appleWeatherUsesNativeTool() {
+    func appleWeatherReceivesAuthorizedWebTools() {
         let provider = LocalProviderAdapter.providerProfile
         let model = ModelProfile(
             providerID: provider.id,
@@ -1040,10 +1046,12 @@ struct LocalModelCatalogTests {
                 ToolSchemaDescriptor(name: "browser.navigate", description: "Open a browser")
             ]
         ))
-        #expect(build.fallbackTools.isEmpty)
-        #expect(build.selectedTools.isEmpty)
-        #expect(!build.requiresToolCall)
-        #expect(build.systemInstructions.contains("No tool is callable"))
+        // Task-authorized web tools are now offered to Foundation Models like
+        // any other local provider; the adapter does not hide them.
+        #expect(Set(build.fallbackTools.map(\.name)) == ["web.search", "browser.navigate"])
+        #expect(build.selectedTools.contains { $0.name == "web.search" })
+        #expect(build.requiresToolCall)
+        #expect(build.systemInstructions.contains("OFFERED TOOLS FOR THIS TURN"))
     }
 
     @Test("Local tool parser rejects tools not offered on the turn")

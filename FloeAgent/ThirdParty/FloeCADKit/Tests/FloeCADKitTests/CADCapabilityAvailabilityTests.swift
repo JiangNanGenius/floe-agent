@@ -72,10 +72,21 @@ final class CADCapabilityAvailabilityTests: XCTestCase {
         XCTAssertTrue(registry.command(for: KeyChord("e"))?.id == "model.extrude",
                       "a real chord still resolves through the executable filter")
 
-        // The default search corpus is the executable launcher set; the named
-        // planned entries must never appear even when their exact title is
-        // typed. Each one retains a stable id and an explicit reason.
-        for id in ["plane.angle", "plane.threePoints", "project.insertProject"] {
+        // M07 now has real dispatcher cases for all three datum-plane commands
+        // (offset/angle/three-point). Their stable ids must be searchable,
+        // launchable and reported executable; a catalog entry without a
+        // handler would fail this same check.
+        for id in ["plane.offset", "plane.angle", "plane.threePoints"] {
+            let command = registry.command(id: id)
+            XCTAssertNotNil(command, "\(id) keeps its stable catalog id")
+            XCTAssertEqual(command?.isExecutable, true, "\(id) must have a real dispatcher case")
+            XCTAssertNotNil(CommandRegistry.launchableCommands.first { $0.id == id })
+            XCTAssertTrue(registry.search(command?.title ?? "").contains { $0.id == id })
+            XCTAssertNil(CommandRegistry.unavailableReason(for: id))
+        }
+        // The default search corpus is the executable launcher set; a still
+        // planned entry must never appear even when its exact title is typed.
+        for id in ["project.insertProject"] {
             let command = registry.command(id: id)
             XCTAssertNotNil(command, "\(id) keeps its stable catalog id")
             XCTAssertEqual(command?.isExecutable, false)

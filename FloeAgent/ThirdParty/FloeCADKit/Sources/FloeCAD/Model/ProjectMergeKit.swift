@@ -74,7 +74,12 @@ nonisolated enum ProjectMergeKit {
                 throw MergeError.associativeVariableCollision(collisions.sorted())
             }
             for plane in guest.planes {
-                if case let .offset(definition)? = plane.definition { try definition.validate() }
+                guard let definition = plane.definition else { continue }
+                switch definition {
+                case let .offset(payload): try payload.validate()
+                case let .angle(payload): try payload.validate()
+                case let .threePoints(payload): try payload.validate()
+                }
             }
             try validateAssociativeExpressions(in: guest)
         }
@@ -157,8 +162,10 @@ nonisolated enum ProjectMergeKit {
             }
         }
         for plane in guest.planes {
-            if case let .offset(definition)? = plane.definition {
-                validate(definition.distance.formula, label: "plane:\(plane.id.raw.uuidString):distance")
+            guard let definition = plane.definition else { continue }
+            for slot in definition.expressionSlots {
+                validate(slot.expr.formula,
+                         label: "plane:\(plane.id.raw.uuidString):\(slot.name)")
             }
         }
         for sketch in guest.sketches {
@@ -393,6 +400,27 @@ nonisolated enum ProjectMergeKit {
                     // This frame is centroid-relative and body-local. Source
                     // geometry and placement already account for translation.
                     attachment: offset.attachment))
+            case let .angle(angle):
+                return .angle(AnglePlaneDefinition(
+                    version: angle.version,
+                    source: remap(angle.source, translation: translation),
+                    sourceVersion: GeometryVersionRef(
+                        bodyID: newBody(angle.sourceVersion.bodyID),
+                        writer: newFeature(angle.sourceVersion.writer)),
+                    hinge: angle.hinge,
+                    angle: angle.angle,
+                    attachment: angle.attachment))
+            case let .threePoints(threePoint):
+                // Anchor identities are sketch/entity ids, not coordinates;
+                // remap both and let the resolver derive world millimetres
+                // from the inserted sketches' own support planes.
+                return .threePoints(ThreePointPlaneDefinition(
+                    version: threePoint.version,
+                    points: threePoint.points.map {
+                        SketchAnchorRef(sketchID: newSketch($0.sketchID),
+                                        entityID: newEntity($0.entityID),
+                                        role: $0.role)
+                    }))
             }
         }
 

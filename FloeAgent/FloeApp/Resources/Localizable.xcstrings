@@ -5063,6 +5063,502 @@
         }
       }
     },
+    "cad.ui.tool.anglePlane": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Angle Plane"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "夹角基准面"
+          }
+        }
+      }
+    },
+    "cad.datum.editPlane": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Edit Plane"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "编辑基准面"
+          }
+        }
+      }
+    },
+    "cad.datum.editAngle": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Edit Angle"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "编辑夹角"
+          }
+        }
+      }
+    },
+    "cad.datum.editThreePoint": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Edit 3-Point Plane"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "编辑三点基准面"
+          }
+        }
+      }
+    },
+    "cad.datum.angleDegrees": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Angle (°)"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "夹角（度）"
+          }
+        }
+      }
+    },
+    "cad.datum.angleHint": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Enter an angle in degrees or a formula using document variables."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "输入角度（度），或使用文档变量编写公式。"
+          }
+        }
+      }
+    },
+    "cad.datum.angleBarHint": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Type an angle; the plane turns about the hinge"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "输入角度，平面会绕铰链轴旋转"
+          }
+        }
+      }
+    },
+    "cad.datum.hinge": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Hinge"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "铰链轴"
+          }
+        }
+      }
+    },
+    "cad.datum.hingeX": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Source X axis"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "来源 X 轴"
+          }
+        }
+      }
+    },
+    "cad.datum.hingeY": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Source Y axis"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "来源 Y 轴"
+          }
+        }
+      }
+    },
+    "cad.datum.hingeHint": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The plane rotates about this in-plane axis through the source face anchor."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "平面绕穿过来源面锚点的该平面内轴旋转。"
+          }
+        }
+      }
+    },
+    "cad.datum.point": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Point"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "点"
+          }
+        }
+      }
+    },
+    "cad.datum.points": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Source Points"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "来源点"
+          }
+        }
+      }
+    },
+    "cad.datum.selectPoint": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Select a point"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "选择点"
+          }
+        }
+      }
+    },
+    "cad.datum.threePointHint": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Pick three existing sketch points. The first is the plane origin; the plane follows those entities."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "选择三个现有草图点。第一个点为平面原点；平面会随这些实体更新。"
+          }
+        }
+      }
+    },
+    "cad.datum.useSelectedFace": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Use Selected Face"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "使用所选面"
+          }
+        }
+      }
+    },
+    "cad.datum.selectedFaceHint": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Reselects this datum's source from the face currently held by the native picker."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "使用原生选择器当前选中的面重新指定该基准面的来源。"
+          }
+        }
+      }
+    },
+    "cad.datum.addThreePoint": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "3-Point Plane"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "三点基准面"
+          }
+        }
+      }
+    },
+    "cad.datum.create": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Create"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "创建"
+          }
+        }
+      }
+    },
+    "cad.datum.role.endpointA": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Start point"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "起点"
+          }
+        }
+      }
+    },
+    "cad.datum.role.endpointB": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "End point"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "终点"
+          }
+        }
+      }
+    },
+    "cad.datum.role.center": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Centre"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "中心"
+          }
+        }
+      }
+    },
+    "cad.datum.role.whole": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Whole entity"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "整个实体"
+          }
+        }
+      }
+    },
+    "cad.datum.entity.line": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Line"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "直线"
+          }
+        }
+      }
+    },
+    "cad.datum.entity.rect": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Rectangle"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "矩形"
+          }
+        }
+      }
+    },
+    "cad.datum.entity.circle": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Circle"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "圆"
+          }
+        }
+      }
+    },
+    "cad.datum.entity.arc": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Arc"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "圆弧"
+          }
+        }
+      }
+    },
+    "cad.datum.entity.ellipse": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Ellipse"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "椭圆"
+          }
+        }
+      }
+    },
+    "cad.datum.entity.polygon": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Polygon"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "多边形"
+          }
+        }
+      }
+    },
+    "cad.datum.entity.spline": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Spline"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "样条"
+          }
+        }
+      }
+    },
+    "cad.datum.missingPoint": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "A source point is missing. Reselect all three points."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "来源点已缺失，请重新选择三个点。"
+          }
+        }
+      }
+    },
     "cad.document.readOnlyAssociation": {
       "extractionState": "manual",
       "localizations": {
@@ -29609,13 +30105,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "The Apple system model currently supports text chat and Apple device capabilities only. Attached images are first summarized by your configured image-assist model; when none is available, the system's image text recognition is used and its limits are stated. Floe tools such as web, Python, browser, SSH, cloud workspaces and Git are unavailable with this model."
+            "value": "The Apple system model runs on this device within the context window the system reports. Floe offers the tools this task is allowed to use, and each call still goes through the normal permission and approval checks. Attached images are summarized by your configured image-assist model or the system's image text recognition; this model does not receive them directly."
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "Apple 系统模型目前只支持文字聊天和 Apple 设备能力。附图会先由已配置的辅助读图模型生成图片摘要；没有可用辅助模型时使用系统的图片文字识别，并明确说明限制。此模型下不能使用网页、Python、浏览器、SSH、云工作区、Git 等 Floe 工具。"
+            "value": "Apple 系统模型在本机运行，可用上下文以系统报告的窗口为准。Floe 会把当前任务已授权的工具提供给该模型，每次调用仍按正常权限与审批检查执行。附图会先由已配置的辅助读图模型或系统图片文字识别处理；该模型不会直接接收图片。"
           }
         }
       }

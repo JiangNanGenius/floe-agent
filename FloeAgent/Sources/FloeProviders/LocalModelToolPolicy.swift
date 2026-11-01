@@ -36,10 +36,10 @@ import Foundation
 /// `cad.document` propose/apply stays bound to the existing CAD proposal,
 /// revision/SHA, undoable-transaction and approval/runtime-authority rules.
 ///
-/// The one real adapter-level restriction is Apple Foundation Models: their
-/// native tool channel accepts only `apple.*` names, enforced by
-/// `LocalProviderAdapter`, not by this policy. Cloud providers are not gated
-/// by this policy and keep their existing dynamic discovery behaviour.
+/// There is no adapter-level Apple name filter: Foundation Models receive the
+/// same caller/task-authorized set as MLX and cloud through the generic
+/// DynamicToolSchema/deferred-call bridge. Every provider keeps its ordinary
+/// permission, approval, schema-admission and execution boundaries.
 ///
 /// There is deliberately no "settings" tool here: the app has no registered
 /// agent-facing settings-mutation capability (settings are native views), so

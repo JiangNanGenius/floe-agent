@@ -6,8 +6,13 @@ import simd
 /// names. The session remains the sole transaction/undo/persistence authority.
 @MainActor
 public final class CADDatumService {
-    public static let actions = ["datum.offsetPlane.create", "datum.offsetPlane.update",
-                                 "datum.offsetPlane.delete", "sketch.setSupport", "sketch.clearSupport"]
+    public static let actions = [
+        "datum.offsetPlane.create", "datum.offsetPlane.update", "datum.offsetPlane.delete",
+        "datum.anglePlane.create", "datum.anglePlane.update", "datum.anglePlane.delete",
+        "datum.threePointPlane.create", "datum.threePointPlane.update",
+        "datum.threePointPlane.delete",
+        "sketch.setSupport", "sketch.clearSupport",
+    ]
     private let document: FloeCADDocument
     public init(document: FloeCADDocument) { self.document = document }
 
@@ -16,15 +21,38 @@ public final class CADDatumService {
         let common: Set<String> = ["action", "revision", "expected_revision"]
         let fields: Set<String>
         switch action {
-        case "datum.offsetPlane.create": fields = ["body_id", "face_index", "query_token", "expression", "size"]
-        case "datum.offsetPlane.update": fields = ["plane_id", "body_id", "face_index", "query_token", "expression", "expected_expression", "size"]
-        case "datum.offsetPlane.delete": fields = ["plane_id"]
-        case "sketch.setSupport": fields = ["sketch_id", "plane_id"]
-        case "sketch.clearSupport": fields = ["sketch_id"]
-        default: return fail("unknown_action", "Unknown datum action '\(action)'.")
+        case "datum.offsetPlane.create":
+            fields = ["body_id", "face_index", "query_token", "expression", "size"]
+        case "datum.offsetPlane.update":
+            fields = ["plane_id", "body_id", "face_index", "query_token", "expression",
+                      "expected_expression", "size"]
+        case "datum.offsetPlane.delete":
+            fields = ["plane_id"]
+        case "datum.anglePlane.create":
+            fields = ["body_id", "face_index", "query_token", "expression", "size",
+                      "hinge_x", "hinge_y"]
+        case "datum.anglePlane.update":
+            fields = ["plane_id", "body_id", "face_index", "query_token", "expression",
+                      "expected_expression", "size", "hinge_x", "hinge_y"]
+        case "datum.anglePlane.delete":
+            fields = ["plane_id"]
+        case "datum.threePointPlane.create":
+            fields = ["points", "size"]
+        case "datum.threePointPlane.update":
+            fields = ["plane_id", "points", "point_index", "point", "expected_points", "size"]
+        case "datum.threePointPlane.delete":
+            fields = ["plane_id"]
+        case "sketch.setSupport":
+            fields = ["sketch_id", "plane_id"]
+        case "sketch.clearSupport":
+            fields = ["sketch_id"]
+        default:
+            return fail("unknown_action", "Unknown datum action '\(action)'.")
         }
         let unknown = args.keys.filter { !common.union(fields).contains($0) }.sorted()
-        guard unknown.isEmpty else { return fail("unknown_argument", "Unknown fields: \(unknown.joined(separator: ", ")).") }
+        guard unknown.isEmpty else {
+            return fail("unknown_argument", "Unknown fields: \(unknown.joined(separator: ", ")).")
+        }
         if let supplied = args["action"], (supplied as? String) != action {
             return fail("contradictory_action", "The action field contradicts the requested operation.")
         }
@@ -34,9 +62,15 @@ public final class CADDatumService {
             }
         }
         switch action {
-        case "datum.offsetPlane.create": return create(args)
-        case "datum.offsetPlane.update": return update(args)
+        case "datum.offsetPlane.create": return createOffset(args)
+        case "datum.offsetPlane.update": return updateOffset(args)
         case "datum.offsetPlane.delete": return delete(args)
+        case "datum.anglePlane.create": return createAngle(args)
+        case "datum.anglePlane.update": return updateAngle(args)
+        case "datum.anglePlane.delete": return delete(args)
+        case "datum.threePointPlane.create": return createThreePoint(args)
+        case "datum.threePointPlane.update": return updateThreePoint(args)
+        case "datum.threePointPlane.delete": return delete(args)
         case "sketch.setSupport": return support(args, clear: false)
         case "sketch.clearSupport": return support(args, clear: true)
         default: return fail("unknown_action", "Unknown datum action.")
@@ -60,15 +94,22 @@ public final class CADDatumService {
         }
         return (value as? String).flatMap(Int.init)
     }
+    private func double(_ value: Any?) -> Double? {
+        if let number = value as? NSNumber {
+            guard CFGetTypeID(number) != CFBooleanGetTypeID(), number.doubleValue.isFinite else { return nil }
+            return number.doubleValue
+        }
+        if let text = value as? String { return Double(text) }
+        return nil
+    }
     private func size(_ value: Any?) throws -> Double? {
         guard let value else { return nil }
-        guard let number = value as? NSNumber, CFGetTypeID(number) != CFBooleanGetTypeID(),
-              number.doubleValue.isFinite, number.doubleValue > 0 else {
+        guard let number = double(value), number > 0 else {
             throw Failure(code: "invalid_size", message: "size must be a finite positive length in mm.")
         }
-        return number.doubleValue
+        return number
     }
-    private func expression(_ value: Any?) throws -> Expr {
+    private func distanceExpression(_ value: Any?) throws -> Expr {
         guard let source = value as? String else {
             throw Failure(code: "invalid_expression", message: "expression must be a distance expression in mm.")
         }
@@ -81,45 +122,107 @@ public final class CADDatumService {
             parsed = ExpressionEvaluator.evaluateStrict(String(trimmed.dropLast(2)), variables: values)
         }
         guard let result = parsed, result.isFinite else {
-            throw Failure(code: "invalid_expression", message: "expression must resolve to a finite distance in mm; use mm or omit the unit suffix.")
+            throw Failure(code: "invalid_expression",
+                          message: "expression must resolve to a finite distance in mm; use mm or omit the unit suffix.")
         }
         return Expr(value: result, formula: source)
+    }
+    /// Angle formulas are authored and stored in public degrees. The definition
+    /// converts to radians exactly once at resolution; this parser never does.
+    private func angleExpression(_ value: Any?) throws -> Expr {
+        guard let source = value as? String else {
+            throw Failure(code: "invalid_expression",
+                          message: "expression must be an angle expression in degrees.")
+        }
+        let values = document.session.variableValues()
+        let trimmed = source.trimmingCharacters(in: .whitespacesAndNewlines)
+        var parsed = ExpressionEvaluator.evaluateStrict(trimmed, variables: values)
+        var formula = source
+        if parsed == nil {
+            let lower = trimmed.lowercased()
+            if lower.hasSuffix("deg") {
+                parsed = ExpressionEvaluator.evaluateStrict(
+                    String(trimmed.dropLast(3)), variables: values)
+            } else if trimmed.hasSuffix("°") {
+                parsed = ExpressionEvaluator.evaluateStrict(
+                    String(trimmed.dropLast()), variables: values)
+                // The shared evaluator strips alphabetic unit suffixes but not
+                // the degree glyph. Store a re-readable formula when the
+                // caller used it, instead of a value the next fan-out cannot
+                // parse.
+                formula = String(trimmed.dropLast()).trimmingCharacters(in: .whitespacesAndNewlines)
+            }
+        }
+        guard let result = parsed, result.isFinite else {
+            throw Failure(code: "invalid_expression",
+                          message: "expression must resolve to a finite angle in degrees.")
+        }
+        return Expr(value: result, formula: formula)
+    }
+    /// Explicit local hinge direction in the source-face attachment frame.
+    /// Omitted means the frozen frame's x axis. Supplied components are
+    /// normalized once; a zero direction refuses.
+    private func hinge(_ args: [String: Any], fallback: SIMD2<Double>) throws -> SIMD2<Double> {
+        let hasX = args["hinge_x"] != nil
+        let hasY = args["hinge_y"] != nil
+        guard hasX == hasY else {
+            throw Failure(code: "invalid_hinge",
+                          message: "Send hinge_x and hinge_y together (local source-plane direction).")
+        }
+        guard hasX else { return fallback }
+        guard let x = double(args["hinge_x"]), let y = double(args["hinge_y"]),
+              x.isFinite, y.isFinite else {
+            throw Failure(code: "invalid_hinge", message: "hinge_x and hinge_y must be finite numbers.")
+        }
+        let length = (x * x + y * y).squareRoot()
+        guard length.isFinite, length > 1e-9 else {
+            throw Failure(code: "invalid_hinge", message: "The hinge direction must not be zero.")
+        }
+        return SIMD2(x / length, y / length)
     }
 
     private struct Source {
         var reference: FaceRef
         var version: GeometryVersionRef
         var frame: PlaneAttachmentFrame
-        var plane: SketchPlane
+        var face: SourceFaceGeometry
+        var bodyTransform: Transform3D
+        var planeAtZero: SketchPlane
     }
-    private func source(_ args: [String: Any], distance: Expr) throws -> Source {
+    private func source(_ args: [String: Any]) throws -> Source {
         guard let id = uuid(args["body_id"]), let index = integer(args["face_index"]), index > 0,
               let body = document.session.document.body(with: BodyID(raw: id)), let brep = body.brep else {
-            throw Failure(code: "invalid_source", message: "Use body_id and the 1-based OCCT kernel face_index from query scope=faces.")
+            throw Failure(code: "invalid_source",
+                          message: "Use body_id and the 1-based OCCT kernel face_index from query scope=faces.")
         }
         guard let token = args["query_token"] as? String, let generation = CADGeometryQueryGeneration.parse(token),
               generation.scope == "faces", generation.matches(documentRevision: document.revision,
                 changeCount: document.session.changeCount, bodyID: id, meshRevision: body.meshRevision) else {
-            throw Failure(code: "stale_query", message: "Re-query scope=faces for this body and use its current query_token.")
+            throw Failure(code: "stale_query",
+                          message: "Re-query scope=faces for this body and use its current query_token.")
         }
         guard document.session.lastNamingRevisions[body.id] == body.meshRevision,
               let name = document.session.lastKernelNames[body.id]?[index], Self.isStable(name),
               document.session.lastKernelNames[body.id]?.values.filter({ $0 == name }).count == 1,
               let liveFace = OCCTKernel.faceInfo(brep).first(where: { $0.index == index }),
               liveFace.signature?.kind == .planar, liveFace.area.isFinite, liveFace.area > 0 else {
-            throw Failure(code: "named_planar_source_required", message: "This face has no current, unique stable planar kernel name. Rebuild or select a supported named face.")
+            throw Failure(code: "named_planar_source_required",
+                          message: "This face has no current, unique stable planar kernel name. Rebuild or select a supported named face.")
         }
         guard let acquired = document.session.associativeSource(for: body.id),
               let snapshotBRep = acquired.snapshot.body.brep else {
-            throw Failure(code: "feature_source_required", message: "An offset plane needs a successful feature-owned exact source.")
+            throw Failure(code: "feature_source_required",
+                          message: "An associative plane needs a successful feature-owned exact source.")
         }
         // Names cross the boundary; indices NEVER do. A snapshot can have a
         // different kernel ordering from the live exact shape.
         let matches = acquired.snapshot.kernelNames.filter { $0.value == name }
         guard matches.count == 1, let snapshotIndex = matches.first?.key,
               let face = OCCTKernel.faceInfo(snapshotBRep).first(where: { $0.index == snapshotIndex }),
-              let signature = face.signature, signature.kind == .planar, face.area.isFinite, face.area > 0 else {
-            throw Failure(code: "ambiguous_source", message: "The selected stable face name is absent or ambiguous in its actual writer snapshot.")
+              let signature = face.signature, signature.kind == .planar,
+              face.area.isFinite, face.area > 0 else {
+            throw Failure(code: "ambiguous_source",
+                          message: "The selected stable face name is absent or ambiguous in its actual writer snapshot.")
         }
         let readable = SketchPlane.readable(origin: face.centroid, normal: face.normal)
         let frame = try PlaneAttachmentFrame.make(faceCentroid: face.centroid, faceNormal: face.normal,
@@ -129,11 +232,13 @@ public final class CADDatumService {
         }?.id ?? name.creator
         let reference = FaceRef(body: BodyRef(producer: producer, bodyID: body.id), creator: name.creator,
                                 role: Self.role(name, index: snapshotIndex), signature: signature, elementName: name)
-        let definition = OffsetPlaneDefinition(source: reference, sourceVersion: acquired.version,
-                                               distance: distance, attachment: frame)
-        let plane = try definition.resolvedPlane(face: SourceFaceGeometry(bodyID: body.id,
-            centroid: face.centroid, normal: face.normal), bodyTransform: acquired.snapshot.body.transform)
-        return Source(reference: reference, version: acquired.version, frame: frame, plane: plane)
+        let sourceFace = SourceFaceGeometry(bodyID: body.id, centroid: face.centroid, normal: face.normal)
+        let plane = try frame.resolvedPlane(face: sourceFace,
+                                            bodyTransform: acquired.snapshot.body.transform,
+                                            offsetMM: 0)
+        return Source(reference: reference, version: acquired.version, frame: frame,
+                      face: sourceFace, bodyTransform: acquired.snapshot.body.transform,
+                      planeAtZero: plane)
     }
 
     private static func isStable(_ name: ElementName) -> Bool {
@@ -180,20 +285,25 @@ public final class CADDatumService {
         return reply
     }
 
-    private func create(_ args: [String: Any]) -> [String: Any] {
+    // MARK: - Offset plane
+
+    private func createOffset(_ args: [String: Any]) -> [String: Any] {
         do {
-            let distance = try expression(args["expression"])
+            let distance = try distanceExpression(args["expression"])
             let displaySize = try size(args["size"]) ?? 100
-            let selectedSource = try source(args, distance: distance)
-            let definition = OffsetPlaneDefinition(source: selectedSource.reference, sourceVersion: selectedSource.version,
-                                                  distance: distance, attachment: selectedSource.frame)
-            let plane = ConstructionPlane(plane: selectedSource.plane, size: displaySize, definition: .offset(definition))
-            return commit([AddConstructionPlaneCommand(plane: plane)], title: "Offset Plane",
-                          action: "datum.offsetPlane.create", extra: ["plane_id": plane.id.raw.uuidString])
+            let selected = try source(args)
+            let definition = OffsetPlaneDefinition(source: selected.reference,
+                                                   sourceVersion: selected.version,
+                                                   distance: distance, attachment: selected.frame)
+            let plane = try definition.resolvedPlane(face: selected.face,
+                                                     bodyTransform: selected.bodyTransform)
+            let record = ConstructionPlane(plane: plane, size: displaySize, definition: .offset(definition))
+            return commit([AddConstructionPlaneCommand(plane: record)], title: "Offset Plane",
+                          action: "datum.offsetPlane.create", extra: ["plane_id": record.id.raw.uuidString])
         } catch { return self.error(error) }
     }
 
-    private func update(_ args: [String: Any]) -> [String: Any] {
+    private func updateOffset(_ args: [String: Any]) -> [String: Any] {
         guard let id = uuid(args["plane_id"]), let plane = document.session.document.planes.first(where: { $0.id.raw == id }),
               case var .offset(definition)? = plane.definition else {
             return fail("unknown_offset_plane", "plane_id must name an existing associative offset plane.")
@@ -208,17 +318,17 @@ public final class CADDatumService {
         }
         do {
             let newSize = try size(args["size"])
-            if let supplied = args["expression"] { definition.distance = try expression(supplied) }
+            if let supplied = args["expression"] { definition.distance = try distanceExpression(supplied) }
             let sourceFields = ["body_id", "face_index", "query_token"]
             let reselect = sourceFields.contains { args[$0] != nil }
             if reselect {
                 guard sourceFields.allSatisfy({ args[$0] != nil }) else {
                     return fail("incomplete_source", "Reselecting a source requires body_id, face_index and query_token together.")
                 }
-                let selectedSource = try source(args, distance: definition.distance)
+                let selected = try source(args)
                 definition = OffsetPlaneDefinition(version: definition.version,
-                    source: selectedSource.reference, sourceVersion: selectedSource.version,
-                    distance: definition.distance, attachment: selectedSource.frame)
+                    source: selected.reference, sourceVersion: selected.version,
+                    distance: definition.distance, attachment: selected.frame)
             }
             var commands: [DocumentCommand] = []
             if plane.definition != .offset(definition) {
@@ -234,27 +344,243 @@ public final class CADDatumService {
         } catch { return self.error(error) }
     }
 
-    private func delete(_ args: [String: Any]) -> [String: Any] {
+    // MARK: - Angle plane
+
+    private func createAngle(_ args: [String: Any]) -> [String: Any] {
+        do {
+            let angle = try angleExpression(args["expression"])
+            let localHinge = try hinge(args, fallback: SIMD2(1, 0))
+            let displaySize = try size(args["size"]) ?? 100
+            let selected = try source(args)
+            let definition = AnglePlaneDefinition(source: selected.reference,
+                                                  sourceVersion: selected.version,
+                                                  hinge: localHinge, angle: angle,
+                                                  attachment: selected.frame)
+            let plane = try definition.resolvedPlane(face: selected.face,
+                                                     bodyTransform: selected.bodyTransform)
+            let record = ConstructionPlane(plane: plane, size: displaySize, definition: .angle(definition))
+            return commit([AddConstructionPlaneCommand(plane: record)], title: "Angle Plane",
+                          action: "datum.anglePlane.create", extra: ["plane_id": record.id.raw.uuidString])
+        } catch { return self.error(error) }
+    }
+
+    private func updateAngle(_ args: [String: Any]) -> [String: Any] {
         guard let id = uuid(args["plane_id"]), let plane = document.session.document.planes.first(where: { $0.id.raw == id }),
-              case .offset? = plane.definition else { return fail("unknown_offset_plane", "plane_id must name an existing associative offset plane.") }
+              case var .angle(definition)? = plane.definition else {
+            return fail("unknown_angle_plane", "plane_id must name an existing associative angle plane.")
+        }
+        if let raw = args["expected_expression"] {
+            guard let expected = raw as? String else {
+                return fail("bad_expected_expression", "expected_expression must be the current exact stored formula string (empty when absent).")
+            }
+            guard expected == (definition.angle.formula ?? "") else {
+                return fail("expression_mismatch", "The angle expression changed. Re-query scope=planes before editing.")
+            }
+        }
+        do {
+            let newSize = try size(args["size"])
+            if let supplied = args["expression"] { definition.angle = try angleExpression(supplied) }
+            if args["hinge_x"] != nil || args["hinge_y"] != nil {
+                definition = AnglePlaneDefinition(version: definition.version,
+                    source: definition.source, sourceVersion: definition.sourceVersion,
+                    hinge: try hinge(args, fallback: definition.hinge),
+                    angle: definition.angle, attachment: definition.attachment)
+            }
+            let sourceFields = ["body_id", "face_index", "query_token"]
+            let reselect = sourceFields.contains { args[$0] != nil }
+            if reselect {
+                guard sourceFields.allSatisfy({ args[$0] != nil }) else {
+                    return fail("incomplete_source", "Reselecting a source requires body_id, face_index and query_token together.")
+                }
+                let selected = try source(args)
+                definition = AnglePlaneDefinition(version: definition.version,
+                    source: selected.reference, sourceVersion: selected.version,
+                    hinge: definition.hinge, angle: definition.angle, attachment: selected.frame)
+            }
+            var commands: [DocumentCommand] = []
+            if plane.definition != .angle(definition) {
+                commands.append(EditConstructionPlaneDefinitionCommand(planeID: plane.id,
+                    before: plane.definition, after: .angle(definition)))
+            }
+            if let newSize, newSize != plane.size {
+                commands.append(SetDatumSizeCommand(planeID: plane.id, before: plane.size, after: newSize))
+            }
+            guard !commands.isEmpty else { return fail("no_change", "The plane already has those values.") }
+            return commit(commands, title: "Edit Angle Plane", action: "datum.anglePlane.update",
+                          extra: ["plane_id": plane.id.raw.uuidString])
+        } catch { return self.error(error) }
+    }
+
+    // MARK: - Three-point plane
+
+    private func anchor(_ value: Any?) throws -> SketchAnchorRef {
+        guard let object = value as? [String: Any],
+              let sketchID = uuid(object["sketch_id"]),
+              let entityID = uuid(object["entity_id"]),
+              let roleRaw = object["role"] as? String,
+              let role = PointRole(rawValue: roleRaw), role.isPersistable,
+              role != .whole else {
+            throw Failure(code: "invalid_points",
+                          message: "Each point needs sketch_id, entity_id and role from query kind=sketches (endpointA, endpointB or center).")
+        }
+        return SketchAnchorRef(sketchID: SketchID(raw: sketchID),
+                               entityID: entityID, role: role)
+    }
+    private func points(_ value: Any?) throws -> [SketchAnchorRef] {
+        guard let array = value as? [Any], array.count == 3 else {
+            throw Failure(code: "invalid_points",
+                          message: "points must contain exactly three sketch point references.")
+        }
+        return try array.map(anchor)
+    }
+    private func expectedPoints(_ value: Any?) throws -> [SketchAnchorRef]? {
+        guard let value else { return nil }
+        return try points(value)
+    }
+
+    /// Verify every stored identity still names the role it claims. This is a
+    /// preflight only; the domain transaction re-resolves the complete graph
+    /// and refuses a replacement/topology change atomically.
+    private func validateAnchors(_ refs: [SketchAnchorRef]) throws {
+        for ref in refs {
+            guard let sketch = document.session.document.sketches.first(where: { $0.id == ref.sketchID }) else {
+                throw Failure(code: "unknown_sketch",
+                              message: "Point \(ref.key) names a sketch that no longer exists.")
+            }
+            guard let entity = sketch.entities.first(where: { $0.id == ref.entityID }) else {
+                throw Failure(code: "unknown_entity",
+                              message: "Point \(ref.key) names an entity that no longer exists in sketch '\(sketch.name)'.")
+            }
+            guard entity.anchorRoles.contains(ref.role) else {
+                throw Failure(code: "unsupported_anchor_role",
+                              message: "That \(Self.entityKind(entity)) exposes no \(ref.role.rawValue) point. Use a line/rect endpoint or a circle/arc/ellipse/polygon centre.")
+            }
+        }
+        guard Set(refs.map(\.key)).count == 3 else {
+            throw Failure(code: "invalid_points", message: "The three source points must be distinct.")
+        }
+    }
+    private static func entityKind(_ entity: SketchEntity) -> String {
+        switch entity {
+        case .line: return "line"
+        case .rect: return "rectangle"
+        case .circle: return "circle"
+        case .arc: return "arc"
+        case .ellipse: return "ellipse"
+        case .polygon: return "polygon"
+        case .spline: return "spline"
+        }
+    }
+    private func previewPlane(_ definition: ThreePointPlaneDefinition) throws -> SketchPlane {
+        var world: [SIMD3<Double>] = []
+        for ref in definition.points {
+            guard let sketch = document.session.document.sketches.first(where: { $0.id == ref.sketchID }),
+                  let entity = sketch.entities.first(where: { $0.id == ref.entityID }),
+                  let local = entity.anchorPoint(for: ref.role) else {
+                throw Failure(code: "invalid_points", message: "A source point cannot be resolved.")
+            }
+            world.append(sketch.plane.toWorld(local))
+        }
+        do { return try definition.resolvedPlane(worldPoints: world) }
+        catch { throw Failure(code: "invalid_points", message: error.localizedDescription) }
+    }
+    private func createThreePoint(_ args: [String: Any]) -> [String: Any] {
+        do {
+            let refs = try points(args["points"])
+            try validateAnchors(refs)
+            let displaySize = try size(args["size"]) ?? 100
+            let definition = ThreePointPlaneDefinition(points: refs)
+            let plane = try previewPlane(definition)
+            let record = ConstructionPlane(plane: plane, size: displaySize,
+                                           definition: .threePoints(definition))
+            return commit([AddConstructionPlaneCommand(plane: record)], title: "3-Point Plane",
+                          action: "datum.threePointPlane.create",
+                          extra: ["plane_id": record.id.raw.uuidString])
+        } catch { return self.error(error) }
+    }
+    private func updateThreePoint(_ args: [String: Any]) -> [String: Any] {
+        guard let id = uuid(args["plane_id"]), let plane = document.session.document.planes.first(where: { $0.id.raw == id }),
+              case let .threePoints(existing)? = plane.definition else {
+            return fail("unknown_three_point_plane",
+                        "plane_id must name an existing associative three-point plane.")
+        }
+        do {
+            let expected = try expectedPoints(args["expected_points"])
+            if let expected, expected != existing.points {
+                return fail("points_mismatch",
+                            "The three-point sources changed. Re-query scope=planes before editing.")
+            }
+            let newSize = try size(args["size"])
+            var refs = existing.points
+            let suppliedPoints = args["points"] != nil
+            let suppliedIndex = args["point_index"] != nil || args["point"] != nil
+            guard !(suppliedPoints && suppliedIndex) else {
+                return fail("ambiguous_points",
+                            "Send either points (all three) or point_index + point, not both.")
+            }
+            if suppliedPoints {
+                refs = try points(args["points"])
+            } else if suppliedIndex {
+                guard let index = integer(args["point_index"]), (0..<3).contains(index) else {
+                    return fail("invalid_point_index", "point_index must be 0, 1 or 2.")
+                }
+                refs[index] = try anchor(args["point"])
+            }
+            try validateAnchors(refs)
+            let definition = ThreePointPlaneDefinition(version: existing.version, points: refs)
+            var commands: [DocumentCommand] = []
+            if plane.definition != .threePoints(definition) {
+                commands.append(EditConstructionPlaneDefinitionCommand(planeID: plane.id,
+                    before: plane.definition, after: .threePoints(definition)))
+            }
+            if let newSize, newSize != plane.size {
+                commands.append(SetDatumSizeCommand(planeID: plane.id, before: plane.size, after: newSize))
+            }
+            guard !commands.isEmpty else { return fail("no_change", "The plane already has those values.") }
+            return commit(commands, title: "Edit 3-Point Plane",
+                          action: "datum.threePointPlane.update",
+                          extra: ["plane_id": plane.id.raw.uuidString])
+        } catch { return self.error(error) }
+    }
+
+    // MARK: - Delete / support
+
+    private func delete(_ args: [String: Any]) -> [String: Any] {
+        guard let id = uuid(args["plane_id"]),
+              let plane = document.session.document.planes.first(where: { $0.id.raw == id }),
+              let definition = plane.definition else {
+            return fail("unknown_associative_plane",
+                        "plane_id must name an existing associative construction plane.")
+        }
+        let action: String
+        let title: String
+        switch definition.kind {
+        case .offset: action = "datum.offsetPlane.delete"; title = "Delete Offset Plane"
+        case .angle: action = "datum.anglePlane.delete"; title = "Delete Angle Plane"
+        case .threePoints: action = "datum.threePointPlane.delete"; title = "Delete 3-Point Plane"
+        }
         let model = document.session.document
         let sketches = model.sketches.filter {
-            guard case let .construction(id)? = $0.support?.source else { return false }
-            return id == plane.id
+            guard case let .construction(planeID)? = $0.support?.source else { return false }
+            return planeID == plane.id
         }
         let sketchIDs = Set(sketches.map(\.id))
         let features = model.features.nodes.filter {
-            $0.referencedConstructionPlaneIDs.contains(plane.id) || !$0.referencedSketchIDs.isDisjoint(with: sketchIDs)
+            $0.referencedConstructionPlaneIDs.contains(plane.id)
+                || !$0.referencedSketchIDs.isDisjoint(with: sketchIDs)
         }
         guard sketches.isEmpty, features.isEmpty else {
-            return fail("plane_in_use", "Detach or rehost the dependent sketches/features before deleting this plane.",
-                fields: ["plane_id": plane.id.raw.uuidString,
-                         "dependent_sketch_ids": sketches.map { $0.id.raw.uuidString },
-                         "dependent_feature_ids": features.map { $0.id.raw.uuidString }])
+            return fail("plane_in_use",
+                        "Detach or rehost the dependent sketches/features before deleting this plane.",
+                        fields: ["plane_id": plane.id.raw.uuidString,
+                                 "dependent_sketch_ids": sketches.map { $0.id.raw.uuidString },
+                                 "dependent_feature_ids": features.map { $0.id.raw.uuidString }])
         }
-        guard let command = DeletePlaneCommand(id: plane.id, document: model) else { return fail("unknown_offset_plane", "The plane no longer exists.") }
-        return commit([command], title: "Delete Offset Plane", action: "datum.offsetPlane.delete",
-                      extra: ["plane_id": plane.id.raw.uuidString])
+        guard let command = DeletePlaneCommand(id: plane.id, document: model) else {
+            return fail("unknown_associative_plane", "The plane no longer exists.")
+        }
+        return commit([command], title: title, action: action,
+                      extra: ["plane_id": plane.id.raw.uuidString, "deleted_kind": definition.kind.rawValue])
     }
 
     private func support(_ args: [String: Any], clear: Bool) -> [String: Any] {
@@ -293,13 +619,16 @@ public final class CADDatumService {
                       extra: ["sketch_id": sketch.id.raw.uuidString])
     }
 
+    // MARK: - Query rows
+
     static func planeRows(document: FloeCADDocument) -> [[String: Any]] {
         document.session.document.planes.map { plane in
             var row: [String: Any] = ["id": plane.id.raw.uuidString, "plane_id": plane.id.raw.uuidString,
                 "kind": "explicit", "size": plane.size, "unit": "mm", "hidden": plane.isHidden,
                 "frame": frameJSON(plane.plane), "editable": document.session.writeBlock == nil,
                 "support_action": "sketch.setSupport"]
-            if case let .offset(definition)? = plane.definition {
+            switch plane.definition {
+            case let .offset(definition)?:
                 row["kind"] = "offset"
                 row["definition_version"] = definition.version
                 row["expression"] = definition.distance.formula ?? String(definition.distance.value)
@@ -310,8 +639,41 @@ public final class CADDatumService {
                 row["source_writer_id"] = definition.sourceVersion.writer.raw.uuidString
                 row["source_producer_id"] = definition.source.body.producer.raw.uuidString
                 row["kernel_element_name"] = definition.source.elementName.flatMap(json) ?? NSNull()
+                row["source_ids"] = [definition.sourceVersion.bodyID.raw.uuidString,
+                                     definition.sourceVersion.writer.raw.uuidString]
                 row["update_action"] = "datum.offsetPlane.update"
                 row["delete_action"] = "datum.offsetPlane.delete"
+                row["supported_operations"] = ["update_expression", "reselect_source", "resize", "delete"]
+            case let .angle(definition)?:
+                row["kind"] = "angle"
+                row["definition_version"] = definition.version
+                row["expression"] = definition.angle.formula ?? String(definition.angle.value)
+                row["formula"] = definition.angle.formula ?? NSNull()
+                row["expression_unit"] = "deg"
+                row["value"] = definition.angle.value
+                row["hinge_local"] = [definition.hinge.x, definition.hinge.y]
+                row["source_body_id"] = definition.sourceVersion.bodyID.raw.uuidString
+                row["source_writer_id"] = definition.sourceVersion.writer.raw.uuidString
+                row["source_producer_id"] = definition.source.body.producer.raw.uuidString
+                row["kernel_element_name"] = definition.source.elementName.flatMap(json) ?? NSNull()
+                row["source_ids"] = [definition.sourceVersion.bodyID.raw.uuidString,
+                                     definition.sourceVersion.writer.raw.uuidString]
+                row["update_action"] = "datum.anglePlane.update"
+                row["delete_action"] = "datum.anglePlane.delete"
+                row["supported_operations"] = ["update_expression", "set_hinge",
+                                               "reselect_source", "resize", "delete"]
+            case let .threePoints(definition)?:
+                row["kind"] = "threePoints"
+                row["definition_version"] = definition.version
+                row["expression_unit"] = "mm"
+                row["points"] = definition.points.map { anchorRow($0, document: document) }
+                row["source_sketch_ids"] = definition.points.map { $0.sketchID.raw.uuidString }
+                row["source_ids"] = definition.points.map { $0.key }
+                row["update_action"] = "datum.threePointPlane.update"
+                row["delete_action"] = "datum.threePointPlane.delete"
+                row["supported_operations"] = ["reselect_points", "resize", "delete"]
+            case nil:
+                break
             }
             if document.isReadOnly {
                 row["status"] = "read_only"
@@ -319,6 +681,7 @@ public final class CADDatumService {
                 row.removeValue(forKey: "support_action")
                 row.removeValue(forKey: "update_action")
                 row.removeValue(forKey: "delete_action")
+                row.removeValue(forKey: "supported_operations")
                 if document.project.hasOpaqueAssociations {
                     row["kind"] = "unsupported"
                     row["semantics"] = "opaque"
@@ -330,12 +693,41 @@ public final class CADDatumService {
                 row.removeValue(forKey: "support_action")
                 row.removeValue(forKey: "update_action")
                 row.removeValue(forKey: "delete_action")
+                row.removeValue(forKey: "supported_operations")
             } else if let error = document.session.lastReferenceErrors[.plane(plane.id)] {
                 row["status"] = "error"; row["error"] = error.message
             } else { row["status"] = "resolved"; row["frame_status"] = "resolved" }
             return row
         }
     }
+
+    private static func anchorRow(_ ref: SketchAnchorRef, document: FloeCADDocument) -> [String: Any] {
+        var row: [String: Any] = ["sketch_id": ref.sketchID.raw.uuidString,
+                                  "entity_id": ref.entityID.uuidString,
+                                  "role": ref.role.rawValue, "unit": "mm"]
+        guard let sketch = document.session.document.sketches.first(where: { $0.id == ref.sketchID }) else {
+            row["resolved"] = false
+            row["error"] = "missing_sketch"
+            return row
+        }
+        row["sketch_name"] = sketch.name
+        guard let entity = sketch.entities.first(where: { $0.id == ref.entityID }) else {
+            row["resolved"] = false
+            row["error"] = "missing_entity"
+            return row
+        }
+        guard let local = entity.anchorPoint(for: ref.role) else {
+            row["resolved"] = false
+            row["error"] = "unsupported_anchor_role"
+            return row
+        }
+        let world = sketch.plane.toWorld(local)
+        row["point_local"] = [local.x, local.y]
+        row["point_world"] = [world.x, world.y, world.z]
+        row["resolved"] = true
+        return row
+    }
+
     static func supportJSON(_ sketch: Sketch) -> Any {
         guard let support = sketch.support else { return NSNull() }
         var row: [String: Any] = ["clear_action": "sketch.clearSupport"]
@@ -385,6 +777,7 @@ public final class CADDatumService {
                     row["datum_source_supported"] = true
                     row["source_body_id"] = acquired.version.bodyID.raw.uuidString
                     row["datum_action"] = "datum.offsetPlane.create"
+                    row["datum_actions"] = ["datum.offsetPlane.create", "datum.anglePlane.create"]
                     row["face_index_space"] = "occt_kernel_1_based"
                 }
             }
@@ -392,7 +785,6 @@ public final class CADDatumService {
         }
         return descriptors
     }
-
 }
 
 /// Field-only adapter; changing display size never replaces the definition or

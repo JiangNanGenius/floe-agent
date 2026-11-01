@@ -536,7 +536,7 @@ public actor AppleFoundationModelRuntime {
     }
 
     @available(iOS 27.0, macOS 27.0, *)
-    private static func deferredTool(
+    nonisolated static func deferredTool(
         from descriptor: ToolSchemaDescriptor,
         recorder: DeferredToolCallRecorder
     ) -> (any FoundationModels.Tool)? {
@@ -564,7 +564,7 @@ public actor AppleFoundationModelRuntime {
 
 #if compiler(>=6.4) && canImport(FoundationModels)
 @available(iOS 27.0, macOS 27.0, *)
-private actor DeferredToolCallRecorder {
+actor DeferredToolCallRecorder {
     private var recorded: (name: String, arguments: String)?
     private var additionalCallDetected = false
 
@@ -594,7 +594,7 @@ private actor DeferredToolCallRecorder {
 }
 
 @available(iOS 27.0, macOS 27.0, *)
-private struct DeferredFloeTool: FoundationModels.Tool {
+struct DeferredFloeTool: FoundationModels.Tool {
     typealias Arguments = GeneratedContent
     typealias Output = String
 
@@ -612,7 +612,7 @@ private struct DeferredFloeTool: FoundationModels.Tool {
 }
 
 @available(iOS 27.0, macOS 27.0, *)
-private final class DynamicToolSchema: Decodable {
+final class DynamicToolSchema: Decodable {
     var type: String?
     var description: String?
     var properties: [String: DynamicToolSchema]?

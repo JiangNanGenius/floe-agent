@@ -118,10 +118,13 @@ struct LocalCADAdmissionTests {
         #expect(LocalProviderAdapter.admissibleToolNames(
             from: ["workspace.readFile"], modelRemoteID: qwen.remoteModelID
         ) == ["workspace.readFile"])
+        // Foundation Models receive exactly the caller/task-authorized set;
+        // the old apple.* name filter is gone. Execution still uses the
+        // ordinary runtime permissions and approval checks.
         #expect(LocalProviderAdapter.admissibleToolNames(
             from: ["cad.document", "apple.location.current"],
             modelRemoteID: AppleFoundationModelIdentity.remoteModelID
-        ) == ["apple.location.current"])
+        ) == ["cad.document", "apple.location.current"])
     }
 
     @Test("A definition larger than the realistic window is deferred whole, never sliced")

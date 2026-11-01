@@ -887,6 +887,570 @@ public struct CadDocumentArguments: Decodable, Sendable {
     }
 }
 
+
+// MARK: - Built-in, on-demand documentation
+
+/// The complete authored documentation for `cad.document`, retained as public
+/// static text instead of every-turn schema bytes. The concise canonical
+/// definition points here; every old rich description is preserved verbatim.
+/// Reading it never grants tool, file, approval or CAD authority.
+public enum CadDocumentHelp {
+    public struct Topic: Sendable, Equatable {
+        public let name: String
+        public let text: String
+
+        public var byteCount: Int { text.utf8.count }
+        public var characterCount: Int { text.count }
+        public var sha256: String { FloeDigest.sha256Hex(Data(text.utf8)) }
+    }
+
+    public struct Request: Sendable, Equatable {
+        public let topic: String
+        public let page: Int
+        public let pageSize: Int
+
+        public init(topic: String, page: Int = 0, pageSize: Int = CadDocumentHelp.defaultPageSize) {
+            self.topic = topic
+            self.page = page
+            self.pageSize = pageSize
+        }
+    }
+
+    public struct Page: Sendable, Equatable {
+        public let topic: String
+        public let page: Int
+        public let pageCount: Int
+        public let pageSize: Int
+        public let characterOffset: Int
+        public let characterCount: Int
+        public let byteOffset: Int
+        public let byteCount: Int
+        public let totalBytes: Int
+        public let totalCharacters: Int
+        public let nextPage: Int?
+        public let contentSHA256: String
+        public let topicSHA256: String
+        public let guideSHA256Value: String
+        public let text: String
+    }
+
+    /// Default page size is deliberately below the runtime's model-visible
+    /// 4 KiB summary cap so a page never arrives truncated. Callers may request
+    /// up to `maximumPageSize`; content identity is always reported.
+    public static let defaultPageSize = 3_000
+    public static let maximumPageSize = 3_500
+    public static let guideVersion = 1
+
+    public static let topics: [Topic] = [
+        Topic(name: "overview", text: #"""
+        Export native CAD with action "export": scope=part keeps the historical selected/all document-body behaviour; scope=assembly writes the saved placed occurrences (nested subassemblies, exact occurrence ids/paths and world transforms), never a flattened document.bodies copy. Add dry_run=true for the coverage receipt only; an incomplete receipt (for example STEP with mesh-only objects) writes nothing unless accept_partial=true is explicit. Observe an original mesh or CAD-surface file, or an authorised native `.floecad` document, with action "observe" without importing, copying or modifying it: choose 1...4 finite views and an optional projection (includeImages=false permits no views for hierarchy-only queries); for GLB/glTF only, a real scene/camera/clip/time; for native documents, optional expectedRevision/expectedChangeCount/expectedSourceSHA256 generation pins. Native frames are real ephemeral offscreen engineering renders of the live scene (renderer=engineering, never an active Present claim) with no change to the user's camera, selection, preferences, saved appearance, playback or undo history; camera/clip/time selections are refused and animated frames use action="animation". Consume actual image artifacts plus source/image hashes and the paged native object rows (stable ids + query_token/generation) bound to the same revision/change_count. GLB/glTF keep the three.js scene path; other originals use the bundled Online3DViewer and STEP/IGES/BREP keep their local display-triangulation conversion. A screenshot does not establish CAD face IDs, B-Rep topology or manufacturing dimensions. Create, import into, read, query, measure, propose changes to, apply confirmed proposals to, save and export a CAD document. The document representation decides the engine: a DWG/DXF drawing runs in the local 2D engine, a native `.floecad` package runs in the parametric 3D kernel. Use action "create" (path/name) to make a new EMPTY native `.floecad` package through the built-in factory — never create the folder, manifest or zip by hand and never guess the internal package layout. Use action "import" on an EXISTING `.floecad` to add the geometry of a workspace STEP/STP, IGES/IGS, STL, OBJ, GLB or glTF file: it drafts a proposal on a throwaway copy and returns a preview. STEP gives exact editable solids; IGES solids are exact and open shells/faces become exact surface bodies that can be moved/rotated/scaled, painted and re-exported to IGES, but cannot take solid boolean/fillet/shell; STL/OBJ/GLB are render meshes with no parametric history. Use action "reference" to attach/check/update/inspect an external native `.floecad` part from the authorized task workspace: source_path is a path request resolved by the host guard (never a model grant); attach/update are ordinary committed CAD edits with source/staged hash CAS, while inspect/check are read-only. Propose binds an exact document revision and SHA-256 and returns a preview without writing. Apply commits ONE atomic undoable transaction for the exact proposal the approved call names: a `grant_id` selects the human-reviewed CAD UI path, and WITHOUT one the runtime-approved call authority for that exact apply authorizes it automatically (the model cannot mint or replay either; the proposal's revision/SHA is re-verified against the live document at commit). 2D edits are lines, circles, arcs, LWPolylines, text, dimensions and leaders plus move/copy/rotate/scale/mirror/trim/extend/offset and layer management. 3D, blocks, xrefs, splines and proxy graphics are retained read-only in the 2D engine; they are never flattened. Units stay drawing units when undefined. Native documents add parametric features, assembly constraints, drawings, ShapeScript and mesh operations through the typed operation vocabulary (`op` + `args`; feature.extrude, feature.hole, feature.boolean, ...) and the three_d_* aliases; status/cancel report durable native jobs. Workflow: create → propose sketch.create → apply → propose sketch.addEntities → apply → propose feature.extrude → apply → measure → export. For text use the native text-sketch route instead of the unavailable mesh.text: propose sketch.addText {sketchID,text,height,fontName?,origin?} → apply → propose feature.extrude on the resulting closed profiles (holes are real counter loops) → apply → measure. Every native propose sends op at the TOP LEVEL beside action and path. Its args is a serialized JSON object containing ONLY the operation parameters, never another {op,args} envelope. For extrusion, serialize {sketchID,seedPoint:[x,y],distance:mm} into args. Native `.floecad` documents additionally accept action "material" (custom PBR material library: list/read/create/update/remove/ apply/applyFaces/reassignFaces/mapping/textures/unresolved/libraryExport/ libraryImport/libraryList/undo/redo; applied appearances are snapshots and survive library deletion), action "parameters" (typed feature parameter list/update/undo/redo; updateSketchEntity for an existing line's endpoints, a rectangle's position/size or a circle's center/radius; setSketchDimension/removeSketchDimension for driving length/distance/ angle/radius/diameter/width/height values (setSketchDimension accepts a positive number or a PUBLIC-unit expression such as width / 8; the exact expression is stored on the dimension formula while an angle's formula text stays in degrees and its solved value is stored in radians); variable.create/update/delete for named scalar formulas (one atomic undo including every dependent feature/sketch rebuild; delete refuses while referenced and rename rewrites identifier tokens); feature.setExpression to bind a formula to an existing formula-capable feature scalar in its PUBLIC unit; feature.suppress/delete/move with dependency checks and checkpoint rollback — units and actions come from query kind=features/sketches/variables/constraints), action "animation" (native camera/assembly keyframe clips: list/query/evaluate, createClip/updateClip/deleteClip/setActiveClip, addTrack/deleteTrack, setKeyframe/setCameraKeyframe/setPartKeyframe/deleteKeyframe, turntable/explodeReturn presets and undo/redo; capture returns an actual animated native frame; export renders a verified MP4, default 1920x1080 at 30 fps H.264 with no audio, and reports a durable task_id for status/ cancel; authored edits are ordinary undoable document commands and playback/scrub never changes the geometry or assembly baseline), and action "capture" (actual viewport PNG artifact bound to the document revision/change_count; only a vision-capable model may inspect it — otherwise measure, never claim to have seen the image). Native `.floecad` also accepts action "scene" (the SAME persisted sceneSettings overlay the editor uses: get/setSection/setSectionEnabled/flipSection/removeSection/ setMeasurementsVisible/addMeasurement/removeMeasurement/clearMeasurements/ undo/redo; setSection takes origin [x,y,z] mm plus normal or x_axis/y_axis; addMeasurement takes start/end world mm and returns its id/length; every mutation is one ordinary undoable document command committed with CAS, and no geometry is edited). Section cut and guide lines appear in screenshots/video, but numeric values are not baked into pixels; model exchange (STEP/IGES/GLB/USDZ/OBJ/STL/3MF) carries geometry only. Action "versions" creates, lists, compares, restores and deletes user-named whole-document checkpoints through payload.action; it also lists retained unpublished checkpoints and can recover or discard one. Compare pages through every difference with identity pins, and record returns the exact stored record JSON (byte-bounded chunk pages) when a summary detail omits fields. Restore is revision/CAS-checked, the pre-restore state is kept as a recovery version, and in-memory undo does not cross a restore. Restore creates a named branch checkpoint of the restored state by default while keeping the same document identity; create_branch=false restricts it to the in-place restore. Nothing is written by propose/preview/import; material/parameter/animation edits are undoable document commands committed with compare-and-swap, and temporary chat remains read-only.
+
+        This is the authored canonical overview retained as public static documentation. It is descriptive only and never grants permissions.
+        """#),
+        Topic(name: "actions", text: #"""
+        # cad.document actions
+
+        capabilities — read-only engine/service catalogs and built-in help. Without kind: the engine matrix. kind=drawing|assembly|script|mesh: that service's exact operations with arguments and examples. payload {documentation:"<topic>|topics",page:n,page_size:n} serves this guide.
+        create — create a new EMPTY native .floecad package through the host factory (path/name). Never hand-write package files, manifest.json or zip bytes.
+        import — add STEP/STP, IGES/IGS, STL, OBJ, GLB or glTF geometry to an EXISTING .floecad. It drafts a proposal on a throwaway copy and returns a preview; nothing is written until preview/apply. STEP gives exact editable solids. IGES solids are exact and open shells/faces become exact surface bodies that can be moved/rotated/scaled, painted and re-exported to IGES, but cannot take solid boolean/fillet/shell. STL/OBJ/GLB are render meshes with no parametric history.
+        read — document summary: format, revision, SHA-256, units, layers.
+        query — paginated 2D entities/text/layers/drawing/snap or native bodies/sketches/constraints/features/edges/faces/planes/variables/materials/assembly/drawings/scene/detail/snapshot/selection/animation.
+        locate — representative point and bounds of one 2D entity handle.
+        measure — deterministic 2D or native measurement.
+        check — 2D consistency checks (zero-length, duplicate, layer, open contour).
+        propose — validate ONE atomic edit batch against an exact revision/SHA, store a pending proposal and return a diff preview. Nothing is written.
+        preview — return the stored proposal preview.
+        apply — commit the exact approved proposal as ONE atomic undoable transaction. A grant_id selects the human-reviewed CAD UI path; without it the runtime-approved call authority for that exact apply authorizes automatically. The model cannot mint or replay either; revision/SHA is re-verified against the live document at commit.
+        save — commit the host engine's verified output with CAS on SHA.
+        export — write a separate verified presentation/export copy; scope=part or assembly; dry_run returns the coverage receipt only.
+        status/cancel — durable native rebuild/export/mesh task status and cancellation.
+        material — native custom PBR material library/application, mapping, textures, unresolved assets, library import/export and undo/redo. Ordinary authorized undoable document commands.
+        parameters — typed feature parameters, existing sketch entities, driving dimensions, variables/formulas, datum offset planes, sketch support, feature suppress/delete/move and undo/redo. Ordinary authorized undoable document commands.
+        capture — actual viewport PNG artifact bound to the document revision/change_count. A text-only model must measure/query, never claim to have seen the image.
+        animation — native camera/assembly keyframe clips, presets, undo/redo, real frame capture and verified MP4/PNG-ZIP export with a durable task_id. Playback/scrub never changes geometry or the assembly baseline.
+        scene — persisted section cut and measurement guides: get/setSection/setSectionEnabled/flipSection/removeSection/setMeasurementsVisible/addMeasurement/removeMeasurement/clearMeasurements/undo/redo. get is read-only; other actions are ordinary undoable document edits on the same additive sceneSettings record. This is the same tool, not a new executor or approval path.
+        observe — read an ORIGINAL mesh/CAD-surface file or an authorized native .floecad document without importing, copying or modifying it: real views, actual hierarchy, generation pins, no mutation.
+        versions — explicit user-named whole-document checkpoints: list/create/compare/restore/delete/recoveries/recover/discard_recovery/record. list/compare/recoveries/record are read-only; edits use the document's own ownership/revision CAS.
+        reference — App-owned external native part reference: attach/check/update/inspect. source_path is resolved by the host workspace guard, never a model grant.
+        three_d_snapshot, three_d_measure, three_d_propose, three_d_apply, three_d_assembly, three_d_drawing — native FloeCAD compatibility aliases. The unified actions above are preferred.
+
+        """#),
+        Topic(name: "fields", text: #"""
+        # Field reference
+
+        ## action
+        Required. The enum is authoritative; see the actions topic for semantics.
+
+        ## path
+        Document path relative to the task workspace (an allowed absolute workspace path is accepted too). Required for every action except capabilities without a path. observe reads an original mesh or CAD-surface file without converting it into a Floe document (GLB/glTF use the three.js scene path; STL/OBJ/PLY/OFF/3DS/DAE/FBX/3MF/AMF/WRL/BIM use the static viewer; STEP/IGES/BREP use the local display-triangulation conversion) and also observes an AUTHORISED native .floecad document through the same public bridge without importing or copying the native model; .dwg/.dxf route to the 2D engine. For 'create' it is the new package location inside the task workspace (a missing parent directory is created inside the guarded workspace; a path outside it is refused; the file need not exist); for 'import' it is the EXISTING .floecad package that receives the geometry. Never write a .floecad directory, manifest.json or zip yourself: use create.
+
+        ## name
+        create: human-readable display name stored in the new native document. Letters and digits of ANY language (Chinese, Japanese, Cyrillic, ...), spaces and -_(). are accepted; it must not contain '/', '\\', control/invisible characters or a '..' path segment and must be at most 120 characters, otherwise the call is refused with a bilingual explanation. When omitted the display name defaults to the file stem. The FILE keeps the stem of 'path' and is uniquified, so the display name and the file name stay separate. import: optional name for the imported body(ies).
+
+        ## source_path
+        import/reference: workspace-relative path resolved by the host through the task workspace guard. import supports .step/.stp, .iges/.igs, .stl/.obj/.glb/.gltf. reference requires an existing native .floecad package; the source is opened only by the App-owned bridge and is never granted by this string alone. DWG/DXF go through the 2D engine instead.
+
+        ## reference_action
+        reference only: attach stages a new external native part and creates its first shared occurrence; check diagnoses source/version/hash state without mutation; update explicitly re-stages the SAME source body with source/staged hash CAS; inspect lists the source document's bodies so a multi-body source can be chosen with source_body_id.
+
+        ## reference_id
+        reference check/update: durable reference id from an attach reply or assembly references query.
+
+        ## expected_source_sha256
+        reference update CAS: the currently pinned source content SHA-256 (from references query).
+
+        ## expected_staged_sha256
+        reference update CAS: the currently pinned staged geometry SHA-256.
+
+        ## source_body_id
+        reference attach: stable source body UUID for a multi-body source; inspect returns the body ids. Omitted only when the source has exactly one body.
+
+        ## format
+        import or native export: explicit format. Import (step/stp, iges/igs, stl, obj, glb, gltf) defaults to the source_path extension; a JSON .gltf imports only when its buffers/images are embedded data URIs, external .bin/texture references are reported unsupported, and a self-contained .glb always works. Native export accepts step/stp, iges/igs, stl, obj, obj_bundle, 3mf, glb, usdz, pdf, svg, dxf and csv; gltf is import-only (export writes glb), and 3mf/usdz plus pdf/svg/dxf/csv are export-only in this adapter. STEP writes closed exact solids; IGES writes exact closed solids AND open surfaces (surface bodies are never flattened to a mesh). obj_bundle writes one .zip containing model.obj, model.mtl and relative texture resources; plain obj remains a single .obj with UVs and no materials. pdf/svg/dxf/csv are drawing-page exports and require page_id; usdz is available where the platform USDZ writer is supported (otherwise usdz_unavailable). The output suffix must match the selected format: step/stp -> .step/.stp, iges/igs -> .iges/.igs, obj_bundle -> .zip, every other export -> .<format> (for example .3mf, .glb, .usdz, .pdf, .svg, .dxf, .csv); a mismatched suffix is refused rather than silently renamed.
+
+        ## unit_scale
+        import only: optional millimetres-per-file-unit scale for unitless meshes (STL/OBJ). Ignored for STEP/IGES and declared-unit glTF.
+
+        ## summary
+        Concise summary of the proposed document change (propose/import).
+
+        ## operations
+        Typed 2D engine edits (propose on a DWG/DXF drawing). Each object needs operation. Exact shapes: addLine{start:[x,y,z],end:[x,y,z],layer}; addCircle{center:[x,y,z],radius,layer}; addArc{center:[x,y,z],radius,startAngle,endAngle,layer}; addLwPolyline{points:[[x,y],...],closed?,layer} (2 numbers per point; rectangle = closed 4-point); addText{position:[x,y,z],text,height,layer}; addLeader{points:[[x,y,z],...],layer}; addDimension{kind:linear|aligned|angular|radius|diameter,points:[[x,y,z],...],layer,offset?,rotation?}; move|copy{handle,delta:[dx,dy,dz]}; rotate{handle,center:[x,y,z],angle}; scale{handle,center:[x,y,z],factor}; mirror{handle,axis:[[x,y,z],[x,y,z]]}; setText{handle,text}; setRadius{handle,radius}; setLayer{handle,layer}; setColor{handle,color}; setLineWeight{handle,lineWeight}; delete{handle}; trim|extend{handle,boundary,pick:[x,y,z]}; offset{handle,distance,side:[x,y,z]}; addLayer{name,color?,lineType?,lineWeight?}; updateLayer{name,locked?,visible?,color?,lineType?,lineWeight?}; renameLayer{from,to}; deleteLayer{name}; batch{operations:[...]} nests the same canonical shapes. Canonical vectors are arrays [x,y] (omitted z = the 2D drawing plane) or [x,y,0]; a nonzero z is rejected, never projected. The validated aliases {x,y[,z]} and {dx,dy[,dz]} are accepted and normalized to those arrays; addLwPolyline vertices are [x,y] or [x,y,0].
+
+        ## proposal_id
+        Proposal id from propose (preview/apply). Send it exactly as the propose reply printed it.
+
+        ## grant_id
+        apply: OPTIONAL. When present, selects the human-reviewed CAD UI confirmation path (opaque single-use token the user's acceptance issued; the model cannot mint it). Omit it to let the runtime-approved call authority for this exact apply authorize the change automatically; a made-up or model-supplied value never authorizes anything.
+
+        ## revision
+        apply/capture/observe/material/parameters/animation: optional base revision pin. For apply it is bound into the approved call; for capture/observe/material/parameters/animation the host refuses with revision_mismatch before any mutation/capture when the live document is at a different revision. For observe it is the same native generation pin as payload.expectedRevision (disagreeing values are refused) and it is refused for an original model.
+
+        ## request_id
+        Optional caller idempotency key; defaults to the tool call id.
+
+        ## task_id
+        Durable native task id (status reports one task; cancel requires it).
+
+        ## kind
+        query/measure scope. 2D query: entities|text|layers|drawing|snap; 2D measure: distance|angle|radius|perimeter|area. Native .floecad query: bodies|sketches|constraints|features|edges|faces|planes|variables|materials|assembly|drawings|scene|detail|snapshot|selection|animation. selection returns the current live workbench bodies/faces/edges/sketch/instances with document revision and change_count; query it for deictic edits such as this face, then resolve exact face/edge query tokens before modifying. Features carry typed parameters/units/dependencies/actions; sketches carry entityRows with stable entity ids and each circle's current radius/diameter (the addressable source of an existing hole); faces/edges carry stable-matching indices, signatures and query_token/generation (revision, change_count, mesh_revision) required for index-based edits, and face rows identify planar/cylindrical kind with the actual radiusMM for a cylinder. Native measure: body|distance|bounds|dof|interference|mesh|rebuild (op may name the same kind). capabilities: pass drawing|assembly|script|mesh to get that service's exact operations with arguments and examples.
+
+        ## scope
+        export: part = selected/all document bodies (historical default); assembly = saved placed occurrences, including nested subassemblies and visible instances of hidden definitions. Hidden instances are excluded. Assembly export supports step, glb and usdz; IGES is part-scope only.
+
+        ## points
+        measure points: 2D distance exactly 2, angle exactly 3, area 3+; snap point (first row). Native distance exactly 2 [x,y,z] rows.
+
+        ## handles
+        2D entity handles: distance exactly 2, angle 2 lines, radius 1 circle/arc, perimeter 1+. Native: one handle per action, body:<uuid> / face:<uuid>:<index> / edge:<uuid>:<index>; body, mesh and bounds accept body:<uuid> (a bare body UUID is also accepted); bounds takes one or more body handles.
+
+        ## tolerance
+        snap/check tolerance in drawing units; native interference tolerance in mm.
+
+        ## layer
+        2D query filter.
+
+        ## entity_type
+        2D query filter: Line|Circle|Arc|LwPolyline|Text.
+
+        ## text
+        2D query filter: text content contains.
+
+        ## offset
+        query pagination offset.
+
+        ## limit
+        query pagination size.
+
+        ## output
+        export relative path. 2D defaults to <name>.export.dxf. Native defaults to <name>.export.step; accepted native formats: step/stp, iges/igs, stl, obj, obj_bundle, 3mf, glb, usdz, pdf, svg, dxf, csv; the path must stay inside the workspace and its suffix must match the format. obj_bundle writes a .zip (model.obj + model.mtl + relative textures) and requires a .zip output path; plain obj writes a single .obj with UVs and no materials. A pdf/svg/dxf export is a DRAWING-page export and also needs page_id (from query kind=drawings). A csv export writes the COMPLETE BOM table for that drawing page (all rows and columns, UTF-8 RFC 4180) and also needs page_id and a .csv output path. usdz export is platform-guarded and reports usdz_unavailable where the writer is unavailable. With scope=assembly use .step, .glb or .usdz (part-scope iges and obj_bundle are also available): placed occurrences are resolved from the saved assembly, not flattened document bodies.
+
+        ## page_id
+        export: the native drawing page id for pdf/svg/dxf drawing exports and the complete BOM CSV table export, exactly as query with kind=drawings returned it.
+
+        ## body_ids
+        export scope=part: exact document body ids. Omit/empty to export every body (historical default).
+
+        ## instance_ids
+        export scope=assembly: exact placed occurrence ids from query kind=assembly/report. Omit/empty for every visible placed part. A subassembly id includes its visible descendant parts.
+
+        ## accept_partial
+        export: explicit acknowledgement that the coverage receipt is incomplete (for example STEP with mesh-only objects or open surfaces, or IGES with mesh-only objects). Without it an incomplete plan returns coverage_incomplete and writes nothing.
+
+        ## dry_run
+        export: return the coverage receipt only (counts, included/excluded occurrence ids and reasons); no file is written. Requires an explicit scope.
+
+        ## op
+        Native typed operation name at the TOP LEVEL beside action and path, never inside args. Native propose requires it; native measure may use it to name the measurement kind. Exact executable vocabulary (also reported by capabilities as operation_names): sketch.create, sketch.addEntities, sketch.addText, feature.extrude, feature.revolve, feature.hole, feature.pattern, feature.mirror, feature.transform, feature.boolean, feature.fillet, feature.chamfer, feature.shell, feature.sweep, feature.loft, feature.pushPull, feature.moveFace, feature.deleteFace, feature.replaceFace, feature.draftFace, body.setMaterial, item.setHidden. feature.scaleFace, feature.rotateFace are NOT executable in this build: the kernel returns exact_edit_unsupported without mutation and reports them under capabilities.unavailable_operations; use feature.transform for a whole-body transform instead. feature.pushPull supports mode=planarAxial only (mode=cylinderRadial refuses with exact_edit_unsupported); feature.moveFace supports normal-axis (dn) movement only (tangential du/dv refuses).
+
+        ## args
+        JSON object STRING containing ONLY the typed operation's arguments, not an {op,args} envelope. Send op separately at the top level. Required for native propose (and the three_d_measure/three_d_propose aliases). Units are mm and degrees. RUNNABLE CONTRACT (exact argument names): sketch.create {name?, origin?[x,y,z], xAxis?[x,y,z], yAxis?[x,y,z]} defaults to the ground plane and returns sketchID; sketch.addEntities {sketchID, entities:[{kind:"line",a:[x,y],b:[x,y]} | {kind:"circle",center:[x,y],radius} | {kind:"arc",center:[x,y],radius,startAngle,endAngle} | {kind:"spline",points:[[x,y],...],closed?} | {kind:"rect",min:[x,y],max:[x,y]} | {kind:"polygon",center:[x,y],radius,sides,rotation?} | {kind:"ellipse",center:[x,y],radiusX,radiusY,rotation?}], construction?:[indexes]}; sketch.addText {sketchID, text, height (cap height, mm), fontName? (installed family or PostScript name; default Helvetica), origin?[x,y] (baseline start in sketch-plane mm; default [0,0])} creates closed line loops for the glyphs as ordinary sketch entities (counter loops are holes) in ONE undo step; the reply reports entityCount, glyphCount, outlineLoopCount, boundsMM, advanceWidthMM, heightMM, resolvedFontNames, fallbackFontNames, units:"mm" and undoSteps. This is the native text-sketch route; this service has no standalone mesh.text operation. A missing font or a visible character without a real vector outline refuses with unsupported_font / unsupported_glyphs and adds nothing; entity ids stay available through query kind=sketches. Example: {"sketchID":"<uuid from sketch.create>","text":"O","height":20,"origin":[10,5]}. feature.extrude {sketchID, seedPoint:[x,y] (a point INSIDE the closed profile), distance (mm, non-zero; optional only with end), symmetric?, taperDegrees? (|t|<89, 0 = straight), end?:"throughAll"|"upToNext"|"blind", boolean?:"newBody"|"union"|"subtract"|"intersect", booleanTargets?:[bodyID]}. Example: {"sketchID":"<uuid from sketch.create>","seedPoint":[40,20],"distance":10}. feature.hole {sketchID, seedPoint:[x,y] inside the SINGLE locating circle, targetBodyID, type:"throughAll"|"blind"|"counterbore"|"countersink", depth? (blind, mm, flat bottom), counterboreDiameter?/counterboreDepth? (counterbore, mm; diameter > pilot), countersinkDiameter?/countersinkAngle? (countersink, mm; included angle 30…170 degrees; diameter > pilot), reversed? (drills along -plane.normal; a face sketch plane normal is the source face outward normal)}; the placement circle owns position and pilot diameter (bind its diameter formula with setSketchDimension or edit it with updateSketchEntity, never the hole), through/counterbore/countersink pilots are through-all, and the target must be an analytic B-rep body. Ops that act on an existing body take {bodyID} plus their own fields (feature.boolean {kind,targetBodyID,toolBodyIDs}, feature.fillet {bodyID,radius,edges,query_token?} / feature.chamfer {bodyID,setback,edges,query_token?}, feature.shell {bodyID,thickness,openFaces,query_token?}, feature.pattern {bodyID,kind,count,...}); Face/edge index operations require query_token from query kind=faces/edges (or the row's stable face signature/edge midpoint); index existence alone is rejected with requery_required because a rebuild can reuse an index for a different face/edge. measure accepts op to name the kind (body|distance|bounds|dof|interference|mesh|rebuild).
+
+        ## payload
+        JSON object string for native workbench services (three_d_assembly/three_d_drawing), material/parameters/capture/animation/scene, and the versions action. scene payload: {action:get|setSection|setSectionEnabled|flipSection|removeSection|setMeasurementsVisible|addMeasurement|removeMeasurement|clearMeasurements|undo|redo, origin?/normal? or x_axis?/y_axis? (mm), enabled?, flip?, size_mm?, start?/end? (mm), id?}. versions: {action:list|create|compare|restore|delete|recoveries|recover|discard_recovery|record, name? (create), version_id? (compare/restore/delete/recover/discard_recovery/record), against_version_id? (compare/record; omit = current committed document), expected_revision? (restore CAS), expected_content_sha256? (restore CAS), create_branch? (restore; default true), branch_name? (restore), offset?/limit? (compare page; limit 1...240), identity? (compare/record continuation: copy the exact from/to objects returned by the first page), section?/identifier? (record: the difference section and record id), chunk_offset?/chunk_limit? (record page over the exact stored JSON; byte-bounded chunks; limit 1...256)}. list/compare/compare pages/recoveries/record are read-only; create/restore/delete/recover/discard_recovery are ordinary task-authorized CAD edits with the document's own ownership/revision CAS. list also returns retained unpublished checkpoints under recoveries; recover publishes one only after it verifies, while discard_recovery deletes only that unpublished checkpoint. compare returns totalDifferences/nextOffset; a later page requires identity pins and a changed current revision is refused. record returns the exact stored record JSON (or the whole stored section for section-level records), its whole-value SHA-256, and byte-bounded chunk pages, so omitted summary fields can be fetched without inventing data. A named version is an explicit whole-document checkpoint, not automatic per-edit history; restore starts a new undo boundary and keeps the pre-restore state as a recovery version. Animation actions: list|query|evaluate (real timeline data), createClip|updateClip|deleteClip|setActiveClip, addTrack|deleteTrack, setKeyframe|setCameraKeyframe|setPartKeyframe|deleteKeyframe, preset {kind:turntable|explodeReturn}, undo|redo, capture {clip_id?,time?|frame?,fps?,width?,height?,format?}, export {output? (workspace .mp4 for mp4, .zip for png_zip),format?:mp4|png_zip,width?,height?,fps?,codec?,bitrate?,overwrite?,poster?,alpha?:opaque|transparent}. Animation edits are ordinary undoable document commands; capture returns a real animated native frame. export returns a verified MP4 (format mp4; codec/bitrate apply) or one ZIP of ordered lossless PNG frames plus manifest.json (format png_zip; codec must be png, no bitrate), with task_id and publishes it through RunOutput. alpha:transparent is refused before rendering: exports keep the scene's opaque background and MP4 H.264/HEVC has no alpha channel. Material actions: list|read|create|update|remove|apply|applyFaces|reassignFaces|mapping|textures|unresolved|libraryExport|libraryImport|libraryList|undo|redo; create/update/apply accept color [r,g,b(,a)] 0…1 (or #RRGGBB[AA]), metallic/roughness/opacity, emissive + emissive_strength, uv_mapping {source:mesh|planarProjection|boxProjection, axis:x|y|z, scale_mm:[u,v], rotation_degrees, offset:[u,v], flip_u, flip_v}, textures [{slot:baseColor|metallic|roughness|normal|emissive|opacity, asset_path? or asset_base64?, color_space?, orientation?}]. Parameter actions: list|update|updateSketchEntity|deleteSketchEntity|setSketchDimension|removeSketchDimension|variable.create|variable.update|variable.delete|feature.setExpression|datum.offsetPlane.create|datum.offsetPlane.update|datum.offsetPlane.delete|sketch.setSupport|sketch.clearSupport|feature.suppress|feature.delete|feature.move|undo|redo; update {feature_id, changes:{distance|angle|taper_angle|radius|setback|thickness|factor|count|spacing|total_angle|symmetric|rotate_instances|hole_type|depth|counterbore_diameter|counterbore_depth|countersink_diameter|countersink_angle|reversed:...}} uses the units query kind=features reports; updateSketchEntity {sketch_id, entity_id, a?, b? | min?, max?, center?, width?, height? | center?, radius?, diameter? | center?, radius?, diameter?, start_angle_deg?, end_angle_deg?, sweep_angle_deg? | center?, radius_x?, radius_y?, rotation_deg? | points? or point_index? + point?, expected_*} edits one existing line/rect/circle/arc/ellipse/spline by stable id and updates matching circle/arc radius or arc sweep dimensions in the same undo step (angles are degrees; an arc stores a CCW sweep under 360 degrees; spline point_index is the zero-based fit-point identity; refused as locked_entity for a Lock, dependent_reference for unsupported referenced geometry, or constraint_conflict if the saved sketch would become unsatisfied; polygon remains query-only); deleteSketchEntity {sketch_id, entity_id, remove_shared_references?, remove_pattern_link?} deletes exactly one entity by stable id in one undo step: references that only name it are removed and reported, a reference that also anchors another entity refuses with shared_references unless the explicit flag is true, and a pattern link refuses unless remove_pattern_link:true while every instance keeps its id; setSketchDimension {sketch_id, entity_id|entity_ids|refs, kind:length|distance|angle|diameter|radius|width|height, value|expression, expected_value?, expected_expression?, dimension_id?} creates or updates one driving value from exactly one of a positive finite number or a formula expression in the SAME public unit, solves with the existing solver and commits one undo step; sending both refuses ambiguous_value and a formula that references an unknown variable/function refuses before mutation. The expression text is stored on the dimension's formula (query kind=constraints exposes formula/formula_unit/formula_reference_names); an angle's formula stays in public degrees while its stored value is radians. expected_value fences the current public numeric value; expected_expression fences the exact stored formula (empty string means none). Variable fan-out re-evaluates the formula and commits every dependent sketch/feature rebuild with the variable edit as ONE undo step (angle is degrees; length is a line's distance; width/height store as horizontal/vertical); removeSketchDimension {sketch_id, dimension_id}; variable.create {name, expression} creates a named unitless scalar; variable.update {variable_id, name?, expression?, expected_expression?} edits/renames one variable and rewrites every variable/feature/sketch formula reference by identifier token (never substring); variable.delete {variable_id} refuses with exact dependent variable/feature/dimension ids while the name is still referenced; both create and update validate names, functions, references and cycles BEFORE commit, and one variable edit plus every dependent feature/sketch rebuild is ONE undo/redo transaction. feature.setExpression {feature_id, parameter, expression, expected_expression?} binds a formula to a parameter query kind=features reports with expression_action=feature.setExpression; expression is written in the PUBLIC unit (deg/mm/unitless) and a radian-persisted public-degree parameter stores an explicit radians(...) conversion rather than an unconverted degree value; expected_expression fences the exact stored `formula` row (radian-valued for a radian-persisted angle), not public_expression; parameters without a formula-capable Expr refuse unsupported_parameter instead of a value-only edit. feature.suppress {feature_id, suppressed}; feature.delete {feature_id, force?} refuses when later features consume its bodies unless forced and always rolls back a broken rebuild; feature.move {feature_id, to_index} verifies body dependency order before moving. datum.offsetPlane.create {body_id, face_index, query_token, expression, size?} creates an associative offset plane in mm from one exact named planar OCCT face; face_index is the kernel index from query kind=faces, never a render triangle. datum.offsetPlane.update {plane_id, expression?, expected_expression?, body_id?, face_index?, query_token?, size?} edits the same plane; source re-selection requires the complete fresh face triple. datum.offsetPlane.delete {plane_id} refuses while referenced. sketch.setSupport {sketch_id, plane_id} rehosts local sketch geometry on that construction plane; sketch.clearSupport {sketch_id} detaches at its current frame. All five operations are ordinary atomic undoable edits; invalid references/formulas refuse before commit. Discover exact ids/formulas/units/dependencies with query kind=planes/sketches/variables/constraints/features. Observe works for an ORIGINAL mesh/CAD-surface file and for an authorised native .floecad document. Original (GLB/glTF keep the three.js scene path): {views?:[{azimuthDegrees,elevationDegrees,distanceScale?}],width?,height?,projection?:perspective|orthographic,sceneIndex?,cameraIndex?,clipIndex?,timeSeconds?,expectedSourceSHA256?,maximumSourceBytes?,maximumResources?,includeImages?,nodeOffset?,nodeLimit?}; defaults to four real camera views and the viewer's actual camera projection. sceneIndex/cameraIndex/clipIndex/timeSeconds are actual GLB/glTF scene selections; static originals allow only sceneIndex 0 (or omitted) and refuse any camera, clip or nonzero time instead of returning a static first frame. Native .floecad uses the SAME request plus two optional live-generation pins: expectedRevision (last committed revision) and expectedChangeCount (the live in-memory generation, which also advances for an unsaved draft). expectedSourceSHA256 on a native document pins the last committed package content SHA-256, never a digest of unsaved mesh bytes. Omit pins for the first observation and reuse the revision/change_count/content_sha256 it returns; disagreeing payload/top-level revision pins and old pins are refused. Frames are real ephemeral offscreen engineering renders of the live scene with a locally fitted camera: the user's camera, selection, preferences, saved appearance, animation playback and undo history are not modified, and the image is not an active RealityKit Present capture (renderer=engineering, present_pixels=false). Native views support exact top/bottom pole frames; cameraIndex, clipIndex and timeSeconds>0 are refused instead of rendering an unrelated static frame — use action=animation with capture {clip_id,time} for actual animated frames. Both routes keep includeImages:false query-only, and the hierarchy is paged with nodeOffset/nodeLimit plus nextOffset; native object rows come from the deterministic body query at the same revision/change_count with stable ids and query_token/generation values. A native .floecad written by a newer app version opens read-only and is refused here. STEP/IGES/BREP pixels come from a lossy display triangulation, not native editable B-Rep; native frames show the actual kernel-built display scene, not CAD topology derived from pixels. This does not create CAD topology or authorize file writes. Capture: {width?,height?} returns a real viewport PNG artifact with renderer=presentation only while Present is active, otherwise renderer=engineering; it is bound to revision/change_count and image_sha256 is separate from content_sha256. applyFaces/reassignFaces require query_token from query kind=faces or face_signatures; index-only edits are refused with requery_required (query tokens are generation proof, not permission). Workbench service payloads MUST name one operation via payload.action or legacy payload.op; mutating workbench services still use propose→apply, while material/parameter edits are ordinary authorized undoable document commands. A global libraryExport/libraryImport uses the single app-owned personal library (libraryList reads it with global:true); global export writes a file so it is refused in temporary/read-only contexts. Never contains file paths other than the guarded asset_path/output/import fields above.
+        """#),
+        Topic(name: "native-operations", text: #"""
+        # Native operations and 2D edit shapes
+
+        ## op
+        Native typed operation name at the TOP LEVEL beside action and path, never inside args. Native propose requires it; native measure may use it to name the measurement kind. Exact executable vocabulary (also reported by capabilities as operation_names): sketch.create, sketch.addEntities, sketch.addText, feature.extrude, feature.revolve, feature.hole, feature.pattern, feature.mirror, feature.transform, feature.boolean, feature.fillet, feature.chamfer, feature.shell, feature.sweep, feature.loft, feature.pushPull, feature.moveFace, feature.deleteFace, feature.replaceFace, feature.draftFace, body.setMaterial, item.setHidden. feature.scaleFace, feature.rotateFace are NOT executable in this build: the kernel returns exact_edit_unsupported without mutation and reports them under capabilities.unavailable_operations; use feature.transform for a whole-body transform instead. feature.pushPull supports mode=planarAxial only (mode=cylinderRadial refuses with exact_edit_unsupported); feature.moveFace supports normal-axis (dn) movement only (tangential du/dv refuses).
+
+        ## args
+        JSON object STRING containing ONLY the typed operation's arguments, not an {op,args} envelope. Send op separately at the top level. Required for native propose (and the three_d_measure/three_d_propose aliases). Units are mm and degrees. RUNNABLE CONTRACT (exact argument names): sketch.create {name?, origin?[x,y,z], xAxis?[x,y,z], yAxis?[x,y,z]} defaults to the ground plane and returns sketchID; sketch.addEntities {sketchID, entities:[{kind:"line",a:[x,y],b:[x,y]} | {kind:"circle",center:[x,y],radius} | {kind:"arc",center:[x,y],radius,startAngle,endAngle} | {kind:"spline",points:[[x,y],...],closed?} | {kind:"rect",min:[x,y],max:[x,y]} | {kind:"polygon",center:[x,y],radius,sides,rotation?} | {kind:"ellipse",center:[x,y],radiusX,radiusY,rotation?}], construction?:[indexes]}; sketch.addText {sketchID, text, height (cap height, mm), fontName? (installed family or PostScript name; default Helvetica), origin?[x,y] (baseline start in sketch-plane mm; default [0,0])} creates closed line loops for the glyphs as ordinary sketch entities (counter loops are holes) in ONE undo step; the reply reports entityCount, glyphCount, outlineLoopCount, boundsMM, advanceWidthMM, heightMM, resolvedFontNames, fallbackFontNames, units:"mm" and undoSteps. This is the native text-sketch route; this service has no standalone mesh.text operation. A missing font or a visible character without a real vector outline refuses with unsupported_font / unsupported_glyphs and adds nothing; entity ids stay available through query kind=sketches. Example: {"sketchID":"<uuid from sketch.create>","text":"O","height":20,"origin":[10,5]}. feature.extrude {sketchID, seedPoint:[x,y] (a point INSIDE the closed profile), distance (mm, non-zero; optional only with end), symmetric?, taperDegrees? (|t|<89, 0 = straight), end?:"throughAll"|"upToNext"|"blind", boolean?:"newBody"|"union"|"subtract"|"intersect", booleanTargets?:[bodyID]}. Example: {"sketchID":"<uuid from sketch.create>","seedPoint":[40,20],"distance":10}. feature.hole {sketchID, seedPoint:[x,y] inside the SINGLE locating circle, targetBodyID, type:"throughAll"|"blind"|"counterbore"|"countersink", depth? (blind, mm, flat bottom), counterboreDiameter?/counterboreDepth? (counterbore, mm; diameter > pilot), countersinkDiameter?/countersinkAngle? (countersink, mm; included angle 30…170 degrees; diameter > pilot), reversed? (drills along -plane.normal; a face sketch plane normal is the source face outward normal)}; the placement circle owns position and pilot diameter (bind its diameter formula with setSketchDimension or edit it with updateSketchEntity, never the hole), through/counterbore/countersink pilots are through-all, and the target must be an analytic B-rep body. Ops that act on an existing body take {bodyID} plus their own fields (feature.boolean {kind,targetBodyID,toolBodyIDs}, feature.fillet {bodyID,radius,edges,query_token?} / feature.chamfer {bodyID,setback,edges,query_token?}, feature.shell {bodyID,thickness,openFaces,query_token?}, feature.pattern {bodyID,kind,count,...}); Face/edge index operations require query_token from query kind=faces/edges (or the row's stable face signature/edge midpoint); index existence alone is rejected with requery_required because a rebuild can reuse an index for a different face/edge. measure accepts op to name the kind (body|distance|bounds|dof|interference|mesh|rebuild).
+
+        ## Exact executable operation vocabulary
+        sketch.create, sketch.addEntities, sketch.addText, feature.extrude, feature.revolve, feature.hole, feature.pattern, feature.mirror, feature.transform, feature.boolean, feature.fillet, feature.chamfer, feature.shell, feature.sweep, feature.loft, feature.pushPull, feature.moveFace, feature.deleteFace, feature.replaceFace, feature.draftFace, body.setMaterial, item.setHidden
+
+        ## Guaranteed-refusal operations
+        feature.scaleFace, feature.rotateFace are NOT executable in this build. The kernel returns exact_edit_unsupported without mutation and reports them under capabilities.unavailable_operations. Use feature.transform for a whole-body transform.
+
+        ## 2D operations
+        Typed 2D engine edits (propose on a DWG/DXF drawing). Each object needs operation. Exact shapes: addLine{start:[x,y,z],end:[x,y,z],layer}; addCircle{center:[x,y,z],radius,layer}; addArc{center:[x,y,z],radius,startAngle,endAngle,layer}; addLwPolyline{points:[[x,y],...],closed?,layer} (2 numbers per point; rectangle = closed 4-point); addText{position:[x,y,z],text,height,layer}; addLeader{points:[[x,y,z],...],layer}; addDimension{kind:linear|aligned|angular|radius|diameter,points:[[x,y,z],...],layer,offset?,rotation?}; move|copy{handle,delta:[dx,dy,dz]}; rotate{handle,center:[x,y,z],angle}; scale{handle,center:[x,y,z],factor}; mirror{handle,axis:[[x,y,z],[x,y,z]]}; setText{handle,text}; setRadius{handle,radius}; setLayer{handle,layer}; setColor{handle,color}; setLineWeight{handle,lineWeight}; delete{handle}; trim|extend{handle,boundary,pick:[x,y,z]}; offset{handle,distance,side:[x,y,z]}; addLayer{name,color?,lineType?,lineWeight?}; updateLayer{name,locked?,visible?,color?,lineType?,lineWeight?}; renameLayer{from,to}; deleteLayer{name}; batch{operations:[...]} nests the same canonical shapes. Canonical vectors are arrays [x,y] (omitted z = the 2D drawing plane) or [x,y,0]; a nonzero z is rejected, never projected. The validated aliases {x,y[,z]} and {dx,dy[,dz]} are accepted and normalized to those arrays; addLwPolyline vertices are [x,y] or [x,y,0].
+        """#),
+        Topic(name: "payloads", text: #"""
+        # Payload reference
+
+        The payload is one JSON object string. It is never an authorization grant; the host and the normal runtime still apply every permission, ownership, revision/SHA and approval check.
+
+        JSON object string for native workbench services (three_d_assembly/three_d_drawing), material/parameters/capture/animation/scene, and the versions action. scene payload: {action:get|setSection|setSectionEnabled|flipSection|removeSection|setMeasurementsVisible|addMeasurement|removeMeasurement|clearMeasurements|undo|redo, origin?/normal? or x_axis?/y_axis? (mm), enabled?, flip?, size_mm?, start?/end? (mm), id?}. versions: {action:list|create|compare|restore|delete|recoveries|recover|discard_recovery|record, name? (create), version_id? (compare/restore/delete/recover/discard_recovery/record), against_version_id? (compare/record; omit = current committed document), expected_revision? (restore CAS), expected_content_sha256? (restore CAS), create_branch? (restore; default true), branch_name? (restore), offset?/limit? (compare page; limit 1...240), identity? (compare/record continuation: copy the exact from/to objects returned by the first page), section?/identifier? (record: the difference section and record id), chunk_offset?/chunk_limit? (record page over the exact stored JSON; byte-bounded chunks; limit 1...256)}. list/compare/compare pages/recoveries/record are read-only; create/restore/delete/recover/discard_recovery are ordinary task-authorized CAD edits with the document's own ownership/revision CAS. list also returns retained unpublished checkpoints under recoveries; recover publishes one only after it verifies, while discard_recovery deletes only that unpublished checkpoint. compare returns totalDifferences/nextOffset; a later page requires identity pins and a changed current revision is refused. record returns the exact stored record JSON (or the whole stored section for section-level records), its whole-value SHA-256, and byte-bounded chunk pages, so omitted summary fields can be fetched without inventing data. A named version is an explicit whole-document checkpoint, not automatic per-edit history; restore starts a new undo boundary and keeps the pre-restore state as a recovery version. Animation actions: list|query|evaluate (real timeline data), createClip|updateClip|deleteClip|setActiveClip, addTrack|deleteTrack, setKeyframe|setCameraKeyframe|setPartKeyframe|deleteKeyframe, preset {kind:turntable|explodeReturn}, undo|redo, capture {clip_id?,time?|frame?,fps?,width?,height?,format?}, export {output? (workspace .mp4 for mp4, .zip for png_zip),format?:mp4|png_zip,width?,height?,fps?,codec?,bitrate?,overwrite?,poster?,alpha?:opaque|transparent}. Animation edits are ordinary undoable document commands; capture returns a real animated native frame. export returns a verified MP4 (format mp4; codec/bitrate apply) or one ZIP of ordered lossless PNG frames plus manifest.json (format png_zip; codec must be png, no bitrate), with task_id and publishes it through RunOutput. alpha:transparent is refused before rendering: exports keep the scene's opaque background and MP4 H.264/HEVC has no alpha channel. Material actions: list|read|create|update|remove|apply|applyFaces|reassignFaces|mapping|textures|unresolved|libraryExport|libraryImport|libraryList|undo|redo; create/update/apply accept color [r,g,b(,a)] 0…1 (or #RRGGBB[AA]), metallic/roughness/opacity, emissive + emissive_strength, uv_mapping {source:mesh|planarProjection|boxProjection, axis:x|y|z, scale_mm:[u,v], rotation_degrees, offset:[u,v], flip_u, flip_v}, textures [{slot:baseColor|metallic|roughness|normal|emissive|opacity, asset_path? or asset_base64?, color_space?, orientation?}]. Parameter actions: list|update|updateSketchEntity|deleteSketchEntity|setSketchDimension|removeSketchDimension|variable.create|variable.update|variable.delete|feature.setExpression|datum.offsetPlane.create|datum.offsetPlane.update|datum.offsetPlane.delete|sketch.setSupport|sketch.clearSupport|feature.suppress|feature.delete|feature.move|undo|redo; update {feature_id, changes:{distance|angle|taper_angle|radius|setback|thickness|factor|count|spacing|total_angle|symmetric|rotate_instances|hole_type|depth|counterbore_diameter|counterbore_depth|countersink_diameter|countersink_angle|reversed:...}} uses the units query kind=features reports; updateSketchEntity {sketch_id, entity_id, a?, b? | min?, max?, center?, width?, height? | center?, radius?, diameter? | center?, radius?, diameter?, start_angle_deg?, end_angle_deg?, sweep_angle_deg? | center?, radius_x?, radius_y?, rotation_deg? | points? or point_index? + point?, expected_*} edits one existing line/rect/circle/arc/ellipse/spline by stable id and updates matching circle/arc radius or arc sweep dimensions in the same undo step (angles are degrees; an arc stores a CCW sweep under 360 degrees; spline point_index is the zero-based fit-point identity; refused as locked_entity for a Lock, dependent_reference for unsupported referenced geometry, or constraint_conflict if the saved sketch would become unsatisfied; polygon remains query-only); deleteSketchEntity {sketch_id, entity_id, remove_shared_references?, remove_pattern_link?} deletes exactly one entity by stable id in one undo step: references that only name it are removed and reported, a reference that also anchors another entity refuses with shared_references unless the explicit flag is true, and a pattern link refuses unless remove_pattern_link:true while every instance keeps its id; setSketchDimension {sketch_id, entity_id|entity_ids|refs, kind:length|distance|angle|diameter|radius|width|height, value|expression, expected_value?, expected_expression?, dimension_id?} creates or updates one driving value from exactly one of a positive finite number or a formula expression in the SAME public unit, solves with the existing solver and commits one undo step; sending both refuses ambiguous_value and a formula that references an unknown variable/function refuses before mutation. The expression text is stored on the dimension's formula (query kind=constraints exposes formula/formula_unit/formula_reference_names); an angle's formula stays in public degrees while its stored value is radians. expected_value fences the current public numeric value; expected_expression fences the exact stored formula (empty string means none). Variable fan-out re-evaluates the formula and commits every dependent sketch/feature rebuild with the variable edit as ONE undo step (angle is degrees; length is a line's distance; width/height store as horizontal/vertical); removeSketchDimension {sketch_id, dimension_id}; variable.create {name, expression} creates a named unitless scalar; variable.update {variable_id, name?, expression?, expected_expression?} edits/renames one variable and rewrites every variable/feature/sketch formula reference by identifier token (never substring); variable.delete {variable_id} refuses with exact dependent variable/feature/dimension ids while the name is still referenced; both create and update validate names, functions, references and cycles BEFORE commit, and one variable edit plus every dependent feature/sketch rebuild is ONE undo/redo transaction. feature.setExpression {feature_id, parameter, expression, expected_expression?} binds a formula to a parameter query kind=features reports with expression_action=feature.setExpression; expression is written in the PUBLIC unit (deg/mm/unitless) and a radian-persisted public-degree parameter stores an explicit radians(...) conversion rather than an unconverted degree value; expected_expression fences the exact stored `formula` row (radian-valued for a radian-persisted angle), not public_expression; parameters without a formula-capable Expr refuse unsupported_parameter instead of a value-only edit. feature.suppress {feature_id, suppressed}; feature.delete {feature_id, force?} refuses when later features consume its bodies unless forced and always rolls back a broken rebuild; feature.move {feature_id, to_index} verifies body dependency order before moving. datum.offsetPlane.create {body_id, face_index, query_token, expression, size?} creates an associative offset plane in mm from one exact named planar OCCT face; face_index is the kernel index from query kind=faces, never a render triangle. datum.offsetPlane.update {plane_id, expression?, expected_expression?, body_id?, face_index?, query_token?, size?} edits the same plane; source re-selection requires the complete fresh face triple. datum.offsetPlane.delete {plane_id} refuses while referenced. sketch.setSupport {sketch_id, plane_id} rehosts local sketch geometry on that construction plane; sketch.clearSupport {sketch_id} detaches at its current frame. All five operations are ordinary atomic undoable edits; invalid references/formulas refuse before commit. Discover exact ids/formulas/units/dependencies with query kind=planes/sketches/variables/constraints/features. Observe works for an ORIGINAL mesh/CAD-surface file and for an authorised native .floecad document. Original (GLB/glTF keep the three.js scene path): {views?:[{azimuthDegrees,elevationDegrees,distanceScale?}],width?,height?,projection?:perspective|orthographic,sceneIndex?,cameraIndex?,clipIndex?,timeSeconds?,expectedSourceSHA256?,maximumSourceBytes?,maximumResources?,includeImages?,nodeOffset?,nodeLimit?}; defaults to four real camera views and the viewer's actual camera projection. sceneIndex/cameraIndex/clipIndex/timeSeconds are actual GLB/glTF scene selections; static originals allow only sceneIndex 0 (or omitted) and refuse any camera, clip or nonzero time instead of returning a static first frame. Native .floecad uses the SAME request plus two optional live-generation pins: expectedRevision (last committed revision) and expectedChangeCount (the live in-memory generation, which also advances for an unsaved draft). expectedSourceSHA256 on a native document pins the last committed package content SHA-256, never a digest of unsaved mesh bytes. Omit pins for the first observation and reuse the revision/change_count/content_sha256 it returns; disagreeing payload/top-level revision pins and old pins are refused. Frames are real ephemeral offscreen engineering renders of the live scene with a locally fitted camera: the user's camera, selection, preferences, saved appearance, animation playback and undo history are not modified, and the image is not an active RealityKit Present capture (renderer=engineering, present_pixels=false). Native views support exact top/bottom pole frames; cameraIndex, clipIndex and timeSeconds>0 are refused instead of rendering an unrelated static frame — use action=animation with capture {clip_id,time} for actual animated frames. Both routes keep includeImages:false query-only, and the hierarchy is paged with nodeOffset/nodeLimit plus nextOffset; native object rows come from the deterministic body query at the same revision/change_count with stable ids and query_token/generation values. A native .floecad written by a newer app version opens read-only and is refused here. STEP/IGES/BREP pixels come from a lossy display triangulation, not native editable B-Rep; native frames show the actual kernel-built display scene, not CAD topology derived from pixels. This does not create CAD topology or authorize file writes. Capture: {width?,height?} returns a real viewport PNG artifact with renderer=presentation only while Present is active, otherwise renderer=engineering; it is bound to revision/change_count and image_sha256 is separate from content_sha256. applyFaces/reassignFaces require query_token from query kind=faces or face_signatures; index-only edits are refused with requery_required (query tokens are generation proof, not permission). Workbench service payloads MUST name one operation via payload.action or legacy payload.op; mutating workbench services still use propose→apply, while material/parameter edits are ordinary authorized undoable document commands. A global libraryExport/libraryImport uses the single app-owned personal library (libraryList reads it with global:true); global export writes a file so it is refused in temporary/read-only contexts. Never contains file paths other than the guarded asset_path/output/import fields above.
+
+        ## M07 associative datum planes (angle and three-point)
+
+        These six actions extend the EXISTING parameters payload and the SAME parameters route; they do not add a top-level field, a new tool or a new executor:
+
+        - datum.anglePlane.create {body_id, face_index, query_token, expression (degrees), hinge_x?, hinge_y? (unit direction in the source-face attachment frame; default 1,0), size?}
+        - datum.anglePlane.update {plane_id, expression?, expected_expression?, hinge_x?+hinge_y?, body_id?, face_index?, query_token?, size?}
+        - datum.anglePlane.delete {plane_id}
+        - datum.threePointPlane.create {points:[{sketch_id, entity_id, role:endpointA|endpointB|center} exactly three distinct], size?}
+        - datum.threePointPlane.update {plane_id, points? (all three) | point_index?+point?, expected_points?, size?}
+        - datum.threePointPlane.delete {plane_id}
+
+        Angle expressions are degrees end to end; conversion to radians happens once in the resolver. The hinge is a finite unit direction in the frozen source-face attachment frame and is normalized once; source-face reselection requires the complete fresh body/face/query_token triple. Three-point planes persist exactly three semantic sketch point identities; no world coordinate is stored. They resolve their current world millimetres from the source sketches' resolved support planes. Roles are endpointA/endpointB for line/rect and center for circle/arc/ellipse/polygon/open-spline endpoints; closed splines, arc rim points, rect centres, spline interior/control points and whole are not offered. Deleted or replaced entity ids are broken references; there is no nearest-point or index fallback. Collinear/coincident points, missing references, cycles, suppressed/rolled-back writers and forward dependencies refuse before commit. Query kind=planes reports kind angle|threePoints, definition_version, expression/formula/expression_unit (deg), hinge_local, points with sketch/entity/role/point_local/point_world/resolved, source ids/roles and supported_operations. Every create/update/delete is an ordinary atomic undoable document edit with the document's existing revision/ownership CAS; each matching delete refuses while referenced.
+        """#),
+        Topic(name: "formats", text: #"""
+        # Formats and exports
+
+        ## format
+        import or native export: explicit format. Import (step/stp, iges/igs, stl, obj, glb, gltf) defaults to the source_path extension; a JSON .gltf imports only when its buffers/images are embedded data URIs, external .bin/texture references are reported unsupported, and a self-contained .glb always works. Native export accepts step/stp, iges/igs, stl, obj, obj_bundle, 3mf, glb, usdz, pdf, svg, dxf and csv; gltf is import-only (export writes glb), and 3mf/usdz plus pdf/svg/dxf/csv are export-only in this adapter. STEP writes closed exact solids; IGES writes exact closed solids AND open surfaces (surface bodies are never flattened to a mesh). obj_bundle writes one .zip containing model.obj, model.mtl and relative texture resources; plain obj remains a single .obj with UVs and no materials. pdf/svg/dxf/csv are drawing-page exports and require page_id; usdz is available where the platform USDZ writer is supported (otherwise usdz_unavailable). The output suffix must match the selected format: step/stp -> .step/.stp, iges/igs -> .iges/.igs, obj_bundle -> .zip, every other export -> .<format> (for example .3mf, .glb, .usdz, .pdf, .svg, .dxf, .csv); a mismatched suffix is refused rather than silently renamed.
+
+        ## output
+        export relative path. 2D defaults to <name>.export.dxf. Native defaults to <name>.export.step; accepted native formats: step/stp, iges/igs, stl, obj, obj_bundle, 3mf, glb, usdz, pdf, svg, dxf, csv; the path must stay inside the workspace and its suffix must match the format. obj_bundle writes a .zip (model.obj + model.mtl + relative textures) and requires a .zip output path; plain obj writes a single .obj with UVs and no materials. A pdf/svg/dxf export is a DRAWING-page export and also needs page_id (from query kind=drawings). A csv export writes the COMPLETE BOM table for that drawing page (all rows and columns, UTF-8 RFC 4180) and also needs page_id and a .csv output path. usdz export is platform-guarded and reports usdz_unavailable where the writer is unavailable. With scope=assembly use .step, .glb or .usdz (part-scope iges and obj_bundle are also available): placed occurrences are resolved from the saved assembly, not flattened document bodies.
+
+        ## scope
+        export: part = selected/all document bodies (historical default); assembly = saved placed occurrences, including nested subassemblies and visible instances of hidden definitions. Hidden instances are excluded. Assembly export supports step, glb and usdz; IGES is part-scope only.
+
+        ## page_id
+        export: the native drawing page id for pdf/svg/dxf drawing exports and the complete BOM CSV table export, exactly as query with kind=drawings returned it.
+
+        ## body_ids
+        export scope=part: exact document body ids. Omit/empty to export every body (historical default).
+
+        ## instance_ids
+        export scope=assembly: exact placed occurrence ids from query kind=assembly/report. Omit/empty for every visible placed part. A subassembly id includes its visible descendant parts.
+
+        ## accept_partial
+        export: explicit acknowledgement that the coverage receipt is incomplete (for example STEP with mesh-only objects or open surfaces, or IGES with mesh-only objects). Without it an incomplete plan returns coverage_incomplete and writes nothing.
+
+        ## dry_run
+        export: return the coverage receipt only (counts, included/excluded occurrence ids and reasons); no file is written. Requires an explicit scope.
+        """#),
+        Topic(name: "workflows", text: #"""
+        # Workflows
+
+        Create and edit a native document
+        1. action=create with path and optional name.
+        2. action=propose with op=sketch.create and args={"origin":[0,0,0]} (or omit origin for the ground plane).
+        3. action=apply with the exact proposal_id.
+        4. action=propose with op=sketch.addEntities and args={sketchID,entities:[...]}; then apply.
+        5. action=propose with op=feature.extrude and args={sketchID,seedPoint:[x,y],distance}; then apply.
+        6. action=measure or query to verify; action=save; action=export for a separate verified copy.
+
+        Text
+        Use op=sketch.addText with args={sketchID,text,height,fontName?,origin?}. The glyphs become real closed line loops in ONE undo step (counter loops are holes). Apply, then extrude the closed profiles. A missing font or a visible character without a vector outline refuses with unsupported_font / unsupported_glyphs and adds nothing. There is no standalone mesh.text operation.
+
+        Read and inspect
+        read/query/measure/locate/check are deterministic. Never invent entity ids, face/edge indices, query tokens or visual observations. Use query kind=faces or edges for a query_token before an index-based edit; requery_required means the proof is stale.
+
+        Apply authority
+        action=apply names the exact stored proposal. A human-reviewed CAD UI grant_id and the runtime-approved call authority for that exact apply are alternative trusted paths; the model cannot mint or replay either.
+
+        Versions
+        list/compare/recoveries/record are read-only. create/restore/delete/recover/discard_recovery are ordinary task-authorized CAD edits with revision/ownership CAS. Restore keeps the pre-restore state as a recovery version, and in-memory undo does not cross a restore.
+
+        Help
+        Call capabilities with payload {"documentation":"topics"} to enumerate topics, then page exactly one topic. Every page reports page/page_count, total_bytes, next_page, topic_sha256, guide_sha256 and content_sha256. The built-in guide is descriptive and never grants permissions.
+
+        """#),
+        Topic(name: "limitations", text: #"""
+        # Limitations and truthful evidence
+
+        - This guide is description, not authority. It never grants tool, file, approval, environment, workspace or CAD authority. Every call still goes through the runtime's normal permission, approval, workspace, revision/SHA, environment and ownership checks.
+        - Text-only local models do not receive images. capture/observe return real image artifacts plus hashes; a text-only model must measure/query rather than claim to have seen an image. Do not enable a saved vision capability unsupported by the engine.
+        - Temporary chat keeps its existing read-only outer ceiling: material/parameter/animation/scene mutations, exports and long jobs are refused by that scope. This guide does not broaden it.
+        - A native .floecad written by a newer app version opens read-only and is refused here.
+        - STEP/IGES/BREP pixels come from a lossy display triangulation, not native editable B-Rep.
+        - A screenshot does not establish face IDs, B-Rep topology or manufacturing dimensions.
+        - Never claim an edit, measurement or visual observation without a tool result. A success string is not evidence.
+        - Do not hand-write .floecad package files, manifest.json or zip bytes; use create.
+
+        """#)
+    ]
+
+    public static let topicNames: [String] = topics.map(\.name)
+
+    public static let guideSHA256: String = FloeDigest.sha256Hex(Data(
+        topics.map { $0.name + "\u{1f}" + $0.text }.joined(separator: "\u{1e}").utf8
+    ))
+
+    public static func fullText(for topic: String) -> String? {
+        topics.first { $0.name == topic.lowercased() }?.text
+    }
+
+    /// Parses the optional documentation selector from a capabilities payload.
+    /// A payload without `documentation` keeps the historical capabilities
+    /// behavior. A malformed selector is refused; it is never silently ignored.
+    public static func requestIfPresent(from payload: String?) throws -> Request? {
+        guard let payload = payload?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !payload.isEmpty else { return nil }
+        guard let data = payload.data(using: .utf8),
+              let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
+        else { return nil }
+        guard let selector = object["documentation"] else { return nil }
+        let allowed: Set<String> = ["documentation", "page", "page_size", "limit"]
+        let unknown = Set(object.keys).subtracting(allowed)
+        guard unknown.isEmpty else {
+            throw FloeError.validationFailed(
+                "capabilities documentation payload has unknown field(s) "
+                    + unknown.sorted().joined(separator: ", ")
+                    + "; allowed: documentation, page, page_size, limit")
+        }
+        var topic: String
+        if let name = selector as? String {
+            let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            guard !trimmed.isEmpty else {
+                throw FloeError.validationFailed(
+                    "capabilities documentation needs a topic name or true")
+            }
+            topic = trimmed
+        } else if let flag = selector as? Bool {
+            guard flag else {
+                throw FloeError.validationFailed(
+                    "capabilities documentation must be a topic name or true")
+            }
+            topic = "topics"
+        } else if let nested = selector as? [String: Any] {
+            guard let rawName = (nested["topic"] as? String) ?? (nested["name"] as? String),
+                  !rawName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            else {
+                throw FloeError.validationFailed(
+                    "capabilities documentation object needs topic")
+            }
+            topic = rawName.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        } else {
+            throw FloeError.validationFailed(
+                "capabilities documentation must be a topic name, true, or {topic,page,page_size}")
+        }
+        var page = 0
+        var pageSize = defaultPageSize
+        if let nested = selector as? [String: Any] {
+            if let value = try integer(nested["page"], field: "page") { page = value }
+            if let value = try integer(nested["page_size"] ?? nested["limit"], field: "page_size") {
+                pageSize = value
+            }
+        }
+        if let value = try integer(object["page"], field: "page") { page = value }
+        if let value = try integer(object["page_size"] ?? object["limit"], field: "page_size") {
+            pageSize = value
+        }
+        return Request(topic: topic, page: page, pageSize: pageSize)
+    }
+
+    public static func validate(_ request: Request) throws {
+        guard request.page >= 0 else {
+            throw FloeError.validationFailed("documentation page must be zero or greater")
+        }
+        guard request.pageSize >= 256, request.pageSize <= maximumPageSize else {
+            throw FloeError.validationFailed(
+                "documentation page_size must be 256...\(maximumPageSize)")
+        }
+        if request.topic == "topics" {
+            guard request.page == 0 else {
+                throw FloeError.validationFailed("documentation topics has exactly one page (page 0)")
+            }
+            return
+        }
+        guard let topic = topics.first(where: { $0.name == request.topic }) else {
+            throw FloeError.validationFailed(
+                "unknown documentation topic '\(request.topic)'; choose "
+                    + topicNames.joined(separator: "|"))
+        }
+        let pages = split(topic.text, pageSize: request.pageSize)
+        guard request.page < pages.count else {
+            throw FloeError.validationFailed(
+                "documentation topic '\(request.topic)' page must be 0...\(max(0, pages.count - 1)) "
+                    + "(page_count=\(pages.count))")
+        }
+    }
+
+    /// A page of one topic. `topics` is served by the catalog reply instead.
+    public static func page(_ request: Request) throws -> Page? {
+        try validate(request)
+        guard request.topic != "topics",
+              let topic = topics.first(where: { $0.name == request.topic }) else {
+            return nil
+        }
+        let pages = split(topic.text, pageSize: request.pageSize)
+        guard request.page < pages.count else { return nil }
+        let slice = pages[request.page]
+        return Page(
+            topic: topic.name,
+            page: request.page,
+            pageCount: pages.count,
+            pageSize: request.pageSize,
+            characterOffset: slice.characterOffset,
+            characterCount: slice.text.count,
+            byteOffset: slice.byteOffset,
+            byteCount: slice.text.utf8.count,
+            totalBytes: topic.byteCount,
+            totalCharacters: topic.characterCount,
+            nextPage: request.page + 1 < pages.count ? request.page + 1 : nil,
+            contentSHA256: FloeDigest.sha256Hex(Data(slice.text.utf8)),
+            topicSHA256: topic.sha256,
+            guideSHA256Value: guideSHA256,
+            text: slice.text
+        )
+    }
+
+    public static func responseJSON(for request: Request) throws -> String {
+        try validate(request)
+        if request.topic == "topics" {
+            let rows: [[String: Any]] = topics.map { topic in
+                let count = split(topic.text, pageSize: request.pageSize).count
+                return [
+                    "name": topic.name,
+                    "bytes": topic.byteCount,
+                    "characters": topic.characterCount,
+                    "sha256": topic.sha256,
+                    "page_count": count,
+                ]
+            }
+            return try encode([
+                "ok": true,
+                "documentation": [
+                    "guide_version": guideVersion,
+                    "guide_sha256": guideSHA256,
+                    "topics": rows,
+                    "default_page_size": defaultPageSize,
+                    "maximum_page_size": maximumPageSize,
+                    "selector": "payload JSON {documentation:\"<topic>|topics\",page:0,page_size:3000}; page is zero-based; copy next_page",
+                ],
+                "permissions": "Documentation only; this reply never grants tool, file, or approval authority.",
+            ])
+        }
+        guard let page = try page(request) else {
+            throw FloeError.validationFailed("documentation topic '\(request.topic)' is not pageable")
+        }
+        var documentation: [String: Any] = [
+            "topic": page.topic,
+            "page": page.page,
+            "page_count": page.pageCount,
+            "page_size": page.pageSize,
+            "character_offset": page.characterOffset,
+            "characters": page.characterCount,
+            "byte_offset": page.byteOffset,
+            "bytes": page.byteCount,
+            "total_bytes": page.totalBytes,
+            "total_characters": page.totalCharacters,
+            "topic_sha256": page.topicSHA256,
+            "guide_sha256": page.guideSHA256Value,
+            "content_sha256": page.contentSHA256,
+            "text": page.text,
+        ]
+        documentation["next_page"] = page.nextPage ?? NSNull()
+        return try encode([
+            "ok": true,
+            "documentation": documentation,
+            "permissions": "Documentation only; this reply never grants tool, file, or approval authority.",
+        ])
+    }
+
+    private struct Slice {
+        let text: String
+        let characterOffset: Int
+        let byteOffset: Int
+    }
+
+    private static func split(_ text: String, pageSize: Int) -> [Slice] {
+        let limit = max(256, min(pageSize, maximumPageSize))
+        var result: [Slice] = []
+        var start = text.startIndex
+        var characterOffset = 0
+        var byteOffset = 0
+        while start < text.endIndex {
+            var end = start
+            var bytes = 0
+            while end < text.endIndex {
+                let next = text.index(after: end)
+                let charBytes = String(text[end]).utf8.count
+                if bytes + charBytes > limit, end > start { break }
+                bytes += charBytes
+                end = next
+            }
+            // Prefer a line boundary in the last third of the page, so a page
+            // stays readable without ever dropping content. The next page
+            // starts at the exact next character.
+            if end < text.endIndex, bytes > limit * 7 / 10 {
+                var candidate = end
+                var backtrack = 0
+                while candidate > start {
+                    let previous = text.index(before: candidate)
+                    backtrack += String(text[previous]).utf8.count
+                    if backtrack > limit / 3 { break }
+                    if text[previous] == "\n" {
+                        candidate = text.index(after: previous)
+                        break
+                    }
+                    candidate = previous
+                }
+                if candidate > start {
+                    end = candidate
+                    bytes = text[start..<end].utf8.count
+                }
+            }
+            let body = String(text[start..<end])
+            result.append(Slice(text: body, characterOffset: characterOffset, byteOffset: byteOffset))
+            characterOffset += body.count
+            byteOffset += body.utf8.count
+            start = end
+        }
+        return result
+    }
+
+    private static func integer(_ value: Any?, field: String) throws -> Int? {
+        guard let value, !(value is NSNull) else { return nil }
+        if value is Bool {
+            throw FloeError.validationFailed("documentation \(field) must be an integer")
+        }
+        if let int = value as? Int { return int }
+        if let number = value as? Double, number.rounded() == number,
+           number >= Double(Int.min), number <= Double(Int.max) {
+            return Int(number)
+        }
+        throw FloeError.validationFailed("documentation \(field) must be an integer")
+    }
+
+    private static func encode(_ object: [String: Any]) throws -> String {
+        guard JSONSerialization.isValidJSONObject(object),
+              let data = try? JSONSerialization.data(withJSONObject: object, options: [.sortedKeys]),
+              let text = String(data: data, encoding: .utf8)
+        else {
+            throw FloeError.validationFailed("documentation reply could not be encoded")
+        }
+        return text
+    }
+}
+
+
 // MARK: - Tool
 
 public struct CadDocumentTool: AgentTool {
@@ -894,120 +1458,7 @@ public struct CadDocumentTool: AgentTool {
 
     public static let name = "cad.document"
     public static let toolDescription = """
-    Export native CAD with action "export": scope=part keeps the historical \
-    selected/all document-body behaviour; scope=assembly writes the saved \
-    placed occurrences (nested subassemblies, exact occurrence ids/paths and \
-    world transforms), never a flattened document.bodies copy. Add dry_run=true \
-    for the coverage receipt only; an incomplete receipt (for example STEP with \
-    mesh-only objects) writes nothing unless accept_partial=true is explicit. \
-    Observe an original mesh or CAD-surface file, or an authorised native \
-    `.floecad` document, with action "observe" without importing, copying or \
-    modifying it: choose 1...4 finite views and an optional projection \
-    (includeImages=false permits no views for hierarchy-only queries); for \
-    GLB/glTF only, a real scene/camera/clip/time; for native documents, \
-    optional expectedRevision/expectedChangeCount/expectedSourceSHA256 \
-    generation pins. Native frames are real ephemeral offscreen engineering \
-    renders of the live scene (renderer=engineering, never an active Present \
-    claim) with no change to the user's camera, selection, preferences, saved \
-    appearance, playback or undo history; camera/clip/time selections are \
-    refused and animated frames use action="animation". Consume actual image \
-    artifacts plus source/image hashes and the paged native object rows \
-    (stable ids + query_token/generation) bound to the same revision/\
-    change_count. GLB/glTF keep the three.js scene path; other originals use \
-    the bundled Online3DViewer and STEP/IGES/BREP keep their local \
-    display-triangulation conversion. A screenshot does not establish CAD \
-    face IDs, B-Rep topology or manufacturing dimensions. \
-    Create, import into, read, query, measure, propose changes to, apply \
-    confirmed proposals to, save and export a CAD document. The document \
-    representation decides the engine: a DWG/DXF drawing runs in the local 2D \
-    engine, a native `.floecad` package runs in the parametric 3D kernel. \
-    Use action "create" (path/name) to make a new EMPTY native `.floecad` \
-    package through the built-in factory — never create the folder, manifest \
-    or zip by hand and never guess the internal package layout. Use action \
-    "import" on an EXISTING `.floecad` to add the geometry of a workspace \
-    STEP/STP, IGES/IGS, STL, OBJ, GLB or glTF file: it drafts a proposal on a \
-    throwaway copy and returns a preview. STEP gives exact editable solids; \
-    IGES solids are exact and open shells/faces become exact surface bodies \
-    that can be moved/rotated/scaled, painted and re-exported to IGES, but \
-    cannot take solid boolean/fillet/shell; STL/OBJ/GLB are render meshes \
-    with no parametric history. Use action "reference" to \
-    attach/check/update/inspect an external native `.floecad` part from the \
-    authorized task workspace: source_path is a path request resolved by the \
-    host guard (never a model grant); attach/update are ordinary committed CAD \
-    edits with source/staged hash CAS, while inspect/check are read-only. \
-    Propose binds an exact \
-    document revision and SHA-256 and returns a preview without writing. \
-    Apply commits ONE atomic undoable transaction for the exact proposal the \
-    approved call names: a `grant_id` selects the human-reviewed CAD UI path, \
-    and WITHOUT one the runtime-approved call authority for that exact apply \
-    authorizes it automatically (the model cannot mint or replay either; the \
-    proposal's revision/SHA is re-verified against the live document at \
-    commit). 2D edits are lines, circles, arcs, LWPolylines, text, dimensions \
-    and leaders plus move/copy/rotate/scale/mirror/trim/extend/offset and \
-    layer management. 3D, blocks, xrefs, splines and proxy graphics are \
-    retained read-only in the 2D engine; they are never flattened. Units stay \
-    drawing units when undefined. Native documents add parametric features, \
-    assembly constraints, drawings, ShapeScript and mesh operations through \
-    the typed operation vocabulary (`op` + `args`; feature.extrude, \
-    feature.hole, feature.boolean, ...) and the three_d_* aliases; status/cancel report \
-    durable native jobs. Workflow: create → propose sketch.create → apply → \
-    propose sketch.addEntities → apply → propose feature.extrude → apply → \
-    measure → export. For text use the native text-sketch route instead of the \
-    unavailable mesh.text: propose sketch.addText {sketchID,text,height,fontName?,origin?} → \
-    apply → propose feature.extrude on the resulting closed profiles (holes are \
-    real counter loops) → apply → measure. Every native propose sends op at the TOP LEVEL beside \
-    action and path. Its args is a serialized JSON object containing ONLY the \
-    operation parameters, never another {op,args} envelope. For extrusion, \
-    serialize {sketchID,seedPoint:[x,y],distance:mm} into args. Native `.floecad` documents additionally accept action \
-    "material" (custom PBR material library: list/read/create/update/remove/ \
-    apply/applyFaces/reassignFaces/mapping/textures/unresolved/libraryExport/ \
-    libraryImport/libraryList/undo/redo; applied appearances are snapshots \
-    and survive library deletion), action "parameters" (typed feature \
-    parameter list/update/undo/redo; updateSketchEntity for an existing line's \
-    endpoints, a rectangle's position/size or a circle's center/radius; \
-    setSketchDimension/removeSketchDimension for driving length/distance/ \
-    angle/radius/diameter/width/height values (setSketchDimension accepts a \
-    positive number or a PUBLIC-unit expression such as width / 8; the exact \
-    expression is stored on the dimension formula while an angle's formula \
-    text stays in degrees and its solved value is stored in radians); \
-    variable.create/update/delete \
-    for named scalar formulas (one atomic undo including every dependent \
-    feature/sketch rebuild; delete refuses while referenced and rename \
-    rewrites identifier tokens); feature.setExpression to bind a formula to an \
-    existing formula-capable feature scalar in its PUBLIC unit; \
-    feature.suppress/delete/move with dependency checks and checkpoint \
-    rollback — units and actions come from \
-    query kind=features/sketches/variables/constraints), action "animation" \
-    (native camera/assembly keyframe clips: list/query/evaluate, \
-    createClip/updateClip/deleteClip/setActiveClip, addTrack/deleteTrack, \
-    setKeyframe/setCameraKeyframe/setPartKeyframe/deleteKeyframe, \
-    turntable/explodeReturn presets and undo/redo; capture returns an actual \
-    animated native frame; export renders a verified MP4, default 1920x1080 \
-    at 30 fps H.264 with no audio, and reports a durable task_id for status/ \
-    cancel; authored edits are ordinary undoable document commands and \
-    playback/scrub never changes the geometry or assembly baseline), and \
-    action "capture" (actual viewport PNG artifact bound to the document \
-    revision/change_count; only a vision-capable model may inspect it — \
-    otherwise measure, never claim to have seen the image). Native `.floecad` \
-    also accepts action "scene" (the SAME persisted sceneSettings overlay the \
-    editor uses: get/setSection/setSectionEnabled/flipSection/removeSection/ \
-    setMeasurementsVisible/addMeasurement/removeMeasurement/clearMeasurements/ \
-    undo/redo; setSection takes origin [x,y,z] mm plus normal or x_axis/y_axis; \
-    addMeasurement takes start/end world mm and returns its id/length; every \
-    mutation is one ordinary undoable document command committed with CAS, and \
-    no geometry is edited). Section cut and guide lines appear in screenshots/\
-    video, but numeric values are not baked into pixels; model exchange \
-    (STEP/IGES/GLB/USDZ/OBJ/STL/3MF) carries geometry only. Action "versions" \
-    creates, lists, compares, restores and deletes user-named whole-document \
-    checkpoints through payload.action; it also lists retained unpublished \
-    checkpoints and can recover or discard one. Compare pages through every \
-    difference with identity pins, and record returns the exact stored record \
-    JSON (byte-bounded chunk pages) when a summary detail omits fields. Restore is \
-    revision/CAS-checked, the pre-restore state is kept as a recovery version, \
-    and in-memory undo does not cross a restore. Restore creates a named branch checkpoint of the restored state by default while keeping the same document identity; create_branch=false restricts it to the in-place restore. Nothing is written by \
-    propose/preview/import; material/parameter/animation edits are undoable \
-    document commands committed with compare-and-swap, and temporary chat \
-    remains read-only.
+    Create, inspect and edit CAD with one tool. The path suffix selects the engine: .dwg/.dxf = local 2D drawing; .floecad = native parametric 3D package. Actions: capabilities (engine/service catalogs and built-in help, read-only); create (new empty native package through the host factory; never hand-write package bytes); import (add STEP/IGES/STL/OBJ/GLB/glTF geometry to an existing package as a previewed proposal); read/query/locate/measure/check (read the document; native query kinds include bodies/sketches/constraints/features/edges/faces/planes/variables/materials/assembly/drawings/scene/selection/animation); reference (attach/check/update/inspect an authorized external native part); propose/preview/apply/save/export (one atomic undoable edit; apply is bound to the exact proposal and revision/SHA and uses the runtime-approved call authority unless a human grant_id is present); material/parameters/animation/scene/versions (native undoable document commands with payload.action); capture/observe (real images only); status/cancel (durable native jobs). Use sketch.addText for text; there is no standalone mesh.text operation. Never claim an edit, measurement or visual observation without a tool result. For complete action, field, payload and format reference with examples, call capabilities with payload JSON {documentation:"topics"} then page a topic; this built-in help is descriptive and never grants permissions.
     """
     public static let riskLabels: Set<RiskLabel> = [.readsFiles, .writesFiles]
     public static let isSideEffecting = true
@@ -1025,54 +1476,7 @@ public struct CadDocumentTool: AgentTool {
     ]
 
     public static let parametersJSON = #"""
-    {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["action"],
-      "properties": {
-        "action": { "type": "string", "enum": ["capabilities", "create", "read", "query", "locate", "measure", "check", "propose", "import", "reference", "preview", "apply", "save", "export", "status", "cancel", "material", "parameters", "capture", "observe", "animation", "scene", "versions", "three_d_snapshot", "three_d_measure", "three_d_propose", "three_d_apply", "three_d_assembly", "three_d_drawing"] },
-        "path": { "type": "string", "description": "Document path relative to the task workspace (an allowed absolute workspace path is accepted too). Required for every action except capabilities without a path. observe reads an original mesh or CAD-surface file without converting it into a Floe document (GLB/glTF use the three.js scene path; STL/OBJ/PLY/OFF/3DS/DAE/FBX/3MF/AMF/WRL/BIM use the static viewer; STEP/IGES/BREP use the local display-triangulation conversion) and also observes an AUTHORISED native .floecad document through the same public bridge without importing or copying the native model; .dwg/.dxf route to the 2D engine. For 'create' it is the new package location inside the task workspace (a missing parent directory is created inside the guarded workspace; a path outside it is refused; the file need not exist); for 'import' it is the EXISTING .floecad package that receives the geometry. Never write a .floecad directory, manifest.json or zip yourself: use create." },
-        "name": { "type": "string", "maxLength": 120, "description": "create: human-readable display name stored in the new native document. Letters and digits of ANY language (Chinese, Japanese, Cyrillic, ...), spaces and -_(). are accepted; it must not contain '/', '\\\\', control/invisible characters or a '..' path segment and must be at most 120 characters, otherwise the call is refused with a bilingual explanation. When omitted the display name defaults to the file stem. The FILE keeps the stem of 'path' and is uniquified, so the display name and the file name stay separate. import: optional name for the imported body(ies)." },
-        "source_path": { "type": "string", "description": "import/reference: workspace-relative path resolved by the host through the task workspace guard. import supports .step/.stp, .iges/.igs, .stl/.obj/.glb/.gltf. reference requires an existing native .floecad package; the source is opened only by the App-owned bridge and is never granted by this string alone. DWG/DXF go through the 2D engine instead." },
-        "reference_action": { "type": "string", "enum": ["attach", "check", "update", "inspect"], "description": "reference only: attach stages a new external native part and creates its first shared occurrence; check diagnoses source/version/hash state without mutation; update explicitly re-stages the SAME source body with source/staged hash CAS; inspect lists the source document's bodies so a multi-body source can be chosen with source_body_id." },
-        "reference_id": { "type": "string", "format": "uuid", "description": "reference check/update: durable reference id from an attach reply or assembly references query." },
-        "expected_source_sha256": { "type": "string", "description": "reference update CAS: the currently pinned source content SHA-256 (from references query)." },
-        "expected_staged_sha256": { "type": "string", "description": "reference update CAS: the currently pinned staged geometry SHA-256." },
-        "source_body_id": { "type": "string", "format": "uuid", "description": "reference attach: stable source body UUID for a multi-body source; inspect returns the body ids. Omitted only when the source has exactly one body." },
-        "format": { "type": "string", "enum": ["step", "stp", "iges", "igs", "stl", "obj", "obj_bundle", "3mf", "glb", "gltf", "usdz", "pdf", "svg", "dxf", "csv"], "description": "import or native export: explicit format. Import (step/stp, iges/igs, stl, obj, glb, gltf) defaults to the source_path extension; a JSON .gltf imports only when its buffers/images are embedded data URIs, external .bin/texture references are reported unsupported, and a self-contained .glb always works. Native export accepts step/stp, iges/igs, stl, obj, obj_bundle, 3mf, glb, usdz, pdf, svg, dxf and csv; gltf is import-only (export writes glb), and 3mf/usdz plus pdf/svg/dxf/csv are export-only in this adapter. STEP writes closed exact solids; IGES writes exact closed solids AND open surfaces (surface bodies are never flattened to a mesh). obj_bundle writes one .zip containing model.obj, model.mtl and relative texture resources; plain obj remains a single .obj with UVs and no materials. pdf/svg/dxf/csv are drawing-page exports and require page_id; usdz is available where the platform USDZ writer is supported (otherwise usdz_unavailable). The output suffix must match the selected format: step/stp -> .step/.stp, iges/igs -> .iges/.igs, obj_bundle -> .zip, every other export -> .<format> (for example .3mf, .glb, .usdz, .pdf, .svg, .dxf, .csv); a mismatched suffix is refused rather than silently renamed." },
-        "unit_scale": { "type": "number", "exclusiveMinimum": 0, "description": "import only: optional millimetres-per-file-unit scale for unitless meshes (STL/OBJ). Ignored for STEP/IGES and declared-unit glTF." },
-        "summary": { "type": "string", "maxLength": 2000, "description": "Concise summary of the proposed document change (propose/import)." },
-        "operations": {
-          "type": "array", "maxItems": 64,
-          "description": "Typed 2D engine edits (propose on a DWG/DXF drawing). Each object needs operation. Exact shapes: addLine{start:[x,y,z],end:[x,y,z],layer}; addCircle{center:[x,y,z],radius,layer}; addArc{center:[x,y,z],radius,startAngle,endAngle,layer}; addLwPolyline{points:[[x,y],...],closed?,layer} (2 numbers per point; rectangle = closed 4-point); addText{position:[x,y,z],text,height,layer}; addLeader{points:[[x,y,z],...],layer}; addDimension{kind:linear|aligned|angular|radius|diameter,points:[[x,y,z],...],layer,offset?,rotation?}; move|copy{handle,delta:[dx,dy,dz]}; rotate{handle,center:[x,y,z],angle}; scale{handle,center:[x,y,z],factor}; mirror{handle,axis:[[x,y,z],[x,y,z]]}; setText{handle,text}; setRadius{handle,radius}; setLayer{handle,layer}; setColor{handle,color}; setLineWeight{handle,lineWeight}; delete{handle}; trim|extend{handle,boundary,pick:[x,y,z]}; offset{handle,distance,side:[x,y,z]}; addLayer{name,color?,lineType?,lineWeight?}; updateLayer{name,locked?,visible?,color?,lineType?,lineWeight?}; renameLayer{from,to}; deleteLayer{name}; batch{operations:[...]} nests the same canonical shapes. Canonical vectors are arrays [x,y] (omitted z = the 2D drawing plane) or [x,y,0]; a nonzero z is rejected, never projected. The validated aliases {x,y[,z]} and {dx,dy[,dz]} are accepted and normalized to those arrays; addLwPolyline vertices are [x,y] or [x,y,0].",
-          "items": { "type": "object", "required": ["operation"], "properties": { "operation": { "type": "string" } } }
-        },
-        "proposal_id": { "type": "string", "format": "uuid", "description": "Proposal id from propose (preview/apply). Send it exactly as the propose reply printed it." },
-        "grant_id": { "type": "string", "description": "apply: OPTIONAL. When present, selects the human-reviewed CAD UI confirmation path (opaque single-use token the user's acceptance issued; the model cannot mint it). Omit it to let the runtime-approved call authority for this exact apply authorize the change automatically; a made-up or model-supplied value never authorizes anything." },
-        "revision": { "type": "integer", "minimum": 0, "description": "apply/capture/observe/material/parameters/animation: optional base revision pin. For apply it is bound into the approved call; for capture/observe/material/parameters/animation the host refuses with revision_mismatch before any mutation/capture when the live document is at a different revision. For observe it is the same native generation pin as payload.expectedRevision (disagreeing values are refused) and it is refused for an original model." },
-        "request_id": { "type": "string", "description": "Optional caller idempotency key; defaults to the tool call id." },
-        "task_id": { "type": "string", "description": "Durable native task id (status reports one task; cancel requires it)." },
-        "kind": { "type": "string", "description": "query/measure scope. 2D query: entities|text|layers|drawing|snap; 2D measure: distance|angle|radius|perimeter|area. Native .floecad query: bodies|sketches|constraints|features|edges|faces|planes|variables|materials|assembly|drawings|scene|detail|snapshot|selection|animation. selection returns the current live workbench bodies/faces/edges/sketch/instances with document revision and change_count; query it for deictic edits such as this face, then resolve exact face/edge query tokens before modifying. Features carry typed parameters/units/dependencies/actions; sketches carry entityRows with stable entity ids and each circle's current radius/diameter (the addressable source of an existing hole); faces/edges carry stable-matching indices, signatures and query_token/generation (revision, change_count, mesh_revision) required for index-based edits, and face rows identify planar/cylindrical kind with the actual radiusMM for a cylinder. Native measure: body|distance|bounds|dof|interference|mesh|rebuild (op may name the same kind). capabilities: pass drawing|assembly|script|mesh to get that service's exact operations with arguments and examples." },
-        "scope": { "type": "string", "enum": ["part", "assembly"], "description": "export: part = selected/all document bodies (historical default); assembly = saved placed occurrences, including nested subassemblies and visible instances of hidden definitions. Hidden instances are excluded. Assembly export supports step, glb and usdz; IGES is part-scope only." },
-        "points": { "type": "array", "items": { "type": "array", "items": { "type": "number" } }, "description": "measure points: 2D distance exactly 2, angle exactly 3, area 3+; snap point (first row). Native distance exactly 2 [x,y,z] rows." },
-        "handles": { "type": "array", "items": { "type": "string" }, "description": "2D entity handles: distance exactly 2, angle 2 lines, radius 1 circle/arc, perimeter 1+. Native: one handle per action, body:<uuid> / face:<uuid>:<index> / edge:<uuid>:<index>; body, mesh and bounds accept body:<uuid> (a bare body UUID is also accepted); bounds takes one or more body handles." },
-        "tolerance": { "type": "number", "description": "snap/check tolerance in drawing units; native interference tolerance in mm." },
-        "layer": { "type": "string", "description": "2D query filter." },
-        "entity_type": { "type": "string", "description": "2D query filter: Line|Circle|Arc|LwPolyline|Text." },
-        "text": { "type": "string", "description": "2D query filter: text content contains." },
-        "offset": { "type": "integer", "minimum": 0, "description": "query pagination offset." },
-        "limit": { "type": "integer", "minimum": 1, "maximum": 500, "description": "query pagination size." },
-        "output": { "type": "string", "description": "export relative path. 2D defaults to <name>.export.dxf. Native defaults to <name>.export.step; accepted native formats: step/stp, iges/igs, stl, obj, obj_bundle, 3mf, glb, usdz, pdf, svg, dxf, csv; the path must stay inside the workspace and its suffix must match the format. obj_bundle writes a .zip (model.obj + model.mtl + relative textures) and requires a .zip output path; plain obj writes a single .obj with UVs and no materials. A pdf/svg/dxf export is a DRAWING-page export and also needs page_id (from query kind=drawings). A csv export writes the COMPLETE BOM table for that drawing page (all rows and columns, UTF-8 RFC 4180) and also needs page_id and a .csv output path. usdz export is platform-guarded and reports usdz_unavailable where the writer is unavailable. With scope=assembly use .step, .glb or .usdz (part-scope iges and obj_bundle are also available): placed occurrences are resolved from the saved assembly, not flattened document bodies." },
-        "page_id": { "type": "string", "format": "uuid", "description": "export: the native drawing page id for pdf/svg/dxf drawing exports and the complete BOM CSV table export, exactly as query with kind=drawings returned it." },
-        "body_ids": { "type": "array", "maxItems": 512, "items": { "type": "string", "format": "uuid" }, "description": "export scope=part: exact document body ids. Omit/empty to export every body (historical default)." },
-        "instance_ids": { "type": "array", "maxItems": 512, "items": { "type": "string", "format": "uuid" }, "description": "export scope=assembly: exact placed occurrence ids from query kind=assembly/report. Omit/empty for every visible placed part. A subassembly id includes its visible descendant parts." },
-        "accept_partial": { "type": "boolean", "description": "export: explicit acknowledgement that the coverage receipt is incomplete (for example STEP with mesh-only objects or open surfaces, or IGES with mesh-only objects). Without it an incomplete plan returns coverage_incomplete and writes nothing." },
-        "dry_run": { "type": "boolean", "description": "export: return the coverage receipt only (counts, included/excluded occurrence ids and reasons); no file is written. Requires an explicit scope." },
-        "op": { "type": "string", "description": "Native typed operation name at the TOP LEVEL beside action and path, never inside args. Native propose requires it; native measure may use it to name the measurement kind. Exact executable vocabulary (also reported by capabilities as operation_names): __NATIVE_EXECUTABLE_OPERATIONS__. __NATIVE_UNAVAILABLE_OPERATIONS__ are NOT executable in this build: the kernel returns exact_edit_unsupported without mutation and reports them under capabilities.unavailable_operations; use feature.transform for a whole-body transform instead. feature.pushPull supports mode=planarAxial only (mode=cylinderRadial refuses with exact_edit_unsupported); feature.moveFace supports normal-axis (dn) movement only (tangential du/dv refuses)." },
-        "args": { "type": "string", "description": "JSON object STRING containing ONLY the typed operation's arguments, not an {op,args} envelope. Send op separately at the top level. Required for native propose (and the three_d_measure/three_d_propose aliases). Units are mm and degrees. RUNNABLE CONTRACT (exact argument names): sketch.create {name?, origin?[x,y,z], xAxis?[x,y,z], yAxis?[x,y,z]} defaults to the ground plane and returns sketchID; sketch.addEntities {sketchID, entities:[{kind:\"line\",a:[x,y],b:[x,y]} | {kind:\"circle\",center:[x,y],radius} | {kind:\"arc\",center:[x,y],radius,startAngle,endAngle} | {kind:\"spline\",points:[[x,y],...],closed?} | {kind:\"rect\",min:[x,y],max:[x,y]} | {kind:\"polygon\",center:[x,y],radius,sides,rotation?} | {kind:\"ellipse\",center:[x,y],radiusX,radiusY,rotation?}], construction?:[indexes]}; sketch.addText {sketchID, text, height (cap height, mm), fontName? (installed family or PostScript name; default Helvetica), origin?[x,y] (baseline start in sketch-plane mm; default [0,0])} creates closed line loops for the glyphs as ordinary sketch entities (counter loops are holes) in ONE undo step; the reply reports entityCount, glyphCount, outlineLoopCount, boundsMM, advanceWidthMM, heightMM, resolvedFontNames, fallbackFontNames, units:\"mm\" and undoSteps. This is the native text-sketch route; this service has no standalone mesh.text operation. A missing font or a visible character without a real vector outline refuses with unsupported_font / unsupported_glyphs and adds nothing; entity ids stay available through query kind=sketches. Example: {\"sketchID\":\"<uuid from sketch.create>\",\"text\":\"O\",\"height\":20,\"origin\":[10,5]}. feature.extrude {sketchID, seedPoint:[x,y] (a point INSIDE the closed profile), distance (mm, non-zero; optional only with end), symmetric?, taperDegrees? (|t|<89, 0 = straight), end?:\"throughAll\"|\"upToNext\"|\"blind\", boolean?:\"newBody\"|\"union\"|\"subtract\"|\"intersect\", booleanTargets?:[bodyID]}. Example: {\"sketchID\":\"<uuid from sketch.create>\",\"seedPoint\":[40,20],\"distance\":10}. feature.hole {sketchID, seedPoint:[x,y] inside the SINGLE locating circle, targetBodyID, type:\"throughAll\"|\"blind\"|\"counterbore\"|\"countersink\", depth? (blind, mm, flat bottom), counterboreDiameter?/counterboreDepth? (counterbore, mm; diameter > pilot), countersinkDiameter?/countersinkAngle? (countersink, mm; included angle 30…170 degrees; diameter > pilot), reversed? (drills along -plane.normal; a face sketch plane normal is the source face outward normal)}; the placement circle owns position and pilot diameter (bind its diameter formula with setSketchDimension or edit it with updateSketchEntity, never the hole), through/counterbore/countersink pilots are through-all, and the target must be an analytic B-rep body. Ops that act on an existing body take {bodyID} plus their own fields (feature.boolean {kind,targetBodyID,toolBodyIDs}, feature.fillet {bodyID,radius,edges,query_token?} / feature.chamfer {bodyID,setback,edges,query_token?}, feature.shell {bodyID,thickness,openFaces,query_token?}, feature.pattern {bodyID,kind,count,...}); Face/edge index operations require query_token from query kind=faces/edges (or the row's stable face signature/edge midpoint); index existence alone is rejected with requery_required because a rebuild can reuse an index for a different face/edge. measure accepts op to name the kind (body|distance|bounds|dof|interference|mesh|rebuild)." },
-        "payload": { "type": "string", "description": "JSON object string for native workbench services (three_d_assembly/three_d_drawing), material/parameters/capture/animation/scene, and the versions action. scene payload: {action:get|setSection|setSectionEnabled|flipSection|removeSection|setMeasurementsVisible|addMeasurement|removeMeasurement|clearMeasurements|undo|redo, origin?/normal? or x_axis?/y_axis? (mm), enabled?, flip?, size_mm?, start?/end? (mm), id?}. versions: {action:list|create|compare|restore|delete|recoveries|recover|discard_recovery|record, name? (create), version_id? (compare/restore/delete/recover/discard_recovery/record), against_version_id? (compare/record; omit = current committed document), expected_revision? (restore CAS), expected_content_sha256? (restore CAS), create_branch? (restore; default true), branch_name? (restore), offset?/limit? (compare page; limit 1...240), identity? (compare/record continuation: copy the exact from/to objects returned by the first page), section?/identifier? (record: the difference section and record id), chunk_offset?/chunk_limit? (record page over the exact stored JSON; byte-bounded chunks; limit 1...256)}. list/compare/compare pages/recoveries/record are read-only; create/restore/delete/recover/discard_recovery are ordinary task-authorized CAD edits with the document's own ownership/revision CAS. list also returns retained unpublished checkpoints under recoveries; recover publishes one only after it verifies, while discard_recovery deletes only that unpublished checkpoint. compare returns totalDifferences/nextOffset; a later page requires identity pins and a changed current revision is refused. record returns the exact stored record JSON (or the whole stored section for section-level records), its whole-value SHA-256, and byte-bounded chunk pages, so omitted summary fields can be fetched without inventing data. A named version is an explicit whole-document checkpoint, not automatic per-edit history; restore starts a new undo boundary and keeps the pre-restore state as a recovery version. Animation actions: list|query|evaluate (real timeline data), createClip|updateClip|deleteClip|setActiveClip, addTrack|deleteTrack, setKeyframe|setCameraKeyframe|setPartKeyframe|deleteKeyframe, preset {kind:turntable|explodeReturn}, undo|redo, capture {clip_id?,time?|frame?,fps?,width?,height?,format?}, export {output? (workspace .mp4 for mp4, .zip for png_zip),format?:mp4|png_zip,width?,height?,fps?,codec?,bitrate?,overwrite?,poster?,alpha?:opaque|transparent}. Animation edits are ordinary undoable document commands; capture returns a real animated native frame. export returns a verified MP4 (format mp4; codec/bitrate apply) or one ZIP of ordered lossless PNG frames plus manifest.json (format png_zip; codec must be png, no bitrate), with task_id and publishes it through RunOutput. alpha:transparent is refused before rendering: exports keep the scene's opaque background and MP4 H.264/HEVC has no alpha channel. Material actions: list|read|create|update|remove|apply|applyFaces|reassignFaces|mapping|textures|unresolved|libraryExport|libraryImport|libraryList|undo|redo; create/update/apply accept color [r,g,b(,a)] 0…1 (or #RRGGBB[AA]), metallic/roughness/opacity, emissive + emissive_strength, uv_mapping {source:mesh|planarProjection|boxProjection, axis:x|y|z, scale_mm:[u,v], rotation_degrees, offset:[u,v], flip_u, flip_v}, textures [{slot:baseColor|metallic|roughness|normal|emissive|opacity, asset_path? or asset_base64?, color_space?, orientation?}]. Parameter actions: list|update|updateSketchEntity|deleteSketchEntity|setSketchDimension|removeSketchDimension|variable.create|variable.update|variable.delete|feature.setExpression|datum.offsetPlane.create|datum.offsetPlane.update|datum.offsetPlane.delete|sketch.setSupport|sketch.clearSupport|feature.suppress|feature.delete|feature.move|undo|redo; update {feature_id, changes:{distance|angle|taper_angle|radius|setback|thickness|factor|count|spacing|total_angle|symmetric|rotate_instances|hole_type|depth|counterbore_diameter|counterbore_depth|countersink_diameter|countersink_angle|reversed:...}} uses the units query kind=features reports; updateSketchEntity {sketch_id, entity_id, a?, b? | min?, max?, center?, width?, height? | center?, radius?, diameter? | center?, radius?, diameter?, start_angle_deg?, end_angle_deg?, sweep_angle_deg? | center?, radius_x?, radius_y?, rotation_deg? | points? or point_index? + point?, expected_*} edits one existing line/rect/circle/arc/ellipse/spline by stable id and updates matching circle/arc radius or arc sweep dimensions in the same undo step (angles are degrees; an arc stores a CCW sweep under 360 degrees; spline point_index is the zero-based fit-point identity; refused as locked_entity for a Lock, dependent_reference for unsupported referenced geometry, or constraint_conflict if the saved sketch would become unsatisfied; polygon remains query-only); deleteSketchEntity {sketch_id, entity_id, remove_shared_references?, remove_pattern_link?} deletes exactly one entity by stable id in one undo step: references that only name it are removed and reported, a reference that also anchors another entity refuses with shared_references unless the explicit flag is true, and a pattern link refuses unless remove_pattern_link:true while every instance keeps its id; setSketchDimension {sketch_id, entity_id|entity_ids|refs, kind:length|distance|angle|diameter|radius|width|height, value|expression, expected_value?, expected_expression?, dimension_id?} creates or updates one driving value from exactly one of a positive finite number or a formula expression in the SAME public unit, solves with the existing solver and commits one undo step; sending both refuses ambiguous_value and a formula that references an unknown variable/function refuses before mutation. The expression text is stored on the dimension's formula (query kind=constraints exposes formula/formula_unit/formula_reference_names); an angle's formula stays in public degrees while its stored value is radians. expected_value fences the current public numeric value; expected_expression fences the exact stored formula (empty string means none). Variable fan-out re-evaluates the formula and commits every dependent sketch/feature rebuild with the variable edit as ONE undo step (angle is degrees; length is a line's distance; width/height store as horizontal/vertical); removeSketchDimension {sketch_id, dimension_id}; variable.create {name, expression} creates a named unitless scalar; variable.update {variable_id, name?, expression?, expected_expression?} edits/renames one variable and rewrites every variable/feature/sketch formula reference by identifier token (never substring); variable.delete {variable_id} refuses with exact dependent variable/feature/dimension ids while the name is still referenced; both create and update validate names, functions, references and cycles BEFORE commit, and one variable edit plus every dependent feature/sketch rebuild is ONE undo/redo transaction. feature.setExpression {feature_id, parameter, expression, expected_expression?} binds a formula to a parameter query kind=features reports with expression_action=feature.setExpression; expression is written in the PUBLIC unit (deg/mm/unitless) and a radian-persisted public-degree parameter stores an explicit radians(...) conversion rather than an unconverted degree value; expected_expression fences the exact stored `formula` row (radian-valued for a radian-persisted angle), not public_expression; parameters without a formula-capable Expr refuse unsupported_parameter instead of a value-only edit. feature.suppress {feature_id, suppressed}; feature.delete {feature_id, force?} refuses when later features consume its bodies unless forced and always rolls back a broken rebuild; feature.move {feature_id, to_index} verifies body dependency order before moving. datum.offsetPlane.create {body_id, face_index, query_token, expression, size?} creates an associative offset plane in mm from one exact named planar OCCT face; face_index is the kernel index from query kind=faces, never a render triangle. datum.offsetPlane.update {plane_id, expression?, expected_expression?, body_id?, face_index?, query_token?, size?} edits the same plane; source re-selection requires the complete fresh face triple. datum.offsetPlane.delete {plane_id} refuses while referenced. sketch.setSupport {sketch_id, plane_id} rehosts local sketch geometry on that construction plane; sketch.clearSupport {sketch_id} detaches at its current frame. All five operations are ordinary atomic undoable edits; invalid references/formulas refuse before commit. Discover exact ids/formulas/units/dependencies with query kind=planes/sketches/variables/constraints/features. Observe works for an ORIGINAL mesh/CAD-surface file and for an authorised native .floecad document. Original (GLB/glTF keep the three.js scene path): {views?:[{azimuthDegrees,elevationDegrees,distanceScale?}],width?,height?,projection?:perspective|orthographic,sceneIndex?,cameraIndex?,clipIndex?,timeSeconds?,expectedSourceSHA256?,maximumSourceBytes?,maximumResources?,includeImages?,nodeOffset?,nodeLimit?}; defaults to four real camera views and the viewer's actual camera projection. sceneIndex/cameraIndex/clipIndex/timeSeconds are actual GLB/glTF scene selections; static originals allow only sceneIndex 0 (or omitted) and refuse any camera, clip or nonzero time instead of returning a static first frame. Native .floecad uses the SAME request plus two optional live-generation pins: expectedRevision (last committed revision) and expectedChangeCount (the live in-memory generation, which also advances for an unsaved draft). expectedSourceSHA256 on a native document pins the last committed package content SHA-256, never a digest of unsaved mesh bytes. Omit pins for the first observation and reuse the revision/change_count/content_sha256 it returns; disagreeing payload/top-level revision pins and old pins are refused. Frames are real ephemeral offscreen engineering renders of the live scene with a locally fitted camera: the user's camera, selection, preferences, saved appearance, animation playback and undo history are not modified, and the image is not an active RealityKit Present capture (renderer=engineering, present_pixels=false). Native views support exact top/bottom pole frames; cameraIndex, clipIndex and timeSeconds>0 are refused instead of rendering an unrelated static frame — use action=animation with capture {clip_id,time} for actual animated frames. Both routes keep includeImages:false query-only, and the hierarchy is paged with nodeOffset/nodeLimit plus nextOffset; native object rows come from the deterministic body query at the same revision/change_count with stable ids and query_token/generation values. A native .floecad written by a newer app version opens read-only and is refused here. STEP/IGES/BREP pixels come from a lossy display triangulation, not native editable B-Rep; native frames show the actual kernel-built display scene, not CAD topology derived from pixels. This does not create CAD topology or authorize file writes. Capture: {width?,height?} returns a real viewport PNG artifact with renderer=presentation only while Present is active, otherwise renderer=engineering; it is bound to revision/change_count and image_sha256 is separate from content_sha256. applyFaces/reassignFaces require query_token from query kind=faces or face_signatures; index-only edits are refused with requery_required (query tokens are generation proof, not permission). Workbench service payloads MUST name one operation via payload.action or legacy payload.op; mutating workbench services still use propose→apply, while material/parameter edits are ordinary authorized undoable document commands. A global libraryExport/libraryImport uses the single app-owned personal library (libraryList reads it with global:true); global export writes a file so it is refused in temporary/read-only contexts. Never contains file paths other than the guarded asset_path/output/import fields above." }
-      }
-    }
+    {"type":"object","additionalProperties":false,"required":["action"],"properties":{"action":{"type":"string","enum":["capabilities","create","read","query","locate","measure","check","propose","import","reference","preview","apply","save","export","status","cancel","material","parameters","capture","observe","animation","scene","versions","three_d_snapshot","three_d_measure","three_d_propose","three_d_apply","three_d_assembly","three_d_drawing"],"description":"Required. Operation to run; see the tool description and the capabilities help for semantics."},"path":{"type":"string","description":"Document path in the task workspace (absolute workspace path allowed). Required except capabilities without path. .dwg/.dxf = 2D; .floecad = native 3D. create: new package path (parent created; outside workspace refused). import: existing .floecad receiving geometry. observe: original mesh/CAD-surface file or authorized native document, read only. Never hand-write package/manifest/zip bytes; use create."},"name":{"type":"string","maxLength":120,"description":"create: display name (max 120; any language; no '/', '\\\\', control characters or '..'; defaults to file stem; file name is uniquified separately). import: optional body name."},"source_path":{"type":"string","description":"import/reference: workspace-relative source resolved by the host guard. import accepts .step/.stp, .iges/.igs, .stl, .obj, .glb, .gltf; reference needs an existing native .floecad. The string never grants access."},"reference_action":{"type":"string","enum":["attach","check","update","inspect"],"description":"reference: attach | check | update | inspect (attach stages the first occurrence; update re-stages the same source body with hash CAS; check/inspect are read-only)."},"reference_id":{"type":"string","format":"uuid","description":"reference check/update: durable reference id from attach or assembly references."},"expected_source_sha256":{"type":"string","description":"reference update CAS: pinned source SHA-256."},"expected_staged_sha256":{"type":"string","description":"reference update CAS: pinned staged geometry SHA-256."},"source_body_id":{"type":"string","format":"uuid","description":"reference attach: stable source body UUID for a multi-body source; omit only for one body."},"format":{"type":"string","enum":["step","stp","iges","igs","stl","obj","obj_bundle","3mf","glb","gltf","usdz","pdf","svg","dxf","csv"],"description":"import/export format; enum is authoritative. Import defaults to source_path extension. Export suffix must match; pdf/svg/dxf/csv require page_id; obj_bundle writes .zip; usdz is platform-guarded; gltf is import-only."},"unit_scale":{"type":"number","exclusiveMinimum":0,"description":"import only: millimetres per unitless mesh file unit (STL/OBJ); ignored for exact/declared-unit formats."},"summary":{"type":"string","maxLength":2000,"description":"propose/import: concise change summary (max 2000)."},"operations":{"type":"array","maxItems":64,"description":"2D edits for propose on .dwg/.dxf (max 64); each item requires operation. Exact shapes and examples: documentation topic native-operations. Vectors are [x,y] or [x,y,0]; nonzero z refused.","items":{"type":"object","required":["operation"],"properties":{"operation":{"type":"string"}}}},"proposal_id":{"type":"string","format":"uuid","description":"propose reply id for preview/apply; send it exactly as printed."},"grant_id":{"type":"string","description":"apply: OPTIONAL human-reviewed UI grant. Omit to use the runtime-approved call authority for this exact apply. The model cannot mint or replay either; made-up values authorize nothing."},"revision":{"type":"integer","minimum":0,"description":"apply/capture/observe/material/parameters/animation/scene: optional base revision pin; mismatch is refused before mutation/capture. For observe it is the same pin as payload.expectedRevision."},"request_id":{"type":"string","description":"optional idempotency key; defaults to the tool call id."},"task_id":{"type":"string","description":"durable native task id (status reports one; cancel requires it)."},"kind":{"type":"string","description":"query/measure scope. 2D query: entities|text|layers|drawing|snap; 2D measure: distance|angle|radius|perimeter|area. Native query: bodies|sketches|constraints|features|edges|faces|planes|variables|materials|assembly|drawings|scene|detail|snapshot|selection|animation. Native measure: body|distance|bounds|dof|interference|mesh|rebuild. capabilities kind=drawing|assembly|script|mesh returns service operations; full semantics: topic fields."},"scope":{"type":"string","enum":["part","assembly"],"description":"export: part = document bodies (default); assembly = saved placed occurrences incl. nested subassemblies and visible instances of hidden definitions. Assembly export: step, glb, usdz; IGES is part-scope only."},"points":{"type":"array","items":{"type":"array","items":{"type":"number"}},"description":"measure points: 2D distance 2, angle 3, area 3+; snap first row. Native distance exactly 2 [x,y,z] rows."},"handles":{"type":"array","items":{"type":"string"},"description":"2D handles: distance 2, angle 2 lines, radius 1, perimeter 1+. Native: body:<uuid>, face:<uuid>:<index>, edge:<uuid>:<index>; body/mesh/bounds accept body:<uuid>; bounds takes 1+."},"tolerance":{"type":"number","description":"snap/check tolerance in drawing units; native interference tolerance in mm."},"layer":{"type":"string","description":"2D query filter."},"entity_type":{"type":"string","description":"2D query filter: Line|Circle|Arc|LwPolyline|Text."},"text":{"type":"string","description":"2D query text contains."},"offset":{"type":"integer","minimum":0,"description":"query page offset (>=0)."},"limit":{"type":"integer","minimum":1,"maximum":500,"description":"query page size (1...500)."},"output":{"type":"string","description":"export relative path inside the workspace. 2D defaults to <name>.export.dxf; native to <name>.export.step. Suffix must match; pdf/svg/dxf/csv are drawing-page exports and need page_id; csv is the complete BOM. obj_bundle requires .zip. usdz is platform-guarded. With scope=assembly use .step/.glb/.usdz."},"page_id":{"type":"string","format":"uuid","description":"export: native drawing page id for pdf/svg/dxf and BOM csv, from query kind=drawings."},"body_ids":{"type":"array","maxItems":512,"items":{"type":"string","format":"uuid"},"description":"export scope=part: exact body ids; omit/empty = all bodies."},"instance_ids":{"type":"array","maxItems":512,"items":{"type":"string","format":"uuid"},"description":"export scope=assembly: exact placed occurrence ids from query kind=assembly/report; omit/empty = all visible parts; a subassembly includes visible descendants."},"accept_partial":{"type":"boolean","description":"export: explicit acknowledgement that the coverage receipt is incomplete; without it an incomplete plan writes nothing."},"dry_run":{"type":"boolean","description":"export: return the coverage receipt only; no file; requires scope."},"op":{"type":"string","description":"Native typed operation at TOP LEVEL beside action/path, never inside args. propose requires it; measure may name the kind. Executable/unavailable vocabulary, per-op arguments and examples: documentation topic native-operations. Unavailable ops refuse with exact_edit_unsupported and are reported by capabilities.unavailable_operations; feature.transform is the whole-body transform; feature.pushPull is planarAxial only; feature.moveFace is normal-axis only."},"args":{"type":"string","description":"JSON object STRING of ONLY the typed operation arguments (not an {op,args} envelope); units mm and degrees. Exact per-op contract/examples: documentation topic native-operations. Text route: sketch.addText; there is no standalone mesh.text operation; unsupported_font/unsupported_glyphs refuse without mutation."},"payload":{"type":"string","description":"JSON object STRING for workbench services, material/parameters/capture/animation/scene, versions and observe. Exact action vocabularies, fields, examples, CAS/page rules and content identity: documentation topic payloads. capabilities: payload {\"documentation\":\"topics\"|<topic>,page,page_size} serves this built-in guide. observe supports expectedRevision, expectedChangeCount, expectedSourceSHA256, includeImages, views, projection?:perspective|orthographic, nodeOffset/nodeLimit/nextOffset; native frames use renderer=engineering, present_pixels=false."}}}
     """#.replacingOccurrences(
         of: "__NATIVE_EXECUTABLE_OPERATIONS__",
         with: CadNativeOperationVocabulary.executable.joined(separator: ", ")
@@ -1097,6 +1501,18 @@ public struct CadDocumentTool: AgentTool {
     }
 
     public func validate(_ args: CadDocumentArguments) throws {
+        // Built-in help is static, read-only documentation. It needs no file
+        // target and never reaches the host; reading it grants no authority.
+        if args.action == .capabilities,
+           let helpRequest = try CadDocumentHelp.requestIfPresent(from: args.payload) {
+            if let raw = args.kind?.trimmingCharacters(in: .whitespacesAndNewlines),
+               !raw.isEmpty {
+                throw FloeError.validationFailed(
+                    "capabilities documentation and kind are separate selectors; send exactly one.")
+            }
+            try CadDocumentHelp.validate(helpRequest)
+            return
+        }
         if args.action == .capabilities, args.path == nil {
             // Engine capability discovery without a document stays on the 2D
             // engine; a `kind` still has to name a real workbench service.
@@ -1764,6 +2180,9 @@ public struct CadDocumentTool: AgentTool {
                 }
             }
             if ["datum.offsetPlane.create", "datum.offsetPlane.update", "datum.offsetPlane.delete",
+                "datum.anglePlane.create", "datum.anglePlane.update", "datum.anglePlane.delete",
+                "datum.threePointPlane.create", "datum.threePointPlane.update",
+                "datum.threePointPlane.delete",
                 "sketch.setSupport", "sketch.clearSupport"].contains(action) {
                 func requireString(_ key: String) throws {
                     guard let value = payload[key] as? String,
@@ -1771,28 +2190,106 @@ public struct CadDocumentTool: AgentTool {
                         throw FloeError.validationFailed("parameters \(action) requires \(key).")
                     }
                 }
-                if action == "datum.offsetPlane.update" || action == "datum.offsetPlane.delete" {
+                func requirePoint(_ value: Any?, label: String) throws {
+                    guard let point = value as? [String: Any],
+                          let sketch = point["sketch_id"] as? String,
+                          UUID(uuidString: sketch) != nil,
+                          let entity = point["entity_id"] as? String,
+                          UUID(uuidString: entity) != nil,
+                          let role = point["role"] as? String,
+                          ["endpointA", "endpointB", "center"].contains(role) else {
+                        throw FloeError.validationFailed(
+                            "parameters \(action) \(label) needs sketch_id, entity_id and role endpointA|endpointB|center.")
+                    }
+                }
+                func requirePoints(_ value: Any?, label: String) throws {
+                    guard let points = value as? [Any], points.count == 3 else {
+                        throw FloeError.validationFailed(
+                            "parameters \(action) \(label) must contain exactly three point references.")
+                    }
+                    for (index, point) in points.enumerated() {
+                        try requirePoint(point, label: "\(label)[\(index)]")
+                    }
+                }
+                let isOffset = action.hasPrefix("datum.offsetPlane.")
+                let isAngle = action.hasPrefix("datum.anglePlane.")
+                let isThreePoint = action.hasPrefix("datum.threePointPlane.")
+                if action.hasSuffix(".update") || action.hasSuffix(".delete") {
                     try requireString("plane_id")
                 }
                 if action == "sketch.setSupport" || action == "sketch.clearSupport" {
                     try requireString("sketch_id")
                 }
                 if action == "sketch.setSupport" { try requireString("plane_id") }
-                let hasSource = ["body_id", "face_index", "query_token"].contains { payload[$0] != nil }
-                if action == "datum.offsetPlane.create" || (action == "datum.offsetPlane.update" && hasSource) {
-                    try requireString("body_id")
-                    try requireString("query_token")
-                    guard let index = Self.intValue(payload["face_index"]), index > 0,
-                          Self.doubleValue(payload["face_index"]) == Double(index) else {
-                        throw FloeError.validationFailed("parameters \(action) requires a positive integer face_index from query kind=faces.")
+                if isOffset || isAngle {
+                    let hasSource = ["body_id", "face_index", "query_token"].contains { payload[$0] != nil }
+                    if action.hasSuffix(".create") || (action.hasSuffix(".update") && hasSource) {
+                        try requireString("body_id")
+                        try requireString("query_token")
+                        guard let index = Self.intValue(payload["face_index"]), index > 0,
+                              Self.doubleValue(payload["face_index"]) == Double(index) else {
+                            throw FloeError.validationFailed(
+                                "parameters \(action) requires a positive integer face_index from query kind=faces.")
+                        }
+                    }
+                    if action.hasSuffix(".create") || payload["expression"] != nil {
+                        try requireString("expression")
+                    }
+                    let changesHinge = isAngle && (payload["hinge_x"] != nil || payload["hinge_y"] != nil)
+                    if action.hasSuffix(".update"), !hasSource,
+                       payload["expression"] == nil, payload["size"] == nil, !changesHinge {
+                        throw FloeError.validationFailed(
+                            "parameters \(action) requires expression, size, hinge or a complete source face.")
                     }
                 }
-                if action == "datum.offsetPlane.create" || payload["expression"] != nil {
-                    try requireString("expression")
+                if isAngle {
+                    let hasX = payload["hinge_x"] != nil
+                    let hasY = payload["hinge_y"] != nil
+                    guard hasX == hasY else {
+                        throw FloeError.validationFailed(
+                            "parameters \(action) hinge_x and hinge_y must be sent together.")
+                    }
+                    if hasX {
+                        guard let x = Self.doubleValue(payload["hinge_x"]), x.isFinite,
+                              let y = Self.doubleValue(payload["hinge_y"]), y.isFinite,
+                              x * x + y * y > 1e-18 else {
+                            throw FloeError.validationFailed(
+                                "parameters \(action) hinge_x/hinge_y must be a finite non-zero in-plane direction.")
+                        }
+                    }
                 }
-                if action == "datum.offsetPlane.update",
-                   !hasSource && payload["expression"] == nil && payload["size"] == nil {
-                    throw FloeError.validationFailed("parameters datum.offsetPlane.update requires expression, size or a complete source face.")
+                if isThreePoint {
+                    if action.hasSuffix(".create") {
+                        try requirePoints(payload["points"], label: "points")
+                    }
+                    if action.hasSuffix(".update") {
+                        let hasPoints = payload["points"] != nil
+                        let hasPoint = payload["point_index"] != nil || payload["point"] != nil
+                        guard !(hasPoints && hasPoint) else {
+                            throw FloeError.validationFailed(
+                                "parameters \(action) accepts points or point_index + point, not both.")
+                        }
+                        if hasPoints { try requirePoints(payload["points"], label: "points") }
+                        if hasPoint {
+                            guard payload["point"] != nil else {
+                                throw FloeError.validationFailed(
+                                    "parameters \(action) point_index also requires point.")
+                            }
+                            guard let index = Self.intValue(payload["point_index"]), (0..<3).contains(index),
+                                  Self.doubleValue(payload["point_index"]) == Double(index) else {
+                                throw FloeError.validationFailed(
+                                    "parameters \(action) point_index must be 0, 1 or 2.")
+                            }
+                            try requirePoint(payload["point"], label: "point")
+                        }
+                        guard hasPoints || hasPoint || payload["size"] != nil else {
+                            throw FloeError.validationFailed(
+                                "parameters \(action) requires points, point_index + point, or size.")
+                        }
+                    }
+                    if let expected = payload["expected_points"] {
+                        try requirePoints(expected, label: "expected_points")
+                    }
                 }
                 if let size = payload["size"] {
                     guard let value = Self.doubleValue(size), value.isFinite, value > 0 else {
@@ -2439,6 +2936,22 @@ public struct CadDocumentTool: AgentTool {
     }
 
     public func execute(_ args: CadDocumentArguments, context: ToolContext) async throws -> ToolExecutionOutput {
+        // Built-in documentation is served by the SAME capabilities action
+        // before any document/host access. A caller never needs a file target
+        // just to read the authored tool contract, and this path grants no
+        // tool, file, environment or approval authority.
+        if args.action == .capabilities,
+           let helpRequest = try CadDocumentHelp.requestIfPresent(from: args.payload) {
+            if let raw = args.kind?.trimmingCharacters(in: .whitespacesAndNewlines),
+               !raw.isEmpty {
+                throw FloeError.validationFailed(
+                    "capabilities documentation and kind are separate selectors; send exactly one.")
+            }
+            return completeOutput(
+                "cad.document help: " + (try CadDocumentHelp.responseJSON(for: helpRequest)),
+                24_000
+            )
+        }
         let access = Self.access(for: context)
         try Self.authorizeDocumentPath(args.path, context: context)
         // `import`'s source_path is scoped by the host's workspace resolver

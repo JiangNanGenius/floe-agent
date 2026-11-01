@@ -1408,11 +1408,9 @@ final class DocumentSession {
             }
         }
         for index in document.planes.indices {
-            guard case var .offset(definition)? = document.planes[index].definition,
-                  let formula = definition.distance.formula,
-                  let value = ExpressionEvaluator.evaluate(formula, variables: values), value.isFinite else { continue }
-            definition.distance.value = value
-            document.planes[index].definition = .offset(definition)
+            guard let definition = document.planes[index].definition,
+                  let updated = definition.reevaluated(with: values) else { continue }
+            document.planes[index].definition = updated
         }
     }
 
@@ -1498,15 +1496,11 @@ final class DocumentSession {
         var planes = document.planes
         var planeCommands: [DocumentCommand] = []
         for index in planes.indices {
-            guard case var .offset(definition)? = planes[index].definition,
-                  let formula = definition.distance.formula,
-                  let value = ExpressionEvaluator.evaluate(formula, variables: values), value.isFinite,
-                  value != definition.distance.value else { continue }
+            guard let after = planes[index].definition?.reevaluated(with: values) else { continue }
             let before = planes[index].definition
-            definition.distance.value = value
-            planes[index].definition = .offset(definition)
+            planes[index].definition = after
             planeCommands.append(EditConstructionPlaneDefinitionCommand(
-                planeID: planes[index].id, before: before, after: planes[index].definition))
+                planeID: planes[index].id, before: before, after: after))
         }
         return VariableFanOutPlan(graph: graph, featureCommands: featureCommands,
                                   sketchCommands: sketchCommands, sketches: sketches,

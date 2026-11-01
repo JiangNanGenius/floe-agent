@@ -1897,10 +1897,10 @@ struct CadNativeEditToolTests {
         // The schema and capability text advertise the same executable names
         // and the unit/fence contract; a typo or missing typed field is refused
         // before the host.
-        let schema = CadDocumentTool.parametersJSON
+        let payloadHelp = try #require(CadDocumentHelp.fullText(for: "payloads"))
         for token in ["variable.create", "variable.update", "variable.delete",
                       "feature.setExpression", "radians(", "expected_expression"] {
-            #expect(schema.contains(token), "schema must advertise \(token)")
+            #expect(payloadHelp.contains(token), "payloads help must advertise \(token)")
         }
         let invalid: [String] = [
             #"{"action":"parameters","path":"part.floecad","payload":"{\"action\":\"variable.create\",\"name\":\"x\"}"}"#,
@@ -1960,10 +1960,10 @@ struct CadNativeEditToolTests {
             #expect(throws: FloeError.self) { try tool.validate(args) }
         }
 
-        let schema = CadDocumentTool.parametersJSON
+        let payloadHelp = try #require(CadDocumentHelp.fullText(for: "payloads"))
         for token in ["value|expression", "ambiguous_value",
                       "formula_reference_names", "expected_expression"] {
-            #expect(schema.contains(token), "schema must advertise \(token)")
+            #expect(payloadHelp.contains(token), "payloads help must advertise \(token)")
         }
     }
 
@@ -1975,6 +1975,12 @@ struct CadNativeEditToolTests {
         let plane = UUID().uuidString
         let sketch = UUID().uuidString
         let body = UUID().uuidString
+        let entity = UUID().uuidString
+        let entity2 = UUID().uuidString
+        let entity3 = UUID().uuidString
+        let point: (String, String, String) -> [String: Any] = { sketch, entity, role in
+            ["sketch_id": sketch, "entity_id": entity, "role": role]
+        }
         func request(_ payload: [String: Any]) throws -> String {
             let encoded = String(decoding: try JSONSerialization.data(withJSONObject: payload), as: UTF8.self)
             return String(decoding: try JSONSerialization.data(withJSONObject: [
@@ -1988,6 +1994,26 @@ struct CadNativeEditToolTests {
             ["action": "datum.offsetPlane.update", "plane_id": plane, "body_id": body,
              "face_index": 2, "query_token": "new-face-proof"],
             ["action": "datum.offsetPlane.delete", "plane_id": plane],
+            ["action": "datum.anglePlane.create", "body_id": body, "face_index": 1,
+             "query_token": "fresh-face-proof", "expression": "30",
+             "hinge_x": 1, "hinge_y": 0],
+            ["action": "datum.anglePlane.update", "plane_id": plane, "expression": "-45",
+             "expected_expression": "30"],
+            ["action": "datum.anglePlane.update", "plane_id": plane, "hinge_x": 0, "hinge_y": 1],
+            ["action": "datum.anglePlane.update", "plane_id": plane, "body_id": body,
+             "face_index": 2, "query_token": "new-face-proof"],
+            ["action": "datum.anglePlane.delete", "plane_id": plane],
+            ["action": "datum.threePointPlane.create",
+             "points": [point(sketch, entity, "endpointA"),
+                        point(sketch, entity2, "endpointB"),
+                        point(sketch, entity3, "center")]],
+            ["action": "datum.threePointPlane.update", "plane_id": plane,
+             "points": [point(sketch, entity, "endpointB"),
+                        point(sketch, entity2, "endpointA"),
+                        point(sketch, entity3, "center")]],
+            ["action": "datum.threePointPlane.update", "plane_id": plane,
+             "point_index": 2, "point": point(sketch, entity3, "center")],
+            ["action": "datum.threePointPlane.delete", "plane_id": plane],
             ["action": "sketch.setSupport", "sketch_id": sketch, "plane_id": plane],
             ["action": "sketch.clearSupport", "sketch_id": sketch],
         ]
@@ -2012,6 +2038,29 @@ struct CadNativeEditToolTests {
             ["action": "datum.offsetPlane.update", "plane_id": plane, "size": -1],
             ["action": "datum.offsetPlane.update", "plane_id": plane, "expression": "2", "expected_expression": 4],
             ["action": "datum.offsetPlane.delete"],
+            ["action": "datum.anglePlane.create", "body_id": body, "face_index": 1,
+             "query_token": "proof", "expression": "30", "hinge_x": 1],
+            ["action": "datum.anglePlane.create", "body_id": body, "face_index": 1,
+             "query_token": "proof", "expression": "30", "hinge_x": 0, "hinge_y": 0],
+            ["action": "datum.anglePlane.update", "plane_id": plane],
+            ["action": "datum.anglePlane.delete"],
+            ["action": "datum.threePointPlane.create",
+             "points": [point(sketch, entity, "endpointA"), point(sketch, entity2, "center")]],
+            ["action": "datum.threePointPlane.create",
+             "points": [point(sketch, entity, "whole"),
+                        point(sketch, entity2, "center"),
+                        point(sketch, entity3, "center")]],
+            ["action": "datum.threePointPlane.update", "plane_id": plane,
+             "points": [point(sketch, entity, "endpointA"),
+                        point(sketch, entity2, "center"),
+                        point(sketch, entity3, "center")],
+             "point_index": 0, "point": point(sketch, entity3, "center")],
+            ["action": "datum.threePointPlane.update", "plane_id": plane, "point_index": 1],
+            ["action": "datum.threePointPlane.update", "plane_id": plane,
+             "point_index": 3, "point": point(sketch, entity, "endpointA")],
+            ["action": "datum.threePointPlane.update", "plane_id": plane,
+             "expected_points": [point(sketch, entity, "endpointA")]],
+            ["action": "datum.threePointPlane.delete"],
             ["action": "sketch.setSupport", "sketch_id": sketch],
             ["action": "sketch.clearSupport"],
         ]
@@ -2020,9 +2069,13 @@ struct CadNativeEditToolTests {
             #expect(throws: FloeError.self) { try tool.validate(args) }
         }
         #expect(CadDocumentTool.nativeQueryScopes.contains("planes"))
+        let payloadHelp = try #require(CadDocumentHelp.fullText(for: "payloads"))
         for token in ["datum.offsetPlane.create", "datum.offsetPlane.update", "datum.offsetPlane.delete",
+                      "datum.anglePlane.create", "datum.anglePlane.update", "datum.anglePlane.delete",
+                      "datum.threePointPlane.create", "datum.threePointPlane.update",
+                      "datum.threePointPlane.delete",
                       "sketch.setSupport", "sketch.clearSupport", "query_token", "face_index"] {
-            #expect(CadDocumentTool.parametersJSON.contains(token))
+            #expect(payloadHelp.contains(token), "payloads help must advertise \(token)")
         }
     }
 
@@ -2282,12 +2335,12 @@ struct CadNativeEditToolTests {
 
     @Test("schema advertises the complete animation vocabulary")
     func animationSchema() throws {
-        let schema = CadDocumentTool.parametersJSON
-        #expect(schema.contains(#""animation""#))
+        #expect(CadDocumentTool.parametersJSON.contains(#""animation""#))
+        let payloadHelp = try #require(CadDocumentHelp.fullText(for: "payloads"))
         for action in CadNativeEditActions.animation {
-            #expect(schema.contains(action), "animation action \(action) must be advertised")
+            #expect(payloadHelp.contains(action), "animation action \(action) must be advertised")
         }
-        #expect(schema.contains("verified MP4"))
+        #expect(payloadHelp.contains("verified MP4"))
     }
 }
 

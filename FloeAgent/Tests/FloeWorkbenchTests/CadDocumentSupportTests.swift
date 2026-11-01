@@ -597,19 +597,23 @@ struct CadServiceOperationCatalogTests {
                 as? [String: Any])
         let properties = try #require(schema["properties"] as? [String: Any])
         let opDescription = try #require((properties["op"] as? [String: Any])?["description"] as? String)
-        #expect(opDescription.contains("sketch.addText"))
-        // X33: the schema is derived from the same executable vocabulary and
-        // marks the retained guaranteed refusals as unavailable, rather than
-        // listing them as runnable operations.
+        #expect(opDescription.contains("documentation topic native-operations"))
+        // The rich vocabulary moved to the built-in guide; the every-turn
+        // schema keeps the executable/unavailable distinction concise.
         #expect(!opDescription.contains("__NATIVE_"))
-        #expect(opDescription.contains(CadNativeOperationVocabulary.executable.joined(separator: ", ")))
+        let nativeOperationsHelp = try #require(
+            CadDocumentHelp.fullText(for: "native-operations"))
+        #expect(nativeOperationsHelp.contains("sketch.addText"))
+        #expect(nativeOperationsHelp.contains(
+            CadNativeOperationVocabulary.executable.joined(separator: ", ")))
         #expect(!CadNativeOperationVocabulary.executable.contains("feature.scaleFace"))
         #expect(!CadNativeOperationVocabulary.executable.contains("feature.rotateFace"))
-        #expect(opDescription.contains("feature.scaleFace, feature.rotateFace are NOT executable"))
-        #expect(opDescription.contains("exact_edit_unsupported"))
-        #expect(opDescription.contains("capabilities.unavailable_operations"))
-        #expect(opDescription.contains("cylinderRadial"))
-        #expect(opDescription.contains("normal-axis"))
+        #expect(nativeOperationsHelp.contains(
+            "feature.scaleFace, feature.rotateFace are NOT executable"))
+        #expect(nativeOperationsHelp.contains("exact_edit_unsupported"))
+        #expect(nativeOperationsHelp.contains("capabilities.unavailable_operations"))
+        #expect(nativeOperationsHelp.contains("cylinderRadial"))
+        #expect(nativeOperationsHelp.contains("normal-axis"))
         let argsDescription = try #require((properties["args"] as? [String: Any])?["description"] as? String)
         #expect(argsDescription.contains("sketch.addText"))
         #expect(argsDescription.contains("unsupported_font"))

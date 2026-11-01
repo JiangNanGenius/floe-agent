@@ -90,6 +90,8 @@ struct NumericInputBar: View {
                 revolveBar(context)
             case .offsetPlane:
                 offsetPlaneBar(context)
+            case .anglePlane:
+                anglePlaneBar(context)
             case .sweep:
                 sweepBar(context)
             case .loft:
@@ -803,10 +805,77 @@ struct NumericInputBar: View {
             Button(FloeCADStrings.label("cad.ui.common.cancel", "Cancel")) {
                 viewModel.cancelTool()
             }
+            Button(FloeCADStrings.label("cad.ui.tool.anglePlane", "Angle Plane")) {
+                viewModel.beginAnglePlane()
+            }
             Button(FloeCADStrings.label("cad.ui.extrude.addPlane", "Add Plane")) {
                 viewModel.commitTool()
             }
             .buttonStyle(.borderedProminent)
+        }
+    }
+
+    private func anglePlaneBar(_ context: EditorViewModel.ToolContext) -> some View {
+        var hinge = SIMD2<Double>(1, 0)
+        if case let .anglePlane(_, stored) = context.kind { hinge = stored }
+        let hingeSelection = hinge.x >= hinge.y ? 0 : 1
+        return AdaptiveBar {
+            Text(FloeCADStrings.label("cad.ui.tool.anglePlane", "Angle Plane"))
+                .font(.headline)
+                .fixedSize()
+            BarHint(FloeCADStrings.text("cad.datum.angleBarHint",
+                "Type an angle; the plane turns about the hinge"))
+
+            HStack(spacing: 6) {
+                Text(FloeCADStrings.label("cad.ui.common.angle", "Angle"))
+                    .font(.caption)
+                    .foregroundStyle(.barLabel)
+                    .fixedSize()
+                ExpressionValueField(
+                    placeholder: FloeCADStrings.text("cad.ui.common.angle", "Angle"),
+                    value: Binding(
+                        get: { viewModel.toolContext?.angle ?? 30 },
+                        set: { viewModel.setAnglePlaneAngle($0) }
+                    ),
+                    kind: .plain,
+                    clamp: nil,
+                    width: 90,
+                    identifier: "AnglePlaneAngleField",
+                    onSubmit: { viewModel.commitTool() }
+                )
+                Text("°").font(.caption).foregroundStyle(.barLabel)
+            }
+
+            HStack(spacing: 4) {
+                Text(FloeCADStrings.label("cad.datum.hinge", "Hinge"))
+                    .font(.caption)
+                    .foregroundStyle(.barLabel)
+                    .fixedSize()
+                Picker(FloeCADStrings.label("cad.datum.hinge", "Hinge"), selection: Binding(
+                    get: { hingeSelection },
+                    set: { viewModel.setAnglePlaneHinge($0 == 0 ? SIMD2(1, 0) : SIMD2(0, 1)) }
+                )) {
+                    Text("X").tag(0)
+                    Text("Y").tag(1)
+                }
+                .pickerStyle(.segmented)
+                .fixedSize()
+                .accessibilityIdentifier("AnglePlaneHingePicker")
+            }
+
+            Spacer()
+        } actions: {
+            Button(FloeCADStrings.label("cad.ui.common.cancel", "Cancel")) {
+                viewModel.cancelTool()
+            }
+            Button(FloeCADStrings.label("cad.ui.tool.offsetPlane", "Offset Plane")) {
+                viewModel.beginOffsetPlane()
+            }
+            Button(FloeCADStrings.label("cad.ui.extrude.addPlane", "Add Plane")) {
+                viewModel.commitTool()
+            }
+            .buttonStyle(.borderedProminent)
+            .accessibilityIdentifier("AnglePlaneCommit")
         }
     }
 

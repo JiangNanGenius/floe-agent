@@ -46,6 +46,11 @@ extension CommandRegistry {
         "model.extrude", "model.revolve", "model.sweep", "model.loft",
         "model.fillet", "model.chamfer", "model.shell", "model.project",
 
+        // Associative construction planes (M07). These route to the same
+        // native face picker / three-point sheet / datum service as the
+        // palette and Items panel; no separate geometry path exists.
+        "plane.offset", "plane.angle", "plane.threePoints",
+
         // Booleans.
         "bool.union", "bool.subtract", "bool.intersect",
 
@@ -150,6 +155,21 @@ extension EditorViewModel {
         case "sketch.trim":         return armSketchTool(.trim)
         case "sketch.offset":       return armSketchTool(.offset)
         case "model.project":       return armSketchTool(.project)
+
+        // MARK: Associative construction planes (M07)
+        case "plane.offset":
+            // The face pull is the existing datum picker; the command only
+            // arms the same tool when a supported named planar face is
+            // selected.
+            guard !session.isReadOnly, session.writeBlock == nil else { return false }
+            return beginOffsetPlane()
+        case "plane.angle":
+            guard !session.isReadOnly, session.writeBlock == nil else { return false }
+            return beginAnglePlane()
+        case "plane.threePoints":
+            guard !session.isReadOnly, session.writeBlock == nil else { return false }
+            showThreePointPlaneSheet = true
+            return true
 
         case "sketch.construction":
             guard mode.isSketching, !selectedSketchEntityIDs.isEmpty else { return false }

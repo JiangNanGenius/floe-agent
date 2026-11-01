@@ -577,11 +577,14 @@ struct LocalModelsSettingsView: View {
                         }
                     ))
                     .accessibilityIdentifier("localModel.hideFromPrimaryPicker.appleFoundation")
-                    if case .available(let context, let vision, let tools, let reasoning) =
+                    if case .available(let context, _, let tools, let reasoning) =
                         center.appleFoundationAvailability {
                         HStack(spacing: 12) {
                             Label(Self.contextLabel(context), systemImage: "circle.dotted")
-                            if vision { Label("localmodels.vision", systemImage: "eye") }
+                            // The system model may report native vision, but Floe never sends
+                            // an image to Foundation Models: attachments are summarized by the
+                            // configured auxiliary image-assist model / system OCR first. Do not
+                            // advertise a direct image capability the product does not use.
                             if tools { Label("localmodels.tools", systemImage: "wrench.and.screwdriver") }
                             if reasoning { Label("localmodels.reasoning", systemImage: "brain") }
                         }

@@ -263,7 +263,7 @@ struct LocalReplayedToolEvidenceTests {
 
 @Suite("Local authorized history tool admission")
 struct LocalHistoryAdmissionTests {
-    @Test("MLX receives the authorized conversation and shell tools; Apple keeps its native channel")
+    @Test("Every local provider receives the authorized conversation and shell tools")
     @available(macOS 15.4, *)
     func conversationToolsFollowRuntimeAuthority() {
         let names: Set<String> = ["conversation.search", "conversation.read", "conversation.list", "workspace.readFile", "ssh.execute"]
@@ -273,13 +273,12 @@ struct LocalHistoryAdmissionTests {
         // by a second curated local fence.
         #expect(mlx == names)
         let apple = LocalProviderAdapter.admissibleToolNames(from: names, modelRemoteID: AppleFoundationModelIdentity.remoteModelID)
-        // The real Apple native-channel restriction still applies: no
-        // non-Apple name is offered to Foundation Models.
-        #expect(apple.isEmpty)
-        #expect(apple.isDisjoint(with: names))
+        // Foundation Models receive exactly the caller/task-authorized set;
+        // the provider bridge and ordinary runtime still enforce execution.
+        #expect(apple == names)
     }
 
-    @Test("Notes and mail tools reach MLX; the Apple native channel stays Apple-only")
+    @Test("Notes and mail tools reach every local provider, including Foundation")
     @available(macOS 15.4, *)
     func notesToolsFollowRuntimeAuthority() throws {
         let names: Set<String> = [
@@ -291,7 +290,7 @@ struct LocalHistoryAdmissionTests {
         // than hidden by the adapter.
         #expect(mlx == names)
         let apple = LocalProviderAdapter.admissibleToolNames(from: names, modelRemoteID: AppleFoundationModelIdentity.remoteModelID)
-        #expect(apple.isEmpty)
+        #expect(apple == names)
         // Not supplied means not callable: the parser still enforces the real
         // offered set rather than accepting any canonical name.
         let unauthorized = try LocalProviderAdapter.toolCall(
@@ -795,10 +794,10 @@ struct LocalCompleteContractSizingTests {
                 cad
             ]
         ))
-        #expect(apple.selectedTools.map(\.name) == ["apple.location.current"])
+        #expect(apple.selectedTools.contains { $0.name == "apple.location.current" })
         #expect(apple.nativeToolSchemas.isEmpty)
-        #expect(apple.fallbackTools.map(\.name).sorted()
-            == ["apple.automation.list", "apple.location.current"])
+        #expect(Set(apple.fallbackTools.map(\.name))
+            == ["apple.automation.list", "apple.location.current", CadDocumentTool.name])
         #expect(apple.requiresToolCall)
     }
 

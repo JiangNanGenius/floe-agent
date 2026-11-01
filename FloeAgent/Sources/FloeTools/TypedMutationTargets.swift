@@ -306,6 +306,9 @@ public enum TypedMutationContract {
                            "variable.create", "variable.update", "variable.delete",
                            "feature.setExpression",
                            "datum.offsetPlane.create", "datum.offsetPlane.update", "datum.offsetPlane.delete",
+                           "datum.anglePlane.create", "datum.anglePlane.update", "datum.anglePlane.delete",
+                           "datum.threePointPlane.create", "datum.threePointPlane.update",
+                           "datum.threePointPlane.delete",
                            "sketch.setSupport", "sketch.clearSupport", "undo", "redo"].contains(operation) else { return [] }
                 } else if operation == "libraryExport", payload["global"] as? Bool == true {
                     // Keep the CAD document's canonical first key, and also

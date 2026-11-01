@@ -415,7 +415,7 @@ nonisolated enum CADDocumentFormat {
         let encoder = JSONEncoder()
         for plane in document.planes {
             guard let definition = plane.definition else { continue }
-            guard definition.semanticVersion == OffsetPlaneDefinition.supportedVersion else {
+            guard definition.isSupportedSemanticVersion else {
                 throw CADDocumentFormatError.opaqueAssociations
             }
             _ = try encoder.encode(plane)

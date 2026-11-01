@@ -1400,7 +1400,7 @@ final class EditorViewModel {
                     origin: SIMD3(Float(tip.x), Float(tip.y), Float(tip.z)),
                     direction: SIMD3(Float(n.x), Float(n.y), Float(n.z))
                 )
-            case .sweep, .loft:
+            case .anglePlane, .sweep, .loft:
                 break // no drag-editable parameter → no arrow
             }
         }
@@ -2167,15 +2167,26 @@ final class EditorViewModel {
                 color: SIMD4(0.0, 0.52, 1.0, 0.95)))
         }
 
-        // Pending offset plane: accent quad tracking the pull.
-        if let context = toolContext, case .offsetPlane(let distance) = context.kind {
-            let pending = offsetPlanePreview(context, distance: distance)
-            appendPlaneQuad(
-                pending.plane, size: pending.size,
-                fill: SIMD4(0.0, 0.52, 1.0, 0.20),
-                border: SIMD4(0.0, 0.52, 1.0, 0.9),
-                into: &scene
-            )
+        // Pending associative construction plane: accent quad tracking the
+        // pull (offset) or the explicit hinge rotation (angle).
+        if let context = toolContext {
+            let pending: (plane: SketchPlane, size: Double)?
+            switch context.kind {
+            case .offsetPlane(let distance):
+                pending = offsetPlanePreview(context, distance: distance)
+            case let .anglePlane(angle, hinge):
+                pending = anglePlanePreview(context, angle: angle, hinge: hinge)
+            default:
+                pending = nil
+            }
+            if let pending {
+                appendPlaneQuad(
+                    pending.plane, size: pending.size,
+                    fill: SIMD4(0.0, 0.52, 1.0, 0.20),
+                    border: SIMD4(0.0, 0.52, 1.0, 0.9),
+                    into: &scene
+                )
+            }
         }
 
         // Inserted reference images (plan §B10): textured quads, plus an
@@ -8416,6 +8427,9 @@ final class EditorViewModel {
             case revolve(axis: RevolveAxis, angle: Double)
             /// Offset construction plane pulled off a face along its normal.
             case offsetPlane(distance: Double)
+            /// Angle construction plane rotated about an explicit local hinge
+            /// axis of the selected face. Angle is public degrees.
+            case anglePlane(angle: Double, hinge: SIMD2<Double>)
             /// Sweep the profile along a world-space polyline spine (plan §B1).
             case sweep(spine: [SIMD3<Double>])
             /// Loft through `loftProfiles` in selection order (plan §B2).
@@ -8472,14 +8486,16 @@ final class EditorViewModel {
             switch kind {
             case .extrude(let distance), .offsetPlane(let distance):
                 return distance
-            case .revolve, .sweep, .loft:
+            case .revolve, .anglePlane, .sweep, .loft:
                 return nil
             }
         }
 
         var angle: Double? {
-            if case .revolve(_, let angle) = kind { return angle }
-            return nil
+            switch kind {
+            case let .revolve(_, angle), let .anglePlane(angle, _): return angle
+            default: return nil
+            }
         }
     }
 
@@ -8906,15 +8922,18 @@ final class EditorViewModel {
     }
 
     private func rebuildToolPreview(_ context: inout ToolContext) {
-        if case .offsetPlane = context.kind {
+        switch context.kind {
+        case .offsetPlane, .anglePlane:
             // The pending plane renders as a quad, not a preview body.
             context.preview = nil
             context.isPendingValid = true
             return
+        default:
+            break
         }
         let mesh: Euclid.Mesh
         switch context.kind {
-        case .offsetPlane:
+        case .offsetPlane, .anglePlane:
             return // handled above
         case .extrude(let distance):
             // Face push/pull: preview the whole modified body so the viewport
@@ -9240,6 +9259,8 @@ final class EditorViewModel {
             commitRevolve(context, angle: angle)
         case .offsetPlane(let distance):
             commitOffsetPlane(context, distance: distance)
+        case .anglePlane(let angle, let hinge):
+            commitAnglePlane(context, angle: angle, hinge: hinge)
         case .sweep(let spine):
             commitSweep(context, spine: spine)
         case .loft:
@@ -9251,21 +9272,55 @@ final class EditorViewModel {
 
     /// "Offset Plane" on a selected face: switch the pull to dragging a copy
     /// of the face plane along its normal.
-    func beginOffsetPlane() {
-        guard case .faceSelected = mode, var context = toolContext else { return }
+    @discardableResult
+    func beginOffsetPlane() -> Bool {
+        guard case .faceSelected = mode, var context = toolContext else { return false }
         guard context.datumSource != nil else {
             errorMessage = FloeCADStrings.text("cad.datum.reselectSource",
                 "Select a supported planar face again to create a reference plane.")
-            return
+            return false
         }
         context.kind = .offsetPlane(distance: 2)
         context.preview = nil
         toolContext = context
+        return true
     }
 
     func setOffsetPlaneDistance(_ distance: Double) {
         guard var context = toolContext, case .offsetPlane = context.kind else { return }
         context.kind = .offsetPlane(distance: distance)
+        toolContext = context
+    }
+
+    /// "Angle Plane" on a selected face: rotate the face plane about an
+    /// explicit in-plane hinge. The hinge defaults to the frozen frame x axis;
+    /// the field/picker can change it before commit.
+    @discardableResult
+    func beginAnglePlane() -> Bool {
+        guard case .faceSelected = mode, var context = toolContext else { return false }
+        guard context.datumSource != nil else {
+            errorMessage = FloeCADStrings.text("cad.datum.reselectSource",
+                "Select a supported planar face again to create a reference plane.")
+            return false
+        }
+        context.kind = .anglePlane(angle: 30, hinge: SIMD2(1, 0))
+        context.preview = nil
+        toolContext = context
+        return true
+    }
+
+    func setAnglePlaneAngle(_ angle: Double) {
+        guard angle.isFinite, var context = toolContext,
+              case let .anglePlane(_, hinge) = context.kind else { return }
+        context.kind = .anglePlane(angle: angle, hinge: hinge)
+        toolContext = context
+    }
+
+    func setAnglePlaneHinge(_ hinge: SIMD2<Double>) {
+        guard hinge.x.isFinite, hinge.y.isFinite, simd_length(hinge) > 1e-9,
+              var context = toolContext,
+              case let .anglePlane(angle, _) = context.kind else { return }
+        context.kind = .anglePlane(angle: angle, hinge: simd_normalize(hinge))
         toolContext = context
     }
 
@@ -9302,6 +9357,44 @@ final class EditorViewModel {
         guard performDatumAction("datum.offsetPlane.create", args: [
             "body_id": source.bodyID.raw.uuidString, "face_index": source.faceIndex,
             "query_token": source.queryToken, "expression": String(distance), "size": pending.size
+        ]) != nil else { return }
+        toolContext = nil
+        selection.removeAll()
+        mode = .idle
+        session.save()
+    }
+
+    /// The pending angle plane: the selected face frame rotated about the
+    /// explicit local hinge by the public degree value. Same math and order as
+    /// `PlaneAttachmentFrame.resolvedRotatedPlane`, so the preview and the
+    /// committed datum agree without a second geometry path.
+    private func anglePlanePreview(
+        _ context: ToolContext, angle: Double, hinge: SIMD2<Double>
+    ) -> (plane: SketchPlane, size: Double) {
+        var radius = 1.0
+        let centroid = context.profile.centroid
+        for p in context.profile.loop {
+            radius = max(radius, simd_length(p - centroid))
+        }
+        guard let source = context.datumSource else {
+            return (context.plane, radius * 2.5)
+        }
+        let base = source.basePlane
+        let localHinge = simd_normalize(base.xAxis * hinge.x + base.yAxis * hinge.y)
+        let q = simd_quatd(angle: angle * .pi / 180, axis: localHinge)
+        let normal = simd_normalize(q.act(base.normal))
+        let xAxis = simd_normalize(q.act(base.xAxis))
+        let yAxis = simd_cross(normal, xAxis)
+        return (SketchPlane(origin: base.origin, xAxis: xAxis, yAxis: yAxis), radius * 2.5)
+    }
+
+    private func commitAnglePlane(_ context: ToolContext, angle: Double, hinge: SIMD2<Double>) {
+        guard angle.isFinite, let source = context.datumSource else { return }
+        let pending = anglePlanePreview(context, angle: angle, hinge: hinge)
+        guard performDatumAction("datum.anglePlane.create", args: [
+            "body_id": source.bodyID.raw.uuidString, "face_index": source.faceIndex,
+            "query_token": source.queryToken, "expression": String(angle),
+            "hinge_x": hinge.x, "hinge_y": hinge.y, "size": pending.size
         ]) != nil else { return }
         toolContext = nil
         selection.removeAll()
@@ -10267,8 +10360,8 @@ final class EditorViewModel {
         case .revolve(_, let angle):
             extrudeDragAnchor = nil // angle drags are always screen-space
             toolDragStartValue = angle
-        case .sweep, .loft:
-            return false // no drag-editable parameter
+        case .anglePlane, .sweep, .loft:
+            return false // typed/angle-picker values only; no drag parameter
         }
         return true
     }
@@ -10307,7 +10400,7 @@ final class EditorViewModel {
             // Snap to 15° stops (90, 180, …) with a small capture window.
             let snapped = (raw / 15).rounded() * 15
             setRevolveAngle(abs(raw - snapped) < 4 ? snapped : raw)
-        case .sweep, .loft:
+        case .anglePlane, .sweep, .loft:
             break // no drag-editable parameter
         }
     }
@@ -17443,8 +17536,16 @@ final class EditorViewModel {
             }
         case .plane(let id):
             guard let command = DeletePlaneCommand(id: id, document: session.document) else { return }
-            if session.document.planes.first(where: { $0.id == id })?.definition != nil {
-                guard performDatumAction("datum.offsetPlane.delete", args: ["plane_id": id.raw.uuidString]) != nil else { return }
+            if let definition = session.document.planes.first(where: { $0.id == id })?.definition {
+                // The service action is kind-specific; the Items delete must
+                // use the same action family the query advertises.
+                let action: String
+                switch definition.kind {
+                case .offset: action = "datum.offsetPlane.delete"
+                case .angle: action = "datum.anglePlane.delete"
+                case .threePoints: action = "datum.threePointPlane.delete"
+                }
+                guard performDatumAction(action, args: ["plane_id": id.raw.uuidString]) != nil else { return }
             } else if session.document.sketches.contains(where: { $0.support != nil }) {
                 let generation = session.changeCount
                 guard session.performAssociativeTransaction([command], title: command.title) else {
@@ -17810,7 +17911,7 @@ final class EditorViewModel {
         case .loft:
             return loftFeatureNode(
                 context: context, boolean: boolean, outputBodyIDs: outputBodyIDs)
-        case .offsetPlane:
+        case .offsetPlane, .anglePlane:
             return nil
         }
     }
@@ -18203,6 +18304,119 @@ final class EditorViewModel {
         ], allowNoChange: true) else { return false }
         if reply["mutated"] as? Bool == true { session.save() }
         return true
+    }
+
+    /// Three-point creation sheet. The sheet owns only the draft selection;
+    /// the datum service and the document transaction remain the authority.
+    var showThreePointPlaneSheet = false
+
+    struct DatumAnchorCandidate: Identifiable {
+        var sketchID: SketchID
+        var entityID: UUID
+        var role: PointRole
+        var sketchName: String
+        var entityKind: String
+        var point: SIMD2<Double>
+
+        var id: String {
+            "\(sketchID.raw.uuidString):\(entityID.uuidString):\(role.rawValue)"
+        }
+        var ref: SketchAnchorRef {
+            SketchAnchorRef(sketchID: sketchID, entityID: entityID, role: role)
+        }
+        var roleLabel: String {
+            switch role {
+            case .endpointA:
+                return FloeCADStrings.text("cad.datum.role.endpointA", "Start point")
+            case .endpointB:
+                return FloeCADStrings.text("cad.datum.role.endpointB", "End point")
+            case .center:
+                return FloeCADStrings.text("cad.datum.role.center", "Centre")
+            case .whole:
+                return FloeCADStrings.text("cad.datum.role.whole", "Whole entity")
+            case .radiusOnly:
+                return role.rawValue
+            }
+        }
+        var label: String { "\(sketchName) · \(entityKind) · \(roleLabel)" }
+    }
+
+    /// Every persisted semantic point a three-point datum can reference,
+    /// derived from the same entity/role identities the solver uses. No
+    /// world-coordinate snapshot is offered or stored.
+    var threePointAnchorCandidates: [DatumAnchorCandidate] {
+        session.document.sketches.flatMap { sketch in
+            sketch.entities.flatMap { entity -> [DatumAnchorCandidate] in
+                entity.anchorRoles.compactMap { role in
+                    guard let point = entity.anchorPoint(for: role) else { return nil }
+                    return DatumAnchorCandidate(
+                        sketchID: sketch.id, entityID: entity.id, role: role,
+                        sketchName: sketch.name,
+                        entityKind: Self.datumEntityKind(entity), point: point)
+                }
+            }
+        }
+    }
+
+    private static func datumEntityKind(_ entity: SketchEntity) -> String {
+        switch entity {
+        case .line: return FloeCADStrings.text("cad.datum.entity.line", "Line")
+        case .rect: return FloeCADStrings.text("cad.datum.entity.rect", "Rectangle")
+        case .circle: return FloeCADStrings.text("cad.datum.entity.circle", "Circle")
+        case .arc: return FloeCADStrings.text("cad.datum.entity.arc", "Arc")
+        case .ellipse: return FloeCADStrings.text("cad.datum.entity.ellipse", "Ellipse")
+        case .polygon: return FloeCADStrings.text("cad.datum.entity.polygon", "Polygon")
+        case .spline: return FloeCADStrings.text("cad.datum.entity.spline", "Spline")
+        }
+    }
+
+    /// The face currently held by the native datum picker, if any. Exposed to
+    /// the edit sheet so source reselection uses the SAME query token/name
+    /// proof that creation used.
+    var currentDatumFaceSelection: DatumFaceSelection? {
+        toolContext?.datumSource
+    }
+
+    @discardableResult
+    func createThreePointPlane(_ points: [SketchAnchorRef], size: Double? = nil) -> Bool {
+        guard points.count == 3 else { return false }
+        var args: [String: Any] = ["points": points.map { point in
+            ["sketch_id": point.sketchID.raw.uuidString,
+             "entity_id": point.entityID.uuidString,
+             "role": point.role.rawValue] as [String: Any]
+        }]
+        if let size { args["size"] = size }
+        guard let reply = performDatumAction("datum.threePointPlane.create", args: args) else { return false }
+        if reply["mutated"] as? Bool == true {
+            showThreePointPlaneSheet = false
+            session.save()
+            return true
+        }
+        return false
+    }
+
+    /// One ordinary datum-service edit from the Items sheet. The caller sends
+    /// the kind-specific action and arguments; plane_id is pinned here.
+    @discardableResult
+    func updateDatumPlane(_ id: ConstructionPlaneID, action: String,
+                          args: [String: Any]) -> Bool {
+        var full = args
+        full["plane_id"] = id.raw.uuidString
+        guard let reply = performDatumAction(action, args: full, allowNoChange: true) else { return false }
+        if reply["mutated"] as? Bool == true { session.save() }
+        return true
+    }
+
+    /// Reselect an offset/angle plane's source from the face currently held by
+    /// the native picker. Uses the complete fresh body/face/token triple.
+    @discardableResult
+    func reselectDatumSource(_ id: ConstructionPlaneID, action: String,
+                             selection: DatumFaceSelection) -> Bool {
+        return updateDatumPlane(id, action: action, args: [
+            "body_id": selection.bodyID.raw.uuidString,
+            "face_index": selection.faceIndex,
+            "query_token": selection.queryToken,
+        ])
     }
 
     @discardableResult

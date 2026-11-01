@@ -2662,6 +2662,12 @@ struct FloeCADEditorView: View {
                 HoleOptionsSheet(viewModel: viewModel, draft: draft)
             }
             .sheet(isPresented: Binding(
+                get: { viewModel.showThreePointPlaneSheet },
+                set: { viewModel.showThreePointPlaneSheet = $0 }
+            )) {
+                ThreePointPlaneSheet(viewModel: viewModel)
+            }
+            .sheet(isPresented: Binding(
                 get: { viewModel.showConstraintSettings },
                 set: { viewModel.showConstraintSettings = $0 }
             )) {

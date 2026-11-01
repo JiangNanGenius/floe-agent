@@ -701,6 +701,7 @@ targets:
       - path: Tests/FloeAppTests/TaskEnvironmentOwnershipTests.swift
       - path: Tests/FloeAppTests/TaskRemoteEnvironmentLiveTests.swift
       - path: Tests/FloeAppTests/NativeCADLiveLLMTests.swift
+      - path: Tests/FloeAppTests/LocalModelCanonicalCADAdmissionTests.swift
       - path: Tests/FloeAppTests/TaskWorkspaceMirrorTests.swift
       - path: Tests/FloePersistenceTests/TaskExecutionBindingStoreTests.swift
       - path: Tests/FloeExecutionTests/RemoteEnvironmentShellBackendTests.swift
@@ -1322,6 +1323,12 @@ targets:
       - path: ThirdParty/FloeCADKit/Tests/FloeCADKitTests/CADDatumEditorTests.swift
       - path: ThirdParty/FloeCADKit/Tests/FloeCADKitTests/CADAssociativeMergeTests.swift
       - path: ThirdParty/FloeCADKit/Tests/FloeCADKitTests/CADAssociativeSessionTests.swift
+      # M07 angle/three-point associative datum source + native UI tests.
+      # Explicit test-target membership; regenerate the Xcode project with
+      # scripts/gen_project.sh after applying this file.
+      - path: ThirdParty/FloeCADKit/Tests/FloeCADKitTests/CADAssociativeAngleThreePointValueTests.swift
+      - path: ThirdParty/FloeCADKit/Tests/FloeCADKitTests/CADAssociativePlaneKindsServiceTests.swift
+      - path: ThirdParty/FloeCADKit/Tests/FloeCADKitTests/CADDatumPlaneKindsEditorTests.swift
       - path: ThirdParty/FloeCADKit/Tests/FloeCADKitTests/CADHoleFeatureTests.swift
       - path: ThirdParty/FloeCADKit/Tests/FloeCADKitTests/CADThreadEngineProbeTests.swift
       - path: ThirdParty/FloeCADKit/Tests/FloeCADKitTests/CADPresentationUITests.swift

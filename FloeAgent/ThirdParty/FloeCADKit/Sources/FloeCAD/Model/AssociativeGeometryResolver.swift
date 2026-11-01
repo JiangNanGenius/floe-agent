@@ -28,6 +28,10 @@ nonisolated enum AssociativeReferenceError: Error, Codable, Equatable, Sendable 
     case exactNamedPlaneRequired(GeometryVersionRef)
     case missingNamedFace(GeometryVersionRef)
     case ambiguousFace(GeometryVersionRef)
+    case missingAnchorEntity(sketch: SketchID, entity: UUID)
+    case unsupportedAnchorRole(sketch: SketchID, entity: UUID, role: String)
+    case invalidHingeAxis(String)
+    case degenerateAnchorPoints(String)
     case invalidDefinition(String)
     case invalidFormula(String)
 
@@ -61,6 +65,7 @@ nonisolated struct ResolvedAssociativeSketch: Sendable {
 nonisolated struct AssociativeDependencyGraph: Sendable {
     private var edges: [AssociativeReferenceKey: Set<AssociativeReferenceKey>] = [:]
     private var versionsByPlane: [ConstructionPlaneID: GeometryVersionRef] = [:]
+    private var definitionPlaneIDs: Set<ConstructionPlaneID> = []
     private var featureIDs: Set<FeatureID> = []
     private var planeIDs: Set<ConstructionPlaneID> = []
     private var sketchIDs: Set<SketchID> = []
@@ -84,9 +89,23 @@ nonisolated struct AssociativeDependencyGraph: Sendable {
         }
         for plane in planes {
             planeIDs.insert(plane.id)
-            if case let .offset(definition)? = plane.definition {
+            switch plane.definition {
+            case nil:
+                break
+            case let .offset(definition)?:
+                definitionPlaneIDs.insert(plane.id)
                 versionsByPlane[plane.id] = definition.sourceVersion
                 edges[.plane(plane.id)] = [.feature(definition.sourceVersion.writer)]
+            case let .angle(definition)?:
+                definitionPlaneIDs.insert(plane.id)
+                versionsByPlane[plane.id] = definition.sourceVersion
+                edges[.plane(plane.id)] = [.feature(definition.sourceVersion.writer)]
+            case let .threePoints(definition)?:
+                definitionPlaneIDs.insert(plane.id)
+                // Every point sketch is a real support writer dependency:
+                // a sketch may itself be supported by another associative
+                // plane, so the walk continues through its own edges.
+                edges[.plane(plane.id)] = Set(definition.points.map { .sketch($0.sketchID) })
             }
         }
     }
@@ -139,7 +158,7 @@ nonisolated struct AssociativeDependencyGraph: Sendable {
                                  uniquingKeysWith: { first, _ in first })
         var errors: [AssociativeReferenceKey: AssociativeReferenceError] = [:]
         let roots = Set(featureIDs.map { AssociativeReferenceKey.feature($0) })
-            .union(versionsByPlane.keys.map { .plane($0) })
+            .union(definitionPlaneIDs.map { .plane($0) })
         for root in roots.sorted(by: { Self.order($0) < Self.order($1) }) {
             var consumerIndex: Int?
             if case let .feature(id) = root {
@@ -214,8 +233,15 @@ nonisolated struct AssociativeGeometryResolver: Sendable {
                              uniquingKeysWith: { first, _ in first })
         var requested = requestedVersions
         for plane in planes {
-            if case let .offset(definition)? = plane.definition {
+            switch plane.definition {
+            case let .offset(definition)?:
                 requested.insert(definition.sourceVersion)
+            case let .angle(definition)?:
+                requested.insert(definition.sourceVersion)
+            case .threePoints?:
+                break
+            case nil:
+                break
             }
         }
         self.requestedVersions = requested
@@ -296,22 +322,75 @@ nonisolated struct AssociativeGeometryResolver: Sendable {
             do {
                 try dependencyGraph.checkCycle(from: .plane(id))
                 guard let record = planes[id] else { throw AssociativeReferenceError.missingPlane(id) }
-                guard case var .offset(definition)? = record.definition else {
+                // Nil definition is the legacy absolute plane and is the ONLY
+                // case allowed to use the cached frame. Every present
+                // definition kind must resolve or report a broken reference;
+                // an unknown/unsupported payload never reaches this switch
+                // because ConstructionPlane decoding refuses it.
+                guard let definition = record.definition else {
                     return ResolvedAssociativePlane(plane: record.plane, stamp: EvalFingerprint.hash(record))
                 }
-                try definition.validate()
-                let snapshot = try version(definition.sourceVersion)
-                let face = try Self.exactFace(definition, snapshot: snapshot)
-                if let formula = definition.distance.formula {
-                    guard let value = ExpressionEvaluator.evaluate(formula, variables: variables), value.isFinite else {
-                        throw AssociativeReferenceError.invalidFormula(formula)
+                let resolved: SketchPlane
+                switch definition {
+                case let .offset(payload):
+                    try payload.validate()
+                    let snapshot = try version(payload.sourceVersion)
+                    let face = try Self.exactFace(source: payload.source,
+                                                  version: payload.sourceVersion,
+                                                  snapshot: snapshot)
+                    var edited = payload
+                    if let formula = payload.distance.formula {
+                        guard let value = ExpressionEvaluator.evaluate(formula, variables: variables),
+                              value.isFinite else {
+                            throw AssociativeReferenceError.invalidFormula(formula)
+                        }
+                        edited.distance.value = value
                     }
-                    definition.distance.value = value
+                    resolved = try edited.resolvedPlane(face: face,
+                                                        bodyTransform: snapshot.body.transform)
+                case let .angle(payload):
+                    try payload.validate()
+                    let snapshot = try version(payload.sourceVersion)
+                    let face = try Self.exactFace(source: payload.source,
+                                                  version: payload.sourceVersion,
+                                                  snapshot: snapshot)
+                    var edited = payload
+                    if let formula = payload.angle.formula {
+                        guard let value = ExpressionEvaluator.evaluate(formula, variables: variables),
+                              value.isFinite else {
+                            throw AssociativeReferenceError.invalidFormula(formula)
+                        }
+                        edited.angle.value = value
+                    }
+                    resolved = try edited.resolvedPlane(face: face,
+                                                        bodyTransform: snapshot.body.transform)
+                case let .threePoints(payload):
+                    try payload.validate()
+                    var worldPoints: [SIMD3<Double>] = []
+                    var stamps: [UInt64] = []
+                    for anchor in payload.points {
+                        let resolvedSketch = try sketch(anchor.sketchID)
+                        let local = try Self.anchorPoint(anchor, in: resolvedSketch.sketch)
+                        worldPoints.append(resolvedSketch.sketch.plane.toWorld(local))
+                        stamps.append(resolvedSketch.stamp)
+                    }
+                    resolved = try payload.resolvedPlane(worldPoints: worldPoints)
+                    var f = EvalFingerprint()
+                    f.combine(EvalFingerprint.hash(definition))
+                    for stamp in stamps { f.combine(stamp) }
+                    f.combine(EvalFingerprint.hash(resolved))
+                    let value = ResolvedAssociativePlane(plane: resolved, stamp: f.value)
+                    planeMemo[id] = value
+                    resolvedPlaneUpdates[id] = resolved
+                    return value
                 }
-                let resolved = try definition.resolvedPlane(face: face, bodyTransform: snapshot.body.transform)
                 var f = EvalFingerprint()
                 f.combine(EvalFingerprint.hash(definition))
-                f.combine(snapshot.stamp)
+                // The geometry snapshot/fingerprint already includes the
+                // definition, but keep the explicit snapshot stamp so a
+                // writer whose definition bytes are unchanged still
+                // invalidates a cached consumer.
+                f.combine(try versionFingerprint(definition))
                 f.combine(EvalFingerprint.hash(resolved))
                 let value = ResolvedAssociativePlane(plane: resolved, stamp: f.value)
                 planeMemo[id] = value
@@ -390,13 +469,37 @@ nonisolated struct AssociativeGeometryResolver: Sendable {
         return snapshot
     }
 
-    private static func exactFace(_ definition: OffsetPlaneDefinition,
+    /// The frozen writer's replay stamp. Reuses the same `version()` checks so
+    /// an angle datum cannot use a stale cache after its source writer moved.
+    private func versionFingerprint(_ definition: ConstructionPlaneDefinition) throws -> UInt64 {
+        switch definition {
+        case let .offset(payload): return try version(payload.sourceVersion).stamp
+        case let .angle(payload): return try version(payload.sourceVersion).stamp
+        case .threePoints: return 0
+        }
+    }
+
+    /// One semantic point on a resolved sketch. Missing/replaced identities
+    /// refuse; no nearest-point or index-only fallback exists.
+    private static func anchorPoint(_ ref: SketchAnchorRef, in sketch: Sketch) throws -> SIMD2<Double> {
+        guard let entity = sketch.entities.first(where: { $0.id == ref.entityID }) else {
+            throw AssociativeReferenceError.missingAnchorEntity(
+                sketch: sketch.id, entity: ref.entityID)
+        }
+        guard let point = entity.anchorPoint(for: ref.role) else {
+            throw AssociativeReferenceError.unsupportedAnchorRole(
+                sketch: sketch.id, entity: ref.entityID, role: ref.role.rawValue)
+        }
+        return point
+    }
+
+    private static func exactFace(source: FaceRef,
+                                  version: GeometryVersionRef,
                                   snapshot: GeometryVersionSnapshot) throws -> SourceFaceGeometry {
-        let version = definition.sourceVersion
         // A name is resolved in the KERNEL map, never against render triangles.
         // We intentionally reject signature/nearest-face guesses in this slice.
-        guard case .planar = definition.source.signature.kind,
-              let name = definition.source.elementName,
+        guard case .planar = source.signature.kind,
+              let name = source.elementName,
               let brep = snapshot.body.brep else {
             throw AssociativeReferenceError.exactNamedPlaneRequired(version)
         }
@@ -416,7 +519,18 @@ nonisolated struct AssociativeGeometryResolver: Sendable {
     }
 
     private func typed(_ error: Error) -> AssociativeReferenceError {
-        (error as? AssociativeReferenceError) ?? .invalidDefinition(error.localizedDescription)
+        if let error = error as? AssociativeReferenceError { return error }
+        if let geometry = error as? AssociativeGeometryError {
+            switch geometry {
+            case let .degenerateAnchorPoints(reason):
+                return .degenerateAnchorPoints(reason)
+            case let .invalidHingeAxis(reason):
+                return .invalidHingeAxis(reason)
+            default:
+                break
+            }
+        }
+        return .invalidDefinition(error.localizedDescription)
     }
 
     private mutating func remember(_ error: AssociativeReferenceError, at key: AssociativeReferenceKey) {

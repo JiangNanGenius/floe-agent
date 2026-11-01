@@ -298,9 +298,6 @@ nonisolated struct CommandRegistry: Sendable {
     /// capability audit. Everything else still receives the generic reason
     /// below, so no non-executable entry is left unexplained.
     private static let plannedReasons: [String: String] = [
-        "plane.angle": "M07 angle datums are not implemented; no editor entry point is wired.",
-        "plane.offset": "Offset datums are created through the existing NumericInputBar datum tool; this command id has no Command Dispatch entry.",
-        "plane.threePoints": "M07 three-point datums are not implemented; no editor entry point is wired.",
         "project.insertProject": "E35 two-copy compare/merge is not implemented; insertion is not merge and no editor entry point is wired.",
     ]
 

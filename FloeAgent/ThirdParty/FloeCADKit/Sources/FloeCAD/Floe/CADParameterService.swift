@@ -206,6 +206,12 @@ public final class CADParameterService {
                 "datum.offsetPlane.create": "{body_id, face_index (OCCT kernel 1-based), query_token, expression, size?}",
                 "datum.offsetPlane.update": "{plane_id, expression?, expected_expression?, size?, body_id? + face_index? + query_token? (all three for source reselect)}",
                 "datum.offsetPlane.delete": "{plane_id}",
+                "datum.anglePlane.create": "{body_id, face_index, query_token, expression (degrees), hinge_x?, hinge_y? (unit local hinge; default 1,0), size?}",
+                "datum.anglePlane.update": "{plane_id, expression? (degrees), expected_expression?, hinge_x?+hinge_y?, size?, body_id? + face_index? + query_token? (all three for source reselect)}",
+                "datum.anglePlane.delete": "{plane_id}",
+                "datum.threePointPlane.create": "{points:[{sketch_id,entity_id,role:endpointA|endpointB|center}, ...three distinct], size?}",
+                "datum.threePointPlane.update": "{plane_id, points? (exactly three), point_index?+point?, expected_points?, size?}",
+                "datum.threePointPlane.delete": "{plane_id}",
                 "sketch.setSupport": "{sketch_id, plane_id}",
                 "sketch.clearSupport": "{sketch_id}",
             ],
@@ -2803,18 +2809,25 @@ public final class CADParameterService {
                 rewrittenFeatureIDs.append(node.id.raw.uuidString)
             }
             for plane in document.session.document.planes {
-                guard case var .offset(definition)? = plane.definition,
-                      let formula = definition.distance.formula,
-                      let rewritten = Self.rewriteIdentifier(formula, from: oldName, to: newName),
-                      rewritten != formula else { continue }
-                if ExpressionEvaluator.evaluate(rewritten, variables: values) == nil,
-                   ExpressionEvaluator.evaluate(formula, variables: oldValues) != nil {
-                    return Self.fail("unsupported_rewrite",
-                        "Renaming '\(oldName)' would make plane \(plane.id.raw.uuidString) unreadable. Nothing was changed.")
+                guard let definition = plane.definition else { continue }
+                var changed = false
+                for slot in definition.expressionSlots {
+                    guard let formula = slot.expr.formula,
+                          let rewritten = Self.rewriteIdentifier(formula, from: oldName, to: newName),
+                          rewritten != formula else { continue }
+                    if ExpressionEvaluator.evaluate(rewritten, variables: values) == nil,
+                       ExpressionEvaluator.evaluate(formula, variables: oldValues) != nil {
+                        return Self.fail("unsupported_rewrite",
+                            "Renaming '\(oldName)' would make plane \(plane.id.raw.uuidString) unreadable. Nothing was changed.")
+                    }
+                    changed = true
                 }
-                definition.distance.formula = rewritten
+                guard changed,
+                      let after = definition.rewritingFormulas({ formula in
+                          Self.rewriteIdentifier(formula, from: oldName, to: newName)
+                      }) else { continue }
                 commands.append(EditConstructionPlaneDefinitionCommand(
-                    planeID: plane.id, before: plane.definition, after: .offset(definition)))
+                    planeID: plane.id, before: plane.definition, after: after))
                 rewrittenPlaneIDs.append(plane.id.raw.uuidString)
             }
             for sketch in document.session.document.sketches {
@@ -3614,12 +3627,14 @@ public final class CADParameterService {
                 ])
             }
         }
-        let planeRows: [[String: Any]] = document.planes.compactMap { plane in
-            guard case let .offset(definition)? = plane.definition,
-                  let formula = definition.distance.formula,
-                  variableReferences(in: formula).contains(name) else { return nil }
-            return ["plane_id": plane.id.raw.uuidString, "parameter": "distance",
-                    "unit": "mm", "formula": formula]
+        let planeRows: [[String: Any]] = document.planes.flatMap { plane -> [[String: Any]] in
+            guard let definition = plane.definition else { return [] }
+            return definition.expressionSlots.compactMap { slot in
+                guard let formula = slot.expr.formula,
+                      variableReferences(in: formula).contains(name) else { return nil }
+                return ["plane_id": plane.id.raw.uuidString, "parameter": slot.name,
+                        "unit": slot.unit, "formula": formula]
+            }
         }
         return [
             "variable_ids": variableIDs,

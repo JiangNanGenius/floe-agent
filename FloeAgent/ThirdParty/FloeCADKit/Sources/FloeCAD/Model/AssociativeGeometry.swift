@@ -2,15 +2,16 @@
 //  AssociativeGeometry.swift
 //  FloeCAD
 //
-//  M07 (associative offset construction planes) — package A: the persistent
-//  value model plus the one pure geometric adapter.
+//  M07 (associative construction planes) — the persistent value model plus
+//  the pure geometric adapters for the three datum kinds:
+//
+//      OffsetPlaneDefinition.resolvedPlane(face:bodyTransform:)
+//      AnglePlaneDefinition.resolvedPlane(face:bodyTransform:)
+//      ThreePointPlaneDefinition.resolvedPlane(worldPoints:)
 //
 //  This file deliberately contains NO feature-graph replay, named-face lookup,
 //  dependency walker, topological naming or resolved-geometry cache. Those
-//  belong to package B/C. It freezes the stored shape and answers exactly one
-//  question for them:
-//
-//      OffsetPlaneDefinition.resolvedPlane(face:bodyTransform:)
+//  live in AssociativeGeometryResolver.
 //
 //  The adapter is bounded by existing conventions: a face contributes a
 //  body-local centroid and outward normal, `SketchPlane` carries the result
@@ -58,6 +59,16 @@ nonisolated enum AssociativeGeometryError: Error, LocalizedError, Equatable, Sen
     /// The snapshot body transform is not a positive finite similarity
     /// transform.
     case invalidBodyTransform(String)
+    /// The stored hinge direction is finite but has no usable in-plane
+    /// direction, or is not unit length.
+    case invalidHingeAxis(String)
+    /// A stored definition is structurally unreadable at a KNOWN semantic
+    /// version (for example a three-point payload that does not carry exactly
+    /// three distinct anchors).
+    case invalidDefinitionShape(String)
+    /// Three resolved anchor points are coincident or collinear, so they do
+    /// not define a plane. This is a broken reference, never a nearest-fit.
+    case degenerateAnchorPoints(String)
 
     var errorDescription: String? {
         switch self {
@@ -66,11 +77,11 @@ nonisolated enum AssociativeGeometryError: Error, LocalizedError, Equatable, Sen
         case let .unsupportedSemanticVersion(version):
             return "Unsupported associative construction-plane definition version \(version)."
         case let .sourceVersionBodyMismatch(source, version):
-            return "The offset definition names source body \(source.raw.uuidString) "
+            return "The associative definition names source body \(source.raw.uuidString) "
                 + "but freezes geometry for body \(version.raw.uuidString)."
         case let .faceBodyMismatch(expected, actual):
             return "The resolved face belongs to body \(actual.raw.uuidString), "
-                + "but the offset definition is frozen to body \(expected.raw.uuidString)."
+                + "but the associative definition is frozen to body \(expected.raw.uuidString)."
         case let .nonFiniteValue(label):
             return "\(label) is not finite."
         case let .degenerateFaceGeometry(reason):
@@ -79,6 +90,12 @@ nonisolated enum AssociativeGeometryError: Error, LocalizedError, Equatable, Sen
             return "Invalid plane attachment frame: \(reason)."
         case let .invalidBodyTransform(reason):
             return "Invalid body transform: \(reason)."
+        case let .invalidHingeAxis(reason):
+            return "Invalid plane hinge axis: \(reason)."
+        case let .invalidDefinitionShape(reason):
+            return "Invalid construction-plane definition: \(reason)."
+        case let .degenerateAnchorPoints(reason):
+            return "Cannot derive a plane from the three source points: \(reason)."
         }
     }
 
@@ -307,6 +324,65 @@ nonisolated struct PlaneAttachmentFrame: Codable, Equatable, Sendable {
         return SketchPlane(origin: origin, xAxis: worldX, yAxis: worldY)
     }
 
+    /// Resolve an angle datum: the CURRENT named source face supplies the
+    /// centroid/normal, the frozen in-plane axis is projected as for an offset
+    /// plane, and the resulting frame is rotated ONCE about the explicit local
+    /// hinge direction by `angleRadians`.
+    ///
+    /// The hinge lives in the same stored attachment frame as `anchorOffset`
+    /// (`hinge.x` along the frozen x axis, `hinge.y` along `n × x`), so a
+    /// later face-normal change carries the hinge with the face instead of
+    /// silently rotating about a world axis. The angle is supplied in radians
+    /// by the definition, which converts the public degree expression exactly
+    /// once.
+    func resolvedRotatedPlane(
+        face: SourceFaceGeometry,
+        bodyTransform: Transform3D,
+        hinge: SIMD2<Double>,
+        angleRadians: Double
+    ) throws -> SketchPlane {
+        try validate()
+        try Self.requireFinite(face.centroid, "face centroid")
+        guard angleRadians.isFinite else {
+            throw AssociativeGeometryError.nonFiniteValue("angle")
+        }
+        guard abs(simd_length(hinge) - 1) <= Self.unitTolerance else {
+            throw AssociativeGeometryError.invalidHingeAxis("the hinge is not unit length")
+        }
+        let currentNormal = try Self.unitDirection(face.normal, label: "face normal")
+
+        let projectedX = xAxis - currentNormal * simd_dot(xAxis, currentNormal)
+        guard simd_length(projectedX) > Self.minimumInPlaneLength else {
+            throw AssociativeGeometryError.degenerateFaceGeometry(
+                "the frozen x axis is parallel to the resolved face normal")
+        }
+        let localX = simd_normalize(projectedX)
+        let localY = simd_cross(currentNormal, localX)
+        try Self.validateBasis(normal: currentNormal, xAxis: localX, yAxis: localY)
+
+        let localAnchor = face.centroid
+            + localX * anchorOffset.x
+            + localY * anchorOffset.y
+        try Self.requireFinite(localAnchor, "resolved anchor")
+
+        // Explicit local hinge: a unit direction in the current face plane.
+        let hingeLocal = simd_normalize(localX * hinge.x + localY * hinge.y)
+        let rotation = simd_quatd(angle: angleRadians, axis: hingeLocal)
+        let rotatedNormal = simd_normalize(rotation.act(currentNormal))
+        let rotatedX = simd_normalize(rotation.act(localX))
+        let rotatedY = simd_cross(rotatedNormal, rotatedX)
+        try Self.validateBasis(normal: rotatedNormal, xAxis: rotatedX, yAxis: rotatedY)
+
+        try Self.validate(bodyTransform)
+        let worldNormal = simd_normalize(bodyTransform.rotation.act(rotatedNormal))
+        let worldX = simd_normalize(bodyTransform.rotation.act(rotatedX))
+        let worldY = simd_cross(worldNormal, worldX)
+        try Self.validateBasis(normal: worldNormal, xAxis: worldX, yAxis: worldY)
+        let worldAnchor = bodyTransform.applying(to: localAnchor)
+        try Self.requireFinite(worldAnchor, "resolved angle-plane origin")
+        return SketchPlane(origin: worldAnchor, xAxis: worldX, yAxis: worldY)
+    }
+
     // MARK: Numeric helpers
 
     /// Loose enough for a basis that has crossed JSON, tight enough that a
@@ -479,20 +555,302 @@ nonisolated struct OffsetPlaneDefinition: Codable, Equatable, Sendable {
     }
 }
 
+// MARK: - Sketch anchor references (three-point datums)
+
+/// One addressable point on a persisted sketch entity.
+///
+/// The pair (entity UUID, `PointRole`) is the SAME semantic point identity the
+/// constraint solver uses; a three-point datum stores three of them, never a
+/// world coordinate copy. A replacement entity with identical coordinates gets
+/// a new UUID and therefore a broken reference — it is never rebound by
+/// position or index.
+nonisolated struct SketchAnchorRef: Codable, Hashable, Sendable {
+    var sketchID: SketchID
+    var entityID: UUID
+    var role: PointRole
+
+    init(sketchID: SketchID, entityID: UUID, role: PointRole) {
+        self.sketchID = sketchID
+        self.entityID = entityID
+        self.role = role
+    }
+
+    /// Identity of the addressed point, for duplicate/order diagnostics.
+    var key: String {
+        "\(sketchID.raw.uuidString):\(entityID.uuidString):\(role.rawValue)"
+    }
+}
+
+nonisolated extension SketchEntity {
+    /// The persisted semantic point roles this entity actually exposes.
+    /// Mirrors the solver's point-addressable slots: line/rect endpoints,
+    /// shape centres, and an open spline's first/last fit points. Rect
+    /// endpoints are its normalized min/max diagonal corners, exactly as the
+    /// existing constraint vocabulary addresses them. Arc rim points and
+    /// index-only spline control points are deliberately absent.
+    var anchorRoles: [PointRole] {
+        switch self {
+        case .line, .rect:
+            return [.endpointA, .endpointB]
+        case .circle, .arc, .ellipse, .polygon:
+            return [.center]
+        case let .spline(_, points, closed):
+            return !closed && points.count >= 2 ? [.endpointA, .endpointB] : []
+        }
+    }
+
+    /// Current plane-local position of one persisted semantic point, or nil
+    /// when this entity does not expose that role.
+    func anchorPoint(for role: PointRole) -> SIMD2<Double>? {
+        guard anchorRoles.contains(role) else { return nil }
+        switch (self, role) {
+        case let (.line(_, a, _), .endpointA): return a
+        case let (.line(_, _, b), .endpointB): return b
+        case let (.rect(_, min, _), .endpointA): return min
+        case let (.rect(_, _, max), .endpointB): return max
+        case let (.circle(_, center, _), .center): return center
+        case let (.arc(_, center, _, _, _), .center): return center
+        case let (.ellipse(_, center, _, _, _), .center): return center
+        case let (.polygon(_, center, _, _, _), .center): return center
+        case let (.spline(_, points, _), .endpointA): return points.first
+        case let (.spline(_, points, _), .endpointB): return points.last
+        case (.spline(_, _, true), _), (_, .whole), (_, .radiusOnly): return nil
+        default: return nil
+        }
+    }
+}
+
+// MARK: - Angle definition
+
+/// One associative angle construction plane.
+///
+/// The source is the same exact named planar face + frozen writer snapshot as
+/// an offset datum. `attachment` stores the face's frozen in-plane frame;
+/// `hinge` is an explicit UNIT direction inside that frame (x along the frame's
+/// x axis, y along `normal × x`). `angle` is a public DEGREE expression:
+/// resolution converts it to radians exactly once. Positive angles follow the
+/// right-hand rule about the hinge.
+nonisolated struct AnglePlaneDefinition: Codable, Equatable, Sendable {
+    static var supportedVersion: Int { 1 }
+
+    let version: Int
+    let source: FaceRef
+    let sourceVersion: GeometryVersionRef
+    /// Unit in-plane hinge direction in the stored attachment frame.
+    let hinge: SIMD2<Double>
+    /// Public degrees. The stored `.value` is the resolved degree value.
+    var angle: Expr
+    let attachment: PlaneAttachmentFrame
+
+    init(
+        version: Int = AnglePlaneDefinition.supportedVersion,
+        source: FaceRef,
+        sourceVersion: GeometryVersionRef,
+        hinge: SIMD2<Double>,
+        angle: Expr,
+        attachment: PlaneAttachmentFrame
+    ) {
+        self.version = version
+        self.source = source
+        self.sourceVersion = sourceVersion
+        self.hinge = hinge
+        self.angle = angle
+        self.attachment = attachment
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case version, source, sourceVersion, hinge, angle, attachment
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        let version = try container.decode(Int.self, forKey: .version)
+        guard version == Self.supportedVersion else {
+            throw AssociativeGeometryError.unsupportedSemanticVersion(version)
+        }
+        self.version = version
+        source = try container.decode(FaceRef.self, forKey: .source)
+        sourceVersion = try container.decode(GeometryVersionRef.self, forKey: .sourceVersion)
+        hinge = try container.decode(SIMD2<Double>.self, forKey: .hinge)
+        angle = try container.decode(Expr.self, forKey: .angle)
+        attachment = try container.decode(PlaneAttachmentFrame.self, forKey: .attachment)
+    }
+
+    func validate() throws {
+        guard version == Self.supportedVersion else {
+            throw AssociativeGeometryError.unsupportedSemanticVersion(version)
+        }
+        guard source.body.bodyID == sourceVersion.bodyID else {
+            throw AssociativeGeometryError.sourceVersionBodyMismatch(
+                source: source.body.bodyID, version: sourceVersion.bodyID)
+        }
+        guard hinge.x.isFinite, hinge.y.isFinite,
+              abs(simd_length(hinge) - 1) <= 1e-6 else {
+            throw AssociativeGeometryError.invalidHingeAxis(
+                "the hinge must be a finite unit direction in the source-face frame")
+        }
+        guard angle.value.isFinite else {
+            throw AssociativeGeometryError.nonFiniteValue("angle")
+        }
+        try attachment.validate()
+    }
+
+    /// Resolve from the CURRENT named face plus the frozen writer snapshot.
+    /// The public degree value is converted to radians once here.
+    func resolvedPlane(face: SourceFaceGeometry, bodyTransform: Transform3D) throws -> SketchPlane {
+        try validate()
+        guard face.bodyID == sourceVersion.bodyID else {
+            throw AssociativeGeometryError.faceBodyMismatch(
+                expected: sourceVersion.bodyID, actual: face.bodyID)
+        }
+        return try attachment.resolvedRotatedPlane(
+            face: face,
+            bodyTransform: bodyTransform,
+            hinge: hinge,
+            angleRadians: angle.value * .pi / 180
+        )
+    }
+}
+
+// MARK: - Three-point definition
+
+/// One associative three-point construction plane.
+///
+/// Exactly three `SketchAnchorRef`s name semantic points on persisted sketch
+/// entities. Resolution reads the CURRENT resolved plane/entities of those
+/// sketches (including their own associative supports), maps the three points
+/// to world millimetres, and builds the plane from the first point toward the
+/// second with the third on the positive normal side. No world coordinate is
+/// stored, so a parent edit moves the datum; a deleted/replaced identity is a
+/// broken reference.
+nonisolated struct ThreePointPlaneDefinition: Codable, Equatable, Sendable {
+    static var supportedVersion: Int { 1 }
+
+    let version: Int
+    /// Creation order: point 1 is the origin, point 2 defines +x, point 3 the
+    /// positive normal side.
+    let points: [SketchAnchorRef]
+
+    init(
+        version: Int = ThreePointPlaneDefinition.supportedVersion,
+        points: [SketchAnchorRef]
+    ) {
+        self.version = version
+        self.points = points
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case version, points
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        let version = try container.decode(Int.self, forKey: .version)
+        guard version == Self.supportedVersion else {
+            throw AssociativeGeometryError.unsupportedSemanticVersion(version)
+        }
+        self.version = version
+        points = try container.decode([SketchAnchorRef].self, forKey: .points)
+        guard points.count == 3 else {
+            throw AssociativeGeometryError.invalidDefinitionShape(
+                "a three-point definition must carry exactly three anchors")
+        }
+        guard Set(points.map(\.key)).count == 3 else {
+            throw AssociativeGeometryError.invalidDefinitionShape(
+                "a three-point definition must name three distinct anchors")
+        }
+    }
+
+    func validate() throws {
+        guard version == Self.supportedVersion else {
+            throw AssociativeGeometryError.unsupportedSemanticVersion(version)
+        }
+        guard points.count == 3 else {
+            throw AssociativeGeometryError.invalidDefinitionShape(
+                "a three-point definition must carry exactly three anchors")
+        }
+        guard Set(points.map(\.key)).count == 3 else {
+            throw AssociativeGeometryError.invalidDefinitionShape(
+                "a three-point definition must name three distinct anchors")
+        }
+        guard points.allSatisfy({ $0.role != .whole && $0.role != .radiusOnly }) else {
+            throw AssociativeGeometryError.invalidDefinitionShape(
+                "a three-point anchor must be an endpoint or centre, not a whole entity")
+        }
+    }
+
+    /// Build the plane from three WORLD-millimetre points. Deterministic in
+    /// argument order: origin = first, +x toward the second, normal toward the
+    /// third. Coincident or collinear input refuses instead of fitting.
+    static func resolvedPlane(
+        first: SIMD3<Double>,
+        second: SIMD3<Double>,
+        third: SIMD3<Double>
+    ) throws -> SketchPlane {
+        for (value, label) in [(first, "first point"), (second, "second point"),
+                               (third, "third point")] {
+            guard value.x.isFinite, value.y.isFinite, value.z.isFinite else {
+                throw AssociativeGeometryError.nonFiniteValue(label)
+            }
+        }
+        let xVector = second - first
+        guard simd_length(xVector) > 1e-9 else {
+            throw AssociativeGeometryError.degenerateAnchorPoints(
+                "the first two points coincide")
+        }
+        let normalVector = simd_cross(second - first, third - first)
+        guard simd_length(normalVector) > 1e-9 else {
+            throw AssociativeGeometryError.degenerateAnchorPoints(
+                "the three points are collinear")
+        }
+        let xAxis = simd_normalize(xVector)
+        let normal = simd_normalize(normalVector)
+        let yAxis = simd_cross(normal, xAxis)
+        return SketchPlane(origin: first, xAxis: xAxis, yAxis: yAxis)
+    }
+
+    func resolvedPlane(worldPoints: [SIMD3<Double>]) throws -> SketchPlane {
+        try validate()
+        guard worldPoints.count == 3 else {
+            throw AssociativeGeometryError.invalidDefinitionShape(
+                "three resolved points are required")
+        }
+        return try Self.resolvedPlane(
+            first: worldPoints[0], second: worldPoints[1], third: worldPoints[2])
+    }
+}
+
+// MARK: - Stored expressions
+
+/// One formula-capable scalar owned by a construction-plane definition.
+nonisolated struct ConstructionPlaneExpressionSlot: Equatable, Sendable {
+    var name: String
+    /// Public authoring unit: `mm` for a distance, `deg` for an angle.
+    var unit: String
+    var expr: Expr
+}
+
 // MARK: - Definition kind
 
-/// The persistent construction-plane definition. The enum is the extension
-/// point for later kinds; only `.offset` exists in the first slice.
+/// The persistent construction-plane definition. Each case has an explicit
+/// semantic version; a present definition never falls back to the cached
+/// absolute plane when it cannot be read or resolved.
 nonisolated enum ConstructionPlaneDefinition: Codable, Equatable, Sendable {
     case offset(OffsetPlaneDefinition)
+    case angle(AnglePlaneDefinition)
+    case threePoints(ThreePointPlaneDefinition)
 
     nonisolated enum Kind: String, Codable, Sendable {
         case offset
+        case angle
+        case threePoints
     }
 
     var kind: Kind {
         switch self {
         case .offset: return .offset
+        case .angle: return .angle
+        case .threePoints: return .threePoints
         }
     }
 
@@ -500,20 +858,110 @@ nonisolated enum ConstructionPlaneDefinition: Codable, Equatable, Sendable {
     var semanticVersion: Int {
         switch self {
         case let .offset(definition): return definition.version
+        case let .angle(definition): return definition.version
+        case let .threePoints(definition): return definition.version
         }
     }
 
+    /// The semantic version this build can read for this kind.
+    var supportedSemanticVersion: Int {
+        switch self {
+        case .offset: return OffsetPlaneDefinition.supportedVersion
+        case .angle: return AnglePlaneDefinition.supportedVersion
+        case .threePoints: return ThreePointPlaneDefinition.supportedVersion
+        }
+    }
+
+    var isSupportedSemanticVersion: Bool {
+        semanticVersion == supportedSemanticVersion
+    }
+
+    /// Formula-capable scalars in their public authoring units. A three-point
+    /// definition has none; it follows geometry only.
+    var expressionSlots: [ConstructionPlaneExpressionSlot] {
+        switch self {
+        case let .offset(definition):
+            return [ConstructionPlaneExpressionSlot(
+                name: "distance", unit: "mm", expr: definition.distance)]
+        case let .angle(definition):
+            return [ConstructionPlaneExpressionSlot(
+                name: "angle", unit: "deg", expr: definition.angle)]
+        case .threePoints:
+            return []
+        }
+    }
+
+    /// Return a copy with one named expression replaced, or nil when this kind
+    /// has no such slot.
+    func settingExpression(named name: String, to expr: Expr) -> ConstructionPlaneDefinition? {
+        switch self {
+        case var .offset(definition) where name == "distance":
+            definition.distance = expr
+            return .offset(definition)
+        case var .angle(definition) where name == "angle":
+            definition.angle = expr
+            return .angle(definition)
+        default:
+            return nil
+        }
+    }
+
+    /// Re-evaluate every formula against `variables`, updating only changed
+    /// `.value` caches. Angle formulas are authored in degrees and stay in
+    /// degrees here; the resolver converts once. A missing/non-finite formula
+    /// leaves the definition untouched so the resolver reports it, matching
+    /// the existing offset behavior.
+    func reevaluated(with variables: [String: Double]) -> ConstructionPlaneDefinition? {
+        var changed = false
+        var result = self
+        for slot in expressionSlots {
+            guard let formula = slot.expr.formula,
+                  let value = ExpressionEvaluator.evaluate(formula, variables: variables),
+                  value.isFinite, value != slot.expr.value else { continue }
+            var expr = slot.expr
+            expr.value = value
+            guard let updated = result.settingExpression(named: slot.name, to: expr) else { continue }
+            result = updated
+            changed = true
+        }
+        return changed ? result : nil
+    }
+
+    /// Rewrite formula text in every expression slot. Returns nil when no
+    /// formula changed. Used by variable rename so distance and angle formulas
+    /// travel through one token-aware path.
+    func rewritingFormulas(_ transform: (String) -> String?) -> ConstructionPlaneDefinition? {
+        var changed = false
+        var result = self
+        for slot in expressionSlots {
+            guard let formula = slot.expr.formula,
+                  let rewritten = transform(formula), rewritten != formula else { continue }
+            var expr = slot.expr
+            expr.formula = rewritten
+            guard let updated = result.settingExpression(named: slot.name, to: expr) else { continue }
+            result = updated
+            changed = true
+        }
+        return changed ? result : nil
+    }
+
     private enum CodingKeys: String, CodingKey {
-        case kind, offset
+        case kind, offset, angle, threePoints
     }
 
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         let kind = try container.decode(String.self, forKey: .kind)
-        guard kind == Kind.offset.rawValue else {
+        switch kind {
+        case Kind.offset.rawValue:
+            self = .offset(try container.decode(OffsetPlaneDefinition.self, forKey: .offset))
+        case Kind.angle.rawValue:
+            self = .angle(try container.decode(AnglePlaneDefinition.self, forKey: .angle))
+        case Kind.threePoints.rawValue:
+            self = .threePoints(try container.decode(ThreePointPlaneDefinition.self, forKey: .threePoints))
+        default:
             throw AssociativeGeometryError.unsupportedDefinitionKind(kind)
         }
-        self = .offset(try container.decode(OffsetPlaneDefinition.self, forKey: .offset))
     }
 
     func encode(to encoder: Encoder) throws {
@@ -522,6 +970,12 @@ nonisolated enum ConstructionPlaneDefinition: Codable, Equatable, Sendable {
         case let .offset(definition):
             try container.encode(Kind.offset, forKey: .kind)
             try container.encode(definition, forKey: .offset)
+        case let .angle(definition):
+            try container.encode(Kind.angle, forKey: .kind)
+            try container.encode(definition, forKey: .angle)
+        case let .threePoints(definition):
+            try container.encode(Kind.threePoints, forKey: .kind)
+            try container.encode(definition, forKey: .threePoints)
         }
     }
 }
