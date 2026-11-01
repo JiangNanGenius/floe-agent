@@ -30,7 +30,13 @@
 import Foundation
 import Observation
 import FloeCAD
+import FloeTools
 import FloeWorkbench
+
+/// The tool-task token is the same cooperative signal the kernel's import
+/// budget polls; the conformance lets the bridge pass it straight through
+/// without copying its state.
+extension CancellationToken: @retroactive MeshImportCancellationChecking {}
 
 @MainActor
 @Observable
@@ -61,6 +67,10 @@ final class FloeCAD3DBridge {
     private var opening: [String: Task<FloeCADDocument, Error>] = [:]
     private var proposalDocument: [UUID: URL] = [:]
     private let service = CADProposalService()
+    /// In-flight import parses keyed by canonical document path. Closing or
+    /// switching away from a document cancels them so a late parse cannot
+    /// persist a proposal for a document the user left.
+    private var inFlightImports: [String: [UUID: MeshImportCancellation]] = [:]
 
     /// One service bundle per open document: assembly/drawing/script/mesh keep
     /// their in-memory bookkeeping (script status, last pages) across calls,
@@ -143,6 +153,33 @@ final class FloeCAD3DBridge {
         try await document(at: url)
     }
 
+    /// Registers one in-flight import token under its canonical document.
+    @discardableResult
+    private func beginImport(_ url: URL,
+                             observing outer: (any MeshImportCancellationChecking)? = nil)
+        -> (id: UUID, token: MeshImportCancellation, key: String) {
+        let key = key(url)
+        let id = UUID()
+        let token = MeshImportCancellation(observed: outer)
+        inFlightImports[key, default: [:]][id] = token
+        return (id, token, key)
+    }
+
+    private func endImport(_ id: UUID, key: String) {
+        inFlightImports[key]?[id] = nil
+        if inFlightImports[key]?.isEmpty == true { inFlightImports[key] = nil }
+    }
+
+    /// Cancels every import parse still running for `url`. Called when the
+    /// editor closes, the preview is dismissed or another document replaces
+    /// this one; the parse observes this token and refuses before any commit.
+    func cancelInFlightImports(for url: URL) {
+        let key = key(url)
+        guard let tokens = inFlightImports[key] else { return }
+        for token in tokens.values { token.cancel() }
+        inFlightImports[key] = nil
+    }
+
     /// Save and release one document, returning its real outcome. The cache
     /// entry is kept until the commit SUCCEEDS: a failed save must not drop the
     /// only live owner of the draft, so the caller can keep the editor open and
@@ -159,6 +196,11 @@ final class FloeCAD3DBridge {
     @discardableResult
     func releaseDocumentOutcome(at url: URL,
                                 expected: FloeCADDocument? = nil) async -> CADSaveOutcome? {
+        // A close/switch cancels an in-flight import BEFORE the release save:
+        // a parse that finishes later must not persist a proposal for a
+        // document the user left (the proposal copy is separate from this
+        // document, so only the token can stop it).
+        cancelInFlightImports(for: url)
         let key = key(url)
         guard let document = documents[key] else { return nil }
         if let expected, document !== expected { return nil }
@@ -211,6 +253,7 @@ final class FloeCAD3DBridge {
     @discardableResult
     func releaseReadOnlyDocument(_ document: FloeCADDocument) -> Bool {
         guard document.isReadOnly else { return false }
+        cancelInFlightImports(for: document.url)
         let key = key(document.url)
         // Drop the cache entry only when it is THIS instance, so a concurrent
         // read-only open of the same path is never closed by this release.
@@ -950,9 +993,16 @@ final class FloeCAD3DBridge {
     func proposeImport(at url: URL, sourceRelativePath: String, data: Data,
                        format rawFormat: String,
                        fileName: String?, unitScale: Double?,
-                       sourceSHA256: String, summary: String) async throws -> CADProposalRecord {
+                       sourceSHA256: String, summary: String,
+                       cancellation: CancellationToken? = nil) async throws -> CADProposalRecord {
         var format = rawFormat.lowercased()
         if format == "igs" { format = "iges" }
+        try cancellation?.throwIfCancelled()
+        // One token for the whole draft: it observes the tool-run token and is
+        // also cancelled by a close/switch through `cancelInFlightImports`.
+        let registration = beginImport(url, observing: cancellation)
+        let importToken = registration.token
+        defer { endImport(registration.id, key: registration.key) }
         let document = try await document(at: url)
         // Mirror CADProposalService: flush live edits first so the proposal
         // binds the bytes the grant will validate; a flush failure refuses.
@@ -985,8 +1035,12 @@ final class FloeCAD3DBridge {
                                    message: "The import preview copy could not be made: \(error.localizedDescription)")
         }
         let clone = try await FloeCADDocument.open(at: cloneURL)
-        let outcome = try Self.applyImport(document: clone, data: data, format: format,
-                                           fileName: fileName, unitScale: unitScale)
+        defer { if !clone.isClosed { clone.close() } }
+        try Self.checkImportCancellation(importToken)
+        let outcome = try await Self.applyImport(document: clone, data: data, format: format,
+                                                 fileName: fileName, unitScale: unitScale,
+                                                 cancellation: importToken)
+        try Self.checkImportCancellation(importToken)
         guard outcome.isOK else {
             clone.close()
             throw CADDocumentError(code: outcome.errorCode ?? "import_failed",
@@ -1035,6 +1089,10 @@ final class FloeCAD3DBridge {
                                     sourceSHA256: sourceSHA256, geometryClass: geometryClass),
         ]
         let operationJSON = try jsonString(operation)
+        // A draft that finished after the owner cancelled must not become a
+        // pending proposal; the throwaway copy is already closed above and the
+        // caller persists nothing on a throw.
+        try Self.checkImportCancellation(importToken)
         let record = CADProposalRecord(
             documentPath: url.path,
             baseRevision: revisionBefore,
@@ -1060,7 +1118,9 @@ final class FloeCAD3DBridge {
     /// package rather than keeping an uncommitted import.
     @discardableResult
     func performAuthorizedImport(proposalID: UUID, data: Data,
-                                 expectedSourceSHA256: String) async throws -> CADApplyReceipt {
+                                 expectedSourceSHA256: String,
+                                 cancellation: CancellationToken? = nil) async throws -> CADApplyReceipt {
+        try cancellation?.throwIfCancelled()
         guard let url = proposalDocument[proposalID],
               let spec = importSpecs[proposalID],
               let record = pending.first(where: { $0.id == proposalID }) else {
@@ -1071,6 +1131,13 @@ final class FloeCAD3DBridge {
                 code: "source_changed",
                 message: "The source file changed after this import was proposed; re-read it and draft the import again.")
         }
+        // The apply re-parses off the MainActor under the same token. A
+        // cancellation that arrives before the body command runs refuses with
+        // zero mutation; once the atomic add has run the commit completes
+        // normally (never a half model).
+        let registration = beginImport(url, observing: cancellation)
+        let importToken = registration.token
+        defer { endImport(registration.id, key: registration.key) }
         let document = try await document(at: url)
         guard document.revision == record.baseRevision,
               document.contentSHA256 == record.baseContentSHA256 else {
@@ -1082,8 +1149,12 @@ final class FloeCAD3DBridge {
             throw CADDocumentError(code: "document_read_only",
                                    message: "The package is read-only in this build; import is not available.")
         }
-        let outcome = try Self.applyImport(document: document, data: data, format: spec.format,
-                                           fileName: spec.fileName, unitScale: spec.unitScale)
+        try Self.checkImportCancellation(importToken)
+        let outcome = try await Self.applyImport(document: document, data: data,
+                                                 format: spec.format,
+                                                 fileName: spec.fileName,
+                                                 unitScale: spec.unitScale,
+                                                 cancellation: importToken)
         guard outcome.isOK else {
             throw CADDocumentError(code: outcome.errorCode ?? "import_failed",
                                    message: outcome.message ?? "The import failed; the document was not changed.")
@@ -1116,60 +1187,90 @@ final class FloeCAD3DBridge {
         return receipt
     }
 
-    /// One import attempt against `document`: B-rep/mesh formats reuse
-    /// `nativeImportData`. GLB/glTF external-resource reuse is NOT
-    /// implemented in this round: the kernel command importer stages the
-    /// guarded source bytes in a fresh temp directory (no sibling scan), so a
-    /// self-contained `.glb` works, while a loose `.gltf` whose buffers/
-    /// textures live beside it is reported as unsupported rather than
-    /// silently losing geometry. No uncontrolled folder scan and no new
-    /// parser are added here.
+    /// One import attempt against `document`. STEP/IGES read and tessellate
+    /// OFF the MainActor through `CADExactImportService` (fresh import handles
+    /// only), then restore their serialized exact shapes and commit on the
+    /// document actor as ONE undo step. Mesh formats use the same scheduling
+    /// split through `CADMeshImportService` under the same budget/token.
     private static func applyImport(document: FloeCADDocument, data: Data, format: String,
-                                    fileName: String?, unitScale: Double?) throws -> CADCommandOutcome {
-        if brepImportFormats.contains(format) || meshImportFormats.contains(format) {
-            return document.nativeImportData(data, format: format,
-                                             fileName: fileName, unitScale: unitScale)
-        }
-        // A JSON .gltf may be self-contained (every buffer/image URI is a
-        // data: URI, or the only buffer has no URI at all) or reference
-        // external .bin buffers/textures beside the file. The staged-temp
-        // import copy cannot resolve siblings, so distinguish the two by
-        // inspecting the JSON buffer/image URIs: self-contained bytes are
-        // staged and imported by the kernel command importer; external
-        // references get an explicit unsupported error (never a silent
-        // geometry drop, never an unguarded sibling scan).
-        if format == "gltf" {
-            switch Self.gltfResourceDependency(of: data) {
-            case .selfContained:
-                break
-            case .externalReferences(let names):
-                let list = names.joined(separator: ", ")
-                throw CADDocumentError(
-                    code: "gltf_external_resources_unsupported",
-                    message: "A loose .gltf that references external resources (\(list)) is not imported by the tool in this build. Provide a self-contained .glb or a .gltf whose buffers/images are embedded data URIs.")
-            case .invalidJSON:
-                throw CADDocumentError(
-                    code: "gltf_invalid_json",
-                    message: "The .gltf source is not valid JSON; the document was not changed.")
+                                    fileName: String?, unitScale: Double?,
+                                    cancellation: MeshImportCancellation) async throws -> CADCommandOutcome {
+        do {
+            if brepImportFormats.contains(format) {
+                let plan = try await CADExactImportService.parseOffMain(
+                    data: data, format: format,
+                    fileName: fileName ?? "Imported.\(format)",
+                    limits: .standard, cancellation: cancellation)
+                try Self.checkImportCancellation(cancellation)
+                if document.isClosed {
+                    throw CADDocumentError(code: "read_only",
+                                           message: "The CAD document is closed.")
+                }
+                let application = try CADExactImportService.apply(
+                    plan, to: document, cancellation: cancellation,
+                    undoMode: .singleStep)
+                return application.outcome
             }
+            if meshImportFormats.contains(format) {
+                // Preserve `nativeImportData`'s exact single-body STL/OBJ
+                // result; only the parse moves off-main.
+                let name = fileName ?? "Imported.\(format)"
+                let plan = try await CADMeshImportService.parseSingleMeshOffMain(
+                    data: data, fileName: name, format: format,
+                    unitScale: unitScale, cancellation: cancellation)
+                return try CADMeshImportService.applySingleMesh(
+                    plan, to: document, cancellation: cancellation)
+            }
+            // A JSON .gltf may be self-contained (every buffer/image URI is a
+            // data: URI, or the only buffer has no URI at all) or reference
+            // external .bin buffers/textures beside the file. The import has
+            // no sibling scan, so distinguish the two by inspecting the JSON
+            // buffer/image URIs: self-contained bytes are imported; external
+            // references get an explicit unsupported error (never a silent
+            // geometry drop, never an unguarded sibling scan).
+            if format == "gltf" {
+                switch Self.gltfResourceDependency(of: data) {
+                case .selfContained:
+                    break
+                case .externalReferences(let names):
+                    let list = names.joined(separator: ", ")
+                    throw CADDocumentError(
+                        code: "gltf_external_resources_unsupported",
+                        message: "A loose .gltf that references external resources (\(list)) is not imported by the tool in this build. Provide a self-contained .glb or a .gltf whose buffers/images are embedded data URIs.")
+                case .invalidJSON:
+                    throw CADDocumentError(
+                        code: "gltf_invalid_json",
+                        message: "The .gltf source is not valid JSON; the document was not changed.")
+                }
+            }
+            let name = fileName ?? "Imported.\(format)"
+            let plan = try await CADMeshImportService.parseOffMain(
+                data: data, fileName: name, unitScale: unitScale,
+                cancellation: cancellation)
+            return try CADMeshImportService.apply(plan, to: document,
+                                                  cancellation: cancellation)
+        } catch let error as CADDocumentError {
+            throw error
+        } catch is CancellationError {
+            throw CADDocumentError(
+                code: "cancelled",
+                message: "The import was cancelled; nothing was imported and the source was not changed.")
+        } catch {
+            throw CADDocumentError(code: "import_failed",
+                                   message: "The import failed: \(error.localizedDescription) "
+                                    + "Nothing was imported; the source and document are unchanged.")
         }
-        // Self-contained binary .glb: stage the guarded bytes for the kernel
-        // importer (no folder sibling scan).
-        let directory = URL(fileURLWithPath: NSTemporaryDirectory())
-            .appendingPathComponent("floecad-import-stage-\(UUID().uuidString)", isDirectory: true)
-        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        defer { try? FileManager.default.removeItem(at: directory) }
-        let staged = directory.appendingPathComponent("source.\(format)")
-        try data.write(to: staged, options: .atomic)
-        let operation: [String: Any] = [
-            "op": "document.import",
-            "args": [
-                "path": staged.path,
-                "fileName": fileName ?? staged.lastPathComponent,
-                "unitScale": unitScale as Any,
-            ].compactMapValues { $0 },
-        ]
-        return document.execute(operation, documentName: fileName)
+    }
+
+    /// Refuses a cancelled draft/apply before any document mutation. Used by
+    /// both the proposal copy and the live authorized import so the two paths
+    /// cannot disagree about the cancel fence.
+    private static func checkImportCancellation(_ token: MeshImportCancellation) throws {
+        if token.isCancelled {
+            throw CADDocumentError(
+                code: "cancelled",
+                message: "The import was cancelled; nothing was imported and the source was not changed.")
+        }
     }
 
     /// How a JSON .gltf sources its buffers/images. `.selfContained` means

@@ -426,6 +426,15 @@ public protocol CadDocumentHost: Sendable {
     /// `grant_id` bound to the proposal and base revision/SHA.
     func threeDAction(documentID: String, requestJSON: String,
                       access: CadDocumentAccess) async throws -> String
+    /// The same native request carrying the REAL runtime cancellation token.
+    /// Import drafts poll it inside the real parse and refuse BEFORE any body
+    /// or proposal record is committed; the import apply refuses before the
+    /// mutation. A host that predates this overload keeps the legacy behavior
+    /// through the default forwarding implementation below, which checks the
+    /// token once before handing the request on.
+    func threeDAction(documentID: String, requestJSON: String,
+                      access: CadDocumentAccess,
+                      cancellation: CancellationToken) async throws -> String
     /// App-owned external native part reference loop. The host resolves
     /// `source_path` through the SAME task-workspace/asset guard used by
     /// import; a model path is never treated as a grant. `check`/`inspect`
@@ -519,6 +528,18 @@ public extension CadDocumentHost {
     func threeDAction(documentID: String, requestJSON: String,
                       access: CadDocumentAccess) async throws -> String {
         throw FloeError.notFound("native_cad_kernel")
+    }
+    /// Honest default for the token-aware requirement: conformers that cannot
+    /// observe cancellation keep compiling and make the same request; the App
+    /// host overrides this and polls inside the import parse. Only a
+    /// pre-request check is performed here: a committed apply must never be
+    /// reported as cancelled after the fact.
+    func threeDAction(documentID: String, requestJSON: String,
+                      access: CadDocumentAccess,
+                      cancellation: CancellationToken) async throws -> String {
+        try cancellation.throwIfCancelled()
+        return try await threeDAction(documentID: documentID, requestJSON: requestJSON,
+                                      access: access)
     }
     func reference(documentID: String, requestJSON: String,
                    access: CadDocumentAccess) async throws -> String {
@@ -3178,7 +3199,8 @@ public struct CadDocumentTool: AgentTool {
             }
             let request = try jsonString(envelope)
             let reply = try await host.threeDAction(documentID: args.path!, requestJSON: request,
-                                                    access: access)
+                                                    access: access,
+                                                    cancellation: context.cancellation)
             return completeOutput("cad.document import proposal: \(reply)", 24_000)
 
         case .reference:
@@ -3864,7 +3886,8 @@ public struct CadDocumentTool: AgentTool {
                                           "grant_id": grant,
                                           "request_id": requestID])
             let reply = try await host.threeDAction(documentID: args.path!, requestJSON: request,
-                                                    access: access)
+                                                    access: access,
+                                                    cancellation: context.cancellation)
             return completeOutput("cad.document apply: \(reply)", 16_000)
         }
         let authorization = try await Self.consumeAutomaticAuthorization(args: args, context: context)

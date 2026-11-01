@@ -310,6 +310,38 @@ public enum CADDebugFixtures {
         CADMeshService.testHeavyComputeProbe = probe
     }
 
+    /// DEBUG-only seam for the E31 UI fixture: the closure runs on the real
+    /// import parse thread at its first large budget charge (charged bytes so
+    /// far), BEFORE the array/buffer is allocated. It lets the fixture cancel
+    /// deterministically during real work. Never installed in production.
+    public static func installImportParseCheckpoint(
+        _ probe: (@Sendable (Int) -> Void)?
+    ) {
+        MeshImportKit.testParseCheckpoint = probe.map { callback in
+            { checkpoint in callback(checkpoint.chargedBytes) }
+        }
+    }
+
+    /// E31-R2: install the REAL exact (STEP/IGES) parse checkpoint. The probe
+    /// fires on the worker (begin/locked/read/body) and on the document actor
+    /// (commit/committed); it never replaces the parser or the commit.
+    public static func installExactImportCheckpoint(
+        _ probe: (@Sendable (CADExactImportCheckpoint) -> Void)?
+    ) {
+        CADExactImportService.testCheckpoint = probe
+    }
+
+    /// E31-R2 manual-import UI trigger: the App fixture seeds a real file and
+    /// asks the real Workbench editor to import it exactly as the Import menu
+    /// does (the system picker cannot be driven by XCUITest). DEBUG only.
+    public static var pendingManualImportPath: String?
+
+    public static func consumePendingManualImportPath() -> String? {
+        let path = pendingManualImportPath
+        pendingManualImportPath = nil
+        return path
+    }
+
     // MARK: - E26 IGES open-surface native UI fixture
 
     /// DEBUG-only native UI fixture support: real IGES bytes for ONE

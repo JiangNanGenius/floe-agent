@@ -17969,6 +17969,23 @@
         }
       }
     },
+    "cad.ui.import.igesFile": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "IGES File…"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "IGES 文件…"
+          }
+        }
+      }
+    },
     "cad.ui.import.imageFiles": {
       "extractionState": "manual",
       "localizations": {
@@ -124543,6 +124560,74 @@
           "stringUnit": {
             "state": "translated",
             "value": "正在写入帧压缩包…"
+          }
+        }
+      }
+    },
+    "cad.error.importBusy": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Couldn't import “%@” — another exact import is already running. Nothing was imported."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "无法导入“%@” — 另一个精确导入正在进行。未导入任何内容。"
+          }
+        }
+      }
+    },
+    "cad.error.importIGESFailed": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Couldn't import “%@” — no transferable exact geometry was found in the IGES file."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "无法导入“%@” — IGES 文件中未找到可转换的精确几何。"
+          }
+        }
+      }
+    },
+    "cad.error.importOverBudget": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Couldn't import “%@” — %@. Nothing was imported; the source and document are unchanged."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "无法导入“%@” — %@。未导入任何内容；源文件和文档均未改变。"
+          }
+        }
+      }
+    },
+    "cad.error.importCancelled": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Couldn't import “%@” — the import was cancelled. Nothing was imported; the source and document are unchanged."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "无法导入“%@” — 导入已取消。未导入任何内容；源文件和文档均未改变。"
           }
         }
       }

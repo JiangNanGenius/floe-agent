@@ -80,15 +80,105 @@ nonisolated enum AgentExportFormat: String, Sendable, CaseIterable {
 final class CADCommandExecutor {
     let viewModel: EditorViewModel
     let documentName: String?
+    /// The owning facade for operations that must prepare bytes off-main and
+    /// then commit on this actor (E31-R2 `document.import`). Nil for callers
+    /// that only use the synchronous query/edit vocabulary.
+    let document: FloeCADDocument?
 
-    init(viewModel: EditorViewModel, documentName: String? = nil) {
+    init(viewModel: EditorViewModel, documentName: String? = nil,
+         document: FloeCADDocument? = nil) {
         self.viewModel = viewModel
         self.documentName = documentName
+        self.document = document
     }
 
     /// Run one parsed operation through the same path the interactive tools use.
+    /// `document.import` is refused here: it would parse asset bytes on the
+    /// MainActor. Use `runAsync` (the real App/AgentExec entry) instead.
     func run(_ op: AgentExecOp) -> AgentResponse {
-        execute(op, on: viewModel)
+        if case .importFile = op {
+            return .failure(409, "Conflict", error: "import_requires_async",
+                            message: "Asset import must run through the async import path so its "
+                                + "parse happens off the MainActor; nothing was imported.")
+        }
+        return execute(op, on: viewModel)
+    }
+
+    /// E31-R2: the async entry. Only `document.import` differs; every other
+    /// operation keeps the exact synchronous implementation and ordering.
+    func runAsync(_ op: AgentExecOp) async -> AgentResponse {
+        switch op {
+        case .importFile:
+            return await executeImportFile(op)
+        default:
+            return run(op)
+        }
+    }
+
+    /// The real `document.import` path: read the host file off-main, parse with
+    /// the kernel importer under the standard budget/token on a detached
+    /// worker, then build bodies on this actor through `importParts` (one undo
+    /// step). A cancelled/refused parse never touches the document.
+    private func executeImportFile(_ op: AgentExecOp) async -> AgentResponse {
+        guard case let .importFile(path, fileName, unitScale) = op else {
+            return .failure(400, "Bad Request", error: "bad_import", message: "Not an import op.")
+        }
+        guard let document else {
+            return .failure(409, "Conflict", error: "document_unavailable",
+                            message: "The native document facade is not available for this import.")
+        }
+        let url = URL(fileURLWithPath: path)
+        let data: Data
+        do {
+            data = try await Task.detached(priority: .userInitiated) {
+                try Data(contentsOf: url)
+            }.value
+        } catch {
+            return .failure(404, "Not Found", error: "unreadable_path",
+                            message: "Could not read \(path).")
+        }
+        let name = fileName ?? url.lastPathComponent
+        let loose = ["obj", "gltf", "blend"].contains(url.pathExtension.lowercased())
+        let siblings = loose ? MeshImportKit.folderSiblings(of: url) : [:]
+        let token = MeshImportCancellation()
+        do {
+            let plan = try await CADMeshImportService.parseOffMain(
+                data: data, fileName: name, siblings: siblings,
+                unitScale: unitScale, cancellation: token)
+            if Task.isCancelled { throw CADDocumentError(
+                code: "cancelled",
+                message: "The import was cancelled; nothing was imported and the source was not changed.") }
+            let outcome = try CADMeshImportService.apply(
+                plan, to: document, cancellation: token)
+            guard outcome.isOK else {
+                return .failure(422, "Unprocessable Entity",
+                                error: outcome.errorCode ?? "import_failed",
+                                message: outcome.message ?? "The import failed.")
+            }
+            let object = (try? JSONSerialization.jsonObject(with: outcome.payload))
+                as? [String: Any] ?? [:]
+            let rows = object["imported"] as? [[String: Any]] ?? []
+            let ids = rows.compactMap { $0["bodyID"] as? String }
+            let names = rows.compactMap { $0["name"] as? String }
+            viewModel.errorMessage = nil
+            return AgentResponse.ok([
+                "bodyIDs": ids,
+                "names": names,
+                "textured": plan.parts.filter {
+                    $0.material?.baseColorTexture != nil
+                }.count,
+                "triangles": plan.triangleCount,
+                "undoSteps": 1,
+                "parsed_off_main": plan.parsedOffMain,
+            ])
+        } catch let error as CADDocumentError {
+            return .failure(422, "Unprocessable Entity", error: error.code,
+                            message: error.message)
+        } catch {
+            return .failure(422, "Unprocessable Entity", error: "import_failed",
+                            message: "The import failed: \(error.localizedDescription) "
+                                + "Nothing was imported; the source and document are unchanged.")
+        }
     }
 
     /// Document state snapshot (bodies, sketches, features, units, selection,
@@ -119,30 +209,12 @@ final class CADCommandExecutor {
 
         switch op {
 
-        case let .importFile(path, fileName, unitScale):
-            let url = URL(fileURLWithPath: path)
-            guard let data = try? Data(contentsOf: url) else {
-                return .failure(404, "Not Found", error: "unreadable_path",
-                                message: "Could not read \(path).")
-            }
-            let before = Set(session.document.bodies.map(\.id))
-            viewModel.errorMessage = nil
-            // A loose .obj/.gltf/.blend needs the files beside it; the host
-            // directory is readable here, so hand them over.
-            let loose = ["obj", "gltf", "blend"].contains(url.pathExtension.lowercased())
-            viewModel.importMesh(data: data, fileName: fileName ?? url.lastPathComponent,
-                                 siblings: loose ? MeshImportKit.folderSiblings(of: url) : [:],
-                                 unitScale: unitScale)
-            if let message = viewModel.errorMessage {
-                return .failure(422, "Unprocessable Entity", error: "import_failed", message: message)
-            }
-            let added = session.document.bodies.filter { !before.contains($0.id) }
-            return execOK(viewModel, [
-                "bodyIDs": added.map { $0.id.raw.uuidString },
-                "names": added.map(\.name),
-                "textured": added.filter { $0.material?.baseColorTexture != nil }.count,
-                "triangles": added.reduce(0) { $0 + $1.render.indices.count / 3 },
-                "undoSteps": 1])
+        case .importFile:
+            // Unreachable from `run` (it refuses the op) and `runAsync`
+            // (it routes to `executeImportFile`). Kept explicit so this
+            // switch stays exhaustive without a hidden MainActor parse.
+            return .failure(409, "Conflict", error: "import_requires_async",
+                            message: "Asset import must run through the async import path.")
 
         case let .createSketch(name, plane):
             let sketch = Sketch(name: name, plane: plane)

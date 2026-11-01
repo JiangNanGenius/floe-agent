@@ -644,6 +644,10 @@ struct CADWorkbenchFixtureHarness: View {
     /// a real pending import proposal; the product FilePreviewView is then the
     /// only surface presented, so the shipped banner/export sheet are real.
     @State private var igesPreview: CADIGESSurfaceUIFixture.Prepared?
+    /// E31: the real import-limit flow. Accepted presents the shipped file
+    /// preview (banner); rejected/cancelled present the fixture's read-back
+    /// diagnostic because the product refusal/cancel has no banner.
+    @State private var importLimits: CADImportLimitsUIFixture.Prepared?
 
     /// The App fixture cannot reach FloeCAD's internal `testHeavyComputeProbe`.
     /// This DEBUG-only launch choice installs the one existing scheduling seam
@@ -664,7 +668,34 @@ struct CADWorkbenchFixtureHarness: View {
 
     var body: some View {
         Group {
-            if let igesPreview {
+            if let importLimits {
+                if importLimits.presentWorkbench {
+                    if let document {
+                        NavigationStack {
+                            FloeCADWorkbenchView(document: document)
+                                .modifier(FloeCADHostChrome(document: document))
+                        }
+                    } else {
+                        ProgressView("Preparing CAD fixture…")
+                    }
+                } else if let status = importLimits.status {
+                    VStack(spacing: 12) {
+                        Text("E31 import-limit fixture")
+                            .font(.headline)
+                        Text(status)
+                            .font(.footnote)
+                            .multilineTextAlignment(.center)
+                            .padding()
+                            .accessibilityIdentifier("cad.importLimits.fixtureStatus")
+                    }
+                } else {
+                    NavigationStack {
+                        FilePreviewView(relativePath: importLimits.workspaceRelativePath,
+                                        center: environment.workspaceCenter,
+                                        conversationID: importLimits.conversationID)
+                    }
+                }
+            } else if let igesPreview {
                 // E26: the SHIPPED workspace preview. The pre-Apply import
                 // banner and the part-scope IGES exchange sheet are the
                 // product views; this branch only selects the real file.
@@ -722,11 +753,22 @@ struct CADWorkbenchFixtureHarness: View {
         }
         .accessibilityIdentifier("CADFixtureHarness")
         .task {
-            guard document == nil, igesPreview == nil, error == nil else { return }
+            guard document == nil, igesPreview == nil, importLimits == nil, error == nil else { return }
             Self.installMeshPanelFlowProbeIfRequested()
             do {
                 let arguments = ProcessInfo.processInfo.arguments
-                if let mode = CADIGESSurfaceUIFixture.Mode.selected(from: arguments) {
+                if let mode = CADImportLimitsUIFixture.Mode.selected(from: arguments) {
+                    let prepared = try await CADImportLimitsUIFixture.prepare(
+                        mode: mode, in: environment)
+                    importLimits = prepared
+                    if prepared.presentWorkbench,
+                       let root = environment.workspaceCenter.currentRootURL {
+                        // The manual Workbench path: the real editor consumes
+                        // the fixture's pending exact-import trigger on appear.
+                        document = try await FloeCADDocument.open(
+                            at: root.appendingPathComponent(prepared.workspaceRelativePath))
+                    }
+                } else if let mode = CADIGESSurfaceUIFixture.Mode.selected(from: arguments) {
                     igesPreview = try await CADIGESSurfaceUIFixture.prepare(
                         mode: mode, in: environment)
                 } else if arguments.contains("--ui-test-cad-hole-form") {

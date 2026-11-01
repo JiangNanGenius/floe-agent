@@ -356,7 +356,9 @@ public final class FloeCADDocument {
                 payload: Self.jsonEnvelope(ok: false, error: block.code, message: block.message),
                 errorCode: block.code, message: block.message)
         }
-        let executor = CADCommandExecutor(viewModel: viewModel(), documentName: documentName ?? name)
+        let executor = CADCommandExecutor(viewModel: viewModel(),
+                                          documentName: documentName ?? name,
+                                          document: self)
         switch AgentExec.parse(operation) {
         case .failure(let error):
             return CADCommandOutcome(status: 400, payload: Self.jsonEnvelope(ok: false,
@@ -365,6 +367,42 @@ public final class FloeCADDocument {
                                      errorCode: error.code, message: error.message)
         case .success(let op):
             let response = executor.run(op)
+            return CADCommandOutcome(status: response.status,
+                                     payload: response.body,
+                                     errorCode: Self.errorCode(in: response.body),
+                                     message: Self.errorMessage(in: response.body))
+        }
+    }
+
+    /// E31-R2: the async command entry. `document.import` is the one executable
+    /// AgentExec operation that parses asset bytes; the synchronous `execute`
+    /// refuses it explicitly (`import_requires_async`) instead of hiding a
+    /// MainActor parse. Every other operation keeps the historical path.
+    @discardableResult
+    public func executeAsync(_ operation: [String: Any],
+                             documentName: String? = nil) async -> CADCommandOutcome {
+        if closed {
+            let message = "The CAD document is closed."
+            return CADCommandOutcome(status: 409,
+                payload: Self.jsonEnvelope(ok: false, error: "read_only", message: message),
+                errorCode: "read_only", message: message)
+        }
+        if let block = session.writeBlock {
+            return CADCommandOutcome(status: 409,
+                payload: Self.jsonEnvelope(ok: false, error: block.code, message: block.message),
+                errorCode: block.code, message: block.message)
+        }
+        let executor = CADCommandExecutor(viewModel: viewModel(),
+                                          documentName: documentName ?? name,
+                                          document: self)
+        switch AgentExec.parse(operation) {
+        case .failure(let error):
+            return CADCommandOutcome(status: 400, payload: Self.jsonEnvelope(ok: false,
+                                                                             error: error.code,
+                                                                             message: error.message),
+                                     errorCode: error.code, message: error.message)
+        case .success(let op):
+            let response = await executor.runAsync(op)
             return CADCommandOutcome(status: response.status,
                                      payload: response.body,
                                      errorCode: Self.errorCode(in: response.body),
@@ -381,6 +419,16 @@ public final class FloeCADDocument {
                                      message: "Body must be a JSON object with op/args.")
         }
         return execute(object)
+    }
+
+    public func executeJSONAsync(_ json: Data) async -> CADCommandOutcome {
+        guard let object = (try? JSONSerialization.jsonObject(with: json)) as? [String: Any] else {
+            return CADCommandOutcome(status: 400, payload: Self.jsonEnvelope(ok: false, error: "bad_json",
+                                                                             message: "Body must be a JSON object with op/args."),
+                                     errorCode: "bad_json",
+                                     message: "Body must be a JSON object with op/args.")
+        }
+        return await executeAsync(object)
     }
 
     /// JSON snapshot of document state (bodies, sketches, features, units,
@@ -601,6 +649,11 @@ public final class FloeCADDocument {
             }
             return self.exchangeCoverage(format: format, selection: selection)
         }
+        // E31-R2: an exact/mesh import parsed off-main may finish after this
+        // facade was closed (or replaced at the same path). The view model
+        // itself has no closed flag; bind the real one before any async import
+        // can reach its MainActor commit.
+        model.documentClosedCheck = { [weak self] in self?.isClosed ?? true }
         model.variableActionHandler = { [weak self] action, args in
             guard let self, !self.isClosed else {
                 return ["ok": false, "error": "closed"]

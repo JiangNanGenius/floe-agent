@@ -872,6 +872,18 @@ targets:
       - path: Tests/FloeAppTests/DesignFreezeLaunchTests.swift
       - path: Tests/FloeAppTests/DesignWorkflowFixtureTests.swift
       - path: Tests/FloeAppTests/DesignPageResourceLimitTests.swift
+      - path: Tests/FloeAppTests/NativeCADImportLimitsTests.swift
+      # E31-R2: exact STEP/IGES off-main scheduling, cancellation/close fences
+      # and the manual Workbench path. The kernel-boundary suite is listed here
+      # too so the App-hosted FloeAppTests run executes it (explicit membership,
+      # not SPM auto-discovery).
+      - path: Tests/FloeAppTests/NativeCADImportSchedulingTests.swift
+      - path: ThirdParty/FloeCADKit/Tests/FloeCADKitTests/NativeExactImportSchedulingTests.swift
+      # E31-R3: queued-waiter cancellation (real reader gate), manual import
+      # ownership and the off-main balanced source read.
+      - path: Tests/FloeAppTests/NativeCADImportCancellationTests.swift
+      - path: ThirdParty/FloeCADKit/Tests/FloeCADKitTests/NativeExactImportCancellationTests.swift
+      - path: ThirdParty/FloeCADKit/Tests/FloeCADKitTests/NativeImportSourceReadTests.swift
       - path: Tests/FloeAppTests/DesignEntryPolicyTests.swift
       - path: Tests/FloeAppTests/CreativeDestinationRouteTests.swift
       - path: Tests/FloeAppTests/DesignAdapterReopenTests.swift

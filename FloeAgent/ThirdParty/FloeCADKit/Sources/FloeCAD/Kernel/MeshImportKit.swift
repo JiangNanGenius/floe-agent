@@ -35,6 +35,189 @@ nonisolated enum MeshImportError: Error, Equatable {
     case unsupportedFormat(String)
     case malformed(String)
     case empty
+    /// The import was cancelled through the caller's cooperative token. No
+    /// body, proposal or committed file exists for a cancelled import.
+    case cancelled
+    /// The asset's DECLARED expansion, triangle count or body count exceeds
+    /// one of `MeshImportLimits`. The message states which budget and the
+    /// concrete number so the UI can name the limitation truthfully.
+    case overBudget(String)
+}
+
+// MARK: - One import's resource budget and cooperative cancellation
+
+/// A cancellation signal every parser in one import polls. `CancellationToken`
+/// in the App conforms to this through a one-line extension, so the kernel
+/// package stays independent of FloeTools while the tool/UI token remains the
+/// single authority.
+public protocol MeshImportCancellationChecking: Sendable {
+    var isCancelled: Bool { get }
+}
+
+/// One import's cancellation token. It can observe an outer token (the
+/// tool-task token) and also be cancelled by its own owner (a closing panel or
+/// a cancelled Task), so both routes stop the same parse.
+public nonisolated final class MeshImportCancellation: MeshImportCancellationChecking, @unchecked Sendable {
+    private let lock = NSLock()
+    private var cancelled = false
+    private let observed: (any MeshImportCancellationChecking)?
+
+    public init(observed: (any MeshImportCancellationChecking)? = nil) {
+        self.observed = observed
+    }
+
+    public func cancel() {
+        lock.lock()
+        cancelled = true
+        lock.unlock()
+    }
+
+    public var isCancelled: Bool {
+        if observed?.isCancelled == true { return true }
+        lock.lock()
+        defer { lock.unlock() }
+        return cancelled
+    }
+}
+
+/// The ceilings one import may consume. The values reuse the App's existing
+/// scene/archive policies instead of inventing a smaller per-format cap:
+///   * triangles/parts are the presentation scene's own hard ceilings
+///     (`CADPresentationLimits.maximumTrianglesPerScene` / `.maximumBodies`),
+///     so an import never produces a document the viewport must drop;
+///   * the expanded-byte/entry ceilings are the workspace archive engine's
+///     `ArchiveLimits` defaults (256 MiB / 5,000 entries). FloeCADKit cannot
+///     import FloeWorkspace, so the numbers are mirrored here and documented;
+///     every App import uses `MeshImportLimits.standard`.
+public nonisolated struct MeshImportLimits: Sendable, Equatable {
+    public var maximumTriangles: Int
+    public var maximumParts: Int
+    public var maximumExpandedBytes: Int
+    public var maximumArchiveEntries: Int
+
+    public init(maximumTriangles: Int = 8_000_000,
+                maximumParts: Int = 4_096,
+                maximumExpandedBytes: Int = 256 * 1024 * 1024,
+                maximumArchiveEntries: Int = 5_000) {
+        self.maximumTriangles = maximumTriangles
+        self.maximumParts = maximumParts
+        self.maximumExpandedBytes = maximumExpandedBytes
+        self.maximumArchiveEntries = maximumArchiveEntries
+    }
+
+    public static let standard = MeshImportLimits()
+}
+
+/// Test-only checkpoint emitted by a REAL parse under an installed probe.
+/// Production leaves `MeshImportKit.testParseCheckpoint` nil and pays nothing.
+nonisolated struct MeshImportCheckpoint: Sendable {
+    let phase: String
+    let fileName: String
+    let ranOnMainThread: Bool
+    let chargedBytes: Int
+    let triangles: Int
+}
+
+/// Mutable accounting for one import. Every parser charges the allocation it
+/// is about to make BEFORE growing an array or inflating a buffer, so a
+/// declared expansion bomb is refused without first allocating it. The
+/// counters are logical decoded bytes (not RSS); the App measures the real
+/// process footprint separately.
+nonisolated final class MeshImportBudget {
+    let limits: MeshImportLimits
+    let cancellation: (any MeshImportCancellationChecking)?
+    let fileName: String
+    private(set) var chargedBytes = 0
+    private(set) var triangles = 0
+    private(set) var parts = 0
+    private(set) var entries = 0
+    private var firedTestPhases: Set<String> = []
+
+    init(limits: MeshImportLimits,
+         cancellation: (any MeshImportCancellationChecking)?,
+         fileName: String) {
+        self.limits = limits
+        self.cancellation = cancellation
+        self.fileName = fileName
+    }
+
+    /// A default argument instance for direct/legacy importer calls. The
+    /// production entry points always pass the import's real budget.
+    static func fresh(fileName: String = "import") -> MeshImportBudget {
+        MeshImportBudget(limits: .standard, cancellation: nil, fileName: fileName)
+    }
+
+    var isCancelled: Bool { cancellation?.isCancelled == true }
+
+    func checkCancellation() throws {
+        if isCancelled { throw MeshImportError.cancelled }
+    }
+
+    /// Charges an allocation that is about to happen. Cancellation is checked
+    /// on the same path, so a cancelled import stops before the allocation.
+    func charge(_ bytes: Int, _ what: @autoclosure () -> String) throws {
+        try checkCancellation()
+        guard bytes >= 0 else {
+            throw MeshImportError.malformed("\(fileName): \(what()) declared a negative size")
+        }
+        let (sum, overflow) = chargedBytes.addingReportingOverflow(bytes)
+        guard !overflow, sum <= limits.maximumExpandedBytes else {
+            let required = bytes / (1024 * 1024)
+            let limit = limits.maximumExpandedBytes / (1024 * 1024)
+            throw MeshImportError.overBudget(
+                "\(what()) needs \(required) MiB more, over the \(limit) MiB import budget")
+        }
+        chargedBytes = sum
+        checkpoint(phase: "charge")
+        // A test gate may have blocked above; a cancellation that arrived
+        // while it was held still refuses BEFORE the caller allocates.
+        try checkCancellation()
+    }
+
+    func addTriangles(_ count: Int) throws {
+        try checkCancellation()
+        guard count >= 0 else {
+            throw MeshImportError.malformed("\(fileName): negative triangle count")
+        }
+        let (sum, overflow) = triangles.addingReportingOverflow(count)
+        guard !overflow, sum <= limits.maximumTriangles else {
+            let required = count
+            throw MeshImportError.overBudget(
+                "the file needs \(required) more triangles, over the \(limits.maximumTriangles)-triangle import budget")
+        }
+        triangles = sum
+    }
+
+    func addPart(_ name: String) throws {
+        try checkCancellation()
+        parts += 1
+        guard parts <= limits.maximumParts else {
+            throw MeshImportError.overBudget(
+                "the file has more than \(limits.maximumParts) parts (at '\(name)')")
+        }
+    }
+
+    func addEntry(_ name: String) throws {
+        try checkCancellation()
+        entries += 1
+        guard entries <= limits.maximumArchiveEntries else {
+            throw MeshImportError.overBudget(
+                "the archive has more than \(limits.maximumArchiveEntries) entries (at '\(name)')")
+        }
+    }
+
+    /// Fires the installed test probe at most once per import, on the thread
+    /// that is doing the real parse. Never installed in production.
+    func checkpoint(phase: String) {
+        guard !firedTestPhases.contains(phase),
+              let probe = MeshImportKit.testParseCheckpoint else { return }
+        firedTestPhases.insert(phase)
+        probe(MeshImportCheckpoint(phase: phase,
+                                   fileName: fileName,
+                                   ranOnMainThread: Thread.isMainThread,
+                                   chargedBytes: chargedBytes,
+                                   triangles: triangles))
+    }
 }
 
 /// A length unit a mesh file may have been authored in (Shapr3D's import
@@ -140,6 +323,19 @@ nonisolated struct MeshImportProbe: Identifiable, Sendable {
 }
 
 nonisolated enum MeshImportKit {
+    /// Test-only seam: receives one checkpoint from a real parse (start and
+    /// the first large charge) when a test installs it. Never set in
+    /// production; the production path then takes no branch.
+    nonisolated(unsafe) static var testParseCheckpoint: (@Sendable (MeshImportCheckpoint) -> Void)?
+
+    /// Test-only seam for the exact-format (STEP/IGES) import path: called
+    /// after each body has been PREPARED but before the single commit, so a
+    /// test can cancel deterministically and prove no partial bodies remain.
+    /// In the off-main E31-R2 path this fires on the parse worker; the legacy
+    /// synchronous `nativeImportData` runs it on the MainActor. Never set in
+    /// production.
+    nonisolated(unsafe) static var testImportBodyCheckpoint: (@Sendable (Int) -> Void)?
+
     /// Parts from `data` named `fileName`, in millimetres. `siblings` are
     /// other files that travelled with it (a zip's entries, keyed by their
     /// path inside the archive), where an OBJ's .mtl and textures or a
@@ -147,14 +343,34 @@ nonisolated enum MeshImportKit {
     /// detected unit — the import prompt's choice, or the bridge's `units`.
     static func parts(from data: Data, fileName: String,
                       siblings: [String: Data] = [:],
-                      unitScale: Double? = nil) throws -> [ImportedPart] {
-        let probe = try probe(data: data, fileName: fileName, siblings: siblings)
+                      unitScale: Double? = nil,
+                      limits: MeshImportLimits = .standard,
+                      cancellation: (any MeshImportCancellationChecking)? = nil)
+        throws -> [ImportedPart] {
+        let probe = try probe(data: data, fileName: fileName, siblings: siblings,
+                              limits: limits, cancellation: cancellation)
         return scaled(probe.parts, by: unitScale ?? probe.detectedScale)
     }
 
     /// Parse without applying units (see `MeshImportProbe`).
     static func probe(data: Data, fileName: String,
-                      siblings: [String: Data] = [:]) throws -> MeshImportProbe {
+                      siblings: [String: Data] = [:],
+                      limits: MeshImportLimits = .standard,
+                      cancellation: (any MeshImportCancellationChecking)? = nil)
+        throws -> MeshImportProbe {
+        let budget = MeshImportBudget(limits: limits, cancellation: cancellation,
+                                      fileName: (fileName as NSString).lastPathComponent)
+        try budget.checkCancellation()
+        return try probe(data: data, fileName: fileName, siblings: siblings, budget: budget)
+    }
+
+    /// Shared parse with an existing budget, so a zip's payload does not get a
+    /// second allowance and the whole import is charged once.
+    static func probe(data: Data, fileName: String,
+                      siblings: [String: Data],
+                      budget: MeshImportBudget) throws -> MeshImportProbe {
+        try budget.checkCancellation()
+        budget.checkpoint(phase: "start")
         let ext = (fileName as NSString).pathExtension.lowercased()
         let parts: [ImportedPart]
         let declaredScale: Double?
@@ -162,32 +378,44 @@ nonisolated enum MeshImportKit {
         switch ext {
         case "glb", "gltf":
             parts = try GLTFImporter.parts(from: data, isBinary: ext == "glb",
-                                           siblings: siblings, unitScale: 1)
+                                           siblings: siblings, unitScale: 1, budget: budget)
             declaredScale = 1000   // glTF is metres by specification
             format = ext == "glb" ? "GLB" : "glTF"
         case "usdz", "usd", "usda", "usdc":
-            parts = try USDImporter.parts(from: data, fileName: fileName, unitScale: 1)
+            // The container's declared expansion is refused BEFORE Model I/O
+            // expands it; the unit probe is a bounded second read.
+            parts = try USDImporter.parts(from: data, fileName: fileName, unitScale: 1,
+                                          budget: budget)
             declaredScale = USDImporter.unitScale(of: data, ext: ext)
             format = ext == "usdz" ? "USDZ" : "USD"
         case "obj":
-            parts = try OBJTexturedImporter.parts(from: data, siblings: siblings, unitScale: 1)
+            parts = try OBJTexturedImporter.parts(from: data, siblings: siblings, unitScale: 1,
+                                                  budget: budget)
             declaredScale = nil
             format = "OBJ"
         case "stl":
             let mesh: RenderMesh
-            do { mesh = try STLImporter.importSTL(data) } catch {
+            do { mesh = try STLImporter.importSTL(data, budget: budget) }
+            catch let error as MeshImportError {
+                switch error {
+                case .cancelled, .overBudget: throw error
+                default: throw MeshImportError.malformed("not a valid STL file")
+                }
+            } catch {
                 throw MeshImportError.malformed("not a valid STL file")
             }
             let stem = ((fileName as NSString).lastPathComponent as NSString).deletingPathExtension
+            try budget.addPart(stem.isEmpty ? "Part" : stem)
             parts = [ImportedPart(name: stem.isEmpty ? "Part" : stem, mesh: mesh, material: nil)]
             declaredScale = nil
             format = "STL"
         case "blend":
-            parts = try BlendImporter.parts(from: data, siblings: siblings, unitScale: 1)
+            parts = try BlendImporter.parts(from: data, siblings: siblings, unitScale: 1,
+                                            budget: budget)
             declaredScale = 1000   // Blender scenes are metres at unit scale 1
             format = "Blender"
         case "zip":
-            let entries = try ZipReader.entries(in: data)
+            let entries = try ZipReader.entries(in: data, budget: budget)
             // The archive's payload file, by preference: a self-contained
             // scene first, then the OBJ (its MTL/textures ride as siblings).
             let order = ["glb", "gltf", "usdz", "obj", "blend", "stl"]
@@ -198,7 +426,8 @@ nonisolated enum MeshImportKit {
                 }) {
                     // Bodies take the ARCHIVE's name, not the payload's
                     // ("Untitled_Scan…", not "textured_output").
-                    let inner = try probe(data: bytes, fileName: path, siblings: entries)
+                    let inner = try probe(data: bytes, fileName: path, siblings: entries,
+                                          budget: budget)
                     return MeshImportProbe(
                         fileName: (fileName as NSString).lastPathComponent, format: inner.format,
                         parts: inner.parts, rawExtent: inner.rawExtent,
@@ -210,6 +439,7 @@ nonisolated enum MeshImportKit {
         default:
             throw MeshImportError.unsupportedFormat(ext)
         }
+        try budget.checkCancellation()
         let live = parts.filter { $0.mesh.indices.count >= 3 }
         guard let extent = overallExtentVector(of: live) else { throw MeshImportError.empty }
         let longest = Double(max(extent.x, extent.y, extent.z))
@@ -329,7 +559,13 @@ nonisolated enum MeshImportKit {
 
 nonisolated enum ZipReader {
     /// Every file entry, keyed by its path inside the archive.
-    static func entries(in data: Data) throws -> [String: Data] {
+    ///
+    /// The DECLARED uncompressed size is charged against the import budget
+    /// before a buffer of that size is allocated, so an expansion bomb is
+    /// refused without ever materialising it. Entry count and the running
+    /// total are bounded by `MeshImportLimits`; cancellation is polled on the
+    /// same path.
+    static func entries(in data: Data, budget: MeshImportBudget = MeshImportBudget.fresh(fileName: "zip")) throws -> [String: Data] {
         var out: [String: Data] = [:]
         // Walk local file headers (PK\3\4) from the front — model archives
         // are small and simple; the central directory would add nothing but
@@ -344,6 +580,7 @@ nonisolated enum ZipReader {
         // from the central directory in that case.
         let central = centralSizes(bytes)
         while offset + 30 <= bytes.count, u32(offset) == 0x04034b50 {
+            try budget.checkCancellation()
             let flags = u16(offset + 6)
             let method = u16(offset + 8)
             var compressed = u32(offset + 18)
@@ -357,12 +594,28 @@ nonisolated enum ZipReader {
             if flags & 0x08 != 0, let sizes = central[name] {
                 compressed = sizes.compressed; uncompressed = sizes.uncompressed
             }
+            // A central record may declare a different uncompressed size than
+            // the local header; use the larger so neither can understate the
+            // expansion this archive asks for.
+            if let sizes = central[name], sizes.uncompressed > uncompressed {
+                uncompressed = sizes.uncompressed
+            }
             guard dataStart + compressed <= bytes.count else { throw MeshImportError.malformed("zip: truncated entry \(name)") }
-            let payload = Data(bytes[dataStart..<dataStart + compressed])
+            try budget.addEntry(name)
             if !name.hasSuffix("/") {
                 switch method {
-                case 0: out[name] = payload
-                case 8: out[name] = try inflate(payload, expected: uncompressed)
+                case 0:
+                    // Stored entries expand to their declared size, too.
+                    try budget.charge(uncompressed, "zip entry '\(name)'")
+                    guard compressed <= bytes.count - dataStart else {
+                        throw MeshImportError.malformed("zip: truncated entry \(name)")
+                    }
+                    out[name] = Data(bytes[dataStart..<dataStart + compressed])
+                case 8:
+                    try budget.charge(uncompressed, "zip entry '\(name)'")
+                    out[name] = try inflate(Data(bytes[dataStart..<dataStart + compressed]),
+                                            expected: uncompressed,
+                                            maximum: budget.limits.maximumExpandedBytes)
                 default: throw MeshImportError.malformed("zip: unsupported compression \(method) for \(name)")
                 }
             }
@@ -371,6 +624,49 @@ nonisolated enum ZipReader {
         }
         guard !out.isEmpty else { throw MeshImportError.malformed("zip: no entries") }
         return out
+    }
+
+    /// Metadata-only declared-size check for a container another reader will
+    /// expand itself (USDZ through Model I/O). It charges the same budget
+    /// without inflating anything, so an oversized archive is refused before
+    /// the framework allocates its own buffers.
+    static func chargeDeclaredSizes(in data: Data, budget: MeshImportBudget) throws {
+        let bytes = [UInt8](data)
+        func u16(_ at: Int) -> Int { Int(bytes[at]) | Int(bytes[at + 1]) << 8 }
+        func u32(_ at: Int) -> Int {
+            Int(bytes[at]) | Int(bytes[at + 1]) << 8 | Int(bytes[at + 2]) << 16 | Int(bytes[at + 3]) << 24
+        }
+        guard bytes.count >= 22 else { return }
+        let central = centralSizes(bytes)
+        var offset = 0
+        var seen = 0
+        while offset + 30 <= bytes.count, u32(offset) == 0x04034b50 {
+            try budget.checkCancellation()
+            let flags = u16(offset + 6)
+            let nameLength = u16(offset + 26)
+            let extraLength = u16(offset + 28)
+            var compressed = u32(offset + 18)
+            var uncompressed = u32(offset + 22)
+            let nameStart = offset + 30
+            guard nameStart + nameLength <= bytes.count else { throw MeshImportError.malformed("zip: truncated name") }
+            let name = String(decoding: bytes[nameStart..<nameStart + nameLength], as: UTF8.self)
+            if flags & 0x08 != 0, let sizes = central[name] {
+                compressed = sizes.compressed; uncompressed = sizes.uncompressed
+            }
+            if let sizes = central[name], sizes.uncompressed > uncompressed {
+                uncompressed = sizes.uncompressed
+            }
+            let dataStart = nameStart + nameLength + extraLength
+            guard dataStart + compressed <= bytes.count else { throw MeshImportError.malformed("zip: truncated entry \(name)") }
+            if !name.hasSuffix("/") {
+                try budget.addEntry(name)
+                try budget.charge(uncompressed, "archive entry '\(name)'")
+                seen += 1
+            }
+            offset = dataStart + compressed
+            if flags & 0x08 != 0 { offset += 16 }
+        }
+        if seen == 0 { throw MeshImportError.malformed("zip: no entries") }
     }
 
     private static func centralSizes(_ bytes: [UInt8]) -> [String: (compressed: Int, uncompressed: Int)] {
@@ -395,7 +691,14 @@ nonisolated enum ZipReader {
         return sizes
     }
 
-    private static func inflate(_ data: Data, expected: Int) throws -> Data {
+    private static func inflate(_ data: Data, expected: Int, maximum: Int) throws -> Data {
+        // Defense in depth: refuse a declared expansion before allocating the
+        // destination even if a caller forgot to charge it first.
+        guard expected >= 0, expected <= maximum else {
+            let limit = maximum / (1024 * 1024)
+            throw MeshImportError.overBudget(
+                "an archive entry declares \(expected / (1024 * 1024)) MiB, over the \(limit) MiB import budget")
+        }
         let capacity = max(expected, 1)
         var out = Data(count: capacity)
         let produced = out.withUnsafeMutableBytes { dst -> Int in
@@ -535,7 +838,7 @@ nonisolated enum GLTFImporter {
     }
 
     static func parts(from data: Data, isBinary: Bool, siblings: [String: Data],
-                      unitScale: Double) throws -> [ImportedPart] {
+                      unitScale: Double, budget: MeshImportBudget = MeshImportBudget.fresh(fileName: "gltf")) throws -> [ImportedPart] {
         var json: [String: Any]
         var binaryBuffer: Data?
         if isBinary {
@@ -604,7 +907,11 @@ nonisolated enum GLTFImporter {
             guard b < buffers.count else { throw MeshImportError.malformed("gltf: buffer \(b)") }
             let offset = view["byteOffset"] as? Int ?? 0
             let length = view["byteLength"] as? Int ?? 0
-            guard offset + length <= buffers[b].count else { throw MeshImportError.malformed("gltf: bufferView \(index) overruns its buffer") }
+            guard offset >= 0, length >= 0,
+                  offset <= buffers[b].count,
+                  length <= buffers[b].count - offset else {
+                throw MeshImportError.malformed("gltf: bufferView \(index) overruns its buffer")
+            }
             return (buffers[b].subdata(in: offset..<offset + length), view["byteStride"] as? Int ?? 0)
         }
 
@@ -618,21 +925,54 @@ nonisolated enum GLTFImporter {
             let components = ["SCALAR": 1, "VEC2": 2, "VEC3": 3, "VEC4": 4, "MAT4": 16][type] ?? 1
             let componentType = acc["componentType"] as? Int ?? 5126
             let normalized = acc["normalized"] as? Bool ?? false
-            guard let viewIndex = acc["bufferView"] as? Int else {
-                return ([Float](repeating: 0, count: count * components), components, count)
+            // Counts are file-declared: reject a negative/overflowing count and
+            // charge the Float array BEFORE reserveCapacity, so a tiny file
+            // that claims billions of components is refused without growing it.
+            guard count >= 0 else {
+                throw MeshImportError.malformed("gltf: accessor \(index) has a negative count")
             }
-            let (bytes, declaredStride) = try viewBytes(viewIndex)
-            let base = acc["byteOffset"] as? Int ?? 0
+            let (elementCount, elementOverflow) = count.multipliedReportingOverflow(by: components)
+            let (floatBytes, byteOverflow) = elementCount.multipliedReportingOverflow(
+                by: MemoryLayout<Float>.size)
+            guard !elementOverflow, !byteOverflow else {
+                throw MeshImportError.overBudget("accessor \(index) declares \(count) elements, an unrepresentable allocation")
+            }
             let size: Int
             switch componentType {
             case 5120, 5121: size = 1
             case 5122, 5123: size = 2
             default: size = 4
             }
+            guard let viewIndex = acc["bufferView"] as? Int else {
+                try budget.charge(floatBytes, "accessor \(index) (zero-filled)")
+                try budget.checkCancellation()
+                return ([Float](repeating: 0, count: elementCount), components, count)
+            }
+            let (bytes, declaredStride) = try viewBytes(viewIndex)
+            let base = acc["byteOffset"] as? Int ?? 0
+            guard base >= 0, base <= bytes.count else {
+                throw MeshImportError.malformed("gltf: accessor \(index) has a bad byteOffset")
+            }
             let stride = declaredStride > 0 ? declaredStride : size * components
-            var out = [Float](); out.reserveCapacity(count * components)
+            // Validate the declared extent against the actual view BEFORE
+            // reserving the output: a count that overruns its buffer is a
+            // malformed file, not a request for a huge temporary array.
+            if count > 0 {
+                let (span, spanOverflow) = (count - 1).multipliedReportingOverflow(by: stride)
+                let (step, stepOverflow) = (components - 1).multipliedReportingOverflow(by: size)
+                let (tail, tailOverflow) = step.addingReportingOverflow(size)
+                let (end, endOverflow) = span.addingReportingOverflow(tail)
+                let (finalEnd, finalOverflow) = base.addingReportingOverflow(end)
+                guard !spanOverflow, !stepOverflow, !tailOverflow,
+                      !endOverflow, !finalOverflow, finalEnd <= bytes.count else {
+                    throw MeshImportError.malformed("gltf: accessor \(index) overruns its view")
+                }
+            }
+            try budget.charge(floatBytes, "accessor \(index)")
+            var out = [Float](); out.reserveCapacity(elementCount)
             try bytes.withUnsafeBytes { raw in
                 for e in 0..<count {
+                    if e % 4096 == 0 { try budget.checkCancellation() }
                     for c in 0..<components {
                         let at = base + e * stride + c * size
                         guard at + size <= raw.count else { throw MeshImportError.malformed("gltf: accessor \(index) overruns its view") }
@@ -656,15 +996,41 @@ nonisolated enum GLTFImporter {
             guard index < accessors.count else { throw MeshImportError.malformed("gltf: index accessor \(index)") }
             let acc = accessors[index]
             let count = acc["count"] as? Int ?? 0
+            guard count >= 0 else {
+                throw MeshImportError.malformed("gltf: index accessor \(index) has a negative count")
+            }
+            guard count <= budget.limits.maximumTriangles * 3 else {
+                throw MeshImportError.overBudget(
+                    "index accessor \(index) declares \(count) indices, over the "
+                    + "\(budget.limits.maximumTriangles * 3)-index import budget")
+            }
             let componentType = acc["componentType"] as? Int ?? 5125
             guard let viewIndex = acc["bufferView"] as? Int else { return [] }
             let (bytes, declaredStride) = try viewBytes(viewIndex)
             let base = acc["byteOffset"] as? Int ?? 0
+            guard base >= 0, base <= bytes.count else {
+                throw MeshImportError.malformed("gltf: index accessor \(index) has a bad byteOffset")
+            }
             let size = componentType == 5121 ? 1 : componentType == 5123 ? 2 : 4
             let stride = declaredStride > 0 ? declaredStride : size
+            if count > 0 {
+                let (span, spanOverflow) = (count - 1).multipliedReportingOverflow(by: stride)
+                let (end, endOverflow) = span.addingReportingOverflow(size)
+                let (finalEnd, finalOverflow) = base.addingReportingOverflow(end)
+                guard !spanOverflow, !endOverflow, !finalOverflow, finalEnd <= bytes.count else {
+                    throw MeshImportError.malformed("gltf: indices overrun their view")
+                }
+            }
+            let (byteCount, byteOverflow) = count.multipliedReportingOverflow(
+                by: MemoryLayout<UInt32>.stride)
+            guard !byteOverflow else {
+                throw MeshImportError.overBudget("index accessor \(index) declares an unrepresentable allocation")
+            }
+            try budget.charge(byteCount, "index accessor \(index)")
             var out = [UInt32](); out.reserveCapacity(count)
             try bytes.withUnsafeBytes { raw in
                 for e in 0..<count {
+                    if e % 4096 == 0 { try budget.checkCancellation() }
                     let at = base + e * stride
                     guard at + size <= raw.count else { throw MeshImportError.malformed("gltf: indices overrun their view") }
                     switch size {
@@ -677,19 +1043,22 @@ nonisolated enum GLTFImporter {
             return out
         }
 
-        func imageBytes(_ imageIndex: Int) -> Data? {
+        func imageBytes(_ imageIndex: Int) throws -> Data? {
             guard imageIndex >= 0, imageIndex < images.count else { return nil }
             let image = images[imageIndex]
             if let viewIndex = image["bufferView"] as? Int, let (bytes, _) = try? viewBytes(viewIndex) {
+                try budget.charge(bytes.count, "texture \(imageIndex)")
                 return bytes
             }
             if let uri = image["uri"] as? String {
-                return decodeDataURI(uri) ?? MeshImportKit.sibling(uri, in: siblings)
+                let bytes = decodeDataURI(uri) ?? MeshImportKit.sibling(uri, in: siblings)
+                if let bytes { try budget.charge(bytes.count, "texture \(imageIndex)") }
+                return bytes
             }
             return nil
         }
 
-        func material(_ index: Int?) -> BodyMaterialSpec? {
+        func material(_ index: Int?) throws -> BodyMaterialSpec? {
             guard let index, index < materials.count else { return nil }
             let m = materials[index]
             // glTF's own defaults: baseColorFactor [1,1,1,1], metallicFactor 1,
@@ -718,24 +1087,24 @@ nonisolated enum GLTFImporter {
                     spec.opacity = f[3]
                 }
             }
-            func textureBytes(_ rawIndex: Any?) -> Data? {
+            func textureBytes(_ rawIndex: Any?) throws -> Data? {
                 guard let rawIndex = rawIndex as? Int, rawIndex >= 0,
                       rawIndex < textures.count,
                       let source = textures[rawIndex]["source"] as? Int else { return nil }
-                return imageBytes(source)
+                return try imageBytes(source)
             }
-            func textureData(_ info: [String: Any]?) -> (data: Data,
-                                                        orientation: MaterialTextureOrientation)? {
+            func textureData(_ info: [String: Any]?) throws -> (data: Data,
+                                                               orientation: MaterialTextureOrientation)? {
                 guard let info, let index = info["index"] as? Int,
-                      let data = textureBytes(index) else { return nil }
+                      let data = try textureBytes(index) else { return nil }
                 return (data, Self.textureOrientation(info))
             }
-            if let base = textureData(baseTexture) {
+            if let base = try textureData(baseTexture) {
                 spec.baseColorTexture = base.data
                 spec.textureMetadata = [Self.textureMetadata(
                     slot: .baseColor, data: base.data, orientation: base.orientation)]
             }
-            if let normal = textureData(m["normalTexture"] as? [String: Any]) {
+            if let normal = try textureData(m["normalTexture"] as? [String: Any]) {
                 spec.normalTexture = normal.data
                 spec.textureMetadata = (spec.textureMetadata ?? [])
                     + [Self.textureMetadata(
@@ -746,7 +1115,7 @@ nonisolated enum GLTFImporter {
             // factor×map stays the same in engineering, Present and on
             // re-export; assigning the packed image to both slots would read
             // its RGB luminance twice and lose the per-channel meaning.
-            if let packed = textureData(pbr?["metallicRoughnessTexture"] as? [String: Any]) {
+            if let packed = try textureData(pbr?["metallicRoughnessTexture"] as? [String: Any]) {
                 if let roughness = Self.channelPNG(packed.data, channel: 1) {
                     spec.roughnessTexture = roughness
                     spec.textureMetadata = (spec.textureMetadata ?? [])
@@ -773,7 +1142,7 @@ nonisolated enum GLTFImporter {
                 as? [String: Any])?["emissiveStrength"] as? Double {
                 spec.emissiveStrength = strength
             }
-            if let emissive = textureData(m["emissiveTexture"] as? [String: Any]) {
+            if let emissive = try textureData(m["emissiveTexture"] as? [String: Any]) {
                 spec.emissiveTexture = emissive.data
                 spec.textureMetadata = (spec.textureMetadata ?? [])
                     + [Self.textureMetadata(
@@ -821,8 +1190,16 @@ nonisolated enum GLTFImporter {
                 let (p, pc, pcount) = try floats(positionAccessor)
                 guard pc == 3, pcount > 0 else { continue }
                 var idx: [UInt32]
-                if let ia = prim["indices"] as? Int { idx = try indices(ia) } else { idx = (0..<UInt32(pcount)).map { $0 } }
+                if let ia = prim["indices"] as? Int {
+                    idx = try indices(ia)
+                } else {
+                    guard pcount <= Int(UInt32.max) else {
+                        throw MeshImportError.overBudget("a primitive declares more than UInt32.max vertices")
+                    }
+                    idx = (0..<UInt32(pcount)).map { $0 }
+                }
                 guard idx.count >= 3, idx.allSatisfy({ Int($0) < pcount }) else { continue }
+                try budget.charge(idx.count * MemoryLayout<UInt32>.stride, "glTF triangle indices")
                 idx = Array(idx.prefix(idx.count - idx.count % 3))
 
                 // Normal matrix: inverse-transpose of the upper 3×3.
@@ -833,6 +1210,7 @@ nonisolated enum GLTFImporter {
                 let nm = m3.inverse.transpose
                 let mirrored = m3.determinant < 0
 
+                try budget.charge(pcount * MemoryLayout<SIMD3<Float>>.stride, "glTF positions")
                 var positions = [SIMD3<Float>](); positions.reserveCapacity(pcount)
                 for i in 0..<pcount {
                     let v = world * SIMD4(Double(p[i * 3]), Double(p[i * 3 + 1]), Double(p[i * 3 + 2]), 1)
@@ -842,8 +1220,22 @@ nonisolated enum GLTFImporter {
                 if mirrored { // keep the winding outward
                     for t in stride(from: 0, to: idx.count, by: 3) { idx.swapAt(t + 1, t + 2) }
                 }
+                try budget.charge(pcount * MemoryLayout<SIMD3<Float>>.stride, "glTF normals")
                 var normals: [SIMD3<Float>]
-                if let na = attributes["NORMAL"] as? Int, let (n, nc, ncount) = try? floats(na), nc == 3, ncount == pcount {
+                var explicitNormals: (values: [Float], components: Int, count: Int)?
+                if let na = attributes["NORMAL"] as? Int {
+                    do {
+                        explicitNormals = try floats(na)
+                    } catch let error as MeshImportError {
+                        switch error {
+                        case .cancelled, .overBudget: throw error
+                        default: explicitNormals = nil
+                        }
+                    } catch {
+                        explicitNormals = nil
+                    }
+                }
+                if let (n, nc, ncount) = explicitNormals, nc == 3, ncount == pcount {
                     normals = (0..<pcount).map { i in
                         let v = nm * SIMD3(Double(n[i * 3]), Double(n[i * 3 + 1]), Double(n[i * 3 + 2]))
                         let len = simd_length(v)
@@ -853,11 +1245,25 @@ nonisolated enum GLTFImporter {
                     normals = MeshImportKit.computedNormals(positions: positions, indices: idx)
                 }
                 var render = RenderMesh(positions: positions, normals: normals, indices: idx)
-                if let ta = attributes["TEXCOORD_0"] as? Int, let (t, tc, tcount) = try? floats(ta), tc == 2, tcount == pcount {
+                var explicitTexcoords: (values: [Float], components: Int, count: Int)?
+                if let ta = attributes["TEXCOORD_0"] as? Int {
+                    do {
+                        explicitTexcoords = try floats(ta)
+                    } catch let error as MeshImportError {
+                        switch error {
+                        case .cancelled, .overBudget: throw error
+                        default: explicitTexcoords = nil
+                        }
+                    } catch {
+                        explicitTexcoords = nil
+                    }
+                }
+                if let (t, tc, tcount) = explicitTexcoords, tc == 2, tcount == pcount {
                     // glTF's (0,0) is the image's top-left — Metal's too.
+                    try budget.charge(pcount * MemoryLayout<SIMD2<Float>>.stride, "glTF texture coordinates")
                     render.texcoords = (0..<pcount).map { SIMD2(t[$0 * 2], t[$0 * 2 + 1]) }
                 }
-                var spec = material(prim["material"] as? Int)
+                var spec = try material(prim["material"] as? Int)
                 if render.texcoords == nil {
                     spec?.baseColorTexture = nil
                     spec?.normalTexture = nil
@@ -869,11 +1275,14 @@ nonisolated enum GLTFImporter {
                 }
                 let base = nodeName ?? meshName ?? "Part"
                 let name = primitives.count > 1 ? "\(base) \(pi + 1)" : base
+                try budget.addTriangles(idx.count / 3)
+                try budget.addPart(name)
                 parts.append(ImportedPart(name: name, mesh: render, material: spec))
             }
         }
         func visit(_ index: Int, parent: simd_double4x4, depth: Int) throws {
             guard index < nodes.count, depth < 64 else { return }
+            try budget.checkCancellation()
             let node = nodes[index]
             let world = parent * localMatrix(node)
             if let meshIndex = node["mesh"] as? Int {
@@ -897,6 +1306,7 @@ nonisolated enum GLTFImporter {
             // Meshes but no nodes referencing them (rare, but legal).
             for i in meshes.indices { try emit(meshIndex: i, world: matrix_identity_double4x4, nodeName: nil) }
         }
+        try budget.checkCancellation()
         guard !parts.isEmpty else { throw MeshImportError.empty }
         return parts
     }
@@ -920,10 +1330,12 @@ nonisolated enum OBJTexturedImporter {
         var texture: String?
     }
 
-    static func parts(from data: Data, siblings: [String: Data], unitScale: Double) throws -> [ImportedPart] {
+    static func parts(from data: Data, siblings: [String: Data], unitScale: Double,
+                      budget: MeshImportBudget = MeshImportBudget.fresh(fileName: "obj")) throws -> [ImportedPart] {
         guard let text = String(data: data, encoding: .utf8) ?? String(data: data, encoding: .isoLatin1) else {
             throw MeshImportError.malformed("obj: not text")
         }
+        try budget.charge(data.count, "OBJ text")
         var positions: [SIMD3<Float>] = [], texcoords: [SIMD2<Float>] = [], normals: [SIMD3<Float>] = []
         var materials: [String: MTL] = [:]
         // A group being accumulated: corner tuples → vertex indices.
@@ -944,18 +1356,24 @@ nonisolated enum OBJTexturedImporter {
             if !current.indices.isEmpty { builders.append(current) }
             current = Builder(name: groupName, materialName: currentMaterial)
         }
+        var parsedLines = 0
         for rawLine in text.split(whereSeparator: { $0 == "\n" || $0 == "\r\n" || $0 == "\r" }) {
+            parsedLines += 1
+            if parsedLines % 4096 == 0 { try budget.checkCancellation() }
             let line = rawLine.trimmingCharacters(in: .whitespaces)
             guard !line.isEmpty, !line.hasPrefix("#") else { continue }
             let fields = line.split(separator: " ", omittingEmptySubsequences: true).map(String.init)
             guard let key = fields.first else { continue }
             switch key {
             case "v" where fields.count >= 4:
+                try budget.charge(MemoryLayout<SIMD3<Float>>.stride, "OBJ vertices")
                 positions.append(SIMD3(Float(fields[1]) ?? 0, Float(fields[2]) ?? 0, Float(fields[3]) ?? 0) * Float(unitScale))
             case "vt" where fields.count >= 3:
                 // OBJ's origin is the image's bottom-left; the renderer's is top-left.
+                try budget.charge(MemoryLayout<SIMD2<Float>>.stride, "OBJ texture coordinates")
                 texcoords.append(SIMD2(Float(fields[1]) ?? 0, 1 - (Float(fields[2]) ?? 0)))
             case "vn" where fields.count >= 4:
+                try budget.charge(MemoryLayout<SIMD3<Float>>.stride, "OBJ normals")
                 normals.append(SIMD3(Float(fields[1]) ?? 0, Float(fields[2]) ?? 0, Float(fields[3]) ?? 0))
             case "o", "g":
                 flush()
@@ -972,6 +1390,9 @@ nonisolated enum OBJTexturedImporter {
                     }
                 }
             case "f" where fields.count >= 4:
+                // A face corner retains ~24 B of position plus its corner
+                // tuple; charge before the builder grows for this face.
+                try budget.charge((fields.count - 1) * 96, "OBJ face corners")
                 var cornerIDs: [UInt32] = []
                 for f in fields.dropFirst() {
                     let parts = f.split(separator: "/", omittingEmptySubsequences: false).map(String.init)
@@ -997,6 +1418,7 @@ nonisolated enum OBJTexturedImporter {
                 }
                 // Fan-triangulate polygons.
                 if cornerIDs.count >= 3 {
+                    try budget.addTriangles(cornerIDs.count - 2)
                     for k in 1..<(cornerIDs.count - 1) {
                         current.indices.append(contentsOf: [cornerIDs[0], cornerIDs[k], cornerIDs[k + 1]])
                     }
@@ -1006,10 +1428,24 @@ nonisolated enum OBJTexturedImporter {
             }
         }
         flush()
+        try budget.checkCancellation()
         guard !builders.isEmpty else { throw MeshImportError.empty }
         var parts: [ImportedPart] = []
         var used: [String: Int] = [:]
         for b in builders {
+            // The finalized RenderMesh copies the builder arrays and, when the
+            // file had no normals, computes one more full normal array.
+            try budget.charge(b.positions.count * MemoryLayout<SIMD3<Float>>.stride
+                              + b.indices.count * MemoryLayout<UInt32>.stride,
+                              "OBJ finalized mesh")
+            if !b.hasNormals {
+                try budget.charge(b.positions.count * MemoryLayout<SIMD3<Float>>.stride,
+                                  "OBJ computed normals")
+            }
+            if b.hasTexcoords {
+                try budget.charge(b.texcoords.count * MemoryLayout<SIMD2<Float>>.stride,
+                                  "OBJ finalized texture coordinates")
+            }
             var mesh = RenderMesh(positions: b.positions,
                                   normals: b.hasNormals ? b.normals.map { simd_length($0) > 1e-12 ? simd_normalize($0) : SIMD3(0, 1, 0) }
                                                         : MeshImportKit.computedNormals(positions: b.positions, indices: b.indices),
@@ -1018,6 +1454,7 @@ nonisolated enum OBJTexturedImporter {
             if let mname = b.materialName, let mtl = materials[mname] {
                 spec = BodyMaterialSpec(baseColor: mtl.color, metallic: 0, roughness: 0.5)
                 if b.hasTexcoords, let texName = mtl.texture, let bytes = MeshImportKit.sibling(texName, in: siblings) {
+                    try budget.charge(bytes.count, "OBJ texture '\(texName)'")
                     mesh.texcoords = b.texcoords
                     spec?.baseColorTexture = bytes
                 }
@@ -1027,7 +1464,9 @@ nonisolated enum OBJTexturedImporter {
             var name = b.name
             if let m = b.materialName, builders.filter({ $0.name == b.name }).count > 1 { name = "\(b.name) (\(m))" }
             let n = (used[name] ?? 0) + 1; used[name] = n
-            parts.append(ImportedPart(name: n > 1 ? "\(name) \(n)" : name, mesh: mesh, material: spec))
+            let finalName = n > 1 ? "\(name) \(n)" : name
+            try budget.addPart(finalName)
+            parts.append(ImportedPart(name: finalName, mesh: mesh, material: spec))
         }
         return parts
     }
@@ -1078,8 +1517,16 @@ nonisolated enum USDImporter {
         return metersPerUnit * 1000
     }
 
-    static func parts(from data: Data, fileName: String, unitScale: Double) throws -> [ImportedPart] {
+    static func parts(from data: Data, fileName: String, unitScale: Double,
+                      budget: MeshImportBudget = MeshImportBudget.fresh(fileName: "usd")) throws -> [ImportedPart] {
         let ext = (fileName as NSString).pathExtension.lowercased()
+        // USDZ is a ZIP container; check its DECLARED expansion before Model
+        // I/O opens and expands it. Model I/O owns the actual buffers, so this
+        // bound is on what the file asks for, not on framework internals.
+        if ext == "usdz" {
+            try ZipReader.chargeDeclaredSizes(in: data, budget: budget)
+        }
+        try budget.checkCancellation()
         let dir = FileManager.default.temporaryDirectory
             .appendingPathComponent("os3d-import-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
@@ -1091,11 +1538,13 @@ nonisolated enum USDImporter {
         }
         let asset = MDLAsset(url: url)
         asset.loadTextures()
+        try budget.checkCancellation()
         guard let meshes = asset.childObjects(of: MDLMesh.self) as? [MDLMesh], !meshes.isEmpty else {
             throw MeshImportError.empty
         }
         var parts: [ImportedPart] = []
         for mesh in meshes {
+            try budget.checkCancellation()
             if mesh.vertexAttributeData(forAttributeNamed: MDLVertexAttributeNormal) == nil {
                 mesh.addNormals(withAttributeNamed: MDLVertexAttributeNormal, creaseThreshold: 0.5)
             }
@@ -1104,6 +1553,10 @@ nonisolated enum USDImporter {
             else { continue }
             let texcoordData = mesh.vertexAttributeData(forAttributeNamed: MDLVertexAttributeTextureCoordinate, as: .float2)
             let count = mesh.vertexCount
+            guard count >= 0 else { throw MeshImportError.malformed("usd: negative vertex count") }
+            try budget.charge(count * (2 * MemoryLayout<SIMD3<Float>>.stride
+                                       + MemoryLayout<SIMD2<Float>>.stride),
+                              "USD vertex arrays")
             let world = MDLTransform.globalTransform(with: mesh, atTime: 0)
             let m3 = simd_float3x3(SIMD3(world.columns.0.x, world.columns.0.y, world.columns.0.z),
                                    SIMD3(world.columns.1.x, world.columns.1.y, world.columns.1.z),
@@ -1125,6 +1578,7 @@ nonisolated enum USDImporter {
                 }
             }
             for (si, sub) in ((mesh.submeshes as? [MDLSubmesh]) ?? []).enumerated() {
+                try budget.checkCancellation()
                 guard sub.geometryType == .triangles || sub.geometryType == .quads else { continue }
                 let map = sub.indexBuffer.map()
                 var raw = [UInt32](); raw.reserveCapacity(sub.indexCount)
@@ -1171,6 +1625,8 @@ nonisolated enum USDImporter {
                 if render.texcoords == nil { spec?.baseColorTexture = nil }
                 let base = mesh.name.isEmpty ? "Part" : mesh.name
                 let name = (mesh.submeshes?.count ?? 1) > 1 ? "\(base) \(si + 1)" : base
+                try budget.addTriangles(indices.count / 3)
+                try budget.addPart(name)
                 parts.append(ImportedPart(name: name, mesh: render, material: spec))
             }
         }

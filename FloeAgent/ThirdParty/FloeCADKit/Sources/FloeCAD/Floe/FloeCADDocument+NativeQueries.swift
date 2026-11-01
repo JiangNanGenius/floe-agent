@@ -642,7 +642,12 @@ public extension FloeCADDocument {
     func nativeImportData(_ data: Data,
                           format rawFormat: String,
                           fileName: String?,
-                          unitScale: Double?) -> CADCommandOutcome {
+                          unitScale: Double?,
+                          limits: MeshImportLimits = .standard,
+                          cancellation: (any MeshImportCancellationChecking)? = nil)
+        -> CADCommandOutcome {
+        let budget = MeshImportBudget(limits: limits, cancellation: cancellation,
+                                      fileName: fileName ?? "import")
         if let block = session.writeBlock {
             return Self.jsonOutcome(status: 409, object: ["ok": false, "error": block.code,
                 "message": block.message, "mutated": false])
@@ -658,31 +663,57 @@ public extension FloeCADDocument {
         func fail(_ code: String, _ message: String) -> CADCommandOutcome {
             Self.jsonOutcome(status: 422, object: ["ok": false, "error": code, "message": message])
         }
+        func fail(_ error: MeshImportError) -> CADCommandOutcome {
+            switch error {
+            case .cancelled:
+                return fail("cancelled", "Import cancelled; nothing was imported.")
+            case .overBudget(let detail):
+                return fail("import_over_budget",
+                            "The import exceeds the import budget: \(detail). Nothing was imported; "
+                            + "the source and document are unchanged.")
+            case .unsupportedFormat(let what):
+                return fail("unsupported_format", "The \(what) format is not supported by this import.")
+            case .empty:
+                return fail("empty_mesh", "The file produced no triangle meshes; nothing was imported.")
+            case .malformed(let what):
+                return fail("mesh_parse_failed", "The file could not be parsed: \(what)")
+            }
+        }
+        /// No mutation may be performed once the owner cancelled: STEP builds
+        /// every body first and commits them together, so a cancel during
+        /// tessellation (or between solids) leaves the document untouched.
+        func cancelled() -> CADCommandOutcome {
+            fail("cancelled", "Import cancelled; nothing was imported.")
+        }
+        do {
+            try budget.checkCancellation()
+        } catch let error as MeshImportError {
+            return fail(error)
+        } catch {
+            return fail("cancelled", "Import cancelled; nothing was imported.")
+        }
         switch format {
-        case "step", "stp":
-            let solids = STEPKit.solids(from: data)
-            guard !solids.isEmpty else {
-                return fail("no_solids", "The STEP file carries no readable solid; nothing was imported.")
-            }
-            for (index, solid) in solids.enumerated() {
-                let name = solids.count > 1 ? "\(baseName) \(index + 1)" : baseName
-                var localDocument = session.document
-                guard let body = STEPKit.body(from: solid, name: name,
-                                              revision: localDocument.nextRevision()) else {
-                    return fail("step_body_failed",
-                                "Solid \(index + 1) could not be meshed; nothing was imported.")
-                }
-                session.perform(AddBodyCommand(body: body, title: "Import \(name)"))
-                imported.append((body.id, body.name, true))
-            }
+        case "step", "stp", "iges", "igs":
+            // E31-R2: the STEP/IGES parse is one shared implementation with
+            // `CADExactImportService`; the synchronous legacy entry keeps the
+            // historical per-body undo granularity. The App/tool paths call
+            // `parseOffMain` + `.singleStep` instead, so a user-facing import
+            // never reads/tessellates on the MainActor.
+            return CADExactImportService.importSync(
+                data, format: format, fileName: fileName, unitScale: unitScale,
+                limits: limits, cancellation: cancellation, to: self)
         case "stl", "obj":
             let render: RenderMesh
             do {
                 if format == "stl" {
-                    render = try STLImporter.importSTL(data, unitScale: unitScale ?? 1)
+                    render = try STLImporter.importSTL(data, unitScale: unitScale ?? 1,
+                                                       budget: budget)
                 } else {
-                    render = try OBJImporter.importSingleMesh(data, unitScale: unitScale ?? 1)
+                    render = try OBJImporter.importSingleMesh(data, unitScale: unitScale ?? 1,
+                                                              budget: budget)
                 }
+            } catch let error as MeshImportError {
+                return fail(error)
             } catch {
                 return fail("mesh_parse_failed",
                             "The \(format.uppercased()) mesh could not be parsed: \(error.localizedDescription)")
@@ -690,6 +721,9 @@ public extension FloeCADDocument {
             guard !render.indices.isEmpty else {
                 return fail("empty_mesh", "The \(format.uppercased()) file produced no triangles.")
             }
+            do { try budget.addPart(baseName); try budget.checkCancellation() }
+            catch let error as MeshImportError { return fail(error) }
+            catch { return cancelled() }
             var localDocument = session.document
             var body = Body(id: BodyID(),
                             name: localDocument.uniqueBodyName(base: baseName),
@@ -700,103 +734,6 @@ public extension FloeCADDocument {
             body.euclid = EuclidBridge.euclidMesh(from: render)
             session.perform(AddBodyCommand(body: body, title: "Import \(body.name)"))
             imported.append((body.id, body.name, false))
-        case "iges", "igs":
-            // IGES is a SURFACE-exchange format: a file may carry closed
-            // solids, shells, or isolated faces. The kernel reader keeps the
-            // two apart (`OCCTKernel.readIGES`), and this branch keeps that
-            // truth all the way into the document. Solids become exact
-            // `Body.brep` bodies (`STEPKit.body`); shell/face roots become
-            // exact `Body.surfaceBRep` bodies (`IGESKit.surfaceBody`) — not
-            // render-only mesh bodies, and never analytic solids, so boolean/
-            // fillet/shell/STEP paths keep refusing them. Nothing is committed
-            // unless every listed solid converted, so a failed import really
-            // leaves the document untouched.
-            let iges = OCCTKernel.readIGES(data)
-            guard iges.readSucceeded else {
-                return fail("iges_read_failed",
-                            "The IGES file could not be read (its records did not parse); "
-                            + "nothing was imported.")
-            }
-            guard iges.rootCount > 0 else {
-                return fail("iges_empty",
-                            "The IGES file parsed but carries no transferable shape; "
-                            + "nothing was imported.")
-            }
-            var pending: [(body: Body, analytic: Bool, kind: String, faceCount: Int?)] = []
-            var localDocument = session.document
-            let total = iges.solids.count + iges.surfaces.count
-            for (index, solid) in iges.solids.enumerated() {
-                let name = total > 1 ? "\(baseName) Solid \(index + 1)" : baseName
-                guard let body = STEPKit.body(from: solid,
-                                              name: localDocument.uniqueBodyName(base: name),
-                                              revision: localDocument.nextRevision()) else {
-                    return fail("iges_import_failed",
-                                "The IGES file's solid \(index + 1) could not be tessellated; "
-                                + "nothing was imported.")
-                }
-                let faceCount = index < iges.solidFaceCounts.count
-                    ? iges.solidFaceCounts[index] : nil
-                pending.append((body, true, "solid", faceCount))
-            }
-            var skippedSurfaces = 0
-            for (index, surface) in iges.surfaces.enumerated() {
-                let name = total > 1 ? "\(baseName) Surface \(index + 1)"
-                                     : "\(baseName) Surface"
-                guard let body = IGESKit.surfaceBody(
-                    from: surface,
-                    name: localDocument.uniqueBodyName(base: name),
-                    revision: localDocument.nextRevision()) else {
-                    skippedSurfaces += 1
-                    continue
-                }
-                let faceCount = index < iges.surfaceFaceCounts.count
-                    ? iges.surfaceFaceCounts[index] : nil
-                pending.append((body, false, "surface", faceCount))
-            }
-            guard !pending.isEmpty else {
-                return fail("iges_import_failed",
-                            "The IGES file's \(iges.rootCount) shape(s) did not survive "
-                            + "validation and tessellation; nothing was imported.")
-            }
-            for entry in pending {
-                session.perform(AddBodyCommand(body: entry.body,
-                                               title: "Import \(entry.body.name)"))
-            }
-            let solidsImported = pending.filter { $0.analytic }.count
-            let surfacesImported = pending.count - solidsImported
-            var object: [String: Any] = [
-                "ok": true,
-                "imported": pending.map { entry -> [String: Any] in
-                    var row: [String: Any] = [
-                        "bodyID": entry.body.id.raw.uuidString,
-                        "name": entry.body.name,
-                        "analyticBRep": entry.analytic,
-                        "openSurfaceBRep": entry.kind == "surface",
-                        "kind": entry.kind,
-                    ]
-                    if let faceCount = entry.faceCount { row["faceCount"] = faceCount }
-                    return row
-                },
-                "count": pending.count,
-                "solidsImported": solidsImported,
-                "surfacesImported": surfacesImported,
-                "openSurfaceBodies": surfacesImported,
-                "mutated": true,
-            ]
-            if surfacesImported > 0 || skippedSurfaces > 0 {
-                var parts: [String] = []
-                if surfacesImported > 0 {
-                    parts.append("IGES surfaces are not solids: \(surfacesImported) shell/face "
-                        + "body(ies) were imported as exact open-surface bodies (analyticBRep: false) "
-                        + "and cannot take boolean, fillet or shell operations. They can be moved, "
-                        + "rotated, scaled, material-painted and exported back to IGES.")
-                }
-                if skippedSurfaces > 0 {
-                    parts.append("\(skippedSurfaces) surface(s) failed to tessellate and were skipped.")
-                }
-                object["note"] = parts.joined(separator: " ")
-            }
-            return Self.jsonOutcome(status: 200, object: object)
         default:
             return fail("unsupported_format",
                         "Native import supports STEP (.step/.stp), IGES (.igs/.iges) "

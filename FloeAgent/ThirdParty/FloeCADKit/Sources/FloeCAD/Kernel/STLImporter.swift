@@ -42,7 +42,12 @@ nonisolated enum STLImporter {
     }
 
     /// Parses binary or ASCII STL. Throws on malformed/truncated/empty input.
-    static func importSTL(_ data: Data, unitScale: Double = 1.0) throws -> RenderMesh {
+    ///
+    /// The declared triangle count is added to the import budget before any
+    /// corner array is reserved, so a small file cannot claim a huge mesh;
+    /// cancellation and the triangle ceiling are polled inside both readers.
+    static func importSTL(_ data: Data, unitScale: Double = 1.0,
+                          budget: MeshImportBudget = MeshImportBudget.fresh(fileName: "stl")) throws -> RenderMesh {
         // Binary detection first: the declared triangle count must match the
         // exact file size (binary files may legally start with "solid" too).
         if data.count >= 84 {
@@ -51,7 +56,15 @@ nonisolated enum STLImporter {
             }
             if data.count == 84 + Int(count) * 50 {
                 guard count > 0 else { throw ImportError.empty }
-                return try binaryMesh(data, triangleCount: Int(count), unitScale: unitScale)
+                try budget.addTriangles(Int(count))
+                let (cornerBytes, overflow) = Int(count).multipliedReportingOverflow(
+                    by: 3 * MemoryLayout<SIMD3<Double>>.stride)
+                guard !overflow else {
+                    throw MeshImportError.overBudget("the STL declares an unrepresentable corner array")
+                }
+                try budget.charge(cornerBytes, "STL corner array")
+                return try binaryMesh(data, triangleCount: Int(count), unitScale: unitScale,
+                                      budget: budget)
             }
         }
         guard
@@ -61,13 +74,13 @@ nonisolated enum STLImporter {
         else {
             throw ImportError.malformed("Not a valid binary or ASCII STL")
         }
-        return try asciiMesh(text, unitScale: unitScale)
+        return try asciiMesh(text, unitScale: unitScale, budget: budget)
     }
 
     // MARK: - Binary
 
     private static func binaryMesh(
-        _ data: Data, triangleCount: Int, unitScale: Double
+        _ data: Data, triangleCount: Int, unitScale: Double, budget: MeshImportBudget
     ) throws -> RenderMesh {
         // 50-byte records: normal (3×f32, ignored), 3 vertices (9×f32), u16 attr.
         var corners = [SIMD3<Double>]()
@@ -86,15 +99,19 @@ nonisolated enum STLImporter {
                 offset += 50
             }
         }
-        return try weldedMesh(corners: corners)
+        return try weldedMesh(corners: corners, budget: budget)
     }
 
     // MARK: - ASCII
 
-    private static func asciiMesh(_ text: String, unitScale: Double) throws -> RenderMesh {
+    private static func asciiMesh(_ text: String, unitScale: Double,
+                                  budget: MeshImportBudget) throws -> RenderMesh {
         var corners = [SIMD3<Double>]()
         var pending = [SIMD3<Double>]()
+        var parsedLines = 0
         for rawLine in text.split(whereSeparator: \.isNewline) {
+            parsedLines += 1
+            if parsedLines % 4096 == 0 { try budget.checkCancellation() }
             let tokens = rawLine.split(whereSeparator: { $0 == " " || $0 == "\t" })
             guard let keyword = tokens.first else { continue }
             switch keyword.lowercased() {
@@ -109,6 +126,8 @@ nonisolated enum STLImporter {
                 guard pending.count == 3 else {
                     throw ImportError.malformed("Facet with \(pending.count) vertices")
                 }
+                try budget.addTriangles(1)
+                try budget.charge(3 * MemoryLayout<SIMD3<Double>>.stride, "STL corner array")
                 corners.append(contentsOf: pending)
                 pending.removeAll(keepingCapacity: true)
             case "solid", "endsolid", "facet", "outer", "endloop":
@@ -118,14 +137,15 @@ nonisolated enum STLImporter {
             }
         }
         guard pending.isEmpty else { throw ImportError.malformed("Unterminated facet") }
-        return try weldedMesh(corners: corners)
+        return try weldedMesh(corners: corners, budget: budget)
     }
 
     // MARK: - Weld
 
     /// `corners` is a flat triangle list (3 entries per triangle). Face normals
     /// are recomputed from winding; degenerate triangles are dropped.
-    private static func weldedMesh(corners: [SIMD3<Double>]) throws -> RenderMesh {
+    private static func weldedMesh(corners: [SIMD3<Double>],
+                                   budget: MeshImportBudget) throws -> RenderMesh {
         var positions = [SIMD3<Float>]()
         var normals = [SIMD3<Float>]()
         var indices = [UInt32]()
@@ -133,6 +153,7 @@ nonisolated enum STLImporter {
 
         var i = 0
         while i + 2 < corners.count {
+            if (i / 3) % 4096 == 0 { try budget.checkCancellation() }
             let a = corners[i], b = corners[i + 1], c = corners[i + 2]
             i += 3
             let cross = simd_cross(b - a, c - a)
@@ -143,8 +164,13 @@ nonisolated enum STLImporter {
                 let p = SIMD3<Float>(corner)
                 let key = WeldKey(position: p, normal: normal, quantum: weldQuantum)
                 if let existing = lookup[key] {
+                    try budget.charge(MemoryLayout<UInt32>.stride, "STL welded indices")
                     indices.append(existing)
                 } else {
+                    // Positions + normals + index + the weld dictionary entry.
+                    try budget.charge(2 * MemoryLayout<SIMD3<Float>>.stride
+                                      + 2 * MemoryLayout<UInt32>.stride + 48,
+                                      "STL welded vertex")
                     let index = UInt32(positions.count)
                     lookup[key] = index
                     positions.append(p)

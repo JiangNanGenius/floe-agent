@@ -24,22 +24,27 @@ nonisolated enum BlendImporter {
 
     // MARK: - Entry
 
-    static func parts(from raw: Data, siblings: [String: Data], unitScale: Double) throws -> [ImportedPart] {
+    static func parts(from raw: Data, siblings: [String: Data], unitScale: Double,
+                      budget: MeshImportBudget = MeshImportBudget.fresh(fileName: "blend")) throws -> [ImportedPart] {
         var data = raw
         if data.count >= 2, data[data.startIndex] == 0x1f, data[data.startIndex + 1] == 0x8b {
-            data = try gunzip(data)
+            data = try gunzip(data, budget: budget)
         } else if data.count >= 4, data[data.startIndex] == 0x28, data[data.startIndex + 1] == 0xb5,
                   data[data.startIndex + 2] == 0x2f, data[data.startIndex + 3] == 0xfd {
             throw MeshImportError.malformed("blend: this file is zstd-compressed (Blender 3.0+ \"Compress\" save); "
                                             + "save it without compression or export glTF")
         }
-        let file = try BlendFile(data)
-        return try extract(file, siblings: siblings, unitScale: unitScale)
+        // `BlendFile` keeps one byte array of the decoded file; charge the
+        // copy before it is made so the gzip payload is never resident twice
+        // beyond the same budget.
+        try budget.charge(data.count, "blend decoded bytes")
+        let file = try BlendFile(data, budget: budget)
+        return try extract(file, siblings: siblings, unitScale: unitScale, budget: budget)
     }
 
     // MARK: - gzip
 
-    private static func gunzip(_ data: Data) throws -> Data {
+    private static func gunzip(_ data: Data, budget: MeshImportBudget) throws -> Data {
         // RFC 1952 header: ID1 ID2 CM FLG MTIME(4) XFL OS, then optional
         // fields by FLG; the payload is a raw deflate stream.
         let bytes = [UInt8](data)
@@ -54,6 +59,14 @@ nonisolated enum BlendImporter {
         // ISIZE (mod 2^32) in the trailer gives the size for anything under 4 GB.
         let isize = Int(bytes[bytes.count - 4]) | Int(bytes[bytes.count - 3]) << 8
             | Int(bytes[bytes.count - 2]) << 16 | Int(bytes[bytes.count - 1]) << 24
+        // The trailer is file-declared. Refuse an oversized ISIZE before the
+        // destination buffer exists (a 10-byte gzip can claim 4 GiB).
+        try budget.charge(isize, "blend gzip payload")
+        guard isize <= budget.limits.maximumExpandedBytes else {
+            throw MeshImportError.overBudget(
+                "the Blender gzip payload declares \(isize / (1024 * 1024)) MiB, over the "
+                + "\(budget.limits.maximumExpandedBytes / (1024 * 1024)) MiB import budget")
+        }
         let capacity = max(isize, 1 << 16)
         var out = Data(count: capacity)
         let produced = out.withUnsafeMutableBytes { dst -> Int in
@@ -122,7 +135,7 @@ nonisolated enum BlendImporter {
         var structIndex: [String: Int] = [:]
         var typeSizes: [String: Int] = [:]
 
-        init(_ data: Data) throws {
+        init(_ data: Data, budget: MeshImportBudget) throws {
             bytes = [UInt8](data)
             guard bytes.count > 12, String(decoding: bytes[0..<7], as: UTF8.self) == "BLENDER" else {
                 throw MeshImportError.malformed("blend: not a Blender file")
@@ -130,7 +143,7 @@ nonisolated enum BlendImporter {
             pointerSize = bytes[7] == UInt8(ascii: "-") ? 8 : 4
             littleEndian = bytes[8] == UInt8(ascii: "v")
             version = Int(String(decoding: bytes[9..<12], as: UTF8.self)) ?? 0
-            try readBlocks()
+            try readBlocks(budget: budget)
             try readDNA()
         }
 
@@ -163,10 +176,11 @@ nonisolated enum BlendImporter {
             return String(decoding: bytes[at..<end], as: UTF8.self)
         }
 
-        private func readBlocks() throws {
+        private func readBlocks(budget: MeshImportBudget) throws {
             var offset = 12
             let header = 16 + pointerSize
             while offset + header <= bytes.count {
+                try budget.checkCancellation()
                 let code = String(decoding: bytes[offset..<offset + 4].prefix { $0 != 0 }, as: UTF8.self)
                 let size = Int(i32(offset + 4))
                 let old = pointer(offset + 8)
@@ -319,7 +333,8 @@ nonisolated enum BlendImporter {
         var texture: Data?
     }
 
-    private static func extract(_ file: BlendFile, siblings: [String: Data], unitScale: Double) throws -> [ImportedPart] {
+    private static func extract(_ file: BlendFile, siblings: [String: Data], unitScale: Double,
+                                budget: MeshImportBudget) throws -> [ImportedPart] {
         guard file.structDef("Object") != nil, file.structDef("Mesh") != nil else {
             throw MeshImportError.malformed("blend: no Object/Mesh structs in DNA")
         }
@@ -327,6 +342,7 @@ nonisolated enum BlendImporter {
         var materialCache: [UInt64: RawMaterial] = [:]
 
         for ob in file.blocks where ob.code == "OB" && file.structName(of: ob) == "Object" {
+            try budget.checkCancellation()
             guard file.int(ob, "Object", "type") == objectTypeMesh,
                   let me = file.deref(file.ptr(ob, "Object", "data")), file.structName(of: me) == "Mesh"
             else { continue }
@@ -346,7 +362,7 @@ nonisolated enum BlendImporter {
                 SIMD3(world.columns.1.x, world.columns.1.y, world.columns.1.z),
                 SIMD3(world.columns.2.x, world.columns.2.y, world.columns.2.z)).determinant < 0
 
-            guard let geometry = geometry(of: me, in: file) else { continue }
+            guard let geometry = try geometry(of: me, in: file, budget: budget) else { continue }
             let (positionsLocal, polygons, uvs) = geometry
             guard !polygons.isEmpty else { continue }
 
@@ -403,6 +419,7 @@ nonisolated enum BlendImporter {
                     return idx
                 }
                 for (a, b, c) in triangles {
+                    try budget.addTriangles(1)
                     guard let ia = corner(a), let ib = corner(b), let ic = corner(c) else { continue }
                     if mirrored { outIndices += [ia, ic, ib] } else { outIndices += [ia, ib, ic] }
                 }
@@ -414,11 +431,17 @@ nonisolated enum BlendImporter {
                 var spec: BodyMaterialSpec?
                 if slot < slotMaterials.count, let raw = slotMaterials[slot] {
                     spec = BodyMaterialSpec(baseColor: raw.color, metallic: 0, roughness: 0.5)
-                    if mesh.texcoords != nil { spec?.baseColorTexture = raw.texture }
+                    if mesh.texcoords != nil {
+                        if let texture = raw.texture {
+                            try budget.charge(texture.count, "blend texture")
+                        }
+                        spec?.baseColorTexture = raw.texture
+                    }
                 }
                 let partName = usedSlots.count > 1
                     ? "\(name) (\(slotMaterials.indices.contains(slot) ? (slotMaterials[slot]?.name ?? "slot \(slot + 1)") : "slot \(slot + 1)"))"
                     : name
+                try budget.addPart(partName)
                 parts.append(ImportedPart(name: partName, mesh: mesh, material: spec))
             }
         }
@@ -435,13 +458,27 @@ nonisolated enum BlendImporter {
 
     /// Vertex positions (local), polygons with their corner loops, and per-loop
     /// UVs if the mesh has any — from whichever storage the file's version uses.
-    private static func geometry(of me: Block, in file: BlendFile)
+    private static func geometry(of me: Block, in file: BlendFile,
+                                 budget: MeshImportBudget) throws
         -> (positions: [SIMD3<Float>], polygons: Polygons, uvs: [SIMD2<Float>]?)? {
         let totvert = file.int(me, "Mesh", "totvert") ?? 0
         let totpoly = file.int(me, "Mesh", "totpoly") ?? 0
         let totloop = file.int(me, "Mesh", "totloop") ?? 0
         guard totvert > 0, totpoly > 0, totloop > 0 else { return nil }
+        // Mesh counts are file-declared. Refuse a count the import budget
+        // cannot hold BEFORE reserving or mapping that many elements.
+        guard totvert <= budget.limits.maximumTriangles * 3,
+              totloop <= budget.limits.maximumTriangles * 12,
+              totpoly <= budget.limits.maximumTriangles else {
+            throw MeshImportError.overBudget(
+                "the Blender mesh declares \(totvert) vertices / \(totpoly) faces, over the import budget")
+        }
+        try budget.charge(totvert * MemoryLayout<SIMD3<Float>>.stride
+                          + totloop * MemoryLayout<Int>.stride
+                          + totpoly * 48,
+                          "Blender mesh arrays")
 
+        try budget.checkCancellation()
         // Positions: MVert.co (≤ 3.4) or the "position" float3 vertex layer (3.5+).
         var positions: [SIMD3<Float>] = []
         if let mv = file.deref(file.ptr(me, "Mesh", "mvert")), file.structDef("MVert")?.byName["co"] != nil {
@@ -458,6 +495,7 @@ nonisolated enum BlendImporter {
         }
         guard positions.count == totvert else { return nil }
 
+        try budget.checkCancellation()
         // Corner → vertex: MLoop.v (≤ 3.5) or the ".corner_vert" int layer (3.6+).
         var loopVertex: [Int] = []
         if let ml = file.deref(file.ptr(me, "Mesh", "mloop")), file.structDef("MLoop")?.byName["v"] != nil {
@@ -474,6 +512,7 @@ nonisolated enum BlendImporter {
         polygons.loopVertex = loopVertex
         if let mp = file.deref(file.ptr(me, "Mesh", "mpoly")), file.structDef("MPoly")?.byName["loopstart"] != nil {
             for i in 0..<totpoly {
+                if i % 4096 == 0 { try budget.checkCancellation() }
                 let start = file.int(mp, "MPoly", "loopstart", index: i) ?? 0
                 let count = file.int(mp, "MPoly", "totloop", index: i) ?? 0
                 let slot = file.int(mp, "MPoly", "mat_nr", index: i) ?? 0
@@ -483,6 +522,7 @@ nonisolated enum BlendImporter {
         } else if let offsets = file.deref(file.ptr(me, "Mesh", "poly_offset_indices")) {
             let slots = file.layers(me, "Mesh", "pdata").first(where: { $0.type == cdPropInt32 && $0.name == "material_index" })?.data
             for i in 0..<totpoly {
+                if i % 4096 == 0 { try budget.checkCancellation() }
                 let start = Int(file.i32(offsets.dataOffset + 4 * i))
                 let end = Int(file.i32(offsets.dataOffset + 4 * (i + 1)))
                 let slot = slots.map { Int(file.i32($0.dataOffset + 4 * i)) } ?? 0
@@ -492,6 +532,7 @@ nonisolated enum BlendImporter {
         }
         guard !polygons.isEmpty else { return nil }
 
+        try budget.checkCancellation()
         // UVs per corner: Mesh.mloopuv, a CD_MLOOPUV layer, or a float2 layer.
         var uvs: [SIMD2<Float>]?
         if let muv = file.deref(file.ptr(me, "Mesh", "mloopuv")), file.structDef("MLoopUV")?.byName["uv"] != nil {

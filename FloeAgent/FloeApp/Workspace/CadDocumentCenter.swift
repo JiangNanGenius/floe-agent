@@ -112,7 +112,17 @@ actor CadDocumentCenter: CadDocumentHost {
     /// mints a grant from tool input and owns the proposal authority context.
     func threeDAction(documentID: String, requestJSON: String,
                       access: CadDocumentAccess) async throws -> String {
+        // Legacy entry for callers without a runtime token.
+        try await threeDAction(documentID: documentID, requestJSON: requestJSON,
+                               access: access, cancellation: CancellationToken())
+    }
+
+    func threeDAction(documentID: String, requestJSON: String,
+                      access: CadDocumentAccess,
+                      cancellation: CancellationToken) async throws -> String {
+        try cancellation.throwIfCancelled()
         let resolved = try await resolveNativeAware(documentID: documentID, access: access)
+        try cancellation.throwIfCancelled()
         let url = try resolved.service.guardResolver.resolve(resolved.id)
         let canonicalTarget = Self.canonicalDocumentPath(url)
         guard let data = requestJSON.data(using: .utf8),
@@ -126,7 +136,8 @@ actor CadDocumentCenter: CadDocumentHost {
             switch kind {
             case "apply":
                 return try await nativeApply(request: request, access: access,
-                                             canonicalTarget: canonicalTarget)
+                                             canonicalTarget: canonicalTarget,
+                                             cancellation: cancellation)
             case "propose":
                 let reply = try await FloeCAD3DBridge.shared.handle(url: url, requestJSON: requestJSON)
                 if let proposalID = Self.nativeProposalID(in: reply) {
@@ -165,7 +176,8 @@ actor CadDocumentCenter: CadDocumentHost {
                 // It never mutates the package directly.
                 return try await nativeImportProposal(resolved: resolved, documentURL: url,
                                                       request: request, access: access,
-                                                      canonicalTarget: canonicalTarget)
+                                                      canonicalTarget: canonicalTarget,
+                                                      cancellation: cancellation)
             case "preview":
                 return try await nativePreview(request: request, access: access,
                                                canonicalTarget: canonicalTarget)
@@ -1459,7 +1471,9 @@ actor CadDocumentCenter: CadDocumentHost {
     /// never modified.
     private func nativeImportProposal(resolved: Resolved, documentURL: URL,
                                       request: [String: Any], access: CadDocumentAccess,
-                                      canonicalTarget: String) async throws -> String {
+                                      canonicalTarget: String,
+                                      cancellation: CancellationToken) async throws -> String {
+        try cancellation.throwIfCancelled()
         let payload = request["payload"] as? [String: Any] ?? [:]
         guard let input = payload["path"] as? String, !input.isEmpty else {
             throw FloeError.validationFailed("import requires payload.path (a workspace path).")
@@ -1485,6 +1499,7 @@ actor CadDocumentCenter: CadDocumentHost {
         }
         try resolved.service.guardResolver.assertReadableSize(inputURL)
         let bytes = try Data(contentsOf: inputURL)
+        try cancellation.throwIfCancelled()
         guard !bytes.isEmpty else {
             throw FloeError.validationFailed(
                 "The import source \(inputURL.lastPathComponent) is empty; nothing to import.")
@@ -1536,26 +1551,59 @@ actor CadDocumentCenter: CadDocumentHost {
                 format: format,
                 fileName: explicitName ?? inputURL.lastPathComponent,
                 unitScale: payload["unitScale"] as? Double,
-                sourceSHA256: sourceSHA, summary: summary)
+                sourceSHA256: sourceSHA, summary: summary,
+                cancellation: cancellation)
         } catch let error as CADDocumentError {
-            await NativeCADTaskRegistry.shared.finish(id: taskID, state: .failed,
-                                                      detail: error.message)
-            throw Self.classifiedNativeError(error)
+            let cancelled = error.code == "cancelled" || cancellation.isCancelled
+            await NativeCADTaskRegistry.shared.finish(
+                id: taskID, state: cancelled ? .cancelled : .failed,
+                detail: error.message)
+            throw cancelled ? FloeError.cancelled : Self.classifiedNativeError(error)
         }
-        await NativeCADTaskRegistry.shared.finish(id: taskID, state: .completed,
-                                                  detail: sourceRelative)
-
+        if cancellation.isCancelled {
+            // The draft finished after the owner cancelled: remove the
+            // in-process proposal, record the honest state and refuse before
+            // it is persisted or shown.
+            await FloeCAD3DBridge.shared.discard(proposalID: record.id)
+            await NativeCADTaskRegistry.shared.finish(id: taskID, state: .cancelled,
+                                                      detail: "cancelled during import draft")
+            throw FloeError.cancelled
+        }
         nativeProposalContexts[record.id] = NativeProposalContext(
             access: access, canonicalPath: canonicalTarget)
+        // A draft that finished after the owner cancelled must not become a
+        // durable pending proposal. The in-process record is discarded too.
+        if cancellation.isCancelled {
+            await FloeCAD3DBridge.shared.discard(proposalID: record.id)
+            nativeProposalContexts[record.id] = nil
+            await NativeCADTaskRegistry.shared.finish(id: taskID, state: .cancelled,
+                                                      detail: "cancelled before persist")
+            throw FloeError.cancelled
+        }
         do {
             try await persistNativeImportProposal(
                 record: record, access: access, canonicalTarget: canonicalTarget)
         } catch {
             await FloeCAD3DBridge.shared.discard(proposalID: record.id)
             nativeProposalContexts[record.id] = nil
+            await NativeCADTaskRegistry.shared.finish(
+                id: taskID, state: .failed,
+                detail: "the import proposal could not be persisted")
             throw FloeError.storageCorrupted(
                 "The import proposal could not be persisted, so it was not drafted: \(error.localizedDescription)")
         }
+        if cancellation.isCancelled {
+            // The persist had already committed; remove it so a cancelled
+            // close/switch leaves no pending proposal behind.
+            await FloeCAD3DBridge.shared.discard(proposalID: record.id)
+            nativeProposalContexts[record.id] = nil
+            try? await nativeProposals.markRejected(record.id)
+            await NativeCADTaskRegistry.shared.finish(id: taskID, state: .cancelled,
+                                                      detail: "cancelled after persist")
+            throw FloeError.cancelled
+        }
+        await NativeCADTaskRegistry.shared.finish(id: taskID, state: .completed,
+                                                  detail: sourceRelative)
 
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
@@ -1679,8 +1727,9 @@ actor CadDocumentCenter: CadDocumentHost {
         case "exists":
             return FloeError.validationFailed(
                 "A CAD package already exists at that name; the factory unique-ifies automatically—retry create without removing anything.")
-        case "no_solids", "iges_empty", "empty_mesh", "iges_read_failed", "iges_import_failed",
-             "mesh_parse_failed", "unsupported_format":
+        case "no_solids", "iges_empty", "empty_mesh", "empty_import", "iges_read_failed",
+             "iges_import_failed", "mesh_parse_failed", "unsupported_format",
+             "import_over_budget", "gltf_external_resources_unsupported", "gltf_invalid_json":
             return FloeError.validationFailed(message)
         case "stale_proposal":
             return FloeError.validationFailed(message)
@@ -1762,7 +1811,9 @@ actor CadDocumentCenter: CadDocumentHost {
     /// bridge's proposal binding. Only after all of that may a grant be
     /// reserved.
     private func nativeApply(request: [String: Any], access: CadDocumentAccess,
-                             canonicalTarget: String) async throws -> String {
+                             canonicalTarget: String,
+                             cancellation: CancellationToken) async throws -> String {
+        try cancellation.throwIfCancelled()
         guard let proposalString = request["proposal_id"] as? String,
               let proposalID = UUID(uuidString: proposalString),
               let grantID = request["grant_id"] as? String, !grantID.isEmpty else {
@@ -1773,7 +1824,8 @@ actor CadDocumentCenter: CadDocumentHost {
         return try await nativeApplyTransaction(proposalID: proposalID,
                                                 authorization: .interactiveGrant(grantID),
                                                 requestID: requestID, access: access,
-                                                canonicalTarget: canonicalTarget)
+                                                canonicalTarget: canonicalTarget,
+                                                cancellation: cancellation)
     }
 
     /// Automatic apply for the runtime-approved `cad.document` call (no UI
@@ -1860,7 +1912,8 @@ actor CadDocumentCenter: CadDocumentHost {
     private func nativeApplyTransaction(proposalID: UUID,
                                         authorization: NativeApplyAuthorization,
                                         requestID: String, access: CadDocumentAccess,
-                                        canonicalTarget: String) async throws -> String {
+                                        canonicalTarget: String,
+                                        cancellation: CancellationToken? = nil) async throws -> String {
         let mode = authorization.mode
         // Idempotent replay first: after a successful apply the live context is
         // cleared, but a retry with the same request id must return the
@@ -1937,7 +1990,8 @@ actor CadDocumentCenter: CadDocumentHost {
         let outcome = try await nativePerformApply(proposalID: proposalID,
                                                    authorization: authorization,
                                                    requestID: requestID, binding: binding,
-                                                   recordedAccess: access)
+                                                   recordedAccess: access,
+                                                   cancellation: cancellation)
         return try Self.encodeNativeReceipt(outcome.receipt, replay: outcome.replay, mode: mode)
     }
 
@@ -1954,8 +2008,10 @@ actor CadDocumentCenter: CadDocumentHost {
     private func nativePerformApply(proposalID: UUID, authorization: NativeApplyAuthorization,
                                     requestID: String,
                                     binding: FloeCAD3DBridge.ProposalBinding,
-                                    recordedAccess: CadDocumentAccess) async throws
+                                    recordedAccess: CadDocumentAccess,
+                                    cancellation: CancellationToken? = nil) async throws
         -> (receipt: CADApplyReceipt, replay: Bool) {
+        try cancellation?.throwIfCancelled()
         let gateKey = Self.canonicalDocumentPath(URL(fileURLWithPath: binding.documentPath))
         let grantID = authorization.grantID
         return try await withDocumentGate(gateKey) {
@@ -1987,7 +2043,7 @@ actor CadDocumentCenter: CadDocumentHost {
                         "The document content changed (expected \(expected.prefix(12))…, actual \(actual.prefix(12))…); regenerate the proposal.")
                 }
             }
-            if Task.isCancelled {
+            if Task.isCancelled || cancellation?.isCancelled == true {
                 if let grantID { await self.grants.releaseReservation(grantID: grantID) }
                 throw FloeError.cancelled
             }
@@ -2011,7 +2067,8 @@ actor CadDocumentCenter: CadDocumentHost {
                 if let importSpec {
                     receipt = try await self.performAuthorizedImport(
                         proposalID: proposalID, spec: importSpec,
-                        binding: binding, access: recordedAccess)
+                        binding: binding, access: recordedAccess,
+                        cancellation: cancellation)
                 } else {
                     receipt = try await FloeCAD3DBridge.shared.performAuthorizedApply(proposalID: proposalID)
                 }
@@ -2045,7 +2102,9 @@ actor CadDocumentCenter: CadDocumentHost {
     private func performAuthorizedImport(proposalID: UUID,
                                          spec: FloeCAD3DBridge.ImportSpec,
                                          binding: FloeCAD3DBridge.ProposalBinding,
-                                         access: CadDocumentAccess) async throws -> CADApplyReceipt {
+                                         access: CadDocumentAccess,
+                                         cancellation: CancellationToken? = nil) async throws -> CADApplyReceipt {
+        try cancellation?.throwIfCancelled()
         let resolved = try resolve(documentID: binding.documentPath, access: access,
                                    allowingNativePackages: true)
         var sourceRelative = spec.sourceRelativePath
@@ -2069,9 +2128,11 @@ actor CadDocumentCenter: CadDocumentHost {
             throw FloeError.validationFailed(
                 "The import source \(sourceURL.lastPathComponent) changed after the preview; re-read it and draft the import again.")
         }
+        try cancellation?.throwIfCancelled()
         do {
             return try await FloeCAD3DBridge.shared.performAuthorizedImport(
-                proposalID: proposalID, data: bytes, expectedSourceSHA256: sourceSHA)
+                proposalID: proposalID, data: bytes, expectedSourceSHA256: sourceSHA,
+                cancellation: cancellation)
         } catch let error as CADDocumentError {
             throw Self.classifiedNativeError(error)
         }

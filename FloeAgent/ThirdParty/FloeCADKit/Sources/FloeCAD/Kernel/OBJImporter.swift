@@ -53,11 +53,14 @@ nonisolated enum OBJImporter {
     /// any `o`/`g` land in a leading unnamed group.
     ///
     /// `unitScale` maps file units to model units (OBJ is unitless, like STL).
-    static func importOBJ(_ data: Data, unitScale: Double = 1.0) throws -> [Group] {
+    static func importOBJ(_ data: Data, unitScale: Double = 1.0,
+                          budget: MeshImportBudget = MeshImportBudget.fresh(fileName: "obj"))
+        throws -> [Group] {
         guard let text = String(data: data, encoding: .utf8)
                 ?? String(data: data, encoding: .isoLatin1) else {
             throw ImportError.malformed("OBJ is not text")
         }
+        try budget.charge(data.count, "OBJ text")
 
         // `v` indices are FILE-global and 1-based (negative = relative to the
         // end), so vertices are collected across the whole file even though
@@ -70,7 +73,10 @@ nonisolated enum OBJImporter {
             if !current.corners.isEmpty { groups.append(current) }
         }
 
+        var parsedLines = 0
         for rawLine in text.split(separator: "\n", omittingEmptySubsequences: false) {
+            parsedLines += 1
+            if parsedLines % 4096 == 0 { try budget.checkCancellation() }
             let line = rawLine.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !line.isEmpty, !line.hasPrefix("#") else { continue }
             let fields = line.split(whereSeparator: { $0 == " " || $0 == "\t" })
@@ -83,6 +89,7 @@ nonisolated enum OBJImporter {
                       let z = Double(fields[3]) else {
                     throw ImportError.malformed("bad vertex: \(line)")
                 }
+                try budget.charge(MemoryLayout<SIMD3<Double>>.stride, "OBJ vertices")
                 vertices.append(SIMD3(x, y, z) * unitScale)
 
             case "o", "g":
@@ -107,6 +114,8 @@ nonisolated enum OBJImporter {
                     return vertices[index]
                 }
                 // Fan-triangulate; OBJ polygons are planar and convex by convention.
+                try budget.charge(corner.count * 96, "OBJ face corners")
+                try budget.addTriangles(corner.count - 2)
                 for i in 1..<(corner.count - 1) {
                     current.corners.append(contentsOf: [corner[0], corner[i], corner[i + 1]])
                 }
@@ -117,17 +126,22 @@ nonisolated enum OBJImporter {
         }
         flush()
 
-        let meshes = groups.compactMap { group -> Group? in
-            guard let mesh = weldedMesh(corners: group.corners) else { return nil }
-            return Group(name: group.name, mesh: mesh)
+        try budget.checkCancellation()
+        var meshes: [Group] = []
+        for group in groups {
+            guard let mesh = try weldedMesh(corners: group.corners, budget: budget) else { continue }
+            try budget.addPart(group.name.isEmpty ? "Part" : group.name)
+            meshes.append(Group(name: group.name, mesh: mesh))
         }
         guard !meshes.isEmpty else { throw ImportError.empty }
         return meshes
     }
 
     /// Every group welded into ONE mesh — the "import as a single body" path.
-    static func importSingleMesh(_ data: Data, unitScale: Double = 1.0) throws -> RenderMesh {
-        let groups = try importOBJ(data, unitScale: unitScale)
+    static func importSingleMesh(_ data: Data, unitScale: Double = 1.0,
+                                 budget: MeshImportBudget = MeshImportBudget.fresh(fileName: "obj"))
+        throws -> RenderMesh {
+        let groups = try importOBJ(data, unitScale: unitScale, budget: budget)
         if groups.count == 1 { return groups[0].mesh }
         var positions = [SIMD3<Float>]()
         var normals = [SIMD3<Float>]()
@@ -145,7 +159,8 @@ nonisolated enum OBJImporter {
 
     /// Nil (rather than throwing) when a group holds no non-degenerate triangle
     /// — an empty `g` line is common and must not fail the whole import.
-    private static func weldedMesh(corners: [SIMD3<Double>]) -> RenderMesh? {
+    private static func weldedMesh(corners: [SIMD3<Double>],
+                                   budget: MeshImportBudget) throws -> RenderMesh? {
         var positions = [SIMD3<Float>]()
         var normals = [SIMD3<Float>]()
         var indices = [UInt32]()
@@ -153,6 +168,7 @@ nonisolated enum OBJImporter {
 
         var i = 0
         while i + 2 < corners.count {
+            if (i / 3) % 4096 == 0 { try budget.checkCancellation() }
             let a = corners[i], b = corners[i + 1], c = corners[i + 2]
             i += 3
             let cross = simd_cross(b - a, c - a)
@@ -163,8 +179,12 @@ nonisolated enum OBJImporter {
                 let p = SIMD3<Float>(corner)
                 let key = WeldKey(position: p, normal: normal, quantum: weldQuantum)
                 if let existing = lookup[key] {
+                    try budget.charge(MemoryLayout<UInt32>.stride, "OBJ welded indices")
                     indices.append(existing)
                 } else {
+                    try budget.charge(2 * MemoryLayout<SIMD3<Float>>.stride
+                                      + 2 * MemoryLayout<UInt32>.stride + 48,
+                                      "OBJ welded vertex")
                     let index = UInt32(positions.count)
                     lookup[key] = index
                     positions.append(p)

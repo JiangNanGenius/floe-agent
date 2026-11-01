@@ -502,6 +502,15 @@ struct FloeCADEditorView: View {
     /// Host-injected Canvas actions; nil in standalone/qualification hosts.
     var canvasActions: CADCanvasActions? = nil
 
+    /// E31-R3: one units prompt instance. It carries the manual import
+    /// operation that produced the probe so the apply cannot land over a
+    /// newer import; the UUID keeps `.sheet(item:)` identity stable.
+    private struct PendingManualMeshImport: Identifiable {
+        let id = UUID()
+        let probe: MeshImportProbe
+        let operation: CADManualImportOperation
+    }
+
     @Environment(\.scenePhase) private var scenePhase
     /// True while this editor is covered by a transient presentation (the
     /// workbench fullscreen cover); its disappearance is not a close.
@@ -529,8 +538,15 @@ struct FloeCADEditorView: View {
     @State private var showWorkbenchTools = false
     /// User-named design versions (E34) sheet.
     @State private var showVersions = false
-        @State private var pendingMeshImport: MeshImportProbe?
+    /// E31-R3: the units prompt's prepared probe plus the manual import
+    /// operation that produced it. The apply runs under that same identity, so
+    /// a prompt left open while a newer import runs cannot commit over it (and
+    /// a stale probe return cannot replace a newer prompt).
+    @State private var pendingMeshImport: PendingManualMeshImport?
     @State private var didHandleDebugImport = false
+    /// E31-R2: the one in-flight manual import (probe, exact parse or prompt
+    /// apply). A real close/switch cancels it; the services own the join.
+    @State private var importTask: Task<Void, Never>?
     @State private var showSettings = false
     /// Measured height of the bottom bar stack, fed by `BottomBarHeightKey`.
     /// The palette and the corner chips inset above it — see `bottomBarInset`.
@@ -555,7 +571,7 @@ struct FloeCADEditorView: View {
     /// one in the chain (found 2026-08-29 while wiring STEP: "Image from
     /// Files…" presented, the three above it did not).
     private enum ImportRequest: Equatable {
-        case stl, dxf, step, mesh, image
+        case stl, dxf, step, iges, mesh, image
 
         var contentTypes: [UTType] {
             switch self {
@@ -566,6 +582,8 @@ struct FloeCADEditorView: View {
             // hatch the `.os3d` archive importer already uses.
             case .dxf: [ExportDocument.dxfType, .data]
             case .step: [ExportDocument.stepType, .data]
+            // IGES has no system UTI; `.data` makes the file selectable.
+            case .iges: [.data]
             // glTF/GLB, USDZ, OBJ (+MTL/textures) and zips of them. `.data`
             // again: .glb/.gltf/.obj have no system UTI worth trusting.
             case .mesh: [ExportDocument.usdzType, .zip, .data]
@@ -1261,6 +1279,14 @@ struct FloeCADEditorView: View {
                 showImporter = true
             }
             .accessibilityIdentifier("ImportSTEP")
+            // IGES exact exchange (closed solids and open surfaces). Same
+            // off-main prepare + atomic commit as STEP; surfaces stay exact
+            // open-surface bodies and are never reported as solids.
+            Button(FloeCADStrings.label("cad.ui.import.igesFile", "IGES File…")) {
+                importRequest = .iges
+                showImporter = true
+            }
+            .accessibilityIdentifier("ImportIGES")
             // Textured meshes: glTF/GLB, USDZ, OBJ with its MTL and images, .blend,
             // or a zip holding any of them. Parts become mesh bodies.
             Button(FloeCADStrings.label("cad.ui.import.meshFile", "OBJ / glTF / USDZ / Blender…")) {
@@ -2453,8 +2479,8 @@ struct FloeCADEditorView: View {
     }
 
     /// The one Import-menu completion handler; `importRequest` says which
-    /// entry opened the picker. Every kind needs the same security-scoped
-    /// read, so only the last line differs.
+    /// entry opened the picker. Every kind shares the same OFF-MAIN read and
+    /// keeps its own feature semantics once the bytes are in hand.
     private func handleImport(
         _ result: Result<URL, Error>, viewModel: EditorViewModel
     ) {
@@ -2462,27 +2488,71 @@ struct FloeCADEditorView: View {
             viewModel.errorMessage = "Import failed — please try again."
             return
         }
-        let accessing = url.startAccessingSecurityScopedResource()
-        defer { if accessing { url.stopAccessingSecurityScopedResource() } }
-        guard let data = try? Data(contentsOf: url) else {
-            // Keep the image wording the image importer had before these were
-            // merged — "file" would be a small step backwards for that entry.
-            viewModel.errorMessage = importRequest == .image
-                ? "Couldn't read the selected image."
-                : "Couldn't read the selected file."
-            return
-        }
-        let name = url.lastPathComponent
-        switch importRequest {
-        case .stl, .mesh:
-            // Mesh formats go through the units prompt (Shapr3D parity):
-            // parse now, build only once the user has picked the unit.
-            if let probe = viewModel.probeMesh(data: data, fileName: name) {
-                pendingMeshImport = probe
+        beginImport(from: url, request: importRequest, viewModel: viewModel)
+    }
+
+    /// E31-R3: the user-selected source is prepared on the Workbench's owned
+    /// Task, OFF the MainActor. `CADImportSourceReader` opens and closes the
+    /// security-scoped lease on the worker that reads, so the lease is held for
+    /// exactly the read and is never closed underneath it; the bytes are copied
+    /// while it is open, so no later step reuses the URL. A cancelled read is
+    /// joined and then dropped: no parse, no unit prompt and no commit follows.
+    ///
+    /// The picker selection is the user's own import action, not a model/tool
+    /// grant: nothing here widens file access for an agent path.
+    private func beginImport(from url: URL, request: ImportRequest,
+                             viewModel: EditorViewModel) {
+        importTask?.cancel()
+        importTask = Task { @MainActor in
+            let operation = viewModel.beginManualImportOperation()
+            defer { viewModel.endManualImportOperation(operation) }
+            let outcome = await CADImportSourceReader.read(url: url)
+            guard !Task.isCancelled, viewModel.isCurrentManualImport(operation) else {
+                return
             }
-        case .dxf: viewModel.importDXF(data: data, fileName: name)
-        case .step: viewModel.importSTEP(data: data, fileName: name)
-        case .image: viewModel.beginInsertImage(data: data)
+            switch outcome {
+            case .failure(let error):
+                guard !error.isCancellation else { return }
+                // Keep the image wording the image importer had before these
+                // entries were merged — "file" would be a small step backwards
+                // for that entry.
+                viewModel.errorMessage = request == .image
+                    ? "Couldn't read the selected image."
+                    : "Couldn't read the selected file."
+            case .success(let source):
+                switch request {
+                case .stl, .mesh:
+                    // Mesh formats go through the units prompt (Shapr3D
+                    // parity). The probe parses OFF the MainActor under the
+                    // shared budget and the prompt applies the SAME parsed
+                    // parts, never a second parse.
+                    if let prepared = await viewModel.probeMeshOffMainWithOperation(
+                        data: source.data, fileName: source.fileName) {
+                        pendingMeshImport = PendingManualMeshImport(
+                            probe: prepared.probe, operation: prepared.operation)
+                    }
+                case .dxf:
+                    viewModel.importDXF(data: source.data, fileName: source.fileName)
+                case .step:
+                    _ = await viewModel.importExactOffMain(
+                        data: source.data, fileName: source.fileName, format: "step")
+                case .iges:
+                    _ = await viewModel.importExactOffMain(
+                        data: source.data, fileName: source.fileName, format: "iges")
+                case .image:
+                    viewModel.beginInsertImage(data: source.data)
+                }
+            }
+        }
+    }
+
+    /// The exact request for a DEBUG fixture path (`nil` for a non-exact path,
+    /// which the previous triggers ignored).
+    private func exactRequest(forPath path: String) -> ImportRequest? {
+        switch (path as NSString).pathExtension.lowercased() {
+        case "step", "stp": return .step
+        case "iges", "igs": return .iges
+        default: return nil
         }
     }
 
@@ -2507,26 +2577,58 @@ struct FloeCADEditorView: View {
             ) { result in
                 handleImport(result, viewModel: viewModel)
             }
-            .sheet(item: $pendingMeshImport) { probe in
-                MeshUnitPromptSheet(probe: probe) { unit in
-                    viewModel.importParts(
-                        MeshImportKit.scaled(probe.parts, by: unit.millimetresPerUnit),
-                        fileName: probe.fileName)
+            .sheet(item: $pendingMeshImport) { pending in
+                MeshUnitPromptSheet(probe: pending.probe) { unit in
+                    // The scale copy runs on a worker; `importParts` is the
+                    // MainActor body commit. No source bytes are reopened, and
+                    // the apply runs under the SAME manual import operation
+                    // that produced this probe, so a newer import cannot be
+                    // overwritten by an old prompt.
+                    guard viewModel.isCurrentManualImport(pending.operation) else { return }
+                    importTask?.cancel()
+                    importTask = Task { @MainActor in
+                        await viewModel.importMeshProbe(pending.probe, unit: unit,
+                                                        operation: pending.operation)
+                    }
                 }
             }
             .onAppear {
-                // DEBUG hook for the UI suite: OS3D_DEBUG_IMPORT_MESH=<path>
-                // opens the units prompt for that file as if it had been
-                // picked — the system file picker can't be driven by XCUITest.
+                // DEBUG hooks for the UI suite: the system file picker can't
+                // be driven by XCUITest. MESH opens the real units prompt;
+                // EXACT drives the same manual STEP/IGES path the menu uses.
                 #if DEBUG
                 guard !didHandleDebugImport else { return }
                 didHandleDebugImport = true
-                if let path = ProcessInfo.processInfo.environment["OS3D_DEBUG_IMPORT_MESH"],
-                   let data = try? Data(contentsOf: URL(fileURLWithPath: path)) {
-                    pendingMeshImport = viewModel.probeMesh(
-                        data: data, fileName: (path as NSString).lastPathComponent)
+                if let path = CADDebugFixtures.consumePendingManualImportPath(),
+                   let request = exactRequest(forPath: path) {
+                    // The real Workbench consumes the same prepared-read path
+                    // the Import menu uses (no MainActor file read here).
+                    beginImport(from: URL(fileURLWithPath: path), request: request,
+                                viewModel: viewModel)
+                    return
+                }
+                let environment = ProcessInfo.processInfo.environment
+                if let path = environment["OS3D_DEBUG_IMPORT_MESH"] {
+                    beginImport(from: URL(fileURLWithPath: path), request: .stl,
+                                viewModel: viewModel)
+                } else if let path = environment["OS3D_DEBUG_IMPORT_EXACT"],
+                          let request = exactRequest(forPath: path) {
+                    beginImport(from: URL(fileURLWithPath: path), request: request,
+                                viewModel: viewModel)
                 }
                 #endif
+            }
+            .onDisappear {
+                // A real close/switch (not the workbench's transient cover)
+                // cancels the owned import and fences its manual-import
+                // identity; the service joins its worker, the read keeps its
+                // lease until it finishes, and a late read/probe/error/commit
+                // cannot touch the newly presented surface.
+                if !transientlyCovered {
+                    viewModel.fenceManualImportOperations()
+                    importTask?.cancel()
+                    importTask = nil
+                }
             }
             .photosPicker(
                 isPresented: $showPhotoPicker,

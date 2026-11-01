@@ -513,6 +513,74 @@ final class EditorViewModel {
         (@MainActor (String, Bool, Int?) -> CADExchangeOutcome)?
     @ObservationIgnored var exchangeCoverageHandler:
         (@MainActor (String, CADExchangeSelection) -> Result<CADExchangeCoverage, CADDocumentError>)?
+    /// Bound by the live facade. An async import that finishes after its
+    /// document was closed must not build bodies into the dead session; the
+    /// session itself carries no closed flag, so the facade supplies it.
+    @ObservationIgnored var documentClosedCheck: (@MainActor () -> Bool)?
+
+    // MARK: Manual import ownership (E31-R3)
+
+    /// One manual import runs at a time. The picker read, the mesh probe, the
+    /// units apply and the exact parse each take an identity; a newer identity
+    /// supersedes older ones. It is not a second task/job/store: the
+    /// Workbench's owned `Task` still cancels, the parser/service still owns
+    /// the work, and nothing is persisted — the identity only decides which
+    /// call may still write manual import UI.
+    @ObservationIgnored private var manualImportSequence: UInt64 = 0
+    @ObservationIgnored private var activeManualImportOperation: CADManualImportOperation?
+    #if DEBUG
+    /// Ordering seam for the stale-failure tests only (nil in production). It
+    /// runs on the MainActor immediately before a manual import failure is
+    /// applied, so a test can release a superseded callback AFTER a newer
+    /// import finished. It never replaces a parser or a document command.
+    @ObservationIgnored var manualImportFailureDeliveryHook:
+        (@MainActor (CADManualImportOperation, String, CADManualImportFailureStage) async -> Void)?
+    #endif
+
+    /// Begin a manual import; every older operation becomes stale.
+    @discardableResult
+    func beginManualImportOperation() -> CADManualImportOperation {
+        manualImportSequence &+= 1
+        let operation = CADManualImportOperation(raw: manualImportSequence)
+        activeManualImportOperation = operation
+        return operation
+    }
+
+    /// True while `operation` still owns the manual import UI.
+    func isCurrentManualImport(_ operation: CADManualImportOperation) -> Bool {
+        activeManualImportOperation == operation
+    }
+
+    /// Release `operation`; only the current owner can clear the slot, so a
+    /// superseded callback can never cancel its successor's ownership.
+    func endManualImportOperation(_ operation: CADManualImportOperation) {
+        if activeManualImportOperation == operation { activeManualImportOperation = nil }
+    }
+
+    /// Close/navigation fence: every in-flight manual import becomes stale, so
+    /// a late read, probe, units apply or error cannot touch the next surface.
+    func fenceManualImportOperations() {
+        manualImportSequence &+= 1
+        activeManualImportOperation = nil
+    }
+
+    /// The one delivery gate for a manual import failure. The DEBUG hook (if
+    /// any) runs first so a test can order a stale callback after a newer
+    /// import; ownership is then re-read. A stale failure is dropped, an
+    /// active one is still surfaced.
+    private func manualImportCanDeliverFailure(
+        _ operation: CADManualImportOperation,
+        fileName: String,
+        stage: CADManualImportFailureStage
+    ) async -> Bool {
+        #if DEBUG
+        if let hook = manualImportFailureDeliveryHook {
+            await hook(operation, fileName, stage)
+        }
+        #endif
+        return isCurrentManualImport(operation)
+    }
+
     #if DEBUG
     /// Deterministic async-preflight cancellation witness for tests. Never set
     /// in production; the hook runs on the main actor after the worker starts.
@@ -1241,41 +1309,265 @@ final class EditorViewModel {
     /// carrying its analytic `brep` — so an imported part can be filleted,
     /// shelled and booleaned on the OCCT path exactly like one modelled here.
     /// All of them land as ONE undo step.
+    ///
+    /// E31-R2: this synchronous entry now shares `CADExactImportService` with
+    /// the async manual/tool path. The Workbench calls `importExactOffMain`;
+    /// this method stays for direct/legacy callers and its tests. It is the
+    /// one remaining sync exact entry and therefore still blocks the caller.
     func importSTEP(data: Data, fileName: String) {
-        let solids = STEPKit.solids(from: data)
-        guard !solids.isEmpty else {
-            errorMessage = FloeCADStrings.format("cad.error.importSTEPNoSolids", "Couldn't import “%@” — no solids found in the STEP file.", fileName)
-            return
-        }
         let stem = (fileName as NSString).deletingPathExtension
         let base = stem.isEmpty ? "Imported" : stem
-        // A local COPY of the document, grown as we go: `uniqueBodyName` reads
-        // the bodies it can see, and a multi-solid file has to number its own
-        // parts before any of them reach the real document.
-        var document = session.document
-        var bodies: [Body] = []
-        for handle in solids {
-            let name = document.uniqueBodyName(base: base)
-            guard let body = STEPKit.body(
-                from: handle, name: name, revision: document.nextRevision()) else { continue }
-            document.bodies.append(body)
-            bodies.append(body)
+        do {
+            let plan = try CADExactImportService.parse(
+                data: data, format: "step", fileName: fileName,
+                bodyNameBase: base, uniqueBodyNames: true, limits: .standard,
+                waitForParser: false)
+            let application = try CADExactImportService.apply(
+                plan, to: session, closed: documentClosedCheck?() ?? false,
+                undoMode: .singleStep, title: "Import STEP")
+            guard application.outcome.isOK, application.bodyCount > 0 else {
+                errorMessage = FloeCADStrings.format(
+                    "cad.error.importSTEPMesh",
+                    "Couldn't import “%@” — its solids could not be meshed.", fileName)
+                return
+            }
+            selection = Set(application.importedBodyIDs.map { BodyID(raw: $0) })
+            mode = .idle
+            cameraControl?.fitScene()
+            if application.bodyCount < plan.solidCount {
+                showNotice("Imported \(application.bodyCount) of \(plan.solidCount) solids — "
+                           + "the rest could not be meshed.")
+            }
+        } catch {
+            setExactImportError(error, fileName: fileName)
         }
-        guard !bodies.isEmpty else {
-            errorMessage = FloeCADStrings.format("cad.error.importSTEPMesh", "Couldn't import “%@” — its solids could not be meshed.", fileName)
+    }
+
+    /// The manual Workbench STEP/IGES import: parse on a detached worker, then
+    /// commit the prepared bodies on this actor as ONE undo step. The caller's
+    /// Task cancellation stops the parse before any body is built; a document
+    /// closed while the parse runs refuses the late commit.
+    ///
+    /// E31-R3 ownership: the whole call owns the manual import UI only while
+    /// its operation is current. A newer manual import (another exact parse, a
+    /// probe or a units apply) supersedes it, so this call's late failure or
+    /// success can neither replace the newer operation's selection/error nor
+    /// clear its notice. Real, still-active failures are surfaced unchanged.
+    @discardableResult
+    func importExactOffMain(data: Data, fileName: String, format: String,
+                            limits: MeshImportLimits = .standard) async -> Bool {
+        let stem = (fileName as NSString).deletingPathExtension
+        let base = stem.isEmpty ? "Imported" : stem
+        let token = MeshImportCancellation()
+        let operation = beginManualImportOperation()
+        defer { endManualImportOperation(operation) }
+        do {
+            let plan = try await CADExactImportService.parseOffMain(
+                data: data, format: format, fileName: fileName,
+                bodyNameBase: base, uniqueBodyNames: true,
+                limits: limits, cancellation: token)
+            // No suspension point between this check and the commit below: a
+            // newer operation cannot start in between, and the document
+            // mutation itself is fenced before it begins.
+            if Task.isCancelled || token.isCancelled
+                || !isCurrentManualImport(operation)
+                || (documentClosedCheck?() ?? false) {
+                throw CADDocumentError(code: "cancelled",
+                                       message: "Import cancelled; nothing was imported.")
+            }
+            let application = try CADExactImportService.apply(
+                plan, to: session, closed: documentClosedCheck?() ?? false,
+                cancellation: token, undoMode: .singleStep,
+                title: "Import \(format.uppercased())")
+            guard application.outcome.isOK, application.bodyCount > 0 else {
+                setExactImportError(
+                    CADDocumentError(code: "empty_import",
+                                     message: "The file produced no importable bodies; nothing was changed."),
+                    fileName: fileName)
+                return false
+            }
+            selection = Set(application.importedBodyIDs.map { BodyID(raw: $0) })
+            mode = .idle
+            cameraControl?.fitScene()
+            return true
+        } catch {
+            guard await manualImportCanDeliverFailure(
+                operation, fileName: fileName, stage: .exact) else {
+                // Superseded by a newer manual import: keep its state.
+                return false
+            }
+            setExactImportError(error, fileName: fileName)
+            return false
+        }
+    }
+
+    /// Parse a mesh file for the units prompt OFF the MainActor. The parsed
+    /// probe is the same value `probeMesh` returns; no parser is duplicated and
+    /// the prompt's apply never re-parses the source.
+    func probeMeshOffMain(data: Data, fileName: String,
+                          siblings: [String: Data] = [:]) async -> MeshImportProbe? {
+        await probeMeshOffMainWithOperation(data: data, fileName: fileName,
+                                            siblings: siblings)?.probe
+    }
+
+    /// The units prompt's probe plus the manual import operation that owns it.
+    /// The sheet applies under that SAME identity, so a prompt left open while
+    /// a newer import runs cannot commit over it.
+    func probeMeshOffMainWithOperation(
+        data: Data, fileName: String, siblings: [String: Data] = [:]
+    ) async -> (probe: MeshImportProbe, operation: CADManualImportOperation)? {
+        let token = MeshImportCancellation()
+        let operation = beginManualImportOperation()
+        do {
+            let probe = try await CADMeshImportService.parseProbeOffMain(
+                data: data, fileName: fileName, siblings: siblings,
+                cancellation: token)
+            guard !Task.isCancelled, !token.isCancelled,
+                  isCurrentManualImport(operation),
+                  !(documentClosedCheck?() ?? false) else {
+                endManualImportOperation(operation)
+                return nil
+            }
+            // Keep `operation` active: the units prompt is the second half of
+            // this import and applies under the same identity.
+            return (probe, operation)
+        } catch {
+            guard await manualImportCanDeliverFailure(
+                operation, fileName: fileName, stage: .meshProbe) else { return nil }
+            endManualImportOperation(operation)
+            setMeshImportError(error, fileName: fileName)
+            return nil
+        }
+    }
+
+    /// Apply the units prompt with the mesh already parsed: only the unit-scale
+    /// copy runs on a worker; `importParts` builds the bodies on this actor.
+    /// No source bytes are read again (the security-scoped lease is long gone).
+    /// The two-argument form applies under the probe that is still the active
+    /// manual import; it refuses when that operation was superseded.
+    func importMeshProbe(_ probe: MeshImportProbe, unit: MeshImportUnit) async {
+        guard let operation = activeManualImportOperation else { return }
+        await importMeshProbe(probe, unit: unit, operation: operation)
+    }
+
+    /// Apply the units prompt under the identity that produced `probe`.
+    func importMeshProbe(_ probe: MeshImportProbe, unit: MeshImportUnit,
+                         operation: CADManualImportOperation) async {
+        guard isCurrentManualImport(operation) else { return }
+        do {
+            let parts = try await CADMeshImportService.scalePartsOffMain(
+                probe.parts, by: unit.millimetresPerUnit,
+                fileName: probe.fileName)
+            guard !Task.isCancelled, isCurrentManualImport(operation),
+                  !(documentClosedCheck?() ?? false) else { return }
+            importParts(parts, fileName: probe.fileName)
+            endManualImportOperation(operation)
+        } catch {
+            guard await manualImportCanDeliverFailure(
+                operation, fileName: probe.fileName, stage: .meshApply) else { return }
+            endManualImportOperation(operation)
+            setMeshImportError(error, fileName: probe.fileName)
+        }
+    }
+
+    /// The stable import error copy shared by the sync and async exact paths.
+    private func setExactImportError(_ error: Error, fileName: String) {
+        guard let error = error as? CADDocumentError else {
+            errorMessage = FloeCADStrings.format(
+                "cad.error.importGeneric", "Couldn't import “%@” — %@.", fileName,
+                error.localizedDescription)
             return
         }
-        cancelTransientPicks()
-        session.perform(CompositeCommand(
-            title: "Import STEP",
-            commands: bodies.map { AddBodyCommand(body: $0, title: "Import \($0.name)") }))
-        selection = Set(bodies.map(\.id))
-        mode = .idle
-        cameraControl?.fitScene()
-        if bodies.count < solids.count {
-            showNotice("Imported \(bodies.count) of \(solids.count) solids — "
-                       + "the rest could not be meshed.")
+        switch error.code {
+        case "cancelled":
+            errorMessage = FloeCADStrings.format(
+                "cad.error.importCancelled",
+                "Couldn't import “%@” — the import was cancelled. Nothing was imported; the source and document are unchanged.",
+                fileName)
+        case "import_over_budget":
+            errorMessage = FloeCADStrings.format(
+                "cad.error.importOverBudget",
+                "Couldn't import “%@” — %@. Nothing was imported; the source and document are unchanged.",
+                fileName, Self.budgetDetail(error.message))
+        case "no_solids":
+            errorMessage = FloeCADStrings.format(
+                "cad.error.importSTEPNoSolids",
+                "Couldn't import “%@” — no solids found in the STEP file.", fileName)
+        case "step_body_failed":
+            errorMessage = FloeCADStrings.format(
+                "cad.error.importSTEPMesh",
+                "Couldn't import “%@” — its solids could not be meshed.", fileName)
+        case "import_busy":
+            errorMessage = FloeCADStrings.format(
+                "cad.error.importBusy",
+                "Couldn't import “%@” — another exact import is already running. Nothing was imported.",
+                fileName)
+        case "iges_read_failed", "iges_empty", "iges_import_failed":
+            errorMessage = FloeCADStrings.format(
+                "cad.error.importIGESFailed",
+                "Couldn't import “%@” — no transferable exact geometry was found in the IGES file.",
+                fileName)
+        case "unsupported_format":
+            errorMessage = FloeCADStrings.format(
+                "cad.error.importUnsupported",
+                "Couldn't import “%@” — %@ files aren't supported.", fileName, "")
+        default:
+            errorMessage = FloeCADStrings.format(
+                "cad.error.importGeneric", "Couldn't import “%@” — %@.", fileName,
+                error.message)
         }
+    }
+
+    /// The mesh prompt's stable error copy. `parseProbeOffMain` maps the
+    /// kernel taxonomy to `CADDocumentError`, so the same codes reach here.
+    private func setMeshImportError(_ error: Error, fileName: String) {
+        guard let error = error as? CADDocumentError else {
+            errorMessage = FloeCADStrings.format(
+                "cad.error.importGeneric", "Couldn't import “%@” — %@.", fileName,
+                error.localizedDescription)
+            return
+        }
+        switch error.code {
+        case "cancelled":
+            errorMessage = FloeCADStrings.format(
+                "cad.error.importCancelled",
+                "Couldn't import “%@” — the import was cancelled. Nothing was imported; the source and document are unchanged.",
+                fileName)
+        case "import_over_budget":
+            errorMessage = FloeCADStrings.format(
+                "cad.error.importOverBudget",
+                "Couldn't import “%@” — %@. Nothing was imported; the source and document are unchanged.",
+                fileName, Self.budgetDetail(error.message))
+        case "unsupported_format":
+            errorMessage = FloeCADStrings.format(
+                "cad.error.importUnsupported",
+                "Couldn't import “%@” — %@ files aren't supported.", fileName, "")
+        case "empty_import":
+            errorMessage = FloeCADStrings.format(
+                "cad.error.importNoMesh", "Couldn't import “%@” — no triangle meshes found.",
+                fileName)
+        case "mesh_parse_failed":
+            errorMessage = FloeCADStrings.format(
+                "cad.error.importMalformed", "Couldn't import “%@” — %@.", fileName,
+                Self.budgetDetail(error.message))
+        default:
+            errorMessage = FloeCADStrings.format(
+                "cad.error.importGeneric", "Couldn't import “%@” — %@.", fileName,
+                error.message)
+        }
+    }
+
+    /// "The import exceeds the import budget: <detail>. …" → the detail only,
+    /// so the localized over-budget sentence stays single-sourced.
+    private static func budgetDetail(_ message: String) -> String {
+        if let range = message.range(of: "budget: ") {
+            let tail = message[range.upperBound...]
+            if let stop = tail.range(of: ". Nothing") {
+                return String(tail[..<stop.lowerBound])
+            }
+            return String(tail)
+        }
+        return message
     }
 
     /// Mesh import for glTF/GLB, USDZ and OBJ (+MTL/textures, alone or in a
@@ -1293,6 +1585,14 @@ final class EditorViewModel {
             errorMessage = FloeCADStrings.format("cad.error.importNoMesh", "Couldn't import “%@” — no triangle meshes found.", fileName)
         } catch MeshImportError.malformed(let what) {
             errorMessage = FloeCADStrings.format("cad.error.importMalformed", "Couldn't import “%@” — %@.", fileName, what)
+        } catch MeshImportError.overBudget(let what) {
+            errorMessage = FloeCADStrings.format("cad.error.importOverBudget",
+                                                 "Couldn't import “%@” — %@. Nothing was imported; the source and document are unchanged.",
+                                                 fileName, what)
+        } catch MeshImportError.cancelled {
+            errorMessage = FloeCADStrings.format("cad.error.importCancelled",
+                                                 "Couldn't import “%@” — the import was cancelled. Nothing was imported; the source and document are unchanged.",
+                                                 fileName)
         } catch {
             errorMessage = FloeCADStrings.format("cad.error.importGeneric", "Couldn't import “%@” — %@.", fileName, error)
         }
