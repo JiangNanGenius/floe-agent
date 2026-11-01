@@ -437,6 +437,10 @@ final class CADEdgeBlendReferenceTests: XCTestCase {
         XCTAssertTrue(ElementNaming.edgeNames(adjacency: single, names: [1: a, 2: b, 3: b]).isEmpty)
         XCTAssertNil(ElementNaming.edgeIndex(named: try legacyName(name), adjacency: single, names: [1: a, 2: b]),
                      "The name-only API cannot authenticate a legacy ordinal")
+        let ordinal = ElementName(creator: a.creator,
+            source: .opFace(operation: a.creator, parents: [a], index: 0))
+        XCTAssertTrue(ElementNaming.edgeNames(adjacency: single, names: [1: ordinal, 2: b]).isEmpty,
+                      "A unique edge cannot earn a stable identity from an unstable face ordinal")
     }
 
     func testQualifiedEdgeFormatIsIntentBasedAndUnknownVersionsStayOpaque() throws {
