@@ -869,8 +869,18 @@ final class CADDatumPlaneFormAcceptanceUITests: XCTestCase {
             cos(45 * Double.pi / 180)),
             "Redo must restore the cos45 normal")
 
-        // Real picker reselect: Bottom view + an actual viewport tap, then the
-        // shipped datum edit sheet's "Use Selected Face" action.
+        // A visible profile coincident with a face intentionally wins an
+        // ordinary tap so it remains extrudable. Hide the source sketch using
+        // the shipped Items control before asking the real picker for the
+        // bottom BODY face; do not replace the pick with a fixture selection.
+        let sketchEye = app.buttons["ItemEye-Plate"]
+        XCTAssertTrue(sketchEye.waitForExistence(timeout: 10),
+                      "the source sketch visibility control must exist: \(app.debugDescription)")
+        XCTAssertEqual(sketchEye.value as? String, "visible")
+        XCTAssertTrue(sketchEye.isHittable)
+        sketchEye.tap()
+        XCTAssertTrue(CADDatumFormUI.waitForValue(sketchEye, "hidden", timeout: 10),
+                      "hide the coincident sketch before selecting the bottom body face")
         CADDatumFormUI.toggleItems(app)
         CADDatumFormUI.selectStandardView(app, "Bottom")
         CADDatumFormUI.tapViewportCenter(app)
@@ -1173,7 +1183,10 @@ final class CADDatumPlaneFormAcceptanceUITests: XCTestCase {
         XCTAssertTrue(CADDatumFormUI.waitForVectorComponent(
             reopened, identifier: "CADDatumReadbackPlane", key: "origin",
             index: 1, equals: 20, timeout: 30),
-            "changing the real parent thickness must move the three-point plane to y=20")
+            "changing the real parent thickness must move the three-point plane to y=20: "
+                + CADDatumFormUI.readback(reopened, "CADDatumReadbackPlane") + " | "
+                + CADDatumFormUI.readback(reopened, "CADDatumReadbackBodies") + " | "
+                + CADDatumFormUI.readback(reopened, "CADDatumReadbackErrors"))
         XCTAssertTrue(CADDatumFormUI.waitForVectorComponent(
             reopened, identifier: "CADDatumReadbackChild", key: "origin",
             index: 1, equals: 20, timeout: 30),

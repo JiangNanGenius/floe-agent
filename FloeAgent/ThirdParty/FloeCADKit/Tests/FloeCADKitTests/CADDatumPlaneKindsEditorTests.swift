@@ -176,6 +176,52 @@ final class CADDatumPlaneKindsEditorTests: XCTestCase {
         XCTAssertEqual(try XCTUnwrap(threePointPlane(f.document)?.definition), .threePoints(edited))
     }
 
+    func testReopenedThreePointDatumAndChildFollowTheNativeHistoryParentEdit() async throws {
+        var documents: [FloeCADDocument] = []
+        defer {
+            for document in documents where !document.isClosed { document.close() }
+            CADDatumPlaneFormFixture.removeAllFixtures()
+        }
+        let document = try await CADDatumPlaneFormFixture.open(
+            mode: .threePoint, reset: true, reopen: false)
+        documents.append(document)
+        let anchorA = try XCTUnwrap(document.session.document.sketches.first { $0.name == "Anchor A" })
+        let anchorB = try XCTUnwrap(document.session.document.sketches.first { $0.name == "Anchor B" })
+        let lineA = try XCTUnwrap(anchorA.entities.first)
+        let lineB = try XCTUnwrap(anchorB.entities.first)
+        let refs = [
+            SketchAnchorRef(sketchID: anchorA.id, entityID: lineA.id, role: .endpointA),
+            SketchAnchorRef(sketchID: anchorB.id, entityID: lineB.id, role: .endpointA),
+            SketchAnchorRef(sketchID: anchorB.id, entityID: lineB.id, role: .endpointB),
+        ]
+        XCTAssertTrue(document.viewModel().createThreePointPlane(refs))
+        let planeID = try XCTUnwrap(threePointPlane(document)).id
+        let saved = await document.save()
+        XCTAssertTrue(saved.succeeded, saved.error ?? "save failed")
+        document.close()
+
+        // Exact same reopen preparation as the UI: installs a real dependent
+        // sketch/extrusion, then edits the parent through History's VM method.
+        let reopened = try await CADDatumPlaneFormFixture.open(
+            mode: .threePoint, reset: false, reopen: true)
+        documents.append(reopened)
+        let parent = try XCTUnwrap(reopened.session.document.features.nodes.first { $0.name == "ParentPlate" })
+        let child = try XCTUnwrap(reopened.session.document.sketches.first { $0.name == "Three point child" })
+        XCTAssertEqual(try XCTUnwrap(threePointPlane(reopened)).plane.origin.y, 10, accuracy: 1e-6)
+        reopened.viewModel().editFeatureScalar(parent.id, key: .primary, value: 20)
+        let readback = CADDatumPlaneFormFixture.readback(document: reopened, focus: .threePoint)
+        let diagnostics = "\(readback.plane) | \(readback.bodies) | \(readback.errors)"
+        XCTAssertEqual(try XCTUnwrap(threePointPlane(reopened)).id, planeID)
+        XCTAssertEqual(try XCTUnwrap(threePointPlane(reopened)).plane.origin.y, 20,
+                       accuracy: 1e-6, diagnostics)
+        XCTAssertEqual(try XCTUnwrap(reopened.session.document.sketches.first { $0.id == anchorA.id }).plane.origin.y,
+                       20, accuracy: 1e-6, diagnostics)
+        XCTAssertEqual(try XCTUnwrap(reopened.session.document.sketches.first { $0.id == child.id }).plane.origin.y,
+                       20, accuracy: 1e-6, diagnostics)
+        XCTAssertTrue(reopened.session.lastReferenceErrors.isEmpty, diagnostics)
+        XCTAssertTrue(reopened.session.lastEvalErrors.isEmpty, diagnostics)
+    }
+
     func testOffsetCommandStillArmsExistingDatumToolAndThreePointCandidateRolesAreReal() async throws {
         let f = try await sourceFixture()
         defer {

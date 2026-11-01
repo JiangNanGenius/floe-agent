@@ -152,6 +152,7 @@ struct CADAnimationTimelineView: View {
         .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 16))
         .overlay(RoundedRectangle(cornerRadius: 16)
             .stroke(Color.primary.opacity(0.08), lineWidth: 0.5))
+        .accessibilityElement(children: .contain)
         .accessibilityIdentifier("CADAnimationTimeline")
         .onAppear {
             syncDurationText()

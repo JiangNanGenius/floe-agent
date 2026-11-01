@@ -49,6 +49,43 @@ final class CADSavedIdentityObservationTests: XCTestCase {
         XCTAssertEqual(doc.assistantSelectionContext().documentRevision, Int64(doc.revision), file: file, line: line)
     }
 
+    func testAddUndoSaveRestoresExactModelIdentityWithUnchangedGeometry() async throws {
+        let doc = try await fixture()
+        let store = FileCADDocumentStore(packageURL: doc.url)
+        let initial = try store.verifiedPackage(at: doc.url)
+        let originalModel = try XCTUnwrap(initial.modelSHA256)
+        doc.session.perform(AddConstructionPlaneCommand(plane: ConstructionPlane(plane: .ground, size: 12)))
+        let changed = await doc.save()
+        XCTAssertTrue(changed.succeeded, changed.error ?? "save failed")
+        XCTAssertNotEqual(changed.modelSHA256, originalModel)
+        doc.session.undo()
+        let restored = await doc.save()
+        XCTAssertTrue(restored.succeeded, restored.error ?? "undo save failed")
+        let undone = try store.verifiedPackage(at: doc.url)
+        XCTAssertGreaterThan(undone.manifest.revision, initial.manifest.revision)
+        XCTAssertEqual(undone.document.bodies.map(\.bodyID), initial.document.bodies.map(\.bodyID))
+        XCTAssertEqual(undone.document.planes.count, initial.document.planes.count)
+        if undone.modelSHA256 != originalModel {
+            // Synthetic fixture only. Preserve exact nested record JSON and
+            // blob digests to distinguish encoding from geometric changes.
+            let blobs: (FileCADDocumentStore.CADVerifiedPackage) -> String = { package in
+                package.blobs.sorted { $0.key < $1.key }.map {
+                    "\($0.key)=\(FileCADDocumentStore.sha256($0.value))"
+                }.joined(separator: "\n")
+            }
+            let diagnostic = "INITIAL\n\(String(decoding: initial.documentData, as: UTF8.self))\n"
+                + "INITIAL BLOBS\n\(blobs(initial))\n"
+                + "UNDONE\n\(String(decoding: undone.documentData, as: UTF8.self))\n"
+                + "UNDONE BLOBS\n\(blobs(undone))"
+            let attachment = XCTAttachment(string: diagnostic)
+            attachment.name = "Exact synthetic CAD records before and after native undo"
+            attachment.lifetime = .keepAlways
+            add(attachment)
+        }
+        XCTAssertEqual(undone.modelSHA256, originalModel,
+                       "a genuine add/undo/save must restore the exact canonical model identity")
+    }
+
     func testActualNativeEditorSynchronousSavePublishesFacadeAndQueryIdentity() async throws {
         let doc = try await fixture()
         let before = doc.revision

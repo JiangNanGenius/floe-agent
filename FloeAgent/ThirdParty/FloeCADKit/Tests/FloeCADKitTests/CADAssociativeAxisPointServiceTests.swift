@@ -274,7 +274,8 @@ final class CADAssociativeAxisPointServiceTests: XCTestCase {
         let f = try await fixture()
         let variable = call(f, "variable.create", ["name": "datumGap", "expression": "2"])
         XCTAssertEqual(variable["ok"] as? Bool, true, "\(variable)")
-        let variableID = try XCTUnwrap(variable["variable_id"] as? String)
+        let variableRow = try XCTUnwrap(variable["variable"] as? [String: Any])
+        let variableID = try XCTUnwrap(variableRow["id"] as? String)
         let axisID = try self.axisID(call(f, "datum.axis.create",
                                          try faceAxisArgs(f, face: topFace(f), offset: "datumGap * 2")))
         let pointID = try self.pointID(call(f, "datum.point.create", [
