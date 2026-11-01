@@ -26,6 +26,35 @@ statement that they must not be attributed to models.dev. They are Floe's own
 review of public provider documentation, not upstream content, and therefore
 fall outside the models.dev MIT attribution below.
 
+### Agent Plan directory refresh
+
+The official [Ark CLI plan directory](https://github.com/volcengine/ark-cli/blob/main/skills/arkcli-plans/references/arkcli-plans-model-list.md)
+provides a machine-readable source distinct from the OpenAI-compatible
+`/models` endpoint:
+
+```sh
+arkcli plans model-list --plan agent-plan --mode direct
+```
+
+Use `direct_models[].model_name` as the inference model identifier. The
+separate `models[]` array contains control-plane routing candidates for
+`ark-code-latest`; its display names and output names are not interchangeable
+with direct inference IDs. Published context, output and input-modality fields
+may be absent and must not be guessed from model names. Plan-specific listing
+requires Volcengine identity authentication; it is a maintainer refresh source,
+not an additional login requirement or an entitlement gate in Floe.
+
+Review the returned facts against the official plan documentation, then update
+`curated-overrides.json` and regenerate through the existing importer. Keep
+chat, image and independently supported audio purposes separate, preserve
+manual user IDs, and do not substitute the public PAYG or Coding Plan catalog.
+The bundled directory remains available offline. A model appearing in a plan
+directory does not establish every account tier's entitlement, and the
+developer's own subscription is not a prerequisite for users to configure it.
+Keep `ark-code-latest` as a separate selectable routing entry even when the
+direct-model table does not list it; do not invent a fixed context/output
+limit for the selector.
+
 Provenance for the currently committed catalog is recorded in `SOURCE.json`.
 The canonical pin is `documentSHA256`, the SHA-256 of the served
 `api.json` response bytes; plain import runs and `--check` refuse to proceed

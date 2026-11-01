@@ -8325,7 +8325,7 @@
     "license_delta": "GLTFKit2 ownMIT/cgltfMIT do notclear precompiled libktx4.2.1 etcdec exception; prefer existing O3DV+same-r176 localGLTFLoader qualification"
   },
   "current_integration_verification": {
-    "source": "ae9dec14ad530d8fc4d1c93bc1837c915791e093",
+    "source": "589d93372a40743e5dac88acb1935ca111ff3781",
     "all_106_retained": true,
     "all_106_accepted": false,
     "release_ready": false,
@@ -8358,22 +8358,43 @@
       "actual_OBJ": "真实OBJ/MTL/PNG显示、缺失贴图及仅资源变化后的旧帧拒绝通过。",
       "scope": "本地实际渲染与资源来源；不冒充原生可编辑BRep，也不代替真实LLM视觉连续编辑。"
     },
-    "accepted_original_criteria": 53,
-    "pending_original_criteria": 53,
+    "accepted_original_criteria": 55,
+    "pending_original_criteria": 51,
     "device_acceptance": "iPad通过的功能复用验收，iPhone仅确认界面；不使用用户手机。",
     "latest_native_batch": {
-      "source": "ae9dec14ad530d8fc4d1c93bc1837c915791e093",
+      "source": "589d93372a40743e5dac88acb1935ca111ff3781",
       "native": {
-        "passed": 22,
+        "passed": 35,
         "failed": 0,
         "skipped": 0
       },
-      "native_UI": {
+      "scope": "Configured unlisted Agent Plan image ID reaches the existing adapter without discovery or developer account gating; 507 real native features page past 500 rows without changing stored identity. Controlled HTTP only; no new paid generation."
+    },
+    "real_model_editing": {
+      "source": "a587571a755989b001e78c16a4fcfd64e23ba8d5",
+      "completed_turns": 4,
+      "original_test_counts": {
+        "passed": 0,
+        "failed": 1,
+        "skipped": 0
+      },
+      "geometry_undo_reopen_assertions_passed": true,
+      "sole_failure": "Test selected rejected first capture rather than later successful request paired to the verified image receipt. Original failure retained.",
+      "corrected_recorded_visual_replay": {
+        "source": "4b01a8f3d4a5e00a84cbb868cab1965584bb5e2e",
         "passed": 4,
         "failed": 0,
-        "skipped": 0
+        "skipped": 0,
+        "additional_paid_requests": 0
       },
-      "scope": "关联基准面、关键帧与曲线编辑；原有动画34项及真实GPU帧序列证据复用。"
+      "query_paging": {
+        "real_features": 507,
+        "first_page_rows": 500,
+        "first_page_bytes": 628941,
+        "all_paged_ids": 507,
+        "same_stored_identity": true
+      },
+      "scope": "Actual App/native and real prepaid vision model; no physical-device performance or release claim."
     }
   }
 }
