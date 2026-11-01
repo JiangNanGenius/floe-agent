@@ -15,9 +15,11 @@ import androidx.compose.ui.Modifier
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
+import com.floe.android.core.networkcapture.CaptureMode
 import com.floe.android.design.*
 import com.floe.android.feature.network.*
 import com.floe.android.host.RuntimeHost
+import com.floe.android.host.capture.CaptureStartPreparation
 import com.floe.android.safgateway.*
 
 private data class PendingPcapExport(
@@ -44,6 +46,34 @@ internal fun NetworkWorkbenchDestination(
     val state by controller.state.collectAsState()
     val artifactController = host.networkArtifact
     val artifactState by artifactController.state.collectAsState()
+    val captureController = host.capture
+    val captureState by captureController.state.collectAsState()
+    val captureAvailability = captureController.rootAvailability()
+    var pendingCaptureConsent by remember { mutableStateOf<String?>(null) }
+    val captureConsentLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.StartActivityForResult(),
+    ) { result ->
+        val sessionId = pendingCaptureConsent
+        pendingCaptureConsent = null
+        if (sessionId != null) {
+            captureController.onConsentResult(
+                sessionId,
+                result.resultCode == Activity.RESULT_OK,
+            )
+        }
+    }
+    fun startCapture(mode: String, detailed: Boolean, minutes: Int) {
+        val prepared = if (mode == CaptureMode.ROOT.wire) {
+            captureController.requestRootStart(detailed, minutes)
+        } else {
+            captureController.requestVpnStart(detailed, minutes)
+        }
+        if (prepared is CaptureStartPreparation.ConsentRequired) {
+            pendingCaptureConsent = prepared.sessionId
+            runCatching { captureConsentLauncher.launch(prepared.intent) }
+                .onFailure { pendingCaptureConsent = null }
+        }
+    }
     val context = LocalContext.current
     val asked = remember { mutableSetOf<String>() }
     val launcher = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { _ ->
@@ -133,6 +163,7 @@ internal fun NetworkWorkbenchDestination(
     }
     LaunchedEffect(controller) { controller.enter() }
     LaunchedEffect(artifactController) { artifactController.enter() }
+    LaunchedEffect(captureController) { captureController.enter() }
     NetworkWorkbench(
         state = state, compact = compact,
         onExecute = controller::execute, onStop = controller::stop,
@@ -151,6 +182,8 @@ internal fun NetworkWorkbenchDestination(
             NetworkArtifactWorkbench(
                 state = artifactState,
                 compact = compact,
+                captureState = captureState,
+                captureAvailability = captureAvailability,
                 callbacks = NetworkArtifactCallbacks(
                     onPickPcap = ::pickPcap,
                     onSelectPcap = artifactController::selectPcap,
@@ -171,6 +204,12 @@ internal fun NetworkWorkbenchDestination(
                     onSetCoverageAgentReadable = artifactController::setCoverageAgentReadable,
                     onPermission = permissionAction,
                     onCancelActive = artifactController::cancelActiveWork,
+                    onCaptureStart = ::startCapture,
+                    onCaptureStop = captureController::stop,
+                    onOpenCaptureAnalysis = { analysisID ->
+                        artifactController.refreshForExternalCapture()
+                        artifactController.selectPcap(analysisID)
+                    },
                 ),
                 modifier = panelModifier,
             )

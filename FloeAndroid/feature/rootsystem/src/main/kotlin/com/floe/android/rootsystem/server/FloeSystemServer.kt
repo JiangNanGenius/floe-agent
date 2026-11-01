@@ -58,6 +58,7 @@ object FloeSystemServer {
             mode = parsed.mode,
             onStop = {
                 if (stopping.compareAndSet(false, true)) {
+                    operations.close()
                     publisher.stop()
                     Handler(Looper.getMainLooper()).postDelayed({
                         exitProcess(ServerExit.STOPPED)

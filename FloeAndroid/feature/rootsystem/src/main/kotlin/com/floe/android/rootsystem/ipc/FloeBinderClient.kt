@@ -15,6 +15,8 @@ import com.floe.android.rootsystem.NetworkDiagnostics
 import com.floe.android.rootsystem.OperationClaim
 import com.floe.android.rootsystem.PackageManagementReceipt
 import com.floe.android.rootsystem.PackageQuery
+import com.floe.android.rootsystem.PacketCaptureChunk
+import com.floe.android.rootsystem.PacketCaptureInfo
 import com.floe.android.rootsystem.ProcessRecord
 import com.floe.android.rootsystem.RootResult
 import com.floe.android.rootsystem.ServiceRecord
@@ -247,6 +249,96 @@ internal class FloeBinderClient(private val binder: IBinder) {
             val reply = service?.networkDiagnostics(request)
             if (BinderProtocol.isOk(reply)) {
                 RootResult.Ok(BinderProtocol.network(reply) ?: NetworkDiagnostics(emptyList(), emptyList(), emptyList()))
+            } else {
+                failed(reply)
+            }
+        } catch (_: Throwable) {
+            RootResult.Unavailable("service_died")
+        }
+    }
+
+    fun packetCaptureStart(
+        claim: OperationClaim,
+        helperId: String,
+        interfaceName: String,
+        snaplen: Int,
+        maxBytes: Long,
+        maxMillis: Long,
+    ): RootResult<PacketCaptureInfo> {
+        val request = request(claim, SystemOperation.PACKET_CAPTURE, null).apply {
+            putString(BinderProtocol.KEY_CAPTURE_MODE, "start")
+            putString(BinderProtocol.KEY_HELPER_ID, helperId)
+            putString(BinderProtocol.KEY_INTERFACE_NAME, interfaceName)
+            putInt(BinderProtocol.KEY_SNAPLEN, snaplen)
+            putLong(BinderProtocol.KEY_MAX_BYTES, maxBytes)
+            putLong(BinderProtocol.KEY_MAX_MILLIS, maxMillis)
+        }
+        return try {
+            val reply = service?.packetCapture(request)
+            if (BinderProtocol.isOk(reply)) {
+                val id = reply?.getString(BinderProtocol.KEY_CAPTURE_ID)
+                val helper = reply?.getString(BinderProtocol.KEY_HELPER_PATH)
+                if (id.isNullOrBlank() || helper.isNullOrBlank()) {
+                    RootResult.Failed("capture_reply")
+                } else {
+                    RootResult.Ok(PacketCaptureInfo(id, helper))
+                }
+            } else {
+                failed(reply)
+            }
+        } catch (_: Throwable) {
+            RootResult.Unavailable("service_died")
+        }
+    }
+
+    fun packetCaptureRead(
+        claim: OperationClaim,
+        captureId: String,
+        maxBytes: Int,
+    ): RootResult<PacketCaptureChunk> {
+        val request = request(claim, SystemOperation.PACKET_CAPTURE, null).apply {
+            putString(BinderProtocol.KEY_CAPTURE_MODE, "read")
+            putString(BinderProtocol.KEY_CAPTURE_ID, captureId)
+            putInt(BinderProtocol.KEY_MAX_BYTES, maxBytes)
+        }
+        return try {
+            val reply = service?.packetCapture(request)
+            if (BinderProtocol.isOk(reply)) {
+                RootResult.Ok(
+                    PacketCaptureChunk(
+                        bytes = reply?.getByteArray(BinderProtocol.KEY_CAPTURE_CHUNK) ?: ByteArray(0),
+                        done = reply?.getBoolean(BinderProtocol.KEY_CAPTURE_DONE, false) == true,
+                        bytesRead = reply?.getLong(BinderProtocol.KEY_BYTES_READ, 0) ?: 0,
+                        endReason = reply?.getString(BinderProtocol.KEY_CAPTURE_END),
+                    ),
+                )
+            } else {
+                failed(reply)
+            }
+        } catch (_: Throwable) {
+            RootResult.Unavailable("service_died")
+        }
+    }
+
+    fun packetCaptureStop(
+        claim: OperationClaim,
+        captureId: String,
+    ): RootResult<PacketCaptureChunk> {
+        val request = request(claim, SystemOperation.PACKET_CAPTURE, null).apply {
+            putString(BinderProtocol.KEY_CAPTURE_MODE, "stop")
+            putString(BinderProtocol.KEY_CAPTURE_ID, captureId)
+        }
+        return try {
+            val reply = service?.packetCapture(request)
+            if (BinderProtocol.isOk(reply)) {
+                RootResult.Ok(
+                    PacketCaptureChunk(
+                        bytes = reply?.getByteArray(BinderProtocol.KEY_CAPTURE_CHUNK) ?: ByteArray(0),
+                        done = reply?.getBoolean(BinderProtocol.KEY_CAPTURE_DONE, false) == true,
+                        bytesRead = reply?.getLong(BinderProtocol.KEY_BYTES_READ, 0) ?: 0,
+                        endReason = reply?.getString(BinderProtocol.KEY_CAPTURE_END),
+                    ),
+                )
             } else {
                 failed(reply)
             }

@@ -189,6 +189,31 @@ class RuntimeHost internal constructor(
     /** Root draining must not create an unused artifact controller. */
     internal fun networkArtifactIfCreated(): com.floe.android.host.networkartifact.NetworkArtifactHostController? =
         if (networkArtifactDelegate.isInitialized()) networkArtifactDelegate.value else null
+
+    /**
+     * C06 Application-owned live capture. Created only by an explicit capture
+     * panel entry; the service owns the TUN fd/forwarders while this host owns
+     * the launch ticket, state machine, raw artifact and analysis publication.
+     * RootStop never constructs an unused controller.
+     */
+    private val captureDelegate = lazy {
+        com.floe.android.host.capture.CaptureHostController(
+            context = appContext,
+            scope = scope,
+            ioDispatcher = ioDispatcher,
+            currentNativeEpoch = ::nativeRootEpoch,
+            onPcapPublished = {
+                networkArtifactIfCreated()?.refreshForExternalCapture()
+            },
+        ).also { com.floe.android.host.capture.CaptureServiceRuntime.install(it) }
+    }
+    internal val capture: com.floe.android.host.capture.CaptureHostController
+        get() = captureDelegate.value
+    internal val isCaptureInitialized: Boolean
+        get() = captureDelegate.isInitialized()
+
+    internal fun captureIfCreated(): com.floe.android.host.capture.CaptureHostController? =
+        if (captureDelegate.isInitialized()) captureDelegate.value else null
     internal data class NetworkPermissionNotice(
         val request: com.floe.android.host.network.NetworkPermissionRequest,
         val generation: Long,
@@ -349,7 +374,10 @@ class RuntimeHost internal constructor(
         val artifacts = networkArtifactIfCreated()
         val artifactsReady = artifacts == null ||
             artifacts.stopAndJoin(artifacts.boundEpoch(), 5_000)
-        return monitorReady && diagnosticsReady && artifactsReady
+        val capture = captureIfCreated()
+        val captureReady = capture == null ||
+            capture.prepareForRootStop(nativeRootEpoch() ?: 0L, 5_000L)
+        return monitorReady && diagnosticsReady && artifactsReady && captureReady
     }
 
     /**

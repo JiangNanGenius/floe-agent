@@ -91,6 +91,8 @@ enum class SystemOperation {
     PACKAGE_QUERY,
     NETWORK_DIAGNOSTICS,
     PACKAGE_FORCE_STOP,
+    /** Full-only genuine native phone packet capture through a pinned helper. */
+    PACKET_CAPTURE,
 }
 
 /**
@@ -258,6 +260,19 @@ data class NetworkDiagnostics(
     val interfaces: List<InterfaceInfo>,
     val routes: List<RouteInfo>,
     val activeTransports: List<String>,
+)
+
+/** One live root capture process and the fixed helper that produced it. */
+data class PacketCaptureInfo(
+    val captureId: String,
+    val helperPath: String,
+)
+
+data class PacketCaptureChunk(
+    val bytes: ByteArray,
+    val done: Boolean,
+    val bytesRead: Long,
+    val endReason: String?,
 )
 
 /** Result of a pairing/start/stop/probe lifecycle action. */

@@ -23,6 +23,8 @@
     <!-- User-started, bounded network monitoring; never a background keepalive. -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
+    <!-- C06 user-started packet-capture VPN/root foreground owner. -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
     <!-- G09-R2 bounded mediaProcessing export; the module service calls
          stopSelf when idle and the App does not use it as a keepalive. -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PROCESSING" />
@@ -73,6 +75,23 @@
             android:exported="false"
             android:foregroundServiceType="dataSync"
             android:stopWithTask="true" />
+        <!-- C06 no-root VpnService. The App is the only starter; the system
+             binds through BIND_VPN_SERVICE after the user's explicit consent.
+             specialUse is the declared FGS type for a user-started VPN that
+             forwards normal traffic, not an idle keepalive. -->
+        <service
+            android:name=".host.capture.VpnPacketCaptureService"
+            android:exported="false"
+            android:permission="android.permission.BIND_VPN_SERVICE"
+            android:foregroundServiceType="specialUse"
+            android:stopWithTask="true">
+            <intent-filter>
+                <action android:name="android.net.VpnService" />
+            </intent-filter>
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="user-initiated local packet capture VPN that forwards ordinary traffic" />
+        </service>
         <!-- G09-R2 bounded cloud-generation dataSync owner. Non-exported,
              App-owned, started only for an already persisted native job with
              an opaque in-process claim token; stopWithTask prevents swipe-away

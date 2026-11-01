@@ -72,6 +72,7 @@ import com.floe.android.design.FloeVerticalDivider
 import com.floe.android.design.InspectorContent
 import com.floe.android.design.InspectorRoute
 import com.floe.android.design.MoreDestination
+import com.floe.android.host.capture.PacketCaptureNavigation
 import com.floe.android.design.SidebarSelection
 import com.floe.android.design.WorkbenchSelection
 import com.floe.android.feature.canvas.CreativeAvailability
@@ -335,6 +336,19 @@ private fun FloeShellContent(
                             SidebarSelection.Conversation(promotion.durableConversationId),
                         )
                     }
+                }
+            }
+        }
+        LaunchedEffect(runtimeHost) {
+            // C06 notification return: reveal the existing Network workbench
+            // so its live capture panel reads the service-owned state. The
+            // Intent carries no path/session content and is consumed once.
+            PacketCaptureNavigation.requests.collect { nonce ->
+                if (nonce != null) {
+                    PacketCaptureNavigation.consume(nonce)
+                    commitVisibleSelection(SidebarSelection.More(MoreDestination.NETWORK))
+                    drawerOpen = false
+                    inspectorRoute = null
                 }
             }
         }

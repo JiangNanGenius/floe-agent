@@ -329,6 +329,62 @@ internal class FloeSystemServiceBinder(
         }
     }
 
+    override fun packetCapture(request: Bundle?): Bundle {
+        if (!callerAllowed()) return BinderProtocol.failure("caller")
+        val claim = parseClaimOnly(request, SystemOperation.PACKET_CAPTURE)
+            ?: return BinderProtocol.failure("request")
+        if (!check(claim, SystemOperation.PACKET_CAPTURE, null, write = false)) {
+            return BinderProtocol.failure("denied")
+        }
+        val req = request!!
+        val mode = req.getString(BinderProtocol.KEY_CAPTURE_MODE)
+            ?: return BinderProtocol.failure("capture_mode")
+        return try {
+            when (mode) {
+                "start" -> {
+                    val info = operations.packetCaptureStart(
+                        requestId = claim.requestId,
+                        helperId = req.getString(BinderProtocol.KEY_HELPER_ID) ?: "",
+                        interfaceName = req.getString(BinderProtocol.KEY_INTERFACE_NAME) ?: "any",
+                        snaplen = req.getInt(BinderProtocol.KEY_SNAPLEN, 65_535),
+                        maxBytes = req.getLong(BinderProtocol.KEY_MAX_BYTES, 128L * 1024L * 1024L),
+                        maxMillis = req.getLong(BinderProtocol.KEY_MAX_MILLIS, 5L * 60L * 1000L),
+                    )
+                    BinderProtocol.ok().apply {
+                        putString(BinderProtocol.KEY_CAPTURE_ID, info.captureId)
+                        putString(BinderProtocol.KEY_HELPER_PATH, info.helperPath)
+                    }
+                }
+                "read" -> {
+                    val chunk = operations.packetCaptureRead(
+                        req.getString(BinderProtocol.KEY_CAPTURE_ID) ?: "",
+                        req.getInt(BinderProtocol.KEY_MAX_BYTES, 64 * 1024),
+                    )
+                    captureChunk(chunk)
+                }
+                "stop" -> {
+                    val chunk = operations.packetCaptureStop(
+                        req.getString(BinderProtocol.KEY_CAPTURE_ID) ?: "",
+                    )
+                    captureChunk(chunk)
+                }
+                else -> BinderProtocol.failure("capture_mode")
+            }
+        } catch (e: SystemOperations.OpException) {
+            BinderProtocol.failure(e.code)
+        } catch (_: Throwable) {
+            BinderProtocol.failure("io")
+        }
+    }
+
+    private fun captureChunk(chunk: com.floe.android.rootsystem.PacketCaptureChunk): Bundle =
+        BinderProtocol.ok().apply {
+            putByteArray(BinderProtocol.KEY_CAPTURE_CHUNK, chunk.bytes)
+            putBoolean(BinderProtocol.KEY_CAPTURE_DONE, chunk.done)
+            putLong(BinderProtocol.KEY_BYTES_READ, chunk.bytesRead)
+            putString(BinderProtocol.KEY_CAPTURE_END, chunk.endReason)
+        }
+
     override fun managePackage(request: Bundle?): Bundle {
         if (!callerAllowed()) return BinderProtocol.failure("caller")
         val claim = parseClaimOnly(request, SystemOperation.PACKAGE_FORCE_STOP)
@@ -366,6 +422,7 @@ internal class FloeSystemServiceBinder(
     override fun cancel(requestId: String?) {
         requireCaller()
         if (requestId.isNullOrBlank() || requestId.length > 128) return
+        operations.cancelPacketCaptures(requestId)
         registry.cancel(requestId)
     }
 
@@ -373,6 +430,7 @@ internal class FloeSystemServiceBinder(
         requireCaller()
         val expectedPid = request?.getInt(BinderProtocol.KEY_EXPECTED_PID) ?: -1
         if (expectedPid != Process.myPid()) throw SecurityException("pid")
+        operations.close()
         registry.revokeAll()
         onStop()
     }
@@ -385,6 +443,7 @@ internal class FloeSystemServiceBinder(
         add("network")
         add("package.forceStop")
         add(if (mode == AccessPolicy.MODE_ROOT) "root.uid0" else "adb.shell")
+        if (mode == AccessPolicy.MODE_ROOT) add("capture.root")
     }
 
     private fun callerAllowed(): Boolean =

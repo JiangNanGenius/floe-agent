@@ -73,6 +73,10 @@ include(":core:network", ":feature:network")
 include(":feature:remote")
 include(":core:networkmonitor")
 include(":core:pcap")
+// C06 live capture: bounded PCAP/sink/state core plus the pinned NetBare
+// forwarding source subset. No prebuilt JNI, sample app or injection module.
+include(":core:networkcapture")
+include(":vendor:netbare")
 
 // G08 embedded ADB pairing/starter source; consumed only by the Full root-system module.
 include(":vendor:embedded-shizuku")

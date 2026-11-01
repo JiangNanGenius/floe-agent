@@ -23,7 +23,7 @@ import com.floe.android.rootsystem.SystemOperation
  */
 object BinderProtocol {
 
-    const val VERSION = 1
+    const val VERSION = 2
     const val MAX_LIST = 500
     const val MAX_READ_BYTES = 1024 * 1024
     const val MAX_WRITE_BYTES = 8 * 1024 * 1024
@@ -56,6 +56,19 @@ object BinderProtocol {
     const val KEY_INCLUDE_SYSTEM = "includeSystem"
     const val KEY_USER_ID = "userId"
     const val KEY_EXPECTED_PID = "expectedPid"
+
+    // Pinned packet-capture request/reply keys (no command or arbitrary path).
+    const val KEY_CAPTURE_MODE = "captureMode"
+    const val KEY_CAPTURE_ID = "captureId"
+    const val KEY_HELPER_ID = "helperId"
+    const val KEY_INTERFACE_NAME = "interfaceName"
+    const val KEY_SNAPLEN = "snaplen"
+    const val KEY_MAX_MILLIS = "maxMillis"
+    const val KEY_HELPER_PATH = "helperPath"
+    const val KEY_CAPTURE_CHUNK = "captureChunk"
+    const val KEY_CAPTURE_DONE = "captureDone"
+    const val KEY_CAPTURE_END = "captureEnd"
+    const val MAX_CAPTURE_CHUNK = 256 * 1024
 
     // Grant keys.
     const val KEY_SCOPE_IDS = "scopeIds"

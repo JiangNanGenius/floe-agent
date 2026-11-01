@@ -147,6 +147,16 @@ class NetworkArtifactHostController(
     }
 
     /**
+     * A live capture publishes its bounded analysis from another App-owned
+     * lane. Refresh the same store projection without starting/stopping the
+     * capture or inventing a second analysis registry.
+     */
+    fun refreshForExternalCapture() {
+        if (stopping.get()) return
+        launchOwned { refreshPcapLists() }
+    }
+
+    /**
      * Panel hide is not navigation away from the work: active analysis,
      * sampling and exports stay service-owned. Only an explicit Cancel or
      * Root retirement drains them.

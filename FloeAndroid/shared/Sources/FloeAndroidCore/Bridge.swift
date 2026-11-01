@@ -34,7 +34,8 @@ public enum AndroidBridge {
                 || requestVersion == BridgeV6.version
                 || requestVersion == BridgeV7.version
                 || requestVersion == BridgeV8.version
-                || requestVersion == BridgeV9.version else {
+                || requestVersion == BridgeV9.version
+                || requestVersion == BridgeV10.version else {
             return response(["ok": false, "error": "unsupportedVersion"])
         }
         if requestVersion == BridgeV2.version {
@@ -135,6 +136,21 @@ public enum AndroidBridge {
                                 stampVersion: BridgeV9.version)
             }
             return response(object, stampVersion: BridgeV9.version)
+        }
+        if requestVersion == BridgeV10.version {
+            // Additive C06 host-only live-capture contract: owner/limit
+            // validation and monotonic session snapshots. No packet bytes,
+            // file path, model command or root executable crosses this ABI.
+            let object = C06PacketCaptureBridge.handle(requestData: data,
+                                                       fallbackRequestID: requestID)
+            let encoded = (try? JSONSerialization.data(withJSONObject: object,
+                                                       options: [.sortedKeys]))
+                ?? Data(#"{"ok":false,"error":"encoding"}"#.utf8)
+            guard encoded.count <= BridgeV10.maximumResponseBytes else {
+                return response(["ok": false, "error": "responseTooLarge"],
+                                stampVersion: BridgeV10.version)
+            }
+            return response(object, stampVersion: BridgeV10.version)
         }
         switch request["operation"] as? String {
         case "handshake":

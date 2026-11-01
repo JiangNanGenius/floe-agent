@@ -487,6 +487,7 @@ dependencies {
     implementation(project(":core:network"))
     implementation(project(":core:networkmonitor"))
     implementation(project(":core:pcap"))
+    implementation(project(":core:networkcapture"))
     implementation(libs.androidx.work.runtime)
     // Preserve the already-locked concurrent-futures KTX 1.2.0 line:
     // androidx.test:core 1.7.0 (androidTest) references SuspendToFutureAdapter,

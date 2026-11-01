@@ -15,6 +15,8 @@ import com.floe.android.rootsystem.MoveReceipt
 import com.floe.android.rootsystem.NetworkDiagnostics
 import com.floe.android.rootsystem.PackageManagementReceipt
 import com.floe.android.rootsystem.PackageQuery
+import com.floe.android.rootsystem.PacketCaptureChunk
+import com.floe.android.rootsystem.PacketCaptureInfo
 import com.floe.android.rootsystem.PackageRecord
 import com.floe.android.rootsystem.ProcessRecord
 import com.floe.android.rootsystem.RouteInfo
@@ -52,6 +54,7 @@ internal class SystemOperations(
     // Includes the stable Floe parent, not only the package that launched this
     // service: the runtime component is a sibling applicationId.
     private val ownPackages = identity.protectedPackages
+    private val captureSessions = RootCaptureSessions(context)
 
     // ---------------------------------------------------------------- files
 
@@ -394,6 +397,43 @@ internal class SystemOperations(
     }
 
     // -------------------------------------------------------------- network
+
+    fun packetCaptureStart(
+        requestId: String,
+        helperId: String,
+        interfaceName: String,
+        snaplen: Int,
+        maxBytes: Long,
+        maxMillis: Long,
+    ): PacketCaptureInfo {
+        val started = captureSessions.start(
+            requestId = requestId,
+            helperId = helperId,
+            interfaceName = interfaceName,
+            snaplen = snaplen,
+            maxBytes = maxBytes,
+            maxMillis = maxMillis,
+        )
+        return PacketCaptureInfo(started.captureId, started.helperPath)
+    }
+
+    fun packetCaptureRead(captureId: String, maxBytes: Int): PacketCaptureChunk {
+        val chunk = captureSessions.read(captureId, maxBytes)
+        return PacketCaptureChunk(chunk.bytes, chunk.done, chunk.bytesRead, chunk.endReason)
+    }
+
+    fun packetCaptureStop(captureId: String): PacketCaptureChunk {
+        val chunk = captureSessions.stop(captureId)
+        return PacketCaptureChunk(chunk.bytes, chunk.done, chunk.bytesRead, chunk.endReason)
+    }
+
+    fun cancelPacketCaptures(requestId: String) {
+        captureSessions.cancel(requestId)
+    }
+
+    fun close() {
+        captureSessions.close()
+    }
 
     fun networkDiagnostics(): NetworkDiagnostics {
         val interfaces = ArrayList<InterfaceInfo>()

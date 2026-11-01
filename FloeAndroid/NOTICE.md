@@ -110,3 +110,20 @@ SwiftNIO, NIOSSH, Crypto, BigInt and support-package revisions recorded in
 `licenses/ssh/`. Full upstream license/source notices are retained there and
 bundled under `assets/legal/ssh/`. No SwiftTerm or host ssh executable is
 used. Android-specific transport changes retain their source lineage.
+
+## C06 pinned NetBare forwarding and root capture helper
+
+C06 vendors only the reviewed IPv4 TCP/UDP forwarding subset of
+`MegatronKing/NetBare-Android` at commit
+`df5b417ea663763932cabf1ef52f15b09ddc2e16`. The repository `LICENSE` is MIT
+(Copyright © 2019 Megatron King), while upstream source file headers still
+carry GPLv3 text. Both notices are retained and the exact vendored source,
+paths, hashes and local compatibility patch lineage are recorded in
+`FloeAndroid/vendor/netbare/UPSTREAM.json` and
+`FloeAndroid/licenses/netbare/`. No NetBare HTTP/SSL injection, UID dumper,
+sample app, prebuilt JNI or Maven/JCenter artifact is linked.
+
+The Full-only root capture helper is **not** distributed by this App and is
+never downloaded by it. The App accepts only a pinned helper at a fixed
+root-owned path and records the source binding in the C06 private handoff for
+Main's later build/install qualification. Play contains no root adapter.

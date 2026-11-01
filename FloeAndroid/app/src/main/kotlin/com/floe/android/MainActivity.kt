@@ -12,6 +12,7 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.repeatOnLifecycle
+import com.floe.android.host.capture.PacketCaptureNavigation
 import com.floe.android.host.creative.GenerationReturnNavigation
 import com.floe.android.host.gallery.GalleryPermissionRequester
 import kotlinx.coroutines.launch
@@ -62,6 +63,7 @@ class MainActivity : ComponentActivity() {
         // context + current native bound epoch. A rotation re-delivery of the
         // SAME request id is ignored by the one-shot owner.
         admitGenerationReturn(intent)
+        PacketCaptureNavigation.submitFromIntent(intent, packageName)
         lifecycleScope.launch {
             repeatOnLifecycle(Lifecycle.State.STARTED) {
                 (application as FloeApplication).runtimeHost
@@ -93,6 +95,7 @@ class MainActivity : ComponentActivity() {
         // not replay an older route; the one-shot owner still dedupes by id.
         setIntent(intent)
         admitGenerationReturn(intent)
+        PacketCaptureNavigation.submitFromIntent(intent, packageName)
     }
 
     /**
