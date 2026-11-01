@@ -1356,6 +1356,7 @@ private final class NativeCADLiveSession {
     private var reopenEvidence: NativeCADLiveReopenEvidence?
     private var cleanupStarted = false
     private var failureDescription: String?
+    private var documentWitnessCount = 0
 
     init(
         environment: AppEnvironment,
@@ -1870,6 +1871,10 @@ private final class NativeCADLiveSession {
         guard FileManager.default.fileExists(atPath: url.path) else {
             throw NativeCADLiveError.missingDocument(url.path)
         }
+        // Keep the exact synthetic package before any identity/geometry
+        // assertion. Cleanup removes the task, so hashes and prose alone
+        // would otherwise make a failure impossible to reproduce.
+        try attachDocumentWitness(at: url, phase: "inspect")
         let manifest = url.appendingPathComponent("manifest.json", isDirectory: false)
         guard FileManager.default.fileExists(atPath: manifest.path) else {
             throw NativeCADLiveError.invalidDocument("the versioned package has no manifest.json")
@@ -2368,6 +2373,67 @@ private final class NativeCADLiveSession {
         }
     }
 
+    /// Only the one synthetic package owned by this test may be retained.
+    /// Copy bytes into attachments now: a file-backed attachment can outlive
+    /// the task's deletion without having copied the original file yet.
+    private func attachDocumentWitness(at url: URL, phase: String) throws {
+        guard let workspaceRoot,
+              url.standardizedFileURL == workspaceRoot
+                .appendingPathComponent(documentName, isDirectory: true).standardizedFileURL else {
+            throw NativeCADLiveError.invalidDocument("Refusing evidence outside the owned synthetic document.")
+        }
+        let keys: Set<URLResourceKey> = [.isRegularFileKey, .isDirectoryKey, .isSymbolicLinkKey]
+        func files(in directory: URL) throws -> [URL] {
+            let values = try directory.resourceValues(forKeys: keys)
+            guard values.isSymbolicLink != true, values.isDirectory == true else {
+                throw NativeCADLiveError.invalidDocument("The synthetic package contains an unsafe directory.")
+            }
+            var result: [URL] = []
+            for file in try FileManager.default.contentsOfDirectory(
+                at: directory, includingPropertiesForKeys: Array(keys)
+            ).sorted(by: { $0.lastPathComponent < $1.lastPathComponent }) {
+                let values = try file.resourceValues(forKeys: keys)
+                guard values.isSymbolicLink != true else {
+                    throw NativeCADLiveError.invalidDocument("The synthetic package contains a symbolic link.")
+                }
+                if values.isDirectory == true {
+                    result += try files(in: file)
+                } else if values.isRegularFile == true {
+                    result.append(file)
+                }
+            }
+            return result
+        }
+        let packageFiles = try files(in: url)
+        documentWitnessCount += 1
+        let prefix = "native-cad-live-package-\(documentWitnessCount)-\(phase)"
+        var index: [[String: Any]] = []
+        for (offset, file) in packageFiles.enumerated() {
+            let relative = String(file.path.dropFirst(url.path.count + 1))
+            let data = try Data(contentsOf: file)
+            let name = "\(prefix)-\(offset)-\(file.lastPathComponent)"
+            let attachment = XCTAttachment(
+                data: data,
+                uniformTypeIdentifier: file.pathExtension == "json" ? "public.json" : "public.data")
+            attachment.name = name
+            attachment.lifetime = .keepAlways
+            XCTContext.runActivity(named: "Native CAD exact package: \(phase)") { activity in
+                activity.add(attachment)
+            }
+            index.append(["path": relative, "attachment": name,
+                          "bytes": data.count, "sha256": FloeDigest.sha256Hex(data)])
+        }
+        let data = try JSONSerialization.data(
+            withJSONObject: ["document": documentName, "phase": phase, "files": index],
+            options: [.sortedKeys, .prettyPrinted])
+        let attachment = XCTAttachment(data: data, uniformTypeIdentifier: "public.json")
+        attachment.name = "\(prefix)-index.json"
+        attachment.lifetime = .keepAlways
+        XCTContext.runActivity(named: "Native CAD exact package index") { activity in
+            activity.add(attachment)
+        }
+    }
+
     /// Reads the exact durable usage and tool lifecycle rows for every owned
     /// run and attaches a bounded, prompt-free text copy. Cleanup deletes the
     /// conversation/run rows, so this must run first on every exit path.
@@ -2719,6 +2785,16 @@ private final class NativeCADLiveSession {
                     + "task-owned rows and the live document were left intact for inspection."
             )
             return
+        }
+
+        if failureDescription != nil, let documentURL,
+           FileManager.default.fileExists(atPath: documentURL.path) {
+            do {
+                try attachDocumentWitness(at: documentURL, phase: "failure-after-join")
+            } catch {
+                XCTFail("Could not retain the failed synthetic package; owned task left intact: \(error)")
+                return
+            }
         }
 
         if let documentURL {
