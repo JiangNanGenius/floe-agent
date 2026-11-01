@@ -485,6 +485,7 @@ final class CADAnimationCurveFrameWitnessTests: XCTestCase {
         var index: Int
         var file: String
         var timeSeconds: Double
+        var presentationValue: Int
         var sha256: String
     }
 
