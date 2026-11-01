@@ -678,7 +678,7 @@ actor CadDocumentCenter: CadDocumentHost {
     /// still refuses the whole OBJ appearance bundle rather than dropping it.
     private static func incompleteExportMessage(format: String) -> String {
         let normalized = format.lowercased()
-        if ["step", "glb", "usdz", "obj_bundle", "stl", "obj", "3mf"].contains(normalized) {
+        if ["step", "iges", "glb", "usdz", "obj_bundle", "stl", "obj", "3mf"].contains(normalized) {
             var message = "The export receipt is incomplete. Review the excluded objects and "
                 + "material images; retry with scope=part and accept_partial=true only "
                 + "if that partial result is intended. Nothing was written."
@@ -782,7 +782,8 @@ actor CadDocumentCenter: CadDocumentHost {
             .trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         var format = (explicitFormat?.isEmpty == false ? explicitFormat! : outputExtension)
         if format == "stp" { format = "step" }
-        let supported: Set<String> = ["step", "stl", "obj", "obj_bundle", "3mf",
+        if format == "igs" { format = "iges" }
+        let supported: Set<String> = ["step", "iges", "stl", "obj", "obj_bundle", "3mf",
                                       "glb", "usdz", "pdf", "svg", "dxf", "csv"]
         guard supported.contains(format) else {
             if format == "zip" {
@@ -792,7 +793,7 @@ actor CadDocumentCenter: CadDocumentHost {
             }
             throw FloeError.validationFailed(
                 "native export format '\(format)' is not supported "
-                + "(step, stl, obj, obj_bundle, 3mf, glb, usdz, pdf, svg, dxf, csv).")
+                + "(step, iges, stl, obj, obj_bundle, 3mf, glb, usdz, pdf, svg, dxf, csv).")
         }
         // An explicitly named format owns its extension. This is what prevents
         // a caller from receiving ZIP bytes under a .obj name (or OBJ bytes
@@ -801,6 +802,7 @@ actor CadDocumentCenter: CadDocumentHost {
             let expected: Set<String>
             switch format {
             case "step": expected = ["step", "stp"]
+            case "iges": expected = ["iges", "igs"]
             case "obj_bundle": expected = ["zip"]
             default: expected = [format]
             }
@@ -819,9 +821,6 @@ actor CadDocumentCenter: CadDocumentHost {
             throw FloeError.validationFailed(
                 "A .zip output requires payload.format = obj_bundle. "
                 + "Plain format=obj writes a single .obj file without materials.")
-        }
-        guard format != "iges" && format != "igs" else {
-            throw FloeError.validationFailed("IGES export is not available in this build.")
         }
         let pageID = (payload["page_id"] as? String).flatMap(UUID.init(uuidString:))
 
@@ -1536,6 +1535,32 @@ actor CadDocumentCenter: CadDocumentHost {
         encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
         let previewData = try encoder.encode(record.preview)
         let previewObject = (try? JSONSerialization.jsonObject(with: previewData)) as? [String: Any] ?? [:]
+        let legacySurfaceImport = record.preview.serviceMessage?
+            .contains("IGES surfaces are not solids") == true
+        let geometryClass = record.preview.importGeometryClass
+            ?? (["stl", "obj", "glb", "gltf"].contains(format) ? "mesh"
+                : legacySurfaceImport ? "surface" : "solid")
+        let openSurfaceCount = record.preview.importOpenSurfaceBodyCount
+            ?? (legacySurfaceImport ? record.preview.addedBodyNames.count : 0)
+        let surfaceWarning = openSurfaceCount > 0
+            ? "This file carries \(openSurfaceCount) exact open-surface body(ies): they support "
+                + "move/rotate/scale, material and IGES re-export, but not solid "
+                + "boolean/fillet/shell. "
+            : ""
+        var importInfo: [String: Any] = [
+            "source": sourceRelative,
+            "source_sha256": sourceSHA,
+            "format": format,
+            "geometry_class": geometryClass,
+            "solid_bodies": record.preview.importSolidBodyCount ?? 0,
+            "surface_bodies": record.preview.importSurfaceBodyCount ?? 0,
+            "open_surface_bodies": openSurfaceCount,
+            "source_bytes": bytes.count,
+            "target_revision": identity.revision,
+        ]
+        if openSurfaceCount > 0 {
+            importInfo["open_surface_representation"] = "exact_brep"
+        }
         return Self.encodeNativeJSON([
             "ok": true,
             "proposal": [
@@ -1545,16 +1570,10 @@ actor CadDocumentCenter: CadDocumentHost {
                 "baseContentSHA256": record.baseContentSHA256,
                 "preview": previewObject,
             ] as [String: Any],
-            "import": [
-                "source": sourceRelative,
-                "source_sha256": sourceSHA,
-                "format": format,
-                "geometry_class": ["stl", "obj", "glb", "gltf"].contains(format) ? "mesh" : "brep",
-                "source_bytes": bytes.count,
-                "target_revision": identity.revision,
-            ],
+            "import": importInfo,
             "task_id": taskID.uuidString,
             "message": "Import drafted on a throwaway copy; the source file and package are unchanged. "
+                + surfaceWarning
                 + "Apply with cad.document action=apply and this proposal_id. Ordinary authorized document editing needs no separate confirmation.",
         ])
     }

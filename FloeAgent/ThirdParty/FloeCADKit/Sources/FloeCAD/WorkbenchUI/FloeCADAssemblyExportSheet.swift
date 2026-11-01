@@ -6,9 +6,12 @@
 //  `FloeCADDocument.exchangeCoverage` / `nativeExchangeExport` plan used by
 //  `cad.document`; there is no second export implementation here.
 //
-//  The normal flow stays short: pick STEP/GLB/USDZ and Part/Assembly, read
-//  the object counts and excluded reasons, then Export. A partial receipt is
-//  only written after the user explicitly chooses "Export Included".
+//  The normal flow stays short: pick STEP/IGES/GLB/USDZ and Part/Assembly,
+//  read the object counts and excluded reasons, then Export. A partial
+//  receipt is only written after the user explicitly chooses "Export
+//  Included". IGES is part-scope exact geometry (solids and open surfaces);
+//  the sheet hides the assembly scope for it rather than offering a plan the
+//  core will refuse.
 //
 
 import SwiftUI
@@ -36,15 +39,25 @@ struct CADAssemblyExportSheet: View {
 
     enum ExchangeFormat: String, CaseIterable, Identifiable, Equatable {
         case step
+        case iges
         case glb
         case usdz
 
         var id: String { rawValue }
 
+        /// Assembly placement export exists for STEP/GLB/USDZ only. IGES is a
+        /// part-scope exact-geometry exchange here (no IGES assembly metadata
+        /// is claimed); the sheet hides the assembly scope instead of letting
+        /// the user pick a plan the core will refuse.
+        var supportsAssembly: Bool { self != .iges }
+
         var title: String {
             switch self {
             case .step:
-                return FloeCADStrings.text("cad.ui.export.format.step", "STEP (exact B-rep)")
+                return FloeCADStrings.text("cad.ui.export.format.step", "STEP (exact solid)")
+            case .iges:
+                return FloeCADStrings.text("cad.ui.export.format.iges",
+                                           "IGES (exact solids + surfaces)")
             case .glb:
                 return FloeCADStrings.text("cad.ui.export.format.glb", "GLB (scene)")
             case .usdz:
@@ -57,6 +70,7 @@ struct CADAssemblyExportSheet: View {
         var contentType: UTType {
             switch self {
             case .step: return ExportDocument.stepType
+            case .iges: return ExportDocument.igesType
             case .glb: return ExportDocument.glbType
             case .usdz: return ExportDocument.usdzType
             }
@@ -82,9 +96,11 @@ struct CADAssemblyExportSheet: View {
                            selection: $scope) {
                         Text(FloeCADStrings.text("cad.ui.export.scope.part", "Part / parts only"))
                             .tag(CADExchangeScope.part)
-                        Text(FloeCADStrings.text("cad.ui.export.scope.assembly",
-                                                 "Assembly (placed instances)"))
-                            .tag(CADExchangeScope.assembly)
+                        if format.supportsAssembly {
+                            Text(FloeCADStrings.text("cad.ui.export.scope.assembly",
+                                                     "Assembly (placed instances)"))
+                                .tag(CADExchangeScope.assembly)
+                        }
                     }
                 }
 
@@ -104,7 +120,10 @@ struct CADAssemblyExportSheet: View {
             .navigationBarTitleDisplayMode(.inline)
             .presentationDetents([.medium, .large])
             .onAppear { refresh() }
-            .onChange(of: format) { _, _ in refresh() }
+            .onChange(of: format) { _, _ in
+                if !format.supportsAssembly { scope = .part }
+                refresh()
+            }
             .onChange(of: scope) { _, _ in refresh() }
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
@@ -185,6 +204,12 @@ nonisolated enum CADExportCopy {
         case "mesh_only_no_analytic_brep":
             return FloeCADStrings.text("cad.export.reason.meshOnlyStep",
                                        "Mesh-only; STEP needs an analytic solid.")
+        case "open_surface_not_step_solid":
+            return FloeCADStrings.text("cad.export.reason.openSurfaceStep",
+                                       "Open surface; STEP export here writes closed solids only.")
+        case "mesh_only_no_exact_brep":
+            return FloeCADStrings.text("cad.export.reason.meshOnlyIges",
+                                       "Mesh-only; IGES export needs an exact solid or surface.")
         case "invalid_mesh", "empty_mesh", "normal_count_mismatch",
              "index_count_not_triangles", "index_out_of_range", "non_finite_mesh":
             return FloeCADStrings.text("cad.export.reason.invalidMesh",
@@ -272,6 +297,11 @@ nonisolated enum CADExportCopy {
             return FloeCADStrings.text(
                 "cad.export.formatLoss.mesh",
                 "Mesh exchange: exact B-rep, history and PMI are not carried.")
+        }
+        if losses.contains("materials") {
+            return FloeCADStrings.text(
+                "cad.export.formatLoss.exactNoMaterials",
+                "Exact geometry only: this file does not keep materials, history, PMI, part names or assembly hierarchy.")
         }
         return FloeCADStrings.text(
             "cad.export.formatLoss.step",

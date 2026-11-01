@@ -133,7 +133,25 @@ nonisolated enum PrimitiveSpec: Codable, Equatable, Sendable {
     }
 }
 
-/// A solid body in the document, in body-local coordinates. `render`/`edges`
+/// One precise refusal for a closed-solid operation aimed at an exact OPEN
+/// surface body. Imported IGES shells/faces are exact geometry, not solids:
+/// boolean, fillet/chamfer, shell, hole, mirror and the solid face edits have
+/// no exact result for them, and the historical mesh fallbacks would silently
+/// replace the sheet's exact handle with a tessellation. This is a capability
+/// boundary, not an approval policy — nothing is mutated or recorded, and the
+/// supported operations (move/rotate/scale, material, save/reopen, IGES
+/// re-export) stay available.
+nonisolated enum ExactSurfaceBoundary {
+    static func refusal(_ operation: String, bodyName: String) -> String {
+        "\(operation) needs a closed solid. “\(bodyName)” is an exact open surface "
+            + "and was left unchanged; move, rotate, scale, material and IGES export "
+            + "still work."
+    }
+}
+
+/// A body in the document, in body-local coordinates. A body is either an
+/// analytic SOLID (`brep`, the historical path) or an exact OPEN SURFACE
+/// (`surfaceBRep`, imported IGES shells/faces), never both. `render`/`edges`
 /// are always present (documents open straight into drawable buffers); the
 /// Euclid mesh is a lazy cache rebuilt from triangles when CSG/export needs it.
 nonisolated struct Body: Identifiable, Sendable {
@@ -167,6 +185,16 @@ nonisolated struct Body: Identifiable, Sendable {
     /// permanently degrades smooth geometry to its tessellation on the next
     /// save (2026-08-25 review, C4).
     var brep: BRepHandle?
+    /// Exact OPEN shell/face B-rep (an imported IGES surface root). This is
+    /// deliberately SEPARATE from `brep`: every existing exact edit/boolean/
+    /// fillet/shell path treats a non-nil `brep` as a closed solid, and an open
+    /// surface must never enter those operations. The body is still a real
+    /// document body: it renders from this exact shape, is selectable,
+    /// transformable, material-paintable, saved through the same B-rep blob
+    /// (the loader classifies it by actual topology) and re-exported as IGES.
+    /// Solid-only formats (STEP here) continue to skip it with a truthful
+    /// coverage reason. Nil = not an open-surface body.
+    var surfaceBRep: BRepHandle?
 
     /// Build from a freshly generated Euclid mesh (primitive, extrude, boolean).
     init(

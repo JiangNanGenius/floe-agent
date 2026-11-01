@@ -1842,15 +1842,29 @@ final class DocumentSession {
                 if decoded == nil { unreadableRows.bodyFaceMaterials.insert(persisted.bodyID) }
                 return decoded
             } ?? []
-            // Restore the analytic B-rep so a reloaded cylinder stays round and
-            // can still compose booleans. An unreadable blob (truncated, or
-            // written by a newer OCCT) leaves the body Euclid-only for this
-            // session — the persisted render mesh is already correct — but the
-            // stored blob is PRESERVED rather than overwritten with nil.
-            body.brep = persisted.brepData.flatMap { data -> BRepHandle? in
-                let decoded = OCCTKernel.deserialize(data)
-                if decoded == nil { unreadableRows.bodyBrep.insert(persisted.bodyID) }
-                return decoded
+            // Restore the exact B-rep so a reloaded cylinder stays round and
+            // can still compose booleans, and an imported IGES surface stays
+            // exact instead of degrading to its render mesh. The SAME
+            // persisted blob column carries both roles; the role is derived
+            // from the shape's actual topology, never from a filename or a
+            // separate side flag. A solid goes to `brep` (the historical
+            // field every solid op requires); a shell/face goes to
+            // `surfaceBRep`. An unreadable blob (truncated, or written by a
+            // newer OCCT) leaves the body render-only for this session — the
+            // persisted render mesh is already correct — but the stored blob
+            // is PRESERVED rather than overwritten with nil.
+            body.brep = nil
+            body.surfaceBRep = nil
+            if let data = persisted.brepData {
+                if let decoded = OCCTKernel.deserialize(data) {
+                    if decoded.containsSolid {
+                        body.brep = decoded
+                    } else {
+                        body.surfaceBRep = decoded
+                    }
+                } else {
+                    unreadableRows.bodyBrep.insert(persisted.bodyID)
+                }
             }
             loaded.bodies.append(body)
         }
@@ -2392,11 +2406,14 @@ final class DocumentSession {
 
     /// B-rep blobs are immutable once produced; cache the serialized bytes per
     /// body/meshRevision/handle so a save never re-serializes an unchanged
-    /// solid and can pre-serialize changed ones off-main.
+    /// exact body and can pre-serialize changed ones off-main. The same cache
+    /// and blob column serve a closed solid and an open IGES surface.
     private var brepBlobCache: [UUID: (handle: ObjectIdentifier, revision: UInt64, data: Data)] = [:]
 
     private func serializedBrep(for body: Body) -> Data? {
-        guard let handle = body.brep else { return nil }
+        // A body owns at most one exact shape. Prefer the solid field if a
+        // future path ever leaves both populated.
+        guard let handle = body.brep ?? body.surfaceBRep else { return nil }
         let key = ObjectIdentifier(handle)
         if let cached = brepBlobCache[body.id.raw],
            cached.handle == key, cached.revision == body.meshRevision {
@@ -2409,7 +2426,8 @@ final class DocumentSession {
         return data
     }
 
-    /// Serialize every changed analytic body off-main into the blob cache.
+    /// Serialize every changed exact B-rep body (solid or open surface)
+    /// off-main into the blob cache.
     ///
     /// Ownership: the detached serializer reads ONLY independently-owned deep
     /// copies (`OCCTKernel.independentSnapshot`) made here on the session
@@ -2432,7 +2450,7 @@ final class DocumentSession {
         #endif
         let pending: [(id: UUID, revision: UInt64, liveKey: ObjectIdentifier, snapshot: BRepHandle)] =
             document.bodies.compactMap { body in
-                guard let handle = body.brep else { return nil }
+                guard let handle = body.brep ?? body.surfaceBRep else { return nil }
                 if let cached = brepBlobCache[body.id.raw],
                    cached.handle == ObjectIdentifier(handle),
                    cached.revision == body.meshRevision {
@@ -2458,7 +2476,7 @@ final class DocumentSession {
         for entry in serialized {
             guard let current = document.body(with: BodyID(raw: entry.0)),
                   current.meshRevision == entry.1,
-                  let handle = current.brep,
+                  let handle = current.brep ?? current.surfaceBRep,
                   ObjectIdentifier(handle) == entry.2 else { continue }
             brepBlobCache[entry.0] = (entry.2, entry.1, entry.3)
         }
@@ -2507,9 +2525,10 @@ final class DocumentSession {
             let materialData = body.material.flatMap { try? JSONEncoder().encode($0) }
             let faceMaterialsData = body.materialFaceBindings.isEmpty
                 ? nil : try? JSONEncoder().encode(body.materialFaceBindings)
-            // Analytic geometry, when this body has it — so roundness and boolean
-            // composability survive a reload instead of degrading to triangles.
-            // Cache-first: `saveAsync` pre-serializes changed solids off-main.
+            // Exact geometry, when this body has it — so roundness/boolean
+            // composability for solids and exact open-surface identity for
+            // IGES surfaces survive a reload instead of degrading to triangles.
+            // Cache-first: `saveAsync` pre-serializes changed exact bodies off-main.
             let brepData = serializedBrep(for: body)
 
             if let persisted = persistedByID[body.id.raw] {

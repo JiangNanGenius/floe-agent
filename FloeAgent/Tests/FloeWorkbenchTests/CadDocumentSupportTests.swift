@@ -650,7 +650,9 @@ struct NativeCADCapabilityMatrixTests {
 
         let iges = try #require(NativeCADCapabilityMatrix.row(forFormat: "iges"))
         #expect(iges.export.contains("step"))
-        #expect(!iges.export.contains("iges"), "IGES export is not available in this build")
+        #expect(iges.export.contains("iges"), "IGES export writes exact solids and open surfaces")
+        #expect(iges.note.contains("exact"), "IGES surfaces are exact B-rep, not render-only")
+        #expect(iges.note.contains("IGES re-export"))
 
         for meshFormat in ["stl", "obj", "glb", "gltf"] {
             let row = try #require(NativeCADCapabilityMatrix.row(forFormat: meshFormat))

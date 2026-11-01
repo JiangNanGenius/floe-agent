@@ -3927,6 +3927,7 @@ public final class CADDrawingService {
             // The B-rep is body-local and immutable; carrying it lets exact
             // section/circle work run on the placed transform.
             placed.brep = source.brep
+            placed.surfaceBRep = source.surfaceBRep
             result.sources.append(ProjectionSource(instanceID: instance.id,
                                                    name: instance.name,
                                                    body: placed))

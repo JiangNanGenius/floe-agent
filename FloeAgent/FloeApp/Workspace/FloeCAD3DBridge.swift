@@ -696,7 +696,7 @@ final class FloeCAD3DBridge {
                 "scopes": ["part", "assembly"],
                 "coverage": true,
                 "dry_run": true,
-                "part_formats": ["step", "stl", "obj", "obj_bundle", "3mf",
+                "part_formats": ["step", "iges", "stl", "obj", "obj_bundle", "3mf",
                                  "glb", "usdz", "pdf", "svg", "dxf", "csv"],
                 "assembly_formats": ["step", "glb", "usdz"],
                 "bundle_formats": ["obj_bundle"],
@@ -788,6 +788,82 @@ final class FloeCAD3DBridge {
         meshImportFormats.contains(format) || commandImporterFormats.contains(format)
     }
 
+    /// The ACTUAL geometry classes an import preview produced, captured from
+    /// the same throwaway apply that produced the body names. This is what
+    /// lets the banner/tool reply state an open-surface limitation BEFORE the
+    /// user applies, instead of calling every IGES file "B-rep" because the
+    /// format name is `.igs`.
+    struct ImportContent {
+        let formatLabel: String
+        /// "mesh" | "solid" | "surface" | "mixed".
+        let geometryClass: String
+        let solids: Int
+        let surfaces: Int
+        let openSurfaces: Int
+        let bodyCount: Int
+
+        func message(warnings: String) -> String {
+            var text: String
+            switch geometryClass {
+            case "mesh":
+                text = "Import \(formatLabel) preview: \(bodyCount) mesh body(ies) "
+                    + "would be added; no parametric feature history is created."
+            case "surface":
+                text = "Import \(formatLabel) preview: \(bodyCount) exact open-surface "
+                    + "body(ies) would be added; open surfaces support move/rotate/scale, "
+                    + "material and IGES re-export but not solid boolean/fillet/shell; "
+                    + "no parametric feature history is created."
+            case "mixed":
+                text = "Import \(formatLabel) preview: \(solids) exact solid body(ies) "
+                    + "+ \(surfaces) exact open-surface body(ies) would be added; open "
+                    + "surfaces support move/rotate/scale, material and IGES re-export but "
+                    + "not solid boolean/fillet/shell; no parametric feature history is created."
+            default:
+                text = "Import \(formatLabel) preview: "
+                    + "\(max(solids, bodyCount)) exact B-rep solid body(ies) would be added; "
+                    + "no parametric feature history is created."
+            }
+            return warnings.isEmpty ? text : text + " " + warnings
+        }
+    }
+
+    static func importContent(_ payload: Data, format: String,
+                              bodyCount: Int) -> ImportContent {
+        let object = (try? JSONSerialization.jsonObject(with: payload)) as? [String: Any] ?? [:]
+        var solids = object["solidsImported"] as? Int ?? 0
+        var surfaces = object["surfacesImported"] as? Int ?? 0
+        var openSurfaces = object["openSurfaceBodies"] as? Int ?? surfaces
+        if isMeshImportFormat(format) {
+            return ImportContent(formatLabel: format.uppercased(), geometryClass: "mesh",
+                                 solids: 0, surfaces: 0, openSurfaces: 0,
+                                 bodyCount: bodyCount)
+        }
+        // Older/other B-rep payloads may omit the split; an IGES note that
+        // says surfaces are not solids is real evidence of surface bodies.
+        if format == "iges", solids == 0, surfaces == 0,
+           let note = object["note"] as? String,
+           note.contains("IGES surfaces are not solids") {
+            surfaces = bodyCount
+            openSurfaces = bodyCount
+        }
+        // STEP (and any other B-rep import without a split payload) reports
+        // only body names; those bodies are exact solids.
+        if !isMeshImportFormat(format), solids == 0, surfaces == 0, bodyCount > 0 {
+            solids = bodyCount
+        }
+        let geometryClass: String
+        if surfaces > 0 && solids > 0 {
+            geometryClass = "mixed"
+        } else if surfaces > 0 {
+            geometryClass = "surface"
+        } else {
+            geometryClass = "solid"
+        }
+        return ImportContent(formatLabel: format.uppercased(), geometryClass: geometryClass,
+                             solids: solids, surfaces: surfaces,
+                             openSurfaces: openSurfaces, bodyCount: bodyCount)
+    }
+
     /// The frozen import specification for a pending proposal, if any. The
     /// center uses this to route an authorized apply through the import
     /// transaction (and to re-read/verify the guarded source bytes).
@@ -814,7 +890,8 @@ final class FloeCAD3DBridge {
                        format rawFormat: String,
                        fileName: String?, unitScale: Double?,
                        sourceSHA256: String, summary: String) async throws -> CADProposalRecord {
-        let format = rawFormat.lowercased()
+        var format = rawFormat.lowercased()
+        if format == "igs" { format = "iges" }
         let document = try await document(at: url)
         // Mirror CADProposalService: flush live edits first so the proposal
         // binds the bytes the grant will validate; a flush failure refuses.
@@ -864,10 +941,10 @@ final class FloeCAD3DBridge {
                                     ?? "The file produced no importable bodies; nothing was changed.")
         }
 
-        let geometryClass = Self.isMeshImportFormat(format) ? "mesh" : "brep"
-        let message = "Import \(format.uppercased()) preview: \(addedNames.count) \(geometryClass) "
-            + "body(ies) would be added; no parametric feature history is created."
-            + (warnings.isEmpty ? "" : " \(warnings)")
+        let content = Self.importContent(outcome.payload, format: format,
+                                         bodyCount: addedNames.count)
+        let geometryClass = content.geometryClass
+        let message = content.message(warnings: warnings)
         // CADProposalPreview has no public memberwise initializer; round-trip
         // it through its Codable conformance.
         let previewJSON: [String: Any] = [
@@ -882,6 +959,10 @@ final class FloeCAD3DBridge {
             "serviceOperation": "document.import",
             "serviceMutated": true,
             "serviceMessage": message,
+            "importGeometryClass": geometryClass,
+            "importSolidBodyCount": content.solids,
+            "importSurfaceBodyCount": content.surfaces,
+            "importOpenSurfaceBodyCount": content.openSurfaces,
         ]
         let previewData = try JSONSerialization.data(withJSONObject: previewJSON)
         let preview = try JSONDecoder().decode(CADProposalPreview.self, from: previewData)
@@ -959,11 +1040,14 @@ final class FloeCAD3DBridge {
                                    message: save.error
                                     ?? "The imported geometry could not be committed; the document was reloaded from the last saved package.")
         }
+        let content = Self.importContent(outcome.payload, format: spec.format,
+                                         bodyCount: Self.importedBodyNames(outcome.payload).count)
         let receipt = CADApplyReceipt(proposalID: proposalID,
                                       revision: save.revision,
                                       contentSHA256: save.contentSHA256,
                                       message: "Imported and committed \(spec.format.uppercased()) geometry "
-                                        + "(\(Self.importedBodyNames(outcome.payload).count) body/bodies).")
+                                        + "(\(content.bodyCount) body/bodies; \(content.geometryClass)). "
+                                        + Self.importWarnings(outcome.payload, format: spec.format))
         pending.removeAll { $0.id == proposalID }
         proposalDocument[proposalID] = nil
         importSpecs[proposalID] = nil
@@ -1120,8 +1204,10 @@ final class FloeCAD3DBridge {
     /// route, so no partial choice is inferred here.
     func exportNativeData(at url: URL, format: String, pageID: UUID?) async throws -> NativeExportResult {
         let document = try await document(at: url)
-        let normalized = format.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        let receiptFormats: Set<String> = ["step", "stl", "obj", "obj_bundle", "3mf", "glb", "usdz"]
+        var normalized = format.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        if normalized == "igs" { normalized = "iges" }
+        let receiptFormats: Set<String> = ["step", "iges", "stl", "obj", "obj_bundle",
+                                           "3mf", "glb", "usdz"]
         if receiptFormats.contains(normalized) {
             switch document.nativePartExport(format: normalized, pageID: pageID) {
             case let .success(data, note, coverage):

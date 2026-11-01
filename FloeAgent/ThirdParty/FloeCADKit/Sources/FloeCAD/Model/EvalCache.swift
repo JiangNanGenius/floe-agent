@@ -86,6 +86,7 @@ nonisolated struct EvalCache: Sendable {
                 adopted.render = doc.render
                 adopted.edges = doc.edges
                 adopted.brep = doc.brep
+                adopted.surfaceBRep = doc.surfaceBRep
                 return .put(adopted, table, kernelNames: names)
             }
             entries[id] = EvalCacheEntry(fingerprint: entry.fingerprint, delta: delta)

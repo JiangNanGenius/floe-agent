@@ -266,6 +266,9 @@ final class CADCommandExecutor {
                 return execMissing("sketch", sketchID.raw.uuidString)
             }
             if let bad = missingBody(targets, session) { return bad }
+            if booleanOp != .newBody,
+               let refusal = exactSurfaceRefusal(targets, operation: "Extrude boolean",
+                                                 session) { return refusal }
             let intent = BooleanIntent(op: booleanOp, resolvedTargets: targets.map { bodyRef($0, session) })
             // An end condition resolves to the distance it stands for, from
             // the boolean's targets (or every body when there are none),
@@ -313,6 +316,9 @@ final class CADCommandExecutor {
                 return execMissing("sketch", sketchID.raw.uuidString)
             }
             if let bad = missingBody(targets, session) { return bad }
+            if booleanOp != .newBody,
+               let refusal = exactSurfaceRefusal(targets, operation: "Revolve boolean",
+                                                 session) { return refusal }
             let intent = BooleanIntent(op: booleanOp, resolvedTargets: targets.map { bodyRef($0, session) })
             return record(FeatureNode(
                 name: "Revolve",
@@ -358,6 +364,8 @@ final class CADCommandExecutor {
 
         case let .boolean(kindName, target, tools):
             if let bad = missingBody([target] + tools, session) { return bad }
+            if let refusal = exactSurfaceRefusal([target] + tools, operation: "Boolean",
+                                                 session) { return refusal }
             guard let kind = BooleanKind(rawValue: kindName) else {
                 return .failure(400, "Bad Request", error: "unknown_boolean_kind",
                                 message: "'\(kindName)' is not a boolean kind.")
@@ -374,6 +382,9 @@ final class CADCommandExecutor {
                 return execMissing("sketch", sketchID.raw.uuidString)
             }
             if let bad = missingBody(targets, session) { return bad }
+            if booleanOp != .newBody,
+               let refusal = exactSurfaceRefusal(targets, operation: "Sweep boolean",
+                                                 session) { return refusal }
             let intent = BooleanIntent(op: booleanOp, resolvedTargets: targets.map { bodyRef($0, session) })
             return record(FeatureNode(
                 name: helix == nil ? "Sweep" : "Helix Sweep",
@@ -391,6 +402,9 @@ final class CADCommandExecutor {
                 return execMissing("sketch", section.sketch.raw.uuidString)
             }
             if let bad = missingBody(targets, session) { return bad }
+            if booleanOp != .newBody,
+               let refusal = exactSurfaceRefusal(targets, operation: "Loft boolean",
+                                                 session) { return refusal }
             let intent = BooleanIntent(op: booleanOp, resolvedTargets: targets.map { bodyRef($0, session) })
             return record(FeatureNode(
                 name: "Loft",
@@ -584,6 +598,24 @@ final class CADCommandExecutor {
         let known = Set(session.document.bodies.map(\.id))
         guard let missing = ids.first(where: { !known.contains($0) }) else { return nil }
         return execMissing("body", missing.raw.uuidString)
+    }
+
+    /// Refuse a closed-solid operation aimed at an exact OPEN surface BEFORE a
+    /// feature node is recorded. Replay cannot see imported bodies, so without
+    /// this preflight the caller would get a generic unresolved-target error;
+    /// with it the refusal names the real limitation and the document, history,
+    /// undo/redo stacks and the exact surface handle stay untouched. This is a
+    /// capability boundary, not a new approval/tool policy.
+    private func exactSurfaceRefusal(_ ids: [BodyID], operation: String,
+                                     _ session: DocumentSession) -> AgentResponse? {
+        for id in ids {
+            guard let body = session.document.body(with: id),
+                  body.surfaceBRep != nil else { continue }
+            return .failure(422, "Unprocessable Entity",
+                            error: "exact_surface_needs_solid",
+                            message: ExactSurfaceBoundary.refusal(operation, bodyName: body.name))
+        }
+        return nil
     }
 
     private func execMissing(_ what: String, _ id: String) -> AgentResponse {
@@ -949,6 +981,10 @@ final class CADCommandExecutor {
                            on viewModel: EditorViewModel) -> AgentResponse {
         let session = viewModel.session
         let context: (body: Body, brep: BRepHandle)
+        if let refusal = exactSurfaceRefusal(
+            [bodyID], operation: isFillet ? "Fillet" : "Chamfer", session) {
+            return refusal
+        }
         switch identityContext(bodyID, session) {
         case let .ok(body, brep): context = (body, brep)
         case let .reply(reply): return reply
@@ -1017,6 +1053,9 @@ final class CADCommandExecutor {
             return .failure(404, "Not Found", error: "unknown_target",
                             message: "No target body with id \(targetID.raw.uuidString) in this document.")
         }
+        if let refusal = exactSurfaceRefusal([targetID], operation: "Hole", session) {
+            return refusal
+        }
         guard target.brep != nil else {
             return .failure(409, "Conflict", error: "hole_requires_brep",
                             message: "Holes need an analytic B-rep target; '\(target.name)' is mesh-only.")
@@ -1074,6 +1113,9 @@ final class CADCommandExecutor {
                            on viewModel: EditorViewModel) -> AgentResponse {
         let session = viewModel.session
         let context: (body: Body, brep: BRepHandle)
+        if let refusal = exactSurfaceRefusal([bodyID], operation: "Shell", session) {
+            return refusal
+        }
         switch identityContext(bodyID, session) {
         case let .ok(body, brep): context = (body, brep)
         case let .reply(reply): return reply
@@ -1102,6 +1144,9 @@ final class CADCommandExecutor {
                                 _ kind: (FaceRef) -> FeatureKind) -> AgentResponse {
         let session = viewModel.session
         let context: (body: Body, brep: BRepHandle)
+        if let refusal = exactSurfaceRefusal([bodyID], operation: name, session) {
+            return refusal
+        }
         switch identityContext(bodyID, session) {
         case let .ok(body, brep): context = (body, brep)
         case let .reply(reply): return reply
@@ -1138,6 +1183,9 @@ final class CADCommandExecutor {
                                 on viewModel: EditorViewModel) -> AgentResponse {
         let session = viewModel.session
         let context: (body: Body, brep: BRepHandle)
+        if let refusal = exactSurfaceRefusal([bodyID], operation: "Delete Face", session) {
+            return refusal
+        }
         switch identityContext(bodyID, session) {
         case let .ok(body, brep): context = (body, brep)
         case let .reply(reply): return reply
@@ -1164,6 +1212,9 @@ final class CADCommandExecutor {
                                on viewModel: EditorViewModel) -> AgentResponse {
         let session = viewModel.session
         let context: (body: Body, brep: BRepHandle)
+        if let refusal = exactSurfaceRefusal([bodyID], operation: "Draft Face", session) {
+            return refusal
+        }
         switch identityContext(bodyID, session) {
         case let .ok(body, brep): context = (body, brep)
         case let .reply(reply): return reply
@@ -1192,6 +1243,9 @@ final class CADCommandExecutor {
                                  on viewModel: EditorViewModel) -> AgentResponse {
         let session = viewModel.session
         let context: (body: Body, brep: BRepHandle)
+        if let refusal = exactSurfaceRefusal([bodyID], operation: "Replace Face", session) {
+            return refusal
+        }
         switch identityContext(bodyID, session) {
         case let .ok(body, brep): context = (body, brep)
         case let .reply(reply): return reply

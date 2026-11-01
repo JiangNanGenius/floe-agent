@@ -1320,6 +1320,10 @@ targets:
       - path: ThirdParty/FloeCADKit/Tests/FloeCADKitTests/CADPresentationUITests.swift
       - path: ThirdParty/FloeCADKit/Tests/FloeCADKitTests/CADAssemblyDrawingExtensionTests.swift
       - path: ThirdParty/FloeCADKit/Tests/FloeCADKitTests/CADAnimationTests.swift
+      # E26 IGES open-surface exact round-trip + solid/surface boundary
+      # regressions. Package test target also builds it; this explicit entry is
+      # what makes it execute in FloeAppTests. Regenerate with gen_project.sh.
+      - path: ThirdParty/FloeCADKit/Tests/FloeCADKitTests/CADIGESSurfaceRoundTripTests.swift
       # Original X28 (animation export options UI → real exporter settings →
       # media read-back): options mapping/persistence tests plus the App-host
       # RealityKit export read-back fixture. Regenerate with gen_project.sh.

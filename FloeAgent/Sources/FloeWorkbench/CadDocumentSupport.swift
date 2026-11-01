@@ -448,28 +448,31 @@ public enum NativeCADPolicy: Sendable {
     }
 
     /// Import formats recognized by the native kernel path, by exchange
-    /// family. STEP/IGES carry exact B-rep solids; STL/OBJ/GLB/glTF are mesh
-    /// exchanges imported as render/mesh bodies without a parametric
-    /// history — the reply states which.
+    /// family. STEP/IGES carry exact B-rep geometry; an IGES shell/face is
+    /// kept as an exact open-surface body (`surfaceBRep`) rather than a
+    /// render mesh. STL/OBJ/GLB/glTF are mesh exchanges imported as render/
+    /// mesh bodies without a parametric history — the reply states which.
     public static let importExtensions: Set<String> =
         ["step", "stp", "iges", "igs", "stl", "obj", "glb", "gltf"]
 
     /// Formats the native kernel exports (the host validates against the
-    /// output extension; IGES export is not available in this build). PDF,
-    /// SVG, DXF and the complete BOM CSV are page-scoped drawing exports and
-    /// need `page_id`; CSV is a table, not a body-geometry exchange.
-    /// `obj_bundle` is the single-file ZIP container (output extension .zip);
-    /// plain `obj` remains a real OBJ with UVs and no materials.
+    /// output extension). STEP is closed-solid-only; IGES writes exact solid
+    /// AND open-surface B-rep geometry back. PDF, SVG, DXF and the complete
+    /// BOM CSV are page-scoped drawing exports and need `page_id`; CSV is a
+    /// table, not a body-geometry exchange. `obj_bundle` is the single-file
+    /// ZIP container (output extension .zip); plain `obj` remains a real OBJ
+    /// with UVs and no materials.
     public static let exportExtensions: Set<String> =
-        ["step", "stp", "stl", "obj", "obj_bundle", "3mf", "glb", "usdz",
-         "pdf", "svg", "dxf", "csv"]
+        ["step", "stp", "iges", "igs", "stl", "obj", "obj_bundle", "3mf", "glb",
+         "usdz", "pdf", "svg", "dxf", "csv"]
 }
 
 /// Per-format capability matrix advertised by the native `.floecad` surface.
 /// View/edit describe whether imported geometry participates in the kernel
-/// (exact solids vs render-only mesh bodies); export lists the formats that
-/// geometry class can leave as. Kept explicit so the model never treats a
-/// mesh import as a parametric solid or assumes feature history exists.
+/// (exact B-rep solids/open surfaces vs render-only mesh bodies); export lists
+/// the formats that geometry class can leave as. Kept explicit so the model
+/// never treats a mesh import as a parametric solid or assumes feature
+/// history exists.
 public enum NativeCADCapabilityMatrix: Sendable {
     public struct FormatRow: Sendable, Equatable {
         public var format: String
@@ -502,7 +505,7 @@ public enum NativeCADCapabilityMatrix: Sendable {
     public static let rows: [FormatRow] = [
         FormatRow(format: "floecad", aliases: [], geometryClass: "native",
                   create: true, import: false, view: true, edit: true,
-                  export: ["step", "stl", "obj", "obj_bundle", "3mf", "glb",
+                  export: ["step", "iges", "stl", "obj", "obj_bundle", "3mf", "glb",
                            "usdz", "pdf", "svg", "dxf", "csv"],
                   note: "Native parametric package created with the create action; "
                     + "never build the package by hand. obj_bundle writes one .zip "
@@ -510,15 +513,18 @@ public enum NativeCADCapabilityMatrix: Sendable {
                     + "remains a single .obj with UVs and no materials."),
         FormatRow(format: "step", aliases: ["stp"], geometryClass: "brep",
                   create: false, import: true, view: true, edit: true,
-                  export: ["step", "stl", "obj", "obj_bundle", "3mf", "glb", "usdz"],
+                  export: ["step", "iges", "stl", "obj", "obj_bundle", "3mf", "glb", "usdz"],
                   note: "Exact OCCT B-rep solids (AP214). Imported solids are editable; "
-                    + "no parametric feature history is synthesized."),
+                    + "no parametric feature history is synthesized. STEP export here "
+                    + "writes closed solids only; IGES can also return exact surfaces."),
         FormatRow(format: "iges", aliases: ["igs"], geometryClass: "brep",
                   create: false, import: true, view: true, edit: true,
-                  export: ["step", "stl", "obj", "obj_bundle", "3mf", "glb", "usdz"],
-                  note: "Surface exchange: closed solids import as exact B-rep bodies; "
-                    + "shells/faces import as render-only bodies that cannot take boolean/fillet/shell. "
-                    + "IGES export is not available in this build."),
+                  export: ["step", "iges", "stl", "obj", "obj_bundle", "3mf", "glb", "usdz"],
+                  note: "Surface exchange: closed solids and open shells/faces import as "
+                    + "exact B-rep bodies. Surface bodies support move/rotate/scale, material, "
+                    + "save/reopen, undo and IGES re-export; solid boolean/fillet/shell and "
+                    + "STEP export require closed solids, so surfaces are excluded there with "
+                    + "a truthful reason. No M17 surface authoring or IGES assembly metadata."),
         FormatRow(format: "stl", aliases: [], geometryClass: "mesh",
                   create: false, import: true, view: true, edit: false,
                   export: ["stl", "obj", "obj_bundle", "3mf", "glb", "usdz"],

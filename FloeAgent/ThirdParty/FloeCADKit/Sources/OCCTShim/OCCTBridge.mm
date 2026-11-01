@@ -3823,6 +3823,45 @@ static void OS3DCollectMakerHistoryThrough(BRepBuilderAPI_MakeShape &builder,
     }
 }
 
++ (BOOL)shapeContainsSolid:(OCCTShape *)shape {
+    if (shape == nil || shape->_shape.IsNull()) return NO;
+    // The caller may be classifying a STORED handle (document load). The
+    // bridge's reader/healer already refused unreadable blobs, but a topology
+    // exception must still never escape into Swift/ObjC: contain it exactly
+    // like the adjacent bridge queries and classify an unreadable shape as
+    // "no solid" (the caller then keeps it as render-only/exact-surface rather
+    // than crashing or trusting it as a solid).
+    try {
+        for (TopExp_Explorer ex(shape->_shape, TopAbs_SOLID); ex.More(); ex.Next()) {
+            return YES;
+        }
+        return NO;
+    } catch (...) {
+        return NO;
+    }
+}
+
+// Shared IGES writer for the product route and the DEBUG fixture route.
+//
+// BRep mode (1) keeps a closed solid an IGES BRep solid (ManifoldSolid) and
+// writes an open shell/face as exact BRep surface geometry, so a read-back of
+// either still carries the analytic geometry. Face mode (0) decomposes a
+// solid into trimmed surfaces — used only to author surface-only fixtures.
+// Units are millimetres, matching the document model.
+static BOOL OS3DWriteIGES(NSArray<OCCTShape *> *shapes, NSString *path, BOOL brepMode) {
+    if (shapes.count == 0 || path.length == 0) return NO;
+    try {
+        IGESControl_Writer writer("MM", brepMode ? 1 : 0);
+        for (OCCTShape *s in shapes) {
+            if (s == nil || s->_shape.IsNull()) continue;
+            if (!writer.AddShape(s->_shape)) return NO;
+        }
+        return writer.Write(path.fileSystemRepresentation) ? YES : NO;
+    } catch (...) {
+        return NO;
+    }
+}
+
 + (BOOL)writeSTEPShapes:(NSArray<OCCTShape *> *)shapes toPath:(NSString *)path {
     if (shapes.count == 0 || path.length == 0) return NO;
     try {
@@ -3973,6 +4012,15 @@ static BOOL OS3DReadIGES(const char *path,
     result->_readSucceeded = readOK;
     result->_rootCount = readOK ? rootCount : 0;
     return result;
+}
+
++ (BOOL)writeIGESShapes:(NSArray<OCCTShape *> *)shapes toPath:(NSString *)path {
+    // Product IGES interchange: exact B-rep only, never a mesh substitute.
+    // The caller (IGESKit) has already selected bodies with an exact B-rep
+    // solid or open surface; this bridge function deliberately does not
+    // triangulate or "repair" that decision. Millimetres and BRep mode match
+    // the document model and keep a round-trip analytic.
+    return OS3DWriteIGES(shapes, path, YES);
 }
 
 // MARK: - Geometry health (docs/FREECAD_PLAYBOOK.md D1)
@@ -4489,22 +4537,7 @@ static bool OS3DPlausibleSectionCounts(NSData *data) {
 + (BOOL)debugWriteIGESShapes:(NSArray<OCCTShape *> *)shapes
                       toPath:(NSString *)path
                     brepMode:(BOOL)brepMode {
-    if (shapes.count == 0 || path.length == 0) return NO;
-    try {
-        // BRep mode (1) keeps a solid an IGES BRep solid (ManifoldSolid), so
-        // the read-back still classifies it as a solid; face mode (0)
-        // decomposes it into trimmed surfaces — the surface-only file the
-        // import classification tests need. Units are millimetres, matching
-        // the document model.
-        IGESControl_Writer writer("MM", brepMode ? 1 : 0);
-        for (OCCTShape *s in shapes) {
-            if (s == nil || s->_shape.IsNull()) continue;
-            if (!writer.AddShape(s->_shape)) return NO;
-        }
-        return writer.Write(path.fileSystemRepresentation) ? YES : NO;
-    } catch (...) {
-        return NO;
-    }
+    return OS3DWriteIGES(shapes, path, brepMode);
 }
 
 + (nullable OCCTShape *)debugStandaloneFaceFrom:(OCCTShape *)shape {

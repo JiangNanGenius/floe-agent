@@ -45,6 +45,19 @@ public nonisolated struct CADProposalPreview: Codable, Sendable, Equatable {
     public var serviceInputExactness: String? = nil
     public var serviceExactness: String? = nil
     public var serviceDroppedBRepBodyCount: Int? = nil
+    /// Import proposals: the ACTUAL geometry classes the throwaway preview
+    /// produced, so the confirmation banner and the tool reply can state an
+    /// open-surface limitation BEFORE apply instead of mislabelling every
+    /// IGES file as a solid. Optional so pre-E26 persisted proposals decode
+    /// unchanged.
+    /// Values: "mesh" | "solid" | "surface" | "mixed".
+    public var importGeometryClass: String? = nil
+    public var importSolidBodyCount: Int? = nil
+    public var importSurfaceBodyCount: Int? = nil
+    /// Surfaces the import kept as exact `Body.surfaceBRep` bodies. Kept
+    /// separate from other surface-like diagnostics so the UI can show the
+    /// exact round-trip capability and the solid-operation limit precisely.
+    public var importOpenSurfaceBodyCount: Int? = nil
 
     public var volumeDeltaMM3: Double { volumeAfterMM3 - volumeBeforeMM3 }
 }

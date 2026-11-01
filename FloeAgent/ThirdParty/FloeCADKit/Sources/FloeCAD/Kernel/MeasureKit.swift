@@ -43,12 +43,20 @@ nonisolated enum MeasureKit {
     /// to the mesh when there is no B-rep (a mesh-only op) or the kernel
     /// reports 0 (its failure value) — never silently reports nothing.
     static func volume(of body: Body) -> Double {
-        let s = body.transform.scale
+        // An open IGES surface (or any exact B-rep without a TopAbs_SOLID)
+        // encloses no solid volume. The mesh signed-tetrahedron sum would
+        // report an arbitrary number for an open sheet, which is exactly the
+        // "fake closed volume" this path must never present. 0 with the
+        // explicit `volumeApplicable:false` query row means "not a closed
+        // solid", not "empty body".
         if let brep = body.brep {
+            if !brep.containsSolid { return 0 }
             let exact = OCCTKernel.volume(brep)
+            let s = body.transform.scale
             if exact > 0 { return exact * s * s * s }
         }
-        return bodyVolume(body.render, scale: s)
+        if body.surfaceBRep != nil { return 0 }
+        return bodyVolume(body.render, scale: body.transform.scale)
     }
 
     /// Total surface area of the mesh (× scale²).

@@ -250,7 +250,7 @@ independent.
 | --- | --- |
 | Versioned `.floecad` kernel: units/tolerance/params/features/B-rep, atomic commit, previous snapshot, revision/CAS, undo/redo | implemented + tested |
 | Sketch (constraints/dimensions/solver), exact 3D features (primitives, extrude, revolve, sweep/helix, loft, boolean, pattern, mirror, fillet/chamfer/shell/draft, face push-pull/move/offset, section) | implemented via the vendored kernel; the fixture/STEP and proposal suites exercise a subset (extrude/boolean/measure/rebuild). Full per-feature matrix not re-run here |
-| Save/reopen, STEP export/import | implemented + tested (fixture); IGES import not wired |
+| Save/reopen, STEP/IGES export/import | implemented; fixture/source tests authored (native/App execution remains with Root); IGES keeps solids exact and open surfaces as exact `surfaceBRep` bodies that export back to IGES |
 | AI `cad.document` 3D actions, propose/apply gate, shared live session | implemented; app build + focused test pass |
 | Assembly service (instances/constraints/DOF/interference) and drawing service (views/scale/PDF/SVG/DXF) | **superseded 2026-10-10 (part 2)**: both implemented and tested — see the continuation section below |
 | ShapeScript interpreter, Euclid mesh tooling UI, Canvas creation path | **partly superseded 2026-10-10 (part 2)**: ShapeScript + mesh services/UI implemented and tested; the native→Canvas entry remains open |
@@ -380,7 +380,7 @@ Mesh (boolean on a mesh copy). Debug-only: no release code path can create this 
 | Unified `cad.document` routing + schema | implemented; App tests cover native routing; SwiftPM workbench tests for schema/routing in this worktree |
 | Workbench tools panel + Floe-owned localization | panel implemented; 216 new `cad.*` keys (panels/settings/toolbar + 173 editor-chrome keys) bilingual en/zh-Hans; remaining imported-editor internals (EditorViewModel labels, materials, some footers) still English |
 | Canvas child-project entry from the native workbench | implemented: "Apply to canvas" (PNG asset, original bound node updated atomically, identity/name/position/size/edges preserved) and explicit "Make variant" (new node + generatedFrom edge); no binding → explicit refusal, no parallel node path; planner tests 7/7 |
-| IGES import | implemented: real OCCT IGES reader (solids vs surfaces classified honestly, B-rep kept only for solids); round-trip and refusal tests 5/5; no IGES export |
+| IGES exchange | implemented: real OCCT IGES reader/writer. Solids stay exact `Body.brep`; open shells/faces stay exact `Body.surfaceBRep` (render, transform, material, save/reopen, IGES re-export; no solid boolean/fillet/shell). STEP excludes open surfaces with a coverage reason. Import/refusal/round-trip source tests added; native/App execution remains with Root |
 | Durable status/cancel jobs + ownership scoping | implemented + tested; proposal notification outbox durability for native 3D proposals is in-process only (2D path keeps its journal) |
 | CUA viewport crash (SIGTRAP, 2026-10-10) | fixed: package shader library is compiled/validated explicitly (host default.metallib no longer selected first) and a missing library surfaces a recoverable alert; `ViewportRenderTests` 2/2 cover context + attach + draw |
 | Physical-device / CUA acceptance, real-provider end-to-end, performance baseline | **not run** — primary agent owns device/CUA/provider acceptance (fixture recipe below) |
@@ -467,8 +467,9 @@ reproducible performance baselines. Branch `codex/content-upgrade-20261009`.
   automatic re-apply until the caller explicitly chooses `fork`/`rebuild`;
   record + body stay one undoable composite.
 - **IGES mixed roots.** A file carrying BOTH a closed solid and loose
-  surfaces imports both (exact analytic solid + render-only surface bodies,
-  per-body undo) — never "solids only, surfaces dropped".
+  surfaces imports both (exact analytic solid + exact open-surface bodies,
+  per-body undo) — never "solids only, surfaces dropped". Surface bodies
+  re-export to IGES; solid-only STEP export lists them as excluded.
 - **Reproducible performance fixtures.** `CADPerformanceBaselineTests` build
   synthetic medium (96 bodies) and large (600 bodies) models through the
   typed command vocabulary and measure build/snapshot/save/open + resident

@@ -47,9 +47,11 @@ NS_ASSUME_NONNULL_BEGIN
 @property (nonatomic, readonly) NSData *faceIndices;
 @end
 
-/// Opaque handle to a world-space OCCT solid (`TopoDS_Shape`). Reference type;
-/// the underlying B-rep is freed on dealloc and is immutable after creation, so
-/// it is safe to pass across the kernel/render boundary.
+/// Opaque handle to a world-space OCCT shape (`TopoDS_Shape`). Most handles
+/// are closed solids; an IGES import may carry an exact open shell/face, and
+/// `shapeContainsSolid:` is the topology query that keeps the two apart.
+/// Reference type; the underlying B-rep is freed on dealloc and is immutable
+/// after creation, so it is safe to pass across the kernel/render boundary.
 @interface OCCTShape : NSObject
 @end
 
@@ -608,6 +610,16 @@ typedef NS_ENUM(NSInteger, OCCTOpCode) {
 /// body's bounding box (docs/FREECAD_PLAYBOOK.md T1).
 + (double)maxToleranceOfShape:(OCCTShape *)shape;
 
+/// YES when `shape` contains at least one `TopAbs_SOLID`. A standalone shell
+/// or face is exact B-rep geometry but NOT a solid: it must never enter the
+/// boolean/fillet/shell paths, which are defined for solids. The IGES reader
+/// already classifies its roots; this query lets Swift classify a
+/// deserialized/stored shape by its actual topology instead of trusting a
+/// filename or a side flag. OCCT exceptions are contained here (a topology
+/// query on an untrusted stored handle must not escape into ObjC/Swift); an
+/// unreadable shape reports NO.
++ (BOOL)shapeContainsSolid:(OCCTShape *)shape;
+
 // MARK: - STEP interchange (spec §12.1 / §12.2)
 
 /// Write `shapes` to a STEP AP214 file at `path`. Exports EXACT B-rep geometry
@@ -627,6 +639,13 @@ typedef NS_ENUM(NSInteger, OCCTOpCode) {
 /// staged in the system temporary directory for the read (the IGES work
 /// library has no stream reader) and removed again.
 + (nullable OCCTIGESImport *)readIGESFromData:(NSData *)data;
+
+/// Write `shapes` to an IGES file at `path` through OCCT's IGES BRep
+/// translator (`IGESControl_Writer`, millimetres, BRep mode). Both closed
+/// solids and open shells/faces are exact B-rep shapes and both round-trip
+/// through this writer; the read side classifies each root by its actual
+/// topology (see `readIGESFromData:`). NO on failure.
++ (BOOL)writeIGESShapes:(NSArray<OCCTShape *> *)shapes toPath:(NSString *)path;
 
 // MARK: - Geometry health + capture replay (docs/FREECAD_PLAYBOOK.md D1/D2)
 
@@ -668,13 +687,13 @@ typedef NS_ENUM(NSInteger, OCCTOpCode) {
 /// so a test can reach the path behind it: the loosened-heal refusal. DEBUG
 /// only.
 + (void)debugSetBooleanUnmergedFallbackEnabled:(BOOL)enabled;
-/// Test support only: write `shapes` to an IGES file. `brepMode` YES writes
-/// them through the IGES BRep translator (a solid stays an IGES BRep solid);
-/// NO decomposes them into loose faces, which is how a surface-only IGES file
-/// is produced for the reader's solid-vs-surface classification tests. No
-/// product feature exports IGES yet — this exists so the import path can be
-/// exercised end to end against a file written by OCCT itself. NO on failure.
-/// DEBUG only.
+/// Test support only: write `shapes` to an IGES file with an explicit mode.
+/// `brepMode` YES writes them through the IGES BRep translator (a solid stays
+/// an IGES BRep solid, an open shell/face stays an exact BRep surface); NO
+/// decomposes them into loose faces, which is how a surface-only IGES file is
+/// produced for the reader's solid-vs-surface classification tests. The
+/// product writer is `writeIGESShapes:toPath:`; this DEBUG entry exists so a
+/// test can request the non-BRep decomposition too. NO on failure.
 + (BOOL)debugWriteIGESShapes:(NSArray<OCCTShape *> *)shapes
                       toPath:(NSString *)path
                     brepMode:(BOOL)brepMode;

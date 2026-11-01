@@ -80,6 +80,8 @@ public extension FloeCADDocument {
                     "name": body.name,
                     "hidden": body.isHidden,
                     "analyticBRep": body.brep != nil,
+                    "openSurfaceBRep": body.surfaceBRep != nil,
+                    "volumeApplicable": body.brep?.containsSolid == true || (body.brep == nil && body.surfaceBRep == nil),
                     "triangles": body.render.indices.count / 3,
                     "volumeMM3": MeasureKit.volume(of: body),
                     "edgeSegments": body.edges.segments.count / 2,
@@ -515,6 +517,8 @@ public extension FloeCADDocument {
                 "bodyID": body.id.raw.uuidString,
                 "name": body.name,
                 "analyticBRep": body.brep != nil,
+                "openSurfaceBRep": body.surfaceBRep != nil,
+                "volumeApplicable": body.brep?.containsSolid == true || (body.brep == nil && body.surfaceBRep == nil),
                 "volumeMM3": MeasureKit.volume(of: body),
                 "triangles": body.render.indices.count / 3,
             ]
@@ -572,6 +576,7 @@ public extension FloeCADDocument {
                 "name": body.name,
                 "triangles": triangles,
                 "analyticBRep": body.brep != nil,
+                "openSurfaceBRep": body.surfaceBRep != nil,
             ]
             if triangles == 0 {
                 issues.append(["kind": "empty_mesh", "bodyID": body.id.raw.uuidString, "body": body.name])
@@ -621,9 +626,10 @@ public extension FloeCADDocument {
     // MARK: Import
 
     /// Import exact STEP bytes, IGES bytes, or mesh STL/OBJ as undoable body
-    /// adds. IGES is read honestly: closed solids become exact bodies while
-    /// shells/faces become render-only bodies that are reported as surfaces,
-    /// never as solids.
+    /// adds. IGES is read honestly: closed solids become exact `Body.brep`
+    /// bodies while shells/faces become exact `Body.surfaceBRep` bodies —
+    /// reported as surfaces, never as solids, and never flattened to a
+    /// render-only mesh.
     func nativeImportData(_ data: Data,
                           format rawFormat: String,
                           fileName: String?,
@@ -688,11 +694,12 @@ public extension FloeCADDocument {
         case "iges", "igs":
             // IGES is a SURFACE-exchange format: a file may carry closed
             // solids, shells, or isolated faces. The kernel reader keeps the
-            // two apart (`OCCTKernel.readIGES`), and this branch reports the
-            // counts honestly. Solids become exact bodies (`Body.adoptBRep`
-            // through `STEPKit.body`); surfaces become render-only bodies
-            // (`analyticBRep: false`) because a shell is not a solid and must
-            // not enter boolean/fillet/shell operations. Nothing is committed
+            // two apart (`OCCTKernel.readIGES`), and this branch keeps that
+            // truth all the way into the document. Solids become exact
+            // `Body.brep` bodies (`STEPKit.body`); shell/face roots become
+            // exact `Body.surfaceBRep` bodies (`IGESKit.surfaceBody`) — not
+            // render-only mesh bodies, and never analytic solids, so boolean/
+            // fillet/shell/STEP paths keep refusing them. Nothing is committed
             // unless every listed solid converted, so a failed import really
             // leaves the document untouched.
             let iges = OCCTKernel.readIGES(data)
@@ -724,22 +731,15 @@ public extension FloeCADDocument {
             }
             var skippedSurfaces = 0
             for (index, surface) in iges.surfaces.enumerated() {
-                let mesh = OCCTKernel.renderMesh(from: surface)
-                guard !mesh.positions.isEmpty, !mesh.indices.isEmpty else {
+                let name = total > 1 ? "\(baseName) Surface \(index + 1)"
+                                     : "\(baseName) Surface"
+                guard let body = IGESKit.surfaceBody(
+                    from: surface,
+                    name: localDocument.uniqueBodyName(base: name),
+                    revision: localDocument.nextRevision()) else {
                     skippedSurfaces += 1
                     continue
                 }
-                let name = total > 1 ? "\(baseName) Surface \(index + 1)"
-                                     : "\(baseName) Surface"
-                var body = Body(id: BodyID(),
-                                name: localDocument.uniqueBodyName(base: name),
-                                transform: .identity,
-                                primitive: nil,
-                                render: RenderMesh(positions: mesh.positions,
-                                                   normals: mesh.normals,
-                                                   indices: mesh.indices),
-                                revision: localDocument.nextRevision())
-                body.euclid = EuclidBridge.euclidMesh(from: body.render)
                 let faceCount = index < iges.surfaceFaceCounts.count
                     ? iges.surfaceFaceCounts[index] : nil
                 pending.append((body, false, "surface", faceCount))
@@ -762,6 +762,7 @@ public extension FloeCADDocument {
                         "bodyID": entry.body.id.raw.uuidString,
                         "name": entry.body.name,
                         "analyticBRep": entry.analytic,
+                        "openSurfaceBRep": entry.kind == "surface",
                         "kind": entry.kind,
                     ]
                     if let faceCount = entry.faceCount { row["faceCount"] = faceCount }
@@ -770,14 +771,16 @@ public extension FloeCADDocument {
                 "count": pending.count,
                 "solidsImported": solidsImported,
                 "surfacesImported": surfacesImported,
+                "openSurfaceBodies": surfacesImported,
                 "mutated": true,
             ]
             if surfacesImported > 0 || skippedSurfaces > 0 {
                 var parts: [String] = []
                 if surfacesImported > 0 {
                     parts.append("IGES surfaces are not solids: \(surfacesImported) shell/face "
-                        + "body(ies) were imported as render-only bodies (analyticBRep: false) "
-                        + "and cannot take boolean, fillet or shell operations.")
+                        + "body(ies) were imported as exact open-surface bodies (analyticBRep: false) "
+                        + "and cannot take boolean, fillet or shell operations. They can be moved, "
+                        + "rotated, scaled, material-painted and exported back to IGES.")
                 }
                 if skippedSurfaces > 0 {
                     parts.append("\(skippedSurfaces) surface(s) failed to tessellate and were skipped.")
@@ -800,10 +803,11 @@ public extension FloeCADDocument {
 
     // MARK: Export
 
-    /// Exact/format export bytes for the native document. STEP/IGES-class
-    /// exchanges use the analytic B-rep (mesh-only bodies are skipped and
-    /// reported); mesh formats use the tessellation; drawing formats render
-    /// real projected geometry for the requested page.
+    /// Exact/format export bytes for the native document. STEP writes exact
+    /// closed solids only; IGES writes exact closed solids AND open surface
+    /// bodies (`Body.surfaceBRep`); mesh-only bodies are skipped and reported
+    /// in both cases. Mesh formats use the tessellation; drawing formats
+    /// render real projected geometry for the requested page.
     ///
     /// This is the RAW writer. Callers that claim export completeness go
     /// through `nativePartExport`, which gates these bytes on a truthful
@@ -820,11 +824,28 @@ public extension FloeCADDocument {
     internal func nativeExportData(format rawFormat: String,
                                    pageID: UUID?,
                                    bodies: [Body]) -> Result<(data: Data, note: String), CADDocumentError> {
-        let format = rawFormat.lowercased()
+        var format = rawFormat.lowercased()
+        if format == "igs" { format = "iges" }
         func failure(_ code: String, _ message: String) -> Result<(data: Data, note: String), CADDocumentError> {
             .failure(CADDocumentError(code: code, message: message))
         }
         switch format {
+        case "iges":
+            switch IGESKit.export(bodies: bodies) {
+            case .success(let data, let skipped):
+                let note = skipped.isEmpty
+                    ? "exact OCCT B-rep IGES (closed solids and open surfaces), \(bodies.count) body/bodies, millimetres; no history, PMI, materials or assembly metadata"
+                    : "exact OCCT B-rep IGES; bodies without an exact B-rep skipped: \(skipped.joined(separator: ", "))"
+                return .success((data, note))
+            case .nothingAnalytic(let skipped):
+                return failure("no_analytic_geometry",
+                               "No exact B-rep body (closed solid or open surface) to export; "
+                               + "mesh-only: \(skipped.joined(separator: ", ")). "
+                               + "No mesh was substituted for an IGES export.")
+            case .failed:
+                return failure("iges_export_failed",
+                               "The IGES writer refused the export; nothing was written.")
+            }
         case "step":
             switch STEPKit.export(bodies: bodies) {
             case .success(let data, let skipped):
@@ -972,7 +993,7 @@ public extension FloeCADDocument {
             }
         default:
             return failure("unsupported_format",
-                           "Native export supports step, stl, obj, obj_bundle, 3mf, glb, usdz "
+                           "Native export supports step, iges, stl, obj, obj_bundle, 3mf, glb, usdz "
                            + "and drawing pdf/svg/dxf/csv/png.")
         }
     }

@@ -1058,18 +1058,20 @@ public final class CADMeshService {
         return Self.fail("bad_request", "Bodies could not be resolved.")
     }
 
-    /// Refuses destructive mesh ops on analytic B-rep bodies unless the
-    /// caller acknowledged the downgrade with `forceMesh:true`. The refusal
-    /// names the real input exactness, so a precise or mixed call can never be
-    /// read as a silently preserved analytic result.
+    /// Refuses destructive mesh ops on exact B-rep bodies unless the caller
+    /// acknowledged the downgrade with `forceMesh:true`. The refusal names the
+    /// real input exactness, so a precise or mixed call can never be read as a
+    /// silently preserved analytic result. Both a closed solid and an exact
+    /// open IGES surface count: either handle is lost by a mesh rebuild.
     private func verifyMeshOnly(_ bodies: [Body], args: [String: Any], action: String) -> [String: Any]? {
         guard !Self.boolean(args["forceMesh"]) else { return nil }
         let exactness = Self.inputExactness(bodies)
         guard exactness.brepBodyCount == 0 else {
             var reply = Self.fail("brep_body_refused",
-                                  "'\(action)' rebuilds meshes and would drop the analytic B-rep of "
+                                  "'\(action)' rebuilds meshes and would drop the exact B-rep of "
                                   + "\(exactness.brepBodyCount) body(ies): "
-                                  + bodies.filter { $0.brep != nil }.map(\.name).joined(separator: ", ")
+                                  + bodies.filter { $0.brep != nil || $0.surfaceBRep != nil }
+                                      .map(\.name).joined(separator: ", ")
                                   + ". Pass forceMesh:true to acknowledge the downgrade.")
             reply["inputExactness"] = exactness.label
             reply["brepBodyCount"] = exactness.brepBodyCount
@@ -1079,16 +1081,17 @@ public final class CADMeshService {
     }
 
     /// Input representation the boolean consumes before it rebuilds triangles.
-    /// "precise" means every input carries an analytic B-rep; "mesh" means
-    /// none does; "mixed" is both in one operation. The forced result is
-    /// always "mesh", so `brepBodyCount` is what that result dropped.
+    /// "precise" means every input carries an exact B-rep (closed solid OR
+    /// open IGES surface); "mesh" means none does; "mixed" is both in one
+    /// operation. The forced result is always "mesh", so `brepBodyCount` is
+    /// what that result dropped — including an open surface handle.
     private struct InputExactness {
         let label: String
         let brepBodyCount: Int
     }
 
     private static func inputExactness(_ bodies: [Body]) -> InputExactness {
-        let analytic = bodies.filter { $0.brep != nil }.count
+        let analytic = bodies.filter { $0.brep != nil || $0.surfaceBRep != nil }.count
         let label: String
         if analytic == 0 {
             label = "mesh"
@@ -1307,6 +1310,10 @@ public final class CADMeshService {
             after.edges = replacement.edges
             after.euclid = nil
             after.brep = nil
+            // Repair/simplify REPLACED the geometry: the old exact IGES
+            // surface handle would otherwise describe the pre-repair shape and
+            // IGES export would silently write stale geometry.
+            after.surfaceBRep = nil
             after.primitive = nil
             pairs.append((before: before, after: after))
         }

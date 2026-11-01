@@ -551,13 +551,18 @@ public final class CADAssemblyReferenceBridge {
         // appearance comes from an assembly occurrence.
         staged.isHidden = true
         staged.euclid = source.euclid
-        // Own the analytic shape through the same serialize/deserialize path
-        // the document package uses; a shared live handle would couple the
-        // staged body to the source document's lifetime.
-        if let brep = source.brep {
-            guard let data = OCCTKernel.serialize(brep),
+        // Own the exact shape through the same serialize/deserialize path the
+        // document package uses; a shared live handle would couple the staged
+        // body to the source document's lifetime. A referenced IGES surface
+        // must stay an exact surface, not become a render-only mesh.
+        if let exact = source.brep ?? source.surfaceBRep {
+            guard let data = OCCTKernel.serialize(exact),
                   let owned = OCCTKernel.deserialize(data) else { return nil }
-            staged.brep = owned
+            if owned.containsSolid {
+                staged.brep = owned
+            } else {
+                staged.surfaceBRep = owned
+            }
         }
         return staged
     }

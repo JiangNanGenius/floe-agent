@@ -922,8 +922,10 @@ public struct CadDocumentTool: AgentTool {
     "import" on an EXISTING `.floecad` to add the geometry of a workspace \
     STEP/STP, IGES/IGS, STL, OBJ, GLB or glTF file: it drafts a proposal on a \
     throwaway copy and returns a preview. STEP gives exact editable solids; \
-    IGES solids are exact while shells/faces stay render-only; STL/OBJ/GLB \
-    are render meshes with no parametric history. Use action "reference" to \
+    IGES solids are exact and open shells/faces become exact surface bodies \
+    that can be moved/rotated/scaled, painted and re-exported to IGES, but \
+    cannot take solid boolean/fillet/shell; STL/OBJ/GLB are render meshes \
+    with no parametric history. Use action "reference" to \
     attach/check/update/inspect an external native `.floecad` part from the \
     authorized task workspace: source_path is a path request resolved by the \
     host guard (never a model grant); attach/update are ordinary committed CAD \
@@ -1023,7 +1025,7 @@ public struct CadDocumentTool: AgentTool {
         "expected_source_sha256": { "type": "string", "description": "reference update CAS: the currently pinned source content SHA-256 (from references query)." },
         "expected_staged_sha256": { "type": "string", "description": "reference update CAS: the currently pinned staged geometry SHA-256." },
         "source_body_id": { "type": "string", "format": "uuid", "description": "reference attach: stable source body UUID for a multi-body source; inspect returns the body ids. Omitted only when the source has exactly one body." },
-        "format": { "type": "string", "enum": ["step", "stp", "iges", "igs", "stl", "obj", "obj_bundle", "3mf", "glb", "gltf", "usdz", "pdf", "svg", "dxf", "csv"], "description": "import or native export: explicit format. Import (step/stp, iges/igs, stl, obj, glb, gltf) defaults to the source_path extension; a JSON .gltf imports only when its buffers/images are embedded data URIs, external .bin/texture references are reported unsupported, and a self-contained .glb always works. Native export accepts step/stp, stl, obj, obj_bundle, 3mf, glb, usdz, pdf, svg, dxf and csv; gltf is import-only (export writes glb), iges/igs are import-only, and 3mf/usdz plus pdf/svg/dxf/csv are export-only in this adapter. obj_bundle writes one .zip containing model.obj, model.mtl and relative texture resources; plain obj remains a single .obj with UVs and no materials. pdf/svg/dxf/csv are drawing-page exports and require page_id; usdz is available where the platform USDZ writer is supported (otherwise usdz_unavailable). The output suffix must match the selected format: step/stp -> .step/.stp, obj_bundle -> .zip, every other export -> .<format> (for example .3mf, .glb, .usdz, .pdf, .svg, .dxf, .csv); a mismatched suffix is refused rather than silently renamed." },
+        "format": { "type": "string", "enum": ["step", "stp", "iges", "igs", "stl", "obj", "obj_bundle", "3mf", "glb", "gltf", "usdz", "pdf", "svg", "dxf", "csv"], "description": "import or native export: explicit format. Import (step/stp, iges/igs, stl, obj, glb, gltf) defaults to the source_path extension; a JSON .gltf imports only when its buffers/images are embedded data URIs, external .bin/texture references are reported unsupported, and a self-contained .glb always works. Native export accepts step/stp, iges/igs, stl, obj, obj_bundle, 3mf, glb, usdz, pdf, svg, dxf and csv; gltf is import-only (export writes glb), and 3mf/usdz plus pdf/svg/dxf/csv are export-only in this adapter. STEP writes closed exact solids; IGES writes exact closed solids AND open surfaces (surface bodies are never flattened to a mesh). obj_bundle writes one .zip containing model.obj, model.mtl and relative texture resources; plain obj remains a single .obj with UVs and no materials. pdf/svg/dxf/csv are drawing-page exports and require page_id; usdz is available where the platform USDZ writer is supported (otherwise usdz_unavailable). The output suffix must match the selected format: step/stp -> .step/.stp, iges/igs -> .iges/.igs, obj_bundle -> .zip, every other export -> .<format> (for example .3mf, .glb, .usdz, .pdf, .svg, .dxf, .csv); a mismatched suffix is refused rather than silently renamed." },
         "unit_scale": { "type": "number", "exclusiveMinimum": 0, "description": "import only: optional millimetres-per-file-unit scale for unitless meshes (STL/OBJ). Ignored for STEP/IGES and declared-unit glTF." },
         "summary": { "type": "string", "maxLength": 2000, "description": "Concise summary of the proposed document change (propose/import)." },
         "operations": {
@@ -1037,7 +1039,7 @@ public struct CadDocumentTool: AgentTool {
         "request_id": { "type": "string", "description": "Optional caller idempotency key; defaults to the tool call id." },
         "task_id": { "type": "string", "description": "Durable native task id (status reports one task; cancel requires it)." },
         "kind": { "type": "string", "description": "query/measure scope. 2D query: entities|text|layers|drawing|snap; 2D measure: distance|angle|radius|perimeter|area. Native .floecad query: bodies|sketches|constraints|features|edges|faces|planes|variables|materials|assembly|drawings|scene|detail|snapshot|selection|animation. selection returns the current live workbench bodies/faces/edges/sketch/instances with document revision and change_count; query it for deictic edits such as this face, then resolve exact face/edge query tokens before modifying. Features carry typed parameters/units/dependencies/actions; sketches carry entityRows with stable entity ids and each circle's current radius/diameter (the addressable source of an existing hole); faces/edges carry stable-matching indices, signatures and query_token/generation (revision, change_count, mesh_revision) required for index-based edits, and face rows identify planar/cylindrical kind with the actual radiusMM for a cylinder. Native measure: body|distance|bounds|dof|interference|mesh|rebuild (op may name the same kind). capabilities: pass drawing|assembly|script|mesh to get that service's exact operations with arguments and examples." },
-        "scope": { "type": "string", "enum": ["part", "assembly"], "description": "export: part = selected/all document bodies (historical default); assembly = saved placed occurrences, including nested subassemblies and visible instances of hidden definitions. Hidden instances are excluded. Assembly export supports step, glb and usdz." },
+        "scope": { "type": "string", "enum": ["part", "assembly"], "description": "export: part = selected/all document bodies (historical default); assembly = saved placed occurrences, including nested subassemblies and visible instances of hidden definitions. Hidden instances are excluded. Assembly export supports step, glb and usdz; IGES is part-scope only." },
         "points": { "type": "array", "items": { "type": "array", "items": { "type": "number" } }, "description": "measure points: 2D distance exactly 2, angle exactly 3, area 3+; snap point (first row). Native distance exactly 2 [x,y,z] rows." },
         "handles": { "type": "array", "items": { "type": "string" }, "description": "2D entity handles: distance exactly 2, angle 2 lines, radius 1 circle/arc, perimeter 1+. Native: one handle per action, body:<uuid> / face:<uuid>:<index> / edge:<uuid>:<index>; body, mesh and bounds accept body:<uuid> (a bare body UUID is also accepted); bounds takes one or more body handles." },
         "tolerance": { "type": "number", "description": "snap/check tolerance in drawing units; native interference tolerance in mm." },
@@ -1046,11 +1048,11 @@ public struct CadDocumentTool: AgentTool {
         "text": { "type": "string", "description": "2D query filter: text content contains." },
         "offset": { "type": "integer", "minimum": 0, "description": "query pagination offset." },
         "limit": { "type": "integer", "minimum": 1, "maximum": 500, "description": "query pagination size." },
-        "output": { "type": "string", "description": "export relative path. 2D defaults to <name>.export.dxf. Native defaults to <name>.export.step; accepted native formats: step/stp, stl, obj, obj_bundle, 3mf, glb, usdz, pdf, svg, dxf, csv; the path must stay inside the workspace and its suffix must match the format. obj_bundle writes a .zip (model.obj + model.mtl + relative textures) and requires a .zip output path; plain obj writes a single .obj with UVs and no materials. A pdf/svg/dxf export is a DRAWING-page export and also needs page_id (from query kind=drawings). A csv export writes the COMPLETE BOM table for that drawing page (all rows and columns, UTF-8 RFC 4180) and also needs page_id and a .csv output path. usdz export is platform-guarded and reports usdz_unavailable where the writer is unavailable. With scope=assembly use .step, .glb or .usdz (part-scope obj_bundle is also available): placed occurrences are resolved from the saved assembly, not flattened document bodies." },
+        "output": { "type": "string", "description": "export relative path. 2D defaults to <name>.export.dxf. Native defaults to <name>.export.step; accepted native formats: step/stp, iges/igs, stl, obj, obj_bundle, 3mf, glb, usdz, pdf, svg, dxf, csv; the path must stay inside the workspace and its suffix must match the format. obj_bundle writes a .zip (model.obj + model.mtl + relative textures) and requires a .zip output path; plain obj writes a single .obj with UVs and no materials. A pdf/svg/dxf export is a DRAWING-page export and also needs page_id (from query kind=drawings). A csv export writes the COMPLETE BOM table for that drawing page (all rows and columns, UTF-8 RFC 4180) and also needs page_id and a .csv output path. usdz export is platform-guarded and reports usdz_unavailable where the writer is unavailable. With scope=assembly use .step, .glb or .usdz (part-scope iges and obj_bundle are also available): placed occurrences are resolved from the saved assembly, not flattened document bodies." },
         "page_id": { "type": "string", "format": "uuid", "description": "export: the native drawing page id for pdf/svg/dxf drawing exports and the complete BOM CSV table export, exactly as query with kind=drawings returned it." },
         "body_ids": { "type": "array", "maxItems": 512, "items": { "type": "string", "format": "uuid" }, "description": "export scope=part: exact document body ids. Omit/empty to export every body (historical default)." },
         "instance_ids": { "type": "array", "maxItems": 512, "items": { "type": "string", "format": "uuid" }, "description": "export scope=assembly: exact placed occurrence ids from query kind=assembly/report. Omit/empty for every visible placed part. A subassembly id includes its visible descendant parts." },
-        "accept_partial": { "type": "boolean", "description": "export: explicit acknowledgement that the coverage receipt is incomplete (for example STEP with mesh-only objects). Without it an incomplete plan returns coverage_incomplete and writes nothing." },
+        "accept_partial": { "type": "boolean", "description": "export: explicit acknowledgement that the coverage receipt is incomplete (for example STEP with mesh-only objects or open surfaces, or IGES with mesh-only objects). Without it an incomplete plan returns coverage_incomplete and writes nothing." },
         "dry_run": { "type": "boolean", "description": "export: return the coverage receipt only (counts, included/excluded occurrence ids and reasons); no file is written. Requires an explicit scope." },
         "op": { "type": "string", "description": "Native typed operation name at the TOP LEVEL beside action and path, never inside args. Native propose requires it; native measure may use it to name the measurement kind. Exact vocabulary (also reported by capabilities as operation_names): sketch.create, sketch.addEntities, sketch.addText, feature.extrude, feature.revolve, feature.hole, feature.pattern, feature.mirror, feature.transform, feature.boolean, feature.fillet, feature.chamfer, feature.shell, feature.sweep, feature.loft, feature.pushPull, feature.moveFace, feature.scaleFace, feature.rotateFace, feature.deleteFace, feature.replaceFace, feature.draftFace, body.setMaterial, item.setHidden." },
         "args": { "type": "string", "description": "JSON object STRING containing ONLY the typed operation's arguments, not an {op,args} envelope. Send op separately at the top level. Required for native propose (and the three_d_measure/three_d_propose aliases). Units are mm and degrees. RUNNABLE CONTRACT (exact argument names): sketch.create {name?, origin?[x,y,z], xAxis?[x,y,z], yAxis?[x,y,z]} defaults to the ground plane and returns sketchID; sketch.addEntities {sketchID, entities:[{kind:\"line\",a:[x,y],b:[x,y]} | {kind:\"circle\",center:[x,y],radius} | {kind:\"arc\",center:[x,y],radius,startAngle,endAngle} | {kind:\"spline\",points:[[x,y],...],closed?} | {kind:\"rect\",min:[x,y],max:[x,y]} | {kind:\"polygon\",center:[x,y],radius,sides,rotation?} | {kind:\"ellipse\",center:[x,y],radiusX,radiusY,rotation?}], construction?:[indexes]}; sketch.addText {sketchID, text, height (cap height, mm), fontName? (installed family or PostScript name; default Helvetica), origin?[x,y] (baseline start in sketch-plane mm; default [0,0])} creates closed line loops for the glyphs as ordinary sketch entities (counter loops are holes) in ONE undo step; the reply reports entityCount, glyphCount, outlineLoopCount, boundsMM, advanceWidthMM, heightMM, resolvedFontNames, fallbackFontNames, units:\"mm\" and undoSteps. This is the native text-sketch route; this service has no standalone mesh.text operation. A missing font or a visible character without a real vector outline refuses with unsupported_font / unsupported_glyphs and adds nothing; entity ids stay available through query kind=sketches. Example: {\"sketchID\":\"<uuid from sketch.create>\",\"text\":\"O\",\"height\":20,\"origin\":[10,5]}. feature.extrude {sketchID, seedPoint:[x,y] (a point INSIDE the closed profile), distance (mm, non-zero; optional only with end), symmetric?, taperDegrees? (|t|<89, 0 = straight), end?:\"throughAll\"|\"upToNext\"|\"blind\", boolean?:\"newBody\"|\"union\"|\"subtract\"|\"intersect\", booleanTargets?:[bodyID]}. Example: {\"sketchID\":\"<uuid from sketch.create>\",\"seedPoint\":[40,20],\"distance\":10}. feature.hole {sketchID, seedPoint:[x,y] inside the SINGLE locating circle, targetBodyID, type:\"throughAll\"|\"blind\"|\"counterbore\"|\"countersink\", depth? (blind, mm, flat bottom), counterboreDiameter?/counterboreDepth? (counterbore, mm; diameter > pilot), countersinkDiameter?/countersinkAngle? (countersink, mm; included angle 30…170 degrees; diameter > pilot), reversed? (drills along -plane.normal; a face sketch plane normal is the source face outward normal)}; the placement circle owns position and pilot diameter (bind its diameter formula with setSketchDimension or edit it with updateSketchEntity, never the hole), through/counterbore/countersink pilots are through-all, and the target must be an analytic B-rep body. Ops that act on an existing body take {bodyID} plus their own fields (feature.boolean {kind,targetBodyID,toolBodyIDs}, feature.fillet {bodyID,radius,edges,query_token?} / feature.chamfer {bodyID,setback,edges,query_token?}, feature.shell {bodyID,thickness,openFaces,query_token?}, feature.pattern {bodyID,kind,count,...}); Face/edge index operations require query_token from query kind=faces/edges (or the row's stable face signature/edge midpoint); index existence alone is rejected with requery_required because a rebuild can reuse an index for a different face/edge. measure accepts op to name the kind (body|distance|bounds|dof|interference|mesh|rebuild)." },
@@ -2810,10 +2812,15 @@ public struct CadDocumentTool: AgentTool {
                     guard allowed.contains(explicitFormat) else {
                         throw FloeError.validationFailed(
                             "export format '\(explicitFormat)' is not supported "
-                            + "(step, stp, stl, obj, obj_bundle, 3mf, glb, usdz, pdf, svg, dxf, csv); "
-                            + "gltf/iges are import-only; glTF export writes .glb.")
+                            + "(step, stp, iges, igs, stl, obj, obj_bundle, 3mf, glb, usdz, "
+                            + "pdf, svg, dxf, csv); gltf is import-only; glTF export writes .glb.")
                     }
-                    let normalized = explicitFormat == "stp" ? "step" : explicitFormat
+                    let normalized: String
+                    switch explicitFormat {
+                    case "stp": normalized = "step"
+                    case "igs": normalized = "iges"
+                    default: normalized = explicitFormat
+                    }
                     if output == nil {
                         output = Self.defaultNativeExportPath(for: args.path!, format: normalized)
                     }
@@ -2830,6 +2837,12 @@ public struct CadDocumentTool: AgentTool {
                             let actual = ext.isEmpty ? "(no extension)" : ".\(ext)"
                             throw FloeError.validationFailed(
                                 "format=step requires a .step or .stp output path; got '\(actual)'.")
+                        }
+                    case "iges":
+                        guard ext == "iges" || ext == "igs" else {
+                            let actual = ext.isEmpty ? "(no extension)" : ".\(ext)"
+                            throw FloeError.validationFailed(
+                                "format=iges requires a .iges or .igs output path; got '\(actual)'.")
                         }
                     default:
                         if normalized == "obj", ext == "zip" {
@@ -2862,16 +2875,21 @@ public struct CadDocumentTool: AgentTool {
                     guard NativeCADPolicy.exportExtensions.contains(ext) else {
                         throw FloeError.validationFailed(
                             "output extension '.\(ext)' is not a supported native export format; "
-                            + "use step/stp, stl, obj, obj_bundle (.zip), 3mf, glb, usdz, pdf, svg, dxf "
-                            + "or csv. gltf/iges are import-only.")
+                            + "use step/stp, iges/igs, stl, obj, obj_bundle (.zip), 3mf, glb, usdz, "
+                            + "pdf, svg, dxf or csv. gltf is import-only.")
                     }
                 }
                 let resolvedOutput = output ?? Self.defaultNativeExportPath(for: args.path!)
                 let effectiveFormat: String
                 if let explicitFormat, !explicitFormat.isEmpty {
-                    effectiveFormat = explicitFormat == "stp" ? "step" : explicitFormat
+                    switch explicitFormat {
+                    case "stp": effectiveFormat = "step"
+                    case "igs": effectiveFormat = "iges"
+                    default: effectiveFormat = explicitFormat
+                    }
                 } else {
-                    effectiveFormat = (resolvedOutput as NSString).pathExtension.lowercased()
+                    let ext = (resolvedOutput as NSString).pathExtension.lowercased()
+                    effectiveFormat = ext == "igs" ? "iges" : ext
                 }
                 var payload: [String: Any] = ["output": resolvedOutput,
                                               "format": effectiveFormat]

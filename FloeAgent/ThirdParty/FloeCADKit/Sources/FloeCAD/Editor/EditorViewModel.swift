@@ -291,6 +291,27 @@ final class EditorViewModel {
         }
     }
 
+    /// The one product message for a closed-solid tool aimed at an exact open
+    /// surface. The body is exact geometry, not a mesh-only body; it simply
+    /// has no solid for boolean/blend/shell/face edits to operate on. The
+    /// interactive entry points use this BEFORE any preview or undo step, so
+    /// the document, history and the exact handle all stay untouched.
+    private func exactSurfaceRefusal(_ operation: String) -> String {
+        FloeCADStrings.format(
+            "cad.exactSurface.refused",
+            "%@ needs a closed solid. This exact open surface was left unchanged; "
+                + "move, rotate, scale, material and IGES export still work.",
+            operation)
+    }
+
+    /// Refuse `operation` when `body` is an exact open surface. Returns true
+    /// after setting the alert; every caller returns before mutating state.
+    private func refuseExactSurface(_ body: Body, operation: String) -> Bool {
+        guard body.surfaceBRep != nil else { return false }
+        errorMessage = exactSurfaceRefusal(operation)
+        return true
+    }
+
     /// The selection is a curved face, so the planar-only tools (push/pull, and
     /// the Move/Scale/Rotate face transforms) can't act on it.
     var selectionIsCurvedFace: Bool {
@@ -2476,6 +2497,9 @@ final class EditorViewModel {
               let context = toolContext, context.cylinderFace == nil,
               let source = session.document.body(with: bodyID)
         else { return false }
+        // Face move has no exact result for an open sheet: the legacy mesh
+        // reshape would drop `surfaceBRep`. Refuse before the drag starts.
+        if refuseExactSurface(source, operation: "Move Face") { return false }
         let local = source.euclidMesh()
         faceMoveLastDelta = .zero
         let worldMesh = local.transformed(by: source.transform.euclid)
@@ -2673,6 +2697,7 @@ final class EditorViewModel {
               let context = toolContext, context.cylinderFace == nil,
               let source = session.document.body(with: bodyID)
         else { return false }
+        if refuseExactSurface(source, operation: "Scale Face") { return false }
         guard source.brep == nil else {
             errorMessage = KernelOps.ExactEditError.unsupported("Face scaling").message
             return false
@@ -2844,6 +2869,7 @@ final class EditorViewModel {
               let context = toolContext, context.cylinderFace == nil,
               let source = session.document.body(with: bodyID)
         else { return false }
+        if refuseExactSurface(source, operation: "Rotate Face") { return false }
         guard source.brep == nil else {
             errorMessage = KernelOps.ExactEditError.unsupported("Face rotation").message
             return false
@@ -3042,6 +3068,7 @@ final class EditorViewModel {
             // degrade to its tessellation (review C4). Handles are shared
             // read-only; downstream ops derive new handles, never mutate.
             clone.brep = body.brep
+            clone.surfaceBRep = body.surfaceBRep
             session.perform(AddBodyCommand(body: clone, title: "Copy \(body.name)"))
             copies.insert(clone.id)
         }
@@ -3879,6 +3906,11 @@ final class EditorViewModel {
                 revision: document.nextRevision()
             )
             clone.euclid = body.euclid
+            // A scale copy is the SAME body-local geometry at a scaled
+            // placement. Carrying both exact roles keeps a copied solid (and a
+            // copied IGES open surface) exact instead of silently mesh-only.
+            clone.brep = body.brep
+            clone.surfaceBRep = body.surfaceBRep
             document.bodies.append(clone) // keeps the next name unique
             commands.append(AddBodyCommand(body: clone, title: "Scale Copy"))
             ids.insert(clone.id)
@@ -4401,6 +4433,22 @@ final class EditorViewModel {
                 var toLocal = Transform3D.identity
                 toLocal.translation = -pivot
                 copy.brep = OCCTKernel.transformed(reflected, by: toLocal)
+            } else if let surface = body.surfaceBRep {
+                // An exact open sheet reflects exactly too; falling back to
+                // the mesh would silently ship a mesh-only copy.
+                guard let placed = OCCTKernel.transformed(surface, by: body.transform),
+                      let reflected = OCCTKernel.mirrored(
+                        placed, origin: plane.origin, normal: n) else {
+                    errorMessage = "Mirror could not reflect the exact open surface; nothing changed."
+                    return
+                }
+                var toLocal = Transform3D.identity
+                toLocal.translation = -pivot
+                guard let local = OCCTKernel.transformed(reflected, by: toLocal) else {
+                    errorMessage = "Mirror could not place the reflected surface; nothing changed."
+                    return
+                }
+                copy.surfaceBRep = local
             }
             document.bodies.append(copy) // keeps the next name unique
             commands.append(AddBodyCommand(body: copy, title: "Mirror"))
@@ -4479,6 +4527,10 @@ final class EditorViewModel {
         cancelTool()
         blendSelectedEdges = []
         blendBodyID = selection.count == 1 ? selection.first : nil
+        if let id = blendBodyID, let body = session.document.body(with: id),
+           refuseExactSurface(body, operation: kind.title) {
+            return
+        }
         // Blend edge picking owns the viewport now. Keeping the source body
         // selected left its transform gizmo visible, and ViewportView gives
         // those controls first refusal on taps. Retain the source identity in
@@ -4542,6 +4594,7 @@ final class EditorViewModel {
             errorMessage = "Couldn't rebuild the shape this blend started from."
             return false
         }
+        if refuseExactSurface(source, operation: kind.title) { return false }
 
         cancelTransientPicks()
         cancelTool()
@@ -4834,6 +4887,10 @@ final class EditorViewModel {
         // An edit stays on its own body: tapping elsewhere would have to
         // re-target the feature, which is not what "edit these edges" means.
         if editing && hit.bodyID != blendBodyID { return }
+        if body.surfaceBRep != nil {
+            showNotice(exactSurfaceRefusal(kind.title))
+            return
+        }
 
         if blendBodyID != hit.bodyID {
             blendBodyID = hit.bodyID
@@ -4989,6 +5046,10 @@ final class EditorViewModel {
               !blendSelectedEdges.isEmpty,
               blendValue > 1e-6   // a zero-size node would error on replay
         else { return }
+        guard !refuseExactSurface(source, operation: kind.title) else {
+            cancelBlend()
+            return
+        }
 
         // Editing an existing feature: change the node and let the rebuild
         // produce the geometry, exactly as `editFeatureDistance` does. The
@@ -5088,6 +5149,10 @@ final class EditorViewModel {
         cancelTool()
         shellSelectedFaces = []
         shellBodyID = selection.count == 1 ? selection.first : nil
+        if let id = shellBodyID, let body = session.document.body(with: id),
+           refuseExactSurface(body, operation: "Shell") {
+            return
+        }
         shellThickness = shellBodyID
             .flatMap { session.document.body(with: $0) }
             .map(Self.defaultShellThickness(for:)) ?? 2
@@ -5111,6 +5176,7 @@ final class EditorViewModel {
             errorMessage = "Couldn't rebuild the shape this shell started from."
             return false
         }
+        if refuseExactSurface(source, operation: "Shell") { return false }
         cancelTransientPicks()
         cancelTool()
         // Unresolvable faces are dropped, not fatal: re-picking is the repair.
@@ -5174,6 +5240,10 @@ final class EditorViewModel {
         if editing && hit.bodyID != shellBodyID { return }
         guard let body = editing ? shellEditSource : session.document.body(with: hit.bodyID)
         else { return }
+        if body.surfaceBRep != nil {
+            showNotice(exactSurfaceRefusal("Shell"))
+            return
+        }
         if shellBodyID != hit.bodyID {
             shellBodyID = hit.bodyID
             shellSelectedFaces = []
@@ -5288,6 +5358,10 @@ final class EditorViewModel {
               let source = session.document.body(with: bodyID),
               shellThickness > 1e-6
         else { return }
+        guard !refuseExactSurface(source, operation: "Shell") else {
+            cancelShell()
+            return
+        }
 
         // Editing an existing node: change the node and let the rebuild
         // produce the geometry (as `commitBlend` does while editing). The
@@ -5381,6 +5455,10 @@ final class EditorViewModel {
         cancelTool()
         deleteFaceTargets = []
         deleteFaceBodyID = selection.count == 1 ? selection.first : nil
+        if let id = deleteFaceBodyID, let body = session.document.body(with: id),
+           refuseExactSurface(body, operation: "Delete Face") {
+            return
+        }
         deleteFacePreview = nil
         mode = .pickingDeleteFaces
     }
@@ -5397,6 +5475,7 @@ final class EditorViewModel {
             errorMessage = "Couldn't rebuild the shape this delete started from."
             return false
         }
+        if refuseExactSurface(source, operation: "Delete Face") { return false }
         cancelTransientPicks()
         cancelTool()
         let naming = SignatureNaming()
@@ -5455,6 +5534,10 @@ final class EditorViewModel {
             deleteFaceBodyID = hit.bodyID
             deleteFaceTargets = []
             deleteFacePreview = nil
+        }
+        if body.surfaceBRep != nil {
+            showNotice(exactSurfaceRefusal("Delete Face"))
+            return
         }
         guard body.brep != nil else {
             // Say why, once, instead of letting every tap do nothing.
@@ -5627,6 +5710,10 @@ final class EditorViewModel {
         cancelTransientPicks()
         cancelTool()
         replaceFaceBodyID = selection.count == 1 ? selection.first : nil
+        if let id = replaceFaceBodyID, let body = session.document.body(with: id),
+           refuseExactSurface(body, operation: "Replace Face") {
+            return
+        }
         replaceSourceFace = nil
         replaceTargetPlane = nil
         replaceFaceFlip = false
@@ -5699,6 +5786,14 @@ final class EditorViewModel {
     private func handleReplaceFaceTap(ray: Ray) {
         guard let hit = HitTester.pickBody(ray: ray, in: scene),
               let body = session.document.body(with: hit.bodyID) else { return }
+
+        // Stage 1 picks the face to MOVE; that body must be a closed solid.
+        // Stage 2 only reads the target face's plane, which an open sheet can
+        // define perfectly well.
+        if replaceSourceFace == nil, body.surfaceBRep != nil {
+            showNotice(exactSurfaceRefusal("Replace Face"))
+            return
+        }
 
         // Stage 1 — the face to move. It has to be planar: the kit resolves a
         // replace into the prism between two PARALLEL planes, and a curved
@@ -5799,6 +5894,10 @@ final class EditorViewModel {
               let face = replaceSourceFace,
               let target = replaceTargetPlane
         else { return }
+        guard !refuseExactSurface(source, operation: "Replace Face") else {
+            resetReplaceFaceState()
+            return
+        }
 
         let after: Body
         if var preview = replaceFacePreview {
@@ -6245,6 +6344,7 @@ final class EditorViewModel {
             // analytic geometry on every copy while replay kept it — the two
             // paths must agree, or a rebuild would change the model.
             copy.brep = body.brep
+            copy.surfaceBRep = body.surfaceBRep
             document.bodies.append(copy) // keeps the next name unique
             commands.append(AddBodyCommand(body: copy, title: "Pattern"))
             ids.insert(copy.id)
@@ -7982,6 +8082,11 @@ final class EditorViewModel {
               let toolIndex = session.document.bodyIndex(of: toolID)
         else { return }
         let tool = session.document.bodies[toolIndex]
+        // Both operands of a live boolean must be closed solids. An exact open
+        // surface used to reach the mesh CSG below and lose its exact handle.
+        let booleanName = kind.rawValue.capitalized
+        if refuseExactSurface(target, operation: booleanName) { return }
+        if refuseExactSurface(tool, operation: booleanName) { return }
 
         // A tool that never reaches the target's bounds cannot cut or
         // intersect it. The CSG would hand the target back unchanged and the
@@ -9142,6 +9247,14 @@ final class EditorViewModel {
     /// Commit a face push/pull: replace the source body with its truncated or
     /// extended mesh, preserving the pivot (rotation/scale bake in).
     private func commitFaceOperation(_ context: ToolContext, distance: Double) {
+        // A live push/pull on an exact open surface has no exact result; the
+        // mesh branch below would silently replace the sheet's handle.
+        if let sourceID = context.sourceBody,
+           let source = session.document.body(with: sourceID),
+           refuseExactSurface(source, operation: "Push/Pull") {
+            cancelTool()
+            return
+        }
         if let sourceID = context.sourceBody,
            let source = session.document.body(with: sourceID), source.brep != nil {
             do {

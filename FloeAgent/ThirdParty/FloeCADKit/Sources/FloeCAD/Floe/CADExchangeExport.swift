@@ -19,9 +19,11 @@
 //      nodes/extras). A hidden definition with visible instances is still
 //      exported through those visible instances; a hidden INSTANCE is not.
 //
-//  Coverage is computed BEFORE any file is promoted. STEP can only carry
-//  analytic B-rep occurrences, so mesh-only objects are listed and require
-//  an explicit `acceptPartial` choice. GLB can carry every valid mesh, but
+//  Coverage is computed BEFORE any file is promoted. STEP (this product's
+//  writer) carries closed solids only, so mesh-only objects AND exact open
+//  surfaces are listed with specific reasons and require an explicit
+//  `acceptPartial` choice. IGES writes both exact solids and surfaces. GLB
+//  can carry every valid mesh, but
 //  invalid meshes/material images are never silently treated as a complete
 //  success: they are reported in the same coverage receipt.
 //
@@ -95,6 +97,10 @@ public nonisolated struct CADExchangeCoverageItem: Sendable, Equatable {
     public var worldMatrix: [Double]
     public var worldPositionMM: [Double]
     public var analyticBRep: Bool
+    /// True when this item carries an exact OPEN shell/face (`Body.surfaceBRep`).
+    /// It is exact B-rep geometry, but not a solid: STEP (solid-only here)
+    /// excludes it with a specific reason, while IGES writes it back exactly.
+    public var openSurfaceBRep: Bool
     public var independentCopy: Bool
     public var sourceReferenceID: UUID?
     public var included: Bool
@@ -115,6 +121,7 @@ public nonisolated struct CADExchangeCoverageItem: Sendable, Equatable {
                 worldMatrix: [Double],
                 worldPositionMM: [Double],
                 analyticBRep: Bool,
+                openSurfaceBRep: Bool = false,
                 independentCopy: Bool = false,
                 sourceReferenceID: UUID? = nil,
                 included: Bool,
@@ -132,6 +139,7 @@ public nonisolated struct CADExchangeCoverageItem: Sendable, Equatable {
         self.worldMatrix = worldMatrix
         self.worldPositionMM = worldPositionMM
         self.analyticBRep = analyticBRep
+        self.openSurfaceBRep = openSurfaceBRep
         self.independentCopy = independentCopy
         self.sourceReferenceID = sourceReferenceID
         self.included = included
@@ -151,6 +159,7 @@ public nonisolated struct CADExchangeCoverageItem: Sendable, Equatable {
             "world_matrix_mm": worldMatrix,
             "world_position_mm": worldPositionMM,
             "analytic_brep": analyticBRep,
+            "open_surface_brep": openSurfaceBRep,
             "independent_copy": independentCopy,
             "included": included,
             "material_warnings": materialWarnings,
@@ -321,11 +330,13 @@ public extension FloeCADDocument {
     /// through its existing verified-staging/atomic workspace commit. When
     /// the receipt is incomplete and `acceptPartial` is false, no bytes are
     /// returned, so a stale/partial export can never overwrite the target.
-    func nativeExchangeExport(format: String,
+    func nativeExchangeExport(format rawFormat: String,
                               pageID: UUID?,
                               selection: CADExchangeSelection,
                               dryRun: Bool) -> CADExchangeOutcome {
         _ = pageID  // Drawing pages use the existing drawing export path.
+        var format = rawFormat.lowercased()
+        if format == "igs" { format = "iges" }
         do {
             let plan = try makeExchangePlan(format: format, selection: selection)
             if dryRun {
@@ -342,6 +353,30 @@ public extension FloeCADDocument {
             }
 
             switch plan.format {
+            case "iges":
+                switch IGESKit.export(bodies: plan.placedBodies) {
+                case let .success(data, skipped):
+                    guard skipped.isEmpty else {
+                        return .failure(CADDocumentError(
+                            code: "iges_geometry_refused",
+                            message: "The IGES writer rejected \(skipped.count) placed exact "
+                                + "object(s) (\(skipped.prefix(3).joined(separator: ", "))); "
+                                + "nothing was written."))
+                    }
+                    let note = "exact OCCT B-rep IGES (closed solids and open surfaces), "
+                        + "\(plan.coverage.includedCount) placed object(s), millimetres; "
+                        + "no history, PMI, materials or assembly metadata"
+                    return .success(data: data, note: note, coverage: plan.coverage)
+                case let .nothingAnalytic(skipped):
+                    return .failure(CADDocumentError(
+                        code: "no_analytic_geometry",
+                        message: "No exact B-rep body (closed solid or open surface) to export; "
+                            + "mesh-only: " + skipped.prefix(4).joined(separator: ", ")))
+                case .failed:
+                    return .failure(CADDocumentError(
+                        code: "iges_export_failed",
+                        message: "The IGES writer refused the export; nothing was written."))
+                }
             case "step":
                 switch STEPKit.export(bodies: plan.placedBodies) {
                 case let .success(data, skipped):
@@ -446,7 +481,8 @@ public extension FloeCADDocument {
                 return .failure(CADDocumentError(
                     code: "unsupported_format",
                     message: "Exchange supports step, glb and usdz for parts or assemblies, "
-                        + "and part-scope obj_bundle, stl, obj and 3mf; got '\(format)'."))
+                        + "part-scope iges, and part-scope obj_bundle, stl, obj and 3mf; "
+                        + "got '\(format)'."))
             }
         } catch let error as CADDocumentError {
             return .failure(error)
@@ -459,7 +495,7 @@ public extension FloeCADDocument {
     /// Truthful part-scope export for the legacy whole-document callers
     /// (`CadDocumentCenter`/`FloeCAD3DBridge` and the editor's GLB actions).
     ///
-    /// `step`/`glb`/`usdz` are the SAME exchange plan/writer used by
+    /// `step`/`iges`/`glb`/`usdz` are the SAME exchange plan/writer used by
     /// `nativeExchangeExport`; `stl`/`obj`/`3mf` reuse that plan's per-body
     /// mesh validation and then the existing mesh writers restricted to the
     /// bodies the receipt includes. Bytes are returned only when every selected
@@ -470,11 +506,12 @@ public extension FloeCADDocument {
                           pageID: UUID?,
                           acceptPartial: Bool = false,
                           expectedChangeCount: Int? = nil) -> CADExchangeOutcome {
-        let format = rawFormat.lowercased()
+        var format = rawFormat.lowercased()
+        if format == "igs" { format = "iges" }
         let selection = CADExchangeSelection(scope: .part, acceptPartial: acceptPartial,
                                              expectedChangeCount: expectedChangeCount)
         switch format {
-        case "step", "glb", "usdz", "obj_bundle":
+        case "step", "glb", "usdz", "obj_bundle", "iges":
             return nativeExchangeExport(format: format, pageID: pageID,
                                         selection: selection, dryRun: false)
 
@@ -512,7 +549,7 @@ public extension FloeCADDocument {
         default:
             return .failure(CADDocumentError(
                 code: "unsupported_format",
-                message: "Part export supports step, stl, obj, 3mf, glb, usdz and "
+                message: "Part export supports step, iges, stl, obj, 3mf, glb, usdz and "
                     + "obj_bundle; got '\(rawFormat)'."))
         }
     }
@@ -524,12 +561,14 @@ public extension FloeCADDocument {
 private extension FloeCADDocument {
     func makeExchangePlan(format rawFormat: String,
                           selection: CADExchangeSelection) throws -> CADExchangePlan {
-        let format = rawFormat.lowercased()
-        guard ["step", "glb", "usdz", "obj_bundle", "stl", "obj", "3mf"].contains(format) else {
+        var format = rawFormat.lowercased()
+        if format == "igs" { format = "iges" }
+        guard ["step", "iges", "glb", "usdz", "obj_bundle", "stl", "obj", "3mf"].contains(format) else {
             throw CADDocumentError(
                 code: "unsupported_format",
                 message: "Exchange supports step, glb and usdz for parts or assemblies, "
-                    + "and part-scope obj_bundle, stl, obj and 3mf; got '\(rawFormat)'.")
+                    + "part-scope iges, and part-scope obj_bundle, stl, obj and 3mf; "
+                    + "got '\(rawFormat)'.")
         }
         if !["step", "glb", "usdz"].contains(format), selection.scope == .assembly {
             throw CADDocumentError(
@@ -619,13 +658,23 @@ private extension FloeCADDocument {
             let fidelityWarnings = materialWarnings(for: body, format: format)
             let meshIssue = CADExchangeMeshValidator.issue(for: body)
             let analytic = body.brep != nil
+            let openSurface = body.surfaceBRep != nil
             var included = true
             var reason: String?
             switch format {
             case "step":
+                // This product's STEP writer carries closed solids only; an
+                // open surface stays an exact IGES-body in the document, it
+                // is not silently flattened into a STEP solid or mesh.
                 if !analytic {
                     included = false
-                    reason = "mesh_only_no_analytic_brep"
+                    reason = openSurface ? "open_surface_not_step_solid"
+                                         : "mesh_only_no_analytic_brep"
+                }
+            case "iges":
+                if !analytic && !openSurface {
+                    included = false
+                    reason = "mesh_only_no_exact_brep"
                 }
             default:
                 if let meshIssue {
@@ -650,6 +699,7 @@ private extension FloeCADDocument {
                 worldMatrix: matrixArray(matrix),
                 worldPositionMM: [matrix.columns.3.x, matrix.columns.3.y, matrix.columns.3.z],
                 analyticBRep: analytic,
+                openSurfaceBRep: openSurface,
                 included: included,
                 reason: reason,
                 materialWarnings: fidelityWarnings,
@@ -773,6 +823,7 @@ private extension FloeCADDocument {
                     worldMatrix: matrixArray(source.transform.matrix),
                     worldPositionMM: vectorArray(placement.position),
                     analyticBRep: source.brep != nil,
+                    openSurfaceBRep: source.surfaceBRep != nil,
                     independentCopy: occurrence.instance.isIndependentCopy,
                     sourceReferenceID: occurrence.sourceReferenceID,
                     included: false,
@@ -786,13 +837,15 @@ private extension FloeCADDocument {
             let meshIssue = CADExchangeMeshValidator.issue(for: source)
             let fidelityWarnings = materialWarnings(for: source, format: format)
             let analytic = source.brep != nil
+            let openSurface = source.surfaceBRep != nil
             var included = true
             var reason: String?
             switch format {
             case "step":
                 if !analytic {
                     included = false
-                    reason = "mesh_only_no_analytic_brep"
+                    reason = openSurface ? "open_surface_not_step_solid"
+                                         : "mesh_only_no_analytic_brep"
                 }
             default:
                 if let meshIssue {
@@ -836,6 +889,7 @@ private extension FloeCADDocument {
                                   world.matrix.columns.3.y,
                                   world.matrix.columns.3.z],
                 analyticBRep: analytic,
+                openSurfaceBRep: openSurface,
                 independentCopy: occurrence.instance.isIndependentCopy,
                 sourceReferenceID: occurrence.sourceReferenceID,
                 included: included,
@@ -967,8 +1021,14 @@ private extension FloeCADDocument {
         let acceptedPartial = selection.acceptPartial
         var notes: [String] = []
         if format == "step" {
-            notes.append("STEP writes exact B-rep geometry in millimetres; it does not carry "
-                + "model history, PMI, part names or the assembly hierarchy.")
+            notes.append("STEP writes exact closed-solid B-rep geometry in millimetres; it does not "
+                + "carry model history, PMI, part names or the assembly hierarchy. Open IGES "
+                + "surfaces stay surface bodies and are listed as excluded, never flattened.")
+        } else if format == "iges" {
+            notes.append("IGES writes exact OCCT B-rep geometry (closed solids and open "
+                + "shells/faces) in millimetres; it does not carry model history, PMI, "
+                + "part names, materials or assembly metadata. Open surfaces are exact "
+                + "surface bodies, not solids.")
         } else if format == "glb" {
             notes.append("GLB keeps body-local millimetre geometry and applies one 0.001 "
                 + "root scale; scope=assembly nodes/extras carry occurrence identity and hierarchy.")
@@ -1012,6 +1072,8 @@ private extension FloeCADDocument {
         switch format {
         case "step":
             return ["history", "pmi", "assembly_names", "assembly_hierarchy"]
+        case "iges":
+            return ["history", "pmi", "assembly_names", "assembly_hierarchy", "materials"]
         case "glb":
             return ["history", "pmi", "brep"]
         case "usdz":

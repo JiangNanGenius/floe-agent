@@ -9,13 +9,14 @@
 //  - a real IGES file imports through the native path with the solid vs
 //    surface distinction kept honest: an OCCT BRep-mode file yields an exact
 //    solid body with the analytic box volume, while a face-mode file yields
-//    render-only surface bodies that are never marked `analyticBRep`.
+//    exact open-surface bodies (`surfaceBRep`) that are never marked
+//    `analyticBRep`.
 //
-//  No IGES sample exists in this repository, so both round-trip fixtures are
+//  No IGES sample exists in this repository, so both import fixtures are
 //  written in-test by OCCT's own IGES writer (`OCCTKernel.debugWriteIGES`,
-//  DEBUG-only test support; the product itself exports STEP only). The tests
-//  themselves are not run by the parse-only qualification this work came
-//  under — see the delivery report.
+//  DEBUG-only fixture support; the product writer is `OCCTKernel.writeIGES`
+//  through `IGESKit`). The tests themselves are not run by the parse-only
+//  qualification this work came under — see the delivery report.
 //
 
 import XCTest
@@ -142,7 +143,7 @@ final class CADIGESTests: XCTestCase {
 
     /// A file that carries BOTH a closed solid and a loose surface must
     /// import both roots: the solid as an exact analytic body, the surface as
-    /// a render-only body — never "solids only, surfaces dropped".
+    /// an exact open-surface body — never "solids only, surfaces dropped".
     func testMixedSolidAndSurfaceIGESPreservesBothRoots() throws {
         let solid = try XCTUnwrap(OCCTKernel.primitiveShape(
             .box(width: 20, depth: 30, height: 40), placement: .identity))
@@ -171,6 +172,8 @@ final class CADIGESTests: XCTestCase {
         let surfaceRow = try XCTUnwrap(rows.first { $0["kind"] as? String == "surface" })
         XCTAssertEqual(surfaceRow["analyticBRep"] as? Bool, false,
                        "a surface must never be reported as an analytic solid")
+        XCTAssertEqual(surfaceRow["openSurfaceBRep"] as? Bool, true,
+                       "a surface must keep its exact open-surface B-rep")
         let solidBody = try XCTUnwrap(
             document.session.document.bodies.first { $0.brep != nil },
             "the solid body must carry its exact B-rep")
@@ -184,8 +187,8 @@ final class CADIGESTests: XCTestCase {
     }
 
     /// Face-mode round trip: an IGES file that carries only surfaces must
-    /// import as render-only bodies, honestly reported as surfaces — never as
-    /// analytic solids.
+    /// import as exact open-surface bodies, honestly reported as surfaces —
+    /// never as analytic solids.
     func testFaceModeIGESImportsAsSurfaceBodiesNotSolids() throws {
         let data = try writeIGESBox(brepMode: false, name: "box-faces.igs")
         let outcome = importOutcome(data, fileName: "BoxFaces")
@@ -206,6 +209,10 @@ final class CADIGESTests: XCTestCase {
         }
         for body in document.session.document.bodies {
             XCTAssertNil(body.brep, "an IGES surface must not be adopted as an analytic solid")
+            let surface = try XCTUnwrap(body.surfaceBRep,
+                                        "an IGES surface must keep its exact open-surface B-rep")
+            XCTAssertFalse(surface.containsSolid,
+                           "an open surface handle must not contain a TopAbs_SOLID")
         }
         let note = try XCTUnwrap(payload["note"] as? String,
                                  "the surface import must carry an honest note")

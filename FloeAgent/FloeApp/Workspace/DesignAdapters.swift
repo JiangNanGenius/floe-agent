@@ -517,7 +517,7 @@ struct CADDesignAdapter: DesignTypeAdapter {
     /// convert).
     static func exportFormats(for dimension: DesignCADBinding.Dimension) -> Set<String> {
         switch dimension {
-        case .native3D: return ["step", "stp", "stl", "obj", "3mf", "glb", "usdz", "pdf"]
+        case .native3D: return ["step", "stp", "iges", "igs", "stl", "obj", "3mf", "glb", "usdz", "pdf"]
         case .drawing2D: return ["dwg", "dxf"]
         }
     }

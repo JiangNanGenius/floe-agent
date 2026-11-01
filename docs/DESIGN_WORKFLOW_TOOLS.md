@@ -309,9 +309,12 @@ Two actions are added to the existing one tool; both are native-engine only
 | `import` | `path` (an EXISTING `.floecad`), `source_path`, optional `format`, `unit_scale`, `name`, `summary` | Adds the geometry of a workspace STEP/STP, IGES/IGS, STL, OBJ, GLB or glTF file by drafting a proposal on a throwaway copy; it returns a preview and changes nothing until the user confirms in the CAD UI and the returned proposal is applied with that UI-issued grant. |
 
 Format boundaries are stated per format by the tool (`geometry_class` and
-`note` in the capabilities reply): STEP/IGES solids import as exact B-rep
-bodies (IGES shells/faces stay render-only; IGES export is not available in
-this build); STL/OBJ/GLB/glTF import as render meshes with **no parametric
+`note` in the capabilities reply): STEP imports closed exact B-rep solids.
+IGES imports closed solids and open shells/faces as **exact** B-rep bodies: a
+surface body supports move/rotate/scale, material, save/reopen, undo and IGES
+re-export, but not solid boolean/fillet/shell; STEP (solid-only here) excludes
+it with a specific coverage reason, and IGES export writes both solids and
+surfaces. STL/OBJ/GLB/glTF import as render meshes with **no parametric
 history**; loose `.obj`/`.gltf` keep their material/texture siblings; the
 source file is read through the workspace guard and never modified. Errors
 distinguish a missing file, a non-package, an unreadable manifest, an

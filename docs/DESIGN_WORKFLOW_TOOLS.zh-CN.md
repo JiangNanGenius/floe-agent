@@ -264,10 +264,12 @@ CAS、`canvas.designAdopt` 用户授权）。用 `kind:"canvasNode"` 调用强�
 | `import` | `path`（**已存在**的 `.floecad`）、`source_path`、可选 `format`、`unit_scale`、`name`、`summary` | 把工作区 STEP/STP、IGES/IGS、STL、OBJ、GLB 或 glTF 文件的几何加进既有包：在一次性副本上起草提案并返回预览；在用户在 CAD UI 确认并用 UI 签发的授权 apply 之前，不改动任何内容。 |
 
 格式边界由工具按格式明确给出（capabilities 回复中的 `geometry_class` 与
-`note`）：STEP/IGES 实体导入为精确 B-rep（IGES 壳体/面保持只读渲染；
-本构建不提供 IGES 导出）；STL/OBJ/GLB/glTF 导入为渲染网格且**没有参数化
-历史**；散装 `.obj`/`.gltf` 保留其材质/贴图兄弟文件；源文件经工作区守卫
-读取且从不修改。错误区分文件不存在、非文档包、清单不可读、格式/引擎不
+`note`）：STEP 导入为封闭的精确 B-rep 实体。IGES 的封闭实体与开放壳体/面
+都导入为**精确** B-rep 实体：曲面实体可移动、旋转、缩放、赋材质、保存/重开、
+撤销并重新导出 IGES，但不参与实体布尔/圆角/抽壳；STEP（此处仅封闭实体）
+会以明确覆盖原因排除它，IGES 导出则同时写入实体与曲面。STL/OBJ/GLB/glTF
+导入为渲染网格且**没有参数化历史**；散装 `.obj`/`.gltf` 保留其材质/贴图兄弟
+文件；源文件经工作区守卫读取且从不修改。错误区分文件不存在、非文档包、清单不可读、格式/引擎不
 支持与权限拒绝。无文档的 `capabilities` 分别报告二维与原生三维引擎，避免
 把二维限制读成“三维不可用”。新建/导入是写操作、继续受审批约束；对已暂存
 画布草稿调用 `create` 会被拒绝（该暂存只授权一个既有文档，不是新包）。

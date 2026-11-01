@@ -296,6 +296,7 @@ nonisolated enum ProjectMergeKit {
             // (2026-08-25 review, C4).
             result.euclid = body.euclid
             result.brep = body.brep
+            result.surfaceBRep = body.surfaceBRep
             return result
         }
 

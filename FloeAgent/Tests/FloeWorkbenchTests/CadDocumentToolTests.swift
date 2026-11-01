@@ -383,8 +383,10 @@ struct CadDocumentToolTests {
         #expect(!NativeCADPolicy.exportExtensions.contains("gltf"),
                 "glTF is import-only; the native export writes GLB")
         #expect(NativeCADPolicy.importExtensions.contains("iges"))
-        #expect(!NativeCADPolicy.exportExtensions.contains("iges"),
-                "IGES export is not available in this build")
+        #expect(NativeCADPolicy.exportExtensions.contains("iges"),
+                "IGES export writes exact solids and open surfaces")
+        #expect(NativeCADPolicy.exportExtensions.contains("igs"),
+                "the .igs alias is admitted and normalized to iges")
     }
 
     @Test("native export suffix truth rejects an import-only glTF output")
@@ -395,11 +397,20 @@ struct CadDocumentToolTests {
                 tool,
                 #"{"action":"export","path":"part.floecad","output":"part.gltf"}"#)
         }
-        await #expect(throws: (any Error).self) {
-            _ = try await execute(
-                tool,
-                #"{"action":"export","path":"part.floecad","output":"part.iges"}"#)
-        }
+    }
+
+    @Test("native export admits IGES with .iges and .igs and normalizes the alias")
+    func nativeExportIGESSuffix() async throws {
+        let host = FakeCadHost()
+        await host.setThreeDReply(#"{"ok":true,"output":"part.igs","sha256":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}"#)
+        let tool = CadDocumentTool(host: host)
+        _ = try await execute(
+            tool,
+            #"{"action":"export","path":"part.floecad","format":"iges","output":"part.igs"}"#)
+        let requests = await host.threeDRequests
+        let request = try #require(requests.last)
+        #expect(request.contains("\"format\":\"iges\""),
+                "the .igs alias must normalize to the canonical iges format")
     }
 
     @Test("native capability matrix advertises the CSV drawing export")

@@ -428,6 +428,21 @@ nonisolated struct EvalResult: Sendable {
 
 nonisolated extension FeatureGraph {
 
+    /// Replay-side guard for an operation that needs a closed solid. Imported
+    /// open surfaces are not graph inputs today (replay builds bodies from
+    /// feature nodes, not document bodies), but a future seeded or
+    /// surface-producing node must never fall into the legacy Euclid mesh
+    /// fallbacks: those would consume the exact sheet and emit a mesh-only
+    /// body. Recording the error leaves the input body in `state` untouched
+    /// and the graph total; no history is changed by replay itself.
+    private func refuseExactSurface(_ node: FeatureNode, _ operation: String,
+                                    body: Body, into state: inout EvalState) -> Bool {
+        guard body.surfaceBRep != nil else { return false }
+        state.errors[node.id] = .kernelFailure(
+            ExactSurfaceBoundary.refusal(operation, bodyName: body.name))
+        return true
+    }
+
     /// Replay every non-suppressed node in order, building the document geometry.
     ///
     /// - Parameters:
@@ -943,6 +958,10 @@ nonisolated extension FeatureGraph {
             state.errors[node.id] = .brokenRef("extrude boolean target unresolved")
             return
         }
+        // A boolean-into-target extrude is a solid operation. Falling into the
+        // padded Euclid cut below on an exact open surface would silently
+        // replace the sheet with a mesh body; refuse and leave it untouched.
+        if refuseExactSurface(node, "Extrude boolean", body: target, into: &state) { return }
         // The tool body is built LAZILY: from the kernel tool's own
         // tessellation when OCCT owns the boolean (below), else the padded
         // Euclid prism in the fallback. The Euclid prism used to be built
@@ -1072,6 +1091,10 @@ nonisolated extension FeatureGraph {
             state.errors[node.id] = .brokenRef("boolean target unresolved")
             return
         }
+        // A boolean is defined on closed solids. Refuse an exact open surface
+        // up front instead of letting the mesh fallback below re-tessellate
+        // it and drop the exact handle on the next save.
+        if refuseExactSurface(node, "Boolean", body: target, into: &state) { return }
         var acc = target
         var inputTables: [FaceTable] = state.faceTables[target.id].map { [$0] } ?? []
         var consumed: [BodyID] = []
@@ -1086,6 +1109,7 @@ nonisolated extension FeatureGraph {
                 state.errors[node.id] = .brokenRef("boolean tool unresolved")
                 return
             }
+            if refuseExactSurface(node, "Boolean", body: tool, into: &state) { return }
             if let t = state.faceTables[tool.id] { inputTables.append(t) }
             // Capture the pre-boolean operand for the brep composition below
             // (acc is replaced by `next` after each tool).
@@ -1261,6 +1285,7 @@ nonisolated extension FeatureGraph {
             state.errors[node.id] = .brokenRef("pushPull body unresolved")
             return
         }
+        if refuseExactSurface(node, "Push/Pull", body: body, into: &state) { return }
         // Re-resolve the persisted FaceRef against the (possibly rebuilt) body —
         // this is the topological-naming step that lets the pushed face follow the
         // geometry after an upstream edit.
@@ -1319,6 +1344,7 @@ nonisolated extension FeatureGraph {
             state.errors[node.id] = .brokenRef("moveFace body unresolved")
             return
         }
+        if refuseExactSurface(node, "Move Face", body: body, into: &state) { return }
         let table = state.faceTables[body.id]
         guard let resolved = state.naming.resolve(face, in: body, table: table),
               let planar = resolved.planar else {
@@ -1381,6 +1407,7 @@ nonisolated extension FeatureGraph {
             state.errors[node.id] = .brokenRef("scaleFace body unresolved")
             return
         }
+        if refuseExactSurface(node, "Scale Face", body: body, into: &state) { return }
         guard body.brep == nil else {
             state.errors[node.id] = .kernelFailure(KernelOps.ExactEditError.unsupported("Face scaling").message)
             return
@@ -1428,6 +1455,7 @@ nonisolated extension FeatureGraph {
             state.errors[node.id] = .brokenRef("rotateFace body unresolved")
             return
         }
+        if refuseExactSurface(node, "Rotate Face", body: body, into: &state) { return }
         guard body.brep == nil else {
             state.errors[node.id] = .kernelFailure(KernelOps.ExactEditError.unsupported("Face rotation").message)
             return
@@ -1482,6 +1510,7 @@ nonisolated extension FeatureGraph {
             state.errors[node.id] = .brokenRef("draftFace body unresolved")
             return
         }
+        if refuseExactSurface(node, "Draft Face", body: body, into: &state) { return }
         let table = state.faceTables[body.id]
         guard let resolved = state.naming.resolve(face, in: body, table: table),
               resolved.planar != nil || resolved.cylinder != nil else {
@@ -1624,6 +1653,8 @@ nonisolated extension FeatureGraph {
             state.errors[node.id] = .brokenRef("blend body unresolved")
             return
         }
+        if refuseExactSurface(node, isFillet ? "Fillet" : "Chamfer",
+                              body: body, into: &state) { return }
 
         // IDENTITY FIRST (TOPO_NAMING_HISTORY_DESIGN step 4b): when every
         // ref carries an edge name and the input body has kernel names,
@@ -1829,6 +1860,7 @@ nonisolated extension FeatureGraph {
             state.errors[node.id] = .brokenRef("shell body unresolved")
             return
         }
+        if refuseExactSurface(node, "Shell", body: body, into: &state) { return }
         let table = state.faceTables[body.id]
         var openFaces = [FaceTopology.PlanarFace]()
         for ref in openFaceRefs {
@@ -1927,6 +1959,7 @@ nonisolated extension FeatureGraph {
             state.errors[node.id] = .brokenRef("delete-face body unresolved")
             return
         }
+        if refuseExactSurface(node, "Delete Face", body: body, into: &state) { return }
         guard !faceRefs.isEmpty else {
             state.errors[node.id] = .kernelFailure("delete face needs at least one face")
             return
@@ -2008,6 +2041,7 @@ nonisolated extension FeatureGraph {
             state.errors[node.id] = .brokenRef("replace-face body unresolved")
             return
         }
+        if refuseExactSurface(node, "Replace Face", body: body, into: &state) { return }
         let table = state.faceTables[body.id]
         guard let resolved = state.naming.resolve(faceRef, in: body, table: table),
               let planar = resolved.planar else {
@@ -2183,6 +2217,10 @@ nonisolated extension FeatureGraph {
             state.errors[node.id] = .brokenRef("boolean target unresolved")
             return
         }
+        // Revolve/sweep/loft booleans are solid operations; their Euclid
+        // fallback below would consume an exact open surface as a mesh.
+        if refuseExactSurface(node, "\(node.name) boolean", body: target,
+                              into: &state) { return }
         // The full solid, wrapped identity so KernelOps.boolean bakes no extra
         // transform (mesh already lives in the shared world space). The brep,
         // when there is one, rides along so the OCCT composition below sees
@@ -2358,6 +2396,7 @@ nonisolated extension FeatureGraph {
             state.errors[node.id] = .brokenRef("hole target unresolved")
             return
         }
+        if refuseExactSurface(node, "Hole", body: target, into: &state) { return }
         guard let targetBrep = target.brep else {
             state.errors[node.id] = .kernelFailure(
                 "hole requires a B-rep target; a mesh body cannot host an exact hole")
@@ -2804,6 +2843,21 @@ nonisolated extension FeatureGraph {
            let placed = OCCTKernel.transformed(sourceBrep, by: input.transform) {
             body.brep = OCCTKernel.mirrored(
                 placed, origin: plane.origin, normal: simd_normalize(plane.normal))
+        } else if input.surfaceBRep != nil {
+            // A reflected open sheet is still exact. Falling through to the
+            // Euclid mesh would silently drop the source's surfaceBRep from
+            // the copy; refuse instead of shipping a mesh-only reflection.
+            guard let surface = input.surfaceBRep,
+                  let placed = OCCTKernel.transformed(surface, by: input.transform),
+                  let reflected = OCCTKernel.mirrored(
+                    placed, origin: plane.origin, normal: simd_normalize(plane.normal))
+            else {
+                state.errors[node.id] = .kernelFailure(
+                    "mirror: the exact open surface could not be reflected; "
+                        + "the original was preserved.")
+                return
+            }
+            body.surfaceBRep = reflected
         }
         let table = state.naming.faceTable(for: body, createdBy: node.id, scheme: .generic)
         state.put(body, table: table)
@@ -2874,6 +2928,7 @@ nonisolated extension FeatureGraph {
             // is a reference type and nothing mutates one in place; every
             // kernel op returns a new handle.)
             copy.brep = source.brep
+            copy.surfaceBRep = source.surfaceBRep
             let table = state.naming.faceTable(for: copy, createdBy: node.id, scheme: .generic)
             state.put(copy, table: table)
             // The copy IS the source solid (shared handle, placement in

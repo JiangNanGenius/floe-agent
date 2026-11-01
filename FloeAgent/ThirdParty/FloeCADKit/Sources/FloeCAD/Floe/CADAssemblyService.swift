@@ -1912,6 +1912,7 @@ public final class CADAssemblyService {
             // Carry the analytic solid, same rule as every other copy path: a
             // copied cylinder must not degrade to its tessellation.
             copy.brep = sourceBody.brep
+            copy.surfaceBRep = sourceBody.surfaceBRep
             copy.material = sourceBody.material
             copy.materialFaceBindings = sourceBody.materialFaceBindings
             copy.isHidden = sourceBody.isHidden
@@ -5129,6 +5130,7 @@ public final class CADAssemblyService {
                         revision: 0)
         copy.euclid = body.euclid
         copy.brep = body.brep
+        copy.surfaceBRep = body.surfaceBRep
         copy.material = body.material
         copy.materialFaceBindings = body.materialFaceBindings
         copy.isHidden = body.isHidden
@@ -5198,6 +5200,7 @@ public final class CADAssemblyService {
                           edges: FeatureEdgeSet(segments: []),
                           revision: body.meshRevision)
         placed.brep = body.brep
+        placed.surfaceBRep = body.surfaceBRep
         return placed
     }
 

@@ -14,8 +14,10 @@ import OCCTShim
 import Foundation
 import simd
 
-/// Owns an OCCT solid handle (`TopoDS_Shape`), world-space. Freed when the
-/// handle is released.
+/// Owns an OCCT shape handle (`TopoDS_Shape`), world-space. Most callers use a
+/// closed solid; an IGES import may also carry an exact open shell/face, and
+/// `containsSolid` is what keeps the two apart for solid-only operations.
+/// Freed when the handle is released.
 ///
 /// `@unchecked Sendable` — CAVEAT (2026-08-25 review, S1): the shape is NOT
 /// deeply immutable. `renderMesh(from:)` runs `BRepMesh_IncrementalMesh`,
@@ -27,7 +29,15 @@ import simd
 /// actor. Do not rely on this annotation for actual thread safety.
 nonisolated final class BRepHandle: @unchecked Sendable {
     let shape: OCCTShape
-    init(_ shape: OCCTShape) { self.shape = shape }
+    /// True when the shape contains at least one `TopAbs_SOLID`. Computed once
+    /// at construction from the actual topology, so a stored/deserialized
+    /// shell is never mistaken for a solid just because it arrived through a
+    /// solid-shaped API.
+    let containsSolid: Bool
+    init(_ shape: OCCTShape) {
+        self.shape = shape
+        self.containsSolid = OCCTBridge.shapeContainsSolid(shape)
+    }
 }
 
 /// Typed failure from an OCCT op — the bridge's `OCCTOpStatus` lifted into
@@ -82,8 +92,11 @@ nonisolated enum OCCTOpError: Error, Equatable {
 /// kept apart. IGES files commonly carry only shells or isolated faces; a
 /// shell is NOT a solid and must not enter the boolean/blend/shell paths, so
 /// callers must be able to tell the two apart without re-inspecting topology.
-/// Every item here already passed the bridge's finite-bounds gate and one
-/// heal-and-validate pass; invalid roots were dropped before this result.
+/// A surface here is still EXACT B-rep geometry: import keeps the handle as
+/// `Body.surfaceBRep` (rendered from that shape, saved and re-exported to
+/// IGES) instead of flattening it to a mesh. Every item already passed the
+/// bridge's finite-bounds gate and one heal-and-validate pass; invalid roots
+/// were dropped before this result.
 nonisolated struct IGESImport {
     /// Closed solids, one handle per TopAbs_SOLID.
     var solids: [BRepHandle]
@@ -1074,6 +1087,15 @@ nonisolated enum OCCTKernel {
         OCCTBridge.readSTEP(fromPath: url.path).map(BRepHandle.init)
     }
 
+    /// Write exact B-rep shapes (closed solids and/or open shells/faces) to an
+    /// IGES file. This is the product writer used by `IGESKit`; it never
+    /// substitutes a mesh. False if any transfer or the write fails.
+    @discardableResult
+    static func writeIGES(_ handles: [BRepHandle], to url: URL) -> Bool {
+        guard !handles.isEmpty else { return false }
+        return OCCTBridge.writeIGESShapes(handles.map(\.shape), toPath: url.path)
+    }
+
     /// Serialize a solid so the analytic geometry survives a document reload.
     static func serialize(_ handle: BRepHandle) -> Data? {
         OCCTBridge.serializedShape(handle.shape)
@@ -1096,16 +1118,16 @@ nonisolated enum OCCTKernel {
         OCCTBridge.shape(fromSerialized: data).map(BRepHandle.init)
     }
 
-    // MARK: - IGES interchange (spec §12.1 / §12.2, import only)
+    // MARK: - IGES interchange (spec §12.1 / §12.2)
 
     /// Read an IGES payload through OCCT's IGES reader. Solids and non-solid
     /// surfaces come back SEPARATELY (`IGESImport`): IGES routinely carries
     /// only shells or faces, and those are exact geometry but not solids — a
-    /// body built from one must not be marked analytic or fed to boolean /
-    /// fillet / shell. The bridge healed and validated every root; a shape
-    /// that survived here can still fail to tessellate, which callers handle
-    /// per item (see `nativeImportData`). There is no IGES writer anywhere in
-    /// the product, so this type is read-only by design.
+    /// body built from one is kept as `Body.surfaceBRep` and must not be
+    /// marked analytic or fed to boolean / fillet / shell. The bridge healed
+    /// and validated every root; a shape that survived here can still fail to
+    /// tessellate, which callers handle per item (see `nativeImportData`).
+    /// `writeIGES` below is the matching exact writer.
     static func readIGES(_ data: Data) -> IGESImport {
         guard let imported = OCCTBridge.readIGES(from: data) else {
             return IGESImport(solids: [], surfaces: [],
@@ -1251,12 +1273,39 @@ nonisolated extension Body {
     /// operate on the accurate tessellation of the analytic solid instead of a
     /// coarse 48-gon. Returns false (leaving the body untouched) if the solid
     /// fails to tessellate, so callers fall back to the Euclid path.
+    ///
+    /// A body owns at most ONE exact shape: adopting a solid also drops any
+    /// earlier open-surface handle, so a stale sheet can never survive as an
+    /// alternate export source. The clear happens only after tessellation
+    /// succeeds — a refused adoption leaves the prior surface intact.
     @discardableResult
     mutating func adoptBRep(_ handle: BRepHandle) -> Bool {
         let m = OCCTKernel.renderMesh(from: handle)
         guard !m.positions.isEmpty, !m.indices.isEmpty else { return false }
         let mesh = RenderMesh(positions: m.positions, normals: m.normals, indices: m.indices)
+        surfaceBRep = nil
         brep = handle
+        render = mesh
+        edges = FeatureEdgeExtractor.edges(from: mesh)
+        euclid = EuclidBridge.euclidMesh(from: mesh)
+        return true
+    }
+
+    /// Adopt an exact OPEN shell/face (an IGES surface root) as this body's
+    /// source of truth. Deliberately does NOT set `brep`: every solid-only
+    /// path (boolean, fillet, chamfer, shell, draft, STEP export, kernel face/
+    /// edge editing) keys off that field, and an open surface is not a closed
+    /// solid. The exact handle still drives the render mesh, persists through
+    /// the same B-rep blob, and is what IGES export writes back. Returns false
+    /// for a shape that contains a solid, or one that does not tessellate.
+    @discardableResult
+    mutating func adoptSurfaceBRep(_ handle: BRepHandle) -> Bool {
+        guard !handle.containsSolid else { return false }
+        let m = OCCTKernel.renderMesh(from: handle)
+        guard !m.positions.isEmpty, !m.indices.isEmpty else { return false }
+        let mesh = RenderMesh(positions: m.positions, normals: m.normals, indices: m.indices)
+        surfaceBRep = handle
+        brep = nil
         render = mesh
         edges = FeatureEdgeExtractor.edges(from: mesh)
         euclid = EuclidBridge.euclidMesh(from: mesh)

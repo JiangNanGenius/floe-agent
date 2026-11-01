@@ -28,8 +28,8 @@ public extension EnvironmentValues {
 }
 
 /// Minimal FileDocument wrapper so `.fileExporter` can save any export
-/// payload (STL/OBJ/3MF/GLB/DXF/USDZ/PNG); the concrete type travels with
-/// the data.
+/// payload (STL/OBJ/3MF/GLB/DXF/STEP/IGES/USDZ/PNG); the concrete type
+/// travels with the data.
 struct ExportDocument: FileDocument {
     static let stlType = UTType(filenameExtension: "stl") ?? .data
     static let objType = UTType("public.geometry-definition-format")
@@ -49,11 +49,16 @@ struct ExportDocument: FileDocument {
     /// makes Xcode ignore `INFOPLIST_FILE` outright) — its own change.
     static let stepType = UTType("org.iso.step")
         ?? UTType(filenameExtension: "step") ?? .data
+    /// IGES B-rep exchange. Like STEP, iOS declares no stable public UTI for
+    /// IGES, so this can resolve to a dynamic type and is only used to stamp
+    /// an exported file (no picker filter depends on it).
+    static let igesType = UTType("com.iges")
+        ?? UTType(filenameExtension: "iges") ?? .data
     static let usdzType = UTType.usdz
     /// The .os3d project archive (Phase F, spec §13).
     static let os3dType = UTType(filenameExtension: "os3d") ?? .data
     static var readableContentTypes: [UTType] {
-        [stlType, objType, threeMFType, glbType, dxfType, stepType,
+        [stlType, objType, threeMFType, glbType, dxfType, stepType, igesType,
          usdzType, os3dType, .png, .data]
     }
 

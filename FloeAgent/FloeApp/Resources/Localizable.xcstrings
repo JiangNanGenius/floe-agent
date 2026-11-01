@@ -123624,6 +123624,159 @@
           }
         }
       }
+    },
+    "cad.native.import_geometry_solid": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "B-rep solid"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "B-rep 实体"
+          }
+        }
+      }
+    },
+    "cad.native.import_geometry_surface": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "exact open surface"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "精确开放曲面"
+          }
+        }
+      }
+    },
+    "cad.native.import_geometry_mixed": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "solids + open surfaces"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "实体 + 开放曲面"
+          }
+        }
+      }
+    },
+    "cad.native.import_surface_limit": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Open surfaces are exact B-rep bodies: move, rotate, scale, material and IGES re-export work; boolean, fillet and shell need closed solids."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "开放曲面为精确 B-rep 实体：可移动、旋转、缩放、赋材质并重新导出 IGES；布尔、圆角与抽壳需要封闭实体。"
+          }
+        }
+      }
+    },
+    "cad.exactSurface.refused": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ needs a closed solid. This exact open surface was left unchanged; move, rotate, scale, material and IGES export still work."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ 需要封闭实体。此精确开放曲面未更改；仍可移动、旋转、缩放、赋材质和导出 IGES。"
+          }
+        }
+      }
+    },
+    "cad.ui.export.format.iges": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "IGES (exact solids + surfaces)"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "IGES（精确实体 + 曲面）"
+          }
+        }
+      }
+    },
+    "cad.export.reason.openSurfaceStep": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Open surface; STEP export here writes closed solids only."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "开放曲面；此处的 STEP 导出仅写入封闭实体。"
+          }
+        }
+      }
+    },
+    "cad.export.reason.meshOnlyIges": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Mesh-only; IGES export needs an exact solid or surface."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "仅网格；IGES 导出需要精确实体或曲面。"
+          }
+        }
+      }
+    },
+    "cad.export.formatLoss.exactNoMaterials": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Exact geometry only: this file does not keep materials, history, PMI, part names or assembly hierarchy."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "仅保留精确几何：此文件不保留材质、历史、PMI、零件名称或装配层级。"
+          }
+        }
+      }
     }
   },
   "version": "1.0"

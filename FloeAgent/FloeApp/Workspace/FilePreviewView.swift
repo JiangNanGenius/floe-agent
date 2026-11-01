@@ -540,18 +540,41 @@ struct FilePreviewView: View {
                     // parametric history and says so.
                     if proposal.preview.serviceOperation == "document.import",
                        let spec = FloeCAD3DBridge.shared.importSpec(for: proposal.id) {
-                        let isMesh = proposal.preview.serviceMessage?
-                            .localizedCaseInsensitiveContains("mesh") == true
+                        // Use the ACTUAL preview classes, never the file
+                        // extension: an IGES file can carry solids, surfaces
+                        // or both, and a surface body is not a "B-rep solid".
+                        let message = proposal.preview.serviceMessage ?? ""
+                        let isMesh = message.localizedCaseInsensitiveContains("mesh")
+                        let legacySurface = message.contains("IGES surfaces are not solids")
+                        let geometryClass = proposal.preview.importGeometryClass
+                            ?? (isMesh ? "mesh" : legacySurface ? "surface" : "solid")
+                        let geometryLabel: String
+                        switch geometryClass {
+                        case "mesh":
+                            geometryLabel = String(localized: "cad.native.import_geometry_mesh")
+                        case "surface":
+                            geometryLabel = String(localized: "cad.native.import_geometry_surface")
+                        case "mixed":
+                            geometryLabel = String(localized: "cad.native.import_geometry_mixed")
+                        default:
+                            geometryLabel = String(localized: "cad.native.import_geometry_solid")
+                        }
                         Text(String(format: String(localized: "cad.native.import_detail"),
                                     spec.fileName ?? spec.sourceRelativePath,
                                     spec.format.uppercased(),
-                                    isMesh
-                                        ? String(localized: "cad.native.import_geometry_mesh")
-                                        : String(localized: "cad.native.import_geometry_brep"),
+                                    geometryLabel,
                                     proposal.preview.addedBodyNames.count))
                             .font(.caption)
                             .foregroundStyle(.secondary)
                             .accessibilityIdentifier("cad.native.importDetail")
+                        let openSurfaceCount = proposal.preview.importOpenSurfaceBodyCount
+                            ?? (legacySurface ? proposal.preview.addedBodyNames.count : 0)
+                        if openSurfaceCount > 0 {
+                            Text(String(localized: "cad.native.import_surface_limit"))
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                                .accessibilityIdentifier("cad.native.importSurfaceLimit")
+                        }
                     } else {
                         Text("\(proposal.preview.bodyCountBefore) → \(proposal.preview.bodyCountAfter) bodies · "
                              + String(format: "%+.1f mm³", proposal.preview.volumeDeltaMM3))
