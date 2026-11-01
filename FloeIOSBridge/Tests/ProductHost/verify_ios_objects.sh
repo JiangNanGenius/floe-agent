@@ -12,13 +12,13 @@ SWIFTC="$(xcrun --find swiftc)"
 SDK="$(xcrun --sdk iphoneos --show-sdk-path)"
 TARGET="arm64-apple-ios26.0"
 BUILD="${PRODUCT_HOST_IOS_BUILD_DIR:-$ROOT/Local/Scratch/ios-bridge-1.0-20261101/product-host/build/ios-final}"
-IDEVICE="${IDEVICE_HEADERS:-/Users/jiangnangenius/Library/Caches/CodexBuild/FloeIOSBridge/recovery/vendor/IDevice.xcframework/ios-arm64/Headers}"
+IDEVICE="${IDEVICE_HEADERS:-$ROOT/FloeIOSBridge/Frameworks/IDevice.xcframework/ios-arm64/Headers}"
 
 rm -rf "$BUILD"
 mkdir -p "$BUILD"
 
 COMMON=(-swift-version 6 -strict-concurrency=complete -warnings-as-errors
-        -target "$TARGET" -sdk "$SDK")
+        -target "$TARGET" -sdk "$SDK" -O)
 
 CORE_SOURCES=()
 while IFS= read -r file; do CORE_SOURCES+=("$file"); done < <(find "$ROOT/FloeIOSBridge/Sources/BridgeCore" -name '*.swift' | sort)
@@ -44,6 +44,7 @@ echo "== BridgeHost module + Swift object importing BridgeCore =="
   "${HOST_SOURCES[@]}"
 
 echo "== Artifact facts =="
+python3 "$ROOT/FloeIOSBridge/Tests/ProductHost/verify_product_object.py" "$BUILD/BridgeHost.o"
 file "$BUILD/BridgeCore.o" "$BUILD/BridgeHost.o" | tee "$BUILD/objects.txt"
 grep -q 'Mach-O 64-bit object arm64' "$BUILD/objects.txt"
 nm "$BUILD/BridgeHost.o" > "$BUILD/BridgeHost.symbols.txt"

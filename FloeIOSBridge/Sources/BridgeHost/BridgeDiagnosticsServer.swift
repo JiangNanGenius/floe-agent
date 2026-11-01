@@ -1,3 +1,4 @@
+#if BRIDGE_PROTOTYPE
 import Foundation
 import Network
 import BridgeCore
@@ -211,3 +212,5 @@ final class BridgeDiagnosticsServer: @unchecked Sendable {
         })
     }
 }
+
+#endif

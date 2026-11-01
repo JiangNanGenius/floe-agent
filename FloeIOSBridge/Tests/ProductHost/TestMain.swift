@@ -8,6 +8,8 @@ struct ProductTest {
 
 func allProductTests() -> [ProductTest] {
     [
+        ProductTest(name: "productPreferenceAccessNeverTouchesLegacyKeys",
+                    body: productPreferenceAccessNeverTouchesLegacyKeys),
         ProductTest(name: "preferenceMigrationKeepsLegacyDiagnosticsOut",
                     body: preferenceMigrationKeepsLegacyDiagnosticsOut),
         ProductTest(name: "desiredRunningIntentIsIndependentFromAutoRestore",

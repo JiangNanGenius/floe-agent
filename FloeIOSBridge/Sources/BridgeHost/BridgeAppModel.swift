@@ -38,6 +38,7 @@ final class BridgeAppModel: ObservableObject {
             UserDefaults.standard.set(autoStart, forKey: Self.autoStartKey)
         }
     }
+#if BRIDGE_PROTOTYPE
     @Published var lanEnabled: Bool {
         didSet { UserDefaults.standard.set(lanEnabled, forKey: Self.lanEnabledKey) }
     }
@@ -56,6 +57,8 @@ final class BridgeAppModel: ObservableObject {
     @Published private(set) var prototypeToken: String?
     @Published private(set) var lanToken: String?
 
+#endif
+
     // MARK: - Product RPC surface
 
     /// Actual canonical RPC state. It is the single source for listener,
@@ -65,8 +68,7 @@ final class BridgeAppModel: ObservableObject {
     /// checked continuation lives in `approvalGate`.
     @Published private(set) var pendingApproval: BridgeProductPendingApproval?
     @Published private(set) var productListenerError: String?
-    /// Product network preferences are intentionally separate from the legacy
-    /// `lanEnabled` / `controlEnabled` diagnostic preferences.
+    /// Product network preferences never inherit historical diagnostic settings.
     @Published private(set) var productLANEnabled = false
     @Published private(set) var productBonjourEnabled = false
     /// Owner desired-running intent. It is independent of the user's
@@ -86,17 +88,25 @@ final class BridgeAppModel: ObservableObject {
     private var lastTerminalFaultAt: String?
     private var isHandlingAuthenticatedStop = false
 
+#if BRIDGE_PROTOTYPE
     private static let autoStartKey = "org.floeagent.iosbridge.prototype.autostart"
     private static let hasCompletedSetupKey = "org.floeagent.iosbridge.prototype.completed"
     private static let lanEnabledKey = "org.floeagent.iosbridge.prototype.lan"
     private static let controlEnabledKey = "org.floeagent.iosbridge.prototype.control"
+#else
+    private static let autoStartKey = BridgeProductLifecyclePreferences.autoRestoreKey
+    private static let hasCompletedSetupKey = BridgeProductLifecyclePreferences.completedSetupKey
+#endif
 
     let tunnel: BridgeTunnelManager
     let pairing: BridgePairingStore
     let ddiStore: BridgeDDIStore
     let ddiManager: BridgeDDIManager
+#if BRIDGE_PROTOTYPE
     let diagnostics = BridgeDiagnosticsServer()
     let lanControl = BridgeLANControlService()
+#endif
+
     private lazy var coordinator = BridgeCoordinator(
         model: self,
         tunnel: tunnel,
@@ -108,7 +118,9 @@ final class BridgeAppModel: ObservableObject {
     private var didActivate = false
     private var autoStartTask: Task<Void, Never>?
     private var isLoadingInitialAutoStart = false
+#if BRIDGE_PROTOTYPE
     private lazy var hostPoller = BridgeHostCommandPoller(model: self)
+#endif
 
     private init() {
         tunnel = BridgeTunnelManager()
@@ -140,17 +152,21 @@ final class BridgeAppModel: ObservableObject {
         )
         isLoadingInitialAutoStart = false
         desiredRunning = BridgeProductRunIntent.load(from: defaults)
+#if BRIDGE_PROTOTYPE
         lanEnabled = defaults.bool(forKey: Self.lanEnabledKey)
         controlEnabled = defaults.bool(forKey: Self.controlEnabledKey)
+#endif
         let productPreferences = BridgeProductPreferences.load(from: defaults)
         productLANEnabled = productPreferences.lanEnabled
         productBonjourEnabled = productPreferences.bonjourEnabled
         BridgePaths.prepare()
         BridgeLog.shared.configure(url: BridgePaths.hostLogFile)
         BridgeSharedState.shared.publishInitialStatus()
+#if BRIDGE_PROTOTYPE
         if BridgeBuild.prototypeDiagnostics {
             prototypeToken = try? BridgeInstallToken.loadOrCreate(account: BridgeInstallToken.fileChannelAccount)
         }
+#endif
         pairingImported = pairing.isImported
         installProductHandlers()
         try? rpcHost.setLANEnabled(productLANEnabled)
@@ -331,11 +347,13 @@ final class BridgeAppModel: ObservableObject {
         } else {
             BridgeProductRunIntent.markStopped()
         }
+#if BRIDGE_PROTOTYPE
         if BridgeBuild.prototypeDiagnostics, !running {
             // Preserve the legacy prototype's old auto-restore behavior only
             // in the diagnostic build; the product keeps the user preference.
             autoStart = false
         }
+#endif
     }
 
     func activate() {
@@ -347,9 +365,11 @@ final class BridgeAppModel: ObservableObject {
             // Product startup owns no legacy file-command poller, LAN
             // diagnostics port or control listener. Keep the old activation
             // only for the prototype-diagnostics build.
+#if BRIDGE_PROTOTYPE
             if BridgeBuild.prototypeDiagnostics {
                 self.hostPoller.start()
             }
+#endif
             let current = BridgeSharedState.shared.snapshot()
             if BridgeProductRestorationPolicy.shouldRestoreOnLaunch(
                 autoRestore: self.autoStart,
@@ -379,10 +399,12 @@ final class BridgeAppModel: ObservableObject {
                     self.startProduct(trigger: "auto-restore")
                 }
             }
+#if BRIDGE_PROTOTYPE
             if BridgeBuild.prototypeDiagnostics {
                 if self.lanEnabled { self.startLAN() }
                 if self.controlEnabled { self.startControl() }
             }
+#endif
             self.refresh()
         }
     }
@@ -412,10 +434,13 @@ final class BridgeAppModel: ObservableObject {
         ddiDownloadProgress = ddiStore.progress
         ddiStatusText = ddiStore.statusText
         ddiError = ddiStore.lastError
+#if BRIDGE_PROTOTYPE
         controlListening = lanControl.isListening
         controlError = lanControl.lastError
         controlURLs = lanControl.urls
         controlKeyFingerprint = lanControl.keyFingerprint
+#endif
+
         if current.phase == .ready, current.engineRunning, current.engineEntryObserved {
             let defaults = UserDefaults.standard
             defaults.set(true, forKey: Self.hasCompletedSetupKey)
@@ -544,7 +569,11 @@ final class BridgeAppModel: ObservableObject {
     // MARK: - Product owner actions
 
     var hasCompletedSetup: Bool {
+#if BRIDGE_PROTOTYPE
         UserDefaults.standard.bool(forKey: Self.hasCompletedSetupKey)
+#else
+        BridgeProductLifecyclePreferences.completedSetup()
+#endif
     }
 
     /// A first-run or missing-prerequisite route. Existing completed installs
@@ -969,6 +998,7 @@ final class BridgeAppModel: ObservableObject {
         coordinator.stopTunnelOnly()
     }
 
+#if BRIDGE_PROTOTYPE
     func startLAN() {
         if diagnostics.isStarted {
             lanListening = diagnostics.isListening
@@ -1059,6 +1089,8 @@ final class BridgeAppModel: ObservableObject {
         lanControl.fence(reason: reason)
     }
 
+#endif
+
     /// Normal Stop closes the control entrance and clears the owner-armed
     /// preference. A subsequent Start/Resume must be a device-owner action;
     /// an authenticated controller cannot reopen engine work through the old
@@ -1068,6 +1100,7 @@ final class BridgeAppModel: ObservableObject {
         // authenticated RPC). The canonical product entrance must close even
         // when the legacy control service was never started.
         closeProductEntrance(reason: "stop")
+#if BRIDGE_PROTOTYPE
         guard BridgeLANControlArmPolicy.shouldDisarm(
             controlEnabled: controlEnabled,
             serverStarted: lanControl.isStarted,
@@ -1082,8 +1115,10 @@ final class BridgeAppModel: ObservableObject {
         controlURLs = []
         controlError = nil
         BridgeLog.shared.append("lan_control_disarmed reason=stop")
+#endif
     }
 
+#if BRIDGE_PROTOTYPE
     func performAuthenticatedShutdown(identifier: String) {
         performRemoteShutdown(identifier: identifier)
     }
@@ -1179,13 +1214,20 @@ final class BridgeAppModel: ObservableObject {
         )
     }
 
+#endif
+
     private static func storedAutoStart(in defaults: UserDefaults) -> Bool? {
+#if BRIDGE_PROTOTYPE
         defaults.object(forKey: autoStartKey) == nil
             ? nil
             : defaults.bool(forKey: autoStartKey)
+#else
+        BridgeProductLifecyclePreferences.storedAutoRestore(in: defaults)
+#endif
     }
 
     func channelToken() -> String? {
+#if BRIDGE_PROTOTYPE
         // Product builds never create or load the legacy file-command token.
         guard BridgeBuild.prototypeDiagnostics else { return nil }
         if let prototypeToken { return prototypeToken }
@@ -1197,8 +1239,13 @@ final class BridgeAppModel: ObservableObject {
             banner = "Could not read the prototype channel token: \(error.localizedDescription)"
             return nil
         }
+#else
+        // Kept for the historical coordinator API; product owns no file token.
+        return nil
+#endif
     }
 
+#if BRIDGE_PROTOTYPE
     func diagnosticsJSON() -> String {
         String(decoding: BridgeDiagnosticsStatus.buildJSONData(logTail: true), as: UTF8.self)
     }
@@ -1284,6 +1331,8 @@ final class BridgeAppModel: ObservableObject {
     var lanURL: String? {
         diagnostics.listeningURL()
     }
+
+#endif
 
     var activityText: String? {
         if canaryRunning, snapshot.phase == .ready {

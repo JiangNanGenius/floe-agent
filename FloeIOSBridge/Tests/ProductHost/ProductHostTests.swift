@@ -88,6 +88,68 @@ final class MemoryClientStore: BridgeRPCClientStore, @unchecked Sendable {
 
 // MARK: - Preferences / restore
 
+// Test fixtures only. Product code must never contain or read these keys.
+private let legacyLANKey = "org.floeagent.iosbridge.prototype.lan"
+private let legacyControlKey = "org.floeagent.iosbridge.prototype.control"
+
+/// Records actual preference accesses, so a false result cannot hide a read
+/// of a historical credential/listener preference.
+final class RecordingProductDefaults: UserDefaults, @unchecked Sendable {
+    var reads: [String] = []
+    var writes: [String] = []
+    var values: [String: Bool] = [:]
+
+    override func object(forKey defaultName: String) -> Any? {
+        reads.append(defaultName)
+        return values[defaultName]
+    }
+
+    override func bool(forKey defaultName: String) -> Bool {
+        reads.append(defaultName)
+        return values[defaultName] ?? false
+    }
+
+    override func set(_ value: Bool, forKey defaultName: String) {
+        writes.append(defaultName)
+        values[defaultName] = value
+    }
+}
+
+@MainActor
+func productPreferenceAccessNeverTouchesLegacyKeys() async throws {
+    let defaults = RecordingProductDefaults()
+    defaults.values = [
+        legacyLANKey: true,
+        legacyControlKey: true,
+        "org.floeagent.iosbridge.prototype.autostart": true,
+        "org.floeagent.iosbridge.prototype.completed": true,
+    ]
+    let network = BridgeProductPreferences.load(from: defaults)
+    let autoRestore = BridgeProductLifecyclePreferences.storedAutoRestore(in: defaults)
+    let completed = BridgeProductLifecyclePreferences.completedSetup(in: defaults)
+    let desired = BridgeProductRunIntent.load(from: defaults)
+    try expect(!network.lanEnabled && !network.bonjourEnabled,
+               "historical listeners cannot enable product listeners")
+    try expect(autoRestore == nil && !completed && !desired,
+               "historical lifecycle settings cannot auto-start a fresh product")
+    try expect(!defaults.reads.contains { $0.contains(".prototype.") },
+               "product initialization must not even read historical settings")
+    try expect(defaults.writes.isEmpty, "loading must not create preferences")
+
+    defaults.values[BridgeProductLifecyclePreferences.autoRestoreKey] = false
+    defaults.values[BridgeProductLifecyclePreferences.completedSetupKey] = true
+    try expectEqual(BridgeProductLifecyclePreferences.storedAutoRestore(in: defaults),
+                    false, "explicit product auto-restore choice survives")
+    try expect(BridgeProductLifecyclePreferences.completedSetup(in: defaults),
+               "product setup completion remains usable")
+    BridgeProductRunIntent.markRunning(in: defaults)
+    BridgeProductPreferences.saveLAN(true, to: defaults)
+    BridgeProductPreferences.saveBonjour(true, to: defaults)
+    try expect(BridgeProductRunIntent.load(from: defaults), "product run intent persists")
+    try expect(!defaults.writes.contains { $0.contains(".prototype.") },
+               "product writes stay in product preferences")
+}
+
 @MainActor
 func preferenceMigrationKeepsLegacyDiagnosticsOut() async throws {
     let name = "org.floeagent.iosbridge.product.tests." + UUID().uuidString
@@ -96,13 +158,13 @@ func preferenceMigrationKeepsLegacyDiagnosticsOut() async throws {
     }
     defer { defaults.removePersistentDomain(forName: name) }
 
-    defaults.set(true, forKey: BridgeProductPreferences.legacyLANKey)
-    defaults.set(true, forKey: BridgeProductPreferences.legacyControlKey)
+    defaults.set(true, forKey: legacyLANKey)
+    defaults.set(true, forKey: legacyControlKey)
     let migrated = BridgeProductPreferences.load(from: defaults)
     try expectEqual(migrated.lanEnabled, false, "legacy LAN must not become product LAN")
     try expectEqual(migrated.bonjourEnabled, false, "legacy control must not become Bonjour")
-    try expect(BridgeProductPreferences.legacyDiagnosticsWereEnabled(in: defaults),
-               "legacy keys should still be observable")
+    try expect(defaults.bool(forKey: legacyLANKey) && defaults.bool(forKey: legacyControlKey),
+               "product loading must preserve historical preferences untouched")
 
     defaults.set(true, forKey: BridgeProductPreferences.lanKey)
     defaults.set(true, forKey: BridgeProductPreferences.bonjourKey)
@@ -115,7 +177,7 @@ func preferenceMigrationKeepsLegacyDiagnosticsOut() async throws {
 
     // A missing new key stays off even when the legacy values were true.
     defaults.removePersistentDomain(forName: name)
-    defaults.set(true, forKey: BridgeProductPreferences.legacyLANKey)
+    defaults.set(true, forKey: legacyLANKey)
     let absent = BridgeProductPreferences.load(from: defaults)
     try expect(!absent.lanEnabled && !absent.bonjourEnabled,
                "absent product keys default off")
@@ -131,8 +193,8 @@ func desiredRunningIntentIsIndependentFromAutoRestore() async throws {
 
     try expect(!BridgeProductRunIntent.load(from: defaults),
                "a fresh product install has no desired-running intent")
-    defaults.set(true, forKey: BridgeProductPreferences.legacyLANKey)
-    defaults.set(true, forKey: BridgeProductPreferences.legacyControlKey)
+    defaults.set(true, forKey: legacyLANKey)
+    defaults.set(true, forKey: legacyControlKey)
     try expect(!BridgeProductRunIntent.load(from: defaults),
                "legacy LAN/control true never becomes a desired run")
 

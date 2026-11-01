@@ -1,3 +1,4 @@
+#if BRIDGE_PROTOTYPE
 import Foundation
 import BridgeCore
 
@@ -277,3 +278,5 @@ enum BridgeNetworkInfo {
         return output
     }
 }
+
+#endif

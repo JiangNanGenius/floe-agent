@@ -1,3 +1,4 @@
+#if BRIDGE_PROTOTYPE
 import Foundation
 import BridgeCore
 
@@ -569,3 +570,5 @@ final class BridgeLANControlService {
         }
     }
 }
+
+#endif

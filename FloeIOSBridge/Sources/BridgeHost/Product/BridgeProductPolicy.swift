@@ -31,11 +31,6 @@ enum BridgeProductPreferences {
     static let lanKey = "org.floeagent.iosbridge.product.lan"
     static let bonjourKey = "org.floeagent.iosbridge.product.bonjour"
 
-    /// Legacy diagnostic keys. They are read only to prove the product never
-    /// inherits them; the values do not feed product activation.
-    static let legacyLANKey = "org.floeagent.iosbridge.prototype.lan"
-    static let legacyControlKey = "org.floeagent.iosbridge.prototype.control"
-
     static func load(from defaults: UserDefaults = .standard) -> BridgeProductPreferenceValues {
         let storedLAN = defaults.object(forKey: lanKey) == nil
             ? false
@@ -58,12 +53,22 @@ enum BridgeProductPreferences {
     static func saveBonjour(_ enabled: Bool, to defaults: UserDefaults = .standard) {
         defaults.set(enabled, forKey: bonjourKey)
     }
+}
 
-    /// True when the old prototype build had either diagnostic listener
-    /// enabled. Product code may show that the old values exist, but it must
-    /// never copy them into the product state.
-    static func legacyDiagnosticsWereEnabled(in defaults: UserDefaults = .standard) -> Bool {
-        defaults.bool(forKey: legacyLANKey) || defaults.bool(forKey: legacyControlKey)
+/// Product-only lifecycle preferences. Historical diagnostic builds cannot
+/// enable restoration or claim setup completion in a new product install.
+enum BridgeProductLifecyclePreferences {
+    static let autoRestoreKey = "org.floeagent.iosbridge.product.auto-restore"
+    static let completedSetupKey = "org.floeagent.iosbridge.product.completed-setup"
+
+    static func storedAutoRestore(in defaults: UserDefaults = .standard) -> Bool? {
+        defaults.object(forKey: autoRestoreKey) == nil
+            ? nil
+            : defaults.bool(forKey: autoRestoreKey)
+    }
+
+    static func completedSetup(in defaults: UserDefaults = .standard) -> Bool {
+        defaults.bool(forKey: completedSetupKey)
     }
 }
 
