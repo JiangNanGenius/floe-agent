@@ -211,6 +211,7 @@ internal class MediaExportEngine(
                 codecMime = plan.codecMime,
                 expectAudio = expectAudio,
                 maxBytes = MediaCapabilityProbe.MAX_OUTPUT_BYTES,
+                expectedHdr = plan.hdr,
             )
             if (job.cancelRequested.get()) {
                 throw refusal(RENDER_CANCELLED, "Export was cancelled")

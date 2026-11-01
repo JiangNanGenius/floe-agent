@@ -35,6 +35,7 @@ internal object VideoVerifier {
         codecMime: String,
         expectAudio: Boolean,
         maxBytes: Long,
+        expectedHdr: HdrPlan? = null,
     ): VerifiedOutput {
         if (!file.isFile || file.length() <= 0L || file.length() > maxBytes) {
             throw refusal(RENDERER_UNAVAILABLE, "Exported file size is invalid")
@@ -73,6 +74,9 @@ internal object VideoVerifier {
             val audioTracks = countAudioTracks(file)
             if (expectAudio && audioTracks <= 0) {
                 throw refusal(RENDER_UNSUPPORTED, "Expected audio is missing from the export")
+            }
+            if (expectedHdr != null && expectedHdr.isHdr) {
+                HdrRenderSupport.verifyOutput(file, expectedHdr)
             }
             val frame = try {
                 retriever.getFrameAtTime(0L, MediaMetadataRetriever.OPTION_CLOSEST_SYNC)

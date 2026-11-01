@@ -58,7 +58,7 @@ internal class Media3VideoExporter(
         onProgress: (Double) -> Unit,
     ) {
         if (control.cancelRequested) throw refusal(RENDER_CANCELLED, "Export was cancelled")
-        val composition = Media3CompositionFactory.build(plan)
+        val composition = Media3CompositionFactory.build(plan, isCancelled = { control.cancelRequested })
         val done = CompletableDeferred<ExportOutcome>()
         val fallbackApplied = AtomicBoolean(false)
         val listener = object : Transformer.Listener {
@@ -130,7 +130,6 @@ internal class Media3VideoExporter(
             try {
                 when (val outcome = done.await()) {
                     ExportOutcome.Completed -> {
-                        completedNormally = true
                         if (fallbackApplied.get()) {
                             throw refusal(
                                 RENDER_UNSUPPORTED,
@@ -141,6 +140,25 @@ internal class Media3VideoExporter(
                         if (!output.isFile || output.length() <= 0L) {
                             throw refusal(RENDERER_UNAVAILABLE, "The encoder produced no output file")
                         }
+                        // Media3's in-app muxer writes a non-standard SmDm box
+                        // for HDR static metadata. Preserve the exact CTA-861.3
+                        // payload with the platform muxer (samples unchanged)
+                        // and reject the export if the boxes did not survive.
+                        HdrRenderSupport.preserveIfNeeded(
+                            hdr = plan.hdr,
+                            output = output,
+                            isCancelled = { control.cancelRequested },
+                        )
+                        if (control.cancelRequested) {
+                            throw refusal(RENDER_CANCELLED, "Export was cancelled")
+                        }
+                        if (!output.isFile || output.length() <= 0L) {
+                            throw refusal(
+                                RENDERER_UNAVAILABLE,
+                                "The encoded HDR output is empty after metadata preservation",
+                            )
+                        }
+                        completedNormally = true
                     }
 
                     ExportOutcome.Cancelled -> throw refusal(RENDER_CANCELLED, "Export was cancelled")

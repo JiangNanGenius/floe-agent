@@ -20,6 +20,12 @@ internal data class ProbedMedia(
     val rotationDegrees: Double,
     val hasVideo: Boolean,
     val hasAudio: Boolean,
+    val colorStandard: Int? = null,
+    val colorTransfer: Int? = null,
+    val colorRange: Int? = null,
+    val hdrStaticInfo: ByteArray? = null,
+    val codecProfile: Int? = null,
+    val dynamicHdrMetadataPresent: Boolean = false,
 ) {
     val displayWidth: Int get() = if (rotationDegrees.toInt() % 180 == 90) height else width
     val displayHeight: Int get() = if (rotationDegrees.toInt() % 180 == 90) width else height
@@ -90,9 +96,13 @@ internal object AssetProbe {
             } else {
                 captureFps
             }
+            val color = HdrRenderSupport.readTrackColor(file)
+                ?: throw refusal(UNSUPPORTED_SOURCE_FORMAT, "The video track format could not be read")
             return ProbedMedia(
                 kind = "video",
-                mimeType = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_MIMETYPE),
+                // Decoder matching needs the elementary track codec, not the
+                // container MIME (for example video/avc instead of video/mp4).
+                mimeType = color.mimeType,
                 byteCount = file.length(),
                 width = width,
                 height = height,
@@ -102,6 +112,12 @@ internal object AssetProbe {
                 rotationDegrees = rotation,
                 hasVideo = true,
                 hasAudio = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_HAS_AUDIO) == "yes",
+                colorStandard = color.colorStandard,
+                colorTransfer = color.colorTransfer,
+                colorRange = color.colorRange,
+                hdrStaticInfo = color.hdrStaticInfo,
+                codecProfile = color.codecProfile,
+                dynamicHdrMetadataPresent = color.dynamicHdrMetadataPresent,
             )
         } catch (failure: Exception) {
             if (failure is com.floe.android.core.workbenchmedia.util.MediaRefusal) throw failure
@@ -127,7 +143,7 @@ internal object AssetProbe {
                 ?.toLongOrNull()?.takeIf { it > 0 }?.div(1000.0)
             return ProbedMedia(
                 kind = "audio",
-                mimeType = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_MIMETYPE),
+                mimeType = trackMime(file, "audio/"),
                 byteCount = file.length(),
                 width = 0,
                 height = 0,
@@ -147,6 +163,21 @@ internal object AssetProbe {
             } catch (_: Exception) {
                 // best effort
             }
+        }
+    }
+
+    private fun trackMime(file: File, prefix: String): String {
+        val extractor = MediaExtractor()
+        try {
+            extractor.setDataSource(file.path)
+            for (index in 0 until extractor.trackCount) {
+                val mime = extractor.getTrackFormat(index)
+                    .getString(android.media.MediaFormat.KEY_MIME)
+                if (mime?.startsWith(prefix) == true) return mime
+            }
+            throw refusal(UNSUPPORTED_SOURCE_FORMAT, "The media track format could not be read")
+        } finally {
+            runCatching { extractor.release() }
         }
     }
 

@@ -226,7 +226,10 @@ internal class Media3PlaybackHandle(
             )
             val builtPlan = planner.planForPlayback(snapshot)
             durationSeconds = builtPlan.durationSeconds
-            val composition = Media3CompositionFactory.build(builtPlan)
+            val composition = Media3CompositionFactory.build(
+                builtPlan,
+                isCancelled = { closed.get() },
+            )
             val current = player ?: return
             runOnMain {
                 if (closed.get()) return@runOnMain

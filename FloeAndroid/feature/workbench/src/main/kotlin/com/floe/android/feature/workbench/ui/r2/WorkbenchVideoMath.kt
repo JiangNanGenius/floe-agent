@@ -184,7 +184,12 @@ object WorkbenchVideoMath {
         }
     }
 
-    /** True when the timeline contains an edit the actual renderer refuses. */
+    /**
+     * True when the timeline contains a cross dissolve. The caller must combine
+     * this with the live `RenderCapabilities.crossDissolveSupported` flag: the
+     * Media3 two-sequence compositor renders SDR dissolves, while an HDR
+     * timeline with a dissolve is refused by the planner to avoid tone mapping.
+     */
     fun hasCrossDissolve(timeline: VideoTimeline): Boolean =
         timeline.clips.any {
             it.leadingTransition ==

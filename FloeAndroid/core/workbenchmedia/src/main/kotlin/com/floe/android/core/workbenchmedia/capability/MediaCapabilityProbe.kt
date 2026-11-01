@@ -16,10 +16,9 @@ import kotlin.math.min
  * Actual platform/engine capability probe. It never promises a universal
  * codec and never reports an encoder that `MediaCodecList` did not expose.
  *
- * Cross-dissolve is explicitly false: the pinned Media3 1.11.1 Transformer has
- * no tested transition compositor, and a hard cut must not be substituted.
- * HEIC is explicitly false in this source stage: the platform writer path is
- * not implemented/qualified, so PNG/JPEG are the only offered image formats.
+ * This hardware probe alone does not bind composition or image writers.
+ * Media3WorkbenchMediaPlatform adds its actual GL compositor and HeifWriter
+ * capability checks before exposing the combined rendering surface.
  */
 internal class MediaCapabilityProbe(
     private val clock: MediaClock,
@@ -205,7 +204,7 @@ internal class MediaCapabilityProbe(
             reasons["codec.videoEncoder"] = "The device exposed no video encoder"
         }
         reasons["image.heic"] = "HEIC export is not implemented in this source stage; PNG/JPEG are the offered image outputs"
-        reasons["transition.crossDissolve"] = "The pinned Media3 1.11.1 Transformer has no tested cross-dissolve compositor"
+        reasons["transition.crossDissolve"] = "Cross dissolve requires the bound Media3 composition adapter"
 
         val result = RenderCapabilities(
             encoders = encoders.values.toList(),

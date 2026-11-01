@@ -395,6 +395,7 @@ internal class MediaRenderTicketService(
                 plan.codecMime,
                 expectAudio,
                 MediaCapabilityProbe.MAX_OUTPUT_BYTES,
+                expectedHdr = plan.hdr,
             )
             if (job.control.cancelRequested) {
                 return TicketOutcome.Failed(RenderTicketReplyStatus.CANCELLED, RENDER_CANCELLED)

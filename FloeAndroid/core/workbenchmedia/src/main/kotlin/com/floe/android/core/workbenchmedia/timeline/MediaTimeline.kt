@@ -39,10 +39,9 @@ data class DissolveWindow(
  * Pure functions only: no player, no encoder, no wall clock. The same
  * placements drive playback planning, export and verification expectations.
  *
- * Cross-dissolve placement is preserved so a hostile/legacy project cannot
- * silently become a hard cut during planning; the platform separately REFUSES
- * cross-dissolve rendering because the pinned Media3 1.11.1 Transformer has no
- * tested transition compositor.
+ * Cross-dissolve placements also drive the shared preview/export composition.
+ * Unsupported HDR or multi-clip overlap cases are refused by the planner;
+ * a transition is never silently replaced with a hard cut.
  */
 object MediaTimeline {
     const val MIN_DURATION = 0.0001

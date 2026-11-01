@@ -395,4 +395,5 @@
     <string name="media_image_sdr_export_boundary">Image exports use 8-bit SDR. Convert HDR or higher-bit-depth sources to SDR separately first.</string>
     <string name="media_image_preserve_transparency">Preserve transparency</string>
     <string name="media_image_heic_alpha_boundary">HEIC cannot preserve transparency. Turn off Preserve transparency to flatten transparent pixels.</string>
+    <string name="media_video_hdr_export_boundary">HDR export supports static HDR10/HLG metadata. Dynamic HDR retention is unsupported; keep the original or explicitly convert a separate copy.</string>
 </resources>

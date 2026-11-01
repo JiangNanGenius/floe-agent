@@ -3,6 +3,7 @@ package com.floe.android.core.workbenchmedia.video
 
 import com.floe.android.core.workbenchmedia.capability.MediaCapabilityProbe
 import com.floe.android.core.workbenchmedia.snapshot.VerifiedSnapshot
+import com.floe.android.core.workbenchmedia.timeline.DissolveWindow
 import com.floe.android.core.workbenchmedia.timeline.MediaTimeline
 import com.floe.android.core.workbenchmedia.timeline.PlacedClip
 import com.floe.android.core.workbenchmedia.util.INVALID_PAYLOAD
@@ -33,6 +34,7 @@ internal data class PlannedClip(
     val asset: MediaAssetReference,
     val file: File,
     val probe: ProbedMedia,
+    val color: SourceVideoColor,
 )
 
 internal data class PlannedMusic(
@@ -51,6 +53,9 @@ internal data class CompositionPlan(
     val snapshot: VerifiedSnapshot,
     val clips: List<PlannedClip>,
     val music: List<PlannedMusic>,
+    val dissolves: List<DissolveWindow>,
+    val layout: CompositionLayout,
+    val hdr: HdrPlan,
     val captions: List<CaptionSegment>,
     val captionStyle: CaptionStyle,
     val durationSeconds: Double,
@@ -130,12 +135,6 @@ internal class CompositionPlanner(private val capabilities: MediaCapabilityProbe
                 )
             }
         }
-        if (timeline.clips.any { it.leadingTransition == VideoTransitionKind.CROSS_DISSOLVE }) {
-            throw refusal(
-                UNSUPPORTED_TRANSITION,
-                "Cross-dissolve has no tested compositor in the pinned Media3 Transformer; no hard-cut substitution is made",
-            )
-        }
 
         val placed = MediaTimeline.placeClips(timeline.clips)
         val fullDuration = MediaTimeline.placedDuration(placed)
@@ -145,6 +144,8 @@ internal class CompositionPlanner(private val capabilities: MediaCapabilityProbe
         if (fullDuration > MediaCapabilityProbe.MAX_DURATION_SECONDS) {
             throw refusal(RENDER_UNSUPPORTED, "The timeline exceeds the 3600 s export limit")
         }
+        val dissolves = MediaTimeline.dissolveWindows(placed)
+        validateDissolves(placed, dissolves)
 
         val plannedClips = ArrayList<PlannedClip>(placed.size)
         val warnings = ArrayList<String>()
@@ -185,7 +186,22 @@ internal class CompositionPlanner(private val capabilities: MediaCapabilityProbe
                     "The source decoder does not support ${decodedW}x$decodedH",
                 )
             }
-            plannedClips += PlannedClip(item, item.clip, asset, file, probe)
+            plannedClips += PlannedClip(
+                placed = item,
+                clip = item.clip,
+                asset = asset,
+                file = file,
+                probe = probe,
+                color = SourceVideoColor(
+                    colorStandard = probe.colorStandard,
+                    colorTransfer = probe.colorTransfer,
+                    colorRange = probe.colorRange,
+                    hdrStaticInfo = probe.hdrStaticInfo,
+                    mimeType = probe.mimeType,
+                    codecProfile = probe.codecProfile,
+                    dynamicHdrMetadataPresent = probe.dynamicHdrMetadataPresent,
+                ),
+            )
         }
 
         val hasAudiblePrimary = plannedClips.any { it.probe.hasAudio && !it.clip.isMuted && it.clip.volume > 0.0 } &&
@@ -214,12 +230,29 @@ internal class CompositionPlanner(private val capabilities: MediaCapabilityProbe
             }
         }
 
+        val hdr = HdrSourcePolicy.plan(plannedClips.map { it.color }, dissolves.isNotEmpty())
+        if (hdr.isHdr && validateEncoding) {
+            HdrRenderSupport.validateEncoder(settings, hdr)
+        }
+        if (dissolves.isNotEmpty() && !hdr.isHdr) {
+            validateSdrColorCompatibility(plannedClips)
+        }
+        val layout = CompositionLayoutMath.layout(
+            plannedClips.map {
+                LayoutInput(it.clip.id, it.placed.timelineStart, it.placed.timelineEnd)
+            },
+            dissolves,
+        )
+
         validateCaptions(timeline, fullDuration)
         val cover = MediaTimeline.coverTime(timeline.coverTime, fullDuration)
         val base = CompositionPlan(
             snapshot = snapshot,
             clips = plannedClips,
             music = plannedMusic,
+            dissolves = dissolves,
+            layout = layout,
+            hdr = hdr,
             captions = timeline.captions,
             captionStyle = timeline.captionStyle,
             durationSeconds = fullDuration,
@@ -234,6 +267,53 @@ internal class CompositionPlanner(private val capabilities: MediaCapabilityProbe
             warnings = warnings,
         )
         return if (window == null) base else windowed(base, window)
+    }
+
+    private fun validateSdrColorCompatibility(clips: List<PlannedClip>) {
+        val known = clips.map { it.color }.filter {
+            it.colorStandard != null && it.colorTransfer != null && it.colorRange != null
+        }
+        // The Media3 compositor requires equal decoder ColorInfos. If every
+        // source declares its SDR color metadata, refuse an incompatible mix
+        // before opening an encoder; if some are unknown, the engine remains
+        // the authority and reports a real frame-processing failure.
+        if (known.size != clips.size) return
+        val first = known.first()
+        if (known.any {
+                it.colorStandard != first.colorStandard ||
+                    it.colorTransfer != first.colorTransfer ||
+                    it.colorRange != first.colorRange
+            }
+        ) {
+            throw refusal(
+                UNSUPPORTED_TRANSITION,
+                "The clips joined by this cross dissolve use different SDR color metadata; " +
+                    "the Media3 compositor requires one color pipeline. Convert them to a common SDR color space first",
+            )
+        }
+    }
+
+    private fun validateDissolves(
+        placed: List<PlacedClip>,
+        windows: List<DissolveWindow>,
+    ) {
+        val byIncoming = windows.associateBy { it.toClipID }
+        for ((index, item) in placed.withIndex()) {
+            if (index == 0 || item.clip.leadingTransition != VideoTransitionKind.CROSS_DISSOLVE) continue
+            val window = byIncoming[item.clip.id]
+                ?: throw refusal(
+                    UNSUPPORTED_TRANSITION,
+                    "Clip ${item.clip.id} requests a cross dissolve but has no usable overlap; " +
+                        "a hard-cut substitution is not made",
+                )
+            if (window.duration <= 0.05) {
+                throw refusal(
+                    UNSUPPORTED_TRANSITION,
+                    "The cross dissolve for clip ${item.clip.id} is shorter than 0.05 s; " +
+                        "a hard-cut substitution is not made",
+                )
+            }
+        }
     }
 
     private fun planMusic(
@@ -330,6 +410,11 @@ internal class CompositionPlanner(private val capabilities: MediaCapabilityProbe
         if (clip.volume < 0.0 || clip.volume > 4.0) {
             throw refusal(INVALID_PAYLOAD, "Clip volume must be 0..4")
         }
+        if (clip.leadingTransition == VideoTransitionKind.CROSS_DISSOLVE &&
+            (clip.transitionDuration <= 0.05 || clip.transitionDuration > 2.0)
+        ) {
+            throw refusal(INVALID_PAYLOAD, "A cross dissolve must be within 0.05..2 s")
+        }
         clip.crop?.let { crop ->
             if (!crop.x.isFinite() || !crop.y.isFinite() || !crop.width.isFinite() || !crop.height.isFinite() ||
                 crop.x < 0.0 || crop.y < 0.0 || crop.width <= 0.0 || crop.height <= 0.0 ||
@@ -357,8 +442,8 @@ internal class CompositionPlanner(private val capabilities: MediaCapabilityProbe
     /**
      * Playback plan: same clips/music/captions mapping, but no encoder/bitrate
      * or output-fps promise (CompositionPlayer plays the source cadence). The
-     * canvas dimensions still drive aspect-fit; source decode validity and
-     * the cross-dissolve refusal still apply.
+     * canvas dimensions still drive aspect-fit and source decode validity; the
+     * same composition layout/alpha and HDR policy as export are applied.
      */
     fun planForPlayback(snapshot: VerifiedSnapshot): CompositionPlan {
         val canvas = snapshot.projection.project.canvas
@@ -382,13 +467,18 @@ internal class CompositionPlanner(private val capabilities: MediaCapabilityProbe
         }
         val start = max(0.0, window.startSeconds)
         val end = min(plan.durationSeconds, start + window.durationSeconds)
-        if (end - start <= 0.05) throw refusal(INVALID_PAYLOAD, "Preview window is outside the timeline")
+        val localDuration = end - start
+        if (localDuration <= 0.05) throw refusal(INVALID_PAYLOAD, "Preview window is outside the timeline")
         val clips = plan.clips.mapNotNull { planned ->
             val left = max(planned.placed.timelineStart, start)
             val right = min(planned.placed.timelineEnd, end)
             if (right - left <= 0.01) return@mapNotNull null
-            val sourceStart = planned.clip.trimStart + (left - planned.placed.timelineStart) * planned.clip.speed
-            val sourceEnd = planned.clip.trimStart + (right - planned.placed.timelineStart) * planned.clip.speed
+            val sourceStart = (planned.clip.trimStart +
+                (left - planned.placed.timelineStart) * planned.clip.speed)
+                .coerceIn(planned.clip.trimStart, planned.clip.trimEnd)
+            val sourceEnd = (planned.clip.trimStart +
+                (right - planned.placed.timelineStart) * planned.clip.speed)
+                .coerceIn(sourceStart, planned.clip.trimEnd)
             val clip = planned.clip.copy(
                 trimStart = sourceStart,
                 trimEnd = sourceEnd,
@@ -400,6 +490,22 @@ internal class CompositionPlanner(private val capabilities: MediaCapabilityProbe
             )
         }
         if (clips.isEmpty()) throw refusal(INVALID_PAYLOAD, "Preview window selects no clips")
+        val includedIDs = clips.mapTo(HashSet()) { it.clip.id }
+        val dissolves = plan.dissolves.mapNotNull { dissolve ->
+            if (dissolve.fromClipID !in includedIDs || dissolve.toClipID !in includedIDs) {
+                return@mapNotNull null
+            }
+            val localStart = dissolve.start - start
+            val localEnd = dissolve.end - start
+            if (min(localEnd, localDuration) - max(localStart, 0.0) <= 0.01) {
+                return@mapNotNull null
+            }
+            dissolve.copy(start = localStart, end = localEnd)
+        }
+        val layout = CompositionLayoutMath.layout(
+            clips.map { LayoutInput(it.clip.id, it.placed.timelineStart, it.placed.timelineEnd) },
+            dissolves,
+        )
         val music = plan.music.mapNotNull { planned ->
             val left = max(planned.offsetSeconds, start)
             val right = min(planned.offsetSeconds + planned.lengthSeconds, end)
@@ -423,8 +529,10 @@ internal class CompositionPlanner(private val capabilities: MediaCapabilityProbe
         return plan.copy(
             clips = clips,
             music = music,
+            dissolves = dissolves,
+            layout = layout,
             captions = captions,
-            durationSeconds = end - start,
+            durationSeconds = localDuration,
             window = window,
             coverTimeSeconds = cover,
         )

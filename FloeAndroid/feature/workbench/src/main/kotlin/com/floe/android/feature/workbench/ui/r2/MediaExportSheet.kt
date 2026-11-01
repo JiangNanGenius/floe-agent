@@ -251,6 +251,12 @@ private fun VideoExportForm(
 
     SectionTitle(stringResource(R.string.media_r2_video_export))
     FloeText(
+        stringResource(R.string.media_video_hdr_export_boundary),
+        style = Floe.typography.metadata,
+        color = Floe.colors.tertiaryLabel,
+        modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp),
+    )
+    FloeText(
         stringResource(R.string.media_r2_codec),
         style = Floe.typography.metadata,
         color = Floe.colors.secondaryLabel,

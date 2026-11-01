@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 package com.floe.android.core.workbenchmedia
 
+import android.app.ActivityManager
 import android.content.Context
 import android.graphics.BitmapFactory
 import com.floe.android.core.workbenchmedia.MediaLifecycleKind
@@ -76,9 +77,24 @@ internal class Media3WorkbenchMediaPlatform(
         } else {
             reasons["image.heic"] = heic.reason ?: "HEIC encoder is unavailable"
         }
+        // Cross-dissolve is a real two-sequence Media3 compositor path, not a
+        // capability flag: the same Composition object drives preview and
+        // export. It needs a working OpenGL ES 2.0 context. HDR timelines with
+        // a dissolve are still refused by the planner (the compositor rejects
+        // HDR input), so this flag only claims the SDR compositor.
+        val activityManager = context.getSystemService(Context.ACTIVITY_SERVICE) as? ActivityManager
+        val glEsVersion = activityManager?.deviceConfigurationInfo?.reqGlEsVersion ?: 0
+        val compositorAvailable = glEsVersion >= 0x20000
+        if (compositorAvailable) {
+            reasons.remove("transition.crossDissolve")
+        } else {
+            reasons["transition.crossDissolve"] =
+                "The device does not expose the OpenGL ES 2.0 compositor required for cross dissolve"
+        }
         return base.copy(
             imageFormats = formats,
             heicSupported = heic.supported,
+            crossDissolveSupported = compositorAvailable,
             unavailableReasons = reasons,
         )
     }
