@@ -1630,7 +1630,7 @@ final class CADMaterialPresentRenderWitnessTests: XCTestCase {
         }
 
         var topLandmarks: [FaceLandmark] {
-            let fractions: [(Float, Float)] = [(0.2, 0.2), (0.5, 0.5), (0.8, 0.8)]
+            let fractions: [(Float, Float)] = [(1.0 / 3.0, 1.0 / 3.0), (0.5, 0.5), (0.8, 0.8)]
             return fractions.enumerated().map { index, fraction in
                 let x = boundsMin.x + (boundsMax.x - boundsMin.x) * fraction.0
                 let z = boundsMin.z + (boundsMax.z - boundsMin.z) * fraction.1
