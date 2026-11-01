@@ -6,6 +6,17 @@ import ScreenCaptureKit
 import CryptoKit
 import FloeMacBridgeProtocol
 
+/// Capability names advertised by the authenticated `ping` response. A client
+/// must see `sensitiveEnvironmentV1` before it sends any per-process secret;
+/// an older companion keeps its old list and receives no sensitive values.
+enum BridgeCapabilityCatalog {
+    static let all: [String] = [
+        "terminal", "pty", "files", "mcp", "originalSkills",
+        "screenCapture", "accessibility",
+        BridgeSensitiveEnvironment.capability,
+    ]
+}
+
 struct BridgeCleanupItem: Identifiable, Sendable {
     let category: String
     let itemID: String
@@ -16,6 +27,15 @@ struct BridgeCleanupItem: Identifiable, Sendable {
 }
 
 extension BridgeService {
+    /// Single source for the authenticated `ping` capability list.
+    func advertisedCapabilities() -> [String] { BridgeCapabilityCatalog.all }
+
+    /// Exact typed decoding of the additive start field. Missing means an
+    /// ordinary command; a malformed field fails before any child exists.
+    func sensitiveEnvironmentNames(from payload: [String: BridgeValue]) throws -> [String] {
+        try BridgeSensitiveEnvironment.names(from: payload["sensitiveEnvironmentNames"])
+    }
+
     func cleanupItems() async throws -> [BridgeCleanupItem] {
         let active = await jobs.activeTaskIDs()
         var result: [BridgeCleanupItem] = []

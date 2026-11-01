@@ -11,28 +11,57 @@ final class BridgeJob: @unchecked Sendable {
     let output: URL
     let pid: pid_t
     let master: Int32
+    /// Exact marked values only; nil for an ordinary job. Used on the single
+    /// drain reader before any bytes reach output.bin.
+    let redactor: BridgeSensitiveRedactor?
     private let lock = NSLock()
     private var finished: Int32?
     private var written: Int64 = 0
     private var inputBytes: Int64 = 0
-    init(id: String, clientID: String, workspaceID: String, output: URL, pid: pid_t, master: Int32) {
+    init(
+        id: String,
+        clientID: String,
+        workspaceID: String,
+        output: URL,
+        pid: pid_t,
+        master: Int32,
+        redactor: BridgeSensitiveRedactor?
+    ) {
         self.id = id; self.clientID = clientID; self.workspaceID = workspaceID
         self.output = output; self.pid = pid; self.master = master
+        self.redactor = redactor
     }
     func status() -> (code: Int32?, bytes: Int64, input: Int64) { lock.withLock { (finished, written, inputBytes) } }
     func drain() {
         DispatchQueue.global(qos: .utility).async { [self] in
             guard let writer = try? FileHandle(forWritingTo: output) else { signal(SIGTERM); return }
             defer { try? writer.close(); lock.withLock { _ = Darwin.close(master) } }
+            var streamRedactor = redactor
             var buffer = [UInt8](repeating: 0, count: 16 * 1_024)
             while true {
                 let count = Darwin.read(master, &buffer, buffer.count)
                 if count < 0 && errno == EINTR { continue }
                 guard count > 0 else { break }
+                let raw = Data(buffer.prefix(count))
+                let safe = streamRedactor?.redact(raw) ?? raw
+                guard !safe.isEmpty else { continue }
                 do {
-                    try writer.write(contentsOf: Data(buffer.prefix(count)))
-                    lock.withLock { written += Int64(count) }
+                    try writer.write(contentsOf: safe)
+                    lock.withLock { written += Int64(safe.count) }
                 } catch { signal(SIGTERM); break }
+            }
+            // EOF/cancel completion: a held partial prefix is replaced with
+            // the marker, never written raw. A writer failure drops it.
+            if var streamRedactor {
+                let tail = streamRedactor.redact(Data(), flush: true)
+                if !tail.isEmpty {
+                    do {
+                        try writer.write(contentsOf: tail)
+                        lock.withLock { written += Int64(tail.count) }
+                    } catch {
+                        signal(SIGTERM)
+                    }
+                }
             }
             var status: Int32 = 0
             while waitpid(pid, &status, 0) < 0 && errno == EINTR {}
@@ -74,8 +103,18 @@ actor BridgeJobs {
     private var jobs: [String: BridgeJob] = [:]
     init(paths: BridgePaths) { self.paths = paths }
     func start(id: String, clientID: String, workspaceID: String, command: String, commandFile: URL? = nil, cwd: URL,
-               environment: [String: String], columns: Int, rows: Int) throws -> [String: BridgeValue] {
+               environment: [String: String], sensitiveEnvironmentNames: [String] = [],
+               columns: Int, rows: Int) throws -> [String: BridgeValue] {
         guard UUID(uuidString: id) != nil, jobs[id] == nil else { throw BridgeFailure.remote("This job already exists; inspect its result.") }
+        // Validate the marked names and collect their exact values before
+        // creating any job state: a malformed request must not leave a task
+        // root that blocks a corrected retry.
+        let redactor: BridgeSensitiveRedactor?
+        if sensitiveEnvironmentNames.isEmpty {
+            redactor = nil
+        } else {
+            redactor = try BridgeSensitiveRedactor(names: sensitiveEnvironmentNames, environment: environment)
+        }
         let taskRoot = try paths.managed("Tasks", id: id)
         // A previous process's receipt is not permission to rerun the command.
         guard !FileManager.default.fileExists(atPath: taskRoot.path) else { throw BridgeFailure.ambiguous }
@@ -84,6 +123,14 @@ actor BridgeJobs {
         guard FileManager.default.createFile(atPath: output.path, contents: nil, attributes: [.posixPermissions: 0o600]) else { throw BridgeFailure.remote("Cannot save terminal output.") }
         let receipt = ["workspace": workspaceID, "client": clientID]
         try BridgeWire.encode(receipt).write(to: taskRoot.appendingPathComponent("owner.json"), options: .atomic)
+        // Metadata contains exact NAMES and the capability only; values never
+        // leave the in-memory environment/envp path.
+        if !sensitiveEnvironmentNames.isEmpty {
+            let metadata = taskRoot.appendingPathComponent("sensitive-environment.json")
+            try BridgeWire.encode(BridgeSensitiveEnvironment.metadata(names: sensitiveEnvironmentNames))
+                .write(to: metadata, options: .atomic)
+            try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: metadata.path)
+        }
         let argvStrings: [String]
         if let commandFile {
             let privateScript = taskRoot.appendingPathComponent("command.zsh")
@@ -108,7 +155,15 @@ actor BridgeJobs {
                            UInt16(clamping: max(1, columns)), UInt16(clamping: max(1, rows)))
         } }
         guard pid > 0, master >= 0 else { throw BridgeFailure.remote("The Mac terminal could not start.") }
-        let job = BridgeJob(id: id, clientID: clientID, workspaceID: workspaceID, output: output, pid: pid, master: master)
+        let job = BridgeJob(
+            id: id,
+            clientID: clientID,
+            workspaceID: workspaceID,
+            output: output,
+            pid: pid,
+            master: master,
+            redactor: redactor
+        )
         jobs[id] = job; job.drain()
         return ["jobID": .string(id), "alive": .bool(true)]
     }

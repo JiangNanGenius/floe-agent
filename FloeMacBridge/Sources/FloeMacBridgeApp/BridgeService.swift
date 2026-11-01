@@ -119,7 +119,7 @@ actor BridgeService {
     private func execute(_ method: String, _ p: [String: BridgeValue], clientID: String) async throws -> [String: BridgeValue] {
         switch method {
         case "ping": return ["host": .string(Host.current().localizedName ?? "Mac"), "os": .string("macos"), "arch": .string("arm64"),
-                            "capabilities": .array(["terminal", "pty", "files", "mcp", "originalSkills", "screenCapture", "accessibility"].map(BridgeValue.string))]
+                            "capabilities": .array(advertisedCapabilities().map(BridgeValue.string))]
         case "workspace":
             let root = try workspace(p)
             return ["root": .string(root.path), "transferPolicyVersion": .integer(Int64(BridgeWorkspaceTransferPolicy.version)),
@@ -151,9 +151,11 @@ actor BridgeService {
                 guard try digest(file) == expected else { throw BridgeFailure.remote("The staged command did not match.") }
                 commandFile = file
             }
+            let sensitiveNames = try sensitiveEnvironmentNames(from: p)
             return try await jobs.start(id: jobID, clientID: clientID,
                 workspaceID: required(p, "workspaceID"), command: p["command"]?.string ?? "", commandFile: commandFile, cwd: cwd,
-                environment: environment, columns: Int(p["columns"]?.integer ?? 100), rows: Int(p["rows"]?.integer ?? 30))
+                environment: environment, sensitiveEnvironmentNames: sensitiveNames,
+                columns: Int(p["columns"]?.integer ?? 100), rows: Int(p["rows"]?.integer ?? 30))
         case "poll": return try await jobs.poll(id: required(p, "jobID"), clientID: clientID,
                                               offset: p["offset"]?.integer ?? 0, limit: Int(p["limit"]?.integer ?? Int64(BridgeWire.pageBytes)))
         case "input":
