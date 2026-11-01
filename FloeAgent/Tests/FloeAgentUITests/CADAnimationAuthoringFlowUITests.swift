@@ -136,7 +136,8 @@ final class CADAnimationAuthoringFlowUITests: XCTestCase {
         cameraRow.tap()
 
         let slider = app.sliders["CADAnimationSlider"]
-        XCTAssertTrue(slider.exists)
+        XCTAssertTrue(slider.exists,
+                      "the real camera timeline slider must be accessible: \(app.debugDescription)")
         slider.adjust(toNormalizedSliderPosition: 0.5)
         let addKey = app.buttons["CADAnimationAddKey"]
         XCTAssertTrue(addKey.isHittable)
