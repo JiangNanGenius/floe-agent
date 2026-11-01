@@ -95,11 +95,26 @@ public protocol VideoProviderAdapter: Sendable {
 public struct VideoProviderAdapterFactory: Sendable {
     public init() {}
     public func adapter(for provider: ProviderProfile) -> (any VideoProviderAdapter)? {
-        switch provider.kind {
+        // Token Plan video runs on the documented native DashScope task API.
+        // Agent Plan video is intentionally not enabled in this round, even
+        // for a legacy profile that stored the plan endpoint under another
+        // kind: no plan video entry is offered.
+        if let billing = ProviderBillingEndpoint.resolve(provider.baseURL) {
+            switch billing {
+            case .volcengineAgentPlan:
+                return nil
+            case .alibabaTokenPlan:
+                return AlibabaVideoAdapter()
+            }
+        }
+        return switch provider.kind {
         case .googleGemini: GoogleVideoAdapter()
         case .volcengineArk: VolcengineVideoAdapter()
         case .alibabaStudio: AlibabaVideoAdapter()
-        case .openAI, .anthropic, .local, .custom: nil
+        case .openAI, .anthropic, .local: nil
+        case .custom:
+            // Older hand-entered DashScope PAYG connections keep working.
+            AlibabaEndpointIdentity.isPayAsYouGo(provider.baseURL) ? AlibabaVideoAdapter() : nil
         }
     }
 }
@@ -574,17 +589,30 @@ public struct AlibabaVideoAdapter: VideoProviderAdapter {
         return .init(providerTaskID: id, estimatedCompletionAt: Date().addingTimeInterval(180), resultRetentionExpiresAt: nil)
     }
     static func requestBody(_ request: RemoteVideoRequest) throws -> [String: Any] {
-        let latest = request.modelRemoteID.hasPrefix("wan3.0-")
-        let modern = latest || request.modelRemoteID.hasPrefix("wan2.7-")
+        let route = AlibabaVideoWireRoute.resolve(modelRemoteID: request.modelRemoteID)
+        switch route {
+        case .happyHorseText, .happyHorseImage:
+            return try happyHorseBody(request, route: route)
+        case .wan3, .wan27, .legacy:
+            return try wanBody(request, route: route)
+        }
+    }
+
+    /// Existing Wan 3.0/2.7/legacy contract, extended only with the shared
+    /// model-family classification.
+    private static func wanBody(
+        _ request: RemoteVideoRequest,
+        route: AlibabaVideoWireRoute
+    ) throws -> [String: Any] {
+        let latest = route == .wan3
+        let modern = route == .wan3 || route == .wan27
         var input: [String: Any] = ["prompt": request.prompt]
         var parameters: [String: Any] = [:]
         if !request.referenceAssetURLs.isEmpty {
             // Only the 3.x first-frame field has a documented image request in
             // this adapter; other Wan models stay text-only rather than
             // silently dropping the image.
-            guard VideoReferenceImagePolicy.supportsReferenceImages(
-                providerKind: .alibabaStudio, modelRemoteID: request.modelRemoteID
-            ), request.referenceAssetURLs.count == 1,
+            guard route == .wan3, request.referenceAssetURLs.count == 1,
                   let image = request.referenceAssetURLs.first,
                   image.scheme?.lowercased() == "https" || image.scheme?.lowercased() == "data" else {
                 throw RemoteVideoError.invalidRequest("This mode accepts one uploaded Wan 3.0 first-frame image")
@@ -607,6 +635,61 @@ public struct AlibabaVideoAdapter: VideoProviderAdapter {
         if let value = request.options.watermark { parameters["watermark"] = value }
         if let value = request.options.seed { parameters["seed"] = value }
         if let value = request.options.promptOptimization { parameters["prompt_extend"] = value }
+        return ["model": request.modelRemoteID, "input": input, "parameters": parameters]
+    }
+
+    /// HappyHorse text-to-video and image-to-video contract (Model Studio,
+    /// verified 2026-10-12). The image-to-video form requires exactly one
+    /// `first_frame`; t2v optionally accepts a ratio. Neither family accepts
+    /// the Wan audio selection or prompt-extension toggle.
+    private static func happyHorseBody(
+        _ request: RemoteVideoRequest,
+        route: AlibabaVideoWireRoute
+    ) throws -> [String: Any] {
+        var input: [String: Any] = ["prompt": request.prompt]
+        if route == .happyHorseImage {
+            guard request.referenceAssetURLs.count == 1,
+                  let image = request.referenceAssetURLs.first,
+                  image.scheme?.lowercased() == "https" || image.scheme?.lowercased() == "data" else {
+                throw RemoteVideoError.invalidRequest("HappyHorse image-to-video requires one uploaded first-frame image")
+            }
+            if image.scheme?.lowercased() == "data" {
+                _ = try VideoReferenceImagePolicy.inlineImage(from: image, providerName: "HappyHorse")
+            }
+            input["media"] = [["type": "first_frame", "url": image.absoluteString]]
+            if request.options.aspectRatio != nil {
+                throw RemoteVideoError.invalidRequest("HappyHorse image-to-video follows the first-frame aspect ratio")
+            }
+        } else {
+            guard request.referenceAssetURLs.isEmpty else {
+                throw RemoteVideoError.invalidRequest("HappyHorse text-to-video does not accept a reference image")
+            }
+        }
+        var parameters: [String: Any] = [:]
+        if let value = request.options.aspectRatio, route == .happyHorseText {
+            parameters["ratio"] = value
+        }
+        if let value = request.options.durationSeconds {
+            guard (3...15).contains(value) else {
+                throw RemoteVideoError.invalidRequest("HappyHorse supports 3–15 seconds")
+            }
+            parameters["duration"] = value
+        }
+        if let value = request.options.resolution {
+            let normalized = value.uppercased()
+            guard ["480P", "720P", "1080P"].contains(normalized) else {
+                throw RemoteVideoError.invalidRequest("Unsupported HappyHorse resolution")
+            }
+            parameters["resolution"] = normalized
+        }
+        if request.options.includeAudio != nil {
+            throw RemoteVideoError.invalidRequest("HappyHorse does not accept an audio selection")
+        }
+        if let value = request.options.watermark { parameters["watermark"] = value }
+        if let value = request.options.seed { parameters["seed"] = value }
+        if request.options.promptOptimization != nil {
+            throw RemoteVideoError.invalidRequest("HappyHorse does not accept prompt optimization")
+        }
         return ["model": request.modelRemoteID, "input": input, "parameters": parameters]
     }
     public func status(taskID: String, modelRemoteID: String, provider: ProviderProfile, credentials: ProviderCredentials) async throws -> RemoteVideoStatus {

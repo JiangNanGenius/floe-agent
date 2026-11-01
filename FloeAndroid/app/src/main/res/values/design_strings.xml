@@ -1,0 +1,50 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- G09-R2 design App entries. Feature-owned workflow copy lives in the
+     feature/canvas module; these are the App integration labels only. -->
+<resources>
+    <string name="design_app_action">Design</string>
+    <string name="design_app_target_document">Document</string>
+    <string name="design_app_target_chat">Chat attachment</string>
+    <string name="design_app_entry_unavailable">Design is unavailable for this document. Reopen it and try again.</string>
+    <string name="design_entry_title">Design</string>
+    <string name="design_entry_subtitle">Make something new, or continue a saved request.</string>
+    <string name="design_entry_close">Close</string>
+    <string name="design_entry_dismiss">Dismiss</string>
+    <string name="design_entry_pending_title">Continue a request</string>
+    <string name="design_entry_pending_empty">No saved design requests yet.</string>
+    <string name="design_entry_loading">Loading\u2026</string>
+    <string name="design_entry_show_more">Show more</string>
+    <string name="design_entry_continue">Continue</string>
+    <string name="design_entry_new_title">New design</string>
+    <string name="design_entry_kind_hint">Choose what you want to make. The starting file must match it.</string>
+    <string name="design_entry_brief_label">What should it be?</string>
+    <string name="design_entry_create">Start design</string>
+    <string name="design_entry_back">Back</string>
+    <string name="design_entry_retry">Retry</string>
+    <string name="design_entry_state_awaiting">Needs a starting file</string>
+    <string name="design_entry_state_bound">Ready to continue</string>
+    <string name="design_entry_materials_title">Choose a starting file</string>
+    <string name="design_entry_materials_empty">No matching files yet. Import one to start.</string>
+    <string name="design_entry_materials_unavailable">Saved files aren\'t available right now. You can still import a file.</string>
+    <string name="design_entry_material_meta">%1$s · %2$s</string>
+    <string name="design_entry_material_mismatch">%1$s · %2$s · doesn\'t match this design type</string>
+    <string name="design_entry_untitled_material">Untitled file</string>
+    <string name="design_entry_import">Import a file</string>
+    <string name="design_entry_import_pending">The file didn\'t finish importing.</string>
+    <string name="design_entry_retry_import">Retry import</string>
+    <string name="design_entry_remove_import">Remove</string>
+    <string name="design_entry_material_added">Starting file: %1$s</string>
+    <string name="design_entry_material_hint">Open the design workflow to make and adopt changes.</string>
+    <string name="design_entry_open_workflow">Open design</string>
+    <string name="design_entry_publication_pending">Saving to your materials is still pending.</string>
+    <string name="design_entry_error_mismatch">This file doesn\'t match the chosen design type.</string>
+    <string name="design_entry_error_too_large">This file is too large for design.</string>
+    <string name="design_entry_error_conflict">This design changed. Reload and try again.</string>
+    <string name="design_entry_error_stale">This design session closed. Reopen the request.</string>
+    <string name="design_entry_error_not_allowed">This file can\'t be used for design.</string>
+    <string name="design_entry_error_unreadable">This file couldn\'t be read. Choose another.</string>
+    <string name="design_entry_error_generic">Design couldn\'t continue. Try again.</string>
+    <string name="design_entry_error_core">Design needs a newer app core before it can work here.</string>
+    <string name="design_entry_error_unavailable">Design is unavailable right now. Try again.</string>
+    <string name="design_entry_error_target">This item can\'t be used for design.</string>
+</resources>

@@ -90,6 +90,16 @@ public enum G04SourceHostLimits {
     public static let maximumRowsPerPage = 32
     public static let shortHopSeconds = 30      // metadata/DB-only hops
     public static let fileHopSeconds = 300      // snapshot/commit hops (streamed file IO)
+    /// Closed media egress open hashes the ENTIRE captured body once (the
+    /// header digest the caller verifies). 8 GiB on slow shared storage can
+    /// legitimately exceed the generic file hop, so this ONE closed lane gets
+    /// a longer, still bounded budget. The hash itself checks the ownership
+    /// lease's cancellation per chunk, so Root retirement aborts it early.
+    public static let mediaOpenSeconds = 900
+    /// Media close ends the owned-work lease; the local actor call is fast,
+    /// and a timeout leaves the ticket live for an honest retry instead of
+    /// reporting a drained session that still owns the lease.
+    public static let mediaCloseSeconds = 60
     /// Free-space recheck cadence for streamed writes (every 16 MiB).
     public static let diskCheckEveryBytes = 16 * 1_048_576
 }
@@ -102,6 +112,32 @@ public enum G04SourceHostLimits {
 /// accepted skills-folder host uses.
 private final class HostHopBox<Value>: @unchecked Sendable {
     var value: Result<Value, any Error>?
+}
+
+/// Swift-6-safe one-shot result box for the closed media open hop. A settled
+/// value after the caller's timeout is REFUSED (`settle` returns false) so
+/// the late hop closes that lease instead of leaking a pinned descriptor and
+/// an owned-work token behind an abandoned ticket.
+private final class MediaLeaseBox: @unchecked Sendable {
+    private let lock = NSLock()
+    private var result: Result<G04WorkspaceMediaEgressLease, any Error>?
+    private var abandoned = false
+
+    func settle(_ value: Result<G04WorkspaceMediaEgressLease, any Error>) -> Bool {
+        lock.lock(); defer { lock.unlock() }
+        guard !abandoned else { return false }
+        result = value
+        return true
+    }
+
+    func abandon() {
+        lock.lock(); abandoned = true; lock.unlock()
+    }
+
+    func take() -> Result<G04WorkspaceMediaEgressLease, any Error>? {
+        lock.lock(); defer { lock.unlock() }
+        return result
+    }
 }
 
 public final class G04WorkspaceSourceHost: @unchecked Sendable {
@@ -161,23 +197,33 @@ public final class G04WorkspaceSourceHost: @unchecked Sendable {
         let workspaceID: UUID
         let sourceID: UUID?              // required for save (journal binding)
         let logicalPath: String
-        let snapshotURL: URL
+        /// Generic save/export materialized snapshot, or nil for the closed
+        /// media lease lane (which streams the pinned source descriptor).
+        let snapshotURL: URL?
         let sha256: String               // native-observed snapshot digest
         let bytes: Int
         let recoveryID: UUID             // minted at open; journaled on prepare
+        /// Closed media-purpose egress lease (mode `export-media` only). Holds
+        /// the exact owned-work token + pinned descriptor until close.
+        let media: G04WorkspaceMediaEgressLease?
         var sourceRevision: String?      // recorded at prepare success
         var recordedSHA256: String?
         var phase: SavePhase = .open
         var receiptToken: String?        // caller gateway receipt identity
         var permitIssued = false
         var closed = false
+        /// Close admitted: new reads refuse immediately; the physical lease
+        /// + descriptor are released by the awaited media close.
+        var closing = false
         init(ticket: Int64, epoch: UInt64, mode: String, taskID: UUID, workspaceID: UUID,
-             sourceID: UUID?, logicalPath: String, snapshotURL: URL, sha256: String,
-             bytes: Int, recoveryID: UUID) {
+             sourceID: UUID?, logicalPath: String, snapshotURL: URL?, sha256: String,
+             bytes: Int, recoveryID: UUID,
+             media: G04WorkspaceMediaEgressLease? = nil) {
             self.ticket = ticket; self.createdEpoch = epoch; self.mode = mode
             self.taskID = taskID; self.workspaceID = workspaceID; self.sourceID = sourceID
             self.logicalPath = logicalPath; self.snapshotURL = snapshotURL
             self.sha256 = sha256; self.bytes = bytes; self.recoveryID = recoveryID
+            self.media = media
         }
     }
 
@@ -187,6 +233,11 @@ public final class G04WorkspaceSourceHost: @unchecked Sendable {
     private var egresses: [Int64: EgressSession] = [:]
     private var retired: Set<Int64> = []
     private var retiredOrder: [Int64] = []
+    /// Terminal status of a CLOSED media ticket. A repeated close (the App's
+    /// `finally` path) reports the SAME honest outcome instead of falsely
+    /// claiming the ticket belongs to another generation.
+    private var retiredMediaCloseStatus: [Int64: Int32] = [:]
+    private var retiredMediaCloseOrder: [Int64] = []
     private var aggregateStagedBytes = 0
     private var counters = (opens: 0, chunksWritten: 0, chunksRead: 0, finished: 0, aborted: 0,
                             fenced: 0, refused: 0, saturated: 0, permitsIssued: 0, hopsTimedOut: 0)
@@ -276,6 +327,17 @@ public final class G04WorkspaceSourceHost: @unchecked Sendable {
         while retiredOrder.count > 512 { retired.remove(retiredOrder.removeFirst()) }
     }
 
+    private func recordMediaCloseStatusLocked(ticket: Int64, status: Int32) {
+        if retiredMediaCloseStatus[ticket] == nil {
+            retiredMediaCloseOrder.append(ticket)
+        }
+        retiredMediaCloseStatus[ticket] = status
+        while retiredMediaCloseOrder.count > 512 {
+            let oldest = retiredMediaCloseOrder.removeFirst()
+            retiredMediaCloseStatus.removeValue(forKey: oldest)
+        }
+    }
+
     private func closeStageLocked(_ session: StageSession) {
         session.closed = true
         try? session.handle?.close()
@@ -293,6 +355,20 @@ public final class G04WorkspaceSourceHost: @unchecked Sendable {
 
     private func closeEgressLocked(_ session: EgressSession) {
         session.closed = true
+        // Closed media lane: there is no snapshot file. The pinned descriptor
+        // and the exact owned-work lease are released by the lease's own
+        // exactly-once close; a generation sweep cannot await, so it hands
+        // that one close to a detached task (the lease's read lock serializes
+        // any in-flight chunk before the descriptor closes).
+        if let media = session.media {
+            Task.detached(priority: .utility) { _ = await media.close() }
+            retireLocked(session.ticket)
+            return
+        }
+        guard let snapshotURL = session.snapshotURL else {
+            retireLocked(session.ticket)
+            return
+        }
         // Snapshot scratch is redundant only after the ladder settled or the
         // caller abandoned it; while a journal permit is still open
         // (`prepared`/`claimed`/`permitted`) the snapshot is the ONLY
@@ -301,7 +377,7 @@ public final class G04WorkspaceSourceHost: @unchecked Sendable {
         // recoverable data.
         switch session.phase {
         case .settled, .retained, .open:
-            try? FileManager.default.removeItem(at: session.snapshotURL)
+            try? FileManager.default.removeItem(at: snapshotURL)
             retireLocked(session.ticket)
         case .prepared, .claimed, .permitted:
             retireLocked(session.ticket)
@@ -661,6 +737,105 @@ public final class G04WorkspaceSourceHost: @unchecked Sendable {
         return session.ticket
     }
 
+    /// Closed media-purpose egress open (G09-R2, additive).
+    ///
+    /// This is the ONLY host entry that can reach the media ceilings
+    /// (image 128 MiB / audio 1 GiB / video 8 GiB). It requires the closed
+    /// kind to EQUAL the logical path's own final extension, keeps the exact
+    /// task/workspace/epoch revalidation in the coordinator, and never
+    /// touches the generic `egressOpen` (Office/Notes save/export) or its
+    /// 1 GiB `maximumProviderCopyBytes` budget. The returned ticket keeps
+    /// the pinned descriptor + owned-work lease until `egressClose`.
+    func egressOpenMedia(epoch: UInt64, kindRaw: String, taskHex: String, workspaceHex: String,
+                         logicalPath: String) -> Int64 {
+        guard let live = liveEpoch(), live == epoch else {
+            lock.lock(); counters.refused &+= 1; lock.unlock()
+            return Int64(epoch == 0 ? G04SourceHostStatus.notInstalled
+                                    : G04SourceHostStatus.generationFenced)
+        }
+        guard let kind = G04WorkspaceMediaKind(rawValue: kindRaw),
+              let taskID = Self.canonicalUUID(taskHex),
+              let workspaceID = Self.canonicalUUID(workspaceHex),
+              Self.validLogicalPath(logicalPath),
+              G04WorkspaceMediaKind.kind(forLogicalPath: logicalPath) == kind else {
+            return Int64(G04SourceHostStatus.invalidArguments)
+        }
+        guard let coordinator = requireCoordinator(epoch: epoch) else {
+            return Int64(G04SourceHostStatus.notInstalled)
+        }
+        lock.lock()
+        sweepStaleGenerationLocked(live: live)
+        let saturated = stages.count + egresses.count >= G04SourceHostLimits.maximumLiveSessions
+        if saturated { counters.saturated &+= 1 }
+        lock.unlock()
+        if saturated { return Int64(G04SourceHostStatus.saturated) }
+
+        let box = MediaLeaseBox()
+        let gate = DispatchSemaphore(value: 0)
+        Task.detached(priority: .userInitiated) {
+            do {
+                let preparation = try await coordinator.prepareMediaEgress(
+                    kind: kind, taskID: taskID, workspaceID: workspaceID,
+                    logicalPath: logicalPath)
+                do {
+                    let lease = try G04WorkspaceMediaEgressLease.open(preparation)
+                    if !box.settle(.success(lease)) { _ = await lease.close() }
+                } catch {
+                    await preparation.release()
+                    _ = box.settle(.failure(error))
+                }
+            } catch {
+                _ = box.settle(.failure(error))
+            }
+            gate.signal()
+        }
+        if gate.wait(timeout: .now() + .seconds(G04SourceHostLimits.mediaOpenSeconds)) == .timedOut {
+            // The hop may still be hashing. Refuse its late value; that task
+            // then closes its own lease (descriptor + owned token) itself.
+            // If the value settled in the timeout/settle race just before
+            // `abandon`, close that exact late lease here instead of leaking
+            // it; a settle AFTER `abandon` sees the refusal and self-closes.
+            box.abandon()
+            if let settled = box.take(), case .success(let late) = settled {
+                Task.detached(priority: .utility) { _ = await late.close() }
+            }
+            lock.lock(); counters.hopsTimedOut &+= 1; lock.unlock()
+            return Int64(G04SourceHostStatus.hopTimeout)
+        }
+        let lease: G04WorkspaceMediaEgressLease
+        switch box.take() {
+        case .success(let value):
+            lease = value
+        case .failure(let error):
+            lock.lock(); counters.refused &+= 1; lock.unlock()
+            return Int64(Self.errorStatus(error))
+        case .none:
+            return Int64(G04SourceHostStatus.internal)
+        }
+        lock.lock()
+        guard liveEpoch() == epoch, requireCoordinator(epoch: epoch) != nil else {
+            counters.fenced &+= 1
+            lock.unlock()
+            Task.detached(priority: .utility) { _ = await lease.close() }
+            return Int64(G04SourceHostStatus.generationFenced)
+        }
+        sweepStaleGenerationLocked(live: epoch)
+        guard stages.count + egresses.count < G04SourceHostLimits.maximumLiveSessions else {
+            lock.unlock()
+            Task.detached(priority: .utility) { _ = await lease.close() }
+            return Int64(G04SourceHostStatus.saturated)
+        }
+        let session = EgressSession(ticket: newTicketLocked(), epoch: epoch, mode: "export-media",
+                                    taskID: taskID, workspaceID: workspaceID,
+                                    sourceID: lease.sourceID, logicalPath: logicalPath,
+                                    snapshotURL: nil, sha256: lease.sha256, bytes: lease.bytes,
+                                    recoveryID: UUID(), media: lease)
+        egresses[session.ticket] = session
+        counters.opens &+= 1
+        lock.unlock()
+        return session.ticket
+    }
+
     func egressInfo(ticket: Int64, buffer: UnsafeMutablePointer<CChar>?, capacity: Int32) -> Int32 {
         lock.lock()
         guard let session = egresses[ticket], !session.closed,
@@ -670,8 +845,14 @@ public final class G04WorkspaceSourceHost: @unchecked Sendable {
         }
         var object: [String: Any] = [
             "ok": 1, "mode": session.mode, "sha256": session.sha256, "bytes": session.bytes,
-            "logicalPath": session.logicalPath, "recoveryID": session.recoveryID.uuidString,
+            "logicalPath": session.logicalPath,
         ]
+        if let media = session.media {
+            // The closed media lane is non-journal: there is no recovery row.
+            object["mediaKind"] = media.kind.rawValue
+        } else {
+            object["recoveryID"] = session.recoveryID.uuidString
+        }
         if let sourceID = session.sourceID { object["sourceID"] = sourceID.uuidString }
         if let revision = session.sourceRevision { object["sourceRevision"] = revision }
         if let recorded = session.recordedSHA256 { object["recordedSHA256"] = recorded }
@@ -687,17 +868,38 @@ public final class G04WorkspaceSourceHost: @unchecked Sendable {
             return Int32(G04SourceHostStatus.invalidArguments)
         }
         lock.lock()
-        guard let session = egresses[ticket], !session.closed,
+        guard let session = egresses[ticket], !session.closed, !session.closing,
               let live = liveEpoch(), session.createdEpoch == live else {
             lock.unlock()
             return egressFailureStatus(ticket: ticket)
         }
+        if let media = session.media {
+            // Closed media lane: pread the pinned source descriptor, bounded
+            // to one 64 KiB chunk. The lease rechecks its fstat identity and
+            // the delivered-byte digest before any content verdict.
+            lock.unlock()
+            do {
+                let copied = try media.read(offset: offset, into: buffer, count: Int(capacity))
+                // Post-I/O fence: a root/session close that raced this chunk
+                // must never return bytes as if the owner were still live.
+                lock.lock()
+                let stillLive = !session.closed && !session.closing
+                    && liveEpoch() == session.createdEpoch
+                if stillLive { counters.chunksRead &+= 1 }
+                lock.unlock()
+                return stillLive ? Int32(copied) : Int32(G04SourceHostStatus.generationFenced)
+            } catch {
+                return Int32(Self.errorStatus(error))
+            }
+        }
         let size = session.bytes
+        let snapshotURL = session.snapshotURL
         lock.unlock()
+        guard let snapshotURL else { return Int32(G04SourceHostStatus.stateConflict) }
         guard offset < Int64(size) else { return 0 }   // clean EOF (0 bytes copied)
         let count = min(Int64(capacity), Int64(size) - offset)
         do {
-            let handle = try FileHandle(forReadingFrom: session.snapshotURL)
+            let handle = try FileHandle(forReadingFrom: snapshotURL)
             defer { try? handle.close() }
             try handle.seek(toOffset: UInt64(offset))
             let data = try handle.read(upToCount: Int(count)) ?? Data()
@@ -744,18 +946,84 @@ public final class G04WorkspaceSourceHost: @unchecked Sendable {
     func egressClose(ticket: Int64) -> Int32 {
         lock.lock()
         guard let session = egresses[ticket], !session.closed else {
+            if let closedStatus = retiredMediaCloseStatus[ticket] {
+                lock.unlock()
+                return closedStatus
+            }
             let wasRetired = retired.contains(ticket)
             lock.unlock()
             return wasRetired ? Int32(G04SourceHostStatus.generationFenced)
                               : Int32(G04SourceHostStatus.ok)
         }
         if let live = liveEpoch(), session.createdEpoch != live {
+            // A stale generation must still RELEASE the physical descriptor
+            // and the owned-work lease: close is a release, never new work.
+            if let media = session.media {
+                session.closing = true
+                lock.unlock()
+                _ = Self.awaitMediaClose(media)
+                lock.lock()
+                if egresses[ticket] === session {
+                    session.closed = true
+                    recordMediaCloseStatusLocked(
+                        ticket: ticket,
+                        status: Int32(G04SourceHostStatus.generationFenced))
+                    retireLocked(ticket)
+                }
+            }
             lock.unlock()
             return Int32(G04SourceHostStatus.generationFenced)
+        }
+        if let media = session.media {
+            // Fence new reads immediately, then WAIT for the real close
+            // (descriptor + owned-work lease) before retiring the ticket.
+            // A timeout keeps the ticket live (still owned) instead of
+            // reporting a drained session behind a flag.
+            session.closing = true
+            lock.unlock()
+            let outcome = Self.awaitMediaClose(media)
+            lock.lock()
+            guard let outcome else {
+                counters.hopsTimedOut &+= 1
+                lock.unlock()
+                return Int32(G04SourceHostStatus.hopTimeout)
+            }
+            let status: Int32
+            switch outcome {
+            case .verified, .abandoned:
+                status = Int32(G04SourceHostStatus.ok)
+            case .digestMismatch:
+                status = Int32(G04SourceHostStatus.digestMismatch)
+            }
+            if egresses[ticket] === session {
+                session.closed = true
+                recordMediaCloseStatusLocked(ticket: ticket, status: status)
+                retireLocked(ticket)
+            }
+            lock.unlock()
+            return status
         }
         closeEgressLocked(session)
         lock.unlock()
         return Int32(G04SourceHostStatus.ok)
+    }
+
+    /// Bounded wait for the lease's exactly-once physical close. The close
+    /// task itself is NOT cancelled on timeout: it still closes the
+    /// descriptor and ends the owned-work lease, so a later retry observes
+    /// the same completed task instead of leaking either.
+    private static func awaitMediaClose(_ media: G04WorkspaceMediaEgressLease)
+        -> G04WorkspaceMediaEgressLease.CloseOutcome? {
+        let box = HostHopBox<G04WorkspaceMediaEgressLease.CloseOutcome>()
+        let gate = DispatchSemaphore(value: 0)
+        Task.detached(priority: .userInitiated) {
+            box.value = .success(await media.close())
+            gate.signal()
+        }
+        if gate.wait(timeout: .now() + .seconds(G04SourceHostLimits.mediaCloseSeconds)) == .timedOut {
+            return nil
+        }
+        return try? box.value?.get()
     }
 
     private func egressFailureStatusLocked(ticket: Int64) -> Int32 {
@@ -1560,6 +1828,23 @@ public func floeG04SourceHostEgressOpen(_ epoch: UInt64, _ mode: UnsafeMutablePo
         epoch: epoch, mode: G04HostC.string(mode) ?? "",
         taskHex: G04HostC.string(taskHex) ?? "", workspaceHex: G04HostC.string(workspaceHex) ?? "",
         logicalPath: G04HostC.string(logicalPath) ?? "", sourceHex: G04HostC.optionalString(sourceHex))
+}
+
+/// Closed media-purpose egress open (G09-R2). `kind` is the closed token
+/// set image|audio|video and must equal the logical path's own extension.
+/// Positive = ticket; negative = typed status. The generic
+/// `floe_g04_source_host_egress_open` above is unchanged.
+@_cdecl("floe_g04_source_host_egress_open_media")
+public func floeG04SourceHostEgressOpenMedia(_ epoch: UInt64,
+                                             _ kind: UnsafeMutablePointer<CChar>?,
+                                             _ taskHex: UnsafeMutablePointer<CChar>?,
+                                             _ workspaceHex: UnsafeMutablePointer<CChar>?,
+                                             _ logicalPath: UnsafeMutablePointer<CChar>?) -> Int64 {
+    G04WorkspaceSourceHost.shared.egressOpenMedia(
+        epoch: epoch, kindRaw: G04HostC.string(kind) ?? "",
+        taskHex: G04HostC.string(taskHex) ?? "",
+        workspaceHex: G04HostC.string(workspaceHex) ?? "",
+        logicalPath: G04HostC.string(logicalPath) ?? "")
 }
 
 @_cdecl("floe_g04_source_host_egress_info")

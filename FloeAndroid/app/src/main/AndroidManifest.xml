@@ -12,6 +12,9 @@
     <!-- User-started, bounded network monitoring; never a background keepalive. -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
+    <!-- G09-R2 bounded mediaProcessing export; the module service calls
+         stopSelf when idle and the App does not use it as a keepalive. -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PROCESSING" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <!-- G07.3B: user-created Agent schedules; wake-up receivers reconcile the
          durable schedule ledger instead of starting a foreground service at boot.
@@ -54,6 +57,20 @@
             android:exported="false"
             android:foregroundServiceType="dataSync"
             android:stopWithTask="true" />
+        <!-- G09-R2 bounded cloud-generation dataSync owner. Non-exported,
+             App-owned, started only for an already persisted native job with
+             an opaque in-process claim token; stopWithTask prevents swipe-away
+             resurrection and the service stops when no claim remains. -->
+        <service
+            android:name="com.floe.android.host.creative.GenerationForegroundService"
+            android:exported="false"
+            android:foregroundServiceType="dataSync"
+            android:stopWithTask="true" />
+        <!-- Notification Cancel only; same-app PendingIntent, no command
+             extras beyond the opaque live claim handled by the owner. -->
+        <receiver
+            android:name="com.floe.android.host.creative.GenerationForegroundCancelReceiver"
+            android:exported="false" />
         <activity android:name=".MainActivity" android:exported="true" android:windowSoftInputMode="adjustResize">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />

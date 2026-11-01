@@ -645,6 +645,22 @@ data class StagedAttachmentUi(
         "StagedAttachmentUi(id=$id, kind=${kind.swiftRaw}, bytes=$byteCount, import=${import::class.simpleName})"
 }
 
+/**
+ * Explicit local Design action for ONE persisted private attachment.
+ *
+ * This carries the REAL conversation/message/attachment identities only; it
+ * is an identity, never a permission. The App resolves the actual binding and
+ * the native design owner re-verifies the attachment row, storage layer and
+ * digest before any design write. Temporary chats never produce this request.
+ */
+data class AttachmentDesignRequest(
+    val conversationId: String,
+    val messageId: String,
+    val attachmentId: String,
+    val displayName: String,
+    val isImage: Boolean,
+)
+
 /** Request to open one persisted message attachment (⇄ ChatAttachmentOpenRequest). */
 data class AttachmentOpenRequest(
     val conversationId: String,

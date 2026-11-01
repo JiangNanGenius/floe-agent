@@ -35,6 +35,12 @@ enum class MediaFailureKind {
     STORAGE,
     ASSET,
     INVALID_REQUEST,
+    /** G09-R2 generation/candidate failure (catalog, provider or job state). */
+    GENERATION,
+    /** G09-R2 verified export/render failure that is not a capability refusal. */
+    EXPORT,
+    /** G09-R2 honest refusal from actual render capabilities. */
+    UNSUPPORTED,
     UNKNOWN,
 }
 
@@ -79,6 +85,19 @@ object MediaFailures {
             "storageUnavailable", "writeFailed" -> MediaFailureKind.STORAGE
             "invalidRequest", "invalidPayload", "sessionLimit" ->
                 MediaFailureKind.INVALID_REQUEST
+            // G09-R2 generation/candidates.
+            "generationUnavailable", "modelUnavailable", "providerRejected",
+            "providerTimeout", "jobNotFound", "jobTerminal", "candidateNotFound",
+            "candidateStale", "generationUnavailableForProject" ->
+                MediaFailureKind.GENERATION
+            // G09-R2 actual-capability refusals.
+            "renderUnsupported", "unsupportedCodec", "unsupportedTransition",
+            "unsupportedSourceFormat", "rendererUnavailable" ->
+                MediaFailureKind.UNSUPPORTED
+            // G09-R2 export/render lifecycle.
+            "renderCancelled", "renderTimeout", "renderTicketNotFound",
+            "renderTicketExpired", "renderTicketAlreadySettled", "foregroundStartDenied" ->
+                MediaFailureKind.EXPORT
             else -> MediaFailureKind.UNKNOWN
         }
         return MediaFailure(

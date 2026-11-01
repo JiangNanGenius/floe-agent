@@ -249,6 +249,10 @@ data class OfficialSupplierUi(
     val unsupportedReason: String?,
     /** Roles a shipped adapter can really serve (⇄ ProviderServiceOfferResolver). */
     val servedRoles: List<ProviderServiceRoleUi>,
+    /** Catalog-declared model IDs per served role
+     * (⇄ ProviderCatalogServiceOffer.models). Empty when the entry declares no
+     * identifiers; never filled from chat model keywords. */
+    val serviceOfferModels: Map<ProviderServiceRoleUi, List<String>> = emptyMap(),
     val isLocalEndpoint: Boolean,
     /** True when a saved provider already uses this catalog identity
      * (⇄ configuredPresetIDs.contains(entry.presetID)); host-projected. */

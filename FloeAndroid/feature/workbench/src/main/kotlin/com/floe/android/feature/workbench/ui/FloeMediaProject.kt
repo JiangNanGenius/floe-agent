@@ -40,6 +40,7 @@ fun FloeMediaProject(
     onRetry: () -> Unit,
     onClose: () -> Unit,
     modifier: Modifier = Modifier,
+    mediaPicker: com.floe.android.feature.workbench.ui.r2.WorkbenchMediaPicker? = null,
 ) {
     var everOpened by remember(session) { mutableStateOf(false) }
     val editor = session.editor
@@ -51,7 +52,12 @@ fun FloeMediaProject(
         }
     }
     if (editor != null) {
-        MediaEditorCover(session = session, editor = editor, pickImage = pickImage)
+        MediaEditorCover(
+            session = session,
+            editor = editor,
+            pickImage = pickImage,
+            mediaPicker = mediaPicker,
+        )
         return
     }
     Column(

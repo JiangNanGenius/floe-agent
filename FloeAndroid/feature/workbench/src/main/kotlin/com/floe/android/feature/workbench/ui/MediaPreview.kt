@@ -3,6 +3,7 @@ package com.floe.android.feature.workbench.ui
 
 import android.graphics.Paint
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
@@ -10,6 +11,7 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -31,6 +33,7 @@ import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.nativeCanvas
 import androidx.compose.ui.graphics.drawscope.DrawScope
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.drawIntoCanvas
 import androidx.compose.ui.graphics.drawscope.withTransform
@@ -54,6 +57,7 @@ import com.floe.android.feature.workbench.MediaCanvas
 import com.floe.android.feature.workbench.MediaProject
 import com.floe.android.feature.workbench.ui.presentation.MediaColor
 import com.floe.android.feature.workbench.ui.presentation.MediaLayerGeometry
+import com.floe.android.feature.workbench.ui.r2.MediaVideoSurface
 import com.floe.android.feature.workbench.ui.state.MediaEditorController
 import kotlin.math.abs
 import kotlin.math.min
@@ -75,15 +79,46 @@ internal fun MediaPreview(
     brushColorHex: String,
     onStroke: (ImageFreehandStroke) -> Unit,
     modifier: Modifier = Modifier,
+    compact: Boolean = false,
 ) {
     val project = controller.project
     val previewRevision = controller.previewRevision
     val canvas = project.canvas
+    val r2 = controller.r2
     val density = LocalDensity.current
     var draftPoints by remember(controller.projectID) {
         mutableStateOf<List<ImageFreehandPoint>>(emptyList())
     }
     val previewLabel = stringResource(R.string.media_preview_description)
+
+    if (project.kind == "video" && r2 != null) {
+        Box(modifier.fillMaxSize()) {
+            MediaVideoSurface(
+                controller = controller,
+                compact = compact,
+                modifier = Modifier.fillMaxSize(),
+            )
+            if (controller.videoLoading) {
+                Row(
+                    Modifier
+                        .align(Alignment.TopCenter)
+                        .padding(8.dp)
+                        .background(Floe.colors.readingSurface.copy(alpha = 0.9f))
+                        .padding(horizontal = 10.dp, vertical = 6.dp),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    com.floe.android.design.FloeActivityIndicator()
+                    FloeText(
+                        stringResource(R.string.media_busy_loading),
+                        style = Floe.typography.metadata,
+                        color = Floe.colors.secondaryLabel,
+                    )
+                }
+            }
+        }
+        return
+    }
 
     BoxWithConstraints(modifier.fillMaxSize().background(Floe.colors.groupedSurface)) {
         val availableWidth = with(density) { maxWidth.toPx() }
@@ -160,14 +195,25 @@ internal fun MediaPreview(
                     }
                 },
         ) {
-            Canvas(Modifier.fillMaxSize()) {
-                drawProject(
-                    controller = controller,
-                    project = project,
-                    displayWidth = displayWidth,
-                    displayHeight = displayHeight,
-                    previewRevision = previewRevision,
+            val renderedPreview = r2?.imagePreview
+                ?.takeIf { r2?.imagePreviewRevision == project.revision }
+            if (renderedPreview != null) {
+                Image(
+                    bitmap = renderedPreview.asImageBitmap(),
+                    contentDescription = previewLabel,
+                    modifier = Modifier.fillMaxSize(),
+                    contentScale = ContentScale.Fit,
                 )
+            } else {
+                Canvas(Modifier.fillMaxSize()) {
+                    drawProject(
+                        controller = controller,
+                        project = project,
+                        displayWidth = displayWidth,
+                        displayHeight = displayHeight,
+                        previewRevision = previewRevision,
+                    )
+                }
             }
             if (draftPoints.size >= 2) {
                 val accent = Floe.colors.accent
@@ -213,6 +259,28 @@ internal fun MediaPreview(
                     )
                 }
             }
+            if (r2 != null) {
+                val previewBadge = when {
+                    r2.imagePreviewBusy -> stringResource(R.string.media_r2_preview_updating)
+                    r2.imagePreviewFailure != null ->
+                        stringResource(R.string.media_r2_rendered_unavailable)
+                    r2.imagePreviewRevision == project.revision ->
+                        stringResource(R.string.media_r2_rendered_preview)
+                    else -> null
+                }
+                if (previewBadge != null) {
+                    FloeText(
+                        previewBadge,
+                        style = Floe.typography.metadata,
+                        color = Floe.colors.tertiaryLabel,
+                        modifier = Modifier
+                            .align(Alignment.TopEnd)
+                            .padding(8.dp)
+                            .background(Floe.colors.readingSurface.copy(alpha = 0.85f))
+                            .padding(horizontal = 8.dp, vertical = 4.dp),
+                    )
+                }
+            }
             if (drawMode) {
                 FloeText(
                     stringResource(R.string.media_draw_hint),
@@ -233,6 +301,7 @@ private fun selectAt(controller: MediaEditorController, x: Float, y: Float) {
     val project = controller.project
     val previewRevision = controller.previewRevision
     val canvas = project.canvas ?: return
+    val r2 = controller.r2 ?: return
     val canvasX = x.toDouble() * canvas.width
     val canvasY = y.toDouble() * canvas.height
     val hit = project.imageLayers.asReversed().firstOrNull { layer ->

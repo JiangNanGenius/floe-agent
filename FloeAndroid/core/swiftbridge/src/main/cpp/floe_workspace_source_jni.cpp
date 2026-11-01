@@ -26,6 +26,11 @@ int32_t floe_g04_source_host_stage_finish(int64_t, char *, int32_t);
 int32_t floe_g04_source_host_stage_abort(int64_t);
 int64_t floe_g04_source_host_egress_open(uint64_t, const char *, const char *, const char *,
                                          const char *, const char *);
+// G09-R2 closed media-purpose egress open (image 128 MiB / audio 1 GiB /
+// video 8 GiB). Additive C ABI next to the generic save/export entry above;
+// the Kotlin object's media open is the only caller.
+int64_t floe_g04_source_host_egress_open_media(uint64_t, const char *, const char *,
+                                               const char *, const char *);
 int32_t floe_g04_source_host_egress_info(int64_t, char *, int32_t);
 int32_t floe_g04_source_host_egress_read(int64_t, int64_t, uint8_t *, int32_t);
 int32_t floe_g04_source_host_egress_verify(int64_t, int64_t, char *, int32_t);
@@ -279,6 +284,26 @@ Java_com_floe_android_bridge_WorkspaceSourceNative_egressOpen(
     return floe_g04_source_host_egress_open(static_cast<uint64_t>(epoch), mode_value.c_str(),
                                             task_value.c_str(), workspace_value.c_str(),
                                             path_value.c_str(), source_value.c_str());
+}
+// G09-R2 closed media-purpose egress open. The kind token is covered by the
+// SAME ASCII/identity validation as mode/purpose; the logical path uses the
+// strict UTF-16 -> UTF-8 converter (no truncation, no CESU-8). Native
+// revalidates the exact task/workspace/epoch + extension and applies the
+// closed media ceiling; nothing here can widen the generic 1 GiB entry.
+extern "C" JNIEXPORT jlong JNICALL
+Java_com_floe_android_bridge_WorkspaceSourceNative_egressOpenMedia(
+    JNIEnv *env, jobject, jlong epoch, jstring kind, jstring task, jstring workspace,
+    jstring logical_path) {
+    if (epoch <= 0) return -501;
+    std::string kind_value, task_value, workspace_value;
+    if (!host_ascii_arg(env, kind, 16, &kind_value) ||
+        !host_ascii_arg(env, task, 64, &task_value) ||
+        !host_ascii_arg(env, workspace, 64, &workspace_value)) return -105;
+    std::string path_value;
+    if (!host_utf8_arg(env, logical_path, 4096, &path_value)) return -105;
+    return floe_g04_source_host_egress_open_media(static_cast<uint64_t>(epoch),
+                                                  kind_value.c_str(), task_value.c_str(),
+                                                  workspace_value.c_str(), path_value.c_str());
 }
 extern "C" JNIEXPORT jint JNICALL
 Java_com_floe_android_bridge_WorkspaceSourceNative_egressInfo(

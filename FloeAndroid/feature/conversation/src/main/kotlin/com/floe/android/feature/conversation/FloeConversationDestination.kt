@@ -87,6 +87,13 @@ fun FloeConversationDestination(
     modifier: Modifier = Modifier,
     onBack: (() -> Unit)? = null,
     paneGeometry: ConversationPaneGeometry? = null,
+    /**
+     * Generic App callback for the optional Design action on a PERSISTED
+     * private attachment. The feature emits the real conversation/message/
+     * attachment identity only; it has no App/design dependency and adds no
+     * route. Temporary sessions never receive this action.
+     */
+    onAttachmentDesign: ((AttachmentDesignRequest) -> Unit)? = null,
 ) {
     val state = holder.snapshot.value
     // Timeline density follows the ACTUAL pane when the host measured one;
@@ -128,7 +135,12 @@ fun FloeConversationDestination(
                 )
                 FloeDivider()
             }
-            ThreadTimeline(holder, isWide = isWide, modifier = Modifier.weight(1f))
+            ThreadTimeline(
+                holder = holder,
+                isWide = isWide,
+                modifier = Modifier.weight(1f),
+                onAttachmentDesign = if (state.isTemporary) null else onAttachmentDesign,
+            )
             ThreadCompactionStatus(holder)
             ThreadErrorBanner(holder)
             ThreadContinuationBar(holder)
@@ -362,7 +374,12 @@ private fun ThreadTopBar(holder: ConversationFlowHolder, onBack: (() -> Unit)?) 
 /* --------------------------------- timeline --------------------------------- */
 
 @Composable
-private fun ThreadTimeline(holder: ConversationFlowHolder, isWide: Boolean, modifier: Modifier = Modifier) {
+private fun ThreadTimeline(
+    holder: ConversationFlowHolder,
+    isWide: Boolean,
+    modifier: Modifier = Modifier,
+    onAttachmentDesign: ((AttachmentDesignRequest) -> Unit)? = null,
+) {
     val state = holder.snapshot.value ?: return
     val search = holder.threadSearch
     val listState = rememberLazyListState()
@@ -451,7 +468,10 @@ private fun ThreadTimeline(holder: ConversationFlowHolder, isWide: Boolean, modi
                 }?.query
                 Box(modifier = Modifier.fillMaxWidth()) {
                     ConversationTimelineRow(
-                        row = row, holder = holder, searchHighlightQuery = searchQuery,
+                        row = row,
+                        holder = holder,
+                        searchHighlightQuery = searchQuery,
+                        onAttachmentDesign = onAttachmentDesign,
                     )
                 }
             }

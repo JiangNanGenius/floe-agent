@@ -515,6 +515,10 @@ dependencies {
     implementation(project(":feature:canvas"))
     implementation(project(":feature:workbench"))
     implementation(project(":core:notesmedia"))
+    // G09-R2 media platform: real Media3 playback/composition/export and the
+    // bounded render-ticket consumer. The module manifest merges the bounded
+    // mediaProcessing/dataSync service and its normal FGS permissions.
+    implementation(project(":core:workbenchmedia"))
     implementation(project(":feature:notes"))
     // G04 service/presentation modules; owner-bound host adapters gate use.
     implementation(project(":core:safgateway"))

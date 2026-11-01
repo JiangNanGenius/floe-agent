@@ -21,6 +21,7 @@ import com.floe.android.feature.workbench.MediaAssetReference
 import com.floe.android.feature.workbench.ui.presentation.MediaFailure
 import com.floe.android.feature.workbench.ui.presentation.MediaFailureKind
 import com.floe.android.feature.workbench.ui.presentation.MediaNotice
+import com.floe.android.feature.workbench.ui.state.VideoNotice
 import java.time.Instant
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
@@ -40,6 +41,9 @@ internal fun MediaFailure.titleRes(): Int = when (kind) {
     MediaFailureKind.ASSET -> R.string.media_asset_import_failed_title
     MediaFailureKind.SESSION_LOST -> R.string.media_failure_session_title
     MediaFailureKind.INVALID_REQUEST -> R.string.media_operation_failed_title
+    MediaFailureKind.GENERATION -> R.string.media_r2_generation_failed_title
+    MediaFailureKind.EXPORT -> R.string.media_r2_export_failed_title
+    MediaFailureKind.UNSUPPORTED -> R.string.media_r2_unsupported_title
     MediaFailureKind.UNKNOWN -> R.string.media_operation_failed_title
 }
 
@@ -57,6 +61,9 @@ internal fun MediaFailure.bodyRes(): Int = when (kind) {
     MediaFailureKind.ASSET -> R.string.media_asset_import_failed_body
     MediaFailureKind.SESSION_LOST -> R.string.media_failure_session_body
     MediaFailureKind.INVALID_REQUEST -> R.string.media_operation_failed_body
+    MediaFailureKind.GENERATION -> R.string.media_r2_generation_failed_body
+    MediaFailureKind.EXPORT -> R.string.media_r2_export_failed_body
+    MediaFailureKind.UNSUPPORTED -> R.string.media_r2_unsupported_body
     MediaFailureKind.UNKNOWN -> R.string.media_operation_failed_body
 }
 
@@ -66,6 +73,22 @@ internal fun MediaNotice.textRes(): Int = when (this) {
     MediaNotice.RELOADED -> R.string.media_reloaded
     MediaNotice.LAYER_REMOVED -> R.string.media_layer_delete
     MediaNotice.MISSING_ASSETS -> R.string.media_missing_asset_title
+}
+
+internal fun VideoNotice.textRes(): Int = when (this) {
+    VideoNotice.CLIP_ADDED -> R.string.media_r2_notice_clip_added
+    VideoNotice.CLIP_DUPLICATED -> R.string.media_r2_notice_clip_duplicated
+    VideoNotice.CLIP_REMOVED -> R.string.media_r2_notice_clip_removed
+    VideoNotice.CLIP_SPLIT -> R.string.media_r2_notice_clip_split
+    VideoNotice.CLIP_REORDERED -> R.string.media_r2_notice_clip_reordered
+    VideoNotice.COVER_SET -> R.string.media_r2_notice_cover_set
+    VideoNotice.COVER_CLEARED -> R.string.media_r2_notice_cover_cleared
+    VideoNotice.CAPTION_ADDED -> R.string.media_r2_notice_caption_added
+    VideoNotice.CAPTION_REMOVED -> R.string.media_r2_notice_caption_removed
+    VideoNotice.CAPTION_SHIFTED -> R.string.media_r2_notice_caption_shifted
+    VideoNotice.MUSIC_ADDED -> R.string.media_r2_notice_music_added
+    VideoNotice.MUSIC_REMOVED -> R.string.media_r2_notice_music_removed
+    VideoNotice.CANVAS_UPDATED -> R.string.media_r2_notice_canvas_updated
 }
 
 internal fun layerKindLabelRes(layer: ImageLayer): Int = when (layer.kind) {

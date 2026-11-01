@@ -630,7 +630,7 @@ let package = Package(
         // MigrationSupport). No renderer, AVFoundation, Media3, CAD or app UI
         // is vendored; see PROVENANCE.md.
         .target(name: "FloeAndroidWorkbench", dependencies: [
-            "FloeCore",
+            "FloeCore", "FloeTools",
         ], swiftSettings: strictSettings),
         .target(name: "FloeAgentRuntime", dependencies: [
             "FloeCore", "FloeModels", "FloeProviders", "FloeTools",

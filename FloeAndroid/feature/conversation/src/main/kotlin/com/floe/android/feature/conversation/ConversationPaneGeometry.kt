@@ -111,6 +111,7 @@ fun FloeConversationPaneHost(
     holder: ConversationFlowHolder,
     modifier: Modifier = Modifier,
     onBack: (() -> Unit)? = null,
+    onAttachmentDesign: ((AttachmentDesignRequest) -> Unit)? = null,
 ) {
     // Consume bottom system bars + IME before BoxWithConstraints measures the
     // pane. Compose subtracts already-consumed insets, so an ancestor that
@@ -152,6 +153,7 @@ fun FloeConversationPaneHost(
             modifier = Modifier.fillMaxSize(),
             onBack = onBack,
             paneGeometry = geometry,
+            onAttachmentDesign = onAttachmentDesign,
         )
     }
 }

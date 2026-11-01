@@ -3,6 +3,7 @@ package com.floe.android
 
 import android.app.Application
 import com.floe.android.host.RuntimeHost
+import com.floe.android.mediaintegration.MediaWorkbenchHost
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -79,6 +80,23 @@ class FloeApplication : Application() {
      * never creates a detached Kotlin/temp project store.
      */
     internal lateinit var creativeHost: com.floe.android.host.creative.CreativeHostController
+        private set
+    /**
+     * G09-R2 App-owned media platform/lifecycle/export/import integration.
+     * Created data-only in onCreate; the process platform session starts only
+     * after the native creative bind accepts a live epoch. Rotation and
+     * background never retire it; an actual Root/epoch replacement does.
+     */
+    internal lateinit var mediaWorkbench: MediaWorkbenchHost
+        private set
+    /**
+     * G09-R2 App-owned design UI integration: bounded retained design
+     * sessions, real proposal staging, verified preview/export opening and
+     * the design Save/Share drain gate. Data-only construction here; native
+     * and disk work starts only on an explicit design action after the
+     * accepted creative epoch exists.
+     */
+    internal lateinit var designUi: com.floe.android.designintegration.DesignUiOwner
         private set
     internal val notesPdfPasswords = com.floe.android.notesplatform.NotesPdfPasswordPromptBroker {
         (runtimeHost?.nativeRootEpoch() ?: 0L) > 0L && isActivityInForeground()
@@ -228,6 +246,16 @@ class FloeApplication : Application() {
         if (runtimeHost?.nativeRootEpoch() != epoch) return
         try {
             creativeHost.bindCurrent()
+            if (runtimeHost?.nativeRootEpoch() != epoch) return
+            // The native creative bind accepted the live epoch; only now may
+            // the process media platform session and its ticket consumer start.
+            if (!mediaWorkbench.onNativeCreativeBound(epoch)) {
+                android.util.Log.i(
+                    "FloeCreative",
+                    "media_platform_" + mediaWorkbench.platformState().javaClass.simpleName.lowercase(),
+                )
+            }
+            designUi.onNativeCreativeBound(epoch)
         } catch (cancelled: kotlinx.coroutines.CancellationException) {
             throw cancelled
         } catch (error: com.floe.android.feature.canvas.CreativeException) {
@@ -238,9 +266,54 @@ class FloeApplication : Application() {
         }
     }
 
+    /**
+     * Actual creative Root retirement order:
+     *  1. fence NEW App media work and drop retained library/route sessions;
+     *  2. await the App-owned Save/Share operation and the old platform
+     *     workers/players/claims/native pins;
+     *  3. App staging drain + native aggregate gate (imports/render pins);
+     *  4. require aggregate pending 0, then stop the host.
+     * Any FALSE keeps the old Root and every owned reference; a later exact
+     * attempt may retry. Never clear/replace the epoch while A work is active.
+     */
     private suspend fun prepareCreativeForRootStop(): Boolean {
         if (!this::creativeHost.isInitialized) return true
+        if (!this::mediaWorkbench.isInitialized) {
+            return try {
+                creativeHost.stop()
+                true
+            } catch (cancelled: kotlinx.coroutines.CancellationException) {
+                throw cancelled
+            } catch (_: Throwable) {
+                false
+            }
+        }
         return try {
+            mediaWorkbench.fenceForRootStop()
+            CreativeUiHost.retireMediaSessions()
+            if (!mediaWorkbench.prepareForRootStop()) {
+                android.util.Log.i(
+                    "FloeCreative",
+                    "media_platform_drain_pending:" +
+                        (mediaWorkbench.lastDrainSummary() ?: "reportUnavailable"),
+                )
+                return false
+            }
+            // Design UI save/staging drain precedes the native design fence.
+            // FALSE keeps Root bound and every owned reference; a later exact
+            // attempt may retry. No boolean cancel is treated as drained.
+            if (!designUi.prepareForRootStop()) {
+                android.util.Log.i("FloeCreative", "design_ui_drain_pending")
+                return false
+            }
+            if (!creativeHost.beginR2NativeRootStop()) {
+                android.util.Log.i("FloeCreative", "creative_native_root_stop_pending")
+                return false
+            }
+            if (creativeHost.r2DrainPending() != 0) {
+                android.util.Log.i("FloeCreative", "creative_native_drain_pending")
+                return false
+            }
             creativeHost.stop()
             true
         } catch (cancelled: kotlinx.coroutines.CancellationException) {
@@ -375,6 +448,30 @@ class FloeApplication : Application() {
             this,
             epochProvider = { runtimeHost?.nativeRootEpoch()?.takeIf { it > 0L } },
             acceptedRootProvider = { runtimeCoordinator.acceptedStorageRoot() },
+            designAuthorityIssuer =
+                com.floe.android.designintegration.DesignAuthorityBridge { runtimeCoordinator },
+        )
+        mediaWorkbench = MediaWorkbenchHost(
+            this,
+            hostScope,
+            { creativeHost },
+            agentBindingOwner = com.floe.android.mediaintegration.MediaAgentBindingOwner(
+                { runtimeCoordinator },
+                { runtimeHost },
+            ),
+        )
+        designUi = com.floe.android.designintegration.DesignUiOwner(
+            context = this,
+            hostScope = hostScope,
+            hostProvider = { creativeHost },
+            acceptedRootProvider = { runtimeCoordinator.acceptedStorageRoot() },
+            epochProvider = { runtimeHost?.nativeRootEpoch()?.takeIf { it > 0L } },
+            // The captured native Canvas owner's read-only Materials root for
+            // the design snapshot's digest-verified image bytes. Null when no
+            // live editor is captured for that exact canvas.
+            canvasAssetsBasePathProvider = { canvasID ->
+                CreativeUiHost.canvasAssetsBasePath(this, canvasID)
+            },
         )
         linuxCleanup = com.floe.android.host.linux.LinuxRuntimeCleanupPump(this, hostScope)
         // The controller receives the APPLICATION-owned scope only to run

@@ -30,7 +30,8 @@ public enum AndroidBridge {
         guard requestVersion == version || requestVersion == BridgeV2.version
                 || requestVersion == BridgeV3.version
                 || requestVersion == BridgeV4.version
-                || requestVersion == BridgeV5.version else {
+                || requestVersion == BridgeV5.version
+                || requestVersion == BridgeV6.version else {
             return response(["ok": false, "error": "unsupportedVersion"])
         }
         if requestVersion == BridgeV2.version {
@@ -68,6 +69,22 @@ public enum AndroidBridge {
                                 stampVersion: BridgeV5.version)
             }
             return response(object, stampVersion: BridgeV5.version)
+        }
+        if requestVersion == BridgeV6.version {
+            // Additive G09-R2 channel: typed video read/apply plus the
+            // closed generation/design vocabulary (typed unavailable until
+            // their real modules exist). Same C ABI, host-only, no model
+            // tool. v1-v5 bytes above remain unchanged.
+            let object = BridgeV6Handler.handle(requestData: data,
+                                                fallbackRequestID: requestID)
+            let encoded = (try? JSONSerialization.data(withJSONObject: object,
+                                                       options: [.sortedKeys]))
+                ?? Data(#"{"ok":false,"error":"encoding"}"#.utf8)
+            guard encoded.count <= BridgeV6.maximumResponseBytes else {
+                return response(["ok": false, "error": "responseTooLarge"],
+                                stampVersion: BridgeV6.version)
+            }
+            return response(object, stampVersion: BridgeV6.version)
         }
         switch request["operation"] as? String {
         case "handshake":

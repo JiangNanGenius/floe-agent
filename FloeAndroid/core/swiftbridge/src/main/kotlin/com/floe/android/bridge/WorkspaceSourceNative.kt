@@ -54,14 +54,29 @@ object WorkspaceSourceNative {
 
     /** Freeze one native working copy for chunked egress. mode: "save"
      * (journal ladder) | "export" (non-destructive send). Positive =
-     * ticket; negative = typed status. */
+     * ticket; negative = typed status. Unchanged generic entry: its
+     * provider-copy ceiling stays 1 GiB for every Office/Notes caller. */
     external fun egressOpen(
         epoch: Long, mode: String, taskID: String, workspaceID: String,
         logicalPath: String, sourceID: String,
     ): Long
 
-    /** {ok, mode, sha256, bytes, logicalPath, recoveryID, [sourceID,
-     * sourceRevision, recordedSHA256]} */
+    /** G09-R2 CLOSED media-purpose egress open (additive). `kind` must be
+     * exactly "image" | "audio" | "video" and must equal the logical path's
+     * own final extension; native applies image 128 MiB / audio 1 GiB /
+     * video 8 GiB and streams the pinned source body (no second snapshot).
+     * Positive = ticket whose info/read/close use the SAME functions below;
+     * negative = typed status. On an older installed Core the symbol is
+     * missing and Kotlin raises UnsatisfiedLinkError/LinkageError — the App
+     * maps that to the honest asset-staging-unavailable refusal instead of
+     * pretending the 8 GiB channel exists. */
+    external fun egressOpenMedia(
+        epoch: Long, kind: String, taskID: String, workspaceID: String,
+        logicalPath: String,
+    ): Long
+
+    /** {ok, mode, sha256, bytes, logicalPath, [mediaKind | recoveryID,
+     * sourceID, sourceRevision, recordedSHA256]} */
     external fun egressInfo(ticket: Long, reply: ByteArray): Int
 
     /** Copy snapshot bytes at [offset] into [target] (<= 64 KiB array).

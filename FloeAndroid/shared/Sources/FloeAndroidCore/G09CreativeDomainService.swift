@@ -41,6 +41,10 @@ public actor G09CreativeDomainService {
         let media: G09MediaProjectHost
         let recovery: G09CreativeRecovery
         let workspaceStore: SQLiteWorkspaceStore
+        let database: DatabaseManager
+        let conversationStore: SQLiteConversationStore
+        let taskBindings: G09R2MediaTaskBindingStore
+        let design: G09R2DesignService
     }
 
     private struct Session: Sendable {
@@ -53,33 +57,66 @@ public actor G09CreativeDomainService {
     private var bound: Bound?
     private var sessions: [String: Session] = [:]
     private var sessionOrder: [String] = []
+    /// Exact generation whose Root stop was requested. New mutations and a
+    /// same-epoch rebind are refused until a fully drained close unbinds.
+    private var r2StoppingEpoch: UInt64?
 
     public init() {}
 
     // MARK: - Binding
 
-    public func bind(epoch: UInt64, storage: G09CreativeStorageContext) throws -> G09CreativeStatusDTO {
+    public func bind(epoch: UInt64, storage: G09CreativeStorageContext) async throws -> G09CreativeStatusDTO {
         guard epoch > 0 else { throw G09CreativeError.invalidRequest("missingEpoch") }
+        guard r2StoppingEpoch != epoch else {
+            throw G09R2Error(.rendererUnavailable, detail: "rootDrainPending")
+        }
         if let current = bound, current.epoch == epoch, current.root == storage.root {
+            G09R2MediaToolAvailability.shared.markBound(epoch: epoch)
             return status()
+        }
+        if let current = bound, current.epoch != epoch {
+            // A newer accepted generation may replace the old one only after
+            // every owned import/render/snapshot has actually settled.
+            guard await r2Drained(epoch: current.epoch) else {
+                throw G09R2Error(.rendererUnavailable, detail: "rootDrainPending")
+            }
+            G09R2SnapshotLeases.shared.retire(epoch: current.epoch)
+            G09R2MediaToolAvailability.shared.markUnbound(epoch: current.epoch)
         }
         let assetStore = CreativeAssetStore(
             database: storage.database,
             reachabilityGuard: nil,
             deferPhysicalReclamation: true)
+        let assets = G09CreativeAssetHost(root: storage.root, store: assetStore)
+        let canvasRepository = G09CanvasProjectRepository(root: storage.root)
+        let design = G09R2DesignService(
+            epoch: epoch,
+            root: storage.root,
+            canvasRepository: canvasRepository,
+            assets: assets,
+            workspaceStore: storage.workspaceStore,
+            conversationStore: storage.conversationStore,
+            database: storage.database)
         bound = Bound(
             epoch: epoch,
             root: storage.root,
             assetStore: assetStore,
-            assets: G09CreativeAssetHost(root: storage.root, store: assetStore),
-            canvas: G09CanvasProjectRepository(root: storage.root),
+            assets: assets,
+            canvas: canvasRepository,
             media: G09MediaProjectHost(root: storage.root,
                                        workspaceStore: storage.workspaceStore,
                                        conversationStore: storage.conversationStore),
             recovery: G09CreativeRecovery(root: storage.root),
-            workspaceStore: storage.workspaceStore)
+            workspaceStore: storage.workspaceStore,
+            database: storage.database,
+            conversationStore: storage.conversationStore,
+            taskBindings: G09R2MediaTaskBindingStore(
+                database: storage.database),
+            design: design)
         sessions.removeAll()
         sessionOrder.removeAll()
+        r2StoppingEpoch = nil
+        G09R2MediaToolAvailability.shared.markBound(epoch: epoch)
         return status()
     }
 
@@ -100,11 +137,67 @@ public actor G09CreativeDomainService {
     }
 
     /// Exact-epoch retirement. A stale epoch never unbinds a newer generation.
-    public func close(epoch: UInt64) {
-        guard let current = bound, current.epoch == epoch else { return }
+    ///
+    /// G09-R2 additive root-drain gate: this exact generation is NOT released
+    /// while ANY owned native work remains:
+    ///  * the bounded media-render ticket mailbox still owns claimed/queued
+    ///    tickets (the platform must cancel real codec/IO and ack each claim);
+    ///  * a streamed large-import worker is still copying/hashing/committing;
+    ///  * a native-issued snapshot lease is pinned by a live ticket/export.
+    /// The bound cluster, Root, DatabaseManager and recoverable project files
+    /// stay valid meanwhile, and a later exact-epoch close retries. Returns
+    /// TRUE only when the cluster was actually released. R1-only callers see
+    /// the original behavior because an unbound/empty foundation drains
+    /// immediately.
+    @discardableResult
+    public func close(epoch: UInt64) async -> Bool {
+        guard let current = bound, current.epoch == epoch else { return true }
+        r2StoppingEpoch = epoch
+        guard await r2Drained(epoch: epoch) else { return false }
+        G09R2SnapshotLeases.shared.retire(epoch: epoch)
         bound = nil
         sessions.removeAll()
         sessionOrder.removeAll()
+        r2StoppingEpoch = nil
+        G09R2MediaToolAvailability.shared.markUnbound(epoch: epoch)
+        return true
+    }
+
+    /// Phase-1 only: refuse new work for this generation without claiming it
+    /// is drained. The owner retries `close(epoch:)` after real settlement.
+    public func r2BeginRootStop(epoch: UInt64) async -> Bool {
+        guard let current = bound, current.epoch == epoch else { return true }
+        r2StoppingEpoch = epoch
+        G09R2MediaToolAvailability.shared.markStopping(epoch: epoch)
+        _ = G09R2MediaRenderHostMailbox.shared.prepareRootStop(epoch: epoch)
+        _ = G09R2LargeImportService.shared.requestRootStop(epoch: epoch)
+        _ = G09R2GenerationService.shared.requestRootStop(epoch: epoch)
+        return await r2Drained(epoch: epoch)
+    }
+
+    public func r2IsRootStopping(epoch: UInt64) -> Bool {
+        r2StoppingEpoch == epoch
+    }
+
+    /// Aggregate over every real owned-work source. Each participant reports
+    /// actual settlement (or pins), never a cancel flag. The design service is
+    /// fenced here too: its in-flight file/payload operations keep Root bound.
+    private func r2Drained(epoch: UInt64) async -> Bool {
+        // Declared hard pin lifetime is honoured at each drain observation; a
+        // leaked direct-operation handle cannot retain a file forever.
+        G09R2RenderBindingPins.shared.purgeExpired(epoch: epoch)
+        let mailbox = G09R2MediaRenderHostMailbox.shared.prepareRootStop(epoch: epoch)
+        let imports = G09R2LargeImportService.shared.requestRootStop(epoch: epoch)
+        let generation = G09R2GenerationService.shared.requestRootStop(epoch: epoch)
+        let pins = G09R2SnapshotLeases.shared.pinnedCount(epoch: epoch)
+        let designService = bound?.design
+        let designDrained: Bool
+        if let designService {
+            designDrained = await designService.requestRootStop(epoch: epoch)
+        } else {
+            designDrained = true
+        }
+        return mailbox && imports && generation && pins == 0 && designDrained
     }
 
     public func status() -> G09CreativeStatusDTO {
@@ -132,6 +225,9 @@ public actor G09CreativeDomainService {
     public func perform(epoch: UInt64, requestID: String,
                         action: String, payload: G09CreativeJSON?) async throws -> Data {
         guard let current = bound, current.epoch == epoch else {
+            throw G09CreativeError.staleGeneration
+        }
+        guard r2StoppingEpoch != epoch else {
             throw G09CreativeError.staleGeneration
         }
         guard G09CreativeActions.isCommand(action) else {
@@ -587,4 +683,180 @@ private struct G09CanvasLibraryResponse: Encodable {
 
 private struct G09MediaLibraryResponse: Encodable {
     var projects: [G09MediaSummaryDTO]
+}
+
+// MARK: - G09-R2 additive foundation seam (job-b72b2978320e484e)
+//
+// The R2 video/snapshot/large-import foundation binds to the SAME accepted
+// generation as the R1 creative service. These accessors expose the already
+// owning media host and asset host (no second store, no second root) plus the
+// exact token-scoped editor-session checks. They add no dispatch path and do
+// not change any R1 action.
+
+/// The SAME bound cluster the R1 service owns, projected for the additive R2
+/// foundation. Values only; no caller path and no storage authority.
+public struct G09R2BoundCluster: Sendable {
+    public let epoch: UInt64
+    public let root: RuntimeStorageRoot
+    public let media: G09MediaProjectHost
+    public let assets: G09CreativeAssetHost
+
+    public init(epoch: UInt64, root: RuntimeStorageRoot,
+                media: G09MediaProjectHost, assets: G09CreativeAssetHost) {
+        self.epoch = epoch
+        self.root = root
+        self.media = media
+        self.assets = assets
+    }
+}
+
+extension G09CreativeDomainService {
+    /// The SAME real workspace/conversation stores owned by this accepted
+    /// generation. Additive read-only projections for the media tool host's
+    /// task/storage resolution; no second store or fallback root exists.
+    func r2WorkspaceStore() -> SQLiteWorkspaceStore? {
+        bound?.workspaceStore
+    }
+
+    func r2ConversationStore() -> SQLiteConversationStore? {
+        bound?.conversationStore
+    }
+
+    /// The SAME accepted database for the additive task/project association
+    /// table. No second database is opened here.
+    func r2Database() -> DatabaseManager? {
+        bound?.database
+    }
+
+    /// The ONE per-generation trusted media task/project association store.
+    /// It is released with the bound cluster but its rows live in the same
+    /// accepted database and survive a normal process restart.
+    func r2TaskBindingStore() -> G09R2MediaTaskBindingStore? {
+        bound?.taskBindings
+    }
+
+    /// Data-only model context for ONE real task: the ONE media project the
+    /// user explicitly selected for it through the trusted Ask AI flow.
+    ///
+    /// The selection is the durable `selected_at` marker carried by the
+    /// explicit association (a same-project reselection refreshes it); it is
+    /// never inferred from pin/update timestamps. Exactly one line is returned
+    /// so two same-named projects can never be confused in the model context,
+    /// and the limit cannot hide an older project that was just reselected.
+    ///
+    /// This is reference data, never permission: it changes no tool ceiling
+    /// and authorizes nothing. Every `media.project` call is still checked by
+    /// the original runtime authority plus the exact task/environment/
+    /// workspace binding CAS. Bounded and fail-soft — an unbound/stopping
+    /// generation, a database that never used the association (no table) or a
+    /// store failure yields no note instead of a failed run or an invented
+    /// identity.
+    func r2MediaTaskContext(taskID: UUID) async -> [String] {
+        // Capture the ACTUAL accepted generation this read belongs to. A
+        // stopping/unbound generation advertises nothing: its executor is
+        // being retired and a replacement run must not inherit its notes.
+        guard let bound = self.bound else { return [] }
+        let epoch = bound.epoch
+        let root = bound.root
+        guard r2StoppingEpoch != epoch,
+              let store = r2TaskBindingStore() else { return [] }
+        let selection: G09R2MediaTaskBindingRecord?
+        do {
+            selection = try await store.currentSelection(taskID: taskID)
+        } catch {
+            return []
+        }
+        // The typed read awaited real IO. Publish only for the SAME still-live
+        // accepted generation: a root stop or a same-epoch replacement that
+        // landed while the read was in flight must never leak the old root's
+        // association into a replacement run's context.
+        guard let current = self.bound,
+              current.epoch == epoch,
+              current.root == root,
+              r2StoppingEpoch != epoch else { return [] }
+        guard let selection else { return [] }
+        return [selection.modelContextLine]
+    }
+
+    /// Exact bound generation, or nil. Never opens a fallback root.
+    public func r2BoundCluster() -> G09R2BoundCluster? {
+        guard let current = bound else { return nil }
+        return G09R2BoundCluster(
+            epoch: current.epoch, root: current.root,
+            media: current.media, assets: current.assets)
+    }
+
+    /// Registers the media editor session exactly like `media.project.load`
+    /// (additive R2 load uses the same token/CAS rules).
+    public func r2RegisterMediaSession(projectID: UUID, token: String) throws {
+        try registerSession(kind: "media", projectID: projectID, token: token)
+    }
+
+    /// Requires the CURRENT media editor session for this exact project.
+    public func r2RequireMediaSession(projectID: UUID, token: String) throws {
+        try requireSession(kind: "media", projectID: projectID, token: token)
+    }
+
+    /// TRUE only while this exact generation is the bound authority and no
+    /// Root stop was requested for it.
+    public func r2IsGenerationLive(epoch: UInt64) -> Bool {
+        bound?.epoch == epoch && r2StoppingEpoch != epoch
+    }
+
+    /// Membership test without throwing, for the bounded render-snapshot lease
+    /// owner check (an export lease may outlive the editor session).
+    public func r2HasMediaSession(projectID: UUID, token: String) -> Bool {
+        let key = sessionKey("media", projectID)
+        guard let session = sessions[key] else { return false }
+        return session.kind == "media" && session.projectID == projectID &&
+            session.token == token
+    }
+}
+
+// MARK: - G09-R2 Design authority (additive)
+
+extension G09CreativeDomainService {
+    /// The exact design service for this generation. A stale/mismatched epoch
+    /// never receives the current design authority.
+    public func r2DesignService(for epoch: UInt64) -> G09R2DesignService? {
+        guard let current = bound,
+              current.epoch == epoch,
+              r2StoppingEpoch != epoch else {
+            return nil
+        }
+        return current.design
+    }
+
+    /// Read-only access for focused tests and host status composition.
+    public func r2DesignService() -> G09R2DesignService? {
+        bound?.design
+    }
+
+    /// Native-computed design availability. When the creative domain is not
+    /// bound there is no design authority and no advertised action/kind.
+    public func r2DesignStatus() async -> G09R2DesignStatusDTO {
+        guard let design = bound?.design else {
+            return G09R2DesignStatusDTO(
+                bound: false,
+                epoch: nil,
+                rootFingerprint: nil,
+                availableTargetKinds: [],
+                targetKindReasons: [
+                    "creativeDocument":
+                        "No design authority is bound in this generation",
+                ],
+                availableActions: [],
+                maxProposalBytes: G09R2CreativeLimits.designSourceBytes,
+                maxPreviewBytes: G09R2CreativeLimits.designPreviewBytes)
+        }
+        return await design.status()
+    }
+}
+
+extension G09CreativeDomainService {
+    /// Exact bound Canvas repository for focused design tests. Production
+    /// callers use the bridge actions, never this read-only handle.
+    public func r2CanvasRepository() -> G09CanvasProjectRepository? {
+        bound?.canvas
+    }
 }

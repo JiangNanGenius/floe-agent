@@ -1,0 +1,49 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- G09-R2 设计 App 入口；工作流界面文案位于 feature/canvas 模块。 -->
+<resources>
+    <string name="design_app_action">设计</string>
+    <string name="design_app_target_document">文档</string>
+    <string name="design_app_target_chat">聊天附件</string>
+    <string name="design_app_entry_unavailable">此文档暂无法使用设计。请重新打开后再试。</string>
+    <string name="design_entry_title">设计</string>
+    <string name="design_entry_subtitle">新建一个设计，或继续已保存的请求。</string>
+    <string name="design_entry_close">关闭</string>
+    <string name="design_entry_dismiss">知道了</string>
+    <string name="design_entry_pending_title">继续请求</string>
+    <string name="design_entry_pending_empty">还没有保存的设计请求。</string>
+    <string name="design_entry_loading">正在载入\u2026</string>
+    <string name="design_entry_show_more">显示更多</string>
+    <string name="design_entry_continue">继续</string>
+    <string name="design_entry_new_title">新建设计</string>
+    <string name="design_entry_kind_hint">选择要制作的内容。起始文件需要与类型一致。</string>
+    <string name="design_entry_brief_label">想做成什么样？</string>
+    <string name="design_entry_create">开始设计</string>
+    <string name="design_entry_back">返回</string>
+    <string name="design_entry_retry">重试</string>
+    <string name="design_entry_state_awaiting">等待起始文件</string>
+    <string name="design_entry_state_bound">可以继续</string>
+    <string name="design_entry_materials_title">选择起始文件</string>
+    <string name="design_entry_materials_empty">还没有匹配的文件，导入一个即可开始。</string>
+    <string name="design_entry_materials_unavailable">暂时无法读取已保存的文件，仍可导入文件。</string>
+    <string name="design_entry_material_meta">%1$s · %2$s</string>
+    <string name="design_entry_material_mismatch">%1$s · %2$s · 与此设计类型不符</string>
+    <string name="design_entry_untitled_material">未命名文件</string>
+    <string name="design_entry_import">导入文件</string>
+    <string name="design_entry_import_pending">文件尚未导入完成。</string>
+    <string name="design_entry_retry_import">重试导入</string>
+    <string name="design_entry_remove_import">移除</string>
+    <string name="design_entry_material_added">起始文件：%1$s</string>
+    <string name="design_entry_material_hint">打开设计流程即可制作并采用修改。</string>
+    <string name="design_entry_open_workflow">打开设计</string>
+    <string name="design_entry_publication_pending">保存到资料仍在等待完成。</string>
+    <string name="design_entry_error_mismatch">这个文件与所选设计类型不符。</string>
+    <string name="design_entry_error_too_large">这个文件超出设计可处理的大小。</string>
+    <string name="design_entry_error_conflict">设计已发生变化，请刷新后重试。</string>
+    <string name="design_entry_error_stale">设计会话已关闭，请重新打开请求。</string>
+    <string name="design_entry_error_not_allowed">这个文件不能用于设计。</string>
+    <string name="design_entry_error_unreadable">无法读取这个文件，请换一个。</string>
+    <string name="design_entry_error_generic">设计暂时无法继续，请重试。</string>
+    <string name="design_entry_error_core">设计需要更新应用核心后才能使用。</string>
+    <string name="design_entry_error_unavailable">设计暂时不可用，请稍后重试。</string>
+    <string name="design_entry_error_target">这个项目不能用于设计。</string>
+</resources>

@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  G09-R2 media platform library manifest.
+
+  The service is a normal (non-exported) mediaProcessing foreground service:
+  it only exists while a user-started export/import is actually encoding or
+  verifying, shows progress/cancel/return-to-project, and stops itself when
+  idle. There is no boot receiver, no start-sticky resurrection and no PiP
+  keepalive. dataSync is used only as the pre-API-34 platform spelling for the
+  same bounded media work; Android 15+ uses the mediaProcessing budget.
+
+  POST_NOTIFICATIONS is intentionally NOT declared/requested here: the App
+  owns the user-facing notification permission/consent flow. A denied
+  notification never becomes an excuse for an unbounded background service.
+-->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PROCESSING" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
+
+    <application>
+        <service
+            android:name=".service.MediaExportService"
+            android:exported="false"
+            android:stopWithTask="false"
+            android:foregroundServiceType="mediaProcessing|dataSync" />
+    </application>
+</manifest>

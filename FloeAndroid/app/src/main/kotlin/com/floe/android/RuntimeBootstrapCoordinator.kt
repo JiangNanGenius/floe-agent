@@ -2,6 +2,9 @@
 package com.floe.android
 
 import android.content.Context
+import com.floe.android.bridge.DesignAuthorityNative
+import com.floe.android.bridge.DesignAuthorityNativeException
+import com.floe.android.bridge.MediaRenderNative
 import com.floe.android.bridge.PrivacyConfirmationNative
 import com.floe.android.bridge.ProviderCatalogNative
 import com.floe.android.bridge.RuntimeCoreNative
@@ -268,6 +271,123 @@ class RuntimeBootstrapCoordinator internal constructor(
             // Typed numeric statuses and defensive nulls collapse to one
             // honest App answer: confirmation unavailable, no capability.
             null
+        }
+    }
+
+
+    /**
+     * Privileged design-authority ingress. The accepted epoch + full owner
+     * token are read atomically under [stateLock]; the JNI call runs outside
+     * the lock and native re-validates the owner proof. The token never enters
+     * a return value, log, UI state or wire envelope.
+     */
+    fun issueDesignAuthorityPrepare(
+        expectedNativeEpoch: Long,
+        requestJson: String,
+    ): String? {
+        val (epoch, token) = acceptedOwnerProof(expectedNativeEpoch)
+            ?: return null
+        // Let the typed JNI refusal reach DesignTrustedApprovalController so
+        // the UI can distinguish mismatch/expiry/unavailable. Only a missing
+        // live owner proof returns null here.
+        return DesignAuthorityNative.prepare(epoch, token, requestJson)
+    }
+
+    fun confirmDesignAuthority(
+        expectedNativeEpoch: Long,
+        confirmationToken: String,
+    ): Int {
+        val (epoch, token) = acceptedOwnerProof(expectedNativeEpoch)
+            ?: return -121
+        return try {
+            DesignAuthorityNative.confirm(epoch, token, confirmationToken)
+        } catch (t: Throwable) {
+            (t as? DesignAuthorityNativeException)?.status ?: -105
+        }
+    }
+
+    fun revokeDesignAuthority(
+        expectedNativeEpoch: Long,
+        confirmationToken: String,
+    ): Int {
+        val (epoch, token) = acceptedOwnerProof(expectedNativeEpoch)
+            ?: return -121
+        return try {
+            DesignAuthorityNative.revoke(epoch, token, confirmationToken)
+        } catch (t: Throwable) {
+            (t as? DesignAuthorityNativeException)?.status ?: -105
+        }
+    }
+
+    fun retireDesignAuthority(expectedNativeEpoch: Long): Int {
+        val (epoch, token) = acceptedOwnerProof(expectedNativeEpoch)
+            ?: return -121
+        return try {
+            DesignAuthorityNative.retire(epoch, token)
+        } catch (t: Throwable) {
+            (t as? DesignAuthorityNativeException)?.status ?: -105
+        }
+    }
+
+    /**
+     * Privileged media task/project association. The App calls this only from
+     * the explicit Ask AI action with the live accepted epoch; native derives
+     * project storage and validates the real task/workspace. Logical refusals
+     * are bounded JSON `{ok:false,error}`; null means no live owner proof.
+     */
+    fun issueMediaTaskBinding(
+        expectedNativeEpoch: Long,
+        requestJson: String,
+    ): String? {
+        val (epoch, token) = acceptedOwnerProof(expectedNativeEpoch)
+            ?: return null
+        return try {
+            MediaRenderNative.selectMediaTaskBinding(epoch, token, requestJson)
+        } catch (_: Throwable) {
+            null
+        }
+    }
+
+    fun revokeMediaTaskBinding(
+        expectedNativeEpoch: Long,
+        requestJson: String,
+    ): String? {
+        val (epoch, token) = acceptedOwnerProof(expectedNativeEpoch)
+            ?: return null
+        return try {
+            MediaRenderNative.revokeMediaTaskBinding(epoch, token, requestJson)
+        } catch (_: Throwable) {
+            null
+        }
+    }
+
+    /**
+     * Issue the ORIGINAL single-use media proposal grant for the pinned
+     * association. This is the optional explicit-review path; the ordinary
+     * task-authorized apply uses the runtime authority and needs no grant.
+     */
+    fun issueMediaProjectGrant(
+        expectedNativeEpoch: Long,
+        requestJson: String,
+    ): String? {
+        val (epoch, token) = acceptedOwnerProof(expectedNativeEpoch)
+            ?: return null
+        return try {
+            MediaRenderNative.issueMediaProjectGrant(epoch, token, requestJson)
+        } catch (_: Throwable) {
+            null
+        }
+    }
+
+    private fun acceptedOwnerProof(
+        expectedNativeEpoch: Long,
+    ): Pair<Long, String>? {
+        synchronized(stateLock) {
+            if (stopRequested || ownerProofInvalid) return null
+            val accepted = acceptedEpoch ?: return null
+            if (accepted != expectedNativeEpoch) return null
+            val token = acceptedToken ?: return null
+            return accepted to token
         }
     }
 

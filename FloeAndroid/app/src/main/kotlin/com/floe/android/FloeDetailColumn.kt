@@ -20,6 +20,7 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import com.floe.android.design.Floe
@@ -31,6 +32,11 @@ import com.floe.android.design.InspectorRoute
 import com.floe.android.design.MoreDestination
 import com.floe.android.design.SidebarSelection
 import com.floe.android.design.WorkbenchSelection
+import com.floe.android.designintegration.ChatDesignIdentity
+import com.floe.android.designintegration.ChatDesignSession
+import com.floe.android.designintegration.PrivateChatDesignEntry
+import com.floe.android.feature.canvas.ui.design.DesignWorkflowSheet
+import com.floe.android.feature.conversation.AttachmentDesignRequest
 import com.floe.android.feature.conversation.FloeConversationHistoryDestination
 import com.floe.android.feature.conversation.FloeConversationPaneHost
 import com.floe.android.host.RuntimeHost
@@ -187,12 +193,127 @@ private fun ConversationDestination(
     androidx.compose.runtime.LaunchedEffect(holder) {
         onHolderBound(conversationId, holder)
     }
+    val context = LocalContext.current
+    val application = context.applicationContext as? FloeApplication
+    val chatKindLabel = stringResource(R.string.design_app_target_chat)
+    // App-owned private design session for THIS holder. It is created only
+    // from the REAL persisted attachment identity the feature projected; the
+    // binding keeps a fresh editor token and the native owner re-verifies the
+    // attachment storage/bytes. The identity is saveable so a rotation reuses
+    // the SAME retained controller instead of minting a second session.
+    var designIdentity by rememberSaveable(
+        conversationId,
+        stateSaver = ChatDesignIdentitySaver,
+    ) {
+        mutableStateOf<ChatDesignIdentity?>(null)
+    }
+    // Key the retained-session resolution on the real temporary posture so a
+    // rotation/first snapshot that arrives just AFTER composition can still
+    // re-acquire the exact saved session (never a second token for the same
+    // attachment).
+    val holderTemporary = holder.snapshot.value?.isTemporary
+    val designIsCurrent: (com.floe.android.feature.conversation.AttachmentDesignRequest) -> Boolean =
+        { request ->
+            val live = holder.snapshot.value
+            PrivateChatDesignEntry.isEligible(
+                request = request,
+                holderConversationId = holder.conversationId,
+                holderIsTemporary = live?.isTemporary,
+                holderRetired = holder.retired,
+            )
+        }
+    val onAttachmentDesign: ((AttachmentDesignRequest) -> Unit)? =
+        if (application == null || temporary != null) {
+            null
+        } else {
+            { request ->
+                if (designIsCurrent(request)) {
+                    val existing = designIdentity
+                    val sameAttachment = existing != null &&
+                        existing.conversationId == request.conversationId &&
+                        existing.messageId == request.messageId &&
+                        existing.attachmentId == request.attachmentId
+                    if (!sameAttachment) {
+                        designIdentity = PrivateChatDesignEntry.identity(request)
+                    }
+                }
+            }
+        }
+    val designSession = remember(designIdentity, holder, holderTemporary) {
+        val identity = designIdentity
+        val app = application
+        if (identity == null || app == null) {
+            null
+        } else {
+            PrivateChatDesignEntry.reopen(
+                sessions = app.designUi,
+                identity = identity,
+                title = identity.displayName,
+                kindLabel = chatKindLabel,
+                isCurrent = { designIsCurrent(identity.request()) },
+            )
+        }
+    }
     FloeConversationPaneHost(
         holder = holder,
         modifier = Modifier.fillMaxSize(),
         onBack = if (compact) (onBackToOrigin ?: onOpenDrawer) else null,
+        onAttachmentDesign = onAttachmentDesign,
     )
+    designSession?.let { session ->
+        DesignWorkflowSheet(
+            controller = session.controller,
+            onClosed = {
+                application?.designUi?.release(session.controller)
+                designIdentity = null
+            },
+        )
+    }
+    // A real leave/B replaces this holder; release the retained design
+    // controller so a late native callback cannot act as conversation B.
+    // A rotation only recreates composition and keeps the same holder/session.
+    androidx.compose.runtime.DisposableEffect(holder) {
+        onDispose {
+            val changing = (context as? android.app.Activity)?.isChangingConfigurations == true
+            if (!changing) {
+                designSession?.let { session ->
+                    application?.designUi?.release(session.controller)
+                }
+            }
+        }
+    }
 }
+
+/** Saveable exact identity of a private-chat design session. */
+private val ChatDesignIdentitySaver =
+    androidx.compose.runtime.saveable.listSaver<ChatDesignIdentity?, String>(
+    save = { value ->
+        value?.let {
+            listOf(
+                it.conversationId,
+                it.messageId,
+                it.attachmentId,
+                it.displayName,
+                it.isImage.toString(),
+                it.sessionToken,
+            )
+        } ?: emptyList()
+    },
+    restore = { values ->
+        if (values.size == 6) {
+            ChatDesignIdentity(
+                conversationId = values[0],
+                messageId = values[1],
+                attachmentId = values[2],
+                displayName = values[3],
+                isImage = values[4] == "true",
+                sessionToken = values[5],
+            )
+        } else {
+            null
+        }
+    },
+)
 
 /**
  * Task Center: the real conversation history surface (list/search/archive/

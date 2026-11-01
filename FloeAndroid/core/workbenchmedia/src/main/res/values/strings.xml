@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="media_export_channel_name">Media exports</string>
+    <string name="media_export_channel_description">Progress and cancel for media preview and export work</string>
+    <string name="media_export_title">Media export</string>
+    <string name="media_export_cancel">Cancel</string>
+    <string name="media_export_state_queued">Waiting</string>
+    <string name="media_export_state_running">Exporting</string>
+    <string name="media_export_state_verifying">Verifying</string>
+    <string name="media_export_state_completed">Completed</string>
+    <string name="media_export_state_cancelled">Cancelled</string>
+    <string name="media_export_state_failed">Failed</string>
+    <string name="media_export_state_interrupted">Interrupted</string>
+    <string name="media_export_state_timeout">Timed out</string>
+</resources>

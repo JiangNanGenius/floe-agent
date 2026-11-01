@@ -22,6 +22,7 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -39,8 +40,15 @@ import com.floe.android.design.FloeCircleButton
 import com.floe.android.design.FloeDivider
 import com.floe.android.design.FloeIcons
 import com.floe.android.design.FloeLayout
+import com.floe.android.design.FloeStatusLine
 import com.floe.android.design.FloeText
 import com.floe.android.design.IconGlyph
+import com.floe.android.designintegration.DesignExportPickerEffect
+import com.floe.android.designintegration.DesignTargetResolver
+import com.floe.android.feature.canvas.ui.design.DesignSessionRequest
+import com.floe.android.feature.canvas.ui.design.DesignTargetDescriptor
+import com.floe.android.feature.canvas.ui.design.DesignWorkflowController
+import com.floe.android.feature.canvas.ui.design.DesignWorkflowSheet
 import com.floe.android.feature.ide.FloeIdeDocumentWindow
 import com.floe.android.feature.ide.IdeBottomAccessory
 import com.floe.android.feature.ide.IdePresenter
@@ -351,6 +359,69 @@ internal fun WorkspaceDocumentDestination(
         closePreview()
         onCloseTask()
     }
+    // App-owned design session for the SAME file document request. The sheet
+    // is a feature-owned dialog; this destination only supplies the real
+    // workspace/file identity and the App owner. No design project, path
+    // authority or second document store is created here.
+    val application = uiContext.applicationContext as? FloeApplication
+    var designController by remember(request.token) {
+        mutableStateOf<DesignWorkflowController?>(null)
+    }
+    var designEntryFailure by remember(request.token) { mutableStateOf(false) }
+    var designSheetRequested by rememberSaveable(request.token) { mutableStateOf(false) }
+    val latestDesignController by rememberUpdatedState(designController)
+    val designSessionToken = remember(
+        request.taskID, request.workspaceID, request.path, request.token,
+    ) {
+        DesignTargetResolver.documentSessionToken(
+            taskID = request.taskID,
+            workspaceID = request.workspaceID,
+            relativePath = request.path,
+            requestToken = request.token,
+        )
+    }
+    val openDesign: () -> Unit = {
+        val owner = application?.designUi
+        if (owner == null) {
+            designEntryFailure = true
+        } else {
+            try {
+                designEntryFailure = false
+                designController = owner.acquire(
+                    DesignSessionRequest(
+                        binding = DesignTargetResolver.workspaceFileBinding(
+                            workspaceID = request.workspaceID,
+                            relativePath = request.path,
+                            sessionToken = designSessionToken,
+                        ),
+                        descriptor = DesignTargetDescriptor(
+                            title = request.fileName,
+                            kindLabel = uiContext.getString(R.string.design_app_target_document),
+                        ),
+                    ),
+                )
+                designSheetRequested = true
+            } catch (_: Throwable) {
+                designEntryFailure = true
+            }
+        }
+    }
+    LaunchedEffect(designSheetRequested, request.token) {
+        // Rotation restores the request flag; re-acquire the SAME retained
+        // App controller so the sheet and its drafts survive.
+        if (designSheetRequested && designController == null) {
+            openDesign()
+        }
+    }
+    DisposableEffect(request.token) {
+        onDispose {
+            if ((uiContext as? Activity)?.isChangingConfigurations != true) {
+                latestDesignController?.let { design ->
+                    application?.designUi?.release(design)
+                }
+            }
+        }
+    }
     Dialog(
         onDismissRequest = backToFiles,
         properties = DialogProperties(
@@ -460,8 +531,44 @@ internal fun WorkspaceDocumentDestination(
                     onCloseTask = closeTask,
                 )
             }
+            val designEntryVisible = previewOwner != null && !imageEditOpen &&
+                !(request.surface == WorkspaceDocumentSurface.MEDIA &&
+                    mediaWorkbenchKind(request.path) != null)
+            if (designEntryVisible) {
+                Column(
+                    modifier = Modifier
+                        .align(Alignment.TopEnd)
+                        .padding(top = 48.dp, end = 12.dp),
+                    horizontalAlignment = Alignment.End,
+                ) {
+                    FloeCapsuleAction(
+                        label = stringResource(R.string.design_app_action),
+                        onClick = openDesign,
+                        modifier = Modifier.testTag("workspace.design"),
+                    )
+                    if (designEntryFailure) {
+                        FloeStatusLine(
+                            icon = FloeIcons.WarningTriangle,
+                            text = stringResource(R.string.design_app_entry_unavailable),
+                            color = Floe.colors.pending,
+                            modifier = Modifier.padding(top = 4.dp),
+                        )
+                    }
+                }
+            }
         }
     }
+    designController?.let { design ->
+        DesignWorkflowSheet(
+            controller = design,
+            onClosed = {
+                designController = null
+                designSheetRequested = false
+                application?.designUi?.release(design)
+            },
+        )
+    }
+    DesignExportPickerEffect(application?.designUi?.exportDelivery)
 }
 
 /** The one document header shared by the real PDF/image preview and the

@@ -16,6 +16,7 @@ import com.floe.android.feature.canvas.CreativeException
 import com.floe.android.feature.canvas.CreativeOriginContext
 import com.floe.android.feature.canvas.CreativeServiceStatus
 import com.floe.android.feature.canvas.CreativeStorageLayer
+import com.floe.android.feature.canvas.DesignHostApi
 import com.floe.android.feature.workbench.CreativeHostApi
 import com.floe.android.feature.workbench.MediaAssetReceipt
 import com.floe.android.feature.workbench.MediaEditCommand
@@ -23,6 +24,10 @@ import com.floe.android.feature.workbench.MediaMutationReceipt
 import com.floe.android.feature.workbench.MediaProjectEnvelope
 import com.floe.android.feature.workbench.MediaProjectReceipt
 import com.floe.android.feature.workbench.MediaProjectSummary
+import com.floe.android.feature.workbench.WorkbenchGenerationHostApi
+import com.floe.android.feature.workbench.WorkbenchLargeImportPort
+import com.floe.android.feature.workbench.MediaRenderTicketTransport
+import com.floe.android.feature.workbench.WorkbenchRenderSnapshotPort
 import java.util.UUID
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
@@ -38,10 +43,17 @@ import kotlinx.coroutines.Dispatchers
 class CreativeHostService(
     context: android.content.Context,
     acceptedRootProvider: () -> CreativeAcceptedRoot?,
-    epochProvider: () -> Long?,
-    transport: CreativeTransport = SwiftCreativeTransport,
-    ioDispatcher: CoroutineDispatcher = Dispatchers.IO,
+    private val epochProvider: () -> Long?,
+    designAuthorityIssuer: DesignAuthorityIssuer? = null,
+    private val transport: CreativeTransport = SwiftCreativeTransport,
+    private val ioDispatcher: CoroutineDispatcher = Dispatchers.IO,
 ) : CreativeHostApi {
+    init {
+        // Data-only: no service/channel/permission is touched here. The real
+        // bounded dataSync owner starts only for a persisted generation job.
+        GenerationForegroundOwner.initializeApplicationContext(context)
+    }
+
     private val project = CreativeProjectController(
         transport = transport, epochProvider = epochProvider,
         ioDispatcher = ioDispatcher)
@@ -50,6 +62,115 @@ class CreativeHostService(
         acceptedRootProvider = acceptedRootProvider,
         liveEpochProvider = epochProvider,
         pump = CreativeSourcePump(ioDispatcher))
+    /**
+     * G09-R2 configured-provider image/video generation and candidate
+     * adoption. Lazy: no native/disk work is performed at construction.
+     * The Main App DI delegates the frozen UI port to this exact accessor.
+     */
+    val generationHost: WorkbenchGenerationHostApi by lazy {
+        CreativeR2GenerationHost(
+            transport = transport, epochProvider = epochProvider,
+            ioDispatcher = ioDispatcher)
+    }
+
+    /**
+     * G09-R2 real design workflow over the frozen DesignHostApi. Constructing
+     * it performs no native/disk work. The native design service is bound to
+     * the same accepted creative epoch/root as Canvas/media.
+     */
+    private val design = CreativeR2DesignHost(
+        context = context,
+        acceptedRootProvider = acceptedRootProvider,
+        epochProvider = epochProvider,
+        designAuthorityIssuer = designAuthorityIssuer,
+        transport = transport,
+        ioDispatcher = ioDispatcher)
+    val designHost: DesignHostApi get() = design
+    internal val designStagingHost: CreativeR2DesignHost get() = design
+
+    /**
+     * Typed trusted UI callback for RESTRUCTURE preservation confirmation.
+     * The App shows the prepared display data and calls confirm only from the
+     * explicit user action; the native design service burns the single-use
+     * grant immediately before freeze/propose/adopt.
+     */
+    val designTrustedApprovals: DesignTrustedApprovalController
+        get() = design.trustedApprovals
+
+    /** Creative START request in the SAME owner envelope (trusted UI). */
+    suspend fun beginCreative(
+        binding: com.floe.android.feature.canvas.DesignTargetBinding,
+        expectedRevision: Long?,
+        opID: String,
+        brief: com.floe.android.feature.canvas.DesignBriefModel? = null,
+        spec: com.floe.android.feature.canvas.DesignSpecModel? = null,
+    ) = design.beginCreative(binding, expectedRevision, opID, brief, spec)
+
+    /** Verified first-result bind over the retained creative asset. */
+    suspend fun bindCreativeFirstResult(
+        binding: com.floe.android.feature.canvas.DesignTargetBinding,
+        expectedRevision: Long,
+        opID: String,
+        boundResultID: String,
+        payload: com.floe.android.feature.canvas.StagedDesignPayload,
+        displayName: String? = null,
+    ) = design.bindCreativeFirstResult(
+        binding, expectedRevision, opID, boundResultID, payload, displayName)
+
+    /**
+     * Bounded retained-asset metadata for the first-material picker. No bytes
+     * or paths cross the bridge; a selected asset id is bound directly below.
+     */
+    suspend fun creativeAssets(
+        cursor: String? = null,
+        limit: Int = 24,
+    ): CreativeDesignAssetPage = design.creativeAssets(cursor, limit)
+
+    /** Bounded pending-request reopen list from the same owner-envelope store. */
+    suspend fun creativePendingRequests(
+        cursor: String? = null,
+        limit: Int = 24,
+    ): CreativeDesignPendingPage = design.creativePendingRequests(cursor, limit)
+
+    /**
+     * Bind an EXISTING retained creative asset as the first result. Native
+     * reads/verifies the asset bytes; the caller supplies only its real id.
+     */
+    suspend fun bindCreativeRetainedFirstResult(
+        binding: com.floe.android.feature.canvas.DesignTargetBinding,
+        expectedRevision: Long,
+        opID: String,
+        boundResultID: String,
+        displayName: String? = null,
+    ): com.floe.android.feature.canvas.DesignStateProjection =
+        design.bindCreativeRetainedFirstResult(
+            binding, expectedRevision, opID, boundResultID, displayName)
+
+    /**
+     * Stage-once SAF/manual import into the EXISTING creative asset library,
+     * then the same verified first-result bind. The staged token is released
+     * only after a committed bind.
+     */
+    suspend fun importCreativeFirstResult(
+        binding: com.floe.android.feature.canvas.DesignTargetBinding,
+        expectedRevision: Long,
+        opID: String,
+        payload: com.floe.android.feature.canvas.StagedDesignPayload,
+        displayName: String? = null,
+    ): CreativeDesignImportReceipt = design.importCreativeFirstResult(
+        binding, expectedRevision, opID, payload, displayName)
+
+    /** Bounded, Root-owned design proposal staging. */
+    suspend fun stageDesignPayload(
+        source: Uri,
+        sessionToken: String,
+    ) = design.stagePayload(source, sessionToken)
+
+    fun discardDesignPayload(token: String) = design.discardPayload(token)
+
+    /** Root stop: fence/cancel/close/join REAL design staging copies. */
+    suspend fun fenceDesignStaging(): Boolean = design.fenceStaging()
+
     private val sourceCreate = CreativeSourceCreateController<Uri>(
         stage = { uri, token -> imports.stage(uri, token) },
         inspect = { file -> CreativeSourceInspector.inspect(file) },
@@ -219,10 +340,36 @@ class CreativeHostService(
         assetID, relativePath, opID)
 
     /**
+     * Additive R1 commit bridges used only by the Main constructor patch. They
+     * keep the private `project` controller the ONE R1 project authority; the
+     * production large-import path now uses the V6 service above.
+     */
+    internal suspend fun createMediaFromStagedForImport(
+        request: CreativeMediaSourceRequest,
+    ): MediaProjectEnvelope = project.createMediaFromStaged(request)
+
+    internal suspend fun importMediaAssetForImport(
+        commit: MediaImportCommit,
+    ): MediaAssetReceipt = project.importAsset(
+        token = commit.token,
+        opID = commit.opID,
+        projectID = commit.context.projectID,
+        expectedRevision = commit.expectedRevision,
+        sessionToken = commit.context.sessionToken,
+        storage = commit.context.storage,
+        origin = commit.context.origin,
+        fileName = commit.fileName,
+        mimeType = commit.mimeType,
+        byteCount = commit.byteCount,
+        sha256 = commit.sha256)
+
+    /**
      * Lifecycle-internal global shutdown; not exposed by CreativeHostApi.
      * Token-scoped editor closes are the only public session-retirement API.
      */
     internal suspend fun shutdown() {
+        design.trustedApprovals.retire()
+        design.shutdownStaging()
         imports.discardAll()
         project.shutdownBinding()
     }
@@ -325,18 +472,125 @@ class CreativeHostService(
  * the Application binds it after the accepted runtime epoch exists.
  */
 class CreativeHostController(
-    context: android.content.Context,
+    private val appContext: android.content.Context,
     private val epochProvider: () -> Long?,
-    acceptedRootProvider: () -> CreativeAcceptedRoot?,
-    transport: CreativeTransport = SwiftCreativeTransport,
+    private val acceptedRootProvider: () -> CreativeAcceptedRoot?,
+    designAuthorityIssuer: DesignAuthorityIssuer? = null,
+    private val transport: CreativeTransport = SwiftCreativeTransport,
 ) {
     private val adapter = CreativeHostService(
-        context = context,
+        context = appContext,
         acceptedRootProvider = acceptedRootProvider,
         epochProvider = epochProvider,
+        designAuthorityIssuer = designAuthorityIssuer,
         transport = transport)
 
     val services: CreativeHostApi get() = adapter
+
+    /** G09-R2 typed video read/apply on floe.creative/6. */
+    val r2Video: CreativeR2VideoHost by lazy {
+        CreativeR2VideoHost(transport = transport, epochProvider = epochProvider)
+    }
+
+    /** G09-R2 native-issued immutable render snapshot lease port. */
+    val r2Snapshots: WorkbenchRenderSnapshotPort by lazy {
+        CreativeRenderSnapshotPort(epochProvider = epochProvider)
+    }
+
+    /** G09-R2 bounded render-ticket pump (platform12 is the consumer). */
+    internal val r2RenderTransport: MediaRenderTicketNativeTransport by lazy {
+        MediaRenderTicketNativeTransport()
+    }
+    val r2RenderTickets: MediaRenderTicketTransport get() = r2RenderTransport
+
+    /** Plain native-record-backed epoch/root + lease authority proofs. */
+    val r2Authority: CreativeR2HostAuthority by lazy {
+        CreativeR2HostAuthority(
+            epochProvider = epochProvider,
+            acceptedRootProvider = acceptedRootProvider)
+    }
+
+    /** G09-R2 configured-provider generation and candidate adoption. */
+    val generationHost: WorkbenchGenerationHostApi get() = adapter.generationHost
+
+    /** G09-R2 real Canvas/workspace/chat/creative design workflow. */
+    val designHost: DesignHostApi get() = adapter.designHost
+
+    /** Typed trusted UI callback for restructure confirmation. */
+    val designTrustedApprovals: DesignTrustedApprovalController
+        get() = adapter.designTrustedApprovals
+
+    /** Creative START request + verified first-result bind host methods. */
+    suspend fun beginCreative(
+        binding: com.floe.android.feature.canvas.DesignTargetBinding,
+        expectedRevision: Long?,
+        opID: String,
+        brief: com.floe.android.feature.canvas.DesignBriefModel? = null,
+        spec: com.floe.android.feature.canvas.DesignSpecModel? = null,
+    ) = adapter.beginCreative(
+        binding, expectedRevision, opID, brief, spec)
+
+    suspend fun bindCreativeFirstResult(
+        binding: com.floe.android.feature.canvas.DesignTargetBinding,
+        expectedRevision: Long,
+        opID: String,
+        boundResultID: String,
+        payload: com.floe.android.feature.canvas.StagedDesignPayload,
+        displayName: String? = null,
+    ) = adapter.bindCreativeFirstResult(
+        binding, expectedRevision, opID, boundResultID, payload, displayName)
+
+    /** Bounded retained-asset metadata for the first-material picker. */
+    suspend fun creativeAssets(
+        cursor: String? = null,
+        limit: Int = 24,
+    ): CreativeDesignAssetPage = adapter.creativeAssets(cursor, limit)
+
+    /** Bounded pending-request reopen list. */
+    suspend fun creativePendingRequests(
+        cursor: String? = null,
+        limit: Int = 24,
+    ): CreativeDesignPendingPage = adapter.creativePendingRequests(cursor, limit)
+
+    /** Direct bind of an EXISTING retained creative asset. */
+    suspend fun bindCreativeRetainedFirstResult(
+        binding: com.floe.android.feature.canvas.DesignTargetBinding,
+        expectedRevision: Long,
+        opID: String,
+        boundResultID: String,
+        displayName: String? = null,
+    ): com.floe.android.feature.canvas.DesignStateProjection =
+        adapter.bindCreativeRetainedFirstResult(
+            binding, expectedRevision, opID, boundResultID, displayName)
+
+    /** Stage-once SAF/manual import + verified first-result bind. */
+    suspend fun importCreativeFirstResult(
+        binding: com.floe.android.feature.canvas.DesignTargetBinding,
+        expectedRevision: Long,
+        opID: String,
+        payload: com.floe.android.feature.canvas.StagedDesignPayload,
+        displayName: String? = null,
+    ): CreativeDesignImportReceipt = adapter.importCreativeFirstResult(
+        binding, expectedRevision, opID, payload, displayName)
+
+    /** The explicit App staging seam for proposal payload bytes. */
+    suspend fun stageDesignPayload(
+        source: Uri,
+        sessionToken: String,
+    ) = adapter.stageDesignPayload(source, sessionToken)
+
+    fun discardDesignPayload(token: String) =
+        adapter.discardDesignPayload(token)
+
+    /** G09-R2 service-owned large-import App facade over the REAL V6 actions. */
+    internal val r2ImportHost: CreativeLargeImportHost by lazy {
+        CreativeLargeImportHost(
+            context = appContext,
+            acceptedRootProvider = acceptedRootProvider,
+            liveEpochProvider = epochProvider,
+            transport = transport)
+    }
+    val r2LargeImports: WorkbenchLargeImportPort get() = r2ImportHost
 
     suspend fun bindCurrent(): CreativeBinding {
         val epoch = epochProvider()?.takeIf { it > 0L }
@@ -345,7 +599,42 @@ class CreativeHostController(
         return services.bind(epoch)
     }
 
-    suspend fun stop() = adapter.shutdown()
+    /**
+     * Root order step 2: App staging must stop first, then the native
+     * aggregate gate (imports + render claims + binding pins) must report
+     * drained. FALSE keeps Root/root references bound and surfaces pending.
+     */
+    suspend fun beginR2NativeRootStop(): Boolean {
+        val epoch = epochProvider()?.takeIf { it > 0L } ?: return true
+        // Retire every prepared/confirmed restructure claim BEFORE native
+        // Root drains, so a late confirmation cannot mint a grant for a
+        // replacement generation.
+        adapter.designTrustedApprovals.retire()
+        // Root order step 1: fence new App staging, cancel/close REAL SAF
+        // copies and join their workers. A still-running copy keeps Root
+        // pending; a cancelled Job flag is never reported as drained. Native
+        // workers are fenced in the same step so no new work starts while the
+        // copy is settling.
+        val stagingDrained = adapter.fenceDesignStaging()
+        val nativeFirst = r2Authority.rootStop()
+        if (!r2ImportHost.drainStaging(epoch)) return false
+        if (!nativeFirst) {
+            GenerationForegroundOwner.releaseAll(epoch)
+            if (!r2Authority.rootStop()) return false
+        }
+        return stagingDrained
+    }
+
+    suspend fun r2DrainPending(): Int {
+        val epoch = epochProvider()?.takeIf { it > 0L } ?: return 0
+        return r2ImportHost.activeStagingCount() + r2Authority.drainPending()
+    }
+
+    suspend fun stop() {
+        GenerationForegroundOwner.stopAll()
+        r2ImportHost.shutdown()
+        adapter.shutdown()
+    }
 
     /** Atomic new Canvas/media project from a user-selected file. */
     suspend fun createCanvasFromUri(

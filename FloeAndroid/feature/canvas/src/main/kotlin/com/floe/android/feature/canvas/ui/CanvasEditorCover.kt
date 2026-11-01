@@ -36,6 +36,8 @@ import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -68,7 +70,17 @@ import com.floe.android.design.FloeToolbar
 import com.floe.android.design.IconGlyph
 import com.floe.android.feature.canvas.CanvasDocument
 import com.floe.android.feature.canvas.CanvasNode
+import com.floe.android.feature.canvas.CreativeOriginContext
+import com.floe.android.feature.canvas.CreativeStorageLayer
+import com.floe.android.feature.canvas.DesignTargetBinding
+import com.floe.android.feature.canvas.DesignTargetIdentity
+import com.floe.android.feature.canvas.DesignTargetKind
 import com.floe.android.feature.canvas.ui.api.CanvasPickedSource
+import com.floe.android.feature.canvas.ui.design.DesignSessionProvider
+import com.floe.android.feature.canvas.ui.design.DesignSessionRequest
+import com.floe.android.feature.canvas.ui.design.DesignTargetDescriptor
+import com.floe.android.feature.canvas.ui.design.DesignWorkflowController
+import com.floe.android.feature.canvas.ui.design.DesignWorkflowSheet
 import com.floe.android.feature.canvas.ui.presentation.CanvasFailureKind
 import com.floe.android.feature.canvas.ui.presentation.CanvasNodeSemantics
 import com.floe.android.feature.canvas.ui.state.CanvasEditorController
@@ -87,6 +99,7 @@ internal fun CanvasEditorCover(
     session: CanvasWorkspaceSession,
     editor: CanvasEditorController,
     pickImage: suspend () -> CanvasPickedSource?,
+    designSessions: DesignSessionProvider? = null,
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
@@ -97,6 +110,54 @@ internal fun CanvasEditorCover(
     var showClose by remember(editor) { mutableStateOf(false) }
     var showDeleteNode by remember(editor) { mutableStateOf(false) }
     var closeAfterBusy by remember(editor) { mutableStateOf(false) }
+    var designController by remember(editor) {
+        mutableStateOf<DesignWorkflowController?>(null)
+    }
+    var designSheetRequested by rememberSaveable(editor) { mutableStateOf(false) }
+    var designEntryFailure by remember(editor) { mutableStateOf(false) }
+    val latestDesignController by rememberUpdatedState(designController)
+    val designNode = editor.selectedNode
+    val designEligible = designSessions != null && designNode != null &&
+        canvasNodeDesignEligible(designNode, editor)
+    val designTitle = designNode?.let {
+        nodeAccessibleTitle(it, stringResource(R.string.design_kind_canvas))
+    }.orEmpty()
+    val openDesign: () -> Unit = {
+        val provider = designSessions
+        val node = designNode
+        val document = editor.activeDocument
+        if (provider != null && node != null && document != null && designEligible) {
+            designEntryFailure = false
+            try {
+                designController = provider.acquire(
+                    DesignSessionRequest(
+                        binding = DesignTargetBinding(
+                            target = DesignTargetIdentity(
+                                kind = DesignTargetKind.CANVAS_NODE,
+                                ownerID = editor.canvasID,
+                                documentID = document.id,
+                                sourceID = node.id,
+                            ),
+                            storage = CreativeStorageLayer.AppOwned,
+                            origin = CreativeOriginContext(
+                                kind = CreativeOriginContext.CANVAS,
+                                ownerID = editor.canvasID,
+                            ),
+                            sessionToken = editor.sessionToken,
+                        ),
+                        descriptor = DesignTargetDescriptor(
+                            title = designTitle,
+                            kindLabel = context.getString(R.string.design_kind_canvas),
+                            expectedRevision = editor.revision,
+                        ),
+                        canvasRefresh = { editor.refreshEnvelopeAfterDesignAdoption() },
+                    ),
+                )
+            } catch (_: Throwable) {
+                designEntryFailure = true
+            }
+        }
+    }
 
     val requestClose: () -> Unit = {
         if (editor.busy) closeAfterBusy = true else showClose = true
@@ -110,7 +171,10 @@ internal fun CanvasEditorCover(
     DisposableEffect(editor) {
         onDispose {
             val changing = (context as? Activity)?.isChangingConfigurations == true
-            if (!changing && !editor.isRetired) session.retireFromUi(editor)
+            if (!changing) {
+                latestDesignController?.let { design -> designSessions?.release(design) }
+                if (!editor.isRetired) session.retireFromUi(editor)
+            }
         }
     }
 
@@ -178,6 +242,11 @@ internal fun CanvasEditorCover(
                         showHairline = true,
                     )
                     CanvasEditorStatus(editor)
+                    if (designEntryFailure) {
+                        CanvasInlineNotice(
+                            text = stringResource(R.string.design_entry_unavailable),
+                        )
+                    }
                     CanvasEditorNotices(editor)
                     FloeDivider()
                     if (editor.documents.size > 1) {
@@ -223,6 +292,15 @@ internal fun CanvasEditorCover(
                 showInspector = false
                 showDeleteNode = true
             },
+            onDesign = if (designEligible) {
+                {
+                    showInspector = false
+                    openDesign()
+                }
+            } else {
+                null
+            },
+            designEntryFailure = designEntryFailure,
         )
     }
     if (showMore) {
@@ -231,6 +309,24 @@ internal fun CanvasEditorCover(
             onDismiss = { showMore = false },
             onRename = { showMore = false; showRename = true },
             onClose = { showMore = false; requestClose() },
+            onDesign = if (designEligible) {
+                {
+                    showMore = false
+                    openDesign()
+                }
+            } else {
+                null
+            },
+        )
+    }
+    designController?.let { design ->
+        DesignWorkflowSheet(
+            controller = design,
+            onClosed = {
+                designController = null
+                designSheetRequested = false
+                designSessions?.release(design)
+            },
         )
     }
     if (showRename) {
@@ -492,6 +588,32 @@ private fun AddNodeOption(
     }
 }
 
+/**
+ * A compact Design entry is offered only for a real, writable Canvas node that
+ * carries an actual design source: text (text/sticky/card) or a retained asset
+ * (image/file). CAD/group/generation/scene nodes and read-only nodes keep
+ * their existing behavior; the native service remains the final authority.
+ */
+private fun canvasNodeDesignEligible(
+    node: CanvasNode,
+    editor: CanvasEditorController,
+): Boolean {
+    if (!editor.writable || editor.busy || editor.needsReload) return false
+    if (CanvasNodeSemantics.isReadOnly(node) || CanvasNodeSemantics.isCadBound(node)) {
+        return false
+    }
+    return when (CanvasNodeSemantics.displayKind(node.kind)) {
+        com.floe.android.feature.canvas.ui.presentation.NodeDisplayKind.TEXT,
+        com.floe.android.feature.canvas.ui.presentation.NodeDisplayKind.STICKY,
+        com.floe.android.feature.canvas.ui.presentation.NodeDisplayKind.CARD,
+        -> node.text.isNotBlank()
+        com.floe.android.feature.canvas.ui.presentation.NodeDisplayKind.IMAGE,
+        com.floe.android.feature.canvas.ui.presentation.NodeDisplayKind.FILE,
+        -> node.asset != null
+        else -> false
+    }
+}
+
 @Composable
 private fun CanvasInspectorSheet(
     editor: CanvasEditorController,
@@ -499,6 +621,8 @@ private fun CanvasInspectorSheet(
     onDismiss: () -> Unit,
     onReplaceImage: () -> Unit,
     onDelete: () -> Unit,
+    onDesign: (() -> Unit)?,
+    designEntryFailure: Boolean,
 ) {
     val displayKind = CanvasNodeSemantics.displayKind(node.kind)
     val typeLabel = stringResource(displayKind.labelRes())
@@ -530,9 +654,24 @@ private fun CanvasInspectorSheet(
                         color = Floe.colors.secondaryLabel,
                     )
                 }
+                if (onDesign != null) {
+                    FloeCapsuleAction(
+                        label = stringResource(R.string.design_entry_action),
+                        onClick = onDesign,
+                        modifier = Modifier.testTag("canvas.design"),
+                    )
+                }
                 FloeCapsuleAction(
                     label = stringResource(R.string.canvas_done),
                     onClick = onDismiss,
+                )
+            }
+            if (designEntryFailure) {
+                FloeText(
+                    stringResource(R.string.design_entry_unavailable),
+                    style = Floe.typography.metadata,
+                    color = Floe.colors.pending,
+                    modifier = Modifier.padding(top = 8.dp),
                 )
             }
             if (readOnly) {
@@ -691,6 +830,7 @@ private fun CanvasMoreSheet(
     onDismiss: () -> Unit,
     onRename: () -> Unit,
     onClose: () -> Unit,
+    onDesign: (() -> Unit)?,
 ) {
     FloeActionSheet(visible = true, onDismiss = onDismiss) {
         Column(Modifier.fillMaxWidth().padding(20.dp)) {
@@ -715,6 +855,14 @@ private fun CanvasMoreSheet(
                 label = stringResource(R.string.canvas_redo),
                 enabled = editor.canRedo && !editor.busy,
             ) { onDismiss(); editor.redo() }
+            if (onDesign != null) {
+                AddNodeOption(
+                    icon = FloeIcons.Creative,
+                    label = stringResource(R.string.design_entry_action),
+                    enabled = !editor.busy,
+                    onClick = onDesign,
+                )
+            }
             AddNodeOption(
                 icon = FloeIcons.Pencil,
                 label = stringResource(R.string.canvas_rename),

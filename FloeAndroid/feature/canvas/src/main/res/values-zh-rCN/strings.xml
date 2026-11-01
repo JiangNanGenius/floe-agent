@@ -149,4 +149,217 @@
     <string name="canvas_node_type_card">卡片</string>
     <string name="canvas_node_type_shape">形状</string>
     <string name="canvas_node_type_image">图片</string>
+
+    <!-- G09-R2 设计工作流（界面位于功能模块，端口由 App 注入） -->
+    <string name="design_workflow_close">完成</string>
+    <string name="design_workflow_loading">正在加载设计…</string>
+    <string name="design_workflow_empty">暂无设计状态。</string>
+    <string name="design_workflow_read_only">此对象为只读，现有内容会保留。</string>
+    <string name="design_workflow_revision">版本 %1$d</string>
+    <string name="design_workflow_retry">重试</string>
+    <string name="design_workflow_reload">重新加载</string>
+    <string name="design_workflow_dismiss">关闭提示</string>
+    <string name="design_workflow_details">详情</string>
+
+    <string name="design_target_section">对象</string>
+    <string name="design_target_kind">类型</string>
+    <string name="design_target_owner_revision">所有者版本</string>
+    <string name="design_target_content">内容</string>
+    <string name="design_target_frozen_mode">冻结模式</string>
+    <string name="design_target_frozen_format">冻结格式</string>
+    <string name="design_kind_canvas">画布节点</string>
+    <string name="design_kind_file">文档</string>
+    <string name="design_kind_chat">聊天附件</string>
+    <string name="design_kind_creative">创作请求</string>
+    <string name="design_content_webpage">网页</string>
+    <string name="design_content_prototype">原型</string>
+    <string name="design_content_presentation">演示文稿</string>
+    <string name="design_content_image">图片</string>
+    <string name="design_content_video">视频</string>
+    <string name="design_content_office">Office 文档</string>
+    <string name="design_content_notes">手记</string>
+    <string name="design_content_pdf">PDF</string>
+    <string name="design_content_cad">CAD</string>
+    <string name="design_content_composition">合成</string>
+    <string name="design_content_unknown">设计</string>
+
+    <string name="design_brief_section">需求简报</string>
+    <string name="design_brief_goal">目标</string>
+    <string name="design_brief_audience">受众</string>
+    <string name="design_brief_constraints">约束（每行一项）</string>
+    <string name="design_brief_save">保存简报</string>
+
+    <string name="design_spec_section">设计规范</string>
+    <string name="design_spec_palette">配色（每行一项）</string>
+    <string name="design_spec_typography">字体</string>
+    <string name="design_spec_layout">布局</string>
+    <string name="design_spec_spacing">间距</string>
+    <string name="design_spec_brand_assets">品牌素材（每行一项）</string>
+    <string name="design_spec_voice">语气</string>
+    <string name="design_spec_prohibitions">禁用项（每行一项）</string>
+    <string name="design_spec_raw_markdown">DESIGN.md（保留未知段落）</string>
+    <string name="design_spec_save">保存规范</string>
+
+    <string name="design_freeze_section">冻结来源</string>
+    <string name="design_freeze_body">将当前对象内容冻结为不可变的设计版本。</string>
+    <string name="design_work_mode">工作模式</string>
+    <string name="design_work_create">新建</string>
+    <string name="design_work_modify">修改</string>
+    <string name="design_work_restructure">重构</string>
+    <string name="design_output_format">输出格式</string>
+    <string name="design_output_format_hint">留空则使用来源格式。</string>
+    <string name="design_freeze_action">冻结版本</string>
+
+    <string name="design_preservation_section">保留要求</string>
+    <string name="design_preservation_body">重构需要明确的约束和可信确认。</string>
+    <string name="design_preservation_content">内容</string>
+    <string name="design_preservation_data">数据</string>
+    <string name="design_preservation_behavior">行为</string>
+    <string name="design_preservation_format">格式边界</string>
+
+    <string name="design_proposal_section">方案</string>
+    <string name="design_proposal_need_freeze">请先冻结一个版本，再添加候选。</string>
+    <string name="design_proposal_choose_file">选择文件</string>
+    <string name="design_proposal_write_text">编写文本</string>
+    <string name="design_proposal_text">方案文本</string>
+    <string name="design_proposal_text_format">文本格式</string>
+    <string name="design_proposal_stage">暂存文本</string>
+    <string name="design_proposal_staged">%1$s · %2$d 字节</string>
+    <string name="design_proposal_discard">移除</string>
+    <string name="design_proposal_summary">摘要</string>
+    <string name="design_proposal_diff">差异说明（每行一项）</string>
+    <string name="design_proposal_action">添加候选</string>
+
+    <string name="design_candidates_section">候选</string>
+    <string name="design_candidates_empty">暂无候选。</string>
+    <string name="design_candidate_untitled">候选</string>
+    <string name="design_candidate_revisions">基准 %1$s · 方案 %2$s</string>
+    <string name="design_candidate_feedback">反馈</string>
+    <string name="design_candidate_preview">预览</string>
+    <string name="design_candidate_compare">对比</string>
+    <string name="design_candidate_adopt_original">应用到原稿</string>
+    <string name="design_candidate_adopt_variant">保存为变体</string>
+    <string name="design_candidate_reject">拒绝</string>
+    <string name="design_candidate_status_pending">待处理</string>
+    <string name="design_candidate_status_adopted">已采用</string>
+    <string name="design_candidate_status_rejected">已拒绝</string>
+    <string name="design_candidate_status_superseded">已取代</string>
+
+    <string name="design_compare_section">对比</string>
+    <string name="design_compare_changed">已更改</string>
+    <string name="design_compare_yes">是</string>
+    <string name="design_compare_no">否</string>
+    <string name="design_compare_base">基准摘要</string>
+    <string name="design_compare_proposed">方案摘要</string>
+    <string name="design_compare_truncated">差异内容有上限，尚未完整显示。</string>
+
+    <string name="design_decision_delivery">送达</string>
+    <string name="design_decision_publication">发布</string>
+    <string name="design_decision_revision">已提交版本</string>
+    <string name="design_delivery_not_required">无需</string>
+    <string name="design_delivery_delivered">已送达</string>
+    <string name="design_delivery_pending">待送达</string>
+    <string name="design_publication_not_required">无需</string>
+    <string name="design_publication_published">已发布</string>
+    <string name="design_publication_pending">待发布</string>
+
+    <string name="design_revisions_section">版本</string>
+    <string name="design_revision_row">#%1$d · %2$s</string>
+    <string name="design_revision_current">当前</string>
+    <string name="design_revision_preview">预览</string>
+    <string name="design_revision_export">导出</string>
+    <string name="design_revision_restore">恢复</string>
+
+    <string name="design_preview_section">预览</string>
+    <string name="design_preview_current">预览当前版本</string>
+    <string name="design_preview_close">关闭预览</string>
+    <string name="design_preview_none">尚未加载预览。</string>
+    <string name="design_preview_image">设计预览</string>
+    <string name="design_preview_text_truncated">预览内容已截断。</string>
+    <string name="design_preview_pdf_pages">共 %1$d 页 · 显示 %2$d 页</string>
+    <string name="design_preview_pdf_page">第 %1$d 页</string>
+    <string name="design_preview_unsupported">无法在应用内预览 %1$s。</string>
+    <string name="design_preview_canvas_snapshot">画布快照</string>
+    <string name="design_preview_canvas_id">画布</string>
+    <string name="design_preview_canvas_revision">画布版本</string>
+    <string name="design_preview_canvas_node">节点</string>
+    <string name="design_preview_canvas_kind">内容</string>
+    <string name="design_preview_canvas_unavailable">无法显示画布场景，请重新打开预览。</string>
+    <string name="design_preview_canvas_assets_truncated">部分关联文件未显示。</string>
+    <string name="design_preview_canvas_assets_unverified">部分关联图片未能校验，已显示为占位内容。</string>
+    <string name="canvas_readonly_description">画布预览</string>
+    <string name="canvas_readonly_empty">这个画布页面还没有内容。</string>
+    <string name="design_export_action">导出 %1$s</string>
+    <string name="design_export_delivered">已保存 · %1$d 字节</string>
+    <string name="design_export_cancelled">已取消导出。</string>
+    <string name="design_export_refused">%1$s</string>
+    <string name="design_canvas_refresh_pending">设计已采用，但画布未能重新加载。请重新加载画布以查看已提交的结果。</string>
+    <string name="design_canvas_reload">重新加载画布</string>
+
+    <string name="design_restructure_confirm_title">确认重构</string>
+    <string name="design_restructure_review">请核对对象与保留要求，然后确认。</string>
+    <string name="design_restructure_target">对象</string>
+    <string name="design_restructure_operation">操作</string>
+    <string name="design_restructure_original_task">原任务</string>
+    <string name="design_restructure_base">基准版本</string>
+    <string name="design_restructure_digest">保留摘要</string>
+    <string name="design_restructure_expires">过期时间</string>
+    <string name="design_restructure_cancel">取消</string>
+    <string name="design_restructure_confirm_action">确认</string>
+
+    <string name="design_notice_saved">已保存。</string>
+    <string name="design_notice_frozen">版本已冻结。</string>
+    <string name="design_notice_proposed">已添加候选。</string>
+    <string name="design_notice_adopted">已采用候选。</string>
+    <string name="design_notice_rejected">已拒绝候选。</string>
+    <string name="design_notice_restored">版本已恢复。</string>
+    <string name="design_notice_exported">导出已保存。</string>
+
+    <string name="design_error_title">设计操作失败</string>
+    <string name="design_error_conflict_title">设计已更改</string>
+    <string name="design_error_unknown_title">结果未知</string>
+    <string name="design_error_pending_title">送达待处理</string>
+    <string name="design_error_target_title">此处无法使用设计</string>
+    <string name="design_error_authority_title">无法确认</string>
+    <string name="design_error_expired_title">确认已过期</string>
+    <string name="design_error_mismatch_title">确认不匹配</string>
+    <string name="design_error_too_large_title">文件过大</string>
+    <string name="design_error_unavailable_body">此对象无法使用设计功能。</string>
+    <string name="design_error_conflict_body">设计已更改，请重新加载后再保存。</string>
+    <string name="design_error_unknown_body">结果未知，请重新加载后再试。</string>
+    <string name="design_error_pending_body">决定已保存，但尚未送达原任务。</string>
+    <string name="design_error_target_body">此对象不能使用设计工作流。</string>
+    <string name="design_error_authority_body">此版本暂不支持重构确认。</string>
+    <string name="design_error_expired_body">确认已过期，请重新准备。</string>
+    <string name="design_error_mismatch_body">确认与当前对象不匹配。</string>
+    <string name="design_error_preservation_body">请至少填写一项保留要求。</string>
+    <string name="design_error_payload_body">尚无设计内容，请先冻结当前来源。</string>
+    <string name="design_error_source_body">请先选择文件或编写文本，再添加候选。</string>
+    <string name="design_error_freeze_body">请先冻结一个版本，再添加候选。</string>
+    <string name="design_error_preview_size_body">预览超过大小限制。</string>
+    <string name="design_error_payload_size_body">方案超过大小限制。</string>
+    <string name="design_error_format_body">此格式无法在不转换的情况下导出。</string>
+    <string name="design_error_generic_body">请重试，或重新加载设计状态。</string>
+
+    <string name="design_entry_action">设计</string>
+    <string name="design_entry_unavailable">此项目暂无法使用设计。请重新打开后再试。</string>
+
+    <string name="design_revision_number">版本 #%1$d</string>
+    <string name="design_restructure_binding">绑定标识</string>
+    <string name="design_restructure_confirmation_id">操作标识</string>
+    <string name="design_restructure_base_id">基准版本标识</string>
+
+    <string name="design_proposal_variant">设计分支</string>
+
+    <string name="design_revision_unknown">未记录</string>
+
+    <string name="design_error_confirmation_pending_body">请先确认或取消当前的重构确认。</string>
+
+    <string name="design_compare_latest">最新版本</string>
+
+    <string name="design_error_session_body">设计会话或所有者已更改，请重新打开后再试。</string>
+
+    <string name="design_export_refused_verify">无法验证已导出的副本。</string>
+    <string name="design_export_refused_session">设计会话已更改，请重新打开后再导出。</string>
+    <string name="design_export_refused_generic">导出未完成。</string>
 </resources>

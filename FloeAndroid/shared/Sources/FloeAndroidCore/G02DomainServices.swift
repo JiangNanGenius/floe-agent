@@ -566,7 +566,14 @@ public final class G02InstalledComposition: @unchecked Sendable {
             // accepted generation (`<owned root>/FloeAgent`). The original
             // run factory forwards it to FloeAgentRuntime; nil would mean the
             // iOS Application Support behavior and is never used on Android.
-            artifactRootURL: cluster.identity.root.artifactStoreURL)
+            artifactRootURL: cluster.identity.root.artifactStoreURL,
+            // G09-R2: the SAME accepted creative service that owns the trusted
+            // Ask AI task/project association supplies its durable, data-only
+            // task context. It grants nothing; the media.project tool still
+            // authorizes every call.
+            mediaTaskContext: { taskID in
+                await BridgeV5.service.r2MediaTaskContext(taskID: taskID)
+            })
         RunDomainFacade.install(components: runComponents, registry: gen.registry)
         G073TaskScheduleFacade.install(epoch: epoch, service: scheduleService)
         // Cold-start ordering is enforced by the service: settle occurrences
@@ -717,6 +724,14 @@ public final class G02InstalledComposition: @unchecked Sendable {
             return nil
         }
         registerTaskChecklistTools(store: taskChecklist, registry: runComponents.registry)
+        // G09-R2 media.project: the ORIGINAL portable tool over the REAL
+        // accepted-root media host. Registration is unconditional for this
+        // generation; model discovery stays gated by the live renderer
+        // consumer lease, the accepted epoch and the explicit host enable
+        // switch. A stale/stopped renderer hides the descriptor truthfully.
+        G09R2MediaToolRegistration.install(
+            service: BridgeV5.service,
+            registry: runComponents.registry)
         // G07.3A user questions: install the durable/RAM coordinator for this
         // exact epoch and register the main-run-only `user.ask` runner. The
         // runner's availability closure reads this installation, so a

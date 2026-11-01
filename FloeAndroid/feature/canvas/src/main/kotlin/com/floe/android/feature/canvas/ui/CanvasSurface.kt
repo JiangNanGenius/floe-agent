@@ -1,9 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 package com.floe.android.feature.canvas.ui
 
-import android.graphics.Bitmap
 import androidx.compose.foundation.Canvas
-import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.gestures.detectDragGestures
@@ -24,7 +22,6 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -37,12 +34,10 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.TransformOrigin
-import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.rotate
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
-import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.testTag
@@ -54,13 +49,10 @@ import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import com.floe.android.design.Floe
-import com.floe.android.design.FloeIcons
 import com.floe.android.design.FloeText
-import com.floe.android.design.IconGlyph
 import com.floe.android.feature.canvas.CanvasDocument
 import com.floe.android.feature.canvas.CanvasNode
 import com.floe.android.feature.canvas.CanvasStroke
-import com.floe.android.feature.canvas.ui.presentation.CanvasBitmapLoader
 import com.floe.android.feature.canvas.ui.presentation.CanvasGeometry
 import com.floe.android.feature.canvas.ui.presentation.CanvasNodeSemantics
 import com.floe.android.feature.canvas.ui.presentation.CanvasView
@@ -189,7 +181,7 @@ internal fun CanvasSurface(
 }
 
 @Composable
-private fun CanvasBackground(
+internal fun CanvasBackground(
     style: String,
     view: CanvasView,
     density: Float,
@@ -225,7 +217,7 @@ private fun CanvasBackground(
 }
 
 @Composable
-private fun LegacyStrokeLayer(
+internal fun LegacyStrokeLayer(
     strokes: List<CanvasStroke>,
     view: CanvasView,
     density: Float,
@@ -258,7 +250,7 @@ private fun LegacyStrokeLayer(
 }
 
 @Composable
-private fun CanvasConnectionsLayer(
+internal fun CanvasConnectionsLayer(
     document: CanvasDocument,
     view: CanvasView,
     density: Float,
@@ -308,6 +300,7 @@ private fun CanvasNodeCard(
     val rotation = preview?.rotation ?: node.rotation
     val editable = editor.writable && !CanvasNodeSemantics.isReadOnly(node)
     val displayKind = CanvasNodeSemantics.displayKind(node.kind)
+    val bitmap = rememberCanvasNodeImage(editor.assetsBasePath, node.asset)
     val topLeftX = with(androidx.compose.ui.platform.LocalDensity.current) {
         (position.x - size.width / 2).toFloat().dp.roundToPx()
     }
@@ -316,14 +309,14 @@ private fun CanvasNodeCard(
     }
     val label = stringResource(displayKind.labelRes())
     val accessibleTitle = nodeAccessibleTitle(node, label)
-    val shape = RoundedCornerShape(10.dp)
-    val container: Color = when (displayKind) {
-        NodeDisplayKind.STICKY -> Floe.colors.pending.copy(alpha = 0.16f)
-        NodeDisplayKind.CARD, NodeDisplayKind.TEXT -> Floe.colors.sectionCardSurface
-        else -> Color.Transparent
-    }
 
-    Box(
+    CanvasNodeChrome(
+        node = node,
+        displayKind = displayKind,
+        bitmap = bitmap,
+        container = canvasNodeContainer(displayKind),
+        shape = RoundedCornerShape(10.dp),
+        selected = false,
         modifier = Modifier
             .offset { IntOffset(topLeftX, topLeftY) }
             .size(size.width.dp, size.height.dp)
@@ -331,15 +324,6 @@ private fun CanvasNodeCard(
                 rotationZ = rotation.toFloat()
                 transformOrigin = TransformOrigin.Center
             }
-            .clip(shape)
-            .then(
-                if (container != Color.Transparent) {
-                    Modifier.background(container)
-                        .border(0.5.dp, Floe.colors.separator, shape)
-                } else {
-                    Modifier
-                },
-            )
             .pointerInput(node.id, editable, editor.busy, editor.needsReload) {
                 detectTapGestures { editor.selectNode(node.id) }
             }
@@ -363,208 +347,7 @@ private fun CanvasNodeCard(
             )
             .semantics { contentDescription = accessibleTitle }
             .testTag("canvas.node.${node.id}"),
-    ) {
-        when (displayKind) {
-            NodeDisplayKind.TEXT, NodeDisplayKind.CARD -> NodeTextContent(node)
-            NodeDisplayKind.STICKY -> NodeTextContent(node)
-            NodeDisplayKind.SHAPE -> NodeShapeContent(node)
-            NodeDisplayKind.IMAGE -> CanvasImageNode(editor, node)
-            else -> NodeReadOnlyContent(node, displayKind)
-        }
-        if (node.isLocked) {
-            com.floe.android.design.FloeBadgePill(
-                text = stringResource(R.string.canvas_node_locked),
-                tone = com.floe.android.design.FloeBadgeTone.SECONDARY,
-                modifier = Modifier.align(Alignment.TopEnd).padding(6.dp),
-            )
-        }
-        if (CanvasNodeSemantics.isCadBound(node)) {
-            com.floe.android.design.FloeBadgePill(
-                text = stringResource(R.string.canvas_node_cad),
-                tone = com.floe.android.design.FloeBadgeTone.PENDING,
-                modifier = Modifier.align(Alignment.BottomStart).padding(6.dp),
-            )
-        }
-    }
-}
-
-@Composable
-private fun NodeTextContent(node: CanvasNode) {
-    Box(Modifier.fillMaxSize().padding(12.dp)) {
-        if (node.text.isBlank()) {
-            FloeText(
-                stringResource(R.string.canvas_node_placeholder),
-                style = Floe.typography.body,
-                color = Floe.colors.placeholderText,
-                maxLines = 6,
-                overflow = TextOverflow.Ellipsis,
-            )
-        } else {
-            FloeText(
-                node.text,
-                style = Floe.typography.body,
-                color = Floe.colors.label,
-                maxLines = 12,
-                overflow = TextOverflow.Ellipsis,
-            )
-        }
-    }
-}
-
-@Composable
-private fun NodeShapeContent(node: CanvasNode) {
-    val fill = Floe.colors.accentFillFaint
-    val stroke = Floe.colors.accent
-    Box(Modifier.fillMaxSize()) {
-        Canvas(Modifier.fillMaxSize()) {
-            val inset = 1.dp.toPx()
-            val width = size.width - inset * 2
-            val height = size.height - inset * 2
-            val topLeft = Offset(inset, inset)
-            when (node.shape) {
-                "ellipse" -> drawOval(fill, topLeft, Size(width, height))
-                "diamond" -> {
-                    val path = Path().apply {
-                        moveTo(size.width / 2, inset)
-                        lineTo(size.width - inset, size.height / 2)
-                        lineTo(size.width / 2, size.height - inset)
-                        lineTo(inset, size.height / 2)
-                        close()
-                    }
-                    drawPath(path, fill)
-                    drawPath(path, stroke, style = Stroke(1.5.dp.toPx()))
-                }
-                "triangle" -> {
-                    val path = Path().apply {
-                        moveTo(size.width / 2, inset)
-                        lineTo(size.width - inset, size.height - inset)
-                        lineTo(inset, size.height - inset)
-                        close()
-                    }
-                    drawPath(path, fill)
-                    drawPath(path, stroke, style = Stroke(1.5.dp.toPx()))
-                }
-                "rectangle" -> {
-                    drawRect(fill, topLeft, Size(width, height))
-                    drawRect(stroke, topLeft, Size(width, height), style = Stroke(1.5.dp.toPx()))
-                }
-                else -> {
-                    drawRoundRect(
-                        fill, topLeft, Size(width, height),
-                        cornerRadius = androidx.compose.ui.geometry.CornerRadius(18.dp.toPx()),
-                    )
-                    drawRoundRect(
-                        stroke, topLeft, Size(width, height),
-                        cornerRadius = androidx.compose.ui.geometry.CornerRadius(18.dp.toPx()),
-                        style = Stroke(1.5.dp.toPx()),
-                    )
-                }
-            }
-        }
-        if (node.text.isNotBlank()) {
-            FloeText(
-                node.text,
-                style = Floe.typography.body,
-                color = Floe.colors.label,
-                maxLines = 6,
-                overflow = TextOverflow.Ellipsis,
-                modifier = Modifier.align(Alignment.Center).padding(14.dp),
-            )
-        }
-    }
-}
-
-@Composable
-private fun NodeReadOnlyContent(node: CanvasNode, kind: NodeDisplayKind) {
-    val icon = when (kind) {
-        NodeDisplayKind.VIDEO -> FloeIcons.PlayRuns
-        NodeDisplayKind.AUDIO -> FloeIcons.Mic
-        NodeDisplayKind.FILE -> FloeIcons.Folder
-        NodeDisplayKind.GENERATION -> FloeIcons.Wand
-        NodeDisplayKind.SCENE_3D -> FloeIcons.Creative
-        NodeDisplayKind.GROUP -> FloeIcons.Folder
-        else -> FloeIcons.InfoCircle
-    }
-    Column(
-        modifier = Modifier.fillMaxSize().background(Floe.colors.sectionCardSurface).padding(12.dp),
-        verticalArrangement = Arrangement.Center,
-        horizontalAlignment = Alignment.CenterHorizontally,
-    ) {
-        IconGlyph(icon, Floe.colors.secondaryLabel, 24.dp)
-        FloeText(
-            stringResource(kind.labelRes()),
-            style = Floe.typography.bodyEmphasized,
-            color = Floe.colors.label,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
-            modifier = Modifier.padding(top = 6.dp),
-        )
-        FloeText(
-            if (CanvasNodeSemantics.isCadBound(node)) {
-                stringResource(R.string.canvas_node_cad_body)
-            } else {
-                stringResource(R.string.canvas_node_read_only)
-            },
-            style = Floe.typography.metadata,
-            color = Floe.colors.secondaryLabel,
-            maxLines = 3,
-            overflow = TextOverflow.Ellipsis,
-            modifier = Modifier.padding(top = 4.dp),
-        )
-    }
-}
-
-@Composable
-private fun CanvasImageNode(editor: CanvasEditorController, node: CanvasNode) {
-    val bitmap by produceState<Bitmap?>(
-        initialValue = null,
-        node.asset?.id,
-        node.asset?.contentHash,
-        editor.assetsBasePath,
-    ) {
-        value = CanvasBitmapLoader.load(editor.assetsBasePath, node.asset)
-    }
-    Box(
-        Modifier
-            .fillMaxSize()
-            .background(Floe.colors.fillTertiary),
-        contentAlignment = Alignment.Center,
-    ) {
-        val image = bitmap
-        if (image != null) {
-            Image(
-                bitmap = image.asImageBitmap(),
-                contentDescription = node.text.ifBlank {
-                    stringResource(R.string.canvas_inspector_image)
-                },
-                contentScale = ContentScale.Crop,
-                modifier = Modifier.fillMaxSize(),
-            )
-            if (node.text.isNotBlank()) {
-                FloeText(
-                    node.text,
-                    style = Floe.typography.metadata,
-                    color = Color.White,
-                    maxLines = 2,
-                    overflow = TextOverflow.Ellipsis,
-                    modifier = Modifier
-                        .align(Alignment.BottomStart)
-                        .background(Color.Black.copy(alpha = 0.45f))
-                        .padding(horizontal = 8.dp, vertical = 4.dp),
-                )
-            }
-        } else {
-            Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                IconGlyph(FloeIcons.Photo, Floe.colors.secondaryLabel, 26.dp)
-                FloeText(
-                    stringResource(R.string.canvas_image_unavailable),
-                    style = Floe.typography.metadata,
-                    color = Floe.colors.secondaryLabel,
-                    modifier = Modifier.padding(top = 6.dp),
-                )
-            }
-        }
-    }
+    )
 }
 
 @Composable

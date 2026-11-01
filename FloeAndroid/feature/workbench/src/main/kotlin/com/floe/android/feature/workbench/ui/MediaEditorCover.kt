@@ -15,6 +15,7 @@ import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawing
@@ -62,8 +63,18 @@ import com.floe.android.design.FloeText
 import com.floe.android.design.FloeToolbar
 import com.floe.android.design.FloeVerticalDivider
 import com.floe.android.design.IconGlyph
+import com.floe.android.feature.workbench.ui.api.MediaAgentAskAiSheet
 import com.floe.android.feature.workbench.ui.api.MediaPickedSource
 import com.floe.android.feature.workbench.ui.presentation.MediaFailureKind
+import com.floe.android.feature.workbench.ui.r2.MediaExportSheet
+import com.floe.android.feature.workbench.ui.r2.MediaGenerationSheet
+import com.floe.android.feature.workbench.ui.r2.MediaVideoAssetsPanel
+import com.floe.android.feature.workbench.ui.r2.MediaVideoAssetsSheet
+import com.floe.android.feature.workbench.ui.r2.MediaVideoPanelSheet
+import com.floe.android.feature.workbench.ui.r2.MediaVideoPropertiesPanel
+import com.floe.android.feature.workbench.ui.r2.MediaVideoTimeline
+import com.floe.android.feature.workbench.ui.r2.WorkbenchMediaPickKind
+import com.floe.android.feature.workbench.ui.r2.WorkbenchMediaPicker
 import com.floe.android.feature.workbench.ui.state.MediaEditorController
 import com.floe.android.feature.workbench.ui.state.MediaWorkspaceSession
 import kotlinx.coroutines.launch
@@ -82,6 +93,7 @@ internal fun MediaEditorCover(
     session: MediaWorkspaceSession,
     editor: MediaEditorController,
     pickImage: suspend () -> MediaPickedSource?,
+    mediaPicker: WorkbenchMediaPicker? = null,
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
@@ -96,7 +108,30 @@ internal fun MediaEditorCover(
     var brushWidth by remember(editor) { mutableFloatStateOf(16f) }
     var brushColor by remember(editor) { mutableStateOf("#0081F6") }
     var closeAfterBusy by remember(editor) { mutableStateOf(false) }
+    var showVideoPanel by remember(editor) { mutableStateOf(false) }
+    var showVideoAssets by remember(editor) { mutableStateOf(false) }
+    var showAi by remember(editor) { mutableStateOf(false) }
+    var showAskAi by remember(editor) { mutableStateOf(false) }
+    var showExport by remember(editor) { mutableStateOf(false) }
     val drawingLayerName = stringResource(R.string.media_layer_freehand)
+    val importVideo: (() -> Unit)? = mediaPicker?.let { picker ->
+        {
+            scope.launch {
+                val picked = picker.pickMedia(WorkbenchMediaPickKind.VIDEO) ?: return@launch
+                editor.importVideoClip(picked)
+            }
+            Unit
+        }
+    }
+    val importMusic: (() -> Unit)? = mediaPicker?.let { picker ->
+        {
+            scope.launch {
+                val picked = picker.pickMedia(WorkbenchMediaPickKind.AUDIO) ?: return@launch
+                editor.importMusic(picked)
+            }
+            Unit
+        }
+    }
 
     LaunchedEffect(editor.isImageProject) {
         if (!editor.isImageProject) drawMode = false
@@ -169,6 +204,25 @@ internal fun MediaEditorCover(
                                     enabled = editor.writable && !editor.busy && !editor.needsReload,
                                 )
                             }
+                            if (editor.r2 != null) {
+                                FloeCircleButton(
+                                    icon = FloeIcons.Wand,
+                                    contentDescription = stringResource(R.string.media_r2_ai),
+                                    onClick = { showAi = true },
+                                )
+                                if (session.agentAvailable) {
+                                    FloeCircleButton(
+                                        icon = FloeIcons.NewTask,
+                                        contentDescription = stringResource(R.string.media_ask_ai),
+                                        onClick = { showAskAi = true },
+                                    )
+                                }
+                                FloeCircleButton(
+                                    icon = FloeIcons.ArrowUp,
+                                    contentDescription = stringResource(R.string.media_r2_export),
+                                    onClick = { showExport = true },
+                                )
+                            }
                             FloeCircleButton(
                                 icon = FloeIcons.Ellipsis,
                                 contentDescription = stringResource(R.string.media_more),
@@ -180,61 +234,89 @@ internal fun MediaEditorCover(
                     MediaEditorStatus(editor)
                     MediaEditorNotices(editor)
                     FloeDivider()
+                    val videoEditing = editor.isVideoProject && editor.r2 != null
                     if (wide) {
-                        Row(Modifier.weight(1f).fillMaxWidth()) {
-                            Column(
-                                Modifier.width(270.dp).fillMaxHeight(),
-                            ) {
-                                FloeSegmented(
-                                    options = listOf(
-                                        stringResource(R.string.media_assets),
-                                        stringResource(R.string.media_layers),
-                                    ),
-                                    selectedIndex = leftPanel,
-                                    onSelect = { leftPanel = it },
-                                    modifier = Modifier.padding(horizontal = 8.dp),
+                        Column(Modifier.weight(1f).fillMaxWidth()) {
+                            Row(Modifier.weight(1f).fillMaxWidth()) {
+                                Column(
+                                    Modifier.width(270.dp).fillMaxHeight(),
+                                ) {
+                                    if (videoEditing) {
+                                        MediaVideoAssetsPanel(
+                                            controller = editor,
+                                            onImportVideo = importVideo,
+                                            onImportMusic = importMusic,
+                                            modifier = Modifier.weight(1f),
+                                        )
+                                    } else {
+                                        FloeSegmented(
+                                            options = listOf(
+                                                stringResource(R.string.media_assets),
+                                                stringResource(R.string.media_layers),
+                                            ),
+                                            selectedIndex = leftPanel,
+                                            onSelect = { leftPanel = it },
+                                            modifier = Modifier.padding(horizontal = 8.dp),
+                                        )
+                                        FloeDivider()
+                                        if (leftPanel == 0) {
+                                            MediaAssetsPanel(
+                                                controller = editor,
+                                                onImport = {
+                                                    scope.launch {
+                                                        val picked = pickImage() ?: return@launch
+                                                        editor.importAsset(picked)
+                                                    }
+                                                },
+                                                modifier = Modifier.weight(1f),
+                                            )
+                                        } else {
+                                            MediaLayersPanel(
+                                                controller = editor,
+                                                onAddText = { showAddText = true },
+                                                modifier = Modifier.weight(1f),
+                                            )
+                                        }
+                                    }
+                                }
+                                FloeVerticalDivider()
+                                MediaPreview(
+                                    controller = editor,
+                                    drawMode = drawMode,
+                                    brushWidth = brushWidth,
+                                    brushColorHex = brushColor,
+                                    onStroke = { editor.addFreehandStroke(it, drawingLayerName) },
+                                    modifier = Modifier.weight(1f).fillMaxHeight(),
+                                    compact = false,
                                 )
-                                FloeDivider()
-                                if (leftPanel == 0) {
-                                    MediaAssetsPanel(
+                                FloeVerticalDivider()
+                                if (videoEditing) {
+                                    MediaVideoPropertiesPanel(
                                         controller = editor,
-                                        onImport = {
-                                            scope.launch {
-                                                val picked = pickImage() ?: return@launch
-                                                editor.importAsset(picked)
-                                            }
-                                        },
-                                        modifier = Modifier.weight(1f),
+                                        modifier = Modifier.width(310.dp).fillMaxHeight(),
                                     )
                                 } else {
-                                    MediaLayersPanel(
+                                    MediaPropertiesPanel(
                                         controller = editor,
-                                        onAddText = { showAddText = true },
-                                        modifier = Modifier.weight(1f),
+                                        drawMode = drawMode,
+                                        onToggleDraw = { drawMode = !drawMode },
+                                        brushWidth = brushWidth,
+                                        onBrushWidth = { brushWidth = it },
+                                        brushColorHex = brushColor,
+                                        onBrushColor = { brushColor = it },
+                                        onDeleteLayer = { showDeleteLayer = true },
+                                        modifier = Modifier.width(310.dp).fillMaxHeight(),
                                     )
                                 }
                             }
-                            FloeVerticalDivider()
-                            MediaPreview(
-                                controller = editor,
-                                drawMode = drawMode,
-                                brushWidth = brushWidth,
-                                brushColorHex = brushColor,
-                                onStroke = { editor.addFreehandStroke(it, drawingLayerName) },
-                                modifier = Modifier.weight(1f).fillMaxHeight(),
-                            )
-                            FloeVerticalDivider()
-                            MediaPropertiesPanel(
-                                controller = editor,
-                                drawMode = drawMode,
-                                onToggleDraw = { drawMode = !drawMode },
-                                brushWidth = brushWidth,
-                                onBrushWidth = { brushWidth = it },
-                                brushColorHex = brushColor,
-                                onBrushColor = { brushColor = it },
-                                onDeleteLayer = { showDeleteLayer = true },
-                                modifier = Modifier.width(310.dp).fillMaxHeight(),
-                            )
+                            if (videoEditing) {
+                                FloeDivider()
+                                MediaVideoTimeline(
+                                    controller = editor,
+                                    compact = false,
+                                    modifier = Modifier.fillMaxWidth().height(210.dp),
+                                )
+                            }
                         }
                     } else {
                         MediaPreview(
@@ -244,30 +326,76 @@ internal fun MediaEditorCover(
                             brushColorHex = brushColor,
                             onStroke = { editor.addFreehandStroke(it, drawingLayerName) },
                             modifier = Modifier.weight(1f).fillMaxWidth(),
+                            compact = true,
                         )
+                        if (videoEditing) {
+                            FloeDivider()
+                            MediaVideoTimeline(
+                                controller = editor,
+                                compact = true,
+                                modifier = Modifier.fillMaxWidth().height(170.dp),
+                            )
+                        }
                         FloeDivider()
                         Row(
                             Modifier.fillMaxWidth().padding(horizontal = 4.dp, vertical = 6.dp),
                             horizontalArrangement = Arrangement.spacedBy(4.dp),
                         ) {
-                            MediaCompactButton(
-                                icon = FloeIcons.Photo,
-                                label = stringResource(R.string.media_assets),
-                                onClick = { showPanel = MediaPanel.ASSETS },
-                                modifier = Modifier.weight(1f),
-                            )
-                            MediaCompactButton(
-                                icon = FloeIcons.Creative,
-                                label = stringResource(R.string.media_layers),
-                                onClick = { showPanel = MediaPanel.LAYERS },
-                                modifier = Modifier.weight(1f),
-                            )
-                            MediaCompactButton(
-                                icon = FloeIcons.Gauge,
-                                label = stringResource(R.string.media_properties),
-                                onClick = { showPanel = MediaPanel.PROPERTIES },
-                                modifier = Modifier.weight(1f),
-                            )
+                            if (videoEditing) {
+                                MediaCompactButton(
+                                    icon = FloeIcons.Photo,
+                                    label = stringResource(R.string.media_assets),
+                                    onClick = { showVideoAssets = true },
+                                    modifier = Modifier.weight(1f),
+                                )
+                                MediaCompactButton(
+                                    icon = FloeIcons.Gauge,
+                                    label = stringResource(R.string.media_r2_video),
+                                    onClick = { showVideoPanel = true },
+                                    modifier = Modifier.weight(1f),
+                                )
+                            } else {
+                                MediaCompactButton(
+                                    icon = FloeIcons.Photo,
+                                    label = stringResource(R.string.media_assets),
+                                    onClick = { showPanel = MediaPanel.ASSETS },
+                                    modifier = Modifier.weight(1f),
+                                )
+                                MediaCompactButton(
+                                    icon = FloeIcons.Creative,
+                                    label = stringResource(R.string.media_layers),
+                                    onClick = { showPanel = MediaPanel.LAYERS },
+                                    modifier = Modifier.weight(1f),
+                                )
+                                MediaCompactButton(
+                                    icon = FloeIcons.Gauge,
+                                    label = stringResource(R.string.media_properties),
+                                    onClick = { showPanel = MediaPanel.PROPERTIES },
+                                    modifier = Modifier.weight(1f),
+                                )
+                            }
+                            if (editor.r2 != null) {
+                                MediaCompactButton(
+                                    icon = FloeIcons.Wand,
+                                    label = stringResource(R.string.media_r2_ai),
+                                    onClick = { showAi = true },
+                                    modifier = Modifier.weight(1f),
+                                )
+                                if (session.agentAvailable) {
+                                    MediaCompactButton(
+                                        icon = FloeIcons.NewTask,
+                                        label = stringResource(R.string.media_ask_ai),
+                                        onClick = { showAskAi = true },
+                                        modifier = Modifier.weight(1f),
+                                    )
+                                }
+                                MediaCompactButton(
+                                    icon = FloeIcons.ArrowUp,
+                                    label = stringResource(R.string.media_r2_export),
+                                    onClick = { showExport = true },
+                                    modifier = Modifier.weight(1f),
+                                )
+                            }
                         }
                     }
                 }
@@ -295,6 +423,45 @@ internal fun MediaEditorCover(
             },
             onAddText = { showPanel = null; showAddText = true },
             onDeleteLayer = { showDeleteLayer = true },
+        )
+    }
+    if (showVideoAssets) {
+        MediaVideoAssetsSheet(
+            controller = editor,
+            onImportVideo = importVideo,
+            onImportMusic = importMusic,
+            onDismiss = { showVideoAssets = false },
+        )
+    }
+    if (showVideoPanel) {
+        MediaVideoPanelSheet(
+            controller = editor,
+            onDismiss = { showVideoPanel = false },
+        )
+    }
+    if (showAi) {
+        MediaGenerationSheet(
+            controller = editor,
+            onDismiss = { showAi = false },
+        )
+    }
+    if (showAskAi && session.agentAvailable) {
+        MediaAgentAskAiSheet(
+            projectName = editor.project.name,
+            usesCurrentTask = session.agentOwner != null,
+            busy = session.agentBusy,
+            failureCode = session.agentFailure,
+            onDismiss = {
+                showAskAi = false
+                session.dismissAgentFailure()
+            },
+            onConfirm = { instruction -> session.askAi(editor, instruction) },
+        )
+    }
+    if (showExport) {
+        MediaExportSheet(
+            controller = editor,
+            onDismiss = { showExport = false },
         )
     }
     if (showAddText) {
@@ -430,10 +597,11 @@ private fun MediaEditorStatus(editor: MediaEditorController) {
 @Composable
 private fun MediaEditorNotices(editor: MediaEditorController) {
     val notice = editor.notice?.let { stringResource(it.textRes()) }
+    val videoNotice = editor.videoNotice?.let { stringResource(it.textRes()) }
     val readOnly = if (!editor.writable) {
         stringResource(R.string.media_read_only)
     } else null
-    listOfNotNull(notice, readOnly).take(2).forEach { MediaInlineNotice(it) }
+    listOfNotNull(videoNotice, notice, readOnly).take(2).forEach { MediaInlineNotice(it) }
 }
 
 @Composable

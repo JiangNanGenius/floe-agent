@@ -110,6 +110,9 @@
     <string name="secure_credentials_hint">已安全保存；本任务可以引用。</string>
     <string name="secure_credentials_card">安全凭据卡片</string>
     <string name="attachment_open_named">打开附件 %1$s</string>
+    <string name="attachment_menu_open">打开</string>
+    <string name="attachment_design_action">设计</string>
+    <string name="attachment_more_actions">%1$s 的更多操作</string>
     <string name="attachment_remove">移除附件 %1$s</string>
     <string name="attachment_importing">正在导入…</string>
     <string name="attachment_progress">正在导入 %1$d%%</string>

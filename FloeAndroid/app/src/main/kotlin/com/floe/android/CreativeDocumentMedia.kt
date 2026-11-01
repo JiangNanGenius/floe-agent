@@ -24,7 +24,10 @@ import com.floe.android.design.FloeUnavailableView
 import com.floe.android.feature.canvas.CreativeOriginContext
 import com.floe.android.feature.canvas.CreativeStorageLayer
 import com.floe.android.feature.workbench.ui.FloeMediaProject
+import com.floe.android.feature.workbench.ui.r2.WorkbenchMediaPickKind
+import com.floe.android.feature.workbench.ui.r2.WorkbenchMediaPicker
 import com.floe.android.feature.workbench.ui.R as WorkbenchR
+import com.floe.android.mediaintegration.MediaWorkbenchExportPickerEffect
 import com.floe.android.host.Owner
 import com.floe.android.host.RuntimeHost
 import java.util.UUID
@@ -72,11 +75,36 @@ internal fun CreativeDocumentMediaDestination(
         LaunchedEffect(Unit) { onBackToFiles() }
         return
     }
+    MediaWorkbenchExportPickerEffect(application.mediaWorkbench.pickerDelivery())
     val key = "creative-doc:${request.token}:${owner.nativeEpoch}"
-    val session = remember(key) { CreativeUiHost.mediaRouteSession(application, key) }
+    val session = remember(key) {
+        CreativeUiHost.mediaRouteSession(
+            application,
+            key,
+            request.taskID,
+            request.workspaceID,
+        )
+    }
     val pickImage = rememberMediaFilePicker(CREATIVE_IMAGE_MIME_TYPES)
+    val pickVideo = rememberMediaFilePicker(
+        arrayOf("video/mp4", "video/quicktime", "video/x-m4v"),
+    )
+    val pickAudio = rememberMediaFilePicker(arrayOf("audio/*"))
+    val mediaPicker = remember(pickVideo, pickAudio) {
+        WorkbenchMediaPicker { kind ->
+            when (kind) {
+                WorkbenchMediaPickKind.VIDEO -> pickVideo()
+                WorkbenchMediaPickKind.AUDIO -> pickAudio()
+            }
+        }
+    }
     var attempt by remember(key) { mutableIntStateOf(0) }
     var stagingFailed by remember(key) { mutableStateOf(false) }
+    // The only window this holds a value is after the App-owned stage commit
+    // and before the import port takes/consumes it. A real navigation in that
+    // window releases exactly this owned snapshot; rotation keeps it for the
+    // retained staging job.
+    var stagedSource by remember(key) { mutableStateOf<android.net.Uri?>(null) }
     // Stable across rotation/process restoration for this exact document
     // request: a retried creation is the SAME logical project creation, so an
     // already-committed outcome is replayed instead of publishing a duplicate.
@@ -93,9 +121,11 @@ internal fun CreativeDocumentMediaDestination(
         .take(96)
 
     LaunchedEffect(key, attempt) {
-        if (session.editor != null || session.busy || session.failure != null) {
+        if (session.editor != null || session.busy) {
             return@LaunchedEffect
         }
+        // An earlier staging/import failure is retryable here; clearing it is
+        // what the retry action means. Never re-enter while an editor exists.
         session.clearFailure()
         stagingFailed = false
         try {
@@ -106,8 +136,10 @@ internal fun CreativeDocumentMediaDestination(
                 relativePath = request.path,
                 kind = kind,
             )
+            stagedSource = picked.uri
             if (session.isClosed) {
-                CreativeDocumentSourceStaging.consume(picked.uri)
+                application.mediaWorkbench.workspacePrestage.consume(picked.uri)
+                stagedSource = null
                 return@LaunchedEffect
             }
             try {
@@ -123,15 +155,20 @@ internal fun CreativeDocumentMediaDestination(
                     editCopy = true,
                     opID = opID,
                 )
+                // The port owns/deletes the snapshot from here on. Keep the
+                // recorded URI until dispose: a duplicate consume is a safe
+                // no-op, while clearing it now could leak if the retained
+                // session closed before its import job reached the port.
                 if (!accepted) {
                     // The session refused the new editor (closed/replaced);
                     // the staged snapshot was never handed to the import.
-                    CreativeDocumentSourceStaging.consume(picked.uri)
+                    application.mediaWorkbench.workspacePrestage.consume(picked.uri)
                     stagingFailed = true
                 }
             } catch (error: Throwable) {
                 // The import never took ownership of the staged snapshot.
-                CreativeDocumentSourceStaging.consume(picked.uri)
+                application.mediaWorkbench.workspacePrestage.consume(picked.uri)
+                stagedSource = null
                 throw error
             }
         } catch (cancelled: CancellationException) {
@@ -143,10 +180,16 @@ internal fun CreativeDocumentMediaDestination(
     DisposableEffect(key) {
         onDispose {
             // Staged-source ownership belongs to the import completion (the
-            // App port consumes it in `finally`). Never delete it here: during
-            // rotation the retained import may still be reading it. Only a
-            // real navigation releases the retained session.
+            // App port consumes it in `finally`). Never delete it while an
+            // import could still be reading it: during rotation the retained
+            // job survives, and a real navigation only releases a snapshot
+            // that has not yet been handed to the import.
             if (activity?.isChangingConfigurations != true) {
+                if (!session.busy) {
+                    stagedSource?.let {
+                        application.mediaWorkbench.workspacePrestage.consume(it)
+                    }
+                }
                 CreativeUiHost.releaseMediaRoute(key)
             }
         }
@@ -178,6 +221,7 @@ internal fun CreativeDocumentMediaDestination(
         FloeMediaProject(
             session = session,
             pickImage = pickImage,
+            mediaPicker = mediaPicker,
             onRetry = { attempt += 1 },
             onClose = onBackToFiles,
         )

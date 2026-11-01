@@ -228,6 +228,12 @@ public enum VideoModelRegistry {
     /// Contract for one route. The official manifest wins when its remote ID
     /// matches; the documented family limits are the fallback.
     public static func contract(model: ModelProfile, provider: ProviderProfile) -> VideoParameterContract {
+        if AlibabaEndpointIdentity.isTokenPlan(provider.baseURL),
+           AlibabaVideoWireRoute.resolve(modelRemoteID: model.remoteModelID).isHappyHorse {
+            return happyHorseContract(
+                route: AlibabaVideoWireRoute.resolve(modelRemoteID: model.remoteModelID)
+            )
+        }
         if let descriptor = OfficialMediaModelCatalog.models.first(where: {
             $0.kind == .video && $0.remoteModelID.caseInsensitiveCompare(model.remoteModelID) == .orderedSame
         }) {
@@ -263,6 +269,24 @@ public enum VideoModelRegistry {
             return "reference_image"
         }
         return "first_frame"
+    }
+
+    /// Documented HappyHorse limits. The 1.1 t2v family accepts nine aspect
+    /// ratios; image-to-video follows the source image and therefore exposes
+    /// no ratio control. Neither family has an audio toggle or prompt
+    /// extension, but both accept a watermark flag and a seed.
+    static func happyHorseContract(route: AlibabaVideoWireRoute) -> VideoParameterContract {
+        VideoParameterContract(
+            aspectRatios: route == .happyHorseText
+                ? ["16:9", "9:16", "1:1", "4:3", "3:4", "4:5", "5:4", "9:21", "21:9"]
+                : [],
+            resolutions: ["480P", "720P", "1080P"],
+            minimumDurationSeconds: 3, maximumDurationSeconds: 15,
+            supportedDurations: Array(3...15),
+            supportsAudio: false, supportsWatermark: true, supportsSeed: true,
+            maximumReferenceAssets: route == .happyHorseImage ? 1 : 0,
+            referenceMode: route == .happyHorseImage ? "first_frame" : nil
+        )
     }
 
     /// Documented fallback limits for a remote model ID whose official entry is

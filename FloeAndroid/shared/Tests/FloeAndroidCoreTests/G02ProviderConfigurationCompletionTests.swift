@@ -442,8 +442,8 @@ final class G02ProviderConfigurationCompletionTests: XCTestCase {
 
     // MARK: - 3. Trusted official catalog
 
-    /// The packaged reviewed resource (exact byte copy of the original iOS
-    /// trusted document), resolved from the test source location.
+    /// The packaged reviewed resource (the prior Android catalog plus the
+    /// current iOS image/video records), resolved from the test source location.
     private func bundledCatalogURL() -> URL {
         URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()   // FloeAndroidCoreTests
@@ -465,7 +465,7 @@ final class G02ProviderConfigurationCompletionTests: XCTestCase {
         // Byte pin of the reviewed resource (schemaVersion 1, 20 providers).
         let digest = sha256Hex(bytes)
         XCTAssertEqual(digest,
-                       "4978b2e9a956d7e4859bfab280282da78f2b3ffd20fbaaf931fec26ecd79f474",
+                       "b72cb804f702a6c85be95b3c2c4443e35e809f49ea4c4e7c0bd2d8a36b72af81",
                        "the reviewed official catalog pin changed")
         let document = try XCTUnwrap(
             JSONSerialization.jsonObject(with: bytes) as? [String: Any])

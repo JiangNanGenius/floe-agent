@@ -2277,14 +2277,21 @@ internal object ProviderWire {
         val baseURL = obj.string("baseURL")
         val endpointHost = runCatching { java.net.URI(baseURL ?: "") }.getOrNull()?.host
         val kind = obj.string("kind") ?: "custom"
+        val offerModels = LinkedHashMap<ProviderServiceRoleUi, List<String>>()
         val offered = (obj["serviceOffers"] as? JsonArray).orEmpty().mapNotNull { element ->
-            (element as? JsonObject)?.string("role")
+            val offer = element as? JsonObject ?: return@mapNotNull null
+            val role = offer.string("role")?.let { raw ->
+                ProviderServiceRoleUi.entries.firstOrNull { it.swiftRaw == raw }
+            } ?: return@mapNotNull null
+            val offerIDs = (offer["models"] as? JsonArray).orEmpty()
+                .mapNotNull { (it as? JsonPrimitive)?.contentOrNull }
+                .filter { it.isNotBlank() }
+            if (offerIDs.isNotEmpty()) offerModels[role] = offerIDs
+            role
         }
         val roles = LinkedHashSet<ProviderServiceRoleUi>()
         roles.add(ProviderServiceRoleUi.CONVERSATION)
-        for (raw in offered) {
-            ProviderServiceRoleUi.entries.firstOrNull { it.swiftRaw == raw }?.let(roles::add)
-        }
+        roles.addAll(offered)
         val models = (obj["models"] as? JsonArray).orEmpty()
             .mapNotNull { (it as? JsonPrimitive)?.contentOrNull }
         return OfficialSupplierUi(
@@ -2307,6 +2314,7 @@ internal object ProviderWire {
             },
             unsupportedReason = obj.string("unsupportedReason"),
             servedRoles = roles.toList(),
+            serviceOfferModels = offerModels,
             isLocalEndpoint = kind == "local",
             isConfigured = false,
             suggestsToolNameCompatibility = obj.bool("toolNameCompatibility") ?: false,
@@ -2394,7 +2402,7 @@ internal object ProviderWire {
         catalog.officialProviders
             .filter { it.servedRoles.contains(role) }
             .flatMap { supplier ->
-                supplier.modelKeywords.take(4).map { keyword ->
+                supplier.serviceOfferModels[role].orEmpty().map { keyword ->
                     OfficialMediaModelUi(
                         displayName = keyword,
                         remoteModelID = keyword,

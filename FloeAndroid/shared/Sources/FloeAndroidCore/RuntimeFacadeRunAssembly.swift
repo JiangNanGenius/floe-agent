@@ -560,6 +560,19 @@ extension FacadeRunDomain {
         let discoveryStore = (temporary || isNotes) ? nil : bundle.discovery
         let personalizationProvider =
             (temporary || isNotes) ? nil : components.personalizationProvider
+        // G09-R2 model context: the media projects the user explicitly
+        // connected to THIS task, read from the durable native association.
+        // Reference data only — the native binding/runtime authority still
+        // authorizes every call. Temporary/Notes runs never receive it, and an
+        // unbound provider or read failure simply yields no note.
+        let mediaTaskContext: [String]
+        if temporary || isNotes {
+            mediaTaskContext = []
+        } else if let provider = components.mediaTaskContext {
+            mediaTaskContext = await provider(conversationID)
+        } else {
+            mediaTaskContext = []
+        }
         let service = ConversationRunService(
             configuration: configuration,
             adapter: adapter,
@@ -585,7 +598,8 @@ extension FacadeRunDomain {
                 // profile, listing or project instructions.
                 workspaceName: (temporary || isNotes) ? nil : workspaceName,
                 availableToolNames: ceiling,
-                skillInstructions: isNotes ? notes?.contextText : nil),
+                skillInstructions: isNotes ? notes?.contextText : nil,
+                taskResources: mediaTaskContext),
             personalizationProvider: personalizationProvider,
             resourceAccessCleanup: nil,
             artifactRootURL: components.artifactRootURL)

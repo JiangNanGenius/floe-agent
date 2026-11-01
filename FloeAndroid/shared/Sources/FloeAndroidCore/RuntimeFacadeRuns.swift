@@ -258,6 +258,12 @@ public struct RunDomainComponents: Sendable {
     /// hosts that never supply an owned root. It is never model-supplied and
     /// never a temporary/HOME fallback.
     public var artifactRootURL: URL?
+    /// G09-R2 (additive, default nil): resolves the READ-ONLY task-context
+    /// notes for the run's system message — the media projects the user
+    /// explicitly connected to this exact task. The notes are reference data,
+    /// never permission: the ceiling, runtime authority and native binding
+    /// CAS are unchanged. nil keeps every previous launch byte-identical.
+    public var mediaTaskContext: (@Sendable (UUID) async -> [String])?
 
     public init(context: RunIngressContext,
                 durable: RunPersistenceBundle,
@@ -282,7 +288,8 @@ public struct RunDomainComponents: Sendable {
                 settings: (any SettingsStore)? = nil,
                 notesRuntime: (any NotesRunRuntimeProviding)? = nil,
                 scheduleCompletion: (any G073ScheduleCompletionRecording)? = nil,
-                artifactRootURL: URL? = nil) {
+                artifactRootURL: URL? = nil,
+                mediaTaskContext: (@Sendable (UUID) async -> [String])? = nil) {
         self.context = context
         self.durable = durable
         self.checkpoints = checkpoints
@@ -305,6 +312,7 @@ public struct RunDomainComponents: Sendable {
         self.notesRuntime = notesRuntime
         self.scheduleCompletion = scheduleCompletion
         self.artifactRootURL = artifactRootURL
+        self.mediaTaskContext = mediaTaskContext
     }
 }
 

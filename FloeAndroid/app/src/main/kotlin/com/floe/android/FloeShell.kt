@@ -74,12 +74,16 @@ import com.floe.android.design.InspectorRoute
 import com.floe.android.design.MoreDestination
 import com.floe.android.design.SidebarSelection
 import com.floe.android.design.WorkbenchSelection
+import com.floe.android.feature.canvas.CreativeAvailability
 import com.floe.android.feature.providers.FloeProviderSettingsDestination
 import com.floe.android.host.AttachmentPickerEffect
 import com.floe.android.host.LocalNetworkPermissionEffect
 import com.floe.android.host.RuntimeHost
 import com.floe.android.host.RuntimeHostProvider
 import com.floe.android.host.SkillsFolderPickerEffect
+import com.floe.android.host.creative.GenerationForegroundOwner
+import com.floe.android.host.creative.GenerationReturnDecision
+import com.floe.android.host.creative.GenerationReturnNavigation
 import com.floe.android.host.rememberRuntimeHost
 import kotlinx.coroutines.launch
 
@@ -213,6 +217,10 @@ private fun FloeShellContent(
     // shell's existing route authority.
     var taskCenterSchedulesToken by rememberSaveable { mutableIntStateOf(0) }
     val scope = androidx.compose.runtime.rememberCoroutineScope()
+    // Exact raw notification return, admitted only after the live claim and
+    // current native bound epoch are re-proven. It survives Activity rotation
+    // through the process-scoped owner; a refused fence dismisses it.
+    val generationReturnRequest by GenerationReturnNavigation.pending.collectAsState()
 
     // G05-R2 Office AI transient launch admission (Main review 2026-10-27):
     // project the shell's MODAL surfaces (Settings Dialog, preview Dialog,
@@ -494,8 +502,16 @@ private fun FloeShellContent(
         }
         ImeFirstBackHandler(enabled = drawerOpen) { drawerOpen = false }
 
-        fun navigateTo(target: SidebarSelection, openSchedules: Boolean) {
+        fun navigateTo(
+            target: SidebarSelection,
+            openSchedules: Boolean,
+            onCommitted: (() -> Unit)? = null,
+            onRefused: (() -> Unit)? = null,
+            mayCommit: () -> Boolean = { true },
+        ) {
             officeNavigationGeneration++
+            val navigationGeneration = officeNavigationGeneration
+            val previousSelectionKey = selection.key
             officePreviews?.cancelUnopened()
             val opensSkillsSheet = target is SidebarSelection.More &&
                 target.destination == MoreDestination.SKILLS
@@ -511,17 +527,22 @@ private fun FloeShellContent(
                     settingsSectionKey =
                         com.floe.android.design.FloeSettingsSection.SKILLS.name
                     settingsVisible = true
+                    onCommitted?.invoke()
                 }
                 // Genuine route transition while a temporary session owns the
                 // surface: fence admission BEFORE the transition (TMP-NAV-2);
                 // the async drain continues afterwards. A REFUSED/timeout
-                // fence commits nothing — including no schedule sub-view.
+                // fence commits nothing — including no schedule sub-view and
+                // no generation-return open.
                 runtimeHost != null && currentTemporary != null && leavingConversation -> {
                     val ref = currentTemporary
                     scope.launch {
                         runtimeHost.conversations.tempFence.beginEnd(ref)
                         val admitted = runtimeHost.conversations.tempFence.awaitAdmission(ref)
-                        if (admitted) {
+                        if (admitted &&
+                            navigationGeneration == officeNavigationGeneration &&
+                            selection.key == previousSelectionKey && mayCommit()
+                        ) {
                             runtimeHost?.home?.onNavigation(target)
                             commitVisibleSelection(target)
                             if (taskCenterSchedulesOpenOnCommit(target, openSchedules)) {
@@ -529,6 +550,11 @@ private fun FloeShellContent(
                             }
                             drawerOpen = false
                             inspectorRoute = null
+                            onCommitted?.invoke()
+                        } else {
+                            // The refused fence owns NO destination: nothing
+                            // is opened and the caller must not claim success.
+                            onRefused?.invoke()
                         }
                     }
                 }
@@ -543,12 +569,93 @@ private fun FloeShellContent(
                     // conversation surface ends temporary chat; rotation,
                     // recreation, background and lock never reach this path.
                     inspectorRoute = null
+                    onCommitted?.invoke()
                 }
             }
         }
 
         val select: (SidebarSelection) -> Unit = { target ->
             navigateTo(target, openSchedules = false)
+        }
+
+        // Generation notification return. This is the shell's single route
+        // authority: it re-proves the opaque token against the LIVE registered
+        // foreground claim, the exact captured project context and the CURRENT
+        // native bound epoch, then uses the ordinary Creative route (including
+        // the existing temporary-chat fence). A rejected token is dismissed
+        // with no navigation; a refused fence publishes no approval, so no
+        // project can open and no success is claimed.
+        LaunchedEffect(application, generationReturnRequest?.requestID) {
+            val request = generationReturnRequest ?: return@LaunchedEffect
+            val app = application ?: return@LaunchedEffect
+            // Never swallow coroutine cancellation: a rotation during the
+            // read must leave the one-shot pending for the next composition.
+            val status = try {
+                app.creativeHost.services.status()
+            } catch (cancelled: kotlinx.coroutines.CancellationException) {
+                throw cancelled
+            } catch (_: Throwable) {
+                null
+            }
+            val decision = GenerationForegroundOwner.resolveReturn(
+                token = request.token,
+                nowElapsedMillis = android.os.SystemClock.elapsedRealtime(),
+                liveEpoch = status?.boundEpoch,
+                availability =
+                    status?.availability ?: CreativeAvailability.Unavailable,
+            )
+            when (decision) {
+                is GenerationReturnDecision.Rejected -> {
+                    // Unknown/expired token, unregistered claim, missing
+                    // captured context, wrong root/epoch or unavailable host:
+                    // refuse safely. Never falls back to the first project.
+                    GenerationReturnNavigation.dismiss(request.requestID)
+                }
+                is GenerationReturnDecision.Authorized -> {
+                    if (GenerationReturnNavigation.pending.value?.requestID !=
+                        request.requestID) return@LaunchedEffect
+                    val creative =
+                        SidebarSelection.More(MoreDestination.CREATIVE)
+                    val liveTemporary =
+                        runtimeHost?.conversations?.activeTemporarySession()
+                    if (selection == creative && liveTemporary == null) {
+                        // Already on the exact destination: no redundant
+                        // route side effect. Transient shell overlays must not
+                        // hide the full-window project; the outer split and
+                        // route order are unchanged.
+                        settingsVisible = false
+                        previewVisible = false
+                        drawerOpen = false
+                        inspectorRoute = null
+                        GenerationReturnNavigation.approve(
+                            request.requestID, decision.target)
+                    } else {
+                        navigateTo(
+                            target = creative,
+                            openSchedules = false,
+                            mayCommit = {
+                                GenerationReturnNavigation.pending.value?.requestID ==
+                                    request.requestID
+                            },
+                            onCommitted = {
+                                // Close transient overlays only after the real
+                                // route/fence commit, so a refused fence leaves
+                                // the current surface untouched.
+                                settingsVisible = false
+                                previewVisible = false
+                                drawerOpen = false
+                                inspectorRoute = null
+                                GenerationReturnNavigation.approve(
+                                    request.requestID, decision.target)
+                            },
+                            onRefused = {
+                                GenerationReturnNavigation.dismiss(
+                                    request.requestID)
+                            },
+                        )
+                    }
+                }
+            }
         }
 
         val sidebarBody: @Composable (Boolean) -> Unit = { inDrawer ->
