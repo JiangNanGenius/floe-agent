@@ -138,9 +138,8 @@ nonisolated struct FaceRef: Codable, Hashable, Sendable {
 // MARK: - Edges
 
 /// Geometric fingerprint of a straight edge, used to re-find it after the input
-/// body is rebuilt. The STABLE identifier is the pair of adjacent face outward
-/// normals (an edge is "the crease between the +Z and +X faces"); midpoint,
-/// direction and length break ties between parallel same-face-pair edges. Unlike
+/// body is rebuilt. It is a geometric fingerprint, NOT a stable identifier:
+/// every component must agree with exactly one current edge. Unlike
 /// a `FaceRef`, an edge blend DESTROYS the edge it references, so an `EdgeRef` is
 /// always resolved against the feature's INPUT body, never its output.
 nonisolated struct EdgeSignature: Codable, Hashable, Sendable {
@@ -154,13 +153,13 @@ nonisolated struct EdgeSignature: Codable, Hashable, Sendable {
 /// A persistent reference to a straight edge on a feature-produced body.
 ///
 /// `faceNames` is the kernel-history identity (step 4b): the unordered pair
-/// of adjacent-face names — "the crease between the top cap and wall X" —
-/// which survives rebuilds exactly as long as its two faces do, where the
-/// geometric signature drifts with every edit. Optional and omitted when
-/// nil, so old documents load unchanged. Each named reference resolves only
-/// by identity, including a mixed named/legacy selection. Only unnamed
-/// legacy references use signatures; one unresolved reference rejects the
-/// whole blend rather than silently blending the remaining edges.
+/// of unique adjacent-face names — "the unique crease between the top cap
+/// and wall X". Version 1 never stamps an ordinal on a multi-edge family.
+/// Pre-contract names require their exact fingerprint AND original face pair;
+/// unnamed references also require exact unique fingerprints. A successful
+/// native operation may upgrade a proven legacy reference to a unique name.
+/// Missing or unknown identities never fall back to a lookalike, including
+/// mixed selections; one unresolved operand rejects the whole blend.
 nonisolated struct EdgeRef: Codable, Hashable, Sendable {
     var body: BodyRef
     var signature: EdgeSignature

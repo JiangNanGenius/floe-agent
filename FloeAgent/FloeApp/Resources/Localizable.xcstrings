@@ -1,6 +1,23 @@
 {
   "sourceLanguage": "en",
   "strings": {
+    "cad.blend.history.referencesMissing": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Some edges are no longer available. Select the edges again."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "部分边已无法确认，请重新选择。"
+          }
+        }
+      }
+    },
     "cad.recovery.error.outsideSource": {
       "extractionState": "manual",
       "localizations": {

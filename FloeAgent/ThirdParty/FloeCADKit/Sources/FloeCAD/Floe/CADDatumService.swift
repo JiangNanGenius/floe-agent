@@ -825,10 +825,9 @@ public final class CADDatumService {
             signature: signature, faceNames: edgeName)
         // The definition resolves against the FROZEN writer's snapshot, so the
         // creation preview must read the same body, not the live render.
-        let snapshotEdges = EdgeTopology.selectableEdges(from: acquired.snapshot.body.render)
-        let aabb = acquired.snapshot.body.render.localAABB
-        let scale = Double(simd_length(aabb.max - aabb.min))
-        guard let resolved = EdgeTopology.resolve(signature, in: snapshotEdges, sizeScale: scale) else {
+        let context = EdgeTopology.ReferenceContext(body: acquired.snapshot.body,
+                                                   kernelNames: acquired.snapshot.kernelNames)
+        guard let resolved = context.resolve(reference)?.edge else {
             throw Failure(code: "ambiguous_source",
                           message: "The picked edge is absent from its writer snapshot. Rebuild and re-pick.")
         }

@@ -5080,6 +5080,10 @@ final class EditorViewModel {
     /// the blend on it; previewing and committing against that would blend the
     /// result a second time. Recovered once, when the edit begins.
     private var blendEditSource: Body?
+    private var blendEditKernelNames: [Int: ElementName]?
+    /// Retain the actual operands while History is open. Re-minting them
+    /// from the blended RESULT's naming table would lose their input identity.
+    private var blendEditReferences: [(edge: SelectableEdge, reference: EdgeRef)] = []
 
     /// The body the current pick blends: the pre-blend one while editing an
     /// existing feature, otherwise the document's own.
@@ -5111,7 +5115,8 @@ final class EditorViewModel {
         default:
             return false
         }
-        guard let source = session.inputBody(for: id, bodyID: bodyRef.bodyID) else {
+        guard let input = session.inputState(before: id),
+              let source = input.bodies.first(where: { $0.id == bodyRef.bodyID }) else {
             errorMessage = "Couldn't rebuild the shape this blend started from."
             return false
         }
@@ -5120,20 +5125,24 @@ final class EditorViewModel {
         cancelTransientPicks()
         cancelTool()
 
-        // Resolve each stored EdgeRef back to a live edge. Unresolvable ones are
-        // dropped rather than failing the whole edit: an upstream change may
-        // have removed one edge of a chain, and re-picking is exactly how the
-        // user fixes that.
-        let aabb = source.render.localAABB
-        let scale = Double(simd_length(aabb.max - aabb.min))
-        let available = EdgeTopology.selectableEdges(from: source.render)
-        blendSelectedEdges = refs.compactMap {
-            EdgeTopology.resolve($0.signature, in: available, sizeScale: scale)
+        let names = input.kernelNames[source.id] ?? [:]
+        let context = EdgeTopology.ReferenceContext(body: source, kernelNames: names)
+        let restored = refs.compactMap { reference -> (edge: SelectableEdge, reference: EdgeRef)? in
+            guard let edge = context.resolve(reference)?.edge else { return nil }
+            return (edge, reference)
         }
+        // A partial selection would offer to commit a different operation.
+        // Leave the original feature untouched and let the user re-pick.
+        let complete = !refs.isEmpty && restored.count == refs.count
+        blendEditReferences = complete ? restored : []
+        blendSelectedEdges = blendEditReferences.map(\.edge)
+        errorMessage = complete ? nil : FloeCADStrings.text("cad.blend.history.referencesMissing",
+            "Some edges are no longer available. Select the edges again.")
 
         blendEditingFeature = id
         blendEditBodyRef = bodyRef
         blendEditSource = source
+        blendEditKernelNames = names
         blendBodyID = bodyRef.bodyID
         blendValue = amount
         blendPreview = nil
@@ -5210,6 +5219,8 @@ final class EditorViewModel {
         blendEditingFeature = nil
         blendEditBodyRef = nil
         blendEditSource = nil
+        blendEditKernelNames = nil
+        blendEditReferences = []
         if case .pickingBlendEdges = mode { mode = .idle }
     }
 
@@ -5565,7 +5576,7 @@ final class EditorViewModel {
               let bodyID = blendBodyID,
               let source = blendSource,
               !blendSelectedEdges.isEmpty,
-              blendValue > 1e-6   // a zero-size node would error on replay
+              blendValue.isFinite, blendValue > 1e-6
         else { return }
         guard !refuseExactSurface(source, operation: kind.title) else {
             cancelBlend()
@@ -5577,10 +5588,23 @@ final class EditorViewModel {
         // live-preview path below would instead REPLACE the body and append a
         // SECOND blend node on top of the first.
         if let featureID = blendEditingFeature, let bodyRef = blendEditBodyRef {
-            let edgeRefs = blendSelectedEdges.map {
-                EdgeRef(body: bodyRef, signature: EdgeTopology.signature(of: $0),
-                        faceNames: mintEdgeName(body: source, edge: $0))
+            let edgeRefs = blendSelectedEdges.map { edge in
+                blendEditReferences.first(where: { $0.edge == edge })?.reference
+                    ?? EdgeRef(body: bodyRef, signature: EdgeTopology.signature(of: edge),
+                               faceNames: mintEdgeName(body: source, edge: edge,
+                                                      kernelNames: blendEditKernelNames))
             }
+            let unchanged: Bool
+            switch session.document.features.node(featureID)?.kind {
+            case let .fillet(currentBody, currentEdges, radius):
+                unchanged = kind == .fillet && currentBody == bodyRef
+                    && currentEdges == edgeRefs && radius.value == blendValue
+            case let .chamfer(currentBody, currentEdges, setback):
+                unchanged = kind == .chamfer && currentBody == bodyRef
+                    && currentEdges == edgeRefs && setback.value == blendValue
+            default: unchanged = false
+            }
+            if unchanged { cancelBlend(); return }
             let after: FeatureKind = kind == .fillet
                 ? .fillet(body: bodyRef, edges: edgeRefs, radius: Expr(value: blendValue))
                 : .chamfer(body: bodyRef, edges: edgeRefs, setback: Expr(value: blendValue))
@@ -18954,11 +18978,17 @@ final class EditorViewModel {
     /// The kernel-history identity of the picked mesh edge on `body` — its
     /// adjacent-face name pair (step 4b). Same staleness guard; nil mints a
     /// legacy signature-only ref.
-    private func mintEdgeName(body: Body, edge: SelectableEdge) -> EdgeName? {
-        guard let brep = body.brep,
-              session.lastNamingRevisions[body.id] == body.meshRevision,
-              let names = session.lastKernelNames[body.id], !names.isEmpty
-        else { return nil }
+    private func mintEdgeName(body: Body, edge: SelectableEdge,
+                              kernelNames: [Int: ElementName]? = nil) -> EdgeName? {
+        guard let brep = body.brep else { return nil }
+        let names: [Int: ElementName]
+        if let kernelNames { names = kernelNames }
+        else {
+            guard session.lastNamingRevisions[body.id] == body.meshRevision,
+                  let current = session.lastKernelNames[body.id] else { return nil }
+            names = current
+        }
+        guard !names.isEmpty else { return nil }
         let mid = edge.midpoint
         guard let index = OCCTKernel.nearestEdgeIndex(
             brep, to: SIMD3(Double(mid.x), Double(mid.y), Double(mid.z)),

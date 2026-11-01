@@ -1876,8 +1876,8 @@ nonisolated extension FeatureGraph {
 
     /// Resolve each persisted `EdgeRef` against the input body's rebuilt edges
     /// and remove/round the corner. Refs resolve against the INPUT body because
-    /// the blend destroys the very edges it names. Non-convex or unresolved edges
-    /// are skipped; if none resolve the node errors so History shows a badge.
+    /// the blend destroys the very edges it names. Every operand must resolve
+    /// before the kernel is allowed to change any part of the selection.
     private func evalEdgeBlend(
         _ node: FeatureNode,
         bodyRef: BodyRef,
@@ -1903,49 +1903,20 @@ nonisolated extension FeatureGraph {
         if refuseExactSurface(node, isFillet ? "Fillet" : "Chamfer",
                               body: body, into: &state) { return }
 
-        // A persisted name is authoritative even in a mixed legacy/named
-        // selection. A lost name must never rebind to a lookalike through its
-        // old geometric fingerprint. Unnamed legacy references alone may use
-        // signature resolution. Resolve the entire selection before asking
-        // the kernel to change anything; duplicate picks are deduped by index.
-        if edgeRefs.contains(where: { $0.faceNames != nil }) {
-            guard OCCTKernel.useOCCTAsSourceOfTruth, let brep = body.brep,
-                  let names = state.kernelNames[body.id], !names.isEmpty else {
-                state.errors[node.id] = .brokenRef("named blend edges need their source identities")
-                return
-            }
-            let adjacency = OCCTKernel.edgeFaceAdjacency(brep)
-            let edgeNames = ElementNaming.edgeNames(adjacency: adjacency,
-                                                    names: names)
-            let hasLegacy = edgeRefs.contains(where: { $0.faceNames == nil })
-            let available = hasLegacy ? EdgeTopology.selectableEdges(from: body.render) : []
-            let aabb = body.render.localAABB
-            let scale = Double(simd_length(aabb.max - aabb.min))
+        let names = state.kernelNames[body.id] ?? [:]
+        let context = EdgeTopology.ReferenceContext(body: body, kernelNames: names)
+        if OCCTKernel.useOCCTAsSourceOfTruth, let brep = body.brep {
+            let edgeNames = context.names
             var indices: [Int] = []
             var upgrades: [(EdgeRef, EdgeName)] = []
             for (offset, ref) in edgeRefs.enumerated() {
-                if let name = ref.faceNames {
-                    let matches = edgeNames.filter { $0.value == name }
-                    guard matches.count == 1, let index = matches.first?.key else {
-                        state.errors[node.id] = .brokenRef(
-                            "blend edge \(offset + 1) identity is missing or ambiguous; no edges were blended")
-                        return
-                    }
-                    indices.append(index)
-                } else {
-                    guard let edge = EdgeTopology.resolve(
-                        ref.signature, in: available, sizeScale: scale),
-                          let index = OCCTKernel.nearestEdgeIndex(
-                            brep, to: SIMD3(Double(edge.midpoint.x), Double(edge.midpoint.y),
-                                            Double(edge.midpoint.z)),
-                            tolerance: OCCTKernel.matchTolerance(for: brep)) else {
-                        state.errors[node.id] = .brokenRef(
-                            "blend edge \(offset + 1) did not resolve; no edges were blended")
-                        return
-                    }
-                    indices.append(index)
-                    if let name = edgeNames[index] { upgrades.append((ref, name)) }
+                guard let resolved = context.resolve(ref), let index = resolved.nativeIndex else {
+                    state.errors[node.id] = .brokenRef(
+                        "blend edge \(offset + 1) identity is missing or ambiguous; no edges were blended")
+                    return
                 }
+                indices.append(index)
+                if let name = resolved.name { upgrades.append((ref, name)) }
             }
             do {
                 // MANY refs can name ONE kernel edge: the picker selects mesh
@@ -2008,19 +1979,13 @@ nonisolated extension FeatureGraph {
             }
         }
 
-        let available = EdgeTopology.selectableEdges(from: body.render)
-        let aabb = body.render.localAABB
-        let scale = Double(simd_length(aabb.max - aabb.min))
-
         func d3(_ v: SIMD3<Float>) -> SIMD3<Double> {
             SIMD3(Double(v.x), Double(v.y), Double(v.z))
         }
 
         var specs = [BlendEdgeSpec]()
-        var resolvedRefs = [(ref: EdgeRef, midpoint: SIMD3<Double>)]()
         for (offset, ref) in edgeRefs.enumerated() {
-            guard let edge = EdgeTopology.resolve(
-                ref.signature, in: available, sizeScale: scale)
+            guard let edge = context.resolve(ref)?.edge
             else {
                 state.errors[node.id] = .brokenRef(
                     "blend edge \(offset + 1) did not resolve; no edges were blended")
@@ -2031,79 +1996,13 @@ nonisolated extension FeatureGraph {
                 normalA: d3(edge.normalA), normalB: d3(edge.normalB),
                 isConvex: edge.isConvex)
             specs.append(spec)
-            resolvedRefs.append((ref, (spec.p0 + spec.p1) * 0.5))
         }
         guard !specs.isEmpty else {
             state.errors[node.id] = .brokenRef("no blend edge resolved")
             return
         }
-        // B-rep fillet: when the body is analytic, round it with BRepFilletAPI so
-        // the result STAYS analytic (a filleted cylinder keeps its round wall and
-        // gains a real torus face) instead of collapsing to a mesh blend. A
-        // tessellated rim is many mesh segments but one OCCT edge, so this also
-        // propagates along tangent chains for free.
-        //
-        // For a body OCCT owns (`brep` present, source of truth), the analytic
-        // blend is the ONLY acceptable result. The Euclid mesh-blend below is a
-        // legacy path for brep-less bodies: on the curved analytic solids that
-        // now flow through OCCT it produces malformed polygons (Euclid asserts
-        // in debug, ships distorted/spiky facets in release) AND desyncs the
-        // render from the brep. So a brep body whose OCCT blend fails ERRORS
-        // with an actionable message rather than silently degrading — the fix
-        // for the "some facets are distorted after filleting" bug. Smaller
-        // radii, which OCCT handles cleanly, just work.
-        if OCCTKernel.useOCCTAsSourceOfTruth, let brep = body.brep {
-            let midpoints = specs.map { ($0.p0 + $0.p1) * 0.5 }
-            // Pick tolerance is deflection-derived, not body-size-derived
-            // (docs/FREECAD_PLAYBOOK.md T1): the midpoints above sit within
-            // the tessellation deflection of the true edge no matter how big
-            // the body is, and a body-scaled ball on a 100×1 mm plate was
-            // wider than the wall it was picking across.
-            let tolerance = OCCTKernel.matchTolerance(for: brep)
-            // Step 5b (edges): a legacy EdgeRef that resolved by signature
-            // earns the crease's name pair — from the kernel edge AT ITS OWN
-            // resolved midpoint, so this pins exactly the edge the blend is
-            // about to round, never re-binding. Only when the input body
-            // carries kernel names (otherwise there is nothing to earn).
-            var upgrades: [(EdgeRef, EdgeName)] = []
-            if let names = state.kernelNames[body.id], !names.isEmpty {
-                let adjacency = OCCTKernel.edgeFaceAdjacency(brep)
-                let edgeNames = ElementNaming.edgeNames(adjacency: adjacency, names: names)
-                for (ref, midpoint) in resolvedRefs where ref.faceNames == nil {
-                    guard let index = OCCTKernel.nearestEdgeIndex(
-                            brep, to: midpoint, tolerance: tolerance),
-                          let name = edgeNames[index] else { continue }
-                    upgrades.append((ref, name))
-                }
-            }
-            let blended = isFillet
-                ? OCCTKernel.filletResult(brep, at: midpoints, radius: amount,
-                                          tolerance: tolerance)
-                : OCCTKernel.chamferResult(brep, at: midpoints, distance: amount,
-                                           tolerance: tolerance)
-            guard case let .success(blended) = blended else {
-                if case let .failure(error) = blended {
-                    let verb = isFillet ? "fillet" : "chamfer"
-                    state.errors[node.id] = .kernelFailure("\(verb): \(error.message)")
-                }
-                return
-            }
-            var result = Body(
-                id: body.id, name: body.name, transform: body.transform, primitive: nil,
-                euclidMesh: body.euclidMesh(), revision: nextRevision())
-            guard result.adoptBRep(blended) else {
-                state.errors[node.id] = .emptyGeometry
-                return
-            }
-            let table = state.naming.faceTable(
-                for: result, createdBy: node.id, scheme: .generic)
-            state.put(result, table: table)
-            for (ref, name) in upgrades {
-                proposeEdgeUpgrade(node, ref: ref, faceNames: name, into: &state)
-            }
-            return
-        }
-
+        // The exact path returned above on both success and refusal. Only an
+        // actually mesh-owned body may use the legacy approximation here.
         let mesh = KernelOps.blendEdges(
             mesh: body.euclidMesh(), edges: specs, amount: amount, isFillet: isFillet)
         guard !mesh.polygons.isEmpty else {

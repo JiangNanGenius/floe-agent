@@ -267,8 +267,11 @@ final class CADAssociativeMergeTests: XCTestCase {
             midpoint: SIMD3(1, 2, 3), direction: SIMD3(1, 0, 0), length: 10,
             normalA: SIMD3(0, 1, 0), normalB: SIMD3(1, 0, 0)),
             faceNames: EdgeName(faceA: cap, faceB: wall, occurrence: 0))
+        var legacy = edge, future = edge
+        legacy.faceNames?.schemeVersion = nil
+        future.faceNames?.schemeVersion = 999
         fixture.document.features.nodes.append(FeatureNode(name: "Blend", kind: .fillet(
-            body: ref, edges: [edge], radius: Expr(value: 1)), outputBodyIDs: [fixture.body]))
+            body: ref, edges: [edge, legacy, future], radius: Expr(value: 1)), outputBodyIDs: [fixture.body]))
         fixture.document.features.nodes.append(FeatureNode(name: "Boolean profile", kind: .extrude(
             profile: ProfileRef(sketchID: fixture.document.sketches[0].id,
                                 entityIDs: [fixture.entity], holeEntityIDs: [], seedPoint: .zero),
@@ -286,6 +289,8 @@ final class CADAssociativeMergeTests: XCTestCase {
         XCTAssertNotEqual(body.bodyID, fixture.body)
         XCTAssertEqual(intent.resolvedTargets, [body])
         XCTAssertEqual(edges[0].faceNames?.faceA.creator, insertion.featureIDs[0])
+        XCTAssertEqual(edges.map { $0.faceNames?.schemeVersion }, [1, nil, 999],
+                       "Import must never qualify an old ordinal or reinterpret a future identity")
         guard case let .profileWall(entity, _)? = edges[0].faceNames?.faceB.source else {
             return XCTFail("Named edge identity lost")
         }

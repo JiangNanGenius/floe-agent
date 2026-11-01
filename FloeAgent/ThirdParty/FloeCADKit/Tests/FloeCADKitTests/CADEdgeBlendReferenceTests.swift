@@ -14,6 +14,22 @@ final class CADEdgeBlendReferenceTests: XCTestCase {
         var edges: [(index: Int, reference: EdgeRef)]
     }
 
+    /// Serialize exactly the shipped three-field wire, rather than setting
+    /// the new qualifier to a convenient value inside the test.
+    private struct LegacyEdgeName: Codable {
+        var faceA: ElementName
+        var faceB: ElementName
+        var occurrence: Int
+    }
+
+    private func legacyName(_ name: EdgeName) throws -> EdgeName {
+        let data = try JSONEncoder().encode(LegacyEdgeName(
+            faceA: name.faceA, faceB: name.faceB, occurrence: name.occurrence))
+        let decoded = try JSONDecoder().decode(EdgeName.self, from: data)
+        XCTAssertNil(decoded.schemeVersion)
+        return decoded
+    }
+
     private func evaluate(_ fixture: Fixture, blend: FeatureNode? = nil) -> EvalResult {
         FeatureGraph(nodes: [fixture.source] + (blend.map { [$0] } ?? []))
             .evaluate(sketches: [fixture.sketch], planes: [], naming: SignatureNaming()) {
@@ -88,7 +104,7 @@ final class CADEdgeBlendReferenceTests: XCTestCase {
         let fixture = try fixture()
         var reference = try XCTUnwrap(fixture.edges.first?.reference)
         let available = EdgeTopology.selectableEdges(from: try XCTUnwrap(evaluate(fixture).bodies.first).render)
-        XCTAssertNotNil(EdgeTopology.resolve(reference.signature, in: available, sizeScale: 50))
+        XCTAssertNotNil(EdgeTopology.exactMatch(reference.signature, in: available))
         var name = try XCTUnwrap(reference.faceNames)
         name.faceA.creator = FeatureID()
         reference.faceNames = name
@@ -350,6 +366,180 @@ final class CADEdgeBlendReferenceTests: XCTestCase {
                        8_000, accuracy: 1e-4)
     }
 
+    func testLegacyWireNeedsExactGeometryAndOnlySuccessfulBlendsEarnTheNewName() throws {
+        let f = try fixture()
+        var reference = f.edges[0].reference
+        let qualified = try XCTUnwrap(reference.faceNames)
+        reference.faceNames = try legacyName(qualified)
+        let original = evaluate(f)
+        let context = EdgeTopology.ReferenceContext(body: try XCTUnwrap(original.bodies.first),
+            kernelNames: try XCTUnwrap(original.kernelNames[f.body]))
+        XCTAssertEqual(context.resolve(reference)?.nativeIndex, f.edges[0].index)
+        XCTAssertEqual(context.resolve(reference)?.name, qualified)
+
+        var displaced = reference
+        displaced.signature.midpoint += SIMD3(0, 100, 0)
+        try assertRejected(f, refs: [displaced], fillet: true)
+        var unknown = reference
+        unknown.faceNames?.schemeVersion = 999
+        try assertRejected(f, refs: [unknown], fillet: true)
+        let refused = blend(f, refs: [reference], fillet: true, amount: 1_000)
+        let failure = evaluate(f, blend: refused)
+        guard case .kernelFailure? = failure.errors[refused.id] else {
+            return XCTFail("An existing edge's oversized blend must report the kernel refusal")
+        }
+        XCTAssertNil(failure.proposedUpgrades[refused.id])
+        XCTAssertEqual(try volume(failure), 8_000, accuracy: 1e-6)
+
+        let node = blend(f, refs: [reference], fillet: true)
+        let result = evaluate(f, blend: node)
+        XCTAssertTrue(result.errors.isEmpty, "\(result.errors)")
+        guard case let .fillet(_, upgraded, _)? = result.proposedUpgrades[node.id] else {
+            return XCTFail("The successful exact match must propose its qualified identity")
+        }
+        XCTAssertEqual(upgraded.first?.faceNames, qualified)
+        XCTAssertEqual(upgraded.first?.signature, reference.signature)
+        XCTAssertEqual(upgraded.first?.body, reference.body)
+        let roundTrip = try JSONDecoder().decode(EdgeRef.self, from: JSONEncoder().encode(upgraded[0]))
+        XCTAssertEqual(roundTrip, upgraded[0])
+    }
+
+    func testExactFingerprintsCannotChooseALookalikeOrAnAmbiguousTie() throws {
+        let f = try fixture()
+        let original = evaluate(f)
+        let body = try XCTUnwrap(original.bodies.first)
+        let context = EdgeTopology.ReferenceContext(body: body, kernelNames: original.kernelNames[f.body] ?? [:])
+        var reference = f.edges[0].reference
+        reference.faceNames = nil
+        let edge = try XCTUnwrap(context.resolve(reference)?.edge)
+        XCTAssertNil(EdgeTopology.exactMatch(reference.signature, in: [edge, edge]))
+        reference.signature.length += 1
+        XCTAssertNil(context.resolve(reference))
+        try assertRejected(f, refs: [reference], fillet: false)
+        reference.signature.length -= 1
+        reference.signature.midpoint += SIMD3(0.25, 0, 0)
+        XCTAssertNil(context.resolve(reference))
+        try assertRejected(f, refs: [reference], fillet: true)
+    }
+
+    func testAmbiguousPairsAndDuplicateFaceNamesNeverMintStableEdgeNames() throws {
+        let a = ElementName(creator: FeatureID(), source: .profileCap(end: true))
+        let b = ElementName(creator: FeatureID(), source: .profileWall(entity: UUID(), occurrence: 0))
+        let single = [(edge: 1, faceA: 1, faceB: 2)]
+        let unique = ElementNaming.edgeNames(adjacency: single, names: [1: a, 2: b])
+        let name = try XCTUnwrap(unique[1])
+        XCTAssertEqual(name.schemeVersion, 1)
+        XCTAssertEqual(name.occurrence, 0)
+        XCTAssertEqual(name, EdgeName(faceA: b, faceB: a, occurrence: 0))
+        XCTAssertEqual(Set([name, EdgeName(faceA: b, faceB: a, occurrence: 0)]).count, 1)
+        XCTAssertTrue(ElementNaming.edgeNames(adjacency: single + [(edge: 2, faceA: 2, faceB: 1)],
+                                              names: [1: a, 2: b]).isEmpty)
+        XCTAssertTrue(ElementNaming.edgeNames(adjacency: single, names: [1: a, 2: b, 3: b]).isEmpty)
+        XCTAssertNil(ElementNaming.edgeIndex(named: try legacyName(name), adjacency: single, names: [1: a, 2: b]),
+                     "The name-only API cannot authenticate a legacy ordinal")
+    }
+
+    func testQualifiedEdgeFormatIsIntentBasedAndUnknownVersionsStayOpaque() throws {
+        let f = try fixture()
+        for version in [nil, 1, 999] as [Int?] {
+            var reference = f.edges[0].reference
+            reference.faceNames?.schemeVersion = version
+            let node = blend(f, refs: [reference], fillet: true)
+            var document = DesignDocument()
+            document.sketches = [f.sketch]
+            document.features = FeatureGraph(nodes: [f.source, node])
+            let floor = version == nil ? CADDocumentFormat.legacyVersion : CADDocumentFormat.qualifiedEdgeIdentityVersion
+            XCTAssertEqual(CADDocumentFormat.requiredFormat(document: document), floor)
+            let row = CADFeatureRecord(featureID: node.id.raw, orderIndex: 1, name: node.name, suppressed: false,
+                kind: try JSONEncoder().encode(node.kind), outputBodyIDs: try JSONEncoder().encode(node.outputBodyIDs))
+            let assessment = try CADDocumentFormat.assess(planes: [], sketches: [], features: [row])
+            XCTAssertEqual(assessment.requiredVersion, floor)
+            XCTAssertEqual(assessment.isOpaqueReadOnly, version == 999)
+            if version == 999 {
+                XCTAssertEqual(assessment.opaqueFeatures, [node.id.raw])
+                XCTAssertThrowsError(try CADDocumentFormat.validateLiveAssociations(document)) {
+                    XCTAssertEqual($0 as? CADDocumentFormatError, .opaqueAssociations)
+                }
+            } else { XCTAssertNoThrow(try CADDocumentFormat.validateLiveAssociations(document)) }
+        }
+    }
+
+    func testUniqueEdgeHistoryFollowsParametersAndPreservesOriginalOperandsThroughReopen() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("FloeEdgeReplay-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let document = try await FloeCADDocument.create(at: root.appendingPathComponent("Part.floecad"), name: "Edge replay")
+        defer { document.close() }
+        let f = try fixture()
+        let reference = try XCTUnwrap(f.edges.first { abs($0.reference.signature.direction.y) > 0.99 }?.reference)
+        XCTAssertEqual(reference.faceNames?.schemeVersion, 1)
+        document.session.perform(AddSketchCommand(sketch: f.sketch))
+        document.session.recordAndRebuild([f.source], title: "Source")
+        let node = blend(f, refs: [reference], fillet: true)
+        document.session.recordAndRebuild([node], title: "Round")
+        XCTAssertTrue(document.session.lastEvalErrors.isEmpty, "\(document.session.lastEvalErrors)")
+        guard case let .extrude(profile, plane, _, symmetric, boolean, extras) = f.source.kind else {
+            return XCTFail("Missing source")
+        }
+        document.session.editFeature(f.source.id, to: .extrude(profile: profile, plane: plane,
+            distance: Expr(value: 20), symmetric: symmetric, boolean: boolean, extraProfiles: extras))
+        XCTAssertTrue(document.session.lastEvalErrors.isEmpty, "\(document.session.lastEvalErrors)")
+        let input = try XCTUnwrap(document.session.inputState(before: node.id))
+        let body = try XCTUnwrap(input.bodies.first { $0.id == f.body })
+        let context = EdgeTopology.ReferenceContext(body: body, kernelNames: input.kernelNames[f.body] ?? [:])
+        XCTAssertNil(EdgeTopology.exactMatch(reference.signature, in: context.available),
+                     "Changed length must be followed by the identity, not the old fingerprint")
+        XCTAssertEqual(try XCTUnwrap(context.resolve(reference)?.edge).length, 20, accuracy: 1e-4)
+        func currentVolume(_ doc: FloeCADDocument) throws -> Double {
+            abs(OCCTKernel.volume(try XCTUnwrap(doc.session.document.body(with: f.body)?.brep)))
+        }
+        let rounded = 16_000 - 20 * (1 - Double.pi / 4)
+        XCTAssertEqual(try currentVolume(document), rounded, accuracy: 1e-4)
+        let initialSave = await document.save()
+        XCTAssertTrue(initialSave.succeeded, initialSave.error ?? "")
+        XCTAssertEqual(document.store.schemaVersion, CADDocumentFormat.qualifiedEdgeIdentityVersion)
+        let identity = document.modelSHA256
+        let count = document.session.undoStack.undoCommands.count
+        let model = document.viewModel()
+        XCTAssertTrue(model.beginBlendEdit(node.id), model.errorMessage ?? "")
+        XCTAssertNil(model.errorMessage)
+        XCTAssertEqual(model.blendSelectedEdges.count, 1)
+        XCTAssertEqual(model.blendSelectedEdges.first?.length ?? 0, 20, accuracy: 1e-4)
+        model.commitBlend()
+        XCTAssertEqual(document.session.undoStack.undoCommands.count, count)
+        let unchangedSave = await document.save()
+        XCTAssertTrue(unchangedSave.succeeded, unchangedSave.error ?? "")
+        XCTAssertEqual(document.modelSHA256, identity)
+        XCTAssertTrue(model.beginBlendEdit(node.id))
+        model.blendValue = 2
+        model.commitBlend()
+        XCTAssertTrue(document.session.lastEvalErrors.isEmpty, "\(document.session.lastEvalErrors)")
+        guard case let .fillet(_, kept, radius)? = document.session.document.features.node(node.id)?.kind else {
+            return XCTFail("Missing edited blend")
+        }
+        XCTAssertEqual(kept, [reference])
+        XCTAssertEqual(radius.value, 2)
+        XCTAssertEqual(document.session.undoStack.undoCommands.count, count + 1)
+        document.session.undo()
+        XCTAssertEqual(try currentVolume(document), rounded, accuracy: 1e-4)
+        document.session.redo()
+        XCTAssertEqual(try currentVolume(document), 16_000 - 80 * (1 - Double.pi / 4), accuracy: 1e-4)
+        let saved = await document.save()
+        XCTAssertTrue(saved.succeeded, saved.error ?? "")
+        let finalIdentity = document.modelSHA256
+        document.close()
+        let reopened = try await FloeCADDocument.open(at: document.url)
+        defer { reopened.close() }
+        XCTAssertEqual(reopened.modelSHA256, finalIdentity)
+        reopened.session.rebuildFrom(f.source.id)
+        XCTAssertTrue(reopened.session.lastEvalErrors.isEmpty, "\(reopened.session.lastEvalErrors)")
+        XCTAssertEqual(try currentVolume(reopened), 16_000 - 80 * (1 - Double.pi / 4), accuracy: 1e-4)
+        guard case let .fillet(_, reopenedRefs, _)? = reopened.session.document.features.node(node.id)?.kind else {
+            return XCTFail("Lost blend on reopen")
+        }
+        XCTAssertEqual(reopenedRefs, [reference])
+    }
+
     func testRemovedMemberOfARealTwoEdgeFamilyCannotRoundTheSurvivingEdge() throws {
         let leftCircle = UUID(), rightCircle = UUID()
         // Put each periodic seam outside the visible arc of the lens. This
@@ -409,7 +599,12 @@ final class CADEdgeBlendReferenceTests: XCTestCase {
             throw NSError(domain: "LensFixture", code: 1)
         }
         let oldRef = EdgeRef(body: BodyRef(producer: intersect.id, bodyID: body),
-                            signature: signature, faceNames: family.key)
+                            signature: signature, faceNames: try legacyName(family.key))
+        let initialContext = EdgeTopology.ReferenceContext(body: original, kernelNames: nativeNames)
+        XCTAssertNil(initialContext.names[selectedIndex], "A two-edge family must not mint ordinal identities")
+        XCTAssertEqual(initialContext.resolve(oldRef)?.nativeIndex, selectedIndex,
+                       "The unchanged legacy geometry remains usable without claiming a stable ordinal")
+        XCTAssertNil(initialContext.resolve(oldRef)?.name)
         let cutterBody = BodyID()
         let cutter = FeatureNode(name: "Remove selected seam", kind: .primitive(
             spec: .box(width: 40, depth: 20, height: 30),
@@ -434,7 +629,9 @@ final class CADEdgeBlendReferenceTests: XCTestCase {
         evidence.name = "real-removed-two-edge-family.txt"
         evidence.lifetime = .keepAlways
         add(evidence)
-        XCTAssertNotNil(actual.errors[fillet.id], "A removed identity must not become the surviving ordinal-zero edge")
+        guard case .brokenRef? = actual.errors[fillet.id] else {
+            return XCTFail("A removed identity must fail reference resolution before blending: \(actual.errors)")
+        }
         XCTAssertEqual(resultVolume, inputVolume, accuracy: 1e-4)
     }
 }

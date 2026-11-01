@@ -951,9 +951,9 @@ nonisolated struct AssociativeGeometryResolver: Sendable {
 
     /// The frozen writer's CURRENT geometry for a persisted straight edge.
     ///
-    /// The `EdgeRef` signature is the document's existing edge identity policy
-    /// (M26 owns how an edge is re-found); a miss refuses — there is no
-    /// nearest-edge, index or lookalike fallback, and the source body is
+    /// Uses the same qualified-name / exact legacy proof as native blends and
+    /// History; a miss refuses — there is no ordinal or lookalike fallback,
+    /// and the source body is
     /// always the FROZEN writer's snapshot, never another body that happens to
     /// carry a similar crease.
     private static func exactEdgeGeometry(
@@ -961,12 +961,8 @@ nonisolated struct AssociativeGeometryResolver: Sendable {
         version: GeometryVersionRef,
         snapshot: GeometryVersionSnapshot
     ) throws -> SourceAxisGeometry {
-        let available = EdgeTopology.selectableEdges(from: snapshot.body.render)
-        guard !available.isEmpty else { throw AssociativeReferenceError.missingEdge(version) }
-        let aabb = snapshot.body.render.localAABB
-        let scale = Double(simd_length(aabb.max - aabb.min))
-        guard let resolved = EdgeTopology.resolve(
-            source.signature, in: available, sizeScale: scale) else {
+        let context = EdgeTopology.ReferenceContext(body: snapshot.body, kernelNames: snapshot.kernelNames)
+        guard let resolved = context.resolve(source)?.edge else {
             throw AssociativeReferenceError.missingEdge(version)
         }
         func d(_ v: SIMD3<Float>) -> SIMD3<Double> {

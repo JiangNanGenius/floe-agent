@@ -56,24 +56,32 @@ nonisolated struct ElementName: Codable, Hashable, Sendable {
     var source: Source
 }
 
-/// The identity of one EDGE: the unordered pair of its adjacent faces'
-/// names plus an occurrence ordinal separating multiple edges that share
-/// the same pair (a cap and a wall can meet more than once). "The crease
-/// between the top cap and wall X" survives rebuilds exactly as long as
-/// its two faces do — which is the whole idea (step 4b).
+/// One crease between two uniquely named faces. A pair that meets at several
+/// edges does NOT identify any one of them: an ordinal compacts when an
+/// upstream operation removes a sibling. Keep the old ordinal readable, but
+/// never mint it as a new identity or resolve it without geometric proof.
 nonisolated struct EdgeName: Codable, Hashable, Sendable {
     var faceA: ElementName
     var faceB: ElementName
     var occurrence: Int
+    /// Nil on pre-contract documents (synthesized decodeIfPresent). Version 1
+    /// is minted only for a unique edge between two unique face identities.
+    /// Unknown versions refuse resolution rather than being reinterpreted.
+    var schemeVersion: Int? = 1
+
+    func hasSameFaces(as other: Self) -> Bool {
+        (faceA == other.faceA && faceB == other.faceB)
+            || (faceA == other.faceB && faceB == other.faceA)
+    }
 
     /// Order-insensitive over the pair: (A,B) names the same edge as (B,A).
     static func == (lhs: Self, rhs: Self) -> Bool {
-        guard lhs.occurrence == rhs.occurrence else { return false }
-        return (lhs.faceA == rhs.faceA && lhs.faceB == rhs.faceB)
-            || (lhs.faceA == rhs.faceB && lhs.faceB == rhs.faceA)
+        lhs.schemeVersion == rhs.schemeVersion && lhs.occurrence == rhs.occurrence
+            && lhs.hasSameFaces(as: rhs)
     }
     func hash(into hasher: inout Hasher) {
         hasher.combine(occurrence)
+        hasher.combine(schemeVersion)
         // Commutative combine, so hashing agrees with the unordered ==.
         hasher.combine(faceA.hashValue ^ faceB.hashValue)
     }
@@ -83,25 +91,27 @@ nonisolated struct EdgeName: Codable, Hashable, Sendable {
 /// wiring comes separately, so these are unit-testable without a document.
 nonisolated enum ElementNaming {
 
-    /// Edge identities for a shape: for every adjacency triple whose BOTH
-    /// faces carry names, the unordered pair plus its occurrence ordinal —
-    /// the position among same-pair edges in ascending edge order, derived
-    /// identically at mint and at resolve so the two always agree. Edges
-    /// flanked by any unnamed face stay unaddressable, honestly.
+    /// Current adjacency pairs whose two faces have unique identities. This
+    /// does not yet claim that the PAIR identifies a unique edge.
+    static func edgeFacePairs(adjacency: [(edge: Int, faceA: Int, faceB: Int)],
+                              names: [Int: ElementName]) -> [Int: EdgeName] {
+        let faceCounts = Dictionary(grouping: names.values, by: { $0 }).mapValues(\.count)
+        var pairs: [Int: EdgeName] = [:]
+        for triple in adjacency {
+            guard let a = names[triple.faceA], let b = names[triple.faceB],
+                  a != b, faceCounts[a] == 1, faceCounts[b] == 1 else { continue }
+            pairs[triple.edge] = EdgeName(faceA: a, faceB: b, occurrence: 0)
+        }
+        return pairs
+    }
+
+    /// Mint only unique face-pair identities. Multiple creases between the
+    /// same faces remain unnamed and require exact fingerprints on replay.
     static func edgeNames(adjacency: [(edge: Int, faceA: Int, faceB: Int)],
                           names: [Int: ElementName]) -> [Int: EdgeName] {
-        var seen: [EdgeName: Int] = [:]
-        var out: [Int: EdgeName] = [:]
-        for triple in adjacency.sorted(by: { $0.edge < $1.edge }) {
-            guard let a = names[triple.faceA],
-                  let b = names[triple.faceB] else { continue }
-            let pair = EdgeName(faceA: a, faceB: b, occurrence: 0)
-            let occurrence = seen[pair, default: 0]
-            seen[pair] = occurrence + 1
-            out[triple.edge] = EdgeName(faceA: a, faceB: b,
-                                        occurrence: occurrence)
-        }
-        return out
+        let pairs = edgeFacePairs(adjacency: adjacency, names: names)
+        let counts = Dictionary(grouping: pairs.values, by: { $0 }).mapValues(\.count)
+        return pairs.filter { counts[$0.value] == 1 }
     }
 
     /// The edge index carrying `name` on a shape — the resolve-side
@@ -109,7 +119,8 @@ nonisolated enum ElementNaming {
     static func edgeIndex(named name: EdgeName,
                           adjacency: [(edge: Int, faceA: Int, faceB: Int)],
                           names: [Int: ElementName]) -> Int? {
-        edgeNames(adjacency: adjacency, names: names)
+        guard name.schemeVersion == 1, name.occurrence == 0 else { return nil }
+        return edgeNames(adjacency: adjacency, names: names)
             .first { $0.value == name }?.key
     }
 
@@ -417,14 +428,12 @@ nonisolated enum ElementNaming {
         return out
     }
 
-    /// Step 5b for EDGES: a legacy `EdgeRef` (no `faceNames`) that resolved by
-    /// signature earns the crease's adjacent-face name PAIR, so the next blend
-    /// rebuild binds by identity and is immune to signature drift. `faceNames`
-    /// comes from the kernel edge at the SAME midpoint the signature resolved,
-    /// so this only PINS what already resolved — it can never re-bind. Nil when
-    /// the ref already has a name (upgraded once, never again).
+    /// After successful evaluation, an unnamed or pre-contract reference may
+    /// earn the current unique-pair name. The shared resolver first proves
+    /// that its exact fingerprint and, when present, old face pair agree.
     static func upgraded(_ ref: EdgeRef, faceNames: EdgeName) -> EdgeRef? {
-        guard ref.faceNames == nil else { return nil }
+        guard ref.faceNames?.schemeVersion == nil,
+              faceNames.schemeVersion == 1 else { return nil }
         var out = ref
         out.faceNames = faceNames
         return out

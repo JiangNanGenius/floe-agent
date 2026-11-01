@@ -41,6 +41,10 @@ nonisolated enum CADDocumentFormat {
     /// floor or bump ordinary documents just because this build can write 7.
     static let drawingManufacturingVersion = 7
     static let supportedVersion = 7
+    /// Shared unreleased format-7 floor. A pre-contract writer ignores an
+    /// edge's qualifier and would reinterpret it as an ordinal. Raise only
+    /// packages that actually contain a qualified edge reference.
+    static let qualifiedEdgeIdentityVersion = 7
     /// Coordinated package floor for a document that actually stores
     /// user-named versions. Ordinary documents keep their existing schema
     /// floor; only a package that gains a checkpoint is raised to this floor.
@@ -119,6 +123,9 @@ nonisolated enum CADDocumentFormat {
 
     static func requiredFormat(document: DesignDocument) -> Int {
         var required = legacyVersion
+        if edgeReferences(in: document).contains(where: { $0.faceNames?.schemeVersion != nil }) {
+            required = max(required, qualifiedEdgeIdentityVersion)
+        }
         if assemblyRequiresNestedFormat(document.assemblyData) {
             required = max(required, nestedAssemblyVersion)
         }
@@ -160,6 +167,39 @@ nonisolated enum CADDocumentFormat {
             required = max(required, associativeVersion)
         }
         return required
+    }
+
+    private static func edgeReferences(in document: DesignDocument) -> [EdgeRef] {
+        var references = document.features.nodes.flatMap { node -> [EdgeRef] in
+            switch node.kind {
+            case let .fillet(_, edges, _), let .chamfer(_, edges, _): return edges
+            default: return []
+            }
+        }
+        for axis in document.axes {
+            if case let .edge(definition)? = axis.definition { references.append(definition.source) }
+        }
+        for point in document.datumPoints {
+            if case let .edgePoint(definition)? = point.definition { references.append(definition.source) }
+        }
+        return references
+    }
+
+    /// Inspect the actual field in known edge-reference locations; no name,
+    /// model capability flag or global supported-version stamp implies intent.
+    private static func edgeIdentityIntent(_ references: [Any]) throws -> (present: Bool, opaque: Bool) {
+        var present = false, opaque = false
+        for reference in references {
+            guard let ref = reference as? [String: Any],
+                  let name = ref["faceNames"] as? [String: Any],
+                  let raw = name["schemeVersion"], !(raw is NSNull) else { continue }
+            present = true
+            guard let version = jsonIntegerValue(raw) else {
+                throw CADDocumentFormatError.malformedAssociation("edge-identity")
+            }
+            if version != 1 { opaque = true }
+        }
+        return (present, opaque)
     }
 
     nonisolated struct DrawingIntent {
@@ -446,6 +486,10 @@ nonisolated enum CADDocumentFormat {
     /// Existing save diffs preserve unreadable legacy rows, but a new
     /// association must never be silently skipped by a try?-encode fallback.
     static func validateLiveAssociations(_ document: DesignDocument) throws {
+        if edgeReferences(in: document).contains(where: {
+            if let version = $0.faceNames?.schemeVersion { return version != 1 }
+            return false
+        }) { throw CADDocumentFormatError.opaqueAssociations }
         let encoder = JSONEncoder()
         for plane in document.planes {
             guard let definition = plane.definition else { continue }
@@ -553,6 +597,14 @@ nonisolated enum CADDocumentFormat {
             guard let object = try? JSONSerialization.jsonObject(with: row.data) as? [String: Any],
                   let definition = object["definition"], !(definition is NSNull) else { continue }
             result.requiredVersion = max(result.requiredVersion, associativeVersion)
+            let edge = (definition as? [String: Any])?["edge"] as? [String: Any]
+            let identity = try edgeIdentityIntent((edge?["source"]).map { [$0] } ?? [])
+            if identity.present { result.requiredVersion = max(result.requiredVersion, qualifiedEdgeIdentityVersion) }
+            if identity.opaque {
+                _ = try cachedAxis(from: row.data)
+                result.opaqueAxes.insert(row.blobID)
+                continue
+            }
             do {
                 _ = try JSONDecoder().decode(ConstructionAxis.self, from: row.data)
             } catch let error as AssociativeAxisPointError where error.requiresOpaqueReadOnlyDocument {
@@ -571,6 +623,14 @@ nonisolated enum CADDocumentFormat {
             result.requiredVersion = max(result.requiredVersion, associativeVersion)
             guard let object = try? JSONSerialization.jsonObject(with: row.data) as? [String: Any],
                   let definition = object["definition"], !(definition is NSNull) else { continue }
+            let edge = (definition as? [String: Any])?["edgePoint"] as? [String: Any]
+            let identity = try edgeIdentityIntent((edge?["source"]).map { [$0] } ?? [])
+            if identity.present { result.requiredVersion = max(result.requiredVersion, qualifiedEdgeIdentityVersion) }
+            if identity.opaque {
+                _ = try cachedDatumPoint(from: row.data)
+                result.opaqueDatumPoints.insert(row.blobID)
+                continue
+            }
             do {
                 _ = try JSONDecoder().decode(DatumPoint.self, from: row.data)
             } catch let error as AssociativeAxisPointError where error.requiresOpaqueReadOnlyDocument {
@@ -607,6 +667,12 @@ nonisolated enum CADDocumentFormat {
             }
             if try featureConsumesConstructionAxis(object) {
                 result.requiredVersion = max(result.requiredVersion, associativeVersion)
+            }
+            for kind in ["fillet", "chamfer"] {
+                let payload = object[kind] as? [String: Any]
+                let identity = try edgeIdentityIntent(payload?["edges"] as? [Any] ?? [])
+                if identity.present { result.requiredVersion = max(result.requiredVersion, qualifiedEdgeIdentityVersion) }
+                if identity.opaque { result.opaqueFeatures.insert(row.featureID) }
             }
             guard let hole = object["hole"], !(hole is NSNull) else { continue }
             result.requiredVersion = max(result.requiredVersion, holeVersion)

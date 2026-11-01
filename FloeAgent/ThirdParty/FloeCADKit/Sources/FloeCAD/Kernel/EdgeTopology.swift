@@ -310,39 +310,114 @@ nonisolated enum EdgeTopology {
             normalB: d(edge.normalB))
     }
 
-    /// Re-find the edge a persisted `EdgeSignature` names among a rebuilt body's
-    /// `edges`. The adjacent-face-normal PAIR dominates (an edge is "the crease
-    /// between these two faces"); direction, midpoint and length break ties. The
-    /// `sizeScale` normalizes midpoint distance so the threshold is scale-free.
-    static func resolve(
-        _ sig: EdgeSignature,
-        in edges: [SelectableEdge],
-        sizeScale: Double,
-        threshold: Double = 0.55
-    ) -> SelectableEdge? {
-        func f(_ v: SIMD3<Double>) -> SIMD3<Float> { SIMD3(Float(v.x), Float(v.y), Float(v.z)) }
-        let refDir = f(sig.direction)
-        let refNA = f(sig.normalA), refNB = f(sig.normalB)
-        let refMid = f(sig.midpoint)
-        let scale = Float(max(sizeScale, 1e-3))
-
-        var best: SelectableEdge?
-        var bestScore: Float = -1
-        for e in edges {
-            // Normal-pair alignment (either pairing).
-            let direct = (simd_dot(refNA, e.normalA) + simd_dot(refNB, e.normalB)) / 2
-            let swapped = (simd_dot(refNA, e.normalB) + simd_dot(refNB, e.normalA)) / 2
-            let normalScore = max(direct, swapped)                     // [-1, 1]
-            let dirScore = abs(simd_dot(refDir, e.direction))          // [0, 1], undirected
-            let midDist = simd_length(refMid - e.midpoint) / scale
-            let midScore = max(0, 1 - midDist)                         // [0, 1]
-            let lenScore = 1 - min(1, abs(Float(sig.length) - e.length) / scale)
-
-            let score = 0.5 * normalScore + 0.2 * dirScore
-                + 0.2 * midScore + 0.1 * lenScore
-            if score > bestScore { bestScore = score; best = e }
+    /// Proof for a pre-identity reference: exactly one current fingerprint
+    /// must agree in every component. A normal/direction score cannot prove
+    /// identity; two opposite edges of a lens can have the same normals. The
+    /// slack covers Float representation, not a percentage of the whole body.
+    static func exactMatch(_ sig: EdgeSignature,
+                           in edges: [SelectableEdge]) -> SelectableEdge? {
+        func finite(_ v: SIMD3<Double>) -> Bool { v.x.isFinite && v.y.isFinite && v.z.isFinite }
+        func d(_ v: SIMD3<Float>) -> SIMD3<Double> { SIMD3(Double(v.x), Double(v.y), Double(v.z)) }
+        func slack(_ value: Double) -> Double {
+            max(1e-5, 4 * Double(Float(value).ulp))
         }
-        return bestScore >= Float(threshold) ? best : nil
+        guard finite(sig.midpoint), finite(sig.direction), finite(sig.normalA), finite(sig.normalB),
+              sig.length.isFinite, sig.length > 1e-6,
+              sig.midpoint.x.magnitude <= Double(Float.greatestFiniteMagnitude),
+              sig.midpoint.y.magnitude <= Double(Float.greatestFiniteMagnitude),
+              sig.midpoint.z.magnitude <= Double(Float.greatestFiniteMagnitude),
+              sig.length <= Double(Float.greatestFiniteMagnitude),
+              abs(simd_length(sig.direction) - 1) < 1e-4,
+              abs(simd_length(sig.normalA) - 1) < 1e-4,
+              abs(simd_length(sig.normalB) - 1) < 1e-4 else { return nil }
+        let positionSlack = max(slack(sig.midpoint.x), slack(sig.midpoint.y), slack(sig.midpoint.z))
+        let direction = simd_normalize(sig.direction)
+        let normalA = simd_normalize(sig.normalA), normalB = simd_normalize(sig.normalB)
+        let matches = edges.filter { edge in
+            guard simd_distance(sig.midpoint, d(edge.midpoint)) <= positionSlack,
+                  abs(sig.length - Double(edge.length)) <= slack(sig.length),
+                  abs(simd_dot(direction, d(edge.direction))) >= 1 - 1e-6 else { return false }
+            let direct = min(simd_dot(normalA, d(edge.normalA)), simd_dot(normalB, d(edge.normalB)))
+            let swapped = min(simd_dot(normalA, d(edge.normalB)), simd_dot(normalB, d(edge.normalA)))
+            return max(direct, swapped) >= 1 - 1e-5
+        }
+        return matches.count == 1 ? matches[0] : nil
+    }
+
+    nonisolated struct ResolvedReference: Sendable {
+        /// Nil when a named native crease has no selectable render segment.
+        let edge: SelectableEdge?
+        let nativeIndex: Int?
+        let name: EdgeName?
+    }
+
+    /// One consumed body, shared by graph replay, History and datum consumers.
+    /// Named references never fall back to resemblance. Old ordinal names can
+    /// still use unchanged geometry, but only a proven unique pair can upgrade.
+    nonisolated struct ReferenceContext: Sendable {
+        let bodyID: BodyID
+        let available: [SelectableEdge]
+        let names: [Int: EdgeName]
+        private let pairs: [Int: EdgeName]
+        private let hasNativeBody: Bool
+        private let nativeIndexBySegment: [Int: Int]
+
+        init(body: Body, kernelNames: [Int: ElementName]) {
+            bodyID = body.id
+            let edges = EdgeTopology.selectableEdges(from: body.render)
+            available = edges
+            if OCCTKernel.useOCCTAsSourceOfTruth, let brep = body.brep {
+                hasNativeBody = true
+                let adjacency = OCCTKernel.edgeFaceAdjacency(brep)
+                pairs = ElementNaming.edgeFacePairs(adjacency: adjacency, names: kernelNames)
+                names = ElementNaming.edgeNames(adjacency: adjacency, names: kernelNames)
+                let tolerance = OCCTKernel.matchTolerance(for: brep)
+                var indices: [Int: Int] = [:]
+                for (offset, edge) in edges.enumerated() {
+                    let mid = edge.midpoint
+                    indices[offset] = OCCTKernel.nearestEdgeIndex(brep,
+                        to: SIMD3(Double(mid.x), Double(mid.y), Double(mid.z)), tolerance: tolerance)
+                }
+                nativeIndexBySegment = indices
+            } else {
+                hasNativeBody = false
+                names = [:]; pairs = [:]; nativeIndexBySegment = [:]
+            }
+        }
+
+        func resolve(_ reference: EdgeRef) -> ResolvedReference? {
+            guard reference.body.bodyID == bodyID else { return nil }
+            if let name = reference.faceNames, let version = name.schemeVersion {
+                guard version == 1, name.occurrence == 0,
+                      let index = names.first(where: { $0.value == name })?.key else { return nil }
+                // The native identity is settled BEFORE choosing a render
+                // segment. Its old midpoint only selects a seed on THAT edge.
+                let candidates = nativeIndexBySegment.compactMap { offset, native in
+                    native == index ? available[offset] : nil
+                }
+                let edge = candidates.min { a, b in
+                    func distance(_ e: SelectableEdge) -> Double {
+                        let mid = e.midpoint
+                        return simd_distance(reference.signature.midpoint,
+                            SIMD3(Double(mid.x), Double(mid.y), Double(mid.z)))
+                    }
+                    let da = distance(a), db = distance(b)
+                    if da != db { return da < db }
+                    return (a.midpoint.x, a.midpoint.y, a.midpoint.z)
+                        < (b.midpoint.x, b.midpoint.y, b.midpoint.z)
+                }
+                return ResolvedReference(edge: edge, nativeIndex: index, name: name)
+            }
+            guard let edge = EdgeTopology.exactMatch(reference.signature, in: available),
+                  let offset = available.firstIndex(of: edge) else { return nil }
+            let index = nativeIndexBySegment[offset]
+            if hasNativeBody, index == nil { return nil }
+            if let oldName = reference.faceNames {
+                guard oldName.occurrence >= 0, let index, let pair = pairs[index],
+                      oldName.hasSameFaces(as: pair) else { return nil }
+            }
+            return ResolvedReference(edge: edge, nativeIndex: index, name: index.flatMap { names[$0] })
+        }
     }
 
     // MARK: - Convexity

@@ -581,7 +581,8 @@ nonisolated enum ProjectMergeKit {
         }
 
         func remap(_ name: EdgeName) -> EdgeName {
-            EdgeName(faceA: remap(name.faceA), faceB: remap(name.faceB), occurrence: name.occurrence)
+            EdgeName(faceA: remap(name.faceA), faceB: remap(name.faceB), occurrence: name.occurrence,
+                     schemeVersion: name.schemeVersion)
         }
 
         func remap(_ definition: ConstructionPlaneDefinition,
