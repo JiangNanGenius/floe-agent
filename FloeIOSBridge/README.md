@@ -50,6 +50,8 @@ The independent tag family is `floe-ios-bridge-v<version>`. The publisher defaul
 
 When the owner explicitly accepts reboot recovery without another device run, the private receipt records `checks.rebootRecovery` as `assumed-by-owner`. The publisher requires that limitation in public release notes; it does not accept this value for other iPhone checks.
 
+The owner may instead direct core control acceptance plus a two-operation iPad smoke check. In that scope, the separate DDI recovery and Stop/Resume entries are both `not-required-by-owner`, with mandatory public disclosure; neither is recorded as a passed device test. Source, package, authentication and core-control checks remain required.
+
 ## Verification and licensing
 
 Focused checks live under `Tests/` and `scripts/run_core_checks.sh`; the primary owner runs the final App build and device acceptance. Physical iPad testing is waived by the project owner: compatibility is assumed for the universal target and must not be described as hardware-tested. Simulator/component results do not prove DDI recovery, background control or reboot recovery.

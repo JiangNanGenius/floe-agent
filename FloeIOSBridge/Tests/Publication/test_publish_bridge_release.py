@@ -477,6 +477,40 @@ class PublisherTests(unittest.TestCase):
         self.assertIn("nativeDDIRecovery", report["error"])
         self.assertEqual(client.mutation_calls(), [])
 
+    def test_owner_core_smoke_scope_is_explicit_and_public(self) -> None:
+        payload = self.fixture.receipt_payload()
+        for name in pub.CORE_SMOKE_DEFERRED_CHECKS:
+            payload["checks"][name] = pub.CORE_SMOKE_NOT_REQUIRED
+        self.fixture.receipt.write_text(json.dumps(payload))
+        self.fixture.notes.write_text(self.fixture.notes.read_text() + "\n" + pub.CORE_SMOKE_SCOPE_NOTE + "\n")
+        code, report, _, _, _, _ = self.run_publisher(publish=True)
+        self.assertEqual(code, 0)
+        self.assertIn(pub.CORE_SMOKE_SCOPE_NOTE, report["limitations"])
+
+    def test_owner_core_smoke_scope_requires_disclosure(self) -> None:
+        payload = self.fixture.receipt_payload()
+        for name in pub.CORE_SMOKE_DEFERRED_CHECKS:
+            payload["checks"][name] = pub.CORE_SMOKE_NOT_REQUIRED
+        self.fixture.receipt.write_text(json.dumps(payload))
+        code, report, _, client, _, _ = self.run_publisher(publish=True)
+        self.assertEqual(code, 2)
+        self.assertIn("disclose", report["error"])
+        self.assertEqual(client.mutation_calls(), [])
+
+    def test_owner_core_smoke_scope_cannot_omit_other_or_partial_checks(self) -> None:
+        for names in ({"nativeDDIRecovery"}, {"packageSigning", "nativeDDIRecovery"},
+                      set(pub.CORE_SMOKE_DEFERRED_CHECKS) | {"authentication"}):
+            with self.subTest(names=sorted(names)):
+                payload = self.fixture.receipt_payload()
+                for name in names:
+                    payload["checks"][name] = pub.CORE_SMOKE_NOT_REQUIRED
+                self.fixture.receipt.write_text(json.dumps(payload))
+                with self.assertRaises(pub.PublicationAbort):
+                    pub.validate_receipt(self.fixture.receipt, source_ref=payload["sourceRef"],
+                                         source_tree_sha256=payload["sourceTreeSHA256"],
+                                         ipa_sha256=payload["ipaSHA256"], version=payload["marketingVersion"],
+                                         build=payload["buildNumber"])
+
     def test_reboot_false_and_unknown_assumptions_remain_rejected(self) -> None:
         for value in (False, "assumed", 1):
             with self.subTest(value=value):

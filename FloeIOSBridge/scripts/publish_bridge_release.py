@@ -110,6 +110,9 @@ RECEIPT_FIELDS = {
 IPAD_QUALIFICATION = "assumed-by-owner"
 REBOOT_OWNER_ASSUMPTION = "assumed-by-owner"
 REBOOT_ASSUMPTION_NOTE = "Reboot recovery was accepted by the owner and was not retested for this release."
+CORE_SMOKE_NOT_REQUIRED = "not-required-by-owner"
+CORE_SMOKE_DEFERRED_CHECKS = frozenset({"backgroundStopResume", "nativeDDIRecovery"})
+CORE_SMOKE_SCOPE_NOTE = "By owner direction, qualification is limited to iPhone core control and a two-operation iPad smoke check; separate DDI recovery and Stop/Resume tests were not required for this release."
 
 FORBIDDEN_TEXT_PATTERNS = (
     (re.compile(r"/Users/[^/\s\"']+"), "absolute user path"),
@@ -882,7 +885,12 @@ def validate_receipt(
     checks = payload.get("checks")
     if not isinstance(checks, dict) or set(checks) != set(QUALIFICATION_CHECKS):
         raise PublicationAbort("preflight", "preflight-failed", "qualification receipt checks are not the exact required set", exit_code=2)
+    deferred = {name for name, value in checks.items() if value == CORE_SMOKE_NOT_REQUIRED}
+    if deferred and deferred != CORE_SMOKE_DEFERRED_CHECKS:
+        raise PublicationAbort("preflight", "preflight-failed", "owner-directed core smoke scope must identify exactly its two omitted checks", exit_code=2)
     for name in QUALIFICATION_CHECKS:
+        if name in deferred:
+            continue
         if name == "rebootRecovery" and checks.get(name) == REBOOT_OWNER_ASSUMPTION:
             continue
         if checks.get(name) is not True:
@@ -1140,6 +1148,8 @@ class Publisher:
             limitations.append("Dry run: no release, tag or asset was created or changed.")
         if (self.receipt_payload or {}).get("checks", {}).get("rebootRecovery") == REBOOT_OWNER_ASSUMPTION:
             limitations.append(REBOOT_ASSUMPTION_NOTE)
+        if any(value == CORE_SMOKE_NOT_REQUIRED for value in (self.receipt_payload or {}).get("checks", {}).values()):
+            limitations.append(CORE_SMOKE_SCOPE_NOTE)
         return limitations
 
     def _abort_report(self, error: PublicationAbort) -> dict:
@@ -1460,6 +1470,9 @@ class Publisher:
         if (self.receipt_payload or {}).get("checks", {}).get("rebootRecovery") == REBOOT_OWNER_ASSUMPTION:
             if REBOOT_ASSUMPTION_NOTE not in text:
                 self._abort("preflight", "preflight-failed", "release notes must disclose the owner-assumed reboot recovery", exit_code=2)
+        if any(value == CORE_SMOKE_NOT_REQUIRED for value in (self.receipt_payload or {}).get("checks", {}).values()):
+            if CORE_SMOKE_SCOPE_NOTE not in text:
+                self._abort("preflight", "preflight-failed", "release notes must disclose the owner-directed core smoke scope", exit_code=2)
         self.notes_text = text
         self.notes_sha256 = digest
         self.report["notes"] = {"sha256": digest, "bytes": size}
