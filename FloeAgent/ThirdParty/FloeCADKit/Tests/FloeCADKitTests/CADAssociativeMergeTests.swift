@@ -168,6 +168,38 @@ final class CADAssociativeMergeTests: XCTestCase {
         assertVector(cached.transform.applying(to: originalCentroid), expectedWorld)
     }
 
+    func testOperationRegionMergeRemapsNestedParentsAndNeighborsWithoutChangingVersion() async throws {
+        var fixture = try fixture()
+        var definition = fixture.definition
+        var face = definition.source
+        let cap = ElementName(creator: fixture.producer, source: .profileCap(end: true))
+        let wall = ElementName(creator: fixture.producer,
+            source: .profileWall(entity: fixture.entity, occurrence: 2))
+        let inner = ElementName(creator: fixture.writer, source: .operationFace(
+            version: 1, operation: fixture.writer, parents: [cap], neighbors: [wall]))
+        face.elementName = ElementName(creator: fixture.writer, source: .operationFace(
+            version: 1, operation: fixture.writer, parents: [inner], neighbors: [cap]))
+        definition = OffsetPlaneDefinition(source: face, sourceVersion: definition.sourceVersion,
+            distance: definition.distance, attachment: definition.attachment)
+        fixture.document.planes[0].definition = .offset(definition)
+        let insertion = try ProjectMergeKit.insert(fixture.document, into: fixture.document, translation: .zero)
+        let retained = try offset(XCTUnwrap(insertion.document.planes.last))
+        let name = try XCTUnwrap(retained.source.elementName)
+        XCTAssertNotEqual(name, face.elementName)
+        XCTAssertFalse(name.requiresExactSignature)
+        guard case let .operationFace(version, writer, parents, neighbors) = name.source,
+              case let .operationFace(innerVersion, innerWriter, roots, walls) = parents[0].source,
+              case let .profileWall(entity, occurrence) = walls[0].source else {
+            return XCTFail("Nested operation-region identity lost")
+        }
+        XCTAssertEqual(version, 1); XCTAssertEqual(innerVersion, 1)
+        XCTAssertEqual(writer, insertion.featureIDs[1]); XCTAssertEqual(innerWriter, writer)
+        XCTAssertEqual(roots[0].creator, insertion.featureIDs[0])
+        XCTAssertEqual(neighbors[0].creator, insertion.featureIDs[0])
+        XCTAssertEqual(entity, insertion.document.sketches[2].entities[0].id)
+        XCTAssertNotEqual(entity, fixture.entity); XCTAssertEqual(occurrence, 2)
+    }
+
     func testAssociativeVariableCollisionIsCaseInsensitiveAndLeavesInputsUntouched() async throws {
         var fixture = try fixture()
         fixture.document.variables = [Variable(name: "Gap", expression: "4", value: 4)]

@@ -574,6 +574,9 @@ nonisolated enum ProjectMergeKit {
                 source = .profileWall(entity: newEntity(entity), occurrence: occurrence)
             case let .opFace(operation, parents, index):
                 source = .opFace(operation: newFeature(operation), parents: parents.map(remap), index: index)
+            case let .operationFace(version, operation, parents, neighbors):
+                source = .operationFace(version: version, operation: newFeature(operation),
+                                        parents: parents.map(remap), neighbors: neighbors.map(remap))
             case .primitiveFace, .profileCap, .kernelFace, .holeFace(_):
                 source = name.source
             }

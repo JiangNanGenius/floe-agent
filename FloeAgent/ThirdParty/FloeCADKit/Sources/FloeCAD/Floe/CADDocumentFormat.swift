@@ -45,6 +45,10 @@ nonisolated enum CADDocumentFormat {
     /// edge's qualifier and would reinterpret it as an ordinal. Raise only
     /// packages that actually contain a qualified edge reference.
     static let qualifiedEdgeIdentityVersion = 7
+    /// Same unreleased floor, only when a new operation-region name is
+    /// actually persisted. Released306 understands format 1 and must not
+    /// decode away or reinterpret these non-additive identity semantics.
+    static let operationFaceIdentityVersion = 7
     /// Coordinated package floor for a document that actually stores
     /// user-named versions. Ordinary documents keep their existing schema
     /// floor; only a package that gains a checkpoint is raised to this floor.
@@ -113,11 +117,12 @@ nonisolated enum CADDocumentFormat {
         /// verify. Preserve the bytes and open the document view-only rather
         /// than letting an edit remove targets that future schema depends on.
         var opaqueAnimation = false
+        var opaqueBodyAppearance = false
         var isOpaqueReadOnly: Bool {
             !opaquePlanes.isEmpty || !opaqueSketches.isEmpty
                 || !opaqueAxes.isEmpty || !opaqueDatumPoints.isEmpty
                 || !opaqueFeatures.isEmpty || opaqueDrawings
-                || opaqueAnimation
+                || opaqueAnimation || opaqueBodyAppearance
         }
     }
 
@@ -125,6 +130,9 @@ nonisolated enum CADDocumentFormat {
         var required = legacyVersion
         if edgeReferences(in: document).contains(where: { $0.faceNames?.schemeVersion != nil }) {
             required = max(required, qualifiedEdgeIdentityVersion)
+        }
+        if faceNames(in: document).contains(where: \.containsQualifiedOperationIdentity) {
+            required = max(required, operationFaceIdentityVersion)
         }
         if assemblyRequiresNestedFormat(document.assemblyData) {
             required = max(required, nestedAssemblyVersion)
@@ -183,6 +191,79 @@ nonisolated enum CADDocumentFormat {
             if case let .edgePoint(definition)? = point.definition { references.append(definition.source) }
         }
         return references
+    }
+
+    private static func faceNames(in document: DesignDocument) -> [ElementName] {
+        var names = edgeReferences(in: document).flatMap { reference -> [ElementName] in
+            reference.faceNames.map { [$0.faceA, $0.faceB] } ?? []
+        }
+        for node in document.features.nodes {
+            let refs: [FaceRef]
+            switch node.kind {
+            case let .pushPull(face, _, _), let .moveFace(face, _), let .scaleFace(face, _),
+                 let .rotateFace(face, _, _), let .draftFace(face, _, _, _), let .replaceFace(face, _, _, _):
+                refs = [face]
+            case let .shell(_, faces, _), let .deleteFace(_, faces): refs = faces
+            default: refs = []
+            }
+            names += refs.compactMap(\.elementName)
+        }
+        for plane in document.planes {
+            switch plane.definition {
+            case let .offset(definition)?: names += [definition.source.elementName].compactMap { $0 }
+            case let .angle(definition)?: names += [definition.source.elementName].compactMap { $0 }
+            default: break
+            }
+        }
+        for axis in document.axes {
+            switch axis.definition {
+            case let .face(definition)?: names += [definition.source.elementName].compactMap { $0 }
+            case let .cylinder(definition)?: names += [definition.source.elementName].compactMap { $0 }
+            default: break
+            }
+        }
+        for point in document.datumPoints {
+            if case let .faceCenter(definition)? = point.definition {
+                names += [definition.source.elementName].compactMap { $0 }
+            }
+        }
+        names += document.bodies.flatMap { $0.materialFaceBindings.compactMap(\.key.elementName) }
+        return names
+    }
+
+    /// Inspect versioned names in actual persisted reference locations. A
+    /// future version keeps its original bytes view-only; a malformed known
+    /// identity cannot be silently decoded away by a writer.
+    private static func operationIdentityIntent(_ object: Any) throws -> (present: Bool, opaque: Bool) {
+        var present = false, opaque = false
+        if let array = object as? [Any] {
+            for value in array {
+                let child = try operationIdentityIntent(value)
+                present = present || child.present; opaque = opaque || child.opaque
+            }
+        } else if let fields = object as? [String: Any] {
+            for value in fields.values {
+                let child = try operationIdentityIntent(value)
+                present = present || child.present; opaque = opaque || child.opaque
+            }
+            if fields["creator"] != nil, let source = fields["source"] as? [String: Any],
+               let raw = source["operationFace"] {
+                present = true
+                guard let payload = raw as? [String: Any], let value = payload["version"],
+                      let version = jsonIntegerValue(value) else {
+                    throw CADDocumentFormatError.malformedAssociation("operation-face-identity")
+                }
+                if version != 1 { opaque = true }
+                else if !opaque {
+                    guard let bytes = try? JSONSerialization.data(withJSONObject: fields),
+                          let name = try? JSONDecoder().decode(ElementName.self, from: bytes),
+                          name.hasSupportedOperationIdentity else {
+                        throw CADDocumentFormatError.malformedAssociation("operation-face-identity")
+                    }
+                }
+            }
+        }
+        return (present, opaque)
     }
 
     /// Inspect the actual field in known edge-reference locations; no name,
@@ -486,6 +567,9 @@ nonisolated enum CADDocumentFormat {
     /// Existing save diffs preserve unreadable legacy rows, but a new
     /// association must never be silently skipped by a try?-encode fallback.
     static func validateLiveAssociations(_ document: DesignDocument) throws {
+        if faceNames(in: document).contains(where: { !$0.hasSupportedOperationIdentity }) {
+            throw CADDocumentFormatError.opaqueAssociations
+        }
         if edgeReferences(in: document).contains(where: {
             if let version = $0.faceNames?.schemeVersion { return version != 1 }
             return false
@@ -557,6 +641,7 @@ nonisolated enum CADDocumentFormat {
                        axes: [CADBlobRecord] = [],
                        datumPoints: [CADBlobRecord] = [],
                        features: [CADFeatureRecord] = [],
+                       bodies: [CADBodyRecord] = [],
                        assembly: Data? = nil,
                        drawings: Data? = nil,
                        animation: Data? = nil) throws -> Assessment {
@@ -578,9 +663,19 @@ nonisolated enum CADDocumentFormat {
         result.requiredVersion = max(result.requiredVersion,
                                      animationIntent.requiredVersion)
         if animationIntent.isFutureSchema { result.opaqueAnimation = true }
+        for body in bodies {
+            guard let bytes = body.faceMaterials,
+                  let object = try? JSONSerialization.jsonObject(with: bytes) else { continue }
+            let identity = try operationIdentityIntent(object)
+            if identity.present { result.requiredVersion = max(result.requiredVersion, operationFaceIdentityVersion) }
+            if identity.opaque { result.opaqueBodyAppearance = true }
+        }
         for row in planes {
-            guard let object = try? JSONSerialization.jsonObject(with: row.data) as? [String: Any],
-                  let definition = object["definition"], !(definition is NSNull) else { continue }
+            guard let object = try? JSONSerialization.jsonObject(with: row.data) as? [String: Any] else { continue }
+            let identity = try operationIdentityIntent(object)
+            if identity.present { result.requiredVersion = max(result.requiredVersion, operationFaceIdentityVersion) }
+            if identity.opaque { result.opaquePlanes.insert(row.blobID) }
+            guard let definition = object["definition"], !(definition is NSNull) else { continue }
             result.requiredVersion = max(result.requiredVersion, associativeVersion)
             do {
                 _ = try JSONDecoder().decode(ConstructionPlane.self, from: row.data)
@@ -594,8 +689,11 @@ nonisolated enum CADDocumentFormat {
             }
         }
         for row in axes {
-            guard let object = try? JSONSerialization.jsonObject(with: row.data) as? [String: Any],
-                  let definition = object["definition"], !(definition is NSNull) else { continue }
+            guard let object = try? JSONSerialization.jsonObject(with: row.data) as? [String: Any] else { continue }
+            let operationIdentity = try operationIdentityIntent(object)
+            if operationIdentity.present { result.requiredVersion = max(result.requiredVersion, operationFaceIdentityVersion) }
+            if operationIdentity.opaque { result.opaqueAxes.insert(row.blobID) }
+            guard let definition = object["definition"], !(definition is NSNull) else { continue }
             result.requiredVersion = max(result.requiredVersion, associativeVersion)
             let edge = (definition as? [String: Any])?["edge"] as? [String: Any]
             let identity = try edgeIdentityIntent((edge?["source"]).map { [$0] } ?? [])
@@ -621,8 +719,11 @@ nonisolated enum CADDocumentFormat {
             // still inspected below so a present future definition opens
             // opaque/read-only with its original bytes.
             result.requiredVersion = max(result.requiredVersion, associativeVersion)
-            guard let object = try? JSONSerialization.jsonObject(with: row.data) as? [String: Any],
-                  let definition = object["definition"], !(definition is NSNull) else { continue }
+            guard let object = try? JSONSerialization.jsonObject(with: row.data) as? [String: Any] else { continue }
+            let operationIdentity = try operationIdentityIntent(object)
+            if operationIdentity.present { result.requiredVersion = max(result.requiredVersion, operationFaceIdentityVersion) }
+            if operationIdentity.opaque { result.opaqueDatumPoints.insert(row.blobID) }
+            guard let definition = object["definition"], !(definition is NSNull) else { continue }
             let edge = (definition as? [String: Any])?["edgePoint"] as? [String: Any]
             let identity = try edgeIdentityIntent((edge?["source"]).map { [$0] } ?? [])
             if identity.present { result.requiredVersion = max(result.requiredVersion, qualifiedEdgeIdentityVersion) }
@@ -665,6 +766,9 @@ nonisolated enum CADDocumentFormat {
             guard let object = try? JSONSerialization.jsonObject(with: row.kind) as? [String: Any] else {
                 continue
             }
+            let operationIdentity = try operationIdentityIntent(object)
+            if operationIdentity.present { result.requiredVersion = max(result.requiredVersion, operationFaceIdentityVersion) }
+            if operationIdentity.opaque { result.opaqueFeatures.insert(row.featureID) }
             if try featureConsumesConstructionAxis(object) {
                 result.requiredVersion = max(result.requiredVersion, associativeVersion)
             }
@@ -718,7 +822,7 @@ nonisolated enum CADDocumentFormat {
     static func assess(_ record: CADDocumentRecord) throws -> Assessment {
         try assess(planes: record.planes, sketches: record.sketches,
                    axes: record.axes, datumPoints: record.datumPoints ?? [],
-                   features: record.features, assembly: record.assembly,
+                   features: record.features, bodies: record.bodies, assembly: record.assembly,
                    drawings: record.drawings, animation: record.animation)
     }
 

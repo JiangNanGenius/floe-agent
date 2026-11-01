@@ -7,8 +7,8 @@
 //  owns — the creating feature and the sketch entity a wall came from —
 //  bound to actual kernel faces through `ShapeAncestry` (OCCT's own
 //  history), never through geometric resemblance. Names layer UNDER
-//  `SignatureNaming`: an unnamed face is normal and falls back to signature
-//  scoring; a WRONG name would be worse than none, so every derivation here
+//  `SignatureNaming`: an unnamed face needs a unique exact fingerprint;
+//  a WRONG name would be worse than none, so every derivation here
 //  refuses to guess.
 //
 
@@ -50,6 +50,12 @@ nonisolated struct ElementName: Codable, Hashable, Sendable {
         /// across topology-changing edits, which is why step 4's resolve
         /// must sanity-check name hits against signatures.
         indirect case opFace(operation: FeatureID, parents: [ElementName], index: Int)
+        /// Versioned operation output identified by its actual named parents
+        /// and, for split regions, a unique set of named neighboring faces.
+        /// No result ordinal is part of this identity. Missing/ambiguous
+        /// neighborhoods stay on the legacy unqualified path.
+        indirect case operationFace(version: Int, operation: FeatureID,
+                                    parents: [ElementName], neighbors: [ElementName])
     }
 
     var creator: FeatureID
@@ -62,6 +68,30 @@ nonisolated struct ElementName: Codable, Hashable, Sendable {
         switch source {
         case .opFace, .kernelFace, .primitiveFace(.derived): return true
         case .primitiveFace, .profileWall, .profileCap, .holeFace: return false
+        case let .operationFace(version, operation, parents, neighbors):
+            return version != 1 || operation != creator
+                || parents.isEmpty
+                || parents.contains(where: \.requiresExactSignature)
+                || neighbors.contains(where: \.requiresExactSignature)
+                || Set(parents).count != parents.count || Set(neighbors).count != neighbors.count
+        }
+    }
+
+    var containsQualifiedOperationIdentity: Bool {
+        switch source {
+        case .operationFace: return true
+        case let .opFace(_, parents, _): return parents.contains(where: \.containsQualifiedOperationIdentity)
+        default: return false
+        }
+    }
+
+    var hasSupportedOperationIdentity: Bool {
+        switch source {
+        case let .operationFace(_, _, parents, neighbors):
+            return !requiresExactSignature && parents.allSatisfy(\.hasSupportedOperationIdentity)
+                && neighbors.allSatisfy(\.hasSupportedOperationIdentity)
+        case let .opFace(_, parents, _): return parents.allSatisfy(\.hasSupportedOperationIdentity)
+        default: return true
         }
     }
 }
@@ -323,7 +353,8 @@ nonisolated enum ElementNaming {
     /// identity, not an accident of geometry. Booleans pass nothing here.
     static func composeNames(operation: FeatureID, ancestry: ShapeAncestry,
                              inputNames: [[Int: ElementName]],
-                             edgeParents: [Int: [ElementName]] = [:]) -> [Int: ElementName] {
+                             edgeParents: [Int: [ElementName]] = [:],
+                             adjacency: [(edge: Int, faceA: Int, faceB: Int)] = []) -> [Int: ElementName] {
         struct Claim {
             var parents: [ElementName] = []
             var hasGenerated = false
@@ -358,8 +389,10 @@ nonisolated enum ElementNaming {
         }
 
         var names: [Int: ElementName] = [:]
+        var mintedFaces: Set<Int> = []
         var mintIndex: [ElementName: Int] = [:]
         func mint(_ face: Int, parents: [ElementName]) {
+            mintedFaces.insert(face)
             // Sibling index per (operation, parents) key, in result-face
             // order — callers iterate faces ascending below.
             let key = ElementName(creator: operation,
@@ -385,6 +418,59 @@ nonisolated enum ElementNaming {
                 mint(face, parents: claim.parents)
             }
             // else: modified with no named parent — honestly unnamed.
+        }
+
+        // Qualify operation outputs separately from old ordinals. First the
+        // single-output families, then synchronous rounds using only already
+        // qualified neighbors. A round never reads its own new names, so face
+        // iteration order cannot change the persisted identity or form cycles.
+        func ordered(_ values: [ElementName]) -> [ElementName]? {
+            let encoder = JSONEncoder()
+            encoder.outputFormatting = [.sortedKeys]
+            guard let keyed = try? Array(Set(values)).map({ ($0, try encoder.encode($0)) }) else { return nil }
+            return keyed.sorted { $0.1.lexicographicallyPrecedes($1.1) }.map(\.0)
+        }
+        var families: [ElementName: [Int]] = [:]
+        for face in mintedFaces {
+            guard let name = names[face], case let .opFace(_, parents, _) = name.source,
+                  !parents.isEmpty,
+                  !parents.contains(where: \.requiresExactSignature),
+                  let canonical = ordered(parents) else { continue }
+            let key = ElementName(creator: operation,
+                source: .operationFace(version: 1, operation: operation, parents: canonical, neighbors: []))
+            families[key, default: []].append(face)
+        }
+        let inherited = Set(names.values.filter { !$0.requiresExactSignature })
+        for (key, faces) in families where faces.count == 1 && !inherited.contains(key) {
+            names[faces[0]] = key
+        }
+        var neighboringFaces: [Int: Set<Int>] = [:]
+        for edge in adjacency where edge.faceA != edge.faceB {
+            neighboringFaces[edge.faceA, default: []].insert(edge.faceB)
+            neighboringFaces[edge.faceB, default: []].insert(edge.faceA)
+        }
+        while true {
+            let prior = names
+            let occupied = Set(prior.values.filter { !$0.requiresExactSignature })
+            var proposals: [Int: ElementName] = [:]
+            for (family, faces) in families where faces.count > 1 {
+                guard case let .operationFace(_, _, parents, _) = family.source else { continue }
+                var keys: [ElementName: [Int]] = [:]
+                for face in faces {
+                    guard let name = prior[face], name.requiresExactSignature else { continue }
+                    let known = (neighboringFaces[face] ?? []).compactMap { prior[$0] }
+                        .filter { !$0.requiresExactSignature }
+                    guard !known.isEmpty, let context = ordered(known) else { continue }
+                    let key = ElementName(creator: operation, source: .operationFace(
+                        version: 1, operation: operation, parents: parents, neighbors: context))
+                    keys[key, default: []].append(face)
+                }
+                for (key, candidates) in keys where candidates.count == 1 && !occupied.contains(key) {
+                    proposals[candidates[0]] = key
+                }
+            }
+            guard !proposals.isEmpty else { break }
+            for (face, name) in proposals { names[face] = name }
         }
         return names
     }

@@ -207,7 +207,6 @@ nonisolated struct SignatureNaming: TopoNaming {
     func resolve(_ ref: FaceRef, in body: Body, table: FaceTable?) -> ResolvedFace? {
         let faces = Self.enumerate(body.render)
         guard !faces.isEmpty else { return nil }
-        let diag = Self.bboxDiagonal(body.render)
 
         // NAME FIRST (docs/TOPO_NAMING_HISTORY_DESIGN.md step 4): an exact
         // kernel-history identity hit outranks any geometric score, because
@@ -239,70 +238,57 @@ nonisolated struct SignatureNaming: TopoNaming {
                                 confidence: 1, elementName: name)
         }
 
-        var best: (score: Double, index: Int, face: EnumeratedFace)?
-        var runnerUpScore: Double?
-        // The role boost's table lookup is O(1) when the table's rows align
-        // with `enumerate` (they do, for a table of this render); a
-        // misaligned table falls back to a scan, but only within the same
-        // budget `propagate` keeps. Without the cap this loop was
-        // O(faces × entries): a revolved spline bottle (tens of thousands of
-        // facet faces) sat in here for minutes resolving a shell's one open
-        // face (2026-09-02).
-        let scanAllowed = faces.count * (table?.entries.count ?? 0) <= Self.propagateBudget
-        for (index, face) in faces.enumerated() {
-            // The ref knows what KIND of surface it referenced, and until now
-            // nothing read it (review R4-N4): a cylindrical ref could bind a
-            // planar cap whenever centroid and area happened to line up, and
-            // the downstream op then deformed the wrong face. The kind is a
-            // hard veto; its radius is NOT compared — edits legitimately
-            // change it, and the area term already reflects size.
-            guard Self.kindCompatible(face.signature.kind, ref.signature.kind)
-            else { continue }
-            var s = score(face.signature, against: ref.signature, bboxDiag: diag)
-            // Boost candidates whose recorded role (from the table) matches the ref.
-            //
-            // ONLY when the candidate actually points the right way. The base
-            // weights are chosen so an orthogonal-or-worse face caps at 0.5 <
-            // resolveThreshold (see the comment above), but adding the boost
-            // AFTER that cap defeated it: a face pointing the opposite way
-            // reached 0.5 + 0.2 = 0.7 and resolved. On a plate whose +Y face
-            // an upstream edit removed, the ref then silently bound to the −Y
-            // face and the push/pull deformed the wrong side, with no broken-
-            // ref badge (2026-08-25 review round 4). Gating on the alignment
-            // term itself — not on the composite score — keeps the legitimate
-            // "moved and resized but same orientation" case resolving.
-            if Self.normalAlignment(face.signature, ref.signature) > 0,
-               let table,
-               let role = roleFromTable(for: face, at: index, table: table,
-                                        bboxDiag: diag, scanAllowed: scanAllowed),
-               role == ref.role {
-                s += Self.roleBoost
-            }
-            if best == nil || s > best!.score {
-                runnerUpScore = best?.score
-                best = (s, index, face)
-            } else if runnerUpScore == nil || s > runnerUpScore! {
-                runnerUpScore = s
+        // Some old refs already contain an author-owned primitive/cap role.
+        // Reconstruct only that exact creator+role identity, never an edge or
+        // face ordinal. This preserves ordinary legacy box/cap parameter edits.
+        let semantic: ElementName.Source?
+        switch ref.role {
+        case .boxFace, .cylinderSide, .cylinderCap, .sphereSurface:
+            semantic = .primitiveFace(ref.role)
+        case .extrudeStartCap: semantic = .profileCap(end: false)
+        case .extrudeEndCap: semantic = .profileCap(end: true)
+        default: semantic = nil
+        }
+        if let semantic, let table {
+            let name = ElementName(creator: ref.creator, source: semantic)
+            let matches = table.entries.enumerated().filter { $0.element.elementName == name }
+            if matches.count == 1, let match = matches.first, match.offset < faces.count {
+                let face = faces[match.offset]
+                if face.triangles == match.element.triangles,
+                   Self.kindCompatible(face.signature.kind, ref.signature.kind) {
+                    return ResolvedFace(planar: face.planar, cylinder: face.cylinder,
+                        confidence: 1, elementName: name, margin: .infinity)
+                }
             }
         }
-        guard let best, best.score >= Self.resolveThreshold else { return nil }
-        let margin = runnerUpScore.map { best.score - $0 }
-        // Only an unnamed legacy reference reaches geometric matching.
-        // Keep its confidence/margin for the separately gated name upgrade.
-        // Surface the matched entry's name (rows align with enumerate,
-        // verified by triangles) — the raw material of the 5b upgrade.
+        // An unqualified fingerprint needs exactly one full current match.
+        // A body-scaled score would bind a deleted cap to a nearby survivor.
+        var nativeSignatures: [Int: FaceSignature]?
+        var channel: [UInt32]?
+        let matches = faces.indices.filter { index in
+            let face = faces[index]
+            if Self.exactSignature(face.signature, ref.signature) { return true }
+            guard let table, index < table.entries.count,
+                  table.entries[index].triangles == face.triangles,
+                  let brep = body.brep else { return false }
+            if nativeSignatures == nil {
+                nativeSignatures = Dictionary(uniqueKeysWithValues: OCCTKernel.faceInfo(brep).compactMap {
+                    info in info.signature.map { (info.index, $0) }
+                })
+                channel = OCCTKernel.renderMeshFaceChannel(from: brep)
+            }
+            guard let native = ElementNaming.kernelFace(of: table.entries[index], channel: channel ?? []),
+                  let signature = nativeSignatures?[native] else { return false }
+            return Self.exactSignature(signature, ref.signature)
+        }
+        guard matches.count == 1, let index = matches.first else { return nil }
+        let face = faces[index]
         var matchedName: ElementName?
-        if let table, best.index < table.entries.count,
-           table.entries[best.index].triangles == best.face.triangles {
-            matchedName = table.entries[best.index].elementName
+        if let table, index < table.entries.count, table.entries[index].triangles == face.triangles {
+            matchedName = table.entries[index].elementName
         }
-        return ResolvedFace(
-            planar: best.face.planar,
-            cylinder: best.face.cylinder,
-            confidence: min(1, best.score),
-            elementName: matchedName,
-            margin: margin
-        )
+        return ResolvedFace(planar: face.planar, cylinder: face.cylinder,
+                            confidence: 1, elementName: matchedName, margin: .infinity)
     }
 
     // MARK: Scoring

@@ -244,12 +244,27 @@ final class CADDeleteFaceHistoryTests: XCTestCase {
         let table = try XCTUnwrap(initial.faceTables[bodyID])
         let tops = table.entries.filter { $0.signature.normal.y > 0.99 }
         XCTAssertEqual(tops.count, 3, "The fixture must really split one top face into three disconnected regions")
-        let picked = try XCTUnwrap(tops.first {
-            guard case let .opFace(operation, _, index)? = $0.elementName?.source else { return false }
-            return operation == cut.id && index == 0
-        })
+        // The original181 failure selected this actual left region. Modern
+        // names no longer expose an ordinal, so select the same physical face
+        // explicitly and keep the old wire as an additional rejection below.
+        let picked = try XCTUnwrap(tops.min { $0.signature.centroid.x < $1.signature.centroid.x })
+        XCTAssertEqual(picked.signature.centroid.x, -21.25, accuracy: 1e-5)
         let reference = FaceRef(body: BodyRef(producer: cut.id, bodyID: bodyID), creator: cut.id,
             role: picked.role, signature: picked.signature, elementName: picked.elementName)
+        XCTAssertFalse(try XCTUnwrap(reference.elementName).requiresExactSignature,
+                       "The actual split region needs a qualified topological identity")
+        var wider = source
+        wider.kind = .primitive(spec: .box(width: 80, depth: 20, height: 10), placement: .identity)
+        let resized = evaluate([wider, a, b] + (compoundCutter ? [compound] : []) + [cut])
+        XCTAssertTrue(resized.errors.isEmpty, "\(resized.errors)")
+        let widerBody = try XCTUnwrap(resized.bodies.first { $0.id == bodyID })
+        let widerTable = try XCTUnwrap(resized.faceTables[bodyID])
+        let changed = try XCTUnwrap(SignatureNaming().resolve(reference, in: widerBody, table: widerTable))
+        XCTAssertEqual(changed.elementName, reference.elementName)
+        let changedEntry = try XCTUnwrap(widerTable.entries.first { $0.elementName == reference.elementName })
+        XCTAssertEqual(changedEntry.signature.centroid.x, -26.25, accuracy: 1e-5)
+        XCTAssertGreaterThan(changedEntry.signature.area, picked.signature.area,
+                             "The same named region must follow a real dimension change, not its old fingerprint")
         let originalFace = try XCTUnwrap(SignatureNaming().resolve(reference, in: input, table: table)?.planar)
         let corners = originalFace.outline.map { originalFace.origin + originalFace.basisX * $0.x + originalFace.basisY * $0.y }
         let minimum = try XCTUnwrap(corners.map(\.x).min()), maximum = try XCTUnwrap(corners.map(\.x).max())
@@ -274,6 +289,15 @@ final class CADDeleteFaceHistoryTests: XCTestCase {
             $0.normal.y > 0.99 && simd_distance($0.centroid, picked.signature.centroid) < 1e-5
         }, "The selected physical region must actually have disappeared")
         let rebound = SignatureNaming().resolve(reference, in: surviving, table: survivingTable)
+        var oldWire = reference
+        oldWire.elementName = ElementName(creator: cut.id, source: .opFace(operation: cut.id,
+            parents: [ElementName(creator: source.id, source: .primitiveFace(.boxFace(.py)))], index: 0))
+        XCTAssertNil(SignatureNaming().resolve(oldWire, in: surviving, table: survivingTable),
+                     "The original181 legacy ordinal must not be treated as a modern qualified name")
+        var unnamed = reference
+        unnamed.elementName = nil
+        XCTAssertNil(SignatureNaming().resolve(unnamed, in: surviving, table: survivingTable),
+                     "A deleted unnamed cap cannot select a nearby survivor by body-scaled scoring")
         let aliases = survivingTable.entries.filter { $0.elementName == picked.elementName }.map { $0.signature.centroid }
         let attachment = XCTAttachment(string: "Actual three-to-two OCCT face split; compoundCutter=\(compoundCutter), removed centroid=\(picked.signature.centroid), old name=\(String(describing: picked.elementName)), current alias centroids=\(aliases), resolved=\(rebound != nil)")
         attachment.name = "real-removed-three-face-fragment.txt"
@@ -320,5 +344,52 @@ final class CADDeleteFaceHistoryTests: XCTestCase {
         XCTAssertFalse(reopened.viewModel().beginDeleteFaceEdit(deletion.id))
         XCTAssertEqual(abs(OCCTKernel.volume(try XCTUnwrap(reopened.session.document.body(with: bodyID)?.brep))),
                        retainedVolume, accuracy: 1e-4)
+    }
+
+    func testOperationRegionIdentityIgnoresTraversalOrderAndRefusesAmbiguousOrUnknownHistory() throws {
+        let creator = FeatureID(), operation = FeatureID()
+        let top = ElementName(creator: creator, source: .primitiveFace(.boxFace(.py)))
+        let left = ElementName(creator: creator, source: .primitiveFace(.boxFace(.nx)))
+        let right = ElementName(creator: creator, source: .primitiveFace(.boxFace(.px)))
+        let rows = [
+            ShapeAncestry.Row(resultFace: 1, inputOrdinal: 0, inputKind: .face, inputSubshape: 1, relation: .modified),
+            ShapeAncestry.Row(resultFace: 2, inputOrdinal: 0, inputKind: .face, inputSubshape: 1, relation: .modified),
+            ShapeAncestry.Row(resultFace: 3, inputOrdinal: 0, inputKind: .face, inputSubshape: 2, relation: .same),
+            ShapeAncestry.Row(resultFace: 4, inputOrdinal: 0, inputKind: .face, inputSubshape: 3, relation: .same)
+        ]
+        let input = [1: top, 2: left, 3: right]
+        let adjacency = [(edge: 1, faceA: 1, faceB: 3), (edge: 2, faceA: 2, faceB: 4)]
+        let names = ElementNaming.composeNames(operation: operation, ancestry: ShapeAncestry(rows: rows),
+                                               inputNames: [input], adjacency: adjacency)
+        XCTAssertFalse(try XCTUnwrap(names[1]).requiresExactSignature)
+        XCTAssertFalse(try XCTUnwrap(names[2]).requiresExactSignature)
+        XCTAssertNotEqual(names[1], names[2])
+        let permutation = [1: 22, 2: 11, 3: 8, 4: 9]
+        let reversed = rows.reversed().map {
+            ShapeAncestry.Row(resultFace: permutation[$0.resultFace]!, inputOrdinal: $0.inputOrdinal,
+                inputKind: $0.inputKind, inputSubshape: $0.inputSubshape, relation: $0.relation)
+        }
+        let remapped = ElementNaming.composeNames(operation: operation, ancestry: ShapeAncestry(rows: reversed),
+            inputNames: [input], adjacency: adjacency.reversed().map {
+                (edge: $0.edge, faceA: permutation[$0.faceB]!, faceB: permutation[$0.faceA]!)
+            })
+        for (before, after) in permutation { XCTAssertEqual(names[before], remapped[after]) }
+        let ambiguous = ElementNaming.composeNames(operation: operation, ancestry: ShapeAncestry(rows: rows),
+            inputNames: [input], adjacency: [(edge: 1, faceA: 1, faceB: 3), (edge: 2, faceA: 2, faceB: 3)])
+        XCTAssertTrue(try XCTUnwrap(ambiguous[1]).requiresExactSignature)
+        XCTAssertTrue(try XCTUnwrap(ambiguous[2]).requiresExactSignature)
+        let noContext = ElementNaming.composeNames(operation: operation, ancestry: ShapeAncestry(rows: rows),
+                                                 inputNames: [input])
+        XCTAssertTrue(try XCTUnwrap(noContext[1]).requiresExactSignature)
+        let old = try XCTUnwrap(noContext[1])
+        let inherited = ElementNaming.composeNames(operation: FeatureID(), ancestry: ShapeAncestry(rows: [
+            .init(resultFace: 7, inputOrdinal: 0, inputKind: .face, inputSubshape: 1, relation: .same)
+        ]), inputNames: [[1: old]])
+        XCTAssertEqual(inherited[7], old, "A later operation cannot promote an inherited unqualified ordinal")
+        let unknown = ElementNaming.composeNames(operation: operation, ancestry: ShapeAncestry(rows: [
+            .init(resultFace: 1, inputOrdinal: 0, inputKind: .face, inputSubshape: 99, relation: .generated)
+        ]), inputNames: [input])
+        XCTAssertTrue(try XCTUnwrap(unknown[1]).requiresExactSignature,
+                      "A sole output with no named ancestor is still not an identity")
     }
 }

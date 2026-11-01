@@ -1385,7 +1385,8 @@ nonisolated extension FeatureGraph {
                     accNames = ElementNaming.composeNames(
                         operation: node.id, ancestry: ancestry,
                         inputNames: [accNames,
-                                     state.kernelNames[tool.id] ?? [:]])
+                                     state.kernelNames[tool.id] ?? [:]],
+                        adjacency: OCCTKernel.edgeFaceAdjacency(outcome.handle))
                 }
             case let .failure(error):
                 // OCCT owned this boolean (both operands analytic) and failed
@@ -2448,7 +2449,8 @@ nonisolated extension FeatureGraph {
                 // own names and the tool's (this node's walls and caps).
                 resultNames = ElementNaming.composeNames(
                     operation: node.id, ancestry: ancestry,
-                    inputNames: [state.kernelNames[target.id] ?? [:], kernelNames])
+                    inputNames: [state.kernelNames[target.id] ?? [:], kernelNames],
+                    adjacency: OCCTKernel.edgeFaceAdjacency(outcome.handle))
             }
         case let .failure(error):
             state.errors[node.id] = .kernelFailure("boolean: \(error.message)")

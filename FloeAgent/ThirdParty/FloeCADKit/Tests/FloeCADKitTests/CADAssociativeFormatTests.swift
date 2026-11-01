@@ -363,6 +363,112 @@ final class CADAssociativeFormatTests: XCTestCase {
         XCTAssertEqual(try CADAssociativeFormatFixture.bytes(url), before)
     }
 
+    func testOperationFaceIdentityFloorCoversEveryPersistedConsumerAndRejectsMalformedNames() throws {
+        let seed = try CADAssociativeFormatFixture.plane()
+        guard case let .offset(offset)? = seed.definition else { return XCTFail("Missing fixture") }
+        let creator = offset.source.creator
+        let parent = ElementName(creator: creator, source: .primitiveFace(.boxFace(.py)))
+        for version in [1, 999] {
+            var face = offset.source
+            face.elementName = ElementName(creator: creator, source: .operationFace(
+                version: version, operation: creator, parents: [parent], neighbors: []))
+            var plane = seed
+            plane.definition = .offset(OffsetPlaneDefinition(source: face, sourceVersion: offset.sourceVersion,
+                distance: offset.distance, attachment: offset.attachment))
+            let axis = try XCTUnwrap(ConstructionAxis(origin: .zero, direction: SIMD3(0, 1, 0),
+                definition: .face(FaceAxisDefinition(source: face, sourceVersion: offset.sourceVersion,
+                    attachment: offset.attachment, offset: Expr(value: 0)))))
+            let point = DatumPoint(definition: .faceCenter(FaceCenterPointDefinition(
+                source: face, sourceVersion: offset.sourceVersion)))
+            let feature = FeatureNode(name: "Face edit", kind: .pushPull(
+                face: face, distance: Expr(value: 1), mode: .planarAxial), outputBodyIDs: [face.body.bodyID])
+            let featureRow = CADFeatureRecord(featureID: feature.id.raw, orderIndex: 0, name: feature.name,
+                suppressed: false, kind: try JSONEncoder().encode(feature.kind),
+                outputBodyIDs: try JSONEncoder().encode(feature.outputBodyIDs))
+            let binding = CADFaceMaterialBinding(key: CADFaceKey(signature: face.signature,
+                elementName: face.elementName), material: .default)
+            let bodyRow = CADBodyRecord(bodyID: face.body.bodyID.raw, name: "Material provenance",
+                transform: try JSONEncoder().encode(Transform3D()), isHidden: false,
+                faceMaterials: try JSONEncoder().encode([binding]))
+            func row<T: Encodable>(_ value: T) throws -> CADBlobRecord {
+                let bytes = try JSONEncoder().encode(value)
+                return CADBlobRecord(blobID: UUID(), data: bytes, sha256: FileCADDocumentStore.sha256(bytes))
+            }
+            let assessments = [
+                try CADDocumentFormat.assess(planes: [row(plane)], sketches: []),
+                try CADDocumentFormat.assess(planes: [], sketches: [], axes: [row(axis)]),
+                try CADDocumentFormat.assess(planes: [], sketches: [], datumPoints: [row(point)]),
+                try CADDocumentFormat.assess(planes: [], sketches: [], features: [featureRow]),
+                try CADDocumentFormat.assess(planes: [], sketches: [], bodies: [bodyRow])
+            ]
+            for assessment in assessments {
+                XCTAssertEqual(assessment.requiredVersion, CADDocumentFormat.operationFaceIdentityVersion)
+                XCTAssertEqual(assessment.isOpaqueReadOnly, version != 1)
+            }
+            XCTAssertEqual(assessments.last?.opaqueBodyAppearance, version != 1)
+            var document = DesignDocument()
+            document.planes = [plane]; document.axes = [axis]; document.datumPoints = [point]
+            document.features = FeatureGraph(nodes: [feature])
+            XCTAssertEqual(CADDocumentFormat.requiredFormat(document: document), CADDocumentFormat.operationFaceIdentityVersion)
+            if version == 1 { XCTAssertNoThrow(try CADDocumentFormat.validateLiveAssociations(document)) }
+            else { XCTAssertThrowsError(try CADDocumentFormat.validateLiveAssociations(document)) }
+        }
+        for parents in [[ElementName](), [parent, parent]] {
+            var face = offset.source
+            face.elementName = ElementName(creator: creator, source: .operationFace(
+                version: 1, operation: creator, parents: parents, neighbors: []))
+            let kind = FeatureKind.pushPull(face: face, distance: Expr(value: 1), mode: .planarAxial)
+            let record = CADFeatureRecord(featureID: UUID(), orderIndex: 0, name: "Malformed",
+                suppressed: false, kind: try JSONEncoder().encode(kind), outputBodyIDs: Data("[]".utf8))
+            XCTAssertThrowsError(try CADDocumentFormat.assess(planes: [], sketches: [], features: [record])) {
+                XCTAssertEqual($0 as? CADDocumentFormatError, .malformedAssociation("operation-face-identity"))
+            }
+        }
+    }
+
+    func testSavedOperationFaceIdentityReopensAndFutureVersionRemainsBytePreservedReadOnly() async throws {
+        let package = url()
+        try await CADAssociativeFormatFixture.basicPackage(at: package)
+        let document = try await open(package)
+        var plane = try CADAssociativeFormatFixture.plane()
+        guard case let .offset(offset)? = plane.definition else { return XCTFail("Missing fixture") }
+        var face = offset.source
+        face.elementName = ElementName(creator: face.creator, source: .operationFace(
+            version: 1, operation: face.creator,
+            parents: [ElementName(creator: face.creator, source: .primitiveFace(.boxFace(.py)))], neighbors: []))
+        plane.definition = .offset(OffsetPlaneDefinition(source: face, sourceVersion: offset.sourceVersion,
+            distance: offset.distance, attachment: offset.attachment))
+        document.session.perform(AddConstructionPlaneCommand(plane: plane))
+        let saved = await document.save()
+        XCTAssertTrue(saved.succeeded, saved.error ?? "")
+        XCTAssertEqual(try CADAssociativeFormatFixture.manifest(package).schemaVersion,
+                       CADDocumentFormat.operationFaceIdentityVersion)
+        document.close()
+        let reopened = try await open(package)
+        XCTAssertFalse(reopened.session.isReadOnly)
+        guard case let .offset(retained)? = reopened.session.document.planes.last?.definition else {
+            return XCTFail("The saved operation identity was dropped")
+        }
+        XCTAssertEqual(retained.source.elementName, face.elementName)
+        reopened.close()
+        try CADAssociativeFormatFixture.rewrite(package, schema: CADDocumentFormat.operationFaceIdentityVersion) { record in
+            face.elementName = ElementName(creator: face.creator, source: .operationFace(
+                version: 999, operation: face.creator,
+                parents: [ElementName(creator: face.creator, source: .primitiveFace(.boxFace(.py)))], neighbors: []))
+            plane.definition = .offset(OffsetPlaneDefinition(source: face, sourceVersion: offset.sourceVersion,
+                distance: offset.distance, attachment: offset.attachment))
+            let index = try XCTUnwrap(record.planes.firstIndex { $0.blobID == plane.id.raw })
+            record.planes[index].data = try JSONEncoder().encode(plane)
+            record.planes[index].sha256 = FileCADDocumentStore.sha256(record.planes[index].data)
+        }
+        let original = try CADAssociativeFormatFixture.bytes(package)
+        let future = try await open(package)
+        XCTAssertTrue(future.session.isReadOnly)
+        let denied = await future.save()
+        XCTAssertFalse(denied.succeeded)
+        XCTAssertEqual(try CADAssociativeFormatFixture.bytes(package), original)
+    }
+
     // Fixed source fixture, NOT current supportedVersion+1 and NOT an old
     // binary App run. Extracted from 17eccb68 PersistenceModels.swift:35-43,
     // DocumentSession.swift:699/1058, SketchPlanes.swift:74-112.
