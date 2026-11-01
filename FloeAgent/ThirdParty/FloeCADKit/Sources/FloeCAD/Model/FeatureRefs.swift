@@ -157,8 +157,10 @@ nonisolated struct EdgeSignature: Codable, Hashable, Sendable {
 /// of adjacent-face names — "the crease between the top cap and wall X" —
 /// which survives rebuilds exactly as long as its two faces do, where the
 /// geometric signature drifts with every edit. Optional and omitted when
-/// nil, so old documents load unchanged; replay resolves by identity when
-/// EVERY ref of the feature carries one, else falls back to signatures.
+/// nil, so old documents load unchanged. Each named reference resolves only
+/// by identity, including a mixed named/legacy selection. Only unnamed
+/// legacy references use signatures; one unresolved reference rejects the
+/// whole blend rather than silently blending the remaining edges.
 nonisolated struct EdgeRef: Codable, Hashable, Sendable {
     var body: BodyRef
     var signature: EdgeSignature

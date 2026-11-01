@@ -1305,6 +1305,7 @@ targets:
       - path: ThirdParty/FloeCADKit/Tests/FloeCADKitTests/CADSketchConflictAttributionReportTests.swift
       - path: ThirdParty/FloeCADKit/Tests/FloeCADKitTests/CADSketchDefinitionPublicationFenceTests.swift
       - path: ThirdParty/FloeCADKit/Tests/FloeCADKitTests/CADParameterCorrectnessTests.swift
+      - path: ThirdParty/FloeCADKit/Tests/FloeCADKitTests/CADEdgeBlendReferenceTests.swift
       - path: ThirdParty/FloeCADKit/Tests/FloeCADKitTests/CADCapabilitySurfaceTests.swift
       - path: ThirdParty/FloeCADKit/Tests/FloeCADKitTests/CADCapabilityAvailabilityTests.swift
       - path: ThirdParty/FloeCADKit/Tests/FloeCADKitTests/CADStoredIntegrityTests.swift

@@ -208,3 +208,15 @@ symbol index is structurally valid, and that the object/platform/minOS and
 Standard_Type symbol set match the base. The public ABI, headers, OCCT version,
 license and relink route are unchanged. Live native/App qualification remains
 recorded separately; see `OCCT_RELINK.md` and `relink/README.md`.
+
+## 2026-11-02: atomic edge-blend reference resolution
+
+`FeatureGraph` treats every stored edge name as authoritative, including mixed
+named/legacy selections. Missing or ambiguous names refuse the whole blend;
+only unnamed legacy references use geometric fingerprints. Unresolved or
+foreign-body edges cannot silently leave a smaller selection, duplicate picks
+blend once, and legacy name upgrades are proposed only after kernel success.
+The command receipt reports requested, processed and rejected indices with the
+existing atomic transaction and rollback. No feature format, OCCT binary or
+legacy decoding changes. Focused App-hosted regression tests are added; their
+actual execution status is recorded separately in the current batch evidence.

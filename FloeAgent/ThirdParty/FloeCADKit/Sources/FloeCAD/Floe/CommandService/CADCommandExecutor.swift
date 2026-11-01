@@ -1051,30 +1051,53 @@ final class CADCommandExecutor {
     private func execBlend(body bodyID: BodyID, isFillet: Bool, amount: Double,
                            edgeIndices: [Int],
                            on viewModel: EditorViewModel) -> AgentResponse {
+        // The blend commits atomically. Report every requested index, including
+        // failures before feature recording, without claiming partial success.
+        var seen = Set<Int>()
+        let uniqueIndices = edgeIndices.filter { seen.insert($0).inserted }
+        func report(_ response: AgentResponse) -> AgentResponse {
+            guard var payload = (try? JSONSerialization.jsonObject(with: response.body))
+                    as? [String: Any] else { return response }
+            let succeeded = (200..<300).contains(response.status)
+                && payload["ok"] as? Bool == true && payload["failed"] as? Bool != true
+            payload["edgeProcessing"] = [
+                "requested": edgeIndices,
+                "processed": succeeded ? uniqueIndices : [],
+                "rejected": succeeded ? [] : uniqueIndices,
+                "atomic": true,
+            ] as [String: Any]
+            var result = AgentResponse.json(response.status, response.reason, payload)
+            result.info = response.info
+            return result
+        }
+        guard !edgeIndices.isEmpty else {
+            return report(.failure(400, "Bad Request", error: "empty_edge_selection",
+                                   message: "Select at least one edge to blend."))
+        }
         let session = viewModel.session
         let context: (body: Body, brep: BRepHandle)
         if let refusal = exactSurfaceRefusal(
             [bodyID], operation: isFillet ? "Fillet" : "Chamfer", session) {
-            return refusal
+            return report(refusal)
         }
         switch identityContext(bodyID, session) {
         case let .ok(body, brep): context = (body, brep)
-        case let .reply(reply): return reply
+        case let .reply(reply): return report(reply)
         }
         let adjacency = OCCTKernel.edgeFaceAdjacency(context.brep)
         let known = Set(adjacency.map(\.edge))
         for index in edgeIndices where !known.contains(index) {
-            return .failure(404, "Not Found", error: "unknown_edge",
+            return report(.failure(404, "Not Found", error: "unknown_edge",
                             message: "No blendable kernel edge \(index) on "
-                                   + "'\(context.body.name)'. GET /v1/edges?body=… for the list.")
+                                   + "'\(context.body.name)'. GET /v1/edges?body=… for the list."))
         }
         let names = freshNames(for: context.body, session)
         let edgeNames = ElementNaming.edgeNames(adjacency: adjacency, names: names)
 
         // Signatures come from the mesh side, exactly as an interactive pick
         // would mint them — inverse-mapped through the same nearest-edge
-        // matching. All-or-nothing: a ref without a signature could not fall
-        // back if its name later misses.
+        // matching. Named references remain bound to their names on replay;
+        // signatures retain compatibility for genuinely unnamed legacy refs.
         let tolerance = OCCTKernel.matchTolerance(for: context.brep)
         let wanted = Set(edgeIndices)
         var signatureByEdge: [Int: EdgeSignature] = [:]
@@ -1093,10 +1116,10 @@ final class CADCommandExecutor {
         var refs: [EdgeRef] = []
         for index in edgeIndices {
             guard let signature = signatureByEdge[index] else {
-                return .failure(409, "Conflict", error: "unaddressable_edge",
+                return report(.failure(409, "Conflict", error: "unaddressable_edge",
                                 message: "Kernel edge \(index) has no mesh-side "
-                                       + "signature to fall back on — pick a different "
-                                       + "edge from /v1/edges.")
+                                       + "selection fingerprint — pick a different "
+                                       + "edge from /v1/edges."))
             }
             refs.append(EdgeRef(body: ref, signature: signature,
                                 faceNames: edgeNames[index]))
@@ -1107,7 +1130,7 @@ final class CADCommandExecutor {
                 ? .fillet(body: ref, edges: refs, radius: Expr(value: amount))
                 : .chamfer(body: ref, edges: refs, setback: Expr(value: amount)),
             outputBodyIDs: [bodyID])
-        return record(node, on: viewModel)
+        return report(record(node, on: viewModel))
     }
 
     /// feature.hole: one locating circle + typed hole semantics. Validates the

@@ -1886,8 +1886,13 @@ nonisolated extension FeatureGraph {
         into state: inout EvalState,
         next nextRevision: () -> UInt64
     ) {
-        guard amount > 1e-6 else {
-            state.errors[node.id] = .kernelFailure("blend amount must be positive")
+        guard amount.isFinite, amount > 1e-6 else {
+            state.errors[node.id] = .kernelFailure("blend amount must be finite and positive")
+            return
+        }
+        guard !edgeRefs.isEmpty,
+              edgeRefs.allSatisfy({ $0.body.bodyID == bodyRef.bodyID }) else {
+            state.errors[node.id] = .brokenRef("blend needs edges on its target body")
             return
         }
         guard let body = state.bodies[bodyRef.bodyID] else {
@@ -1897,25 +1902,51 @@ nonisolated extension FeatureGraph {
         if refuseExactSurface(node, isFillet ? "Fillet" : "Chamfer",
                               body: body, into: &state) { return }
 
-        // IDENTITY FIRST (TOPO_NAMING_HISTORY_DESIGN step 4b): when every
-        // ref carries an edge name and the input body has kernel names,
-        // resolve the blend edges by their adjacent-face NAME PAIRS and
-        // blend by index — no geometric matching anywhere in the path, so
-        // an upstream edit that moved or resized the edge cannot re-bind
-        // the blend to a lookalike. All-or-nothing: a partial identity
-        // resolution falls back to signatures WHOLESALE, because mixing the
-        // two could blend one edge twice.
-        if OCCTKernel.useOCCTAsSourceOfTruth, let brep = body.brep,
-           !edgeRefs.isEmpty, edgeRefs.allSatisfy({ $0.faceNames != nil }),
-           let names = state.kernelNames[body.id], !names.isEmpty {
+        // A persisted name is authoritative even in a mixed legacy/named
+        // selection. A lost name must never rebind to a lookalike through its
+        // old geometric fingerprint. Unnamed legacy references alone may use
+        // signature resolution. Resolve the entire selection before asking
+        // the kernel to change anything; duplicate picks are deduped by index.
+        if edgeRefs.contains(where: { $0.faceNames != nil }) {
+            guard OCCTKernel.useOCCTAsSourceOfTruth, let brep = body.brep,
+                  let names = state.kernelNames[body.id], !names.isEmpty else {
+                state.errors[node.id] = .brokenRef("named blend edges need their source identities")
+                return
+            }
             let adjacency = OCCTKernel.edgeFaceAdjacency(brep)
             let edgeNames = ElementNaming.edgeNames(adjacency: adjacency,
                                                     names: names)
-            let indices = edgeRefs.compactMap { ref -> Int? in
-                guard let name = ref.faceNames else { return nil }
-                return edgeNames.first { $0.value == name }?.key
+            let hasLegacy = edgeRefs.contains(where: { $0.faceNames == nil })
+            let available = hasLegacy ? EdgeTopology.selectableEdges(from: body.render) : []
+            let aabb = body.render.localAABB
+            let scale = Double(simd_length(aabb.max - aabb.min))
+            var indices: [Int] = []
+            var upgrades: [(EdgeRef, EdgeName)] = []
+            for (offset, ref) in edgeRefs.enumerated() {
+                if let name = ref.faceNames {
+                    let matches = edgeNames.filter { $0.value == name }
+                    guard matches.count == 1, let index = matches.first?.key else {
+                        state.errors[node.id] = .brokenRef(
+                            "blend edge \(offset + 1) identity is missing or ambiguous; no edges were blended")
+                        return
+                    }
+                    indices.append(index)
+                } else {
+                    guard let edge = EdgeTopology.resolve(
+                        ref.signature, in: available, sizeScale: scale),
+                          let index = OCCTKernel.nearestEdgeIndex(
+                            brep, to: SIMD3(Double(edge.midpoint.x), Double(edge.midpoint.y),
+                                            Double(edge.midpoint.z)),
+                            tolerance: OCCTKernel.matchTolerance(for: brep)) else {
+                        state.errors[node.id] = .brokenRef(
+                            "blend edge \(offset + 1) did not resolve; no edges were blended")
+                        return
+                    }
+                    indices.append(index)
+                    if let name = edgeNames[index] { upgrades.append((ref, name)) }
+                }
             }
-            if indices.count == edgeRefs.count {
+            do {
                 // MANY refs can name ONE kernel edge: the picker selects mesh
                 // segments, and a tessellated rim is a long chain of them over
                 // a single OCCT edge, so every segment mints the same EdgeName.
@@ -1960,6 +1991,9 @@ nonisolated extension FeatureGraph {
                     if !outNames.isEmpty {
                         state.kernelNames[result.id] = outNames
                     }
+                    for (ref, name) in upgrades {
+                        proposeEdgeUpgrade(node, ref: ref, faceNames: name, into: &state)
+                    }
                     return
                 case let .failure(error):
                     // The named edges EXIST — the blend itself failed
@@ -1971,8 +2005,6 @@ nonisolated extension FeatureGraph {
                     return
                 }
             }
-            // Some name no longer exists on the input body — fall through to
-            // signature resolution, which reports honestly per edge.
         }
 
         let available = EdgeTopology.selectableEdges(from: body.render)
@@ -1985,10 +2017,14 @@ nonisolated extension FeatureGraph {
 
         var specs = [BlendEdgeSpec]()
         var resolvedRefs = [(ref: EdgeRef, midpoint: SIMD3<Double>)]()
-        for ref in edgeRefs {
+        for (offset, ref) in edgeRefs.enumerated() {
             guard let edge = EdgeTopology.resolve(
                 ref.signature, in: available, sizeScale: scale)
-            else { continue }
+            else {
+                state.errors[node.id] = .brokenRef(
+                    "blend edge \(offset + 1) did not resolve; no edges were blended")
+                return
+            }
             let spec = BlendEdgeSpec(
                 p0: d3(edge.start), p1: d3(edge.end),
                 normalA: d3(edge.normalA), normalB: d3(edge.normalB),
@@ -2028,6 +2064,7 @@ nonisolated extension FeatureGraph {
             // resolved midpoint, so this pins exactly the edge the blend is
             // about to round, never re-binding. Only when the input body
             // carries kernel names (otherwise there is nothing to earn).
+            var upgrades: [(EdgeRef, EdgeName)] = []
             if let names = state.kernelNames[body.id], !names.isEmpty {
                 let adjacency = OCCTKernel.edgeFaceAdjacency(brep)
                 let edgeNames = ElementNaming.edgeNames(adjacency: adjacency, names: names)
@@ -2035,7 +2072,7 @@ nonisolated extension FeatureGraph {
                     guard let index = OCCTKernel.nearestEdgeIndex(
                             brep, to: midpoint, tolerance: tolerance),
                           let name = edgeNames[index] else { continue }
-                    proposeEdgeUpgrade(node, ref: ref, faceNames: name, into: &state)
+                    upgrades.append((ref, name))
                 }
             }
             let blended = isFillet
@@ -2060,6 +2097,9 @@ nonisolated extension FeatureGraph {
             let table = state.naming.faceTable(
                 for: result, createdBy: node.id, scheme: .generic)
             state.put(result, table: table)
+            for (ref, name) in upgrades {
+                proposeEdgeUpgrade(node, ref: ref, faceNames: name, into: &state)
+            }
             return
         }
 
