@@ -47,6 +47,18 @@ nonisolated struct FaceTable: Codable, Sendable {
     }
 
     init(entries: [Entry] = []) { self.entries = entries }
+
+    /// Used only after an owned history/memo transfer restores the exact
+    /// geometry paired with this table. ReplaceBodyCommand legitimately
+    /// re-mints the revision; this is not permission to bless an arbitrary
+    /// old table against new geometry.
+    func rebindingNativeRevision(afterOwnedRestore body: Body) -> FaceTable {
+        guard nativeBodyID == body.id, nativeFaceNames != nil, body.brep != nil,
+              nativeFaceChannel?.count == body.render.triangleCount else { return self }
+        var result = self
+        result.nativeMeshRevision = body.meshRevision
+        return result
+    }
 }
 
 /// How a body was built — drives which `FaceRole`s the faces are labelled with.

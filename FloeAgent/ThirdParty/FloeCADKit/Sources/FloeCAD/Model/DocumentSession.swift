@@ -1127,6 +1127,11 @@ final class DocumentSession {
     /// describe, from the DOCUMENT's post-apply state.
     private func captureNamingRevisions<S: Sequence>(for ids: S) where S.Element == BodyID {
         let wanted = Set(ids)
+        for body in document.bodies where wanted.contains(body.id) {
+            if let table = lastFaceTables[body.id] {
+                lastFaceTables[body.id] = table.rebindingNativeRevision(afterOwnedRestore: body)
+            }
+        }
         lastNamingRevisions = Dictionary(uniqueKeysWithValues:
             document.bodies.filter { wanted.contains($0.id) }
                 .map { ($0.id, $0.meshRevision) })
