@@ -1777,10 +1777,13 @@ final class CADFeaturePlaneReferenceTests: XCTestCase {
         XCTAssertEqual(refused["dependent_feature_ids"] as? [String], [edit.id.raw.uuidString])
         let reordered = service.handle(action: "feature.move", args: ["feature_id": edit.id.raw.uuidString, "to_index": 1])
         XCTAssertEqual(reordered["error"] as? String, "dependency_order", "\(reordered)")
-        let forced = service.handle(action: "feature.delete", args: ["feature_id": target.id.raw.uuidString, "force": true])
-        XCTAssertEqual(forced["ok"] as? Bool, false, "\(forced)")
-        XCTAssertNotNil(document.session.document.features.node(target.id))
         XCTAssertEqual(document.session.changeCount, beforeChange)
+        let forced = service.handle(action: "feature.delete", args: ["feature_id": target.id.raw.uuidString, "force": true])
+        XCTAssertEqual(forced["error"] as? String, "rebuild_failed", "\(forced)")
+        XCTAssertEqual(forced["rolled_back"] as? Bool, true, "\(forced)")
+        XCTAssertNotNil(document.session.document.features.node(target.id))
+        XCTAssertGreaterThan(document.session.changeCount, beforeChange,
+            "Restoring a rejected edit advances the query generation to fence stale callbacks")
         XCTAssertEqual(document.session.undoStack.undoCommands.count, beforeUndo)
         XCTAssertEqual(try volume(body(document, source)), 16_000, accuracy: 1e-3)
 
@@ -1825,8 +1828,15 @@ final class CADFeaturePlaneReferenceTests: XCTestCase {
         let updated = try XCTUnwrap(document.session.document.features.node(edit.id))
         XCTAssertEqual(updated.kind.operationPlaneReference, reference)
         XCTAssertEqual(try xAtNeutral(8), 40, accuracy: 1e-4)
-        let withFormula = try XCTUnwrap(DocumentSession.reevaluatedKind(updated.kind, with: [:]))
+        XCTAssertNil(DocumentSession.reevaluatedKind(updated.kind, with: [:]),
+            "Unchanged non-formula values must not create another history edit")
+        let formulaKind = try XCTUnwrap(DocumentSession.replacingExpression(in: updated.kind,
+            named: "angle", with: Expr(value: 7, formula: "draft_angle")))
+        let withFormula = try XCTUnwrap(DocumentSession.reevaluatedKind(formulaKind, with: ["draft_angle": 9]))
         XCTAssertEqual(withFormula.operationPlaneReference, reference)
+        let slot = try XCTUnwrap(DocumentSession.expressionSlot(in: withFormula, named: "angle"))
+        XCTAssertEqual(slot.expr.value, 9)
+        XCTAssertEqual(slot.expr.formula, "draft_angle")
     }
 
     func testDatumPlaneAndTransformedTargetUseWorldFrameOnce() async throws {
