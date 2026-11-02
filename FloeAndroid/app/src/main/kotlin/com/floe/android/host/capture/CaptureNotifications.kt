@@ -127,7 +127,7 @@ object CaptureNotifications {
             builder.addAction(0, if (chinese) "停止" else "Stop", stopPending)
         }
         if (state.phase == CapturePhase.RUNNING && state.startedAtMillis != null) {
-            builder.setWhen(state.startedAtMillis).setUsesChronometer(true)
+            builder.setWhen(requireNotNull(state.startedAtMillis)).setUsesChronometer(true)
         }
         return builder.build()
     }

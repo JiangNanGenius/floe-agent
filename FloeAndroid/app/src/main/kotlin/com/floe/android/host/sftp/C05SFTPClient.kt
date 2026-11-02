@@ -102,6 +102,7 @@ internal class C05SFTPClient(
             put("path", path)
         })
         return parseEntry(response.objectValue("entry") ?: throw invalid("missingEntry"))
+            ?: throw invalid("invalidEntry")
     }
 
     fun revision(laneID: String, path: String, owner: C05SFTPOwner): C05SFTPEntry {
@@ -111,6 +112,7 @@ internal class C05SFTPClient(
             put("path", path)
         })
         return parseEntry(response.objectValue("entry") ?: throw invalid("missingEntry"))
+            ?: throw invalid("invalidEntry")
     }
 
     fun destinationRevision(

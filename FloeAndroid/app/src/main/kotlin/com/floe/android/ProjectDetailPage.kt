@@ -346,7 +346,7 @@ private fun ProjectTaskRow(task: ProjectTaskUi, onClick: () -> Unit) {
                 FloeText("• ", style = Floe.typography.body, color = colors.accent)
             }
             val title = if (task.title.isBlank()) {
-                stringResource(R.string.history_untitled)
+                stringResource(com.floe.android.feature.conversation.R.string.history_untitled)
             } else {
                 task.title
             }

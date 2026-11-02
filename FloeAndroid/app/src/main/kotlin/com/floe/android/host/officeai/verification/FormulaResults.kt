@@ -843,9 +843,9 @@ private class FormulaParser(private val text: String) {
             consumeToken("<=") -> Operator.LE
             consumeToken(">=") -> Operator.GE
             consumeToken("<>") -> Operator.NE
-            consume("=") -> Operator.EQ
-            consume("<") -> Operator.LT
-            consume(">") -> Operator.GT
+            consume('=') -> Operator.EQ
+            consume('<') -> Operator.LT
+            consume('>') -> Operator.GT
             else -> return left
         }
         val right = parseSum() ?: return null
@@ -857,11 +857,11 @@ private class FormulaParser(private val text: String) {
         while (true) {
             skipWhitespace()
             when {
-                consume("+") -> {
+                consume('+') -> {
                     val right = parseTerm() ?: return null
                     left = FormulaNode.NodeBinary(Operator.ADD, left, right)
                 }
-                consume("-") -> {
+                consume('-') -> {
                     val right = parseTerm() ?: return null
                     left = FormulaNode.NodeBinary(Operator.SUB, left, right)
                 }
@@ -875,11 +875,11 @@ private class FormulaParser(private val text: String) {
         while (true) {
             skipWhitespace()
             when {
-                consume("*") -> {
+                consume('*') -> {
                     val right = parseFactor() ?: return null
                     left = FormulaNode.NodeBinary(Operator.MUL, left, right)
                 }
-                consume("/") -> {
+                consume('/') -> {
                     val right = parseFactor() ?: return null
                     left = FormulaNode.NodeBinary(Operator.DIV, left, right)
                 }
@@ -893,13 +893,13 @@ private class FormulaParser(private val text: String) {
         depth += 1
         try {
             skipWhitespace()
-            if (consume("-")) {
+            if (consume('-')) {
                 val value = parseFactor() ?: return null
                 return FormulaNode.NodeNegate(value)
             }
-            if (consume("(")) {
+            if (consume('(')) {
                 val value = parseComparison() ?: return null
-                if (!consume(")")) return null
+                if (!consume(')')) return null
                 return value
             }
             if (peek('"')) return parseText()

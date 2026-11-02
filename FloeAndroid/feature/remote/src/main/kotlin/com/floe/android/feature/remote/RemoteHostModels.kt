@@ -95,6 +95,7 @@ data class RemoteSessionUi(
     val transportConnected: Boolean,
     val ptyCount: Int,
     val tunnelCount: Int,
+    val profileID: String? = null,
 )
 
 data class RemotePtyUi(

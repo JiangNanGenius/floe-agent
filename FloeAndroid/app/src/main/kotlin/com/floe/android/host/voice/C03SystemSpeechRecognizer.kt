@@ -207,15 +207,22 @@ class C03SystemSpeechRecognizer(
         }
     }
 
-    private inline fun <T> onMainValue(block: () -> T): T {
+    private inline fun <T> onMainValue(crossinline block: () -> T): T {
         if (Looper.myLooper() == Looper.getMainLooper()) return block()
         var value: T? = null
         val latch = java.util.concurrent.CountDownLatch(1)
-        main.post {
-            value = block()
-            latch.countDown()
-        }
+        var failure: Throwable? = null
+        check(main.post {
+            try {
+                value = block()
+            } catch (error: Throwable) {
+                failure = error
+            } finally {
+                latch.countDown()
+            }
+        }) { "Speech main-thread handler is unavailable" }
         latch.await()
+        failure?.let { throw it }
         @Suppress("UNCHECKED_CAST")
         return value as T
     }

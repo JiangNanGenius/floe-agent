@@ -297,16 +297,16 @@ internal class MailTransportLane(
     }
 
     private fun parseDescriptor(text: String): MailTransportDescriptor? {
-        val object = Json.parseToJsonElement(text).jsonObject
-        val operation = object["op"]?.jsonPrimitive?.content ?: return null
-        val claim = object["claim"]?.jsonPrimitive?.long ?: return null
-        val session = object["session"]?.jsonPrimitive?.long ?: return null
-        val host = object["host"]?.jsonPrimitive?.content ?: return null
-        val port = object["port"]?.jsonPrimitive?.int ?: return null
-        val tls = object["tls"]?.jsonPrimitive?.content ?: return null
-        val maxBytes = object["maxBytes"]?.jsonPrimitive?.int ?: 0
-        val writeLength = object["writeLength"]?.jsonPrimitive?.int ?: 0
-        val timeoutMillis = object["timeoutMillis"]?.jsonPrimitive?.int ?: 1_000
+        val obj = Json.parseToJsonElement(text).jsonObject
+        val operation = obj["op"]?.jsonPrimitive?.content ?: return null
+        val claim = obj["claim"]?.jsonPrimitive?.long ?: return null
+        val session = obj["session"]?.jsonPrimitive?.long ?: return null
+        val host = obj["host"]?.jsonPrimitive?.content ?: return null
+        val port = obj["port"]?.jsonPrimitive?.int ?: return null
+        val tls = obj["tls"]?.jsonPrimitive?.content ?: return null
+        val maxBytes = obj["maxBytes"]?.jsonPrimitive?.int ?: 0
+        val writeLength = obj["writeLength"]?.jsonPrimitive?.int ?: 0
+        val timeoutMillis = obj["timeoutMillis"]?.jsonPrimitive?.int ?: 1_000
         if (host.isEmpty() || port !in 1..65535) return null
         return MailTransportDescriptor(
             claim = claim,

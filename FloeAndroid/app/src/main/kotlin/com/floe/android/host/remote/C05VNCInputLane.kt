@@ -61,7 +61,7 @@ internal class C05VNCInputLane(
         signal.close()
     }
 
-    private fun takeBatch(): List<C05VncInput>? {
+    private suspend fun takeBatch(): List<C05VncInput>? {
         while (true) {
             synchronized(lock) {
                 if (closed) return null

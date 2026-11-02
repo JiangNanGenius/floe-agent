@@ -16,7 +16,6 @@ import com.floe.android.feature.rdp.RdpEndpointDraftUi
 import com.floe.android.feature.rdp.RdpEndpointUi
 import com.floe.android.feature.rdp.RdpFailureUi
 import com.floe.android.feature.rdp.RdpHostDetailUi
-import com.floe.android.feature.rdp.RdpHostUi
 import com.floe.android.feature.rdp.RdpProfileDraftUi
 import com.floe.android.feature.rdp.RdpSessionUi
 import com.floe.android.feature.rdp.RdpUiState
@@ -58,7 +57,7 @@ internal class C05RDPHostController(
     val state: StateFlow<RdpUiState> = _state.asStateFlow()
 
     private val gate = Gate()
-    private var details: MutableMap<String, RdpHostDetailUi> = mutableMapOf()
+    private var details: MutableMap<String, C05RdpHostDetail> = mutableMapOf()
     private var statusJob: Job? = null
     private var frameJob: Job? = null
     private var inputJob: Job? = null
@@ -184,7 +183,7 @@ internal class C05RDPHostController(
                             supportsCertificateTrust = capabilities.supportsCertificateTrust,
                             modelTools = capabilities.modelTools,
                         ),
-                        hosts = hosts,
+                        hosts = hosts.map { it.toUi() },
                         error = null,
                     )
                 }
@@ -218,11 +217,12 @@ internal class C05RDPHostController(
             try {
                 val owner = ownerFor(epoch)
                 val endpoints = mutableListOf<C05RdpEndpointDraft>()
-                val password = draft.endpoints.firstOrNull()?.password?.takeIf { it.isNotEmpty() }
                 for (endpoint in draft.endpoints) {
                     val endpointID = endpoint.id ?: UUID.randomUUID().toString()
                     val existing = details[draft.id]?.endpoints?.firstOrNull { it.id == endpointID }
-                    val secret = password?.takeIf { draft.endpoints.size == 1 && it.isNotEmpty() }
+                    val port = endpoint.port.toIntOrNull()?.takeIf { it in 1..65535 }
+                        ?: throw C05RDPException("invalidRequest", "invalidPort")
+                    val secret = endpoint.password.takeIf { it.isNotEmpty() }
                     val reference = if (secret != null) {
                         val account = "floe.rdp.$endpointID.password"
                         val bytes = secret.toByteArray(Charsets.UTF_8)
@@ -240,7 +240,7 @@ internal class C05RDPHostController(
                         id = endpointID,
                         displayName = endpoint.displayName,
                         host = endpoint.host,
-                        port = endpoint.port,
+                        port = port,
                         username = endpoint.username,
                         domain = endpoint.domain,
                         passwordRef = reference,
@@ -263,7 +263,7 @@ internal class C05RDPHostController(
                         busy = null,
                         error = null,
                         savedMessage = "Saved",
-                        hosts = details.values.sortedBy { host -> host.summary.displayName },
+                        hosts = details.values.sortedBy { host -> host.summary.displayName }.map { it.toUi() },
                     )
                 }
             } catch (failure: C05RemoteFailure) {
@@ -298,7 +298,7 @@ internal class C05RDPHostController(
                     it.copy(
                         busy = null,
                         savedMessage = "Deleted",
-                        hosts = details.values.sortedBy { host -> host.summary.displayName },
+                        hosts = details.values.sortedBy { host -> host.summary.displayName }.map { it.toUi() },
                     )
                 }
             } catch (failure: C05RemoteFailure) {
@@ -331,7 +331,7 @@ internal class C05RDPHostController(
                     it.copy(
                         busy = null,
                         savedMessage = "Deleted",
-                        hosts = details.values.sortedBy { host -> host.summary.displayName },
+                        hosts = details.values.sortedBy { host -> host.summary.displayName }.map { it.toUi() },
                     )
                 }
             } catch (failure: C05RemoteFailure) {
@@ -794,6 +794,18 @@ internal class C05RDPHostController(
         retryable = true,
         category = "coreUnavailable",
         stage = "runtime",
+    )
+
+    private fun C05RdpHostDetail.toUi(): RdpHostDetailUi = RdpHostDetailUi(
+        id = summary.id,
+        displayName = summary.displayName,
+        deviceKind = summary.deviceKind,
+        isRemoteExecutionEnvironment = summary.isRemoteExecutionEnvironment,
+        endpoints = endpoints.map { endpoint ->
+            RdpEndpointUi(endpoint.id, endpoint.displayName, endpoint.host, endpoint.port,
+                endpoint.username, endpoint.domain, endpoint.hasPassword,
+                endpoint.approvedFingerprintSHA256, endpoint.passwordRef?.keychainAccount)
+        },
     )
 
     private fun C05RdpSession.toUi(bitmap: Bitmap?, fps: Double): RdpSessionUi =

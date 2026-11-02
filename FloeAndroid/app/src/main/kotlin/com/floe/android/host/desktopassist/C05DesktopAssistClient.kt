@@ -36,7 +36,7 @@ internal interface DesktopAssistHostPort {
     fun ocrStatus(epoch: Long): Boolean
     fun listCards(epoch: Long): List<DesktopAssistCardUi>
     fun listHosts(epoch: Long): List<DesktopAssistHostUi>
-    override fun createCard(
+    fun createCard(
         epoch: Long,
         label: String,
         kind: String,
@@ -112,7 +112,7 @@ internal class C05DesktopAssistClient(
         return parseCard(
             response.objectValue("card")
                 ?: throw C05RemoteFailure("invalidResponse", "missingCard"),
-        )
+        ) ?: throw C05RemoteFailure("invalidResponse", "invalidCard")
     }
 
     override fun updateCard(
@@ -130,7 +130,7 @@ internal class C05DesktopAssistClient(
         return parseCard(
             response.objectValue("card")
                 ?: throw C05RemoteFailure("invalidResponse", "missingCard"),
-        )
+        ) ?: throw C05RemoteFailure("invalidResponse", "invalidCard")
     }
 
     override fun deleteCard(epoch: Long, id: String) {

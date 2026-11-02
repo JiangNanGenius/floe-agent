@@ -91,8 +91,7 @@ internal fun C07DataExchangeSettingsDestination(
 
     val suggestedName = remember {
         "Floe-backup-" + LocalDateTime.now()
-            .format(DateTimeFormatter.ofPattern("yyyyMMdd-HHmm"))
-            + ".floebackup"
+            .format(DateTimeFormatter.ofPattern("yyyyMMdd-HHmm")) + ".floebackup"
     }
     val documentTypes = arrayOf(
         "application/zip",

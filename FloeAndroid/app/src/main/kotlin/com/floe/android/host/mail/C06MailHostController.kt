@@ -463,7 +463,7 @@ internal class C06MailHostController(
                         ),
                         messageRow = if (current.messageRow?.id == row.id) updatedRow else current.messageRow,
                         search = current.search?.copy(
-                            rows = current.search.rows.map {
+                            messages = current.search.messages.map {
                                 if (it.id == row.id) updatedRow else it
                             }
                         ),

@@ -155,18 +155,18 @@ object C01LinuxEnvironmentOwner {
             runtime == null || (!runtime.optBoolean("active") && !runtime.optBoolean("stopping"))
         }
         if (!idle) {
-            return JSONObject(base(attached, control, "refused"))
+            return base(attached, control, "refused")
                 .put("detail", "Another task's run, job, terminal or managed service still owns work in this environment; stop it explicitly first.")
                 .put("retryable", true)
         }
         if (runtime?.optBoolean("active") != true) {
-            return JSONObject(base(attached, control, "stopped"))
+            return base(attached, control, "stopped")
                 .put("detail", "The runtime service reports no owned work; nothing was running.")
         }
         runCatching(request).onFailure {
             return failure(attached, control, "The existing root stop request failed; the environment was not changed.")
         }
-        return JSONObject(base(attached, control, "stopping"))
+        return base(attached, control, "stopping")
             .put("runtimeStopping", true)
             .put("retryable", true)
             .put("detail", "The existing Root stop/drain was requested. Poll status until the host proves the stop.")
@@ -175,7 +175,7 @@ object C01LinuxEnvironmentOwner {
     private fun statusBlocking(attached: Attachment, control: JSONObject): JSONObject {
         val runtime = runtimeStatus(attached.context)
         val phase = if (runtime?.optBoolean("active") == true) "ready" else "installed"
-        return JSONObject(base(attached, control, phase))
+        return base(attached, control, phase)
             .put("runtimeActive", runtime?.optBoolean("active") == true)
             .put("contractVersion", runtime?.optString("workloadContractVersion")?.take(64) ?: "")
             .put("detail", if (runtime?.optBoolean("active") == true)
@@ -184,22 +184,22 @@ object C01LinuxEnvironmentOwner {
     }
 
     private fun pending(attached: Attachment, control: JSONObject, detail: String): JSONObject =
-        JSONObject(base(attached, control, "pending")).put("retryable", true).put("detail", detail)
+        base(attached, control, "pending").put("retryable", true).put("detail", detail)
 
     private fun installRequired(attached: Attachment, control: JSONObject, detail: String): JSONObject =
-        JSONObject(base(attached, control, "installRequired"))
+        base(attached, control, "installRequired")
             .put("installRequired", true)
             .put("retryable", true)
             .put("detail", detail)
 
     private fun failure(attached: Attachment, control: JSONObject, detail: String): JSONObject =
-        JSONObject(base(attached, control, "failed")).put("retryable", true).put("detail", detail.take(512))
+        base(attached, control, "failed").put("retryable", true).put("detail", detail.take(512))
 
     private fun refusal(detail: String): JSONObject =
         JSONObject().put("phase", "refused").put("detail", detail.take(512))
 
     private fun refusal(attached: Attachment, control: JSONObject, detail: String): JSONObject =
-        JSONObject(base(attached, control, "refused")).put("detail", detail.take(512))
+        base(attached, control, "refused").put("detail", detail.take(512))
 
     private fun base(attached: Attachment, control: JSONObject, phase: String): JSONObject {
         val state = attached.setup.state.value

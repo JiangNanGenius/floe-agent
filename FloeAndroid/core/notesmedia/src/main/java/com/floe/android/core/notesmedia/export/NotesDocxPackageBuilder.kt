@@ -782,7 +782,9 @@ public object NotesDocxPackageBuilder {
         bytes: ByteArray,
         expectedPages: Int? = null,
         factory: DocumentBuilderFactory = DocumentBuilderFactory.newInstance(),
-    ): NotesDocxValidation = validate(bytes, expectedPages, null, factory)
+    ): NotesDocxValidation = validate(bytes, expectedPages, null, factory).let {
+        NotesDocxValidation(it.ok, it.reason)
+    }
 
     private fun validate(
         bytes: ByteArray,

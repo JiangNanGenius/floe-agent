@@ -706,10 +706,17 @@ let package = Package(
             publicHeadersPath: "include",
             cSettings: [
                 .define("_GNU_SOURCE", to: "1", .when(platforms: [.android])),
-                .unsafeFlags(["-I", floeRDPPrefix + "/include"], .when(platforms: [.android])),
+                .unsafeFlags([
+                    "-I", floeRDPPrefix + "/include/freerdp3",
+                    "-I", floeRDPPrefix + "/include/winpr3",
+                    "-I", floeRDPPrefix + "/openssl/include",
+                ], .when(platforms: [.android])),
             ],
             linkerSettings: [
-                .unsafeFlags(["-L", floeRDPPrefix + "/lib"], .when(platforms: [.android])),
+                .unsafeFlags([
+                    "-L", floeRDPPrefix + "/lib",
+                    "-L", floeRDPPrefix + "/openssl/lib",
+                ], .when(platforms: [.android])),
                 .linkedLibrary("freerdp3", .when(platforms: [.android])),
                 .linkedLibrary("winpr3", .when(platforms: [.android])),
                 .linkedLibrary("ssl", .when(platforms: [.android])),

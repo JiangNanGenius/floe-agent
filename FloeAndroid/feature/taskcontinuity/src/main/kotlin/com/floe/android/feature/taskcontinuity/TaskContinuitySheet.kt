@@ -307,14 +307,14 @@ private fun WaitRow(
                 } else {
                     FloeCapsuleAction(
                         label = stringResource(R.string.taskcontinuity_wait_resume),
-                        onClick = { onResumeTask(wait.identity.runID) },
+                        onClick = { onResumeTask(wait.runID) },
                         enabled = !busy,
                     )
                 }
             }
             TaskContinuityWaitAction.REVIEW_QUESTION -> FloeCapsuleAction(
                 label = stringResource(R.string.taskcontinuity_wait_review),
-                onClick = { onReviewQuestion(wait.identity.requestID) },
+                onClick = { onReviewQuestion(wait.requestID) },
                 enabled = !busy,
             )
             TaskContinuityWaitAction.REVIEW_APPROVAL -> FloeText(

@@ -7,19 +7,7 @@ package com.floe.android.host.remote
 
 internal const val C05_VNC_VERSION = 11
 
-internal data class C05VncPasswordRef(
-    val keychainAccount: String,
-    val synchronizable: Boolean,
-)
-
-internal data class C05VncEndpoint(
-    val id: String,
-    val displayName: String,
-    val transport: String,
-    val host: String,
-    val port: Int,
-    val passwordRef: C05VncPasswordRef?,
-)
+internal typealias C05VncPasswordRef = C05CredentialRef
 
 internal data class C05VncEndpointDraft(
     val id: String?,
@@ -99,63 +87,63 @@ internal sealed interface C05VncInput {
 }
 
 internal fun parseVncPasswordRef(
-    object: kotlinx.serialization.json.JsonObject,
+    obj: kotlinx.serialization.json.JsonObject,
 ): C05VncPasswordRef = C05VncPasswordRef(
-    keychainAccount = object.requiredString("keychainAccount"),
-    synchronizable = object.boolValue("synchronizable"),
+    keychainAccount = obj.requiredString("keychainAccount"),
+    synchronizable = obj.boolValue("synchronizable"),
 )
 
 internal fun parseVncEndpoint(
-    object: kotlinx.serialization.json.JsonObject,
+    obj: kotlinx.serialization.json.JsonObject,
 ): C05VncEndpoint = C05VncEndpoint(
-    id = object.requiredString("id"),
-    displayName = object.string("displayName") ?: "VNC",
-    transport = object.string("transport") ?: "direct",
-    host = object.string("host") ?: "",
-    port = object.intValue("port") ?: 5900,
-    passwordRef = object.objectValue("passwordRef")?.let(::parseVncPasswordRef),
+    id = obj.requiredString("id"),
+    displayName = obj.string("displayName") ?: "VNC",
+    transport = obj.string("transport") ?: "direct",
+    host = obj.string("host") ?: "",
+    port = obj.intValue("port") ?: 5900,
+    passwordRef = obj.objectValue("passwordRef")?.let(::parseVncPasswordRef),
 )
 
 internal fun parseVncFailure(
-    object: kotlinx.serialization.json.JsonObject,
+    obj: kotlinx.serialization.json.JsonObject,
 ): C05VncFailureInfo = C05VncFailureInfo(
-    code = object.string("code") ?: "unknown",
-    message = object.string("message") ?: "",
-    retryable = object.boolValue("retryable"),
-    category = object.string("category") ?: "unknown",
-    stage = object.string("stage") ?: "unknown",
+    code = obj.string("code") ?: "unknown",
+    message = obj.string("message") ?: "",
+    retryable = obj.boolValue("retryable"),
+    category = obj.string("category") ?: "unknown",
+    stage = obj.string("stage") ?: "unknown",
 )
 
 internal fun parseVncSession(
-    object: kotlinx.serialization.json.JsonObject,
+    obj: kotlinx.serialization.json.JsonObject,
 ): C05VncSession = C05VncSession(
-    id = object.requiredString("id"),
-    profileID = object.requiredString("profileID"),
-    endpointID = object.requiredString("endpointID"),
-    displayName = object.string("displayName") ?: "VNC",
-    host = object.string("host") ?: "",
-    port = object.intValue("port") ?: 5900,
-    transport = object.string("transport") ?: "direct",
-    state = object.string("state") ?: "unknown",
-    width = object.intValue("width") ?: 0,
-    height = object.intValue("height") ?: 0,
-    frameRevision = object.longValue("frameRevision") ?: 0L,
-    frameBytes = object.intValue("frameBytes") ?: 0,
-    sshSessionID = object.string("sshSessionID"),
-    tunnelID = object.string("tunnelID"),
-    createdAt = object.string("createdAt") ?: "",
-    lastActivityAt = object.string("lastActivityAt") ?: "",
-    failure = object.objectValue("failure")?.let(::parseVncFailure),
+    id = obj.requiredString("id"),
+    profileID = obj.requiredString("profileID"),
+    endpointID = obj.requiredString("endpointID"),
+    displayName = obj.string("displayName") ?: "VNC",
+    host = obj.string("host") ?: "",
+    port = obj.intValue("port") ?: 5900,
+    transport = obj.string("transport") ?: "direct",
+    state = obj.string("state") ?: "unknown",
+    width = obj.intValue("width") ?: 0,
+    height = obj.intValue("height") ?: 0,
+    frameRevision = obj.longValue("frameRevision") ?: 0L,
+    frameBytes = obj.intValue("frameBytes") ?: 0,
+    sshSessionID = obj.string("sshSessionID"),
+    tunnelID = obj.string("tunnelID"),
+    createdAt = obj.string("createdAt") ?: "",
+    lastActivityAt = obj.string("lastActivityAt") ?: "",
+    failure = obj.objectValue("failure")?.let(::parseVncFailure),
 )
 
 internal fun parseVncCloseResult(
-    object: kotlinx.serialization.json.JsonObject,
+    obj: kotlinx.serialization.json.JsonObject,
 ): C05VncCloseResult = C05VncCloseResult(
-    sessionID = object.string("sessionID") ?: "",
-    closed = object.boolValue("closed"),
-    complete = object.boolValue("complete"),
-    closedTunnel = object.boolValue("closedTunnel"),
-    closedSSHSession = object.boolValue("closedSSHSession"),
+    sessionID = obj.string("sessionID") ?: "",
+    closed = obj.boolValue("closed"),
+    complete = obj.boolValue("complete"),
+    closedTunnel = obj.boolValue("closedTunnel"),
+    closedSSHSession = obj.boolValue("closedSSHSession"),
 )
 
 internal data class C05VncCapabilities(

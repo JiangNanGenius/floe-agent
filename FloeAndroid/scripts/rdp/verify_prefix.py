@@ -13,6 +13,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import re
 import shutil
 import subprocess
 import sys
@@ -65,10 +66,18 @@ def main() -> int:
     if not prefix.is_absolute() or not prefix.is_dir():
         raise SystemExit("prefix must be an absolute existing directory")
 
-    missing = [header for header in REQUIRED_HEADERS if not (prefix / "include" / header).is_file()]
+    header_paths = {
+        header: prefix / "include" / ("winpr3" if header.startswith("winpr/") else "freerdp3") / header
+        for header in REQUIRED_HEADERS
+    }
+    library_paths = {
+        name: prefix / ("openssl/lib" if name in ("libssl.a", "libcrypto.a") else "lib") / name
+        for name in REQUIRED_LIBRARIES
+    }
+    missing = [header for header, path in header_paths.items() if not path.is_file()]
     if missing:
         raise SystemExit(f"missing headers: {', '.join(missing)}")
-    missing = [library for library in REQUIRED_LIBRARIES if not (prefix / "lib" / library).is_file()]
+    missing = [library for library, path in library_paths.items() if not path.is_file()]
     if missing:
         raise SystemExit(f"missing libraries: {', '.join(missing)}")
 
@@ -81,29 +90,35 @@ def main() -> int:
     file_tool = shutil.which("file")
     if file_tool is None:
         raise SystemExit("the `file` utility is required for architecture proof")
+    readobj = shutil.which("llvm-readobj")
+    if readobj is None:
+        raise SystemExit("NDK llvm-readobj is required for archive-member architecture proof")
     for library in REQUIRED_LIBRARIES:
-        description = run([file_tool, str(prefix / "lib" / library)])
+        description = run([file_tool, str(library_paths[library])])
         if "archive" not in description.lower():
             raise SystemExit(f"{library} is not a static archive: {description.strip()}")
-        if "aarch64" not in description.lower() and "arm aarch64" not in description.lower():
-            raise SystemExit(f"{library} is not ARM64: {description.strip()}")
+        headers = run([readobj, "--file-headers", str(library_paths[library])])
+        machines = re.findall(r"Machine:\s+([^\n]+)", headers)
+        if not machines or any(not machine.startswith("EM_AARCH64 ") for machine in machines):
+            raise SystemExit(f"{library} contains missing or non-ARM64 ELF member headers")
 
     nm = shutil.which("llvm-nm") or shutil.which("nm")
     if nm is None:
         raise SystemExit("llvm-nm/nm is required for symbol proof")
     symbols = run([nm, "-g", str(prefix / "lib" / "libfreerdp3.a")])
-    absent = [symbol for symbol in REQUIRED_SYMBOLS if symbol not in symbols]
+    absent = [symbol for symbol in REQUIRED_SYMBOLS
+              if re.search(r"\b[TW]\s+" + re.escape(symbol) + r"\b", symbols) is None]
     if absent:
         raise SystemExit(f"missing FreeRDP symbols: {', '.join(absent)}")
 
     manifest = {
         "schema": 1,
         "abi": "arm64-v8a",
-        "headers": {header: sha256(prefix / "include" / header) for header in REQUIRED_HEADERS},
+        "headers": {header: sha256(header_paths[header]) for header in REQUIRED_HEADERS},
         "libraries": {
             library: {
-                "sha256": sha256(prefix / "lib" / library),
-                "bytes": (prefix / "lib" / library).stat().st_size,
+                "sha256": sha256(library_paths[library]),
+                "bytes": library_paths[library].stat().st_size,
             }
             for library in REQUIRED_LIBRARIES
         },

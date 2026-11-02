@@ -451,7 +451,8 @@ internal class OfficeConflictReviewCoordinator(
 
     private fun newRecordId(): String = UUID.randomUUID().toString()
 
-    private fun createReviewDirectory(): File? = try {
+    private fun createReviewDirectory(): File? {
+        return try {
         val canonicalRoot = root.canonicalFile
         if (!canonicalRoot.isDirectory && !canonicalRoot.mkdirs()) return null
         val directory = File(canonicalRoot, "review-" + UUID.randomUUID())
@@ -459,6 +460,8 @@ internal class OfficeConflictReviewCoordinator(
         directory.canonicalFile.takeIf { it.parentFile?.canonicalFile == canonicalRoot }
     } catch (_: Exception) {
         null
+    }
+
     }
 
     private fun deleteReviewDirectory(directory: File) {

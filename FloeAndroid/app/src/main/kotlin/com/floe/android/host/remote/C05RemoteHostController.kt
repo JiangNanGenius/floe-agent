@@ -867,13 +867,13 @@ internal class C05RemoteHostController(
                     _state.update {
                         it.copy(
                             terminal = it.terminal?.copy(
-                                pty = it.terminal.pty.copy(
+                                pty = requireNotNull(it.terminal).pty.copy(
                                     state = state,
                                     totalBytes = page.totalBytes,
                                     rolledOverBytes = page.rolledOverBytes,
                                 ),
                                 status = ptyStatus(state, page.lostBytes),
-                                inputIssue = if (page.lostBytes > 0L) "outputRolled" else it.terminal.inputIssue,
+                                inputIssue = if (page.lostBytes > 0L) "outputRolled" else requireNotNull(it.terminal).inputIssue,
                             )
                         )
                     }
@@ -1073,6 +1073,7 @@ internal class C05RemoteHostController(
         user = session.user,
         state = session.state,
         transportConnected = session.transportConnected,
+        profileID = session.profileID,
         ptyCount = session.ptyCount,
         tunnelCount = session.tunnelCount,
     )

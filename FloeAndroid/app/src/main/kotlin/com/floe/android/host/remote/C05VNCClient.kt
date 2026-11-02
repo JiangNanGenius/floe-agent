@@ -9,6 +9,7 @@ package com.floe.android.host.remote
 import java.util.Base64
 import java.util.UUID
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonArray

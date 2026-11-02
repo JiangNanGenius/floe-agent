@@ -10,7 +10,6 @@ import java.util.UUID
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.jsonObject
-import kotlinx.serialization.json.parseToJsonElement
 import kotlinx.serialization.json.put
 
 internal interface TaskContinuityApi {

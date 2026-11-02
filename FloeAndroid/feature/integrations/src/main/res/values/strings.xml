@@ -233,11 +233,11 @@
     <string name="skills_catalog_load_more">Load more</string>
     <string name="skills_catalog_query_too_long">Shorten the search text and try again.</string>
     <string name="mcp_create_service">Create a service in a project</string>
-    <string name="mcp_create_service_detail">Build a standard MCP server inside a project's Linux environment.</string>
+    <string name="mcp_create_service_detail">Build a standard MCP server inside a project\'s Linux environment.</string>
     <string name="mcp_reconnect">Reconnect</string>
     <string name="mcp_refresh_tools">Refresh tools</string>
     <string name="mcp_setup_title">Create MCP service</string>
-    <string name="mcp_setup_intro">Floe builds a standard MCP server in the selected project's Linux environment. Its tools stay off until you add the connection.</string>
+    <string name="mcp_setup_intro">Floe builds a standard MCP server in the selected project\'s Linux environment. Its tools stay off until you add the connection.</string>
     <string name="mcp_setup_project">Project</string>
     <string name="mcp_setup_environment">Linux environment</string>
     <string name="mcp_setup_name">Service name</string>

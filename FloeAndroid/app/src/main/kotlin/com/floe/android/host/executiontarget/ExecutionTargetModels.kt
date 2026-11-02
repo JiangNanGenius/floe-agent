@@ -48,7 +48,7 @@ internal object C02TargetJson {
     val json = Json { ignoreUnknownKeys = true; isLenient = false }
 
     fun parse(value: String): C02TargetUi =
-        parseTarget(value.jsonObject)
+        parseTarget(json.parseToJsonElement(value).jsonObject)
 
     fun parseTarget(obj: JsonObject): C02TargetUi = C02TargetUi(
         taskID = obj.requiredString("taskID"),

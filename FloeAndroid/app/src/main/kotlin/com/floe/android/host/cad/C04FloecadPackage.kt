@@ -244,16 +244,16 @@ internal class C04FloecadPackageReader(
         check()
         val manifestStaged = stagePackageFile(
             "$root/${C04FloecadLimits.MANIFEST_NAME}",
-            C04FloecadLimits.MAX_MANIFEST_BYTES, "manifestMissing", check)
+            C04FloecadLimits.MAX_MANIFEST_BYTES, "manifestMissing", ::check)
         val manifestBytes = readBounded(manifestStaged.file, C04FloecadLimits.MAX_MANIFEST_BYTES)
             ?: throw C04FloecadFailure("invalidPackage", "manifestRead")
         val manifest = parseManifest(manifestBytes)
         val documentStaged = stagePackageFile(
             "$root/${C04FloecadLimits.DOCUMENT_NAME}",
-            C04FloecadLimits.MAX_DOCUMENT_BYTES, "documentMissing", check)
+            C04FloecadLimits.MAX_DOCUMENT_BYTES, "documentMissing", ::check)
         val documentBytes = readBounded(documentStaged.file, C04FloecadLimits.MAX_DOCUMENT_BYTES)
             ?: throw C04FloecadFailure("invalidPackage", "documentRead")
-        val document = parseDocument(documentBytes, check)
+        val document = parseDocument(documentBytes, ::check)
         // The preview artifact is not needed for geometry, but its digest is
         // part of the writer's content identity (below). No preview bytes are
         // read as geometry.
@@ -270,7 +270,7 @@ internal class C04FloecadPackageReader(
                 return stagedByPath[path]
                     ?: throw C04FloecadFailure("invalidPackage", "duplicateBlob")
             }
-            val staged = stageChecked("$root/$path", C04FloecadLimits.MAX_BLOB_BYTES, check)
+            val staged = stageChecked("$root/$path", C04FloecadLimits.MAX_BLOB_BYTES, ::check)
             if (!staged.sha256.equals(sha, ignoreCase = true)) {
                 throw C04FloecadFailure("invalidPackage", "blobDigest")
             }
@@ -353,7 +353,7 @@ internal class C04FloecadPackageReader(
         check()
         val manifestAgain = stagePackageFile(
             "$root/${C04FloecadLimits.MANIFEST_NAME}",
-            C04FloecadLimits.MAX_MANIFEST_BYTES, "manifestMissing", check)
+            C04FloecadLimits.MAX_MANIFEST_BYTES, "manifestMissing", ::check)
         if (!manifestAgain.sha256.equals(manifestStaged.sha256, ignoreCase = true)) {
             throw C04FloecadFailure("sourceChanged", "manifestChanged")
         }

@@ -2102,7 +2102,7 @@ class ConversationFlowHolder(
         voiceListening = false
     }
 
-    fun setVoiceListening(listening: Boolean) {
+    fun updateVoiceListening(listening: Boolean) {
         if (!retired) voiceListening = listening
     }
 

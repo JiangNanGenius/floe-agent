@@ -271,71 +271,71 @@ internal fun JsonObject.objectValue(key: String): JsonObject? =
 internal fun JsonObject.arrayValue(key: String): List<JsonElement> =
     (this[key] as? JsonArray) ?: emptyList()
 
-internal fun parseCapabilities(object: JsonObject): C06MailCapabilitiesUi =
+internal fun parseCapabilities(obj: JsonObject): C06MailCapabilitiesUi =
     C06MailCapabilitiesUi(
-        coreReady = object.bool("coreReady"),
-        epoch = object.long("epoch"),
-        credentialGatewayReady = object.bool("credentialGatewayReady"),
-        schemaReady = object.bool("schemaReady"),
-        transportReady = object.bool("transportReady"),
-        accountCount = object.int("accountCount") ?: 0,
-        maximumAccounts = object.int("maximumAccounts") ?: 0,
-        maximumMessageBytes = object.int("maximumMessageBytes") ?: 0,
-        maximumAttachmentBytes = object.int("maximumAttachmentBytes") ?: 0,
-        maximumChunkBytes = object.int("maximumChunkBytes") ?: 0,
-        modelTools = object.bool("modelTools"),
+        coreReady = obj.bool("coreReady"),
+        epoch = obj.long("epoch"),
+        credentialGatewayReady = obj.bool("credentialGatewayReady"),
+        schemaReady = obj.bool("schemaReady"),
+        transportReady = obj.bool("transportReady"),
+        accountCount = obj.int("accountCount") ?: 0,
+        maximumAccounts = obj.int("maximumAccounts") ?: 0,
+        maximumMessageBytes = obj.int("maximumMessageBytes") ?: 0,
+        maximumAttachmentBytes = obj.int("maximumAttachmentBytes") ?: 0,
+        maximumChunkBytes = obj.int("maximumChunkBytes") ?: 0,
+        modelTools = obj.bool("modelTools"),
     )
 
-internal fun parseServer(object: JsonObject): C06MailServerUi =
+internal fun parseServer(obj: JsonObject): C06MailServerUi =
     C06MailServerUi(
-        host = object.requiredString("host"),
-        port = object.int("port") ?: throw C06MailFailure("invalidResponse", "missing_port"),
-        tls = object.requiredString("tls"),
-        username = object.requiredString("username"),
+        host = obj.requiredString("host"),
+        port = obj.int("port") ?: throw C06MailFailure("invalidResponse", "missing_port"),
+        tls = obj.requiredString("tls"),
+        username = obj.requiredString("username"),
     )
 
-internal fun parseAccount(object: JsonObject): C06MailAccountUi =
+internal fun parseAccount(obj: JsonObject): C06MailAccountUi =
     C06MailAccountUi(
-        id = object.requiredString("id"),
-        displayName = object.requiredString("displayName"),
-        address = object.requiredString("address"),
-        incomingProtocol = object.requiredString("incomingProtocol"),
-        incoming = parseServer(object.objectValue("incoming")
+        id = obj.requiredString("id"),
+        displayName = obj.requiredString("displayName"),
+        address = obj.requiredString("address"),
+        incomingProtocol = obj.requiredString("incomingProtocol"),
+        incoming = parseServer(obj.objectValue("incoming")
             ?: throw C06MailFailure("invalidResponse", "missing_incoming")),
-        outgoing = parseServer(object.objectValue("outgoing")
+        outgoing = parseServer(obj.objectValue("outgoing")
             ?: throw C06MailFailure("invalidResponse", "missing_outgoing")),
-        revision = object.int("revision") ?: 0,
-        updatedAt = object.string("updatedAt") ?: "",
+        revision = obj.int("revision") ?: 0,
+        updatedAt = obj.string("updatedAt") ?: "",
     )
 
-internal fun parseRow(object: JsonObject): C06MailRowUi =
+internal fun parseRow(obj: JsonObject): C06MailRowUi =
     C06MailRowUi(
-        id = object.requiredString("id"),
-        byteCount = object.int("byteCount") ?: 0,
-        flags = object.arrayValue("flags").mapNotNull {
+        id = obj.requiredString("id"),
+        byteCount = obj.int("byteCount") ?: 0,
+        flags = obj.arrayValue("flags").mapNotNull {
             (it as? JsonPrimitive)?.contentOrNull
         },
     )
 
-internal fun parseListing(object: JsonObject): C06MailListingUi =
+internal fun parseListing(obj: JsonObject): C06MailListingUi =
     C06MailListingUi(
-        folder = object.requiredString("folder"),
-        mailboxVersion = object.nullableString("mailboxVersion"),
-        messages = object.arrayValue("messages").mapNotNull { (it as? JsonObject)?.let(::parseRow) },
-        hasMore = object.bool("hasMore"),
-        nextBeforeMessageID = object.nullableString("nextBeforeMessageID"),
+        folder = obj.requiredString("folder"),
+        mailboxVersion = obj.nullableString("mailboxVersion"),
+        messages = obj.arrayValue("messages").mapNotNull { (it as? JsonObject)?.let(::parseRow) },
+        hasMore = obj.bool("hasMore"),
+        nextBeforeMessageID = obj.nullableString("nextBeforeMessageID"),
     )
 
-internal fun parseMessage(object: JsonObject): C06MailMessageUi =
+internal fun parseMessage(obj: JsonObject): C06MailMessageUi =
     C06MailMessageUi(
-        subject = object.string("subject") ?: "",
-        from = object.string("from") ?: "",
-        to = object.string("to") ?: "",
-        date = object.string("date") ?: "",
-        text = object.string("text") ?: "",
-        html = object.string("html") ?: "",
-        sha256 = object.string("sha256") ?: "",
-        attachments = object.arrayValue("attachments").mapNotNull { element ->
+        subject = obj.string("subject") ?: "",
+        from = obj.string("from") ?: "",
+        to = obj.string("to") ?: "",
+        date = obj.string("date") ?: "",
+        text = obj.string("text") ?: "",
+        html = obj.string("html") ?: "",
+        sha256 = obj.string("sha256") ?: "",
+        attachments = obj.arrayValue("attachments").mapNotNull { element ->
             val attachment = element as? JsonObject ?: return@mapNotNull null
             val index = attachment.int("index") ?: return@mapNotNull null
             C06MailAttachmentUi(
@@ -345,48 +345,48 @@ internal fun parseMessage(object: JsonObject): C06MailMessageUi =
                 sha256 = attachment.string("sha256") ?: "",
             )
         },
-        hasMoreText = object.bool("hasMoreText"),
-        hasMoreHtml = object.bool("hasMoreHtml"),
-        nextTextCursor = object.string("nextTextCursor")?.takeIf { it.isNotEmpty() },
-        nextHtmlCursor = object.string("nextHtmlCursor")?.takeIf { it.isNotEmpty() },
-        truncated = object.bool("truncated"),
+        hasMoreText = obj.bool("hasMoreText"),
+        hasMoreHtml = obj.bool("hasMoreHtml"),
+        nextTextCursor = obj.string("nextTextCursor")?.takeIf { it.isNotEmpty() },
+        nextHtmlCursor = obj.string("nextHtmlCursor")?.takeIf { it.isNotEmpty() },
+        truncated = obj.bool("truncated"),
     )
 
-internal fun parseSearchPage(object: JsonObject): C06MailSearchPageUi =
+internal fun parseSearchPage(obj: JsonObject): C06MailSearchPageUi =
     C06MailSearchPageUi(
-        folder = object.requiredString("folder"),
-        mailboxVersion = object.string("mailboxVersion") ?: "",
-        messages = object.arrayValue("messages").mapNotNull { (it as? JsonObject)?.let(::parseRow) },
-        hasMore = object.bool("hasMore"),
-        nextCursor = object.string("nextCursor")?.takeIf { it.isNotEmpty() },
-        totalMatched = object.int("totalMatched") ?: 0,
-        returned = object.int("returned") ?: 0,
-        pageTruncated = object.bool("pageTruncated"),
+        folder = obj.requiredString("folder"),
+        mailboxVersion = obj.string("mailboxVersion") ?: "",
+        messages = obj.arrayValue("messages").mapNotNull { (it as? JsonObject)?.let(::parseRow) },
+        hasMore = obj.bool("hasMore"),
+        nextCursor = obj.string("nextCursor")?.takeIf { it.isNotEmpty() },
+        totalMatched = obj.int("totalMatched") ?: 0,
+        returned = obj.int("returned") ?: 0,
+        pageTruncated = obj.bool("pageTruncated"),
     )
 
-internal fun parseMove(object: JsonObject): C06MailMoveResultUi =
+internal fun parseMove(obj: JsonObject): C06MailMoveResultUi =
     C06MailMoveResultUi(
-        status = object.requiredString("status"),
-        requestID = object.requiredString("requestID"),
-        messageID = object.string("messageID") ?: "",
-        sourceFolder = object.string("sourceFolder") ?: "",
-        destination = object.nullableString("destination"),
-        destinationUID = object.nullableString("destinationUID"),
-        destinationMailboxVersion = object.nullableString("destinationMailboxVersion"),
-        expunged = object.string("expunged") ?: "notAttempted",
-        destinationVerified = object.bool("destinationVerified"),
-        replayed = object.bool("replayed"),
-        reconciled = object.bool("reconciled"),
-        receiptPersisted = object.bool("receiptPersisted"),
-        reason = object.string("reason"),
-        warning = object.string("warning"),
+        status = obj.requiredString("status"),
+        requestID = obj.requiredString("requestID"),
+        messageID = obj.string("messageID") ?: "",
+        sourceFolder = obj.string("sourceFolder") ?: "",
+        destination = obj.nullableString("destination"),
+        destinationUID = obj.nullableString("destinationUID"),
+        destinationMailboxVersion = obj.nullableString("destinationMailboxVersion"),
+        expunged = obj.string("expunged") ?: "notAttempted",
+        destinationVerified = obj.bool("destinationVerified"),
+        replayed = obj.bool("replayed"),
+        reconciled = obj.bool("reconciled"),
+        receiptPersisted = obj.bool("receiptPersisted"),
+        reason = obj.string("reason"),
+        warning = obj.string("warning"),
     )
 
-internal fun parseSend(object: JsonObject): C06MailSendResultUi =
+internal fun parseSend(obj: JsonObject): C06MailSendResultUi =
     C06MailSendResultUi(
-        status = object.requiredString("status"),
-        requestID = object.requiredString("requestID"),
-        replayed = object.bool("replayed"),
-        receiptPersisted = object.bool("receiptPersisted"),
-        warning = object.string("warning"),
+        status = obj.requiredString("status"),
+        requestID = obj.requiredString("requestID"),
+        replayed = obj.bool("replayed"),
+        receiptPersisted = obj.bool("receiptPersisted"),
+        warning = obj.string("warning"),
     )

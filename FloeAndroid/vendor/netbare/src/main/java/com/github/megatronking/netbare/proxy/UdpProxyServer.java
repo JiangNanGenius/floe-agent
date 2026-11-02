@@ -124,13 +124,6 @@ import java.util.concurrent.ConcurrentHashMap;
     }
 
     @Override
-    void stopServer() {
-        // Wake the blocking selector before joining the server thread.
-        super.stopServer();
-        NetBareUtils.closeQuietly(mSelector);
-    }
-
-    @Override
     protected void process() throws IOException {
         int select = mSelector.select();
         if (select == 0) {
@@ -170,6 +163,9 @@ import java.util.concurrent.ConcurrentHashMap;
     @Override
     void stopServer() {
         super.stopServer();
+        // Closing the selector wakes its blocking read before thread join;
+        // retain the original per-tunnel cleanup in this same override.
+        NetBareUtils.closeQuietly(mSelector);
         for (UdpVATunnel tunnel : mTunnels.values()) {
             NetBareUtils.closeQuietly(tunnel);
         }

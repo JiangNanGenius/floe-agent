@@ -20,6 +20,8 @@ import com.floe.android.host.taskcontinuity.TaskContinuityHostController
 import com.floe.android.host.remote.C05BrokerLocalNetworkGate
 import com.floe.android.host.devicecommunication.C05BrokerDeviceLanGate
 import com.floe.android.host.devicecommunication.C05DevicesHostController
+import com.floe.android.host.remote.C05VNCClient
+import com.floe.android.host.remote.C05RemoteFailure
 import com.floe.android.host.remote.C05RemoteHostController
 import com.floe.android.host.sftp.C05SFTPHostController
 import com.floe.android.host.rdp.C05RDPClient
@@ -697,7 +699,7 @@ class RuntimeHost internal constructor(
      */
     internal suspend fun prepareC06MailForRootStop(): Boolean =
         if (c06MailDelegate.isInitialized()) {
-            c06Mail.prepareForRootStop(C06_MAIL_STOP_WAIT_MS)
+            c06Mail.prepareForRootStop(C06_MAIL_STOP_WAIT_MS.toInt())
         } else {
             true
         }
@@ -710,7 +712,7 @@ class RuntimeHost internal constructor(
      */
     internal suspend fun prepareC06CalendarForRootStop(): Boolean =
         if (c06CalendarDelegate.isInitialized()) {
-            c06Calendar.prepareForRootStop(C06_CALENDAR_STOP_WAIT_MS)
+            c06Calendar.prepareForRootStop(C06_CALENDAR_STOP_WAIT_MS.toInt())
         } else {
             true
         }
@@ -724,7 +726,7 @@ class RuntimeHost internal constructor(
      */
     internal suspend fun prepareC06SystemServicesForRootStop(): Boolean =
         if (c06SystemServicesDelegate.isInitialized()) {
-            c06SystemServices.prepareForRootStop(C06_SYSTEM_SERVICES_STOP_WAIT_MS)
+            c06SystemServices.prepareForRootStop(C06_SYSTEM_SERVICES_STOP_WAIT_MS.toInt())
         } else {
             true
         }

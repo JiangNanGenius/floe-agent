@@ -129,7 +129,7 @@ internal fun C04CadViewerDestination(
                 C04CadViewerSurface(controller)
             }
             when (current) {
-                null, is C04CadViewerState.Opening -> LoadingOverlay(
+                null, C04CadViewerState.Idle, is C04CadViewerState.Opening -> LoadingOverlay(
                     text = stringResource(R.string.workspace_document_cad_preparing))
                 is C04CadViewerState.Rendering -> LoadingOverlay(
                     text = stringResource(R.string.workspace_document_cad_rendering))

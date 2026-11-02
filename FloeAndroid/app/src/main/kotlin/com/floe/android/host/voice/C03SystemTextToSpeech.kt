@@ -91,7 +91,7 @@ class C03SystemTextToSpeech(
             onAvailability(availability, null, emptyList())
             return@onMain
         }
-        engineName = runCatching { engine.defaultEngine }
+        engineName = runCatching { engine.defaultEngine }.getOrNull()
             ?.takeIf { it.isNotBlank() }
             ?: installed.firstOrNull()?.name
         voices = runCatching { engine.voices }.getOrNull()
@@ -224,8 +224,8 @@ class C03SystemTextToSpeech(
         }
         currentUtterance = utteranceID
         currentListener = listener
-        engine.speechRate = rate.coerceIn(0.5, 2.0).toFloat()
-        engine.pitch = pitchToMultiplier(pitchSemitones)
+        engine.setSpeechRate(rate.coerceIn(0.5, 2.0).toFloat())
+        engine.setPitch(pitchToMultiplier(pitchSemitones))
         val result = try {
             engine.speak(clean, TextToSpeech.QUEUE_FLUSH, null, utteranceID)
         } catch (_: Throwable) {

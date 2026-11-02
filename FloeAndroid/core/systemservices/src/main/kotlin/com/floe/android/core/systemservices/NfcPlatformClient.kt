@@ -249,7 +249,7 @@ class NfcPlatformClient(context: Context) : NfcService {
             when {
                 tnf == NdefRecord.TNF_EMPTY -> NfcRecordRow(
                     index = index,
-                    tnf = tnf,
+                    tnf = tnf.toInt(),
                     type = typeText,
                     id = idText,
                     kind = "empty",
@@ -263,7 +263,7 @@ class NfcPlatformClient(context: Context) : NfcService {
                     val text = decodeText(payload)
                     NfcRecordRow(
                         index = index,
-                        tnf = tnf,
+                        tnf = tnf.toInt(),
                         type = typeText,
                         id = idText,
                         kind = "text",
@@ -281,7 +281,7 @@ class NfcPlatformClient(context: Context) : NfcService {
                     val uri = record.toUri()
                     NfcRecordRow(
                         index = index,
-                        tnf = tnf,
+                        tnf = tnf.toInt(),
                         type = typeText,
                         id = idText,
                         kind = "uri",
@@ -300,7 +300,7 @@ class NfcPlatformClient(context: Context) : NfcService {
                     val mime = record.toMimeType()
                     NfcRecordRow(
                         index = index,
-                        tnf = tnf,
+                        tnf = tnf.toInt(),
                         type = typeText,
                         id = idText,
                         kind = "mime",
@@ -312,7 +312,7 @@ class NfcPlatformClient(context: Context) : NfcService {
                 }
                 else -> NfcRecordRow(
                     index = index,
-                    tnf = tnf,
+                    tnf = tnf.toInt(),
                     type = typeText,
                     id = idText,
                     kind = "unknown",
@@ -325,7 +325,7 @@ class NfcPlatformClient(context: Context) : NfcService {
         } catch (_: RuntimeException) {
             NfcRecordRow(
                 index = index,
-                tnf = tnf,
+                tnf = tnf.toInt(),
                 type = typeText,
                 id = idText,
                 kind = "malformed",

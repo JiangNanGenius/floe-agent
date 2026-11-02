@@ -61,7 +61,7 @@ internal class C05RDPInputLane(
         signal.close()
     }
 
-    private fun takeBatch(): List<C05RdpInput>? {
+    private suspend fun takeBatch(): List<C05RdpInput>? {
         while (true) {
             synchronized(lock) {
                 if (closed) return null

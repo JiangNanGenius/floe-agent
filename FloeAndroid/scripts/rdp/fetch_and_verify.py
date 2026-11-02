@@ -45,6 +45,8 @@ def fetch(name: str, source: str, expected: str, root: Path) -> Path:
 
 
 def main() -> int:
+    if sys.version_info < (3, 12):
+        raise SystemExit("Python 3.12 or newer is required for filtered archive extraction.")
     parser = argparse.ArgumentParser()
     parser.add_argument("--scratch", required=True, type=Path)
     parser.add_argument("--lock", type=Path, default=Path(__file__).with_name("runtime.lock.json"))

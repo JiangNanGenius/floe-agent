@@ -425,6 +425,7 @@ internal fun MediaEditorCover(
             },
             onAddText = { showPanel = null; showAddText = true },
             onDeleteLayer = { showDeleteLayer = true },
+            onLayerOperations = { showPanel = null; showLayerOperations = true },
         )
     }
     if (showVideoAssets) {
@@ -673,6 +674,7 @@ private fun MediaPanelSheet(
     onImport: () -> Unit,
     onAddText: () -> Unit,
     onDeleteLayer: () -> Unit,
+    onLayerOperations: () -> Unit,
 ) {
     val title = stringResource(
         when (panel) {
@@ -707,7 +709,7 @@ private fun MediaPanelSheet(
                 MediaPanel.LAYERS -> MediaLayersPanel(
                     controller = editor,
                     onAddText = onAddText,
-                    onLayerOperations = { showLayerOperations = true },
+                    onLayerOperations = onLayerOperations,
                     modifier = Modifier.weight(1f),
                 )
                 MediaPanel.PROPERTIES -> MediaPropertiesPanel(

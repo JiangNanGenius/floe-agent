@@ -6,6 +6,14 @@
 package com.floe.android.host.rdp
 
 import com.floe.android.host.remote.C05RemoteOwner
+import com.floe.android.host.remote.requiredString
+import com.floe.android.host.remote.string
+import com.floe.android.host.remote.intValue
+import com.floe.android.host.remote.longValue
+import com.floe.android.host.remote.boolValue
+import com.floe.android.host.remote.objectValue
+import com.floe.android.host.remote.arrayValue
+
 import kotlinx.serialization.json.JsonObject
 
 internal const val C05_RDP_VERSION = 17
@@ -159,95 +167,95 @@ internal sealed interface C05RdpInput {
     data class Text(val text: String, val submit: Boolean) : C05RdpInput
 }
 
-internal fun parseRdpCredentialRef(object: JsonObject): C05RdpCredentialRef =
+internal fun parseRdpCredentialRef(obj: JsonObject): C05RdpCredentialRef =
     C05RdpCredentialRef(
-        keychainAccount = object.requiredString("keychainAccount"),
-        synchronizable = object.boolValue("synchronizable"),
+        keychainAccount = obj.requiredString("keychainAccount"),
+        synchronizable = obj.boolValue("synchronizable"),
     )
 
-internal fun parseRdpEndpoint(object: JsonObject): C05RdpEndpoint =
+internal fun parseRdpEndpoint(obj: JsonObject): C05RdpEndpoint =
     C05RdpEndpoint(
-        id = object.requiredString("id"),
-        displayName = object.string("displayName") ?: "RDP",
-        host = object.string("host") ?: "",
-        port = object.intValue("port") ?: 3389,
-        username = object.string("username") ?: "",
-        domain = object.string("domain") ?: "",
-        hasPassword = object.boolValue("hasPassword"),
-        approvedFingerprintSHA256 = object.string("approvedFingerprintSHA256"),
-        passwordRef = object.objectValue("passwordRef")?.let(::parseRdpCredentialRef),
+        id = obj.requiredString("id"),
+        displayName = obj.string("displayName") ?: "RDP",
+        host = obj.string("host") ?: "",
+        port = obj.intValue("port") ?: 3389,
+        username = obj.string("username") ?: "",
+        domain = obj.string("domain") ?: "",
+        hasPassword = obj.boolValue("hasPassword"),
+        approvedFingerprintSHA256 = obj.string("approvedFingerprintSHA256"),
+        passwordRef = obj.objectValue("passwordRef")?.let(::parseRdpCredentialRef),
     )
 
-internal fun parseRdpHostSummary(object: JsonObject): C05RdpHostSummary =
+internal fun parseRdpHostSummary(obj: JsonObject): C05RdpHostSummary =
     C05RdpHostSummary(
-        id = object.requiredString("id"),
-        displayName = object.string("displayName") ?: "RDP",
-        deviceKind = object.string("deviceKind") ?: "unspecified",
-        isRemoteExecutionEnvironment = object.boolValue("isRemoteExecutionEnvironment"),
-        endpointCount = object.intValue("endpointCount") ?: 0,
+        id = obj.requiredString("id"),
+        displayName = obj.string("displayName") ?: "RDP",
+        deviceKind = obj.string("deviceKind") ?: "unspecified",
+        isRemoteExecutionEnvironment = obj.boolValue("isRemoteExecutionEnvironment"),
+        endpointCount = obj.intValue("endpointCount") ?: 0,
     )
 
-internal fun parseRdpHostDetail(object: JsonObject): C05RdpHostDetail =
+internal fun parseRdpHostDetail(obj: JsonObject): C05RdpHostDetail =
     C05RdpHostDetail(
         summary = parseRdpHostSummary(
-            object.objectValue("summary")
+            obj.objectValue("summary")
                 ?: throw IllegalArgumentException("missingSummary"),
         ),
-        endpoints = object.arrayValue("endpoints").mapNotNull { element ->
+        endpoints = obj.arrayValue("endpoints").mapNotNull { element ->
             (element as? JsonObject)?.let(::parseRdpEndpoint)
         },
     )
 
-internal fun parseRdpFailure(object: JsonObject): C05RdpFailure =
+internal fun parseRdpFailure(obj: JsonObject): C05RdpFailure =
     C05RdpFailure(
-        code = object.string("code") ?: "unknown",
-        message = object.string("message") ?: "",
-        retryable = object.boolValue("retryable"),
-        category = object.string("category") ?: "unknown",
-        stage = object.string("stage") ?: "unknown",
-        fingerprintSHA256 = object.string("fingerprintSHA256"),
+        code = obj.string("code") ?: "unknown",
+        message = obj.string("message") ?: "",
+        retryable = obj.boolValue("retryable"),
+        category = obj.string("category") ?: "unknown",
+        stage = obj.string("stage") ?: "unknown",
+        fingerprintSHA256 = obj.string("fingerprintSHA256"),
     )
 
-internal fun parseRdpChallenge(object: JsonObject): C05RdpCertificatePrompt =
+internal fun parseRdpChallenge(obj: JsonObject): C05RdpCertificatePrompt =
     C05RdpCertificatePrompt(
-        profileID = object.requiredString("profileID"),
-        endpointID = object.requiredString("endpointID"),
-        host = object.string("host") ?: "",
-        port = object.intValue("port") ?: 3389,
-        fingerprintSHA256 = object.requiredString("fingerprintSHA256"),
-        subject = object.string("subject") ?: "",
-        kind = object.string("kind") ?: "firstUse",
-        reason = object.string("reason") ?: "",
-        notBefore = object.string("notBefore"),
-        notAfter = object.string("notAfter"),
-        expiresAt = object.string("expiresAt") ?: "",
+        profileID = obj.requiredString("profileID"),
+        endpointID = obj.requiredString("endpointID"),
+        host = obj.string("host") ?: "",
+        port = obj.intValue("port") ?: 3389,
+        fingerprintSHA256 = obj.requiredString("fingerprintSHA256"),
+        subject = obj.string("subject") ?: "",
+        kind = obj.string("kind") ?: "firstUse",
+        reason = obj.string("reason") ?: "",
+        notBefore = obj.string("notBefore"),
+        notAfter = obj.string("notAfter"),
+        expiresAt = obj.string("expiresAt") ?: "",
     )
 
-internal fun parseRdpSession(object: JsonObject): C05RdpSession =
+internal fun parseRdpSession(obj: JsonObject): C05RdpSession =
     C05RdpSession(
-        id = object.requiredString("id"),
-        profileID = object.requiredString("profileID"),
-        endpointID = object.requiredString("endpointID"),
-        displayName = object.string("displayName") ?: "RDP",
-        host = object.string("host") ?: "",
-        port = object.intValue("port") ?: 3389,
-        username = object.string("username") ?: "",
-        domain = object.string("domain") ?: "",
-        state = object.string("state") ?: "unknown",
-        width = object.intValue("width") ?: 0,
-        height = object.intValue("height") ?: 0,
-        frameRevision = object.longValue("frameRevision") ?: 0L,
-        frameBytes = object.intValue("frameBytes") ?: 0,
-        approvedFingerprintSHA256 = object.string("approvedFingerprintSHA256"),
-        certificateChallenge = object.objectValue("certificateChallenge")?.let(::parseRdpChallenge),
-        createdAt = object.string("createdAt") ?: "",
-        lastActivityAt = object.string("lastActivityAt") ?: "",
-        failure = object.objectValue("failure")?.let(::parseRdpFailure),
+        id = obj.requiredString("id"),
+        profileID = obj.requiredString("profileID"),
+        endpointID = obj.requiredString("endpointID"),
+        displayName = obj.string("displayName") ?: "RDP",
+        host = obj.string("host") ?: "",
+        port = obj.intValue("port") ?: 3389,
+        username = obj.string("username") ?: "",
+        domain = obj.string("domain") ?: "",
+        state = obj.string("state") ?: "unknown",
+        width = obj.intValue("width") ?: 0,
+        height = obj.intValue("height") ?: 0,
+        frameRevision = obj.longValue("frameRevision") ?: 0L,
+        frameBytes = obj.intValue("frameBytes") ?: 0,
+        approvedFingerprintSHA256 = obj.string("approvedFingerprintSHA256"),
+        certificateChallenge = obj.objectValue("certificateChallenge")?.let(::parseRdpChallenge),
+        createdAt = obj.string("createdAt") ?: "",
+        lastActivityAt = obj.string("lastActivityAt") ?: "",
+        failure = obj.objectValue("failure")?.let(::parseRdpFailure),
     )
 
-internal fun parseRdpCloseResult(object: JsonObject): C05RdpCloseResult =
+internal fun parseRdpCloseResult(obj: JsonObject): C05RdpCloseResult =
     C05RdpCloseResult(
-        sessionID = object.string("sessionID") ?: "",
-        closed = object.boolValue("closed"),
-        complete = object.boolValue("complete"),
+        sessionID = obj.string("sessionID") ?: "",
+        closed = obj.boolValue("closed"),
+        complete = obj.boolValue("complete"),
     )

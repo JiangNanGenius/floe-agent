@@ -163,7 +163,7 @@ object CalendarPresentation {
     fun reminderLabel(minutes: Int?): String? = when (minutes) {
         null -> null
         0 -> "at due time"
-        1..59 -> "$minutes min before"
+        in 1..59 -> "$minutes min before"
         60 -> "1 hour before"
         else -> if (minutes % 1440 == 0) "${minutes / 1440} day before" else "$minutes min before"
     }

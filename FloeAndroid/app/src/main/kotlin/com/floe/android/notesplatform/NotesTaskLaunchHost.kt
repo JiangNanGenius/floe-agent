@@ -38,13 +38,15 @@ internal class NotesTaskLaunchHost(
     private val creation = Mutex()
     private val ready = ConcurrentHashMap<String, Long>()
 
-    override fun isAvailable(): Boolean = host.nativeRootEpoch() > 0L
+    override fun isAvailable(): Boolean = (host.nativeRootEpoch() ?: 0L) > 0L
 
     override suspend fun createTask(request: NotesTaskLaunchRequest): NotesTaskLaunchOutcome =
         withContext(host.ioDispatcher) {
+            val epoch = host.nativeRootEpoch()?.takeIf { it > 0L }
+                ?: return@withContext NotesTaskLaunchOutcome.Failed(
+                    NotesPortFailure(NotesPortFailure.UNAVAILABLE))
             if (!creation.tryLock()) return@withContext NotesTaskLaunchOutcome.Failed(
                 NotesPortFailure(NotesPortFailure.BUSY))
-            val epoch = host.nativeRootEpoch()
             val receiptID = UUID.randomUUID().toString()
             var conversationID: String? = null
             var granted = false
@@ -58,7 +60,7 @@ internal class NotesTaskLaunchHost(
                 if (document.revision != request.documentRevision) throw NotesException("conflict")
                 for (resource in request.resources) {
                     val metadata = notes.service.resourceMetadata(resource.resourceID)
-                    if (metadata.sha256.lowercase() != resource.sha256.lowercase() ||
+                    if (metadata.hash.lowercase() != resource.sha256.lowercase() ||
                         metadata.byteCount != resource.byteCount || metadata.fileName != resource.fileName ||
                         metadata.mediaType != resource.mediaType) throw NotesException("conflict")
                 }

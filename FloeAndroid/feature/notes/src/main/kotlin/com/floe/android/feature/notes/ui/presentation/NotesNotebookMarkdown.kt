@@ -14,7 +14,7 @@ import java.util.Locale
  * same meaning in English.
  */
 public data class NotesMarkdownLabels(
-    public val pageHeadingFormat: String = "Page %1$d",
+    public val pageHeadingFormat: String = "Page %1\$d",
     public val emptyPage: String = "No text content on this page.",
     public val imageOmitted: String =
         "Image not included in Markdown. Use PDF, Page Image, or the editable note to keep it.",

@@ -879,10 +879,10 @@ class IntegrationsHostController internal constructor(
             val state: com.floe.android.feature.integrations.CatalogCardStateUi = when {
                 card.offer == "incompatible" -> com.floe.android.feature.integrations
                     .CatalogCardStateUi.Unavailable(
-                        actionString(R.string.plugins_requires_newer_app))
+                        actionString(com.floe.android.feature.integrations.R.string.plugins_requires_newer_app))
                 card.offer != "installable" -> com.floe.android.feature.integrations
                     .CatalogCardStateUi.Unavailable(
-                        actionString(R.string.plugins_catalog_unavailable))
+                        actionString(com.floe.android.feature.integrations.R.string.plugins_catalog_unavailable))
                 row == null -> com.floe.android.feature.integrations
                     .CatalogCardStateUi.NotInstalled
                 newer -> com.floe.android.feature.integrations

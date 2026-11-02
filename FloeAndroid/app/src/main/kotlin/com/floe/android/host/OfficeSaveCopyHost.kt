@@ -350,7 +350,7 @@ internal class OfficeSaveCopyHandoff(
                 runCatching {
                     journal.recordFlush(
                         candidateId,
-                        receipt.workingCopySha256,
+                        requireNotNull(receipt.workingCopySha256),
                         receipt.workingCopyBytes,
                     )
                 }.onFailure { diagnostic = it }

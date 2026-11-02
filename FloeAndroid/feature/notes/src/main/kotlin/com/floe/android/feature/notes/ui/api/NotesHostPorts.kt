@@ -353,7 +353,7 @@ public class NotesPageImageExportRequest(
  * same meaning in English.
  */
 public data class NotesDocxLabels(
-    public val pageHeadingFormat: String = "Page %1$d",
+    public val pageHeadingFormat: String = "Page %1\$d",
     public val emptyPage: String = "No text content on this page.",
     public val imageAltText: String = "Note image",
     public val pageVisualAltText: String = "Page visual",

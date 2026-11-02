@@ -973,7 +973,7 @@ class CaptureHostController internal constructor(
         } else {
             CaptureLimits.MAX_DURATION_MILLIS
         }
-        val duration = durationMinutes.coerceIn(1L, maxDuration / 60_000L) * 60_000L
+        val duration = durationMinutes.toLong().coerceIn(1L, maxDuration / 60_000L) * 60_000L
         return try {
             CaptureConfig(
                 owner = owner,

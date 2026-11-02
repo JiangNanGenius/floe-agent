@@ -28,7 +28,6 @@ import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.intOrNull
 import kotlinx.serialization.json.longOrNull
-import kotlinx.serialization.json.parseToJsonElement
 
 internal const val C02_CONTINUITY_VERSION = 21
 internal const val C02_CONTINUITY_SCHEMA = "floe.continuity/21"

@@ -7,6 +7,7 @@ package com.floe.android.host.remote
 
 import com.floe.android.bridge.SwiftCore
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.put
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonNull
@@ -287,149 +288,149 @@ internal fun JsonObject.arrayValue(key: String): JsonArray =
 internal fun JsonElement.asObjectOrNull(): JsonObject? = this as? JsonObject
 
 internal fun JsonObject.parseCredential(key: String): C05CredentialRef? {
-    val object = objectValue(key) ?: return null
+    val obj = objectValue(key) ?: return null
     return C05CredentialRef(
-        keychainAccount = object.requiredString("keychainAccount"),
-        synchronizable = object.boolValue("synchronizable"),
+        keychainAccount = obj.requiredString("keychainAccount"),
+        synchronizable = obj.boolValue("synchronizable"),
     )
 }
 
-internal fun parseAuth(object: JsonObject): C05Auth = C05Auth(
-    kind = object.requiredString("kind"),
-    keyType = object.string("keyType"),
-    credential = object.parseCredential("credential"),
+internal fun parseAuth(obj: JsonObject): C05Auth = C05Auth(
+    kind = obj.requiredString("kind"),
+    keyType = obj.string("keyType"),
+    credential = obj.parseCredential("credential"),
 )
 
-internal fun parseChallenge(object: JsonObject): C05HostKeyChallenge = C05HostKeyChallenge(
-    id = object.requiredString("id"),
-    profileID = object.requiredString("profileID"),
-    address = object.requiredString("address"),
-    port = object.intValue("port") ?: 22,
-    keyType = object.requiredString("keyType"),
-    fingerprintSHA256 = object.requiredString("fingerprintSHA256"),
-    expectedFingerprintSHA256 = object.string("expectedFingerprintSHA256"),
-    kind = object.string("kind") ?: "firstUse",
-    createdAt = object.string("createdAt") ?: "",
-    expiresAt = object.string("expiresAt") ?: "",
+internal fun parseChallenge(obj: JsonObject): C05HostKeyChallenge = C05HostKeyChallenge(
+    id = obj.requiredString("id"),
+    profileID = obj.requiredString("profileID"),
+    address = obj.requiredString("address"),
+    port = obj.intValue("port") ?: 22,
+    keyType = obj.requiredString("keyType"),
+    fingerprintSHA256 = obj.requiredString("fingerprintSHA256"),
+    expectedFingerprintSHA256 = obj.string("expectedFingerprintSHA256"),
+    kind = obj.string("kind") ?: "firstUse",
+    createdAt = obj.string("createdAt") ?: "",
+    expiresAt = obj.string("expiresAt") ?: "",
 )
 
-internal fun parseSummary(object: JsonObject): C05HostSummary {
-    val authObject = object.objectValue("auth") ?: JsonObject(emptyMap())
+internal fun parseSummary(obj: JsonObject): C05HostSummary {
+    val authObject = obj.objectValue("auth") ?: JsonObject(emptyMap())
     return C05HostSummary(
-        id = object.requiredString("id"),
-        displayName = object.requiredString("displayName"),
+        id = obj.requiredString("id"),
+        displayName = obj.requiredString("displayName"),
         // VNC-only profiles deliberately have no SSH address/user/port.
-        address = object.string("address") ?: "",
-        port = object.intValue("port") ?: 0,
-        user = object.string("user") ?: "",
+        address = obj.string("address") ?: "",
+        port = obj.intValue("port") ?: 0,
+        user = obj.string("user") ?: "",
         auth = parseAuth(authObject),
-        deviceKind = object.string("deviceKind") ?: "unspecified",
-        isRemoteExecutionEnvironment = object.boolValue("isRemoteExecutionEnvironment"),
-        hostKeyPolicy = object.string("hostKeyPolicy") ?: "trustOnFirstUse",
-        pinnedFingerprint = object.string("pinnedFingerprintSHA256"),
-        allowsLegacyAlgorithms = object.boolValue("allowsLegacyAlgorithms"),
-        jumpHopCount = object.intValue("jumpHopCount") ?: 0,
-        vncEndpointCount = object.intValue("vncEndpointCount") ?: 0,
-        auxiliaryConnectionCount = object.intValue("auxiliaryConnectionCount") ?: 0,
+        deviceKind = obj.string("deviceKind") ?: "unspecified",
+        isRemoteExecutionEnvironment = obj.boolValue("isRemoteExecutionEnvironment"),
+        hostKeyPolicy = obj.string("hostKeyPolicy") ?: "trustOnFirstUse",
+        pinnedFingerprint = obj.string("pinnedFingerprintSHA256"),
+        allowsLegacyAlgorithms = obj.boolValue("allowsLegacyAlgorithms"),
+        jumpHopCount = obj.intValue("jumpHopCount") ?: 0,
+        vncEndpointCount = obj.intValue("vncEndpointCount") ?: 0,
+        auxiliaryConnectionCount = obj.intValue("auxiliaryConnectionCount") ?: 0,
     )
 }
 
-internal fun parseJump(object: JsonObject): C05JumpHop = C05JumpHop(
-    address = object.requiredString("address"),
-    port = object.intValue("port") ?: 22,
-    user = object.requiredString("user"),
-    auth = parseAuth(object.objectValue("auth") ?: JsonObject(emptyMap())),
+internal fun parseJump(obj: JsonObject): C05JumpHop = C05JumpHop(
+    address = obj.requiredString("address"),
+    port = obj.intValue("port") ?: 22,
+    user = obj.requiredString("user"),
+    auth = parseAuth(obj.objectValue("auth") ?: JsonObject(emptyMap())),
 )
 
-internal fun parseVnc(object: JsonObject): C05VncEndpoint = C05VncEndpoint(
-    id = object.requiredString("id"),
-    displayName = object.string("displayName") ?: "VNC",
-    transport = object.string("transport") ?: "sshTunnel",
-    host = object.string("host") ?: "localhost",
-    port = object.intValue("port") ?: 5900,
-    passwordRef = object.parseCredential("passwordRef"),
+internal fun parseVnc(obj: JsonObject): C05VncEndpoint = C05VncEndpoint(
+    id = obj.requiredString("id"),
+    displayName = obj.string("displayName") ?: "VNC",
+    transport = obj.string("transport") ?: "sshTunnel",
+    host = obj.string("host") ?: "localhost",
+    port = obj.intValue("port") ?: 5900,
+    passwordRef = obj.parseCredential("passwordRef"),
 )
 
-internal fun parseAux(object: JsonObject): C05AuxConnection = C05AuxConnection(
-    id = object.requiredString("id"),
-    displayName = object.string("displayName") ?: "",
-    kind = object.string("kind") ?: "tcp",
-    host = object.string("host"),
-    port = object.intValue("port"),
-    bluetoothPeripheralID = object.string("bluetoothPeripheralID"),
-    bluetoothServiceUUID = object.string("bluetoothServiceUUID"),
-    bluetoothWriteCharacteristicUUID = object.string("bluetoothWriteCharacteristicUUID"),
-    bluetoothNotifyCharacteristicUUID = object.string("bluetoothNotifyCharacteristicUUID"),
+internal fun parseAux(obj: JsonObject): C05AuxConnection = C05AuxConnection(
+    id = obj.requiredString("id"),
+    displayName = obj.string("displayName") ?: "",
+    kind = obj.string("kind") ?: "tcp",
+    host = obj.string("host"),
+    port = obj.intValue("port"),
+    bluetoothPeripheralID = obj.string("bluetoothPeripheralID"),
+    bluetoothServiceUUID = obj.string("bluetoothServiceUUID"),
+    bluetoothWriteCharacteristicUUID = obj.string("bluetoothWriteCharacteristicUUID"),
+    bluetoothNotifyCharacteristicUUID = obj.string("bluetoothNotifyCharacteristicUUID"),
 )
 
-internal fun parseDetail(object: JsonObject): C05HostDetail = C05HostDetail(
-    summary = parseSummary(object),
-    jumpChain = object.arrayValue("jumpChain").mapNotNull { (it as? JsonObject)?.let(::parseJump) },
-    vncEndpoints = object.arrayValue("vncEndpoints").mapNotNull { (it as? JsonObject)?.let(::parseVnc) },
-    auxiliaryConnections = object.arrayValue("auxiliaryConnections").mapNotNull {
+internal fun parseDetail(obj: JsonObject): C05HostDetail = C05HostDetail(
+    summary = parseSummary(obj),
+    jumpChain = obj.arrayValue("jumpChain").mapNotNull { (it as? JsonObject)?.let(::parseJump) },
+    vncEndpoints = obj.arrayValue("vncEndpoints").mapNotNull { (it as? JsonObject)?.let(::parseVnc) },
+    auxiliaryConnections = obj.arrayValue("auxiliaryConnections").mapNotNull {
         (it as? JsonObject)?.let(::parseAux)
     },
 )
 
-internal fun parseSession(object: JsonObject): C05Session = C05Session(
-    id = object.requiredString("id"),
-    profileID = object.requiredString("profileID"),
-    displayName = object.string("displayName") ?: "",
-    address = object.string("address") ?: "",
-    port = object.intValue("port") ?: 22,
-    user = object.string("user") ?: "",
-    state = object.string("state") ?: "unknown",
-    transportConnected = object.boolValue("transportConnected"),
-    createdAt = object.string("createdAt") ?: "",
-    lastActivityAt = object.string("lastActivityAt") ?: "",
-    ptyCount = object.intValue("ptyCount") ?: 0,
-    execCount = object.intValue("execCount") ?: 0,
-    tunnelCount = object.intValue("tunnelCount") ?: 0,
+internal fun parseSession(obj: JsonObject): C05Session = C05Session(
+    id = obj.requiredString("id"),
+    profileID = obj.requiredString("profileID"),
+    displayName = obj.string("displayName") ?: "",
+    address = obj.string("address") ?: "",
+    port = obj.intValue("port") ?: 22,
+    user = obj.string("user") ?: "",
+    state = obj.string("state") ?: "unknown",
+    transportConnected = obj.boolValue("transportConnected"),
+    createdAt = obj.string("createdAt") ?: "",
+    lastActivityAt = obj.string("lastActivityAt") ?: "",
+    ptyCount = obj.intValue("ptyCount") ?: 0,
+    execCount = obj.intValue("execCount") ?: 0,
+    tunnelCount = obj.intValue("tunnelCount") ?: 0,
 )
 
-internal fun parsePty(object: JsonObject): C05Pty = C05Pty(
-    id = object.requiredString("id"),
-    sessionID = object.requiredString("sessionID"),
-    state = object.string("state") ?: "unknown",
-    columns = object.intValue("columns") ?: 80,
-    rows = object.intValue("rows") ?: 24,
-    totalBytes = object.longValue("totalBytes") ?: 0L,
-    rolledOverBytes = object.longValue("rolledOverBytes") ?: 0L,
+internal fun parsePty(obj: JsonObject): C05Pty = C05Pty(
+    id = obj.requiredString("id"),
+    sessionID = obj.requiredString("sessionID"),
+    state = obj.string("state") ?: "unknown",
+    columns = obj.intValue("columns") ?: 80,
+    rows = obj.intValue("rows") ?: 24,
+    totalBytes = obj.longValue("totalBytes") ?: 0L,
+    rolledOverBytes = obj.longValue("rolledOverBytes") ?: 0L,
 )
 
-internal fun parseExec(object: JsonObject): C05Exec = C05Exec(
-    id = object.requiredString("id"),
-    sessionID = object.requiredString("sessionID"),
-    state = object.string("state") ?: "unknown",
-    stdoutBytes = object.longValue("stdoutBytes") ?: 0L,
-    stderrBytes = object.longValue("stderrBytes") ?: 0L,
-    rolledOverBytes = object.longValue("rolledOverBytes") ?: 0L,
-    exitCode = object.intValue("exitCode"),
-    remoteOutcomeUnknown = object.boolValue("remoteOutcomeUnknown"),
+internal fun parseExec(obj: JsonObject): C05Exec = C05Exec(
+    id = obj.requiredString("id"),
+    sessionID = obj.requiredString("sessionID"),
+    state = obj.string("state") ?: "unknown",
+    stdoutBytes = obj.longValue("stdoutBytes") ?: 0L,
+    stderrBytes = obj.longValue("stderrBytes") ?: 0L,
+    rolledOverBytes = obj.longValue("rolledOverBytes") ?: 0L,
+    exitCode = obj.intValue("exitCode"),
+    remoteOutcomeUnknown = obj.boolValue("remoteOutcomeUnknown"),
 )
 
-internal fun parseTunnel(object: JsonObject): C05Tunnel = C05Tunnel(
-    id = object.requiredString("id"),
-    sessionID = object.requiredString("sessionID"),
-    targetHost = object.requiredString("targetHost"),
-    targetPort = object.intValue("targetPort") ?: 0,
-    localHost = object.string("localHost") ?: "127.0.0.1",
-    localPort = object.intValue("localPort"),
-    state = object.string("state") ?: "unknown",
-    acceptedConnections = object.intValue("acceptedConnections") ?: 0,
-    activeConnections = object.intValue("activeConnections") ?: 0,
-    bytesToRemote = object.longValue("bytesToRemote") ?: 0L,
-    bytesFromRemote = object.longValue("bytesFromRemote") ?: 0L,
-    lastErrorCode = object.string("lastErrorCode"),
+internal fun parseTunnel(obj: JsonObject): C05Tunnel = C05Tunnel(
+    id = obj.requiredString("id"),
+    sessionID = obj.requiredString("sessionID"),
+    targetHost = obj.requiredString("targetHost"),
+    targetPort = obj.intValue("targetPort") ?: 0,
+    localHost = obj.string("localHost") ?: "127.0.0.1",
+    localPort = obj.intValue("localPort"),
+    state = obj.string("state") ?: "unknown",
+    acceptedConnections = obj.intValue("acceptedConnections") ?: 0,
+    activeConnections = obj.intValue("activeConnections") ?: 0,
+    bytesToRemote = obj.longValue("bytesToRemote") ?: 0L,
+    bytesFromRemote = obj.longValue("bytesFromRemote") ?: 0L,
+    lastErrorCode = obj.string("lastErrorCode"),
 )
 
-internal fun parseSessionDetail(object: JsonObject): C05SessionDetail {
-    val session = parseSession(object.objectValue("session") ?: JsonObject(emptyMap()))
+internal fun parseSessionDetail(obj: JsonObject): C05SessionDetail {
+    val session = parseSession(obj.objectValue("session") ?: JsonObject(emptyMap()))
     return C05SessionDetail(
         session = session,
-        ptys = object.arrayValue("ptys").mapNotNull { (it as? JsonObject)?.let(::parsePty) },
-        execs = object.arrayValue("execs").mapNotNull { (it as? JsonObject)?.let(::parseExec) },
-        tunnels = object.arrayValue("tunnels").mapNotNull { (it as? JsonObject)?.let(::parseTunnel) },
+        ptys = obj.arrayValue("ptys").mapNotNull { (it as? JsonObject)?.let(::parsePty) },
+        execs = obj.arrayValue("execs").mapNotNull { (it as? JsonObject)?.let(::parseExec) },
+        tunnels = obj.arrayValue("tunnels").mapNotNull { (it as? JsonObject)?.let(::parseTunnel) },
     )
 }
 

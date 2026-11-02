@@ -22,7 +22,8 @@
     "TcpProxyServer/UdpProxyServer close their selector/channel and provide a real stopAndJoin proof.",
     "ProxyServerForwarder gained releaseAndJoin; Tcp/Udp forwarders implement it.",
     "TcpVATunnel/UdpVATunnel use the upstream base VirtualGateway for direct forwarding instead of NetBareVirtualGateway injection policy.",
-    "SessionTunnelFlow javadoc/import no longer references the excluded NetBareConfig."
+    "SessionTunnelFlow javadoc/import no longer references the excluded NetBareConfig.",
+    "Merged UDP selector wake/close and existing tunnel cleanup into the single stopServer override (integrated Java compilation correction)."
   ],
   "files": [
     {
@@ -166,8 +167,8 @@
     {
       "vendoredPath": "src/main/java/com/github/megatronking/netbare/proxy/UdpProxyServer.java",
       "upstreamPath": "netbare-core/src/main/java/com/github/megatronking/netbare/proxy/UdpProxyServer.java",
-      "sha256": "1bcd148af50db1bd09b8a873e7ad41dcee5cdea69a6f1e627b90ab8128b3d184",
-      "bytes": 6651
+      "sha256": "aa536357ddf3dbc1828e871b937ec8130ed51f1de3acdab3266c1eeca4ccc466",
+      "bytes": 6655
     },
     {
       "vendoredPath": "src/main/java/com/github/megatronking/netbare/proxy/UdpProxyServerForwarder.java",

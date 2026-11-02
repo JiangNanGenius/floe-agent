@@ -133,11 +133,11 @@ internal class C05DesktopAssistSettingsController(
         label: String,
         kind: String,
         hostID: String?,
-        secret: String,
+        secret: String?,
     ) {
         val editor = _state.value.editor?.takeIf { it.editorID == editorID } ?: return
         val trimmed = label.trim()
-        val bytes = secret.toByteArray(Charsets.UTF_8)
+        val bytes = secret.orEmpty().toByteArray(Charsets.UTF_8)
         val keepExisting = editor.cardID != null && editor.hasExistingSecret && bytes.isEmpty()
         if (trimmed.isEmpty() || trimmed.length > 200 ||
             kind !in DesktopAssistKinds.all ||
@@ -160,7 +160,7 @@ internal class C05DesktopAssistSettingsController(
             return
         }
         val cardID = editor.cardID
-        val secretText = secret
+        val secretText = secret.orEmpty()
         bytes.fill(0)
         val accepted = launchOperation {
             _state.update { it.copy(saving = true, notice = null) }

@@ -183,4 +183,5 @@
     <string name="remote_error_vnc_lan_settings">本地网络访问已关闭。请在系统设置中开启后重试。</string>
     <string name="remote_vnc_host_hint">直接连接 VNC 服务器，无需 SSH 身份。</string>
     <string name="remote_vnc_ssh_hint">流量将通过此主机的 SSH 连接转发。</string>
+    <string name="open_sidebar">打开侧栏</string>
 </resources>

@@ -143,7 +143,7 @@ internal object C04CadResourceResolver {
                 issues = listOf(C04CadResourceIssue("", "preflightTooLarge")),
             )
         }
-        val jsonBytes = if (isGlb) glbJsonChunk(bytes) else bytes
+        val jsonBytes = (if (isGlb) glbJsonChunk(bytes) else bytes)
             ?: return C04CadResolution(
                 issues = listOf(C04CadResourceIssue("", "invalidGlb")),
                 invalidMainBytes = true,
@@ -219,7 +219,7 @@ internal object C04CadResourceResolver {
         val chunkLength = readUInt32LE(bytes, 12)
         val chunkType = readUInt32LE(bytes, 16)
         if (chunkType != 0x4E4F534Au) return null // JSON
-        if (chunkLength > Int.MAX_VALUE.toUInt() ||
+        if (chunkLength > 0x7fffffffu ||
             20L + chunkLength.toLong() > bytes.size
         ) return null
         return bytes.copyOfRange(20, 20 + chunkLength.toInt())

@@ -101,6 +101,10 @@ class MediaEditorController internal constructor(
      * editor can show the real progress/error without a fake apply state. */
     var transcriptionBusy by mutableStateOf(false)
         private set
+    var layerOperation by mutableStateOf(LayerOperationState())
+        private set
+    var gallerySave by mutableStateOf(GallerySaveState())
+        private set
     var failure: MediaFailure? by mutableStateOf(null)
         private set
     var notice: MediaNotice? by mutableStateOf(null)
@@ -592,7 +596,7 @@ class MediaEditorController internal constructor(
                 }
             }
         }
-        return Unit
+        return true
     }
 
     private fun selectAllSelection(): kotlinx.serialization.json.JsonObject = buildJsonObject {

@@ -3152,7 +3152,7 @@ class ConversationHostController internal constructor(
         if (code == "persistenceUnavailable" && !entry.isTemporary) {
             val runID = entry.holder.snapshot.value?.selectedRunId
             if (!runID.isNullOrBlank()) {
-                taskContinuity.noteRunStorageFailure(
+                host.taskContinuity.noteRunStorageFailure(
                     entry.holder.conversationId, runID)
             }
         }
@@ -6148,7 +6148,7 @@ class ConversationHostController internal constructor(
         val sink = object : C03DictationSink {
             override fun onPartial(text: String) {
                 if (holders[session.conversationId]?.holder?.session == session) {
-                    entry.holder.setVoiceListening(true)
+                    entry.holder.updateVoiceListening(true)
                 }
             }
 
@@ -6160,17 +6160,17 @@ class ConversationHostController internal constructor(
 
             override fun onFailure(failure: C03VoiceFailure) {
                 if (holders[session.conversationId]?.holder?.session == session) {
-                    entry.holder.setVoiceListening(false)
+                    entry.holder.updateVoiceListening(false)
                 }
             }
 
             override fun onCancelled() {
                 if (holders[session.conversationId]?.holder?.session == session) {
-                    entry.holder.setVoiceListening(false)
+                    entry.holder.updateVoiceListening(false)
                 }
             }
         }
-        entry.holder.setVoiceListening(true)
+        entry.holder.updateVoiceListening(true)
         val outcome = host.voiceOrNull()?.startDictation(
             C03VoiceOwner(
                 conversationID = session.conversationId,
@@ -6183,7 +6183,7 @@ class ConversationHostController internal constructor(
         if (outcome != C03StartOutcome.ACCEPTED &&
             outcome != C03StartOutcome.PERMISSION_REQUIRED
         ) {
-            entry.holder.setVoiceListening(false)
+            entry.holder.updateVoiceListening(false)
         }
         return outcome == C03StartOutcome.ACCEPTED ||
             outcome == C03StartOutcome.PERMISSION_REQUIRED
@@ -6193,7 +6193,7 @@ class ConversationHostController internal constructor(
         val entry = holders[session.conversationId] ?: return
         if (entry.holder.session != session) return
         host.voiceOrNull()?.stopDictation()
-        entry.holder.setVoiceListening(false)
+        entry.holder.updateVoiceListening(false)
     }
 
     /**

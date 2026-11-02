@@ -26,7 +26,7 @@ if [[ ! -f "$source_dir/CMakeLists.txt" || ! -f "$source_dir/LICENSE" ]]; then
   echo "not a FreeRDP source tree: $source_dir" >&2
   exit 2
 fi
-if [[ "$(tr -d '[:space:]' < "$source_dir/.source_tag" 2>/dev/null)" != "3.31.1" ]]; then
+if [[ "$(tr -d '[:space:]' < "$source_dir/.source_version" 2>/dev/null)" != "3.31.1" ]]; then
   echo "FreeRDP source is not the pinned 3.31.1 release" >&2
   exit 2
 fi
@@ -82,6 +82,7 @@ cmake -S "$source_dir" -B "$build" -G Ninja \
   -DWITH_OPENSSL=ON \
   -DWITH_MBEDTLS=OFF \
   -DOPENSSL_ROOT_DIR="$openssl_prefix" \
+  -DOPENSSL_INCLUDE_DIR="$openssl_prefix/include" \
   -DOPENSSL_USE_STATIC_LIBS=ON \
   -DOPENSSL_CRYPTO_LIBRARY="$openssl_prefix/lib/libcrypto.a" \
   -DOPENSSL_SSL_LIBRARY="$openssl_prefix/lib/libssl.a" \

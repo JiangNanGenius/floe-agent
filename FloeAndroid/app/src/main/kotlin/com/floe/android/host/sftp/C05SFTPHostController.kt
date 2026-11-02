@@ -309,7 +309,7 @@ internal class C05SFTPHostController(
 
     fun approveChallenge(accept: Boolean, replaceChanged: Boolean) {
         val challenge = _state.value.challenge ?: return
-        val profileID = _state.value.selectedProfileID ?: challenge.profileID
+        val profileID = _state.value.selectedProfileID ?: return
         val epoch = currentNativeEpoch()?.takeIf { it > 0 } ?: return
         val token = nextToken()
         _state.update { it.copy(busy = "approve") }
@@ -447,7 +447,8 @@ internal class C05SFTPHostController(
                         path = lane.homePath,
                     )
                 }
-                listPath(lane.homePath, lane)
+                listPath(lane.homePath, SftpLaneUi(lane.id, lane.profileID, lane.displayName, lane.address,
+                    lane.port, lane.user, lane.state, lane.homePath))
             } catch (failure: C05SFTPFailure) {
                 if (!isLive(token, epoch)) return@launch
                 val challenge = failure.challenge
@@ -478,7 +479,7 @@ internal class C05SFTPHostController(
         }
     }
 
-    private fun listPath(path: String, lane: C05SFTPLane) {
+    private fun listPath(path: String, lane: SftpLaneUi) {
         val epoch = currentNativeEpoch()?.takeIf { it > 0 } ?: return
         val token = nextToken()
         _state.update { it.copy(busy = "list", error = null, pendingDownload = null) }
@@ -515,7 +516,7 @@ internal class C05SFTPHostController(
     }
 
     private fun startDownload(
-        lane: C05SFTPLane,
+        lane: SftpLaneUi,
         entry: SftpEntryUi,
         task: String,
         localPath: String,
@@ -675,7 +676,7 @@ internal class C05SFTPHostController(
     }
 
     private fun availableRemotePath(
-        lane: C05SFTPLane,
+        lane: SftpLaneUi,
         base: String,
         owner: C05SFTPOwner,
     ): String {

@@ -75,12 +75,12 @@ class C04FloecadPackageTest {
         for (index in 0 until vertices) {
             buffer.putFloat(index.toFloat()); buffer.putFloat(0f); buffer.putFloat(0f)
         }
-        for (_ in 0 until vertices) {
+        repeat(vertices) {
             buffer.putFloat(0f); buffer.putFloat(1f); buffer.putFloat(0f)
         }
         indices.forEach { buffer.putInt(it) }
         if (version == 2) {
-            for (_ in 0 until vertices) { buffer.putFloat(0f); buffer.putFloat(1f) }
+            repeat(vertices) { buffer.putFloat(0f); buffer.putFloat(1f) }
         }
         return buffer.array()
     }

@@ -96,4 +96,5 @@
     <string name="mail_error_tooManyAttachments">最多支持 10 个附件，总计不超过 10 MB。</string>
     <string name="mail_error_recipientRequired">请至少输入一个收件人。</string>
     <string name="mail_error_unknown">邮件操作未能完成。请检查账户配置后重试；不会自动重试。</string>
-<string name="mail_test_success">接收和发送服务器均已通过认证。</string><string name="mail_error_local_network">此私有邮件服务器需要本地网络访问权限。请在 App 设置中允许后重试；没有发送任何内容。</string><string name="mail_error_bodyTooLarge">此版本的正文上限为 32 KB。请缩短邮件，或改用桌面邮件客户端发送。</string><string name="mail_error_subjectTooLong">主题上限为 512 字节。</string><string name="mail_error_tooManyRecipients">最多支持 50 个收件人。</string></resources>
+<string name="mail_test_success">接收和发送服务器均已通过认证。</string><string name="mail_error_local_network">此私有邮件服务器需要本地网络访问权限。请在 App 设置中允许后重试；没有发送任何内容。</string><string name="mail_error_bodyTooLarge">此版本的正文上限为 32 KB。请缩短邮件，或改用桌面邮件客户端发送。</string><string name="mail_error_subjectTooLong">主题上限为 512 字节。</string><string name="mail_error_tooManyRecipients">最多支持 50 个收件人。</string>    <string name="open_sidebar">打开侧栏</string>
+</resources>

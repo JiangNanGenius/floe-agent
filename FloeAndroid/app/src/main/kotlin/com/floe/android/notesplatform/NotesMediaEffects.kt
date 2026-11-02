@@ -1416,7 +1416,7 @@ internal class NotesMediaEffects(
                                     text = page.text,
                                     regions = regions,
                                     truncated = page.truncated,
-                                    geometryMatches = page.geometryMatches,
+                                    geometryMatches = outcome.geometryMatches,
                                 ),
                             )
                         }

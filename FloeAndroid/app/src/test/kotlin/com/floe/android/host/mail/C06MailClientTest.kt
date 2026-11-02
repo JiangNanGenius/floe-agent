@@ -45,7 +45,7 @@ class C06MailClientTest {
         })
         val accounts = client.accountList(owner)
         assertEquals(1, accounts.size)
-        assertEquals("imap.example.com", accounts[0].incomingHost)
+        assertEquals("imap.example.com", accounts[0].incoming.host)
         assertFalse(accounts[0].toString().contains("password"))
     }
 

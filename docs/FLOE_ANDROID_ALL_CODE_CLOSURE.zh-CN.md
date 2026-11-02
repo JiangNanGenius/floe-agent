@@ -292,3 +292,10 @@ An explicit Notes action now creates an ordinary task through the existing conve
 Removed duplicate default-delta dispatch from the foreground download service. The controller owns the exact user choice (delta, explicit full fallback or resume); the service only hosts its lifecycle. Preparation publishes progress before checksum/base/network work. The selected release survives later feed refresh/failure. Installer commit uses compare-and-set so an early system callback is not overwritten; confirmation-launch failure is tied to its original session, retaining durable ownership until explicit recovery.
 
 Actual production download-source host tests passed 69 cases, including corrupt-delta reconstruction followed by verified full bytes and no duplicate writer during preparation. This does not prove real APK signature/installation/UI/device behavior. Integrated App compilation reached application sources and exposed cross-batch integration errors now under repair. No qualified new APK or Release exists. Resolver-generated dependency candidates still need review; no new dependency metadata is selected in this source checkpoint.
+
+
+### Integrated Kotlin checkpoint
+
+Full production Kotlin and all Full test sources now compile; the targeted Full updater suite passed 89 tests with zero failures/skips. Play production Kotlin also compiled. Batch corrections align remote/desktop/SFTP DTOs, Notes resource identities, media state/actions, calendar/NFC types, Office recovery/result types and localized resource references with their real services. No assertions were removed to make tests compile.
+
+The resolver regenerated 22 changed lockfiles and additive verification metadata. All 140 newly recorded artifacts were independently read back from their official Google Maven, Maven Central or explicitly allowlisted JitPack origin and matched the candidate hashes; all 873 previously trusted entries were preserved. This is dependency/source evidence, not binary/channel/device acceptance. OpenSSL ARM64 static production has completed; FreeRDP/core native production and the remaining code gaps still block qualified APK delivery.
