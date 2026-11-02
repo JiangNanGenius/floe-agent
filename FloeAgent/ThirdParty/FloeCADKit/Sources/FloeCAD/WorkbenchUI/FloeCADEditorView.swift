@@ -890,6 +890,7 @@ struct FloeCADEditorView: View {
             get: { viewModel.blendValue },
             set: { viewModel.blendValue = max(0, $0) })
         return AdaptiveBar(style: .capsule, spacing: 12) {
+            blendModeMenu(kind, viewModel)
             Image(systemName: kind == .chamfer ? "square.on.circle" : "circle.circle")
             // When the kernel refused the current size/pick, say WHY — the
             // typed diagnostic replaces the count until the preview is valid
@@ -909,7 +910,6 @@ struct FloeCADEditorView: View {
                     .fixedSize()
             }
             Divider().frame(height: 20)
-            blendModeMenu(kind, viewModel)
             Text(viewModel.blendAdvancedMode == .variableFillet
                  ? FloeCADStrings.text("cad.blend.endRadius", "End radius") : kind.valueLabel)
                 .font(.caption).foregroundStyle(.barLabel).fixedSize()

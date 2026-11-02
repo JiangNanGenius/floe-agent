@@ -3124,6 +3124,18 @@ static bool OS3DAdvancedBlendOperands(OCCTShape *shape, NSData *packed,
         TopTools_IndexedMapOfShape edgeMap;
         std::set<Standard_Integer> chosen;
         if (!OS3DAdvancedBlendOperands(shape, edgeIndices, edgeMap, chosen, status)) return nil;
+        // A closed curve has no stable endpoint/midpoint phase. Symmetry
+        // removes reversal ambiguity, not an arbitrary circle seam. Refuse it
+        // before building instead of persisting an apparent radius anchor.
+        for (const auto index : chosen) {
+            TopoDS_Vertex first, last;
+            TopExp::Vertices(TopoDS::Edge(edgeMap(index)), first, last);
+            if (first.IsNull() || last.IsNull() || first.IsSame(last)) {
+                OS3DSetStatus(status, OCCTOpCodeKernelRefused,
+                              @"variable fillet requires an open edge with two endpoints");
+                return nil;
+            }
+        }
         BRepFilletAPI_MakeFillet mk(shape->_shape);
         TColgp_Array1OfPnt2d law(1, 3);
         law(1) = gp_Pnt2d(0, endRadius);

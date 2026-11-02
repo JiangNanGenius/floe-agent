@@ -2890,6 +2890,23 @@ final class CADAdvancedBlendKernelTests: XCTestCase {
         XCTAssertEqual(OCCTKernel.volume(variable.handle), OCCTKernel.volume(single.handle), accuracy: 1e-7)
     }
 
+    func testClosedCurveVariableProfileRefusesUnanchoredPhaseButUniformFilletStillWorks() throws {
+        let handle = try XCTUnwrap(OCCTKernel.primitiveShape(.cylinder(radius: 10, height: 20), placement: .identity))
+        let adjacent = Set(OCCTKernel.edgeFaceAdjacency(handle).map(\.edge))
+        let index = try XCTUnwrap(OCCTKernel.edgeCurves(handle).first { index, curve in
+            adjacent.contains(index) && !curve.isLine && simd_distance(curve.start, curve.end) < 1e-5
+        }?.key)
+        let before = try XCTUnwrap(OCCTKernel.serialize(handle))
+        let result = OCCTKernel.variableFilletResultWithAncestry(handle,
+            edgeIndices: [index], endRadius: 1, middleRadius: 2)
+        guard case let .failure(.kernelRefused(message)) = result else { return XCTFail("Closed radius phase must refuse before building") }
+        XCTAssertTrue(message.contains("open edge"), message)
+        XCTAssertEqual(OCCTKernel.serialize(handle), before)
+        let uniform = try OCCTKernel.filletResultWithAncestry(handle, edgeIndices: [index], radius: 1).get()
+        assertHealthy(uniform.handle)
+        XCTAssertLessThan(OCCTKernel.volume(uniform.handle), OCCTKernel.volume(handle))
+    }
+
     func testConcaveExactChamferAddsMeasuredMaterialAndVariableFilletStaysExact() throws {
         let polygon: [SIMD2<Double>] = [SIMD2(0, 0), SIMD2(40, 0), SIMD2(40, 20),
                                        SIMD2(20, 20), SIMD2(20, 40), SIMD2(0, 40)]
@@ -3103,6 +3120,49 @@ final class CADAdvancedBlendDocumentTests: XCTestCase {
         for args: [String: Any] in [["secondDistance": 2, "angleDegrees": 30], ["angleDegrees": 90], ["flip": 1]] {
             var full = args; full["bodyID"] = target.raw.uuidString; full["edges"] = [edge]; full["setback"] = 2
             if case .success = AgentExec.parse(["op": "feature.chamfer", "args": full]) { XCTFail("Invalid advanced arguments accepted") }
+        }
+    }
+
+    func testDistinctMultiEdgeAdvancedBatchesReportAllProcessedAndOnlyOneUndo() async throws {
+        for mode in AdvancedBlendDefinition.Mode.allCases {
+            let doc = try await document(); defer { doc.close() }
+            let (_, target, first, firstIndex) = try box(doc)
+            let body = try XCTUnwrap(doc.session.document.body(with: target)), handle = try XCTUnwrap(body.brep)
+            let opposite = try XCTUnwrap(EdgeTopology.selectableEdges(from: body.render).filter { abs($0.direction.y) > 0.99 }
+                .max { simd_distance($0.midpoint, first.midpoint) < simd_distance($1.midpoint, first.midpoint) })
+            XCTAssertGreaterThan(simd_distance(opposite.midpoint, first.midpoint), 30)
+            let other = try XCTUnwrap(OCCTKernel.nearestEdgeIndex(handle,
+                to: SIMD3(Double(opposite.midpoint.x), Double(opposite.midpoint.y), Double(opposite.midpoint.z)),
+                tolerance: OCCTKernel.matchTolerance(for: handle)))
+            XCTAssertNotEqual(firstIndex, other)
+            var args: [String: Any] = ["bodyID": target.raw.uuidString, "edges": [firstIndex, other, firstIndex]]
+            let operation: String, expected: Double
+            switch mode {
+            case .variableFillet:
+                operation = "feature.fillet"; args["radius"] = 1; args["middleRadius"] = 2
+                let single = try OCCTKernel.variableFilletResultWithAncestry(handle,
+                    edgeIndices: [firstIndex], endRadius: 1, middleRadius: 2).get()
+                expected = 8000 - 2 * (8000 - OCCTKernel.volume(single.handle))
+            case .twoDistanceChamfer:
+                operation = "feature.chamfer"; args["setback"] = 2; args["secondDistance"] = 4
+                expected = 7920
+            case .distanceAngleChamfer:
+                operation = "feature.chamfer"; args["setback"] = 2; args["angleDegrees"] = 30
+                expected = 8000 - 40 * tan(Double.pi / 6)
+            }
+            let undo = doc.session.undoStack.undoCommands.count
+            let result = doc.executeJSON(try JSONSerialization.data(withJSONObject: ["op": operation, "args": args]))
+            XCTAssertTrue(result.isOK, "\(mode): \(result.message ?? "")")
+            let payload = try XCTUnwrap(JSONSerialization.jsonObject(with: result.payload) as? [String: Any])
+            let receipt = try XCTUnwrap(payload["edgeProcessing"] as? [String: Any])
+            XCTAssertEqual(receipt["requested"] as? [Int], [firstIndex, other, firstIndex])
+            XCTAssertEqual(receipt["processed"] as? [Int], [firstIndex, other])
+            XCTAssertEqual(receipt["rejected"] as? [Int], [])
+            XCTAssertEqual(receipt["atomic"] as? Bool, true)
+            XCTAssertEqual(try volume(doc, target), expected, accuracy: 1e-4)
+            XCTAssertEqual(doc.session.undoStack.undoCommands.count, undo + 1)
+            doc.session.undo(); XCTAssertEqual(try volume(doc, target), 8000, accuracy: 1e-6)
+            doc.session.redo(); XCTAssertEqual(try volume(doc, target), expected, accuracy: 1e-4)
         }
     }
 

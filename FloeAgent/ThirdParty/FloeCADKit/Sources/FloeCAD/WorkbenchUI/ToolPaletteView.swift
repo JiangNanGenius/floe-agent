@@ -57,6 +57,7 @@ private struct GroupFrameKey: PreferenceKey {
 
 struct ToolPaletteView: View {
     @Bindable var viewModel: EditorViewModel
+    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
 
     private var paletteOnRight: Bool { CADPreferences.shared.paletteOnRight }
 
@@ -83,6 +84,7 @@ struct ToolPaletteView: View {
         .coordinateSpace(name: "palette")
         .onPreferenceChange(GroupFrameKey.self) { groupFrames = $0 }
         .overlay(alignment: paletteOnRight ? .topTrailing : .topLeading) { flyoutOverlay }
+        .onChange(of: horizontalSizeClass) { _, _ in expandedGroupID = nil }
         // A context flip (enter/leave sketch) closes any open flyout.
         .onChange(of: viewModel.mode.isSketching) { _, _ in expandedGroupID = nil }
     }
@@ -401,29 +403,52 @@ struct ToolPaletteView: View {
 
     // MARK: - Group button + flyout
 
+    @ViewBuilder
     private func groupButton(_ group: ToolGroup) -> some View {
         let anyActive = group.items.contains { $0.active }
         let expanded = expandedGroupID == group.id
-        return Button {
-            withAnimation(.snappy(duration: 0.18)) {
-                expandedGroupID = expanded ? nil : group.id
+        if horizontalSizeClass == .compact {
+            // The regular flyout is a long row anchored outside the rail.
+            // In a narrow editor it crosses the editor's hit-test boundary.
+            // A native menu keeps every item inside the presenting surface.
+            Menu {
+                ForEach(group.items) { item in
+                    if item.menu == nil {
+                        Button { item.run() } label: { Label(item.label, systemImage: item.icon) }
+                            .disabled(!item.enabled)
+                            .accessibilityIdentifier(item.accessibilityID ?? item.id)
+                    } else {
+                        toolView(item)
+                    }
+                }
+            } label: {
+                paletteIcon(group.icon, label: group.label)
+                    .foregroundStyle(anyActive ? Color.blue : Color.primary)
             }
-        } label: {
-            paletteIcon(group.icon, label: group.label)
-                .foregroundStyle(anyActive ? Color.blue : Color.primary)
-        }
-        .buttonStyle(.plain)
-        .background(
-            RoundedRectangle(cornerRadius: 10)
-                .fill((expanded || anyActive) ? Color.blue.opacity(0.15) : Color.clear)
-        )
-        .background(GeometryReader { geo in
-            Color.clear.preference(
-                key: GroupFrameKey.self,
-                value: [group.id: geo.frame(in: .named("palette"))]
+            .buttonStyle(.plain)
+            .accessibilityIdentifier(group.id + "Group")
+        } else {
+            Button {
+                withAnimation(.snappy(duration: 0.18)) {
+                    expandedGroupID = expanded ? nil : group.id
+                }
+            } label: {
+                paletteIcon(group.icon, label: group.label)
+                    .foregroundStyle(anyActive ? Color.blue : Color.primary)
+            }
+            .buttonStyle(.plain)
+            .background(
+                RoundedRectangle(cornerRadius: 10)
+                    .fill((expanded || anyActive) ? Color.blue.opacity(0.15) : Color.clear)
             )
-        })
-        .accessibilityIdentifier(group.id + "Group")
+            .background(GeometryReader { geo in
+                Color.clear.preference(
+                    key: GroupFrameKey.self,
+                    value: [group.id: geo.frame(in: .named("palette"))]
+                )
+            })
+            .accessibilityIdentifier(group.id + "Group")
+        }
     }
 
     @ViewBuilder
