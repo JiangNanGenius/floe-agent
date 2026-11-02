@@ -1817,7 +1817,8 @@ actor CadDocumentCenter: CadDocumentHost {
                 "A CAD package already exists at that name; the factory unique-ifies automatically—retry create without removing anything.")
         case "no_solids", "iges_empty", "empty_mesh", "empty_import", "iges_read_failed",
              "iges_import_failed", "mesh_parse_failed", "unsupported_format",
-             "import_over_budget", "gltf_external_resources_unsupported", "gltf_invalid_json":
+             "import_over_budget", "import_units_required", "unsupported_import_content",
+             "gltf_external_resources_unsupported", "gltf_invalid_json":
             return FloeError.validationFailed(message)
         case "stale_proposal":
             return FloeError.validationFailed(message)

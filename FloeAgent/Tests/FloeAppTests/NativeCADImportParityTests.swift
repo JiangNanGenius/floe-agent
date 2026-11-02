@@ -185,7 +185,12 @@ final class NativeCADImportParityTests: XCTestCase {
         let aiName="Agent-\(fileName).floecad",aiURL=try await target(aiName)
         if binaryUSD {
             do { _=try await propose(target:aiName,source:fileName);XCTFail("Unknown USD units must not create a silent wrongly scaled proposal") }
-            catch { XCTAssertTrue(error.localizedDescription.lowercased().contains("unit"),"\(error)") }
+            catch {
+                guard case FloeError.validationFailed(let message) = error else {
+                    XCTFail("A unit choice is validation, never storage corruption: \(error)");return
+                }
+                XCTAssertTrue(message.lowercased().contains("unit") || message.contains("单位"),"\(message)")
+            }
             XCTAssertTrue(FloeCAD3DBridge.shared.pendingProposals(for:aiURL).isEmpty)
         }
         let proposal=try await propose(target:aiName,source:fileName,units:binaryUSD ? "m":nil)
@@ -253,7 +258,8 @@ final class NativeCADImportParityTests: XCTestCase {
         let at=try XCTUnwrap(file.fieldOffset(ob,"Object","parent"))
         for n in 0..<file.pointerSize { bytes[at+n]=UInt8(truncatingIfNeeded:ob.oldAddress >> (8*(file.littleEndian ? n:file.pointerSize-1-n))) }
         let source=try put("cyclic.blend",bytes),url=try await target("Cyclic.floecad")
-        do { _=try await propose(target:"Cyclic.floecad",source:"cyclic.blend");XCTFail("Cyclic placement cannot become an identity-placed successful import") } catch {}
+        do { _=try await propose(target:"Cyclic.floecad",source:"cyclic.blend");XCTFail("Cyclic placement cannot become an identity-placed successful import") }
+        catch { guard case FloeError.validationFailed = error else { XCTFail("Unsupported source content is validation, never storage corruption: \(error)");return } }
         let doc=try await FloeCAD3DBridge.shared.openDocument(at:url)
         XCTAssertEqual(doc.summary().bodyCount,0)
         XCTAssertTrue(FloeCAD3DBridge.shared.pendingProposals(for:url).isEmpty)
