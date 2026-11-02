@@ -260,13 +260,16 @@ final class CADUVAuthoringTests: XCTestCase {
         let pin=try await read(doc,id), count=doc.liveChangeCount
         let entered=expectation(description:"Real native computation finished"), gate=DispatchSemaphore(value:0)
         CADUVService.testBeforeCommitProbe={ entered.fulfill(); _=gate.wait(timeout:.now()+20) }
-        let task=Task { await CADMaterialService(document:doc).handleAsync(action:"uv.unwrap",args:[
-            "body_id":id.raw.uuidString,"source_sha256":pin["source_sha256"]!,"expected_change_count":count]) }
+        let task=Task { @MainActor () -> (ok: Bool?, error: String?) in
+            let reply=await CADMaterialService(document:doc).handleAsync(action:"uv.unwrap",args:[
+                "body_id":id.raw.uuidString,"source_sha256":pin["source_sha256"]!,"expected_change_count":count])
+            return (reply["ok"] as? Bool,reply["error"] as? String)
+        }
         await fulfillment(of:[entered],timeout:20)
         let before=try body(doc,id); var changed=before; changed.name="Edited while unwrapping"
         doc.session.perform(ReplaceBodyCommand(title:"Concurrent edit",before:before,after:changed))
         gate.signal(); let reply=await task.value; CADUVService.testBeforeCommitProbe=nil
-        XCTAssertEqual(reply["error"] as? String,"document_changed")
+        XCTAssertEqual(reply.error,"document_changed")
         XCTAssertEqual(try body(doc,id).name,"Edited while unwrapping"); XCTAssertNil(try body(doc,id).uvData)
     }
 
@@ -276,14 +279,17 @@ final class CADUVAuthoringTests: XCTestCase {
             let pin=try await read(doc,id), count=doc.liveChangeCount
             let entered=expectation(description:"Real native result waits before commit"), gate=DispatchSemaphore(value:0)
             CADUVService.testBeforeCommitProbe={ entered.fulfill(); _=gate.wait(timeout:.now()+20) }
-            let task=Task { await CADMaterialService(document:doc).handleAsync(action:"uv.unwrap",args:[
-                "body_id":id.raw.uuidString,"source_sha256":pin["source_sha256"]!,"expected_change_count":count]) }
+            let task=Task { @MainActor () -> (ok: Bool?, error: String?) in
+                let reply=await CADMaterialService(document:doc).handleAsync(action:"uv.unwrap",args:[
+                    "body_id":id.raw.uuidString,"source_sha256":pin["source_sha256"]!,"expected_change_count":count])
+                return (reply["ok"] as? Bool,reply["error"] as? String)
+            }
             await fulfillment(of:[entered],timeout:20)
             XCTAssertEqual(CADUVService(document:doc).control(action:"uv.status")["active"] as? Bool,true)
             if closing { doc.close(); didClose=true } else { task.cancel() }
             gate.signal(); let reply=await task.value; CADUVService.testBeforeCommitProbe=nil
-            XCTAssertEqual(reply["ok"] as? Bool,false)
-            XCTAssertTrue(["cancelled","document_closed"].contains(reply["error"] as? String ?? ""))
+            XCTAssertEqual(reply.ok,false)
+            XCTAssertTrue(["cancelled","document_closed"].contains(reply.error ?? ""))
             XCTAssertNil(try body(doc,id).uvData); XCTAssertEqual(doc.liveChangeCount,count)
         }
     }

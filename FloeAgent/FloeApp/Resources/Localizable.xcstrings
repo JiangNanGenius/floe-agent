@@ -128894,23 +128894,6 @@
         }
       }
     },
-    "cad.uv.undoNote": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Each edit uses the document’s undo history."
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "每次编辑都可通过文档历史撤销。"
-          }
-        }
-      }
-    },
     "cad.uv.unwrap": {
       "extractionState": "manual",
       "localizations": {

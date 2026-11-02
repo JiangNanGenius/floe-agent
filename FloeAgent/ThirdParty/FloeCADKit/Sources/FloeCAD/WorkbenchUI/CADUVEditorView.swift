@@ -138,8 +138,6 @@ struct CADUVEditorView: View {
                             Button(FloeCADStrings.text("cad.ui.common.redo","Redo")) { model.history(redo:true) }
                                 .disabled(!model.document.session.undoStack.canRedo)
                         }
-                        Text(FloeCADStrings.text("cad.uv.undoNote","Each edit uses the document’s undo history."))
-                            .font(.footnote).foregroundStyle(.secondary)
                     }.disabled(model.isBusy)
                 } else { ProgressView() }
                 if let error=model.errorMessage { Section { Text(error).foregroundStyle(.red) } }
