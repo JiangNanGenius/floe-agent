@@ -718,21 +718,7 @@ nonisolated enum CADDocumentFormat {
         for row in axes {
             guard let object = try? JSONSerialization.jsonObject(with: row.data) as? [String: Any] else { continue }
             let operationIdentity = try operationIdentityIntent(object)
-            if let sweep = object["sweep"] as? [String: Any], let raw = sweep["path"], !(raw is NSNull) {
-                result.requiredVersion = max(result.requiredVersion, associativeSweepVersion)
-                guard let definition = raw as? [String: Any],
-                      let version = definition["version"] as? Int, version > 0 else {
-                    throw CADDocumentFormatError.malformedAssociation("sweep-path")
-                }
-                if version > SweepPathDefinition.supportedVersion {
-                    result.opaqueFeatures.insert(row.featureID)
-                } else {
-                    do {
-                        let data = try JSONSerialization.data(withJSONObject: definition)
-                        _ = try JSONDecoder().decode(SweepPathDefinition.self, from: data)
-                    } catch { throw CADDocumentFormatError.malformedAssociation("sweep-path") }
-                }
-            }
+
             if operationIdentity.present { result.requiredVersion = max(result.requiredVersion, operationFaceIdentityVersion) }
             if operationIdentity.opaque { result.opaqueAxes.insert(row.blobID) }
             guard let definition = object["definition"], !(definition is NSNull) else { continue }
@@ -809,6 +795,21 @@ nonisolated enum CADDocumentFormat {
                 continue
             }
             let operationIdentity = try operationIdentityIntent(object)
+            if let sweep = object["sweep"] as? [String: Any], let raw = sweep["path"], !(raw is NSNull) {
+                result.requiredVersion = max(result.requiredVersion, associativeSweepVersion)
+                guard let definition = raw as? [String: Any],
+                      let version = definition["version"] as? Int, version > 0 else {
+                    throw CADDocumentFormatError.malformedAssociation("sweep-path")
+                }
+                if version > SweepPathDefinition.supportedVersion {
+                    result.opaqueFeatures.insert(row.featureID)
+                } else {
+                    do {
+                        let data = try JSONSerialization.data(withJSONObject: definition)
+                        _ = try JSONDecoder().decode(SweepPathDefinition.self, from: data)
+                    } catch { throw CADDocumentFormatError.malformedAssociation("sweep-path") }
+                }
+            }
             if operationIdentity.present { result.requiredVersion = max(result.requiredVersion, operationFaceIdentityVersion) }
             if operationIdentity.opaque { result.opaqueFeatures.insert(row.featureID) }
             if try featureConsumesConstructionAxis(object) {
