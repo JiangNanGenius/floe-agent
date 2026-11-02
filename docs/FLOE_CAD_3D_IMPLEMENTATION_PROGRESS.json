@@ -2265,11 +2265,16 @@
       "package": "mechanical",
       "implementation": {
         "stage": "C",
-        "status": "partial_atomic_selection_and_receipts_actual_App_verified",
+        "status": "accepted_original_literal_exact_advanced_blends_actual_App",
         "source_changes": [
           "47d8110bda8e669c8973100cddce9baae1168d1d",
           "531fb22707f7162bfb897d692f982163e8b7e4ab",
-          "2921b0d4160579fe964ed84575ced9683be4fb13"
+          "2921b0d4160579fe964ed84575ced9683be4fb13",
+          "c63e9af11fade687f3afaa16a03acb5decba6520",
+          "f352ef6c90fab1cff63fea7540150203e075717b",
+          "80a394ccb8a8088b50c91e8c06256b1009303a2c",
+          "dba7b156e32cfa4af0ff928002f732af9657578f",
+          "2bc771d63641147493f33b26b18c0e27ae04612b"
         ],
         "verification": [
           {
@@ -2289,11 +2294,22 @@
             "exact_volume_tolerance_mm3": 0.0001,
             "mesh_volume_tolerance_mm3": 0.15,
             "physical_device": false
+          },
+          {
+            "source": "2bc771d63641147493f33b26b18c0e27ae04612b",
+            "scope": "33 distinct affected native cases from actual stages, original failures retained and recovered; App269 object compile plus4current compact UI; regular UI reused from263",
+            "distinct_native_passed": 33,
+            "current_compact_ui_passed": 4,
+            "failed": 0,
+            "skipped": 0,
+            "physical_device": false,
+            "record": "docs/qualification/cad-advanced-blends-20261103/README.md"
           }
         ],
         "limitations": [
-          "M21 advanced varying radius/two-distance/concave coverage remains original scope; do not mark whole M21 complete.",
-          "M26 remaining structural/topology split matrix still open; this only closes blend-reference fallback defect."
+          "Variable fillet is a symmetric end/middle/end radius law on independent open single-edge OCCT contours; tangent chains and closed-curve phase are explicitly refused.",
+          "Advanced modes are exact BRep only; legacy mesh/uniform modes and prior conservative refusals remain.",
+          "iPhone functional behavior is assumed passed per current user policy; actual compact layout checks run only on reused canonical iPad. No physical performance or whole106/release claim."
         ]
       },
       "alignment_review": {
@@ -2328,12 +2344,18 @@
         "acceptance_pending": "多边圆角明确列全部处理/拒绝的边；支持所需两距离倒角/变半径作为扩展，凹边行为与精确等级清楚。"
       },
       "current_acceptance": {
-        "original_criterion_accepted": false,
+        "original_criterion_accepted": true,
         "source_changes": [
           "47d8110bda8e669c8973100cddce9baae1168d1d",
           "531fb22707f7162bfb897d692f982163e8b7e4ab",
-          "2921b0d4160579fe964ed84575ced9683be4fb13"
-        ]
+          "2921b0d4160579fe964ed84575ced9683be4fb13",
+          "c63e9af11fade687f3afaa16a03acb5decba6520",
+          "f352ef6c90fab1cff63fea7540150203e075717b",
+          "80a394ccb8a8088b50c91e8c06256b1009303a2c",
+          "dba7b156e32cfa4af0ff928002f732af9657578f",
+          "2bc771d63641147493f33b26b18c0e27ae04612b"
+        ],
+        "record": "docs/qualification/cad-advanced-blends-20261103/README.md"
       }
     },
     {
@@ -9443,7 +9465,7 @@
     "license_delta": "GLTFKit2 ownMIT/cgltfMIT do notclear precompiled libktx4.2.1 etcdec exception; prefer existing O3DV+same-r176 localGLTFLoader qualification"
   },
   "current_integration_verification": {
-    "source": "de5ce8e9ac0870e68263ab0d441f1634fd0c7b68",
+    "source": "2bc771d63641147493f33b26b18c0e27ae04612b",
     "all_106_retained": true,
     "all_106_accepted": false,
     "release_ready": false,
@@ -9476,8 +9498,8 @@
       "actual_OBJ": "真实OBJ/MTL/PNG显示、缺失贴图及仅资源变化后的旧帧拒绝通过。",
       "scope": "本地实际渲染与资源来源；不冒充原生可编辑BRep，也不代替真实LLM视觉连续编辑。"
     },
-    "accepted_original_criteria": 71,
-    "pending_original_criteria": 35,
+    "accepted_original_criteria": 72,
+    "pending_original_criteria": 34,
     "device_acceptance": "iPad通过的功能复用验收，iPhone仅确认界面；不使用用户手机。",
     "latest_native_batch": {
       "source": "582810ed58f8d3d63e23967909b74898af502c60",

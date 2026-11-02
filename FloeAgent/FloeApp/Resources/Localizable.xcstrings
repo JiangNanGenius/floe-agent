@@ -17459,6 +17459,12 @@
         }
       }
     },
+    "cad.ui.common.parameters": {
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Parameters" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "参数" } }
+      }
+    },
     "cad.ui.common.close": {
       "extractionState": "manual",
       "localizations": {

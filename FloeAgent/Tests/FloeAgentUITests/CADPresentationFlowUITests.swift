@@ -2139,16 +2139,24 @@ final class CADAdvancedPatternNativeFlowUITests: XCTestCase {
         XCTAssertTrue(pattern.waitForExistence(timeout: 15) && pattern.isEnabled)
         pattern.tap()
         let seed = app.buttons["PatternSeedMenu"]
-        XCTAssertTrue(seed.waitForExistence(timeout: 15) && seed.isHittable)
+        XCTAssertTrue(seed.waitForExistence(timeout: 15)); reveal(seed, in: app)
+        XCTAssertTrue(seed.isHittable)
         seed.tap()
         let feature = app.buttons["Extrude"].firstMatch
         XCTAssertTrue(feature.waitForExistence(timeout: 10) && feature.isHittable); feature.tap()
         let path = app.buttons["PatternPathMenu"]
+        reveal(path, in: app)
         XCTAssertTrue(path.exists && path.isHittable); path.tap()
         let circle = app.buttons["Hole · Circle 1"].firstMatch
         XCTAssertTrue(circle.waitForExistence(timeout: 10) && circle.isHittable); circle.tap()
         let apply = app.buttons["PatternApply"]
         XCTAssertTrue(apply.exists && apply.isHittable)
+        if compact {
+            for control in [app.textFields["PatternCount"], app.textFields["PatternSpacing"], seed, path] {
+                reveal(control, in: app)
+                assertWholeControl(control, in: app)
+            }
+        }
         capture(compact ? (largeText ? "M25 compact large text native feature and path controls" : "M25 compact default text native feature and path controls") : "M25 native feature and exact path controls")
         if compact {
             app.buttons["PatternCancel"].tap()
@@ -2173,6 +2181,21 @@ final class CADAdvancedPatternNativeFlowUITests: XCTestCase {
         capture(compact ? "M25 compact native cancel returns to document" : "M25 native patterned feature applied")
     }
 
+    private func reveal(_ control: XCUIElement, in app: XCUIApplication) {
+        guard app.buttons["CADToolParametersClose"].exists else { return }
+        let form = app.descendants(matching: .any).matching(identifier: "CADToolParametersForm").firstMatch
+        XCTAssertTrue(form.exists)
+        for _ in 0..<6 where !control.isHittable { form.swipeUp() }
+        if !control.isHittable {
+            for _ in 0..<6 where !control.isHittable { form.swipeDown() }
+        }
+    }
+    private func assertWholeControl(_ control: XCUIElement, in app: XCUIApplication) {
+        let form = app.descendants(matching: .any).matching(identifier: "CADToolParametersForm").firstMatch
+        XCTAssertTrue(control.exists && control.isHittable)
+        XCTAssertGreaterThanOrEqual(control.frame.minX, form.frame.minX - 1)
+        XCTAssertLessThanOrEqual(control.frame.maxX, form.frame.maxX + 1)
+    }
     private func toggleItems(_ app: XCUIApplication) {
         if app.buttons["ItemsButton"].exists { app.buttons["ItemsButton"].tap() }
         else {
@@ -2231,6 +2254,17 @@ final class CADAdvancedBlendNativeFlowUITests: XCTestCase {
         reveal(second, in: app)
         XCTAssertEqual(Double(second.value as? String ?? ""), 45,
                        "Angles stay in degrees even when length fields use centimetres")
+        if compact {
+            assertWholeControl(second, in: app)
+            if !largeText {
+                app.buttons["CADToolParametersClose"].tap()
+                let reopen = app.buttons["CADToolParametersButton"]
+                XCTAssertTrue(reopen.waitForExistence(timeout: 10) && reopen.isHittable)
+                reopen.tap()
+                XCTAssertTrue(second.waitForExistence(timeout: 10)); reveal(second, in: app)
+                XCTAssertEqual(Double(second.value as? String ?? ""), 45)
+            }
+        }
         capture(compact ? "M21 compact native distance angle" : "M21 native distance angle")
         let cancel = app.buttons["BlendCancel"]
         XCTAssertTrue(cancel.exists && cancel.isHittable); cancel.tap()
@@ -2242,19 +2276,32 @@ final class CADAdvancedBlendNativeFlowUITests: XCTestCase {
         XCTAssertTrue(second.waitForExistence(timeout: 10)); reveal(second, in: app)
         XCTAssertTrue(second.isHittable)
         XCTAssertFalse(app.switches["BlendSwapSides"].exists)
+        if compact { assertWholeControl(second, in: app) }
         capture(compact ? (largeText ? "M21 compact large text variable radius controls" : "M21 compact default text variable radius controls") : "M21 variable radius controls")
         app.buttons["BlendCancel"].tap()
         XCTAssertFalse(app.buttons["BlendApply"].exists)
         XCTAssertEqual(app.alerts.count, 0)
     }
     private func reveal(_ control: XCUIElement, in app: XCUIApplication, left: Bool = true) {
-        for _ in 0..<6 where !control.isHittable {
-            // Scroll only within the observed field/bar row, leaving fixed
-            // Apply/Cancel actions untouched. No viewport coordinate picking.
-            let bar = app.scrollViews.containing(.textField, identifier: "BlendValueField").firstMatch
-            XCTAssertTrue(bar.exists, app.debugDescription)
-            if left { bar.swipeLeft() } else { bar.swipeRight() }
+        if app.buttons["CADToolParametersClose"].exists {
+            let form = app.descendants(matching: .any).matching(identifier: "CADToolParametersForm").firstMatch
+            XCTAssertTrue(form.exists)
+            for _ in 0..<8 where !control.isHittable {
+                if left { form.swipeUp() } else { form.swipeDown() }
+            }
+        } else {
+            for _ in 0..<6 where !control.isHittable {
+                let bar = app.scrollViews.containing(.textField, identifier: "BlendValueField").firstMatch
+                XCTAssertTrue(bar.exists, app.debugDescription)
+                if left { bar.swipeLeft() } else { bar.swipeRight() }
+            }
         }
+    }
+    private func assertWholeControl(_ control: XCUIElement, in app: XCUIApplication) {
+        let form = app.descendants(matching: .any).matching(identifier: "CADToolParametersForm").firstMatch
+        XCTAssertTrue(control.exists && control.isHittable)
+        XCTAssertGreaterThanOrEqual(control.frame.minX, form.frame.minX - 1)
+        XCTAssertLessThanOrEqual(control.frame.maxX, form.frame.maxX + 1)
     }
     private func capture(_ name: String) {
         let attachment = XCTAttachment(screenshot: XCUIScreen.main.screenshot())

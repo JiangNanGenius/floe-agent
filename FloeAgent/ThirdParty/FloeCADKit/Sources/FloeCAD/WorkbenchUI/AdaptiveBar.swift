@@ -2,27 +2,11 @@
 //  AdaptiveBar.swift
 //  openshape3d
 //
-//  Shared layout for the bottom contextual bars (numeric input, blend, shell).
-//  At regular width they lay out exactly as they always have: one row, controls
-//  on the left, actions on the right.
-//
-//  At compact width a single fixed HStack has no good answer — SwiftUI
-//  compresses every label to its minimum and then wraps it one character per
-//  line, which is what turned "Extrude" into a vertical stack of letters and
-//  grew the bar to ~40% of an iPhone screen (see
-//  marketing/bugs/iphone-extrude-bar-broken.png). So in compact width the same
-//  content splits into horizontally scrollable rows: labels keep their natural
-//  width, and nothing is pushed off-screen or clipped away.
-//
-//  Callers supply the slots and place their own `Spacer()` inside `controls` if
-//  they want the actions pushed to the trailing edge at regular width. In a
-//  compact scroll row that Spacer collapses to its minimum length, so the same
-//  slot content serves both layouts.
-//
-//  Labels stay as words in both size classes on purpose: the UI suite matches
-//  several of these buttons by title (`buttons["Extrude"]`, `buttons["Cancel"]`,
-//  `buttons["Revolve"]`, `buttons["Done"]`), so swapping in icon-only labels at
-//  compact width would break those tests.
+//  Shared contextual controls. Regular width keeps the inline toolbar;
+//  compact width uses a native parameter sheet with complete form rows.
+//  The sheet can be collapsed while selecting geometry, and reopened without
+//  resetting the active tool. Secondary sheets belong to their trigger inside
+//  these rows so their presentation context stays inside the inspector.
 //
 
 import SwiftUI
@@ -137,7 +121,7 @@ enum AdaptiveBarStyle {
 
 struct AdaptiveBar<Controls: View, Actions: View, Footer: View>: View {
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
-    @Environment(\.verticalSizeClass) private var verticalSizeClass
+    @State private var compactInspectorPresented = true
 
     private let style: AdaptiveBarStyle
     private let spacing: CGFloat
@@ -166,44 +150,74 @@ struct AdaptiveBar<Controls: View, Actions: View, Footer: View>: View {
 
     private var isCompact: Bool { horizontalSizeClass == .compact }
 
-    /// Landscape on a non-Max iPhone: ~390pt of height for the viewport, the
-    /// bar, the info strip and the tool palette combined. Stacking three rows
-    /// there costs over half the screen and scrolls most of the palette out of
-    /// reach, so the bar collapses back to a single scrolling row.
-    private var isShortScreen: Bool { verticalSizeClass == .compact }
-
-    /// A bar with no buttons (the polygon bar) must not reserve an empty
-    /// actions row in the compact layout.
+    /// A tool without actions must not reserve an empty bottom toolbar.
     private var hasActions: Bool { Actions.self != EmptyView.self }
     private var hasFooter: Bool { Footer.self != EmptyView.self && showsFooter }
 
+    @ViewBuilder
     var body: some View {
-        content
-            .transformEnvironment(\.font) { if isCompact { $0 = .subheadline } }
-            .transformEnvironment(\.controlSize) { if isCompact { $0 = .small } }
-            .padding(.horizontal, isCompact ? 12 : style.horizontalPadding)
-            .padding(.vertical, isCompact ? 8 : style.verticalPadding)
-            .background(.regularMaterial, in: background)
-            .shadow(color: .black.opacity(0.15),
-                    radius: style.shadowRadius, y: style.shadowY)
+        if isCompact {
+            Button {
+                compactInspectorPresented = true
+            } label: {
+                Label(FloeCADStrings.text("cad.ui.common.parameters", "Parameters"), systemImage: "slider.horizontal.3")
+            }
+            .buttonStyle(.bordered)
+            .accessibilityIdentifier("CADToolParametersButton")
+            .sheet(isPresented: $compactInspectorPresented) { compactInspector }
+        } else {
+            regularContent
+                .padding(.horizontal, style.horizontalPadding)
+                .padding(.vertical, style.verticalPadding)
+                .background(.regularMaterial, in: background)
+                .shadow(color: .black.opacity(0.15),
+                        radius: style.shadowRadius, y: style.shadowY)
+        }
+    }
+
+    private var compactInspector: some View {
+        NavigationStack {
+            Form {
+                Section { controls }
+                if hasFooter { Section { footer } }
+            }
+            .formStyle(.grouped)
+            .font(.subheadline)
+            .controlSize(.regular)
+            .accessibilityElement(children: .contain)
+            .accessibilityIdentifier("CADToolParametersForm")
+            .navigationTitle(FloeCADStrings.text("cad.ui.common.parameters", "Parameters"))
+            .navigationBarTitleDisplayMode(.inline)
+            .safeAreaInset(edge: .bottom, spacing: 0) {
+                if hasActions {
+                    ViewThatFits(in: .horizontal) {
+                        HStack(spacing: 16) { actions }
+                            .fixedSize(horizontal: true, vertical: false)
+                        VStack(alignment: .trailing, spacing: 8) { actions }
+                    }
+                        .frame(maxWidth: .infinity, alignment: .trailing)
+                        .padding()
+                        .background(.bar)
+                }
+            }
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button(FloeCADStrings.label("cad.ui.common.close", "Close"), systemImage: "chevron.down") {
+                        compactInspectorPresented = false
+                    }
+                    .accessibilityIdentifier("CADToolParametersClose")
+                }
+            }
+        }
+        .presentationDetents([.medium, .large])
+        .presentationDragIndicator(.visible)
+        .presentationBackgroundInteraction(.enabled(upThrough: .medium))
+        .presentationContentInteraction(.scrolls)
     }
 
     @ViewBuilder
-    private var content: some View {
-        if isCompact && isShortScreen {
-            // Everything on one scrolling row — height is the scarce axis here.
-            scrollRow {
-                controls
-                actions
-                footer
-            }
-        } else if isCompact {
-            VStack(alignment: .leading, spacing: 6) {
-                scrollRow { controls }
-                if hasActions { scrollRow { actions } }
-                if hasFooter { scrollRow { footer } }
-            }
-        } else if hasFooter {
+    private var regularContent: some View {
+        if hasFooter {
             VStack(alignment: .leading, spacing: 10) {
                 regularRow
                 footer
@@ -243,7 +257,7 @@ struct AdaptiveBar<Controls: View, Actions: View, Footer: View>: View {
         }
     }
 
-    /// One compact row. `fixedSize(horizontal:)` is the actual fix for the
+    /// Regular-width overflow fallback. `fixedSize(horizontal:)` is the actual fix for the
     /// per-character wrapping: it makes the row take its ideal width instead of
     /// being squeezed into the screen, and the scroll view absorbs the
     /// overflow. `lineLimit(1)` then guarantees no descendant can wrap even if

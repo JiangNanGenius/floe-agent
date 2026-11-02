@@ -105,14 +105,14 @@ struct NumericInputBar: View {
             AdaptiveBar {
                 Text(spec.displayName)
                     .font(isCompact ? .subheadline.weight(.semibold) : .headline)
-                    .fixedSize()
+                    .fixedSize(horizontal: !isCompact, vertical: true)
 
                 ForEach(Array(fieldLabels(for: spec).enumerated()), id: \.offset) { index, label in
                     HStack(spacing: 6) {
                         Text(label)
                             .font(.caption)
                             .foregroundStyle(.barLabel)
-                            .fixedSize()
+                            .fixedSize(horizontal: !isCompact, vertical: true)
                         // Raw millimetres: `.length` converts for display, so
                         // `unit.binding` here would convert twice. Values apply
                         // live, and Done / the pad's commit push them.
@@ -128,7 +128,7 @@ struct NumericInputBar: View {
                     }
                 }
 
-                Spacer()
+                if !isCompact { Spacer() }
             } actions: {
                 Button(FloeCADStrings.label("cad.ui.common.done", "Done")) {
                     commit()
@@ -155,14 +155,14 @@ struct NumericInputBar: View {
         AdaptiveBar {
             Text(FloeCADStrings.label("cad.ui.tool.scale", "Scale"))
                 .font(isCompact ? .subheadline.weight(.semibold) : .headline)
-                .fixedSize()
+                .fixedSize(horizontal: !isCompact, vertical: true)
             BarHint("Uniform, about the body pivot")
 
             HStack(spacing: 6) {
                 Text(FloeCADStrings.label("cad.ui.scale.factor", "Factor"))
                     .font(.caption)
                     .foregroundStyle(.barLabel)
-                    .fixedSize()
+                    .fixedSize(horizontal: !isCompact, vertical: true)
                 // A multiplier, not a length — `.plain` so the display unit
                 // never scales it.
                 ExpressionValueField(
@@ -186,7 +186,7 @@ struct NumericInputBar: View {
             .tint(viewModel.scaleCopyOnCommit ? Color.blue : .barLabel)
             .accessibilityIdentifier("ScaleCopyBadge")
 
-            Spacer()
+            if !isCompact { Spacer() }
         } actions: {
             Button(FloeCADStrings.label("cad.ui.common.cancel", "Cancel")) {
                 viewModel.cancelScaleEntry()
@@ -205,14 +205,14 @@ struct NumericInputBar: View {
         AdaptiveBar {
             Text(FloeCADStrings.label("cad.ui.tool.rotate", "Rotate"))
                 .font(isCompact ? .subheadline.weight(.semibold) : .headline)
-                .fixedSize()
+                .fixedSize(horizontal: !isCompact, vertical: true)
             BarHint("Drag to rotate (5° steps), or type an angle")
 
             HStack(spacing: 6) {
                 Text(FloeCADStrings.label("cad.ui.common.angle", "Angle"))
                     .font(.caption)
                     .foregroundStyle(.barLabel)
-                    .fixedSize()
+                    .fixedSize(horizontal: !isCompact, vertical: true)
                 ExpressionValueField(
                     placeholder: FloeCADStrings.text("cad.ui.common.angle", "Angle"),
                     value: Binding(
@@ -227,7 +227,7 @@ struct NumericInputBar: View {
                 )
             }
 
-            Spacer()
+            if !isCompact { Spacer() }
         } actions: {
             Button(FloeCADStrings.label("cad.ui.common.cancel", "Cancel")) {
                 viewModel.cancelRotateAxis()
@@ -255,7 +255,7 @@ struct NumericInputBar: View {
         return AdaptiveBar(showsFooter: isCompact) {
             Text(FloeCADStrings.label("cad.ui.tool.pattern", "Pattern"))
                 .font(isCompact ? .subheadline.weight(.semibold) : .headline)
-                .fixedSize()
+                .fixedSize(horizontal: !isCompact, vertical: true)
 
             if !isCompact { patternPickers(axisChoices) }
 
@@ -263,7 +263,7 @@ struct NumericInputBar: View {
                 Text(FloeCADStrings.label("cad.ui.common.count", "Count"))
                     .font(.caption)
                     .foregroundStyle(.barLabel)
-                    .fixedSize()
+                    .fixedSize(horizontal: !isCompact, vertical: true)
                 // `count` is an Int; the field speaks Double, so round on the
                 // way in. The range lives in `clamp` rather than the setter so
                 // the field knows about it too.
@@ -285,7 +285,7 @@ struct NumericInputBar: View {
                     Text(FloeCADStrings.label("cad.ui.common.spacing", "Spacing"))
                         .font(.caption)
                         .foregroundStyle(.barLabel)
-                        .fixedSize()
+                        .fixedSize(horizontal: !isCompact, vertical: true)
                     // Bind the RAW millimetres: `.length` does the display-unit
                     // conversion itself, so wrapping in `unit.binding` here
                     // would convert twice.
@@ -314,7 +314,7 @@ struct NumericInputBar: View {
                     Text(FloeCADStrings.label("cad.ui.common.angle", "Angle"))
                         .font(.caption)
                         .foregroundStyle(.barLabel)
-                        .fixedSize()
+                        .fixedSize(horizontal: !isCompact, vertical: true)
                     ExpressionValueField(
                         placeholder: FloeCADStrings.text("cad.ui.common.angle", "Angle"),
                         value: Binding(
@@ -329,7 +329,7 @@ struct NumericInputBar: View {
                 }
             }
 
-            Spacer()
+            if !isCompact { Spacer() }
         } actions: {
             Button(FloeCADStrings.label("cad.ui.common.cancel", "Cancel")) {
                 viewModel.cancelPattern()
@@ -363,7 +363,7 @@ struct NumericInputBar: View {
             } label: {
                 Label(viewModel.patternSeedChoices.first { $0.id == viewModel.patternState?.featureSeed?.featureID }?.name
                     ?? FloeCADStrings.text("cad.pattern.bodies", "Bodies"), systemImage: "square.on.square")
-                    .lineLimit(1)
+                    .lineLimit(isCompact ? nil : 1)
             }
             .accessibilityIdentifier("PatternSeedMenu")
             Menu {
@@ -380,7 +380,7 @@ struct NumericInputBar: View {
             } label: {
                 Label(viewModel.patternPathChoices.first { $0.path == viewModel.patternState?.curvePath }?.name
                     ?? FloeCADStrings.text("cad.pattern.path", "Along path"), systemImage: "point.topleft.down.to.point.bottomright.curvepath")
-                    .lineLimit(1)
+                    .lineLimit(isCompact ? nil : 1)
             }
             .accessibilityIdentifier("PatternPathMenu")
         }
@@ -396,7 +396,7 @@ struct NumericInputBar: View {
             }
         }
         .pickerStyle(.segmented)
-        .fixedSize()
+        .fixedSize(horizontal: !isCompact, vertical: true)
 
         let constructionAxes = viewModel.session.document.axes
         if !constructionAxes.isEmpty {
@@ -416,7 +416,7 @@ struct NumericInputBar: View {
             } label: {
                 Label(currentAxisLabel(), systemImage: "line.diagonal.arrow")
                     .font(.caption)
-                    .fixedSize()
+                    .fixedSize(horizontal: !isCompact, vertical: true)
             }
             .accessibilityIdentifier("PatternAxisMenu")
         } else if !axisChoices.isEmpty {
@@ -429,7 +429,7 @@ struct NumericInputBar: View {
                 }
             }
             .pickerStyle(.segmented)
-            .fixedSize()
+            .fixedSize(horizontal: !isCompact, vertical: true)
         }
         }
     }
@@ -474,7 +474,7 @@ struct NumericInputBar: View {
             Text("Opacity")
                 .font(.caption)
                 .foregroundStyle(.barLabel)
-                .fixedSize()
+                .fixedSize(horizontal: !isCompact, vertical: true)
             Slider(
                 value: Binding(
                     get: { viewModel.selectedImage?.opacity ?? image.opacity },
@@ -505,13 +505,13 @@ struct NumericInputBar: View {
             Text(image.name)
                 .font(isCompact ? .subheadline.weight(.semibold) : .headline)
                 .lineLimit(1)
-                .fixedSize()
+                .fixedSize(horizontal: !isCompact, vertical: true)
 
             HStack(spacing: 6) {
                 Text("Size")
                     .font(.caption)
                     .foregroundStyle(.barLabel)
-                    .fixedSize()
+                    .fixedSize(horizontal: !isCompact, vertical: true)
                 ExpressionValueField(
                     placeholder: "Size",
                     value: Binding(
@@ -530,7 +530,7 @@ struct NumericInputBar: View {
 
             if !isCompact { opacityControl(image, width: 140) }
 
-            Spacer()
+            if !isCompact { Spacer() }
         } actions: {
             Button(FloeCADStrings.label("cad.ui.common.delete", "Delete"), role: .destructive) {
                 viewModel.deleteImage(image.id)
@@ -550,14 +550,14 @@ struct NumericInputBar: View {
         AdaptiveBar {
             Text(FloeCADStrings.label("cad.ui.tool.polygon", "Polygon"))
                 .font(isCompact ? .subheadline.weight(.semibold) : .headline)
-                .fixedSize()
+                .fixedSize(horizontal: !isCompact, vertical: true)
             BarHint("Drag from center to a vertex")
 
             HStack(spacing: 6) {
                 Text(FloeCADStrings.label("cad.ui.polygon.sides", "Sides"))
                     .font(.caption)
                     .foregroundStyle(.barLabel)
-                    .fixedSize()
+                    .fixedSize(horizontal: !isCompact, vertical: true)
                 ExpressionValueField(
                     placeholder: FloeCADStrings.text("cad.ui.polygon.sides", "Sides"),
                     value: Binding(
@@ -579,7 +579,7 @@ struct NumericInputBar: View {
                 .labelsHidden()
             }
 
-            Spacer()
+            if !isCompact { Spacer() }
         }
     }
 
@@ -588,12 +588,12 @@ struct NumericInputBar: View {
         AdaptiveBar {
             Text(FloeCADStrings.label("cad.ui.diameter.title", "Diameter"))
                 .font(isCompact ? .subheadline.weight(.semibold) : .headline)
-                .fixedSize()
+                .fixedSize(horizontal: !isCompact, vertical: true)
             HStack(spacing: 6) {
                 Text("⌀")
                     .font(.caption)
                     .foregroundStyle(.barLabel)
-                    .fixedSize()
+                    .fixedSize(horizontal: !isCompact, vertical: true)
                 ExpressionValueField(
                     placeholder: FloeCADStrings.text("cad.ui.diameter.title", "Diameter"),
                     value: Binding(
@@ -607,7 +607,7 @@ struct NumericInputBar: View {
                     onSubmit: { viewModel.commitTool() }
                 )
             }
-            Spacer()
+            if !isCompact { Spacer() }
         } actions: {
             Button(FloeCADStrings.label("cad.ui.common.cancel", "Cancel")) { viewModel.cancelTool() }
             Button(FloeCADStrings.label("cad.ui.common.apply", "Apply")) { viewModel.commitTool() }
@@ -626,13 +626,13 @@ struct NumericInputBar: View {
         AdaptiveBar {
             Text(FloeCADStrings.label("cad.ui.tool.extrude", "Extrude"))
                 .font(isCompact ? .subheadline.weight(.semibold) : .headline)
-                .fixedSize()
+                .fixedSize(horizontal: !isCompact, vertical: true)
 
             HStack(spacing: 6) {
                 Text(FloeCADStrings.label("cad.ui.common.distance", "Distance"))
                     .font(.caption)
                     .foregroundStyle(.barLabel)
-                    .fixedSize()
+                    .fixedSize(horizontal: !isCompact, vertical: true)
                 TextField(FloeCADStrings.text("cad.ui.common.distance", "Distance"), text: $extrudeDistanceText)
                 .keyboardType(.numbersAndPunctuation)
                 .autocorrectionDisabled()
@@ -697,29 +697,17 @@ struct NumericInputBar: View {
             // Concrete grey, not hierarchical `.secondary` — see `.barLabel`.
             .tint(context.symmetric ? Color.accentColor : .barLabel)
 
-            Spacer()
+            if !isCompact { Spacer() }
         } actions: {
-            // Sketch profiles can revolve about one of their lines, sweep
-            // along a path, loft to more profiles, or coil into a helix.
-            if context.sketchID != nil {
-                Button(FloeCADStrings.label("cad.ui.tool.revolve", "Revolve")) {
-                    viewModel.beginRevolveAxisPick()
+            if isCompact {
+                Menu { alternateExtrudeActions(context) } label: {
+                    Label(FloeCADStrings.text("cad.ui.common.more", "More"), systemImage: "ellipsis")
+                        .labelStyle(.iconOnly)
                 }
-                Button(FloeCADStrings.label("cad.ui.tool.sweep", "Sweep")) {
-                    viewModel.beginSweepPathPick()
-                }
-                Button(FloeCADStrings.label("cad.ui.tool.loft", "Loft")) {
-                    viewModel.beginLoftProfilePick()
-                }
-                Button(FloeCADStrings.label("cad.ui.tool.helix", "Helix")) {
-                    viewModel.showHelixOptions = true
-                }
-            }
-            // Face pulls can become an offset construction plane instead.
-            if context.sourceBody != nil {
-                Button(FloeCADStrings.label("cad.ui.tool.offsetPlane", "Offset Plane")) {
-                    viewModel.beginOffsetPlane()
-                }
+                .sheet(isPresented: $viewModel.showHelixOptions) { helixOptions }
+            } else {
+                alternateExtrudeActions(context)
+                    .sheet(isPresented: $viewModel.showHelixOptions) { helixOptions }
             }
             Button(FloeCADStrings.label("cad.ui.common.cancel", "Cancel")) {
                 viewModel.cancelTool()
@@ -746,7 +734,7 @@ struct NumericInputBar: View {
                 Text(FloeCADStrings.label("cad.ui.extrude.result", "Result"))
                     .font(.caption)
                     .foregroundStyle(.barLabel)
-                    .fixedSize()
+                    .fixedSize(horizontal: !isCompact, vertical: true)
                 Picker(FloeCADStrings.label("cad.ui.extrude.result", "Result"), selection: Binding(
                     get: { viewModel.toolContext?.booleanOverride ?? .auto },
                     set: { viewModel.setBooleanOverride($0) }
@@ -756,13 +744,28 @@ struct NumericInputBar: View {
                     }
                 }
                 .pickerStyle(.segmented)
-                .fixedSize()
+                .fixedSize(horizontal: !isCompact, vertical: true)
             }
         }
-        .sheet(isPresented: $viewModel.showHelixOptions) {
-            HelixOptionsSheet { radius, pitch, turns in
-                viewModel.commitHelixSweep(radius: radius, pitch: pitch, turns: turns)
-            }
+
+    }
+
+    @ViewBuilder
+    private func alternateExtrudeActions(_ context: EditorViewModel.ToolContext) -> some View {
+        if context.sketchID != nil {
+            Button(FloeCADStrings.label("cad.ui.tool.revolve", "Revolve")) { viewModel.beginRevolveAxisPick() }
+            Button(FloeCADStrings.label("cad.ui.tool.sweep", "Sweep")) { viewModel.beginSweepPathPick() }
+            Button(FloeCADStrings.label("cad.ui.tool.loft", "Loft")) { viewModel.beginLoftProfilePick() }
+            Button(FloeCADStrings.label("cad.ui.tool.helix", "Helix")) { viewModel.showHelixOptions = true }
+        }
+        if context.sourceBody != nil {
+            Button(FloeCADStrings.label("cad.ui.tool.offsetPlane", "Offset Plane")) { viewModel.beginOffsetPlane() }
+        }
+    }
+
+    private var helixOptions: some View {
+        HelixOptionsSheet { radius, pitch, turns in
+            viewModel.commitHelixSweep(radius: radius, pitch: pitch, turns: turns)
         }
     }
 
@@ -773,15 +776,15 @@ struct NumericInputBar: View {
         return AdaptiveBar {
             Text(FloeCADStrings.label("cad.ui.tool.sweep", "Sweep"))
                 .font(isCompact ? .subheadline.weight(.semibold) : .headline)
-                .fixedSize()
+                .fixedSize(horizontal: !isCompact, vertical: true)
             Text(count == 0
                 ? "Tap sketch lines or arcs to build the path"
                 : "\(count) path segment\(count == 1 ? "" : "s")")
                 .font(.caption)
                 .foregroundStyle(.barLabel)
-                .fixedSize()
+                .fixedSize(horizontal: !isCompact, vertical: true)
 
-            Spacer()
+            if !isCompact { Spacer() }
         } actions: {
             Button(FloeCADStrings.label("cad.ui.common.cancel", "Cancel")) {
                 viewModel.cancelSweepPathPick()
@@ -802,13 +805,13 @@ struct NumericInputBar: View {
         return AdaptiveBar {
             Text(FloeCADStrings.label("cad.ui.tool.loft", "Loft"))
                 .font(isCompact ? .subheadline.weight(.semibold) : .headline)
-                .fixedSize()
+                .fixedSize(horizontal: !isCompact, vertical: true)
             Text("\(count) section\(count == 1 ? "" : "s") — tap more profile fills")
                 .font(.caption)
                 .foregroundStyle(.barLabel)
-                .fixedSize()
+                .fixedSize(horizontal: !isCompact, vertical: true)
 
-            Spacer()
+            if !isCompact { Spacer() }
         } actions: {
             Button(FloeCADStrings.label("cad.ui.common.cancel", "Cancel")) {
                 viewModel.cancelLoftProfilePick()
@@ -826,14 +829,14 @@ struct NumericInputBar: View {
         AdaptiveBar {
             Text(FloeCADStrings.label("cad.ui.tool.offsetPlane", "Offset Plane"))
                 .font(isCompact ? .subheadline.weight(.semibold) : .headline)
-                .fixedSize()
+                .fixedSize(horizontal: !isCompact, vertical: true)
             BarHint("Drag the arrow, or type a distance")
 
             HStack(spacing: 6) {
                 Text(FloeCADStrings.label("cad.ui.common.distance", "Distance"))
                     .font(.caption)
                     .foregroundStyle(.barLabel)
-                    .fixedSize()
+                    .fixedSize(horizontal: !isCompact, vertical: true)
                 ExpressionValueField(
                     placeholder: FloeCADStrings.text("cad.ui.common.distance", "Distance"),
                     value: Binding(
@@ -848,13 +851,24 @@ struct NumericInputBar: View {
                 )
             }
 
-            Spacer()
+            if !isCompact { Spacer() }
         } actions: {
             Button(FloeCADStrings.label("cad.ui.common.cancel", "Cancel")) {
                 viewModel.cancelTool()
             }
-            Button(FloeCADStrings.label("cad.ui.tool.anglePlane", "Angle Plane")) {
+            if isCompact {
+                Menu {
+                Button(FloeCADStrings.label("cad.ui.tool.anglePlane", "Angle Plane")) {
                 viewModel.beginAnglePlane()
+            }
+                } label: {
+                    Label(FloeCADStrings.text("cad.ui.common.more", "More"), systemImage: "ellipsis")
+                        .labelStyle(.iconOnly)
+                }
+            } else {
+                Button(FloeCADStrings.label("cad.ui.tool.anglePlane", "Angle Plane")) {
+                viewModel.beginAnglePlane()
+            }
             }
             Button(FloeCADStrings.label("cad.ui.extrude.addPlane", "Add Plane")) {
                 viewModel.commitTool()
@@ -870,7 +884,7 @@ struct NumericInputBar: View {
         return AdaptiveBar {
             Text(FloeCADStrings.label("cad.ui.tool.anglePlane", "Angle Plane"))
                 .font(isCompact ? .subheadline.weight(.semibold) : .headline)
-                .fixedSize()
+                .fixedSize(horizontal: !isCompact, vertical: true)
             BarHint(FloeCADStrings.text("cad.datum.angleBarHint",
                 "Type an angle; the plane turns about the hinge"))
 
@@ -878,7 +892,7 @@ struct NumericInputBar: View {
                 Text(FloeCADStrings.label("cad.ui.common.angle", "Angle"))
                     .font(.caption)
                     .foregroundStyle(.barLabel)
-                    .fixedSize()
+                    .fixedSize(horizontal: !isCompact, vertical: true)
                 ExpressionValueField(
                     placeholder: FloeCADStrings.text("cad.ui.common.angle", "Angle"),
                     value: Binding(
@@ -898,7 +912,7 @@ struct NumericInputBar: View {
                 Text(FloeCADStrings.label("cad.datum.hinge", "Hinge"))
                     .font(.caption)
                     .foregroundStyle(.barLabel)
-                    .fixedSize()
+                    .fixedSize(horizontal: !isCompact, vertical: true)
                 Picker(FloeCADStrings.label("cad.datum.hinge", "Hinge"), selection: Binding(
                     get: { hingeSelection },
                     set: { viewModel.setAnglePlaneHinge($0 == 0 ? SIMD2(1, 0) : SIMD2(0, 1)) }
@@ -907,18 +921,29 @@ struct NumericInputBar: View {
                     Text("Y").tag(1)
                 }
                 .pickerStyle(.segmented)
-                .fixedSize()
+                .fixedSize(horizontal: !isCompact, vertical: true)
                 .accessibilityIdentifier("AnglePlaneHingePicker")
             }
 
-            Spacer()
+            if !isCompact { Spacer() }
         } actions: {
             Button(FloeCADStrings.label("cad.ui.common.cancel", "Cancel")) {
                 viewModel.cancelTool()
             }
             .accessibilityIdentifier("AnglePlaneCancel")
-            Button(FloeCADStrings.label("cad.ui.tool.offsetPlane", "Offset Plane")) {
+            if isCompact {
+                Menu {
+                Button(FloeCADStrings.label("cad.ui.tool.offsetPlane", "Offset Plane")) {
                 viewModel.beginOffsetPlane()
+            }
+                } label: {
+                    Label(FloeCADStrings.text("cad.ui.common.more", "More"), systemImage: "ellipsis")
+                        .labelStyle(.iconOnly)
+                }
+            } else {
+                Button(FloeCADStrings.label("cad.ui.tool.offsetPlane", "Offset Plane")) {
+                viewModel.beginOffsetPlane()
+            }
             }
             Button(FloeCADStrings.label("cad.ui.extrude.addPlane", "Add Plane")) {
                 viewModel.commitTool()
@@ -932,14 +957,14 @@ struct NumericInputBar: View {
         AdaptiveBar {
             Text(FloeCADStrings.label("cad.ui.tool.revolve", "Revolve"))
                 .font(isCompact ? .subheadline.weight(.semibold) : .headline)
-                .fixedSize()
+                .fixedSize(horizontal: !isCompact, vertical: true)
             BarHint("Drag to sweep, or type an angle")
 
             HStack(spacing: 6) {
                 Text(FloeCADStrings.label("cad.ui.common.angle", "Angle"))
                     .font(.caption)
                     .foregroundStyle(.barLabel)
-                    .fixedSize()
+                    .fixedSize(horizontal: !isCompact, vertical: true)
                 ExpressionValueField(
                     placeholder: FloeCADStrings.text("cad.ui.common.angle", "Angle"),
                     value: Binding(
@@ -954,7 +979,7 @@ struct NumericInputBar: View {
                 )
             }
 
-            Spacer()
+            if !isCompact { Spacer() }
         } actions: {
             Button(FloeCADStrings.label("cad.ui.common.cancel", "Cancel")) {
                 viewModel.cancelTool()

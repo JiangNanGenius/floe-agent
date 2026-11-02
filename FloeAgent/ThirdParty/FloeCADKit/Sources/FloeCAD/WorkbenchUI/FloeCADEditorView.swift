@@ -891,45 +891,52 @@ struct FloeCADEditorView: View {
             set: { viewModel.blendValue = max(0, $0) })
         return AdaptiveBar(style: .capsule, spacing: 12) {
             blendModeMenu(kind, viewModel)
-            Image(systemName: kind == .chamfer ? "square.on.circle" : "circle.circle")
-            // When the kernel refused the current size/pick, say WHY — the
-            // typed diagnostic replaces the count until the preview is valid
-            // again. Concrete color, not hierarchical .secondary (gotcha 10).
-            if let failure = viewModel.blendPreviewFailure,
-               !viewModel.blendSelectedEdges.isEmpty {
-                Text(failure)
-                    .font(.subheadline)
-                    .foregroundStyle(.orange)
-                    .lineLimit(2)
-                    .accessibilityIdentifier("BlendFailureHint")
-            } else {
-                Text(viewModel.blendSelectedEdges.isEmpty
-                     ? "Tap edges to \(kind.title.lowercased())"
-                     : "\(viewModel.blendSelectedEdges.count) edge\(viewModel.blendSelectedEdges.count == 1 ? "" : "s") selected")
-                    .font(.subheadline)
-                    .fixedSize()
+            HStack(spacing: 8) {
+                Image(systemName: kind == .chamfer ? "square.on.circle" : "circle.circle")
+                if let failure = viewModel.blendPreviewFailure,
+                   !viewModel.blendSelectedEdges.isEmpty {
+                    Text(failure)
+                        .font(.subheadline)
+                        .foregroundStyle(.orange)
+                        .accessibilityIdentifier("BlendFailureHint")
+                } else {
+                    Text(viewModel.blendSelectedEdges.isEmpty
+                         ? "Tap edges to \(kind.title.lowercased())"
+                         : "\(viewModel.blendSelectedEdges.count) edge\(viewModel.blendSelectedEdges.count == 1 ? "" : "s") selected")
+                        .font(.subheadline)
+                }
             }
-            Divider().frame(height: 20)
-            Text(viewModel.blendAdvancedMode == .variableFillet
-                 ? FloeCADStrings.text("cad.blend.endRadius", "End radius") : kind.valueLabel)
-                .font(.caption).foregroundStyle(.barLabel).fixedSize()
-            // Text, applied live, arithmetic allowed — see ExpressionValueField.
-            ExpressionValueField(placeholder: settings.unit.symbol, value: value,
-                                 clamp: nil, identifier: "BlendValueField")
-            Text(settings.unit.symbol).font(.caption).foregroundStyle(.barLabel).fixedSize()
+            HStack(spacing: 6) {
+                Text(viewModel.blendAdvancedMode == .variableFillet
+                     ? FloeCADStrings.text("cad.blend.endRadius", "End radius") : kind.valueLabel)
+                    .font(.caption).foregroundStyle(.barLabel)
+                    .fixedSize(horizontal: horizontalSizeClass != .compact, vertical: true)
+                if horizontalSizeClass == .compact { Spacer() }
+                ExpressionValueField(placeholder: settings.unit.symbol, value: value,
+                                     clamp: nil, identifier: "BlendValueField")
+                Text(settings.unit.symbol).font(.caption).foregroundStyle(.barLabel).fixedSize(horizontal: horizontalSizeClass != .compact, vertical: true)
+            }
             if let advanced = viewModel.blendAdvancedMode {
-                Text(advanced == .variableFillet ? FloeCADStrings.text("cad.blend.middleRadius", "Middle radius")
-                     : advanced == .distanceAngleChamfer ? FloeCADStrings.text("cad.feature.angle", "Angle")
-                     : FloeCADStrings.text("cad.blend.secondDistance", "Second distance"))
-                    .font(.caption).foregroundStyle(.barLabel).fixedSize()
-                ExpressionValueField(placeholder: advanced == .distanceAngleChamfer ? "°" : settings.unit.symbol,
-                    value: Binding(get: { viewModel.blendSecondValue }, set: { viewModel.blendSecondValue = $0 }),
-                    kind: advanced == .distanceAngleChamfer ? .plain : .length,
-                    clamp: nil, identifier: "BlendSecondValueField")
+                HStack(spacing: 6) {
+                    Text(advanced == .variableFillet ? FloeCADStrings.text("cad.blend.middleRadius", "Middle radius")
+                         : advanced == .distanceAngleChamfer ? FloeCADStrings.text("cad.feature.angle", "Angle")
+                         : FloeCADStrings.text("cad.blend.secondDistance", "Second distance"))
+                        .font(.caption).foregroundStyle(.barLabel)
+                        .fixedSize(horizontal: horizontalSizeClass != .compact, vertical: true)
+                    if horizontalSizeClass == .compact { Spacer() }
+                    ExpressionValueField(placeholder: advanced == .distanceAngleChamfer ? "°" : settings.unit.symbol,
+                        value: Binding(get: { viewModel.blendSecondValue }, set: { viewModel.blendSecondValue = $0 }),
+                        kind: advanced == .distanceAngleChamfer ? .plain : .length,
+                        clamp: nil, identifier: "BlendSecondValueField")
+                    Text(advanced == .distanceAngleChamfer ? "°" : settings.unit.symbol)
+                        .font(.caption).foregroundStyle(.barLabel).fixedSize(horizontal: horizontalSizeClass != .compact, vertical: true)
+                }
                 if !advanced.isFillet {
-                    Toggle(FloeCADStrings.text("cad.blend.swapSides", "Swap sides"), isOn: Binding(
+                    let swap = Toggle(FloeCADStrings.text("cad.blend.swapSides", "Swap sides"), isOn: Binding(
                         get: { viewModel.blendSwapSupport }, set: { viewModel.blendSwapSupport = $0 }))
-                        .toggleStyle(.button).controlSize(.small).accessibilityIdentifier("BlendSwapSides")
+                        .accessibilityIdentifier("BlendSwapSides")
+                    if horizontalSizeClass == .compact { swap }
+                    else { swap.toggleStyle(.button).controlSize(.small) }
                 }
             }
             // While dragging, show the kernel-derived ceiling the drag is
@@ -938,7 +945,7 @@ struct FloeCADEditorView: View {
                 Text("max \(settings.unit.display(fromMM: cap), format: .number.precision(.fractionLength(0...1)))")
                     .font(.caption)
                     .foregroundStyle(.barLabel)
-                    .fixedSize()
+                    .fixedSize(horizontal: horizontalSizeClass != .compact, vertical: true)
                     .accessibilityIdentifier("BlendMaxHint")
             }
         } actions: {
@@ -982,12 +989,14 @@ struct FloeCADEditorView: View {
     /// say which stage you are in and — when the kit refuses — why.
     private func replaceFaceBar(_ viewModel: EditorViewModel) -> some View {
         AdaptiveBar(style: .capsule, spacing: 12) {
-            Image(systemName: "arrow.up.and.down.square")
-            Text(replaceFaceHint(viewModel))
-                .font(.subheadline)
-                .fixedSize()
+            HStack(spacing: 8) {
+                Image(systemName: "arrow.up.and.down.square")
+                Text(replaceFaceHint(viewModel))
+                    .font(.subheadline)
+                    .fixedSize(horizontal: horizontalSizeClass != .compact, vertical: true)
+            }
             if viewModel.replaceSourceFace != nil {
-                Divider().frame(height: 20)
+                if horizontalSizeClass != .compact { Divider().frame(height: 20) }
                 Toggle("Flip", isOn: Binding(
                     get: { viewModel.replaceFaceFlip },
                     set: { viewModel.replaceFaceFlip = $0 }))
@@ -1025,10 +1034,12 @@ struct FloeCADEditorView: View {
     /// is "which faces", so the bar reports the pick and why Apply is off.
     private func deleteFaceBar(_ viewModel: EditorViewModel) -> some View {
         AdaptiveBar(style: .capsule, spacing: 12) {
-            Image(systemName: "square.slash")
-            Text(deleteFaceHint(viewModel))
-                .font(.subheadline)
-                .fixedSize()
+            HStack(spacing: 8) {
+                Image(systemName: "square.slash")
+                Text(deleteFaceHint(viewModel))
+                    .font(.subheadline)
+                    .fixedSize(horizontal: horizontalSizeClass != .compact, vertical: true)
+            }
         } actions: {
             Button("Cancel") { viewModel.cancelDeleteFace() }
                 .buttonStyle(.bordered)
@@ -1061,19 +1072,24 @@ struct FloeCADEditorView: View {
             get: { viewModel.shellThickness },
             set: { viewModel.shellThickness = max(0, $0) })
         return AdaptiveBar(style: .capsule, spacing: 12) {
-            Image(systemName: "cube.transparent")
-            Text(viewModel.shellBodyID == nil
-                 ? "Tap a body to shell"
-                 : viewModel.shellSelectedFaces.isEmpty
-                    ? "Tap faces to open (or Apply for a closed hollow)"
-                    : "\(viewModel.shellSelectedFaces.count) face\(viewModel.shellSelectedFaces.count == 1 ? "" : "s") open")
-                .font(.subheadline)
-                .fixedSize()
-            Divider().frame(height: 20)
-            Text("Thickness").font(.caption).foregroundStyle(.barLabel).fixedSize()
-            ExpressionValueField(placeholder: settings.unit.symbol, value: value,
-                                 clamp: nil, identifier: "ShellThicknessField")
-            Text(settings.unit.symbol).font(.caption).foregroundStyle(.barLabel).fixedSize()
+            HStack(spacing: 8) {
+                Image(systemName: "cube.transparent")
+                Text(viewModel.shellBodyID == nil
+                     ? "Tap a body to shell"
+                     : viewModel.shellSelectedFaces.isEmpty
+                        ? "Tap faces to open (or Apply for a closed hollow)"
+                        : "\(viewModel.shellSelectedFaces.count) face\(viewModel.shellSelectedFaces.count == 1 ? "" : "s") open")
+                    .font(.subheadline)
+                    .fixedSize(horizontal: horizontalSizeClass != .compact, vertical: true)
+            }
+            if horizontalSizeClass != .compact { Divider().frame(height: 20) }
+            HStack(spacing: 6) {
+                Text("Thickness").font(.caption).foregroundStyle(.barLabel).fixedSize(horizontal: horizontalSizeClass != .compact, vertical: true)
+                if horizontalSizeClass == .compact { Spacer() }
+                ExpressionValueField(placeholder: settings.unit.symbol, value: value,
+                                     clamp: nil, identifier: "ShellThicknessField")
+                Text(settings.unit.symbol).font(.caption).foregroundStyle(.barLabel).fixedSize(horizontal: horizontalSizeClass != .compact, vertical: true)
+            }
         } actions: {
             Button("Cancel") { viewModel.cancelShell() }
                 .buttonStyle(.bordered)
@@ -1097,20 +1113,25 @@ struct FloeCADEditorView: View {
             get: { viewModel.axisLength },
             set: { viewModel.axisLength = max(0.001, $0) }))
         return AdaptiveBar(style: .capsule, spacing: 12) {
-            Image(systemName: "line.diagonal.arrow")
-            Text(viewModel.axisConstructionLabel)
-                .font(.subheadline)
-                .fixedSize()
-            Divider().frame(height: 20)
-            Text("Length").font(.caption).foregroundStyle(.barLabel).fixedSize()
-            TextField(settings.unit.symbol, value: value,
-                      format: .number.precision(.fractionLength(0...3)))
-                .textFieldStyle(.roundedBorder)
-                .frame(width: 64)
-                .multilineTextAlignment(.trailing)
-                .keyboardType(.decimalPad)
-                .accessibilityIdentifier("AxisLengthField")
-            Text(settings.unit.symbol).font(.caption).foregroundStyle(.barLabel).fixedSize()
+            HStack(spacing: 8) {
+                Image(systemName: "line.diagonal.arrow")
+                Text(viewModel.axisConstructionLabel)
+                    .font(.subheadline)
+                    .fixedSize(horizontal: horizontalSizeClass != .compact, vertical: true)
+            }
+            if horizontalSizeClass != .compact { Divider().frame(height: 20) }
+            HStack(spacing: 6) {
+                Text("Length").font(.caption).foregroundStyle(.barLabel).fixedSize(horizontal: horizontalSizeClass != .compact, vertical: true)
+                if horizontalSizeClass == .compact { Spacer() }
+                TextField(settings.unit.symbol, value: value,
+                          format: .number.precision(.fractionLength(0...3)))
+                    .textFieldStyle(.roundedBorder)
+                    .frame(width: 64)
+                    .multilineTextAlignment(.trailing)
+                    .keyboardType(.decimalPad)
+                    .accessibilityIdentifier("AxisLengthField")
+                Text(settings.unit.symbol).font(.caption).foregroundStyle(.barLabel).fixedSize(horizontal: horizontalSizeClass != .compact, vertical: true)
+            }
         } actions: {
             Button("Cancel") { viewModel.cancelAxisTool() }
                 .buttonStyle(.bordered)
@@ -1131,7 +1152,7 @@ struct FloeCADEditorView: View {
                 get: { viewModel.sketchCurveEditKind }, set: { viewModel.sketchCurveEditKind = $0 })) {
                 Text(FloeCADStrings.text("cad.sketch.curve.trim", "Trim")).tag(SketchCurveEditKind.trim)
                 Text(FloeCADStrings.text("cad.sketch.curve.extend", "Extend")).tag(SketchCurveEditKind.extend)
-            }.pickerStyle(.segmented).fixedSize().accessibilityIdentifier("SketchCurveOperation")
+            }.pickerStyle(.segmented).fixedSize(horizontal: horizontalSizeClass != .compact, vertical: true).accessibilityIdentifier("SketchCurveOperation")
             Picker(FloeCADStrings.text("cad.sketch.curve.boundary", "Boundary"), selection: Binding(
                 get: { viewModel.sketchCurveBoundaryID }, set: { viewModel.sketchCurveBoundaryID = $0 })) {
                 Text(FloeCADStrings.text("cad.sketch.curve.chooseBoundary", "Choose the boundary first.")).tag(Optional<UUID>.none)
@@ -1155,16 +1176,20 @@ struct FloeCADEditorView: View {
             set: { viewModel.sketchOffsetDistance = $0 }))
         let picked = viewModel.sketchOffsetSourceEntities.count
         return AdaptiveBar(style: .capsule, spacing: 12) {
-            Image(systemName: "square.on.square.dashed")
-            Text(picked == 0
-                 ? "Tap sketch geometry to offset"
-                 : "\(picked) selected")
-                .font(.subheadline)
-                .fixedSize()
+            HStack(spacing: 8) {
+                HStack(spacing: 8) {
+                Image(systemName: "square.on.square.dashed")
+                    Text(picked == 0
+                         ? "Tap sketch geometry to offset"
+                         : "\(picked) selected")
+                        .font(.subheadline)
+                        .fixedSize(horizontal: horizontalSizeClass != .compact, vertical: true)
+            }
+            }
             if viewModel.sketchOffsetUsesLinkedCurve {
                 Text(FloeCADStrings.text("cad.sketch.curve.linkedOffset", "Linked offset")).font(.caption)
             }
-            Divider().frame(height: 20)
+            if horizontalSizeClass != .compact { Divider().frame(height: 20) }
             Picker("Type", selection: Binding(
                 get: { viewModel.sketchOffsetType },
                 set: { viewModel.sketchOffsetType = $0 }
@@ -1174,17 +1199,20 @@ struct FloeCADEditorView: View {
                 }
             }
             .pickerStyle(.segmented)
-            .fixedSize()
+            .fixedSize(horizontal: horizontalSizeClass != .compact, vertical: true)
             .accessibilityIdentifier("SketchOffsetType")
-            Text("Distance").font(.caption).foregroundStyle(.barLabel).fixedSize()
-            TextField(settings.unit.symbol, value: value,
-                      format: .number.precision(.fractionLength(0...3)))
-                .textFieldStyle(.roundedBorder)
-                .frame(width: 64)
-                .multilineTextAlignment(.trailing)
-                .keyboardType(.numbersAndPunctuation)
-                .accessibilityIdentifier("SketchOffsetDistanceField")
-            Text(settings.unit.symbol).font(.caption).foregroundStyle(.barLabel).fixedSize()
+            HStack(spacing: 6) {
+                Text("Distance").font(.caption).foregroundStyle(.barLabel).fixedSize(horizontal: horizontalSizeClass != .compact, vertical: true)
+                if horizontalSizeClass == .compact { Spacer() }
+                TextField(settings.unit.symbol, value: value,
+                          format: .number.precision(.fractionLength(0...3)))
+                    .textFieldStyle(.roundedBorder)
+                    .frame(width: 64)
+                    .multilineTextAlignment(.trailing)
+                    .keyboardType(.numbersAndPunctuation)
+                    .accessibilityIdentifier("SketchOffsetDistanceField")
+                Text(settings.unit.symbol).font(.caption).foregroundStyle(.barLabel).fixedSize(horizontal: horizontalSizeClass != .compact, vertical: true)
+            }
         } actions: {
             if viewModel.sketchOffsetSelectedLinkID != nil {
                 Button(FloeCADStrings.text("cad.sketch.curve.makeIndependent", "Make independent")) { viewModel.unlinkSelectedSketchOffset() }
