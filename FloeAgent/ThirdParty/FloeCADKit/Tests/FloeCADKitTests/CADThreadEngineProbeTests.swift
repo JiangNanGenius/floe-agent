@@ -429,7 +429,7 @@ final class CADThreadEngineProbeTests: XCTestCase {
         // while unsafe helix arithmetic is refused even with that spine.
         let supplied: [[Double]] = [[0, 0, 0], [0, 1, 0]]
         guard case let .success(op) = AgentExec.parse(command(turns: 10, spine: supplied)),
-              case let .sweep(_, _, parsedSpine, _, _, parsedHelix) = op else {
+              case let .sweep(_, _, parsedSpine, _, _, parsedHelix, _) = op else {
             return XCTFail("valid supplied spine + helix must parse")
         }
         XCTAssertEqual(parsedSpine, [SIMD3<Double>(0, 0, 0), SIMD3<Double>(0, 1, 0)])
@@ -437,7 +437,7 @@ final class CADThreadEngineProbeTests: XCTestCase {
         expectFailure(command(turns: 1e20, spine: supplied), code: "helix_sampling_limit")
 
         guard case let .success(op) = AgentExec.parse(command(turns: 10, reference: nil)),
-              case let .sweep(_, _, sampled, _, _, helix) = op else {
+              case let .sweep(_, _, sampled, _, _, helix, _) = op else {
             return XCTFail("valid opaque helix must parse")
         }
         XCTAssertEqual(sampled.count, 361)
@@ -451,7 +451,7 @@ final class CADThreadEngineProbeTests: XCTestCase {
         // A parallel/absent reference keeps its existing deterministic fallback.
         guard case let .success(op) = AgentExec.parse(
             command(turns: 2, reference: [0, 1, 0])),
-              case let .sweep(_, _, _, _, _, fallbackHelix) = op else {
+              case let .sweep(_, _, _, _, _, fallbackHelix, _) = op else {
             return XCTFail("parallel reference must use the deterministic fallback")
         }
         let fallbackSpec = try XCTUnwrap(fallbackHelix)
@@ -461,7 +461,7 @@ final class CADThreadEngineProbeTests: XCTestCase {
 
         // Negative pitch is valid and descends along the +Y axis.
         guard case let .success(op) = AgentExec.parse(command(turns: 10, pitch: -1.25)),
-              case let .sweep(_, _, descending, _, _, negativeHelix) = op else {
+              case let .sweep(_, _, descending, _, _, negativeHelix, _) = op else {
             return XCTFail("negative pitch must parse")
         }
         XCTAssertEqual(try XCTUnwrap(negativeHelix).pitch, -1.25)

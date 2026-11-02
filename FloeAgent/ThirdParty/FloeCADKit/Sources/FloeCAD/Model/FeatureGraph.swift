@@ -365,7 +365,7 @@ nonisolated enum FeatureKind: Codable, Sendable {
     /// documents written before helices carried — they decode with `helix`
     /// absent, i.e. nil). See `HelixSpec`.
     case sweep(profile: ProfileRef, plane: PlaneRef, spine: [PointWrapper], boolean: BooleanIntent,
-               helix: HelixSpec?)
+               helix: HelixSpec?, path: SweepPathDefinition? = nil)
     case loft(sections: [ProfileRef], boolean: BooleanIntent)
     case boolean(kind: BooleanKind, target: BodyRef, tools: [BodyRef])
     case transform(body: BodyRef, delta: Transform3D)
@@ -471,8 +471,9 @@ nonisolated extension FeatureNode {
         case let .hole(_, profile, plane, _):
             ids.insert(profile.sketchID)
             addPlane(plane)
-        case let .sweep(profile, plane, _, _, _):
+        case let .sweep(profile, plane, _, _, _, path):
             ids.insert(profile.sketchID)
+            for segment in path?.segments ?? [] { ids.insert(segment.sketchID) }
             addPlane(plane)
         case let .loft(sections, _):
             for ref in sections { ids.insert(ref.sketchID) }
@@ -495,7 +496,7 @@ nonisolated extension FeatureNode {
         }
         switch kind {
         case let .extrude(_, plane, _, _, _, _), let .draftExtrude(_, plane, _, _, _, _),
-             let .revolve(_, plane, _, _, _), let .sweep(_, plane, _, _, _),
+             let .revolve(_, plane, _, _, _), let .sweep(_, plane, _, _, _, _),
              let .hole(_, _, plane, _), let .mirror(_, plane, _):
             add(plane)
         case .primitive, .loft, .boolean, .transform, .pattern, .pushPull, .moveFace,
@@ -537,7 +538,7 @@ nonisolated extension FeatureNode {
         case .primitive:
             return []
         case let .extrude(_, _, _, _, boolean, _), let .draftExtrude(_, _, _, _, _, boolean),
-             let .revolve(_, _, _, _, boolean), let .sweep(_, _, _, boolean, _),
+             let .revolve(_, _, _, _, boolean), let .sweep(_, _, _, boolean, _, _),
              let .loft(_, boolean):
             return boolean.resolvedTargets.map(\.bodyID)
         case let .boolean(_, target, tools):
@@ -881,10 +882,10 @@ nonisolated extension FeatureGraph {
             evalHole(
                 node, targetRef: target, profileRef: profile, planeRef: plane,
                 spec: spec, into: &state, next: nextRevision)
-        case let .sweep(profile, plane, spine, boolean, helix):
+        case let .sweep(profile, plane, spine, boolean, helix, path):
             evalSweep(
                 node, profileRef: profile, planeRef: plane, spine: spine,
-                boolean: boolean, helix: helix, into: &state, next: nextRevision)
+                boolean: boolean, helix: helix, path: path, into: &state, next: nextRevision)
         case let .loft(sections, boolean):
             evalLoft(node, sectionRefs: sections, boolean: boolean, into: &state, next: nextRevision)
         case let .mirror(body, plane, keepOriginal):
@@ -2708,6 +2709,7 @@ nonisolated extension FeatureGraph {
         spine: [PointWrapper],
         boolean: BooleanIntent,
         helix: HelixSpec? = nil,
+        path: SweepPathDefinition? = nil,
         into state: inout EvalState,
         next nextRevision: () -> UInt64
     ) {
@@ -2721,6 +2723,21 @@ nonisolated extension FeatureGraph {
                 "sweep helix refused: \(helixError.message)")
             return
         }
+        let resolvedSpine: [PointWrapper]
+        if let path {
+            guard helix == nil else {
+                state.errors[node.id] = .brokenRef("A sweep cannot use both a helix and sketch-edge path.")
+                return
+            }
+            do {
+                resolvedSpine = try path.resolvedSpine { id in
+                    state.sketch(id)
+                }.map(PointWrapper.init)
+            } catch {
+                state.errors[node.id] = .brokenRef("sweep path: \(error.localizedDescription)")
+                return
+            }
+        } else { resolvedSpine = spine }
         guard let plane = state.resolvePlane(planeRef) else {
             state.errors[node.id] = .brokenRef("sweep plane unresolved")
             return
@@ -2734,17 +2751,17 @@ nonisolated extension FeatureGraph {
         // Check the profile × spine multiplication before copying/deduplicating
         // the spine or building any polygon: a short helix can still generate
         // an unusable wall mesh for a dense profile.
-        if helix != nil {
+        if helix != nil || path != nil {
             let loopVertices = outer.loop.count
                 + holes.reduce(0) { $0 + $1.loop.count }
             if let meshError = HelixSamplingLimits.sweepMeshError(
-                spinePointCount: spine.count, loopVertexCount: loopVertices) {
+                spinePointCount: resolvedSpine.count, loopVertexCount: loopVertices) {
                 state.errors[node.id] = .kernelFailure(
                     "sweep helix refused: \(meshError)")
                 return
             }
         }
-        let spinePts = spine.map(\.point)   // WORLD-space 3D points
+        let spinePts = resolvedSpine.map(\.point)   // WORLD-space 3D points
         let mesh = SweepLoftKit.sweep(profile: outer, holes: holes, in: plane, alongPath: spinePts)
         var brep: BRepHandle? = nil
         var names: [Int: ElementName] = [:]
@@ -2758,6 +2775,10 @@ nonisolated extension FeatureGraph {
             let history = OCCTShapeHistory()
             guard var solid = OCCTKernel.sweepSolid(outer: outer, holes: [], plane: plane,
                                                     spine: spinePts, helix: helix, history: history) else {
+                if path != nil || helix != nil {
+                    state.errors[node.id] = .kernelFailure("The associated sweep could not build an exact solid.")
+                    return
+                }
                 emitFullSolid(node, mesh: mesh, brep: nil, kernelNames: [:],
                               boolean: boolean, scheme: .generic,
                               into: &state, next: nextRevision)
@@ -3381,7 +3402,7 @@ private nonisolated struct EvalState {
         }
     }
 
-    private mutating func sketch(_ id: SketchID) -> Sketch? {
+    fileprivate mutating func sketch(_ id: SketchID) -> Sketch? {
         guard let record = sketches.first(where: { $0.id == id }) else { return nil }
         if record.support != nil { return try? associative.sketch(id).sketch }
         return record

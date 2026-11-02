@@ -8534,9 +8534,9 @@ final class EditorViewModel {
         case let .revolve(profile, _, axis, angle, boolean):
             guard !Self.sameProfile(profile, ref) else { cancelFeatureProfilePick(); return }
             after = .revolve(profile: ref, plane: plane, axis: axis, angle: angle, boolean: boolean)
-        case let .sweep(profile, _, spine, boolean, helix):
+        case let .sweep(profile, _, spine, boolean, helix, path):
             guard !Self.sameProfile(profile, ref) else { cancelFeatureProfilePick(); return }
-            after = .sweep(profile: ref, plane: plane, spine: spine, boolean: boolean, helix: helix)
+            after = .sweep(profile: ref, plane: plane, spine: spine, boolean: boolean, helix: helix, path: path)
         default:
             cancelFeatureProfilePick()
             return
@@ -8866,6 +8866,7 @@ final class EditorViewModel {
         var extraProfiles: [(profile: Profile, holes: [Profile])] = []
         /// Entities already chained into the sweep path (tap order).
         var sweepPathEntityIDs: [UUID] = []
+        var sweepPathSegments: [SweepPathDefinition.Segment] = []
         /// Ordered loft sections (seeded with the armed profile; taps append).
         var loftProfiles: [(profile: Profile, holes: [Profile], plane: SketchPlane, sketchID: SketchID)] = []
         /// Boolean badge: manual result override (auto = sample-point rules).
@@ -10500,6 +10501,7 @@ final class EditorViewModel {
         }
         context.kind = .extrude(distance: 2)
         context.sweepPathEntityIDs = []
+        context.sweepPathSegments = []
         rebuildToolPreview(&context)
         toolContext = context
         mode = .extruding
@@ -10513,7 +10515,7 @@ final class EditorViewModel {
             return
         }
         let tolerance = SketchHitTester.screenPickTolerance(worldUnitsPerPoint: worldPerPoint)
-        var best: (entity: SketchEntity, plane: SketchPlane, distance: Double)?
+        var best: (entity: SketchEntity, sketchID: SketchID, plane: SketchPlane, distance: Double)?
         for sketch in session.document.sketches where !sketch.isHidden {
             guard let local = localPoint(of: ray, on: sketch.plane) else { continue }
             for entity in sketch.entities {
@@ -10526,7 +10528,7 @@ final class EditorViewModel {
                     )
                 }
                 if distance <= tolerance, best == nil || distance < best!.distance {
-                    best = (entity, sketch.plane, distance)
+                    best = (entity, sketch.id, sketch.plane, distance)
                 }
             }
         }
@@ -10540,20 +10542,22 @@ final class EditorViewModel {
 
         let segment = localPolyline.map { hit.plane.toWorld($0) }
         let spine: [SIMD3<Double>]
+        let reversed: Bool
         if case .sweep(let existing) = context.kind, existing.count >= 2 {
             guard let joined = Self.chainedSpine(existing, adding: segment) else {
                 errorMessage = "That segment doesn't connect to the end of the path."
                 return
             }
             spine = joined
+            reversed = simd_length(segment.last! - existing.last!) < simd_length(segment.first! - existing.last!)
         } else {
             // First segment: start at the endpoint nearest the profile.
             let anchor = context.plane.toWorld(context.profile.centroid)
-            spine = simd_length(segment.last! - anchor) < simd_length(segment.first! - anchor)
-                ? segment.reversed()
-                : segment
+            reversed = simd_length(segment.last! - anchor) < simd_length(segment.first! - anchor)
+            spine = reversed ? segment.reversed() : segment
         }
         context.sweepPathEntityIDs.append(hit.entity.id)
+        context.sweepPathSegments.append(.init(sketchID: hit.sketchID, entityID: hit.entity.id, reversed: reversed))
         context.kind = .sweep(spine: spine)
         rebuildToolPreview(&context)
         toolContext = context
@@ -10562,25 +10566,7 @@ final class EditorViewModel {
     /// Plane-local polyline of an OPEN entity (lines/arcs); closed entities
     /// can't chain into a spine.
     nonisolated static func sweepPathPolyline(of entity: SketchEntity) -> [SIMD2<Double>]? {
-        switch entity {
-        case let .line(_, a, b):
-            return [a, b]
-        case let .arc(_, center, radius, startAngle, endAngle):
-            let points = SketchEntity.arcPoints(
-                center: center, radius: radius,
-                startAngle: startAngle, endAngle: endAngle,
-                segmentsPerTurn: SketchTessellator.circleSegments
-            )
-            return points.count >= 2 ? points : nil
-        case let .spline(_, points, closed):
-            // An open spline is a valid sweep spine — this is the main reason
-            // to have splines at all (spec §4.11 sweeps along a drawn curve).
-            guard !closed else { return nil }
-            let curve = SketchEntity.splinePoints(points, closed: false)
-            return curve.count >= 2 ? curve : nil
-        case .rect, .circle, .ellipse, .polygon:
-            return nil
-        }
+        SweepPathDefinition.polyline(of: entity)
     }
 
     /// Append `segment` to `spine`, reversed so its nearer endpoint meets the
@@ -10728,6 +10714,7 @@ final class EditorViewModel {
         }
         context.kind = .sweep(spine: spine)
         context.sweepPathEntityIDs = []
+        context.sweepPathSegments = []
         rebuildToolPreview(&context)
         guard context.preview != nil else {
             errorMessage = "The helix sweep produced no geometry."
@@ -18872,7 +18859,8 @@ final class EditorViewModel {
                 plane: PlaneRef(source: .sketch(sketchID)),
                 spine: spine.map { PointWrapper($0) },
                 boolean: boolean,
-                helix: nil          // the interactive tool sweeps a drawn polyline
+                helix: nil,
+                path: context.sweepPathSegments.isEmpty ? nil : SweepPathDefinition(segments: context.sweepPathSegments)
             ),
             outputBodyIDs: outputBodyIDs
         )
@@ -19087,6 +19075,7 @@ final class EditorViewModel {
         case taperAngle
         /// Face rotate: shown in degrees, stored in radians (the kernel's unit).
         case rotateAngle
+        case helixRadius, helixPitch, helixTurns
     }
 
     /// One editable option of a feature, as the History row shows it: a
@@ -19142,6 +19131,15 @@ final class EditorViewModel {
     /// The editable scalars of a feature kind, in display order.
     static func scalars(of kind: FeatureKind) -> [FeatureScalar] {
         switch kind {
+        case let .sweep(_, _, _, _, helix?, _):
+            return [
+                FeatureScalar(key: .helixRadius, label: FloeCADStrings.text("cad.feature.radius", "Radius"),
+                              unit: "mm", value: helix.radius),
+                FeatureScalar(key: .helixPitch, label: FloeCADStrings.text("cad.feature.pitch", "Pitch"),
+                              unit: "mm", value: helix.pitch),
+                FeatureScalar(key: .helixTurns, label: FloeCADStrings.text("cad.feature.turns", "Turns"),
+                              unit: "", value: helix.turns),
+            ]
         case let .extrude(_, _, distance, _, _, _):
             return [FeatureScalar(key: .primary,
                                     label: FloeCADStrings.text("cad.feature.distance", "Distance"),
@@ -19708,6 +19706,15 @@ final class EditorViewModel {
     /// angle (degrees) is the one kind with a second scalar.
     func editFeatureScalar(_ id: FeatureID, key: FeatureScalarKey, value: Double) {
         switch key {
+        case .helixRadius, .helixPitch, .helixTurns:
+            let parameter: String
+            switch key {
+            case .helixRadius: parameter = "helix_radius"
+            case .helixPitch: parameter = "helix_pitch"
+            default: parameter = "helix_turns"
+            }
+            if let reply = performFeatureUpdate(id, changes: [parameter: value]),
+               reply["mutated"] as? Bool == true { session.save() }
         case .primary:
             editFeatureDistance(id, value)
         case .taperAngle:
@@ -19952,7 +19959,7 @@ final class EditorViewModel {
                 "That construction axis no longer exists.")
         default:
             errorMessage = FloeCADStrings.text("cad.feature.editRejected",
-                "Couldn't change the feature axis. Check the axis source and the sketch plane.")
+                "Couldn't change this feature. Check its values and references.")
         }
         return nil
     }

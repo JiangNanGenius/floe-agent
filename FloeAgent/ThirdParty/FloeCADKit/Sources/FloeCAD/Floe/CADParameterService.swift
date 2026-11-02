@@ -291,9 +291,17 @@ public final class CADParameterService {
         // pay no sketch-resolution cost here (the helper short-circuits).
         var edited: FeatureKind = node.kind
         if !scalarChanges.isEmpty {
+            var currentSweepSpine: [PointWrapper]?
+            if scalarChanges["path"] is NSNull,
+               case let .sweep(_, _, _, _, _, path) = node.kind, let path {
+                currentSweepSpine = try? path.resolvedSpine { id in
+                    document.session.document.sketches.first(where: { $0.id == id })
+                }.map(PointWrapper.init)
+            }
             switch Self.updated(node.kind, changes: scalarChanges,
                                 pilotDiameter: Self.placementPilotDiameter(
-                                    node, document: document.session.document)) {
+                                    node, document: document.session.document),
+                                currentSweepSpine: currentSweepSpine) {
             case .failure(let error):
                 return Self.fail("bad_parameter", error.message)
             case .success(let kind):
@@ -307,6 +315,15 @@ public final class CADParameterService {
             case .success(let kind):
                 edited = kind
             }
+        }
+        if case let .sweep(profile, plane, _, boolean, helix, path) = edited, let path {
+            do {
+                let points = try path.resolvedSpine { id in
+                    document.session.document.sketches.first(where: { $0.id == id })
+                }
+                edited = .sweep(profile: profile, plane: plane, spine: points.map(PointWrapper.init),
+                                boolean: boolean, helix: helix, path: path)
+            } catch { return Self.fail("invalid_sweep_path", error.localizedDescription) }
         }
         // FeatureKind deliberately is not Equatable. Compare its persisted
         // value with stable object-key order before creating an undo entry.
@@ -324,6 +341,12 @@ public final class CADParameterService {
         let beforeErrors = document.session.lastEvalErrors
         let beforeChangeCount = document.session.changeCount
         let checkpoint = document.captureEditCheckpoint()
+        let exactSweepBodies: Set<BodyID>
+        if case .sweep = node.kind {
+            exactSweepBodies = Set(document.session.document.bodies.filter {
+                node.outputBodyIDs.contains($0.id) && $0.brep != nil
+            }.map(\.id))
+        } else { exactSweepBodies = [] }
 
         if case let .pattern(_, spec) = edited {
             document.session.editPatternFeature(featureID, spec: spec)
@@ -335,6 +358,12 @@ public final class CADParameterService {
                                          title: Self.editTitle(for: node.kind))
         }
         if let rejection = Self.rebuildRejection(document) { return rejection }
+        if exactSweepBodies.contains(where: { id in
+            !document.session.document.bodies.contains(where: { $0.id == id && $0.brep != nil })
+        }) {
+            document.restoreEditCheckpoint(checkpoint)
+            return Self.fail("exact_sweep_failed", "The sweep could not retain its exact geometry. The previous model was kept.")
+        }
         let afterErrors = document.session.lastEvalErrors
         let introduced = afterErrors.filter { id, error in
             guard let old = beforeErrors[id] else { return true }
@@ -3921,7 +3950,7 @@ public final class CADParameterService {
         switch kind {
         case let .extrude(_, _, _, _, boolean, _),
              let .draftExtrude(_, _, _, _, _, boolean),
-             let .revolve(_, _, _, _, boolean), let .sweep(_, _, _, boolean, _),
+             let .revolve(_, _, _, _, boolean), let .sweep(_, _, _, boolean, _, _),
              let .loft(_, boolean):
             guard boolean.op != .newBody, let target = boolean.resolvedTargets.first else { return [] }
             return [target.bodyID]
@@ -4465,13 +4494,22 @@ public final class CADParameterService {
                     note: "Derived from the placement circle.")
             }
             unit = "mm"
-        case let .sweep(_, _, spine, _, helix):
+        case let .sweep(_, _, spine, _, helix, path):
             kindName = "sweep"
-            add("spine_points", "mm", spine.map { [$0.point.x, $0.point.y, $0.point.z] }, editable: false)
+            let resolved = path.flatMap { definition in
+                try? definition.resolvedSpine { id in document.sketches.first(where: { $0.id == id }) }
+            }
+            add("spine_points", "mm", (resolved ?? spine.map(\.point)).map { [$0.x, $0.y, $0.z] },
+                editable: helix == nil && path == nil,
+                note: path == nil ? nil : "Derived from the referenced sketch edges. Edit those edges, replace path, or explicitly detach with path:null.")
+            let encodedPath = path.flatMap { try? JSONEncoder().encode($0) }
+                .flatMap { try? JSONSerialization.jsonObject(with: $0) }
+            add("path", "unitless", encodedPath ?? NSNull(), editable: helix == nil,
+                note: "{version:1,segments:[{sketchID,entityID,reversed}]} or null; ordered open sketch edges by identity.")
             if let helix {
-                add("helix_radius", "mm", helix.radius, editable: false)
-                add("helix_pitch", "mm", helix.pitch, editable: false)
-                add("helix_turns", "unitless", helix.turns, editable: false)
+                add("helix_radius", "mm", helix.radius, minimum: 1e-6)
+                add("helix_pitch", "mm", helix.pitch, note: "Non-zero; sign is handedness.")
+                add("helix_turns", "unitless", helix.turns, minimum: 1e-6)
             }
         case let .loft(sections, _):
             kindName = "loft"
@@ -4630,7 +4668,7 @@ public final class CADParameterService {
         switch kind {
         case .primitive, .extrude, .draftExtrude, .revolve, .pattern,
              .pushPull, .scaleFace, .rotateFace, .draftFace, .chamfer,
-             .fillet, .shell, .hole:
+             .fillet, .shell, .hole, .sweep:
             return true
         default:
             return false
@@ -4643,7 +4681,7 @@ public final class CADParameterService {
         switch kind {
         case let .extrude(_, _, _, _, boolean, _),
              let .draftExtrude(_, _, _, _, _, boolean),
-             let .revolve(_, _, _, _, boolean), let .sweep(_, _, _, boolean, _),
+             let .revolve(_, _, _, _, boolean), let .sweep(_, _, _, boolean, _, _),
              let .loft(_, boolean):
             return boolean.resolvedTargets
         case let .boolean(_, target, tools): return [target] + tools
@@ -4655,7 +4693,7 @@ public final class CADParameterService {
         case let .extrude(_, _, _, _, boolean, _),
              let .draftExtrude(_, _, _, _, _, boolean),
              let .revolve(_, _, _, _, boolean),
-             let .sweep(_, _, _, boolean, _),
+             let .sweep(_, _, _, boolean, _, _),
              let .loft(_, boolean):
             return boolean.resolvedTargets
         case let .hole(target, _, _, _): return [target]
@@ -4730,7 +4768,8 @@ public final class CADParameterService {
     static func updated(_ kind: FeatureKind,
                         changes: [String: Any],
                         requireChange: Bool = true,
-                        pilotDiameter: Double? = nil) -> Result<FeatureKind, CADParameterEditError> {
+                        pilotDiameter: Double? = nil,
+                        currentSweepSpine: [PointWrapper]? = nil) -> Result<FeatureKind, CADParameterEditError> {
         var didChange = false
         func value(_ name: String) -> Double? {
             guard let raw = changes[name] else { return nil }
@@ -4755,6 +4794,66 @@ public final class CADParameterService {
         }
 
         switch kind {
+        case let .sweep(profile, plane, spine, boolean, helix, path):
+            let allowed = ["spine_points", "path", "helix_radius", "helix_pitch", "helix_turns"]
+            guard !changes.keys.contains(where: { !allowed.contains($0) }) else { return unknown(allowed) }
+            var nextSpine = spine, nextPath = path, nextHelix = helix
+            let helixKeys = ["helix_radius", "helix_pitch", "helix_turns"]
+            if helixKeys.contains(where: { changes[$0] != nil }) {
+                guard var spec = helix, changes["spine_points"] == nil, changes["path"] == nil else {
+                    return fail("helix", "Edit an existing helix separately from a sketch or literal path.")
+                }
+                for key in helixKeys where changes[key] != nil {
+                    guard let v = value(key) else { return fail(key, "A finite number is required.") }
+                    switch key {
+                    case "helix_radius": spec.radius = v
+                    case "helix_pitch": spec.pitch = v
+                    default: spec.turns = v
+                    }
+                }
+                do { nextSpine = try spec.checkedSampledSpine().map(PointWrapper.init) }
+                catch { return fail("helix", error.localizedDescription) }
+                nextHelix = spec
+            }
+            if let raw = changes["path"] {
+                guard helix == nil else { return fail("path", "A helix cannot also use sketch edges.") }
+                if raw is NSNull {
+                    if path != nil, changes["spine_points"] == nil {
+                        guard let currentSweepSpine else { return fail("path", "The current path must resolve before it can be detached.") }
+                        nextSpine = currentSweepSpine
+                    }
+                    nextPath = nil
+                } else {
+                    guard changes["spine_points"] == nil,
+                          let data = try? JSONSerialization.data(withJSONObject: raw),
+                          let definition = try? JSONDecoder().decode(SweepPathDefinition.self, from: data) else {
+                        return fail("path", "Provide version:1 and ordered segments with sketchID, entityID and reversed.")
+                    }
+                    nextPath = definition
+                }
+            }
+            if let raw = changes["spine_points"] {
+                guard helix == nil, nextPath == nil, let points = raw as? [[Any]],
+                      points.count >= 2, points.count <= SweepPathDefinition.maximumPoints else {
+                    return fail("spine_points", "Provide 2–100001 world-space points; explicitly detach a referenced path first.")
+                }
+                var parsed: [PointWrapper] = []
+                for point in points {
+                    guard point.count == 3 else { return fail("spine_points", "Each point needs x, y and z in mm.") }
+                    let values = point.compactMap { CADMaterialService.number($0) }
+                    guard values.count == 3, values.allSatisfy(\.isFinite) else {
+                        return fail("spine_points", "Every coordinate must be finite.")
+                    }
+                    parsed.append(PointWrapper(SIMD3(values[0], values[1], values[2])))
+                }
+                nextSpine = parsed
+            }
+            guard zip(nextSpine, nextSpine.dropFirst()).allSatisfy({ a, b in
+                let distance = simd_length(b.point - a.point)
+                return distance.isFinite && distance > 1e-9
+            }) else { return fail("spine_points", "A path cannot contain a collapsed or invalid edge.") }
+            return .success(.sweep(profile: profile, plane: plane, spine: nextSpine, boolean: boolean,
+                                    helix: nextHelix, path: nextPath))
         case let .primitive(spec, placement):
             switch spec {
             case let .box(width, depth, height):

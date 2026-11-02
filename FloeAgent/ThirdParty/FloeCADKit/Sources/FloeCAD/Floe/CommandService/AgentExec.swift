@@ -116,7 +116,7 @@ nonisolated enum AgentExecOp: Sendable, Equatable {
     /// `FeatureKind.sweep` stores (a sweep's path is routinely drawn on a
     /// different plane than its profile, so plane-local would be ambiguous).
     case sweep(sketch: SketchID, seed: SIMD2<Double>, spine: [SIMD3<Double>],
-               boolean: BooleanIntent.Op, targets: [BodyID], helix: HelixSpec?)
+               boolean: BooleanIntent.Op, targets: [BodyID], helix: HelixSpec?, path: SweepPathDefinition? = nil)
     /// ≥2 ordered sections, each a (sketch, seed) that resolves to a profile
     /// on that sketch's plane; OCCT lofts a solid through them in order. Each
     /// section is on its OWN sketch/plane — that is the whole point of a loft.
@@ -626,15 +626,27 @@ nonisolated enum AgentExec {
             // An exact helix may replace the polyline: the render mesh then
             // follows a polyline SAMPLED from the same spec, so the two agree.
             let helix = try parseHelix(a["helix"])
+            let path: SweepPathDefinition?
+            if let raw = a["path"], !(raw is NSNull) {
+                guard helix == nil, a["spine"] == nil,
+                      let data = try? JSONSerialization.data(withJSONObject: raw),
+                      let definition = try? JSONDecoder().decode(SweepPathDefinition.self, from: data) else {
+                    return .failure(.init(code: "bad_sweep_path",
+                        message: "Use path {version:1,segments:[{sketchID,entityID,reversed}]} separately from spine or helix."))
+                }
+                path = definition
+            } else { path = nil }
             let spine: [SIMD3<Double>]
             if let raw = a["spine"] as? [[Double]] {
-                guard raw.count >= 2,
+                guard raw.count >= 2, raw.count <= SweepPathDefinition.maximumPoints,
                       raw.allSatisfy({ $0.count == 3 && $0.allSatisfy(\.isFinite) }) else {
                     return .failure(.init(code: "missing_spine",
                                           message: "args.spine must be ≥2 world-space "
                                           + "[x, y, z] points in mm."))
                 }
                 spine = raw.map { SIMD3($0[0], $0[1], $0[2]) }
+            } else if path != nil {
+                spine = [] // Resolved against the actual document by the executor.
             } else if let helix {
                 do {
                     spine = try helix.checkedSampledSpine()
@@ -648,7 +660,7 @@ nonisolated enum AgentExec {
             }
             let (op, targets) = try booleanIntent(a)
             return .success(.sweep(sketch: sketch, seed: seed, spine: spine,
-                                   boolean: op, targets: targets, helix: helix))
+                                   boolean: op, targets: targets, helix: helix, path: path))
         } catch let e as AgentExecError { return .failure(e) } catch { return .failure(unexpected) }
     }
 

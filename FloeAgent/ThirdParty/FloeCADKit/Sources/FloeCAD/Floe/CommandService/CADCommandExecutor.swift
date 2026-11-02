@@ -449,7 +449,7 @@ final class CADCommandExecutor {
                                tools: tools.map { bodyRef($0, session) }),
                 outputBodyIDs: [BodyID()]), on: viewModel)
 
-        case let .sweep(sketchID, seed, spine, booleanOp, targets, helix):
+        case let .sweep(sketchID, seed, spine, booleanOp, targets, helix, path):
             guard session.document.sketches.contains(where: { $0.id == sketchID }) else {
                 return execMissing("sketch", sketchID.raw.uuidString)
             }
@@ -458,15 +458,23 @@ final class CADCommandExecutor {
                let refusal = exactSurfaceRefusal(targets, operation: "Sweep boolean",
                                                  session) { return refusal }
             let intent = BooleanIntent(op: booleanOp, resolvedTargets: targets.map { bodyRef($0, session) })
+            let resolvedSpine: [SIMD3<Double>]
+            do {
+                resolvedSpine = try path?.resolvedSpine { id in
+                    session.document.sketches.first(where: { $0.id == id })
+                } ?? spine
+            } catch {
+                return .failure(400, "Bad Request", error: "invalid_sweep_path", message: error.localizedDescription)
+            }
             return record(FeatureNode(
                 name: helix == nil ? "Sweep" : "Helix Sweep",
                 kind: .sweep(
                     profile: execProfileRef(sketchID: sketchID, seed: seed,
                                             in: session),
                     plane: PlaneRef(source: .sketch(sketchID)),
-                    spine: spine.map(PointWrapper.init),
+                    spine: resolvedSpine.map(PointWrapper.init),
                     boolean: intent,
-                    helix: helix),
+                    helix: helix, path: path),
                 outputBodyIDs: [BodyID()]), on: viewModel)
 
         case let .loft(sections, booleanOp, targets):

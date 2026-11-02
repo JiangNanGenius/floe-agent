@@ -459,7 +459,7 @@ public final class CADDrawingService {
             return boolean.resolvedTargets.contains { $0.bodyID == target }
         case let .revolve(_, _, _, _, boolean):
             return boolean.resolvedTargets.contains { $0.bodyID == target }
-        case let .sweep(_, _, _, boolean, _):
+        case let .sweep(_, _, _, boolean, _, _):
             return boolean.resolvedTargets.contains { $0.bodyID == target }
         case let .loft(_, boolean):
             return boolean.resolvedTargets.contains { $0.bodyID == target }

@@ -122,6 +122,186 @@ final class CADParameterCorrectnessTests: XCTestCase {
         return try XCTUnwrap(payload["volumeMM3"] as? Double)
     }
 
+    private func makeAssociatedSweep(_ document: FloeCADDocument) throws -> (FeatureNode, SketchID, UUID) {
+        let profile = try run(document, "sketch.create", [
+            "origin": [0, 0, 0], "xAxis": [1, 0, 0], "yAxis": [0, 0, -1]])
+        let profileID = try XCTUnwrap(profile["sketchID"] as? String)
+        try run(document, "sketch.addEntities", ["sketchID": profileID,
+            "entities": [["kind": "circle", "center": [0, 0], "radius": 1]]])
+        let path = try run(document, "sketch.create", [
+            "origin": [0, 0, 0], "xAxis": [0, 1, 0], "yAxis": [0, 0, 1]])
+        let pathID = try XCTUnwrap(path["sketchID"] as? String)
+        try run(document, "sketch.addEntities", ["sketchID": pathID,
+            "entities": [["kind": "line", "a": [0, 0], "b": [20, 0]]]])
+        let sketch = try XCTUnwrap(document.session.document.sketches.first { $0.id.raw.uuidString == pathID })
+        let entity = try XCTUnwrap(sketch.entities.first).id
+        try run(document, "feature.sweep", ["sketchID": profileID, "seedPoint": [0, 0],
+            "path": ["version": 1, "segments": [["sketchID": pathID,
+                "entityID": entity.uuidString, "reversed": false]]]])
+        return (try XCTUnwrap(document.session.document.features.nodes.last), sketch.id, entity)
+    }
+
+    func testSweepFollowsOriginalSketchEdgeAndRetainsIdentityThroughUndoAndReopen() async throws {
+        let document = try await makeDocument()
+        defer { document.close() }
+        let (feature, sketch, edge) = try makeAssociatedSweep(document)
+        let originalBody = try body(document).id
+        XCTAssertNotNil(try body(document).brep)
+        XCTAssertEqual(try volume(document), 20 * .pi, accuracy: 1e-4)
+        XCTAssertTrue(feature.referencedSketchIDs.contains(sketch))
+        let service = CADParameterService(document: document)
+        let reply = service.handle(action: "updateSketchEntity", args: [
+            "sketch_id": sketch.raw.uuidString, "entity_id": edge.uuidString, "b": [30, 0]])
+        XCTAssertEqual(reply["ok"] as? Bool, true, "\(reply)")
+        XCTAssertEqual(try volume(document), 30 * .pi, accuracy: 1e-4)
+        XCTAssertEqual(try body(document).id, originalBody)
+        XCTAssertNotNil(try body(document).brep)
+        let points = try parameter(document, feature: feature.id, name: "spine_points")["value"] as? [[Double]]
+        XCTAssertEqual(points?.last, [0, 30, 0])
+        document.session.undo()
+        XCTAssertEqual(try volume(document), 20 * .pi, accuracy: 1e-4)
+        document.session.redo()
+        XCTAssertEqual(try volume(document), 30 * .pi, accuracy: 1e-4)
+        let saved = await document.save()
+        XCTAssertTrue(saved.succeeded, saved.error ?? "")
+        let url = document.url; document.close()
+        let reopened = try await FloeCADDocument.open(at: url)
+        defer { reopened.close() }
+        XCTAssertNotNil(reopened.session.document.features.node(feature.id))
+        XCTAssertEqual(try body(reopened).id, originalBody)
+        XCTAssertEqual(try volume(reopened), 30 * .pi, accuracy: 1e-4)
+        XCTAssertNotNil(try body(reopened).brep)
+    }
+
+    func testSweepPathReplacementAndExplicitDetachUseCurrentGeometry() async throws {
+        let document = try await makeDocument(); defer { document.close() }
+        let (feature, sketchID, oldEdge) = try makeAssociatedSweep(document)
+        try run(document, "sketch.addEntities", ["sketchID": sketchID.raw.uuidString,
+            "entities": [["kind": "line", "a": [0, 0], "b": [40, 0]]]])
+        let sketch = try XCTUnwrap(document.session.document.sketches.first { $0.id == sketchID })
+        let newEdge = try XCTUnwrap(sketch.entities.first { $0.id != oldEdge }).id
+        let service = CADParameterService(document: document)
+        let replacement = service.handle(action: "update", args: ["feature_id": feature.id.raw.uuidString,
+            "changes": ["path": ["version": 1, "segments": [["sketchID": sketchID.raw.uuidString,
+                "entityID": newEdge.uuidString, "reversed": false]]]]])
+        XCTAssertEqual(replacement["ok"] as? Bool, true, "\(replacement)")
+        XCTAssertEqual(try volume(document), 40 * .pi, accuracy: 1e-4)
+        let editedSource = service.handle(action: "updateSketchEntity", args: [
+            "sketch_id": sketchID.raw.uuidString, "entity_id": newEdge.uuidString, "b": [50, 0]])
+        XCTAssertEqual(editedSource["ok"] as? Bool, true, "\(editedSource)")
+        XCTAssertEqual(try volume(document), 50 * .pi, accuracy: 1e-4)
+        let detached = service.handle(action: "update", args: ["feature_id": feature.id.raw.uuidString,
+            "changes": ["path": NSNull()]])
+        XCTAssertEqual(detached["ok"] as? Bool, true, "\(detached)")
+        XCTAssertEqual(try volume(document), 50 * .pi, accuracy: 1e-4,
+            "Detach must freeze the current resolved path, not its old20mm cache")
+        let later = service.handle(action: "updateSketchEntity", args: [
+            "sketch_id": sketchID.raw.uuidString, "entity_id": newEdge.uuidString, "b": [60, 0]])
+        XCTAssertEqual(later["ok"] as? Bool, true, "\(later)")
+        XCTAssertEqual(try volume(document), 50 * .pi, accuracy: 1e-4)
+        XCTAssertNotNil(document.session.document.features.node(feature.id))
+    }
+
+    func testSweepMissingEdgeAndCollapsedPathKeepGeometryAndUndoHistory() async throws {
+        let document = try await makeDocument(); defer { document.close() }
+        let (feature, sketch, edge) = try makeAssociatedSweep(document)
+        let beforeVolume = try volume(document), beforeID = try body(document).id
+        let revision = document.revision, changes = document.session.changeCount
+        let undo = document.session.undoStack.undoCommands.count
+        let service = CADParameterService(document: document)
+        let rejected = service.handle(action: "update", args: ["feature_id": feature.id.raw.uuidString,
+            "changes": ["path": ["version": 1, "segments": [["sketchID": sketch.raw.uuidString,
+                "entityID": UUID().uuidString, "reversed": false]]]]])
+        XCTAssertEqual(rejected["ok"] as? Bool, false)
+        XCTAssertEqual(rejected["error"] as? String, "invalid_sweep_path")
+        XCTAssertEqual(document.revision, revision)
+        XCTAssertEqual(document.session.changeCount, changes)
+        XCTAssertEqual(document.session.undoStack.undoCommands.count, undo)
+        let collapsed = service.handle(action: "updateSketchEntity", args: [
+            "sketch_id": sketch.raw.uuidString, "entity_id": edge.uuidString, "b": [0, 0]])
+        XCTAssertEqual(collapsed["ok"] as? Bool, false, "\(collapsed)")
+        XCTAssertEqual(try volume(document), beforeVolume, accuracy: 1e-4)
+        XCTAssertEqual(try body(document).id, beforeID)
+        XCTAssertNotNil(try body(document).brep)
+        XCTAssertEqual(document.session.undoStack.undoCommands.count, undo)
+        XCTAssertTrue(document.session.lastEvalErrors.isEmpty)
+    }
+
+    func testNativeHelixFieldsEditTheSameFeatureAndRejectUnsafeValues() async throws {
+        let document = try await makeDocument(); defer { document.close() }
+        let profile = try run(document, "sketch.create", [
+            "origin": [3.5, 0, 0], "xAxis": [1, 0, 0], "yAxis": [0, 0, -1]])
+        let sketchID = try XCTUnwrap(profile["sketchID"] as? String)
+        try run(document, "sketch.addEntities", ["sketchID": sketchID,
+            "entities": [["kind": "circle", "center": [0, 0], "radius": 0.5]]])
+        try run(document, "feature.sweep", ["sketchID": sketchID, "seedPoint": [0, 0],
+            "helix": ["axisPoint": [0, 0, 0], "axisDirection": [0, 1, 0],
+                "referenceDirection": [1, 0, 0], "radius": 3.5, "pitch": 2, "turns": 2]])
+        let feature = try XCTUnwrap(document.session.document.features.nodes.last)
+        let bodyID = try body(document).id
+        let originalMax = try body(document).render.localAABB.max.y
+        let viewModel = document.viewModel()
+        XCTAssertEqual(EditorViewModel.scalars(of: feature.kind).map(\.key), [.helixRadius, .helixPitch, .helixTurns])
+        viewModel.editFeatureScalar(feature.id, key: .helixPitch, value: 3)
+        XCTAssertNil(viewModel.errorMessage)
+        viewModel.editFeatureScalar(feature.id, key: .helixTurns, value: 3)
+        XCTAssertNil(viewModel.errorMessage)
+        let current = try XCTUnwrap(document.session.document.features.node(feature.id))
+        guard case let .sweep(_, _, spine, _, helix?, path) = current.kind else {
+            return XCTFail("Same feature lost its helix")
+        }
+        XCTAssertEqual(helix.pitch, 3); XCTAssertEqual(helix.turns, 3); XCTAssertNil(path)
+        XCTAssertEqual(spine.map(\.point), try helix.checkedSampledSpine())
+        XCTAssertEqual(try body(document).id, bodyID); XCTAssertNotNil(try body(document).brep)
+        XCTAssertGreaterThan(try body(document).render.localAABB.max.y, originalMax + 4)
+        let revision = document.revision, undo = document.session.undoStack.undoCommands.count
+        viewModel.editFeatureScalar(feature.id, key: .helixPitch, value: 0)
+        XCTAssertNotNil(viewModel.errorMessage)
+        XCTAssertEqual(document.revision, revision)
+        XCTAssertEqual(document.session.undoStack.undoCommands.count, undo)
+        document.session.undo()
+        guard let restoredFeature = document.session.document.features.node(feature.id),
+              case let .sweep(_, _, _, _, restored?, _) = restoredFeature.kind else {
+            return XCTFail("Undo lost the original feature")
+        }
+        XCTAssertEqual(restored.pitch, 3); XCTAssertEqual(restored.turns, 2)
+        document.session.redo()
+        let saved = await document.save(); XCTAssertTrue(saved.succeeded, saved.error ?? "")
+        let url = document.url; document.close()
+        let reopened = try await FloeCADDocument.open(at: url); defer { reopened.close() }
+        guard let reopenedFeature = reopened.session.document.features.node(feature.id),
+              case let .sweep(_, _, reopenedSpine, _, reopenedHelix?, _) = reopenedFeature.kind else {
+            return XCTFail("Reopen lost the original feature")
+        }
+        XCTAssertEqual(reopenedHelix.pitch, 3); XCTAssertEqual(reopenedHelix.turns, 3)
+        XCTAssertEqual(reopenedSpine.map(\.point), try reopenedHelix.checkedSampledSpine())
+        XCTAssertNotNil(try body(reopened).brep)
+    }
+
+    func testSweepPathVersionFloorAndLegacyDecodePreserveIntent() async throws {
+        let document = try await makeDocument(); defer { document.close() }
+        let (feature, _, _) = try makeAssociatedSweep(document)
+        XCTAssertEqual(CADDocumentFormat.requiredFormat(document: document.session.document),
+                       CADDocumentFormat.associativeSweepVersion)
+        var object = try XCTUnwrap(try JSONSerialization.jsonObject(
+            with: JSONEncoder().encode(feature.kind)) as? [String: Any])
+        var sweep = try XCTUnwrap(object["sweep"] as? [String: Any])
+        var path = try XCTUnwrap(sweep["path"] as? [String: Any])
+        path["version"] = 2; sweep["path"] = path; object["sweep"] = sweep
+        let futureData = try JSONSerialization.data(withJSONObject: object)
+        let row = CADFeatureRecord(featureID: feature.id.raw, orderIndex: 0, name: feature.name,
+            suppressed: false, kind: futureData, outputBodyIDs: try JSONEncoder().encode(feature.outputBodyIDs))
+        let assessment = try CADDocumentFormat.assess(planes: [], sketches: [], features: [row])
+        XCTAssertTrue(assessment.isOpaqueReadOnly)
+        XCTAssertTrue(assessment.opaqueFeatures.contains(feature.id.raw))
+        XCTAssertThrowsError(try JSONDecoder().decode(FeatureKind.self, from: futureData))
+        sweep.removeValue(forKey: "path"); object["sweep"] = sweep
+        let legacy = try JSONDecoder().decode(FeatureKind.self,
+            from: JSONSerialization.data(withJSONObject: object))
+        guard case let .sweep(_, _, _, _, _, decodedPath) = legacy else { return XCTFail("Legacy sweep did not decode") }
+        XCTAssertNil(decodedPath)
+    }
+
     private func parameter(_ document: FloeCADDocument, feature: FeatureID,
                            name: String) throws -> [String: Any] {
         let featureRow = try XCTUnwrap(try rows(document, "features").first {

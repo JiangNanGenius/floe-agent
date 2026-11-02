@@ -126172,13 +126172,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Couldn't change the feature axis. Check the axis source and the sketch plane."
+            "value": "Couldn't change this feature. Check its values and references."
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "无法更改特征轴，请检查轴来源和草图平面。"
+            "value": "无法更改此特征，请检查参数和引用。"
           }
         }
       }
@@ -126952,6 +126952,40 @@
           "stringUnit": {
             "state": "translated",
             "value": "文件尚未完成保存，请稍后重试调整运行资源。"
+          }
+        }
+      }
+    },
+    "cad.feature.pitch": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Pitch"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "螺距"
+          }
+        }
+      }
+    },
+    "cad.feature.turns": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Turns"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "圈数"
           }
         }
       }

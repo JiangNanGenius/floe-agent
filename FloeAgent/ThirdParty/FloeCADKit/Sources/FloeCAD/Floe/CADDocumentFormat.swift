@@ -52,6 +52,9 @@ nonisolated enum CADDocumentFormat {
     /// A saved material name is now an active binding, not merely provenance
     /// that an older similarity-based writer may ignore.
     static let namedFaceMaterialVersion = 7
+    /// Ordered sweep edges are semantic references, not cached spine points.
+    /// Share the coordinated unreleased floor; old writers must not drop them.
+    static let associativeSweepVersion = 7
     /// Coordinated package floor for a document that actually stores
     /// user-named versions. Ordinary documents keep their existing schema
     /// floor; only a package that gains a checkpoint is raised to this floor.
@@ -131,6 +134,10 @@ nonisolated enum CADDocumentFormat {
 
     static func requiredFormat(document: DesignDocument) -> Int {
         var required = legacyVersion
+        if document.features.nodes.contains(where: {
+            if case let .sweep(_, _, _, _, _, path) = $0.kind { return path != nil }
+            return false
+        }) { required = max(required, associativeSweepVersion) }
         if document.bodies.contains(where: { $0.materialFaceBindings.contains { $0.key.elementName != nil } }) {
             required = max(required, namedFaceMaterialVersion)
         }
@@ -619,6 +626,11 @@ nonisolated enum CADDocumentFormat {
         // before any commit. A non-encodable hole must FAIL the transaction,
         // never be silently dropped by a try?-encode row update.
         for node in document.features.nodes {
+            if case let .sweep(_, _, _, _, helix, path) = node.kind, let path {
+                guard helix == nil else { throw CADDocumentFormatError.malformedAssociation("sweep-path") }
+                do { try path.validate(); _ = try encoder.encode(node.kind) }
+                catch { throw CADDocumentFormatError.malformedAssociation("sweep-path") }
+            }
             guard case let .hole(_, profile, _, spec) = node.kind else { continue }
             guard spec.version == HoleSpec.supportedVersion else {
                 throw CADDocumentFormatError.unsupportedHoleVersion(spec.version)
@@ -706,6 +718,21 @@ nonisolated enum CADDocumentFormat {
         for row in axes {
             guard let object = try? JSONSerialization.jsonObject(with: row.data) as? [String: Any] else { continue }
             let operationIdentity = try operationIdentityIntent(object)
+            if let sweep = object["sweep"] as? [String: Any], let raw = sweep["path"], !(raw is NSNull) {
+                result.requiredVersion = max(result.requiredVersion, associativeSweepVersion)
+                guard let definition = raw as? [String: Any],
+                      let version = definition["version"] as? Int, version > 0 else {
+                    throw CADDocumentFormatError.malformedAssociation("sweep-path")
+                }
+                if version > SweepPathDefinition.supportedVersion {
+                    result.opaqueFeatures.insert(row.featureID)
+                } else {
+                    do {
+                        let data = try JSONSerialization.data(withJSONObject: definition)
+                        _ = try JSONDecoder().decode(SweepPathDefinition.self, from: data)
+                    } catch { throw CADDocumentFormatError.malformedAssociation("sweep-path") }
+                }
+            }
             if operationIdentity.present { result.requiredVersion = max(result.requiredVersion, operationFaceIdentityVersion) }
             if operationIdentity.opaque { result.opaqueAxes.insert(row.blobID) }
             guard let definition = object["definition"], !(definition is NSNull) else { continue }
