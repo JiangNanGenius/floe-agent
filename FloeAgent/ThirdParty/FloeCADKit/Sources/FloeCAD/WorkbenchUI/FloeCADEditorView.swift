@@ -904,18 +904,21 @@ struct FloeCADEditorView: View {
                     systemImage: kind == .chamfer ? "square.on.circle" : "circle.circle")
                     .font(.caption).foregroundStyle(.barLabel)
             }
-            compactBlendValue(viewModel.blendAdvancedMode == .variableFillet
-                ? FloeCADStrings.text("cad.blend.endRadius", "End radius") : kind.valueLabel,
-                value: Binding(get: { viewModel.blendValue }, set: { viewModel.blendValue = max(0, $0) }),
-                kind: .length, identifier: "BlendValueField")
             if let advanced = viewModel.blendAdvancedMode {
-                compactBlendValue(advanced == .variableFillet
-                    ? FloeCADStrings.text("cad.blend.middleRadius", "Middle radius")
-                    : advanced == .distanceAngleChamfer ? FloeCADStrings.text("cad.feature.angle", "Angle")
-                    : FloeCADStrings.text("cad.blend.secondDistance", "Second distance"),
-                    value: Binding(get: { viewModel.blendSecondValue }, set: { viewModel.blendSecondValue = $0 }),
-                    kind: advanced == .distanceAngleChamfer ? .plain : .length,
-                    identifier: "BlendSecondValueField")
+                HStack(alignment: .top, spacing: 12) {
+                    compactBlendValue(advanced == .variableFillet
+                        ? FloeCADStrings.text("cad.blend.endRadius", "End radius")
+                        : FloeCADStrings.text("cad.blend.short.firstDistance", "Distance 1"),
+                        value: Binding(get: { viewModel.blendValue }, set: { viewModel.blendValue = max(0, $0) }),
+                        kind: .length, identifier: "BlendValueField")
+                    compactBlendValue(advanced == .variableFillet
+                        ? FloeCADStrings.text("cad.blend.middleRadius", "Middle radius")
+                        : advanced == .distanceAngleChamfer ? FloeCADStrings.text("cad.feature.angle", "Angle")
+                        : FloeCADStrings.text("cad.blend.short.secondDistance", "Distance 2"),
+                        value: Binding(get: { viewModel.blendSecondValue }, set: { viewModel.blendSecondValue = $0 }),
+                        kind: advanced == .distanceAngleChamfer ? .plain : .length,
+                        identifier: "BlendSecondValueField")
+                }
                 if !advanced.isFillet {
                     Toggle(isOn: Binding(get: { viewModel.blendSwapSupport }, set: { viewModel.blendSwapSupport = $0 })) {
                         Label(FloeCADStrings.text("cad.blend.swapSides", "Swap sides"), systemImage: "arrow.left.arrow.right")
@@ -924,6 +927,10 @@ struct FloeCADEditorView: View {
                     .accessibilityLabel(FloeCADStrings.text("cad.blend.swapSides", "Swap sides"))
                     .accessibilityIdentifier("BlendSwapSides")
                 }
+            } else {
+                compactBlendValue(kind.valueLabel,
+                    value: Binding(get: { viewModel.blendValue }, set: { viewModel.blendValue = max(0, $0) }),
+                    kind: .length, identifier: "BlendValueField")
             }
         } actions: {
             Button("Cancel") { viewModel.cancelBlend() }

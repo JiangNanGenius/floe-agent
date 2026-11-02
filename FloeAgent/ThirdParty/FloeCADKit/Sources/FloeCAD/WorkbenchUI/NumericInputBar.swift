@@ -291,28 +291,22 @@ struct NumericInputBar: View {
                         .font(.caption)
                         .foregroundStyle(.barLabel)
                         .fixedSize(horizontal: !isCompact, vertical: true)
-                    // Bind the RAW millimetres: `.length` does the display-unit
-                    // conversion itself, so wrapping in `unit.binding` here
-                    // would convert twice.
-                    if state.curvePath != nil {
-                        Toggle(FloeCADStrings.label("cad.pattern.fitPath", "Fit path"), isOn: Binding(
-                            get: { viewModel.patternState?.spacing == 0 },
-                            set: { viewModel.patternState?.spacing = $0 ? 0 : 6 }
-                        ))
-                        .toggleStyle(.button)
+                    if state.curvePath != nil && state.spacing == 0 {
+                        patternSpacingMenu(automatic: true)
+                            .accessibilityIdentifier("PatternSpacing")
+                    } else {
+                        HStack(spacing: 6) {
+                            ExpressionValueField(
+                                placeholder: FloeCADStrings.text("cad.ui.common.spacing", "Spacing"),
+                                value: Binding(get: { viewModel.patternState?.spacing ?? 6 },
+                                               set: { viewModel.patternState?.spacing = $0 }),
+                                kind: .length, clamp: nil, width: 80, identifier: "PatternSpacing")
+                            if state.curvePath != nil {
+                                patternSpacingMenu(automatic: false)
+                                    .accessibilityIdentifier("PatternSpacingMode")
+                            }
+                        }
                     }
-                    ExpressionValueField(
-                        placeholder: FloeCADStrings.text("cad.ui.common.spacing", "Spacing"),
-                        value: Binding(
-                            get: { viewModel.patternState?.spacing ?? 6 },
-                            set: { viewModel.patternState?.spacing = $0 }
-                        ),
-                        kind: .length,
-                        clamp: nil,
-                        width: 80,
-                        identifier: "PatternSpacing"
-                    )
-                    .disabled(state.curvePath != nil && state.spacing == 0)
                 }
             } else {
                 fieldLayout {
@@ -348,6 +342,23 @@ struct NumericInputBar: View {
             .accessibilityIdentifier("PatternApply")
         } footer: {
             patternPickers(axisChoices)
+        }
+    }
+
+    private func patternSpacingMenu(automatic: Bool) -> some View {
+        Menu {
+            Button(FloeCADStrings.text("cad.pattern.fitPath", "Fit path")) { viewModel.patternState?.spacing = 0 }
+            Button(FloeCADStrings.text("cad.pattern.fixedSpacing", "Fixed distance")) {
+                if (viewModel.patternState?.spacing ?? 0) <= 0 { viewModel.patternState?.spacing = 6 }
+            }
+        } label: {
+            if automatic {
+                Label(FloeCADStrings.text("cad.pattern.fitPath", "Fit path"), systemImage: "arrow.left.and.right")
+                    .fixedSize(horizontal: !isCompact, vertical: true)
+            } else {
+                Image(systemName: "arrow.left.and.right")
+                    .accessibilityLabel(FloeCADStrings.text("cad.pattern.fitPath", "Fit path"))
+            }
         }
     }
 

@@ -17495,6 +17495,24 @@
         "zh-Hans": { "stringUnit": { "state": "translated", "value": "选项" } }
       }
     },
+    "cad.blend.short.firstDistance": {
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Distance 1" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "距离 1" } }
+      }
+    },
+    "cad.blend.short.secondDistance": {
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Distance 2" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "距离 2" } }
+      }
+    },
+    "cad.pattern.fixedSpacing": {
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Fixed distance" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "固定间距" } }
+      }
+    },
     "cad.ui.common.close": {
       "extractionState": "manual",
       "localizations": {

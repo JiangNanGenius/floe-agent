@@ -2177,8 +2177,19 @@ final class CADAdvancedPatternNativeFlowUITests: XCTestCase {
         let apply = app.buttons["PatternApply"]
         XCTAssertTrue(apply.exists && apply.isHittable)
         if compact {
-            for control in [seed, path, app.textFields["PatternCount"], app.textFields["PatternSpacing"], apply] {
+            for control in [seed, path, app.textFields["PatternCount"], app.descendants(matching: .any).matching(identifier: "PatternSpacing").firstMatch, apply] {
                 CADInlineBarProbe.assertWhole(control, in: app)
+            }
+            if !largeText {
+                let spacingMode = app.descendants(matching: .any).matching(identifier: "PatternSpacing").firstMatch
+                XCTAssertTrue(spacingMode.label.contains("Fit path")); spacingMode.tap()
+                app.buttons["Fixed distance"].firstMatch.tap()
+                let fixed = app.textFields["PatternSpacing"]
+                XCTAssertTrue(fixed.waitForExistence(timeout: 5))
+                XCTAssertEqual(Double(fixed.value as? String ?? ""), 6)
+                app.buttons["PatternSpacingMode"].tap()
+                app.buttons["Fit path"].firstMatch.tap()
+                XCTAssertFalse(app.textFields["PatternSpacing"].exists, "Automatic spacing has no meaningless zero field")
             }
             app.buttons["CADToolOptionsButton"].tap()
             XCTAssertFalse(seed.exists)
