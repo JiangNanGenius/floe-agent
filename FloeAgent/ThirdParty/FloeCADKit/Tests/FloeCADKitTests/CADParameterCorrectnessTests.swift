@@ -334,6 +334,33 @@ final class CADParameterCorrectnessTests: XCTestCase {
         XCTAssertEqual(try encoder.encode(unchanged), try encoder.encode(legacy))
     }
 
+    func testNativeHelixRadiusChangesTheActualBRepExtent() async throws {
+        let document = try await makeDocument(); defer { document.close() }
+        let profile = try run(document, "sketch.create", [
+            "origin": [3.5, 0, 0], "xAxis": [1, 0, 0], "yAxis": [0, 0, -1]])
+        let sketchID = try XCTUnwrap(profile["sketchID"] as? String)
+        try run(document, "sketch.addEntities", ["sketchID": sketchID,
+            "entities": [["kind": "circle", "center": [0, 0], "radius": 0.5]]])
+        try run(document, "feature.sweep", ["sketchID": sketchID, "seedPoint": [0, 0],
+            "helix": ["axisPoint": [0, 0, 0], "axisDirection": [0, 1, 0],
+                "referenceDirection": [1, 0, 0], "radius": 3.5, "pitch": 2, "turns": 2]])
+        let feature = try XCTUnwrap(document.session.document.features.nodes.last)
+        func radialExtent() throws -> Double {
+            let solid = try XCTUnwrap(try body(document).brep)
+            let points = OCCTKernel.renderMesh(from: solid).positions
+            return try XCTUnwrap(points.map { hypot(Double($0.x), Double($0.z)) }.max())
+        }
+        let original = try radialExtent()
+        let viewModel = document.viewModel()
+        viewModel.editFeatureScalar(feature.id, key: .helixRadius, value: 4.5)
+        XCTAssertNil(viewModel.errorMessage)
+        XCTAssertGreaterThan(try radialExtent(), original + 0.8,
+            "Measure tessellated actual BRep, independently of the sampled display spine")
+        XCTAssertNotNil(document.session.document.features.node(feature.id))
+        document.session.undo()
+        XCTAssertEqual(try radialExtent(), original, accuracy: 1e-3)
+    }
+
     private func parameter(_ document: FloeCADDocument, feature: FeatureID,
                            name: String) throws -> [String: Any] {
         let featureRow = try XCTUnwrap(try rows(document, "features").first {
