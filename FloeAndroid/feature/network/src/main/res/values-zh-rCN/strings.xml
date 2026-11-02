@@ -5,6 +5,7 @@
     <string name="network_wifi">Wi-Fi</string>
     <string name="network_dns">DNS 查询</string>
     <string name="network_ping">Ping</string>
+    <string name="network_trace">路由追踪</string>
     <string name="network_tcp">TCP 连接</string>
     <string name="network_https">HTTPS 请求</string>
     <string name="network_back">返回</string>

@@ -237,6 +237,68 @@ class PhoneNetworkServiceTest {
     }
 
     @Test
+    fun tracerouteDispatchesToSessionAndReturnsFrozenEnvelope() = runBlocking {
+        val session = FakeSession(
+            handler = {
+                ProbeResult(
+                    status = ObservationStatus.OK,
+                    observations = org.json.JSONObject()
+                        .put("resolvedAddress", "192.0.2.44")
+                        .put("reachedTarget", true)
+                        .put("hops", org.json.JSONArray()),
+                    target = "example.com",
+                )
+            },
+        )
+        val service = PhoneNetworkService(
+            platform = FakePlatform(session),
+            clock = { Instant.parse("2026-10-30T01:02:03Z") },
+            dispatcher = Dispatchers.Default,
+        )
+        val json = JSONObject(
+            service.execute(
+                request(
+                    "network.traceroute",
+                    org.json.JSONObject()
+                        .put("host", "example.com")
+                        .put("maxHops", 12),
+                ),
+            ),
+        )
+        assertEquals("ok", json.getString("status"))
+        assertEquals("network.traceroute", json.getString("method"))
+        assertEquals("example.com", json.getString("target"))
+        assertEquals("192.0.2.44", json.getJSONObject("observations").getString("resolvedAddress"))
+        assertEquals(listOf("traceroute"), session.calls)
+        assertTrue(session.closed.get())
+        service.close()
+    }
+
+    @Test
+    fun tracerouteCancelClosesSessionAndSettlesCancelled() = runBlocking {
+        val gate = CompletableDeferred<ProbeResult>()
+        val session = FakeSession(handler = { gate.await() })
+        val service = PhoneNetworkService(
+            platform = FakePlatform(session),
+            dispatcher = Dispatchers.Default,
+        )
+        val execution = async(Dispatchers.Default) {
+            service.execute(
+                request(
+                    "network.traceroute",
+                    org.json.JSONObject().put("host", "example.com"),
+                ),
+            )
+        }
+        session.entered.await()
+        service.cancel(operationID)
+        val json = JSONObject(execution.await())
+        assertEquals("cancelled", json.getString("status"))
+        assertTrue(session.closed.get())
+        service.close()
+    }
+
+    @Test
     fun invalidRequestReturnsPlainErrorEnvelope() = runBlocking {
         val session = FakeSession()
         val service = PhoneNetworkService(
@@ -292,6 +354,8 @@ class PhoneNetworkServiceTest {
             dispatch("lanDiscover")
         override suspend fun speedTest(request: SpeedTestRequest): ProbeResult =
             dispatch("speedTest")
+        override suspend fun traceroute(request: TracerouteRequest): ProbeResult =
+            dispatch("traceroute")
 
         override fun close() {
             closed.set(true)

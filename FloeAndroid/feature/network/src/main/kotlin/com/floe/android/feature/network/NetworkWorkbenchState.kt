@@ -6,10 +6,10 @@ enum class NetworkPage(val method: String) {
     OVERVIEW("network.status"), WIFI("network.wifiScan"),
     LAN("network.lanDiscover"), SPEED("network.speedTest"),
     DNS("network.dnsLookup"), PING("network.ping"), TCP("network.tcpProbe"),
-    HTTPS("network.http");
+    HTTPS("network.http"), TRACE("network.traceroute");
 
     /** Simple pages ask for one host/URL field; LAN and Speed have typed forms. */
-    val needsTarget: Boolean get() = this in listOf(DNS, PING, TCP, HTTPS)
+    val needsTarget: Boolean get() = this in listOf(DNS, PING, TCP, HTTPS, TRACE)
 }
 /**
  * One decoded observation fact. [key] is the stable JSON path of the source

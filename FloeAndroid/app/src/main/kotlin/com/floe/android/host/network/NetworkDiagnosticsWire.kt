@@ -53,6 +53,7 @@ internal object NetworkDiagnosticsWire {
         "network.wifiScan",
         "network.dnsLookup",
         "network.ping",
+        "network.traceroute",
         "network.tcpProbe",
         "network.http",
         "network.lanDiscover",

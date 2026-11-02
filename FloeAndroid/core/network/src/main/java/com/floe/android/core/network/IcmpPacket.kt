@@ -9,15 +9,32 @@ package com.floe.android.core.network
 internal object IcmpPacket {
     const val TYPE_ECHO_REQUEST = 8
     const val TYPE_ECHO_REPLY = 0
+    const val TYPE_DEST_UNREACH = 3
+    const val TYPE_TIME_EXCEEDED = 11
     const val HEADER_BYTES = 8
     const val PAYLOAD_BYTES = 20
     const val PACKET_BYTES = HEADER_BYTES + PAYLOAD_BYTES
     const val TOKEN_MAGIC = 0x464C4F45 // "FLOE"
 
+    /** IPv4 header length floor when an ICMP error quotes the original datagram. */
+    const val IPV4_HEADER_MIN_BYTES = 20
+
     data class EchoReply(
         val sequence: Int,
         val timestampNanos: Long,
         val token: Int,
+    )
+
+    /**
+     * An ICMP error (router time-exceeded or destination-unreachable) that
+     * quotes one of our echo requests. Only the quoted IPv4 header + first 8
+     * bytes of the original ICMP datagram are inspected; the sequence number
+     * identifies the probe because one operation owns this socket exclusively.
+     */
+    data class IcmpError(
+        val type: Int,
+        val code: Int,
+        val sequence: Int,
     )
 
     fun buildEchoRequest(sequence: Int, timestampNanos: Long, token: Int): ByteArray {
@@ -49,6 +66,30 @@ internal object IcmpPacket {
             timestampNanos = readLong(packet, 12),
             token = expectedToken,
         )
+    }
+
+    /**
+     * Parses an ICMP error delivered on the unconnected datagram ping socket.
+     * The outer message must be time-exceeded or destination-unreachable; the
+     * embedded IPv4 header length honors the real IHL (options included) and
+     * the quoted ICMP bytes must be one of our echo requests with the expected
+     * sequence. Unrelated or malformed traffic returns null and is ignored.
+     */
+    fun parseError(packet: ByteArray, expectedSequence: Int): IcmpError? {
+        if (packet.size < HEADER_BYTES + IPV4_HEADER_MIN_BYTES + 8) return null
+        val outerType = packet[0].toInt() and 0xFF
+        val outerCode = packet[1].toInt() and 0xFF
+        if (outerType != TYPE_TIME_EXCEEDED && outerType != TYPE_DEST_UNREACH) return null
+        val ipStart = HEADER_BYTES
+        val ihl = (packet[ipStart].toInt() and 0x0F) * 4
+        if (ihl < IPV4_HEADER_MIN_BYTES) return null
+        val icmpStart = ipStart + ihl
+        if (packet.size < icmpStart + 8) return null
+        if ((packet[icmpStart].toInt() and 0xFF) != TYPE_ECHO_REQUEST) return null
+        val sequence = ((packet[icmpStart + 6].toInt() and 0xFF) shl 8) or
+            (packet[icmpStart + 7].toInt() and 0xFF)
+        if (sequence != expectedSequence) return null
+        return IcmpError(type = outerType, code = outerCode, sequence = sequence)
     }
 
     /** One's-complement checksum; a valid packet returns 0 when re-summed. */

@@ -192,6 +192,8 @@ class LanSpeedServiceTest {
             timeoutMs: Int,
         ): ProbeResult = ProbeResult()
         override suspend fun ping(host: String, count: Int, timeoutMs: Int): ProbeResult = ProbeResult()
+        override suspend fun traceroute(request: TracerouteRequest): ProbeResult =
+            error("Traceroute is outside the LAN/speed fixture")
         override suspend fun tcpProbe(host: String, port: Int, timeoutMs: Int): ProbeResult = ProbeResult()
         override suspend fun http(
             target: HttpTarget,

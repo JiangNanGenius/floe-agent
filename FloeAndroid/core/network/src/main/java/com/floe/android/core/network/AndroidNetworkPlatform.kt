@@ -147,6 +147,9 @@ internal class AndroidNetworkSession(
     override suspend fun speedTest(request: SpeedTestRequest): ProbeResult =
         AndroidSpeedTest.run(this, request)
 
+    override suspend fun traceroute(request: TracerouteRequest): ProbeResult =
+        AndroidIcmpTraceroute.traceroute(this, request)
+
     override fun partialResult(): ProbeResult? = partial.get()
 
     override fun close() {

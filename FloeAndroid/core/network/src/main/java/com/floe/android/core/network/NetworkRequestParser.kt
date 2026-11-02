@@ -19,9 +19,12 @@ internal data class ParsedRequest(
     val refresh: Boolean = false,
     val lan: LanDiscoveryRequest? = null,
     val speed: SpeedTestRequest? = null,
+    val traceroute: TracerouteRequest? = null,
 ) {
     val target: String? get() = when (method) {
-        NetworkMethod.DNS_LOOKUP, NetworkMethod.PING, NetworkMethod.TCP_PROBE -> host
+        NetworkMethod.DNS_LOOKUP, NetworkMethod.PING, NetworkMethod.TCP_PROBE,
+        NetworkMethod.TRACEROUTE,
+        -> host
         NetworkMethod.HTTP -> httpTarget?.redacted
         NetworkMethod.LAN_DISCOVER -> lan?.let { discovery ->
             discovery.subnet?.let { "lan:${it.cidr}" } ?: "lan:mdns"
@@ -257,6 +260,39 @@ internal object NetworkRequestParser {
                                 maximum = NetworkLimits.MAX_TCP_CONCURRENCY,
                             ) ?: NetworkLimits.DEFAULT_TCP_CONCURRENCY,
                             timeoutMs = timeoutMs,
+                        ),
+                    )
+                }
+                NetworkMethod.TRACEROUTE -> {
+                    val host = hostArgument(arguments)
+                    ParsedRequest(
+                        operationID = operationID,
+                        method = method,
+                        timeoutMs = timeoutArgument(arguments, NetworkLimits.DEFAULT_TRACEROUTE_TIMEOUT_MS),
+                        host = host,
+                        traceroute = TracerouteRequest(
+                            host = host,
+                            maxHops = intArgument(
+                                arguments,
+                                "maxHops",
+                                default = NetworkLimits.DEFAULT_TRACEROUTE_HOPS,
+                                minimum = NetworkLimits.MIN_TRACEROUTE_HOPS,
+                                maximum = NetworkLimits.MAX_TRACEROUTE_HOPS,
+                            ) ?: NetworkLimits.DEFAULT_TRACEROUTE_HOPS,
+                            probesPerHop = intArgument(
+                                arguments,
+                                "probesPerHop",
+                                default = NetworkLimits.DEFAULT_TRACEROUTE_PROBES_PER_HOP,
+                                minimum = NetworkLimits.MIN_TRACEROUTE_PROBES_PER_HOP,
+                                maximum = NetworkLimits.MAX_TRACEROUTE_PROBES_PER_HOP,
+                            ) ?: NetworkLimits.DEFAULT_TRACEROUTE_PROBES_PER_HOP,
+                            probeTimeoutMs = intArgument(
+                                arguments,
+                                "probeTimeoutMs",
+                                default = NetworkLimits.DEFAULT_TRACEROUTE_PROBE_TIMEOUT_MS,
+                                minimum = NetworkLimits.MIN_TRACEROUTE_PROBE_TIMEOUT_MS,
+                                maximum = NetworkLimits.MAX_TRACEROUTE_PROBE_TIMEOUT_MS,
+                            ) ?: NetworkLimits.DEFAULT_TRACEROUTE_PROBE_TIMEOUT_MS,
                         ),
                     )
                 }

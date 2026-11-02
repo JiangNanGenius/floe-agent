@@ -5,6 +5,7 @@
     <string name="network_wifi">Wi-Fi</string>
     <string name="network_dns">DNS lookup</string>
     <string name="network_ping">Ping</string>
+    <string name="network_trace">Traceroute</string>
     <string name="network_tcp">TCP connection</string>
     <string name="network_https">HTTPS request</string>
     <string name="network_back">Back</string>

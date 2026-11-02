@@ -58,6 +58,21 @@ internal object NetworkLimits {
     const val MIN_SPEED_SAMPLE_MS = 250
     const val SPEED_CONNECTION_MARGIN_MS = 1_500
 
+    // NET-PING-TRACE traceroute bounds. Timing/count values are clamped by
+    // contract exactly like ping; the whole operation stays inside the frozen
+    // 500-30000 ms envelope deadline and reports its actual partial hops when
+    // the budget ends early.
+    const val MIN_TRACEROUTE_HOPS = 1
+    const val MAX_TRACEROUTE_HOPS = 30
+    const val DEFAULT_TRACEROUTE_HOPS = 20
+    const val MIN_TRACEROUTE_PROBES_PER_HOP = 1
+    const val MAX_TRACEROUTE_PROBES_PER_HOP = 3
+    const val DEFAULT_TRACEROUTE_PROBES_PER_HOP = 2
+    const val MIN_TRACEROUTE_PROBE_TIMEOUT_MS = 500
+    const val MAX_TRACEROUTE_PROBE_TIMEOUT_MS = 5_000
+    const val DEFAULT_TRACEROUTE_PROBE_TIMEOUT_MS = 2_000
+    const val DEFAULT_TRACEROUTE_TIMEOUT_MS = 15_000
+
     const val MAX_HOST_CHARS = 253
     const val MAX_URL_CHARS = 4096
     const val MAX_IDENTIFIER_CHARS = 64
@@ -76,7 +91,8 @@ internal enum class NetworkMethod(val wire: String, val defaultTimeoutMs: Int) {
     TCP_PROBE("network.tcpProbe", NetworkLimits.DEFAULT_TCP_TIMEOUT_MS),
     HTTP("network.http", NetworkLimits.DEFAULT_HTTP_TIMEOUT_MS),
     LAN_DISCOVER("network.lanDiscover", NetworkLimits.DEFAULT_LAN_TIMEOUT_MS),
-    SPEED_TEST("network.speedTest", NetworkLimits.DEFAULT_SPEED_TIMEOUT_MS);
+    SPEED_TEST("network.speedTest", NetworkLimits.DEFAULT_SPEED_TIMEOUT_MS),
+    TRACEROUTE("network.traceroute", NetworkLimits.DEFAULT_TRACEROUTE_TIMEOUT_MS);
 
     companion object {
         fun fromWire(value: String): NetworkMethod? = entries.firstOrNull { it.wire == value }

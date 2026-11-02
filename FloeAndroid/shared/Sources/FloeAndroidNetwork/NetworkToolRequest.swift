@@ -8,6 +8,8 @@
 //   network.status{}; network.wifiScan{refresh?:bool=false};
 //   network.dnsLookup{host,recordType?=A_AND_AAAA,timeoutMs?=5000};
 //   network.ping{host,count?=4,timeoutMs?=5000};
+//   network.traceroute{host,maxHops?=20,probesPerHop?=2,probeTimeoutMs?=2000,
+//     timeoutMs?=15000};
 //   network.tcpProbe{host,port,timeoutMs?=5000};
 //   network.http{url,timeoutMs?=10000,maxRedirects?=5};
 //   network.lanDiscover{serviceTypes?,subnetCidr?,ports?,discoveryDurationMs?,
@@ -67,6 +69,18 @@ public enum NetworkToolLimits {
     public static let maximumWarmupBytes = 262_144
     public static let defaultSpeedTimeoutMs = 30_000
     public static let speedConnectionMarginMs = 1_500
+
+    // NET-PING-TRACE traceroute bounds (frozen alongside the Kotlin parser).
+    public static let minimumTracerouteHops = 1
+    public static let maximumTracerouteHops = 30
+    public static let defaultTracerouteHops = 20
+    public static let minimumTracerouteProbesPerHop = 1
+    public static let maximumTracerouteProbesPerHop = 3
+    public static let defaultTracerouteProbesPerHop = 2
+    public static let minimumTracerouteProbeTimeoutMs = 500
+    public static let maximumTracerouteProbeTimeoutMs = 5_000
+    public static let defaultTracerouteProbeTimeoutMs = 2_000
+    public static let defaultTracerouteTimeoutMs = 15_000
 }
 
 public enum NetworkToolMethod: String, Sendable, CaseIterable {
@@ -74,6 +88,7 @@ public enum NetworkToolMethod: String, Sendable, CaseIterable {
     case wifiScan = "network.wifiScan"
     case dnsLookup = "network.dnsLookup"
     case ping = "network.ping"
+    case traceroute = "network.traceroute"
     case tcpProbe = "network.tcpProbe"
     case http = "network.http"
     case lanDiscover = "network.lanDiscover"
@@ -139,6 +154,42 @@ public struct NetworkToolRequest: Sendable, Equatable {
         return try make(method: .ping, operationID: operationID, arguments: [
             "host": .string(normalizedHost),
             "count": .int(clampedCount),
+            "timeoutMs": .int(timeout),
+        ])
+    }
+
+    /// `network.traceroute`. Genuine bounded IPv4 ICMP route probing with
+    /// increasing TTL on the phone's actual network; timed-out/filtered hops
+    /// are reported as such. Every count/timing value is clamped exactly like
+    /// the frozen Kotlin parser, and the host passes the same structural and
+    /// diagnostic-target guards as ping.
+    public static func traceroute(host: String, maxHops: Int?, probesPerHop: Int?,
+                                  probeTimeoutMs: Int?, timeoutMs: Int?,
+                                  operationID: UUID = UUID()) throws -> NetworkToolRequest {
+        let normalizedHost = try NetworkToolValidation.normalizedHost(host)
+        try NetworkToolValidation.validateDiagnosticTarget(host: normalizedHost)
+        let hops = NetworkToolValidation.clamp(
+            maxHops,
+            defaultValue: NetworkToolLimits.defaultTracerouteHops,
+            minimum: NetworkToolLimits.minimumTracerouteHops,
+            maximum: NetworkToolLimits.maximumTracerouteHops)
+        let probes = NetworkToolValidation.clamp(
+            probesPerHop,
+            defaultValue: NetworkToolLimits.defaultTracerouteProbesPerHop,
+            minimum: NetworkToolLimits.minimumTracerouteProbesPerHop,
+            maximum: NetworkToolLimits.maximumTracerouteProbesPerHop)
+        let probeTimeout = NetworkToolValidation.clamp(
+            probeTimeoutMs,
+            defaultValue: NetworkToolLimits.defaultTracerouteProbeTimeoutMs,
+            minimum: NetworkToolLimits.minimumTracerouteProbeTimeoutMs,
+            maximum: NetworkToolLimits.maximumTracerouteProbeTimeoutMs)
+        let timeout = NetworkToolValidation.clampTimeout(
+            timeoutMs, defaultValue: NetworkToolLimits.defaultTracerouteTimeoutMs)
+        return try make(method: .traceroute, operationID: operationID, arguments: [
+            "host": .string(normalizedHost),
+            "maxHops": .int(hops),
+            "probesPerHop": .int(probes),
+            "probeTimeoutMs": .int(probeTimeout),
             "timeoutMs": .int(timeout),
         ])
     }

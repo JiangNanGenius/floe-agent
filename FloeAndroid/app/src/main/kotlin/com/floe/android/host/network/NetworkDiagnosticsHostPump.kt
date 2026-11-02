@@ -41,7 +41,7 @@ import kotlinx.coroutines.withTimeoutOrNull
  *    generation remains owned/pending. The reader's finally performs the
  *    exact-epoch close only after real settlement.
  *
- * Availability is REAL: the eight `network.*` tools are registered by the
+ * Availability is REAL: the nine `network.*` tools are registered by the
  * Swift bind, and the bind is only attempted when an actual service is
  * present. A missing service leaves the lane honestly absent.
  */

@@ -311,13 +311,13 @@ final class G07NetworkDiagnosticsTests: XCTestCase {
 
     // MARK: - Registration / metadata
 
-    func testRegistrationPublishesEightHonestDescriptors() async throws {
+    func testRegistrationPublishesNineHonestDescriptors() async throws {
         let registry = ToolRunnerRegistry()
         let executor = ScriptedNetworkExecutor()
         executor.reply = { request in statusObservation(for: request) }
         let names = registerNetworkTools(executor: executor, registry: registry)
         XCTAssertEqual(Set(names), Set(NetworkToolNames.all))
-        XCTAssertEqual(names.count, 8)
+        XCTAssertEqual(names.count, 9)
         for name in NetworkToolNames.all {
             let descriptor = try XCTUnwrap(registry.descriptor(named: name), name)
             XCTAssertFalse(descriptor.requiresHostScope)
@@ -332,7 +332,8 @@ final class G07NetworkDiagnosticsTests: XCTestCase {
                 XCTAssertTrue(descriptor.isSideEffecting)
                 XCTAssertEqual(descriptor.effect, .mutating)
             } else {
-                // The six G07.1 methods and LAN discovery stay read-only.
+                // The G07.1 methods, traceroute and LAN discovery stay
+                // read-only.
                 XCTAssertEqual(descriptor.riskLabels, [.networkAccess])
                 XCTAssertFalse(descriptor.isSideEffecting)
                 XCTAssertEqual(descriptor.effect, .readOnly)

@@ -22,6 +22,7 @@ public enum NetworkObservationSummary {
         let accessPoints: Int
         let dnsAnswers: Int
         let pingProbes: Int
+        let hops: Int
         let tcpAttempts: Int
         let httpRedirects: Int
         let headers: Int
@@ -33,15 +34,15 @@ public enum NetworkObservationSummary {
     }
 
     private static let full = Limits(accessPoints: 8, dnsAnswers: 8, pingProbes: 10,
-                                     tcpAttempts: 6, httpRedirects: 4, headers: 8,
+                                     hops: 30, tcpAttempts: 6, httpRedirects: 4, headers: 8,
                                      addresses: 4, capabilities: 8,
                                      lanServices: 6, lanTypes: 4, lanOpenPorts: 8)
     private static let tight = Limits(accessPoints: 4, dnsAnswers: 4, pingProbes: 4,
-                                      tcpAttempts: 3, httpRedirects: 2, headers: 4,
+                                      hops: 12, tcpAttempts: 3, httpRedirects: 2, headers: 4,
                                       addresses: 2, capabilities: 0,
                                       lanServices: 3, lanTypes: 2, lanOpenPorts: 4)
     private static let minimal = Limits(accessPoints: 0, dnsAnswers: 0, pingProbes: 0,
-                                        tcpAttempts: 0, httpRedirects: 0, headers: 0,
+                                        hops: 0, tcpAttempts: 0, httpRedirects: 0, headers: 0,
                                         addresses: 0, capabilities: 0,
                                         lanServices: 0, lanTypes: 0, lanOpenPorts: 0)
 
@@ -101,6 +102,10 @@ public enum NetworkObservationSummary {
             observations = compactPing(observation.observations.ping,
                                        raw: observation.observations.raw,
                                        limits: limits, notes: &notes)
+        case .traceroute:
+            observations = compactTraceroute(observation.observations.traceroute,
+                                             raw: observation.observations.raw,
+                                             limits: limits, notes: &notes)
         case .tcpProbe:
             observations = compactTCP(observation.observations.tcpProbe,
                                       raw: observation.observations.raw,
@@ -422,6 +427,40 @@ public enum NetworkObservationSummary {
             object["probesOmitted"] = ping.probes.count - probes.count
             notes.append("Ping summary includes \(probes.count) of \(ping.probes.count) probes.")
         }
+        return object
+    }
+
+    private static func compactTraceroute(_ trace: NetworkTracerouteObservation?,
+                                          raw: [String: NetworkJSONValue],
+                                          limits: Limits,
+                                          notes: inout [String]) -> [String: Any] {
+        guard let trace else { return [:] }
+        var object: [String: Any] = [:]
+        set(&object, "resolvedAddress", trace.resolvedAddress)
+        set(&object, "family", trace.family)
+        set(&object, "maxHops", trace.maxHops)
+        set(&object, "probesPerHop", trace.probesPerHop)
+        set(&object, "probeTimeoutMs", trace.probeTimeoutMs)
+        set(&object, "elapsedMs", trace.elapsedMs)
+        set(&object, "reachedTarget", trace.reachedTarget)
+        set(&object, "budgetExhausted", trace.budgetExhausted)
+        object["hopCount"] = trace.hops.count
+        let hops = trace.hops.prefix(limits.hops).map { hop -> [String: Any] in
+            var row: [String: Any] = [:]
+            set(&row, "ttl", hop.ttl)
+            set(&row, "status", hop.status)
+            set(&row, "address", hop.address.map { bounded($0, 64) })
+            set(&row, "unreachableCode", hop.unreachableCode)
+            if !hop.rttsMs.isEmpty { row["rttsMs"] = hop.rttsMs }
+            return row
+        }
+        object["hops"] = hops
+        if trace.hops.count > hops.count {
+            object["hopsTruncated"] = true
+            object["hopsOmitted"] = trace.hops.count - hops.count
+            notes.append("Traceroute summary includes \(hops.count) of \(trace.hops.count) hops.")
+        }
+        copyRawDiagnostics(from: raw, into: &object)
         return object
     }
 
