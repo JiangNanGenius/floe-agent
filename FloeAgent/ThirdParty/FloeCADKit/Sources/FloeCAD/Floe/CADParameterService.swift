@@ -292,7 +292,7 @@ public final class CADParameterService {
         var edited: FeatureKind = node.kind
         if !scalarChanges.isEmpty {
             var currentSweepSpine: [PointWrapper]?
-            var sweepProfileAnchor: SIMD2<Double>?
+            var sweepProfileAnchor: SIMD3<Double>?
             if scalarChanges["helix_radius"] != nil,
                case let .sweep(_, planeRef, _, _, helix?, _) = node.kind {
                 let sourcePlane: SketchPlane?
@@ -304,7 +304,11 @@ public final class CADParameterService {
                 case let .construction(id):
                     sourcePlane = document.session.document.planes.first(where: { $0.id == id })?.plane
                 }
-                sweepProfileAnchor = sourcePlane?.toLocal(helix.point(at: helix.startAngle))
+                sweepProfileAnchor = sourcePlane.map { plane in
+                    let point = helix.point(at: helix.startAngle)
+                    let uv = plane.toLocal(point)
+                    return SIMD3(uv.x, uv.y, simd_dot(point - plane.origin, plane.normal))
+                }
             }
             if scalarChanges["path"] is NSNull,
                case let .sweep(_, _, _, _, _, path) = node.kind, let path {
@@ -4796,7 +4800,7 @@ public final class CADParameterService {
                         requireChange: Bool = true,
                         pilotDiameter: Double? = nil,
                         currentSweepSpine: [PointWrapper]? = nil,
-                        sweepProfileAnchor: SIMD2<Double>? = nil) -> Result<FeatureKind, CADParameterEditError> {
+                        sweepProfileAnchor: SIMD3<Double>? = nil) -> Result<FeatureKind, CADParameterEditError> {
         var didChange = false
         func value(_ name: String) -> Double? {
             guard let raw = changes[name] else { return nil }

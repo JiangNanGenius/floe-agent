@@ -803,7 +803,7 @@ nonisolated enum CADDocumentFormat {
                let helix = sweep["helix"] as? [String: Any],
                let raw = helix["profileAnchor"], !(raw is NSNull) {
                 result.requiredVersion = max(result.requiredVersion, associativeSweepVersion)
-                guard let values = raw as? [Any], values.count == 2,
+                guard let values = raw as? [Any], values.count == 3,
                       values.allSatisfy({ value in
                           guard let number = value as? NSNumber,
                                 CFGetTypeID(number) != CFBooleanGetTypeID() else { return false }

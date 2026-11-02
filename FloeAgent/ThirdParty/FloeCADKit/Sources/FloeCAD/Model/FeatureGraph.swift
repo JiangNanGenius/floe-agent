@@ -127,7 +127,7 @@ nonisolated struct HelixSpec: Codable, Hashable, Sendable {
     /// new pipe radius. This anchor moves only the evaluation frame, never
     /// the source sketch or its support relationship. Nil preserves legacy
     /// placement until a real radius edit establishes the attachment.
-    var profileAnchor: SIMD2<Double>? = nil
+    var profileAnchor: SIMD3<Double>? = nil
 
     /// The helix point at angle `theta` (radians from `referenceDirection`).
     func point(at theta: Double) -> SIMD3<Double> {
@@ -196,7 +196,7 @@ nonisolated struct HelixSpec: Codable, Hashable, Sendable {
         guard startAngle.isFinite else {
             return .invalid("helix.startAngle must be finite.")
         }
-        if let profileAnchor, !profileAnchor.x.isFinite || !profileAnchor.y.isFinite {
+        if let profileAnchor, !Self.isFinite(profileAnchor) {
             return .invalid("helix.profileAnchor must be finite.")
         }
         guard perTurn > 0 else { return .invalidPerTurn }
@@ -2752,7 +2752,11 @@ nonisolated extension FeatureGraph {
             return
         }
         if let helix, let anchor = helix.profileAnchor {
-            let shift = helix.point(at: helix.startAngle) - plane.toWorld(anchor)
+            // Keep the original normal offset as well as the two planar
+            // coordinates. Projecting it away would move a valid section
+            // when the helix starts at a non-zero angle.
+            let attached = plane.toWorld(SIMD2(anchor.x, anchor.y)) + plane.normal * anchor.z
+            let shift = helix.point(at: helix.startAngle) - attached
             let origin = plane.origin + shift
             guard shift.x.isFinite, shift.y.isFinite, shift.z.isFinite,
                   origin.x.isFinite, origin.y.isFinite, origin.z.isFinite else {

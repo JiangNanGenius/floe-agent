@@ -375,6 +375,42 @@ final class CADParameterCorrectnessTests: XCTestCase {
                        CADDocumentFormat.associativeSweepVersion)
     }
 
+    func testHelixRadiusKeepsFullSectionOffsetAtANonzeroStartAngle() async throws {
+        let document = try await makeDocument(); defer { document.close() }
+        let profile = try run(document, "sketch.create", [
+            "origin": [0, -0.5, 3.5], "xAxis": [1, 0, 0], "yAxis": [0, 0, -1]])
+        let rawID = try XCTUnwrap(profile["sketchID"] as? String)
+        try run(document, "sketch.addEntities", ["sketchID": rawID,
+            "entities": [["kind": "circle", "center": [0, 0], "radius": 0.5]]])
+        try run(document, "feature.sweep", ["sketchID": rawID, "seedPoint": [0, 0],
+            "helix": ["axisPoint": [0, 0, 0], "axisDirection": [0, 1, 0],
+                "referenceDirection": [1, 0, 0], "radius": 3.5, "pitch": 2,
+                "turns": 2, "startAngle": Double.pi / 2]])
+        let feature = try XCTUnwrap(document.session.document.features.nodes.last)
+        let source = try XCTUnwrap(document.session.document.sketches.first { $0.id.raw.uuidString == rawID })
+        let solid = try XCTUnwrap(try body(document).brep)
+        let before = try XCTUnwrap(OCCTKernel.renderMesh(from: solid).positions
+            .map { hypot(Double($0.x), Double($0.z)) }.max())
+        let service = CADParameterService(document: document)
+        let reply = service.handle(action: "update", args: ["feature_id": feature.id.raw.uuidString,
+            "changes": ["helix_radius": 4.5]])
+        XCTAssertEqual(reply["ok"] as? Bool, true, "\(reply)")
+        guard let updated = document.session.document.features.node(feature.id),
+              case let .sweep(_, ref, _, _, spec?, _) = updated.kind else {
+            return XCTFail("The original helix identity was lost")
+        }
+        let anchor = try XCTUnwrap(spec.profileAnchor)
+        XCTAssertEqual(anchor.z, 1, accuracy: 1e-9,
+            "Keep the section's normal offset; a two-coordinate projection would discard it")
+        XCTAssertEqual(ref, PlaneRef(source: .sketch(source.id)))
+        XCTAssertEqual(document.session.document.sketches.first { $0.id == source.id }?.plane, source.plane)
+        let newSolid = try XCTUnwrap(try body(document).brep)
+        let after = try XCTUnwrap(OCCTKernel.renderMesh(from: newSolid).positions
+            .map { hypot(Double($0.x), Double($0.z)) }.max())
+        XCTAssertGreaterThan(after, before + 0.75)
+        XCTAssertTrue(document.session.lastEvalErrors.isEmpty)
+    }
+
     private func parameter(_ document: FloeCADDocument, feature: FeatureID,
                            name: String) throws -> [String: Any] {
         let featureRow = try XCTUnwrap(try rows(document, "features").first {
