@@ -59,6 +59,8 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.floe.android.design.Floe
 import com.floe.android.design.LocalFloeOverlayMaterial
 import com.floe.android.design.floeMaterialSource
@@ -148,6 +150,11 @@ private fun FloeShellContent(
     runtimeHost: RuntimeHost?,
 ) {
     val application = androidx.compose.ui.platform.LocalContext.current.applicationContext as? FloeApplication
+    val shellLifecycle = LocalLifecycleOwner.current.lifecycle
+    val shellLifecycleState by shellLifecycle.currentStateFlow.collectAsState()
+    // External SEND/VIEW can leave an older Activity in another task. Only
+    // the resumed surface may consume application-owned navigation requests.
+    val consumesExternalRoutes = shellLifecycleState.isAtLeast(Lifecycle.State.RESUMED)
     val officePreviews = application?.officePreviews
     if (officePreviews != null) {
         OfficePreviewEffect(officePreviews, themeMode)
@@ -423,10 +430,11 @@ private fun FloeShellContent(
                 }
             }
         }
-        LaunchedEffect(runtimeHost) {
+        LaunchedEffect(runtimeHost, consumesExternalRoutes) {
             // C06 notification return: reveal the existing Network workbench
             // so its live capture panel reads the service-owned state. The
             // Intent carries no path/session content and is consumed once.
+            if (!consumesExternalRoutes) return@LaunchedEffect
             PacketCaptureNavigation.requests.collect { nonce ->
                 if (nonce != null) {
                     PacketCaptureNavigation.consume(nonce)
@@ -608,6 +616,10 @@ private fun FloeShellContent(
             onRefused: (() -> Unit)? = null,
             mayCommit: () -> Boolean = { true },
         ) {
+            if (!mayCommit()) {
+                onRefused?.invoke()
+                return
+            }
             officeNavigationGeneration++
             val navigationGeneration = officeNavigationGeneration
             val previousSelectionKey = selection.key
@@ -682,7 +694,8 @@ private fun FloeShellContent(
         // different task/root. A temporary-chat fence refusal dismisses the
         // request instead of committing a partial navigation.
         val calendarReminderRoute by C06CalendarNavigation.pending.collectAsState()
-        LaunchedEffect(calendarReminderRoute?.requestID) {
+        LaunchedEffect(calendarReminderRoute?.requestID, consumesExternalRoutes) {
+            if (!consumesExternalRoutes) return@LaunchedEffect
             val request = calendarReminderRoute ?: return@LaunchedEffect
             if (C06CalendarNavigation.isExpired(request)) {
                 C06CalendarNavigation.dismiss(request.requestID)
@@ -699,51 +712,58 @@ private fun FloeShellContent(
         // existing conversation/schedule store and refused stale targets; this
         // consumer only commits the ordinary route, with the EXISTING
         // temporary-chat fence and the existing schedule sub-view token.
-        LaunchedEffect(runtimeHost) {
+        LaunchedEffect(runtimeHost, consumesExternalRoutes) {
             runtimeHost ?: return@LaunchedEffect
+            if (!consumesExternalRoutes) return@LaunchedEffect
             C07EntryFlowHost.navigation.collect { requested ->
                 val request = requested ?: return@collect
-                when (request) {
-                    is C07EntryNavigation.OpenTask -> navigateTo(
-                        target = SidebarSelection.Conversation(request.conversationID),
-                        openSchedules = false,
-                        onCommitted = { C07EntryFlowHost.consumeNavigation(request) },
-                        onRefused = {
-                            C07EntryFlowHost.navigationRefused()
+                fun navigateEntry(
+                    target: SidebarSelection,
+                    openSchedules: Boolean = false,
+                    onCommitted: () -> Unit = {},
+                    onRefused: () -> Unit = { C07EntryFlowHost.navigationRefused() },
+                ) {
+                    fun current() = shellLifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED) &&
+                        C07EntryFlowHost.navigation.value == request
+                    navigateTo(target, openSchedules,
+                        mayCommit = { current() },
+                        onCommitted = {
+                            onCommitted()
                             C07EntryFlowHost.consumeNavigation(request)
                         },
+                        onRefused = {
+                            // Leave a paused surface's request pending for the
+                            // actual resumed Activity; do not consume its route.
+                            if (current()) {
+                                onRefused()
+                                C07EntryFlowHost.consumeNavigation(request)
+                            }
+                        },
                     )
-                    is C07EntryNavigation.OpenSchedule -> navigateTo(
+                }
+                when (request) {
+                    is C07EntryNavigation.OpenTask -> navigateEntry(
+                        target = SidebarSelection.Conversation(request.conversationID),
+                    )
+                    is C07EntryNavigation.OpenSchedule -> navigateEntry(
                         target = SidebarSelection.Workbench(WorkbenchSelection.OVERVIEW),
                         openSchedules = true,
-                        onCommitted = { C07EntryFlowHost.consumeNavigation(request) },
-                        onRefused = {
-                            C07EntryFlowHost.navigationRefused()
-                            C07EntryFlowHost.consumeNavigation(request)
-                        },
                     )
-                    is C07EntryNavigation.OpenNewTask -> navigateTo(
+                    is C07EntryNavigation.OpenNewTask -> navigateEntry(
                         target = SidebarSelection.Workbench(WorkbenchSelection.NEW_TASK),
                         openSchedules = false,
                         onCommitted = {
                             request.intakeID?.let(C07EntryFlowHost::applyTaskDestination)
-                            C07EntryFlowHost.consumeNavigation(request)
                         },
                         onRefused = {
                             request.intakeID?.let {
                                 C07EntryFlowHost.taskDestinationRefused(it, temporary = true)
                             }
-                            C07EntryFlowHost.consumeNavigation(request)
                         },
                     )
-                    C07EntryNavigation.OpenNotes -> navigateTo(
+                    C07EntryNavigation.OpenNotes -> navigateEntry(
                         target = SidebarSelection.More(MoreDestination.NOTES),
                         openSchedules = false,
-                        onCommitted = { C07EntryFlowHost.consumeNavigation(request) },
-                        onRefused = {
-                            C07EntryFlowHost.navigationRefused()
-                            C07EntryFlowHost.consumeNavigation(request)
-                        },
                     )
                 }
             }
@@ -756,7 +776,8 @@ private fun FloeShellContent(
         // the existing temporary-chat fence). A rejected token is dismissed
         // with no navigation; a refused fence publishes no approval, so no
         // project can open and no success is claimed.
-        LaunchedEffect(application, generationReturnRequest?.requestID) {
+        LaunchedEffect(application, generationReturnRequest?.requestID, consumesExternalRoutes) {
+            if (!consumesExternalRoutes) return@LaunchedEffect
             val request = generationReturnRequest ?: return@LaunchedEffect
             val app = application ?: return@LaunchedEffect
             // Never swallow coroutine cancellation: a rotation during the
@@ -768,6 +789,7 @@ private fun FloeShellContent(
             } catch (_: Throwable) {
                 null
             }
+            if (!shellLifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED)) return@LaunchedEffect
             val decision = GenerationForegroundOwner.resolveReturn(
                 token = request.token,
                 nowElapsedMillis = android.os.SystemClock.elapsedRealtime(),
@@ -805,7 +827,8 @@ private fun FloeShellContent(
                             target = creative,
                             openSchedules = false,
                             mayCommit = {
-                                GenerationReturnNavigation.pending.value?.requestID ==
+                                shellLifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED) &&
+                                    GenerationReturnNavigation.pending.value?.requestID ==
                                     request.requestID
                             },
                             onCommitted = {

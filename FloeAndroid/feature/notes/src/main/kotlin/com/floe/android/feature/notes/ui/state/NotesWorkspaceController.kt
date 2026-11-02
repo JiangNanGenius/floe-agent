@@ -1336,6 +1336,9 @@ internal class NotesWorkspaceController(
                     }
                 }
                 event.kind.startsWith("document.") -> {
+                    // Imports may create/change documents with no open editor
+                    // session. Library truth must not depend on an existing tab.
+                    library.refreshSoon()
                     val revision = event.revision ?: return@forEach
                     val session = sessions[documentID] ?: return@forEach
                     if (revision > session.currentRevision) {

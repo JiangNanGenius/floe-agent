@@ -174,5 +174,29 @@ class NotesWorkspaceColdOpenObservableTest {
         }
     }
 
+    @Test
+    fun createdDocumentWithoutOpenSessionRefreshesTheLibrary() = runBlocking {
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Unconfined)
+        val native = GatedLibraryService(document())
+        try {
+            val controller = NotesWorkspaceController(
+                service = native.service,
+                ports = unavailableNotesHostPorts(InMemoryNotesPresentationStore(), InMemoryNotesRecoveryStore()),
+                scope = scope, generation = { 0L }, fenced = { false },
+            )
+            assertNull(controller.session(documentID))
+            val handle = NotesWorkspaceController::class.java.getDeclaredMethod("handleEvents", NotesEventBatch::class.java)
+            handle.isAccessible = true
+            handle.invoke(controller, NotesEventBatch(1, 1, listOf(
+                com.floe.android.feature.notes.NotesEvent(1, "document.created", documentID, 1),
+            ), false, false))
+            // The original defect never requested this refresh because there
+            // was no document session; releaseLibrary would fail at that point.
+            native.releaseLibrary()
+            assertTrue(controller.library.documents.any { it.id == documentID })
+            assertNull(controller.session(documentID))
+        } finally { scope.cancel() }
+    }
+
     private fun summaryOf(document: NoteDocument) = GatedLibraryService.summaryOf(document)
 }

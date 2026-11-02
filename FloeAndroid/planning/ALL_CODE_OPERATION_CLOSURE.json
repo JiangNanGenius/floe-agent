@@ -5,7 +5,7 @@
     "version": "g02.2026-10-21.2",
     "fixedIOSDonor": "a59b4d4005f616c611df67fab7620e9853c525b9"
   },
-  "status": "live source closure index; original statuses are historical, not acceptance",
+  "status": "Live source closure index; original IDs/statuses retained; scope replacement and source/runtime acceptance are separate",
   "sourceCheckpoint": "99e4d2888a360cbe5c464f0f94751689b830aef3",
   "operationCount": 183,
   "noNewReleaseBeforeClosure": true,
@@ -315,7 +315,7 @@
       "id": "WSF-WRITE-LAYER",
       "family": "WSF",
       "originalGoal": "G04",
-      "originalOperation": "Resolve session→project→shared→base with an explicit write layer; never silently choose a temp dir or the first project",
+      "originalOperation": "Resolve session\u2192project\u2192shared\u2192base with an explicit write layer; never silently choose a temp dir or the first project",
       "originalStatus": "planned",
       "required": true,
       "codeReview": "pending per-operation UI/service/runtime-storage/failure reconciliation",
@@ -527,7 +527,7 @@
       "id": "IDE-ENCODING-LINES",
       "family": "IDE",
       "originalGoal": "G04",
-      "originalOperation": "Preserve CRLF, UTF-8 BOM and long lines across open→edit→save→reopen",
+      "originalOperation": "Preserve CRLF, UTF-8 BOM and long lines across open\u2192edit\u2192save\u2192reopen",
       "originalStatus": "planned",
       "required": true,
       "codeReview": "present-source-connected at immutable 4437d379ec34a3d846ea5a634675ec763ec789ae; static source only, not acceptance",
@@ -2681,7 +2681,7 @@
       "id": "NTF-DISMISSED-SEPARATION",
       "family": "NTF",
       "originalGoal": "G03",
-      "originalOperation": "Notification removal ≠ task stop; background/inactive/lock preserves current session and route",
+      "originalOperation": "Notification removal \u2260 task stop; background/inactive/lock preserves current session and route",
       "originalStatus": "planned",
       "required": true,
       "codeReview": "pending per-operation UI/service/runtime-storage/failure reconciliation",
@@ -2894,9 +2894,16 @@
       "originalOperation": "Layer listing, entity selection and editing on DXF",
       "originalStatus": "planned",
       "required": true,
-      "codeReview": "pending per-operation UI/service/runtime-storage/failure reconciliation",
+      "codeReview": "scope replaced by approved read-only preview; original ID/operation/status retained, not an implementation pass",
       "qualification": "not newly verified this round",
-      "scopeDecision": "Current user contract replaces modeling/editing requirements with actual read-only CAD/.floecad preview; preserve original ID, audit replacement contract, do not claim old editor implemented"
+      "scopeDecision": "Current user contract replaces modeling/editing requirements with actual read-only CAD/.floecad preview; preserve original ID, audit replacement contract, do not claim old editor implemented",
+      "currentScope": "Read-only CAD/3D preview under the approved C04 all-code closure plan; modeling/editing/native geometry export excluded from this round",
+      "scopeResolution": {
+        "authority": "User approved Android C01-C08 all-code closure plan, section1 CAD and section2 C04",
+        "replacement": "Read-only DWG/DXF, STEP/IGES/BREP, GLB/glTF/OBJ/STL/3MF and floecad directory packages; original resources preserved; controlled Linux conversion labelled derived",
+        "sourceCheckpoint": "23192a682201e94979650b96b7f032a97ae29a90",
+        "evidenceBoundary": "Actual OBJ Notes preview/controls observed on existing API37 16KiB tablet; not all-format or modeling acceptance"
+      }
     },
     {
       "id": "CAD-MEASURE",
@@ -2905,9 +2912,16 @@
       "originalOperation": "Measure length/radius from parsed geometry",
       "originalStatus": "planned",
       "required": true,
-      "codeReview": "pending per-operation UI/service/runtime-storage/failure reconciliation",
+      "codeReview": "scope replaced by approved read-only preview; original ID/operation/status retained, not an implementation pass",
       "qualification": "not newly verified this round",
-      "scopeDecision": "Current user contract replaces modeling/editing requirements with actual read-only CAD/.floecad preview; preserve original ID, audit replacement contract, do not claim old editor implemented"
+      "scopeDecision": "Current user contract replaces modeling/editing requirements with actual read-only CAD/.floecad preview; preserve original ID, audit replacement contract, do not claim old editor implemented",
+      "currentScope": "Read-only CAD/3D preview under the approved C04 all-code closure plan; modeling/editing/native geometry export excluded from this round",
+      "scopeResolution": {
+        "authority": "User approved Android C01-C08 all-code closure plan, section1 CAD and section2 C04",
+        "replacement": "Read-only DWG/DXF, STEP/IGES/BREP, GLB/glTF/OBJ/STL/3MF and floecad directory packages; original resources preserved; controlled Linux conversion labelled derived",
+        "sourceCheckpoint": "23192a682201e94979650b96b7f032a97ae29a90",
+        "evidenceBoundary": "Actual OBJ Notes preview/controls observed on existing API37 16KiB tablet; not all-format or modeling acceptance"
+      }
     },
     {
       "id": "CAD-UNKNOWN-PRESERVE",
@@ -2916,9 +2930,16 @@
       "originalOperation": "Unknown/unsupported objects preserved on save; no silent corruption",
       "originalStatus": "planned",
       "required": true,
-      "codeReview": "pending per-operation UI/service/runtime-storage/failure reconciliation",
+      "codeReview": "scope replaced by approved read-only preview; original ID/operation/status retained, not an implementation pass",
       "qualification": "not newly verified this round",
-      "scopeDecision": "Current user contract replaces modeling/editing requirements with actual read-only CAD/.floecad preview; preserve original ID, audit replacement contract, do not claim old editor implemented"
+      "scopeDecision": "Current user contract replaces modeling/editing requirements with actual read-only CAD/.floecad preview; preserve original ID, audit replacement contract, do not claim old editor implemented",
+      "currentScope": "Read-only CAD/3D preview under the approved C04 all-code closure plan; modeling/editing/native geometry export excluded from this round",
+      "scopeResolution": {
+        "authority": "User approved Android C01-C08 all-code closure plan, section1 CAD and section2 C04",
+        "replacement": "Read-only DWG/DXF, STEP/IGES/BREP, GLB/glTF/OBJ/STL/3MF and floecad directory packages; original resources preserved; controlled Linux conversion labelled derived",
+        "sourceCheckpoint": "23192a682201e94979650b96b7f032a97ae29a90",
+        "evidenceBoundary": "Actual OBJ Notes preview/controls observed on existing API37 16KiB tablet; not all-format or modeling acceptance"
+      }
     },
     {
       "id": "CAD-IMPORT-EXPORT",
@@ -2927,9 +2948,16 @@
       "originalOperation": "Import/export DXF and OBJ",
       "originalStatus": "planned",
       "required": true,
-      "codeReview": "pending per-operation UI/service/runtime-storage/failure reconciliation",
+      "codeReview": "scope replaced by approved read-only preview; original ID/operation/status retained, not an implementation pass",
       "qualification": "not newly verified this round",
-      "scopeDecision": "Current user contract replaces modeling/editing requirements with actual read-only CAD/.floecad preview; preserve original ID, audit replacement contract, do not claim old editor implemented"
+      "scopeDecision": "Current user contract replaces modeling/editing requirements with actual read-only CAD/.floecad preview; preserve original ID, audit replacement contract, do not claim old editor implemented",
+      "currentScope": "Read-only CAD/3D preview under the approved C04 all-code closure plan; modeling/editing/native geometry export excluded from this round",
+      "scopeResolution": {
+        "authority": "User approved Android C01-C08 all-code closure plan, section1 CAD and section2 C04",
+        "replacement": "Read-only DWG/DXF, STEP/IGES/BREP, GLB/glTF/OBJ/STL/3MF and floecad directory packages; original resources preserved; controlled Linux conversion labelled derived",
+        "sourceCheckpoint": "23192a682201e94979650b96b7f032a97ae29a90",
+        "evidenceBoundary": "Actual OBJ Notes preview/controls observed on existing API37 16KiB tablet; not all-format or modeling acceptance"
+      }
     },
     {
       "id": "CAD-SAVE-REOPEN",
@@ -2938,9 +2966,16 @@
       "originalOperation": "Save a CAD document and reopen with identical semantics",
       "originalStatus": "planned",
       "required": true,
-      "codeReview": "pending per-operation UI/service/runtime-storage/failure reconciliation",
+      "codeReview": "scope replaced by approved read-only preview; original ID/operation/status retained, not an implementation pass",
       "qualification": "not newly verified this round",
-      "scopeDecision": "Current user contract replaces modeling/editing requirements with actual read-only CAD/.floecad preview; preserve original ID, audit replacement contract, do not claim old editor implemented"
+      "scopeDecision": "Current user contract replaces modeling/editing requirements with actual read-only CAD/.floecad preview; preserve original ID, audit replacement contract, do not claim old editor implemented",
+      "currentScope": "Read-only CAD/3D preview under the approved C04 all-code closure plan; modeling/editing/native geometry export excluded from this round",
+      "scopeResolution": {
+        "authority": "User approved Android C01-C08 all-code closure plan, section1 CAD and section2 C04",
+        "replacement": "Read-only DWG/DXF, STEP/IGES/BREP, GLB/glTF/OBJ/STL/3MF and floecad directory packages; original resources preserved; controlled Linux conversion labelled derived",
+        "sourceCheckpoint": "23192a682201e94979650b96b7f032a97ae29a90",
+        "evidenceBoundary": "Actual OBJ Notes preview/controls observed on existing API37 16KiB tablet; not all-format or modeling acceptance"
+      }
     },
     {
       "id": "CAD3D-MODEL-KERNEL",
@@ -2949,9 +2984,16 @@
       "originalOperation": "Real modeling through the pinned geometry kernel (OCCT on iOS; fixed-kernel Android build at G10)",
       "originalStatus": "planned",
       "required": true,
-      "codeReview": "pending per-operation UI/service/runtime-storage/failure reconciliation",
+      "codeReview": "scope replaced by approved read-only preview; original ID/operation/status retained, not an implementation pass",
       "qualification": "not newly verified this round",
-      "scopeDecision": "Current user contract replaces modeling/editing requirements with actual read-only CAD/.floecad preview; preserve original ID, audit replacement contract, do not claim old editor implemented"
+      "scopeDecision": "Current user contract replaces modeling/editing requirements with actual read-only CAD/.floecad preview; preserve original ID, audit replacement contract, do not claim old editor implemented",
+      "currentScope": "Read-only CAD/3D preview under the approved C04 all-code closure plan; modeling/editing/native geometry export excluded from this round",
+      "scopeResolution": {
+        "authority": "User approved Android C01-C08 all-code closure plan, section1 CAD and section2 C04",
+        "replacement": "Read-only DWG/DXF, STEP/IGES/BREP, GLB/glTF/OBJ/STL/3MF and floecad directory packages; original resources preserved; controlled Linux conversion labelled derived",
+        "sourceCheckpoint": "23192a682201e94979650b96b7f032a97ae29a90",
+        "evidenceBoundary": "Actual OBJ Notes preview/controls observed on existing API37 16KiB tablet; not all-format or modeling acceptance"
+      }
     },
     {
       "id": "CAD3D-ASSEMBLY-DRAWING",
@@ -2960,9 +3002,16 @@
       "originalOperation": "Assembly and drawing views (sections) of 3D documents",
       "originalStatus": "planned",
       "required": true,
-      "codeReview": "pending per-operation UI/service/runtime-storage/failure reconciliation",
+      "codeReview": "scope replaced by approved read-only preview; original ID/operation/status retained, not an implementation pass",
       "qualification": "not newly verified this round",
-      "scopeDecision": "Current user contract replaces modeling/editing requirements with actual read-only CAD/.floecad preview; preserve original ID, audit replacement contract, do not claim old editor implemented"
+      "scopeDecision": "Current user contract replaces modeling/editing requirements with actual read-only CAD/.floecad preview; preserve original ID, audit replacement contract, do not claim old editor implemented",
+      "currentScope": "Read-only CAD/3D preview under the approved C04 all-code closure plan; modeling/editing/native geometry export excluded from this round",
+      "scopeResolution": {
+        "authority": "User approved Android C01-C08 all-code closure plan, section1 CAD and section2 C04",
+        "replacement": "Read-only DWG/DXF, STEP/IGES/BREP, GLB/glTF/OBJ/STL/3MF and floecad directory packages; original resources preserved; controlled Linux conversion labelled derived",
+        "sourceCheckpoint": "23192a682201e94979650b96b7f032a97ae29a90",
+        "evidenceBoundary": "Actual OBJ Notes preview/controls observed on existing API37 16KiB tablet; not all-format or modeling acceptance"
+      }
     },
     {
       "id": "CAD3D-DOC-REVISIONS",
@@ -2971,9 +3020,16 @@
       "originalOperation": "Unified engineering document with variants and revisions",
       "originalStatus": "planned",
       "required": true,
-      "codeReview": "pending per-operation UI/service/runtime-storage/failure reconciliation",
+      "codeReview": "scope replaced by approved read-only preview; original ID/operation/status retained, not an implementation pass",
       "qualification": "not newly verified this round",
-      "scopeDecision": "Current user contract replaces modeling/editing requirements with actual read-only CAD/.floecad preview; preserve original ID, audit replacement contract, do not claim old editor implemented"
+      "scopeDecision": "Current user contract replaces modeling/editing requirements with actual read-only CAD/.floecad preview; preserve original ID, audit replacement contract, do not claim old editor implemented",
+      "currentScope": "Read-only CAD/3D preview under the approved C04 all-code closure plan; modeling/editing/native geometry export excluded from this round",
+      "scopeResolution": {
+        "authority": "User approved Android C01-C08 all-code closure plan, section1 CAD and section2 C04",
+        "replacement": "Read-only DWG/DXF, STEP/IGES/BREP, GLB/glTF/OBJ/STL/3MF and floecad directory packages; original resources preserved; controlled Linux conversion labelled derived",
+        "sourceCheckpoint": "23192a682201e94979650b96b7f032a97ae29a90",
+        "evidenceBoundary": "Actual OBJ Notes preview/controls observed on existing API37 16KiB tablet; not all-format or modeling acceptance"
+      }
     },
     {
       "id": "CAD3D-EXPORT",
@@ -2982,9 +3038,16 @@
       "originalOperation": "Export engineering geometry",
       "originalStatus": "planned",
       "required": true,
-      "codeReview": "pending per-operation UI/service/runtime-storage/failure reconciliation",
+      "codeReview": "scope replaced by approved read-only preview; original ID/operation/status retained, not an implementation pass",
       "qualification": "not newly verified this round",
-      "scopeDecision": "Current user contract replaces modeling/editing requirements with actual read-only CAD/.floecad preview; preserve original ID, audit replacement contract, do not claim old editor implemented"
+      "scopeDecision": "Current user contract replaces modeling/editing requirements with actual read-only CAD/.floecad preview; preserve original ID, audit replacement contract, do not claim old editor implemented",
+      "currentScope": "Read-only CAD/3D preview under the approved C04 all-code closure plan; modeling/editing/native geometry export excluded from this round",
+      "scopeResolution": {
+        "authority": "User approved Android C01-C08 all-code closure plan, section1 CAD and section2 C04",
+        "replacement": "Read-only DWG/DXF, STEP/IGES/BREP, GLB/glTF/OBJ/STL/3MF and floecad directory packages; original resources preserved; controlled Linux conversion labelled derived",
+        "sourceCheckpoint": "23192a682201e94979650b96b7f032a97ae29a90",
+        "evidenceBoundary": "Actual OBJ Notes preview/controls observed on existing API37 16KiB tablet; not all-format or modeling acceptance"
+      }
     },
     {
       "id": "DSN-FREEZE-CANDIDATE",
