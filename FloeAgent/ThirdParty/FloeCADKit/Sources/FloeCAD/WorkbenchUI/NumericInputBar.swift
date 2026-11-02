@@ -665,7 +665,8 @@ struct NumericInputBar: View {
                 .allowsHitTesting(extrudeDistanceUsesKeyboard)
                 .contentShape(Rectangle())
                 .onTapGesture {
-                    if !extrudeDistanceUsesKeyboard { extrudeDistancePadOpen = true }
+                    if extrudeDistanceUsesKeyboard { extrudeDistanceFocused = true }
+                    else { extrudeDistancePadOpen = true }
                 }
                 .numericKeypad(
                     isPresented: $extrudeDistancePadOpen,

@@ -80,12 +80,12 @@ extension View {
     }
 }
 
-/// Background treatment for a bottom bar. Compact width always uses the
-/// rounded-rect panel — a multi-row capsule reads as a lozenge, not a bar.
+/// Contextual bar spacing. Both layouts share the system floating surface;
+/// the legacy capsule case keeps the tighter blend/shell spacing.
 enum AdaptiveBarStyle {
-    /// Numeric input bars: 20/12 padding, 16pt rounded rect.
+    /// Numeric input bars.
     case panel
-    /// Blend / shell pick bars: tighter 16/10 padding, capsule at regular width.
+    /// Tighter blend / shell pick bars.
     case capsule
 
     var horizontalPadding: CGFloat {
@@ -107,6 +107,7 @@ enum AdaptiveBarStyle {
 
 struct AdaptiveBar<Controls: View, Actions: View, Footer: View>: View {
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
+    @Environment(\.colorScheme) private var colorScheme
     @State private var compactOptionsExpanded = false
 
     private let style: AdaptiveBarStyle
@@ -151,7 +152,9 @@ struct AdaptiveBar<Controls: View, Actions: View, Footer: View>: View {
             .environment(\.cadInlineValueAppearance, true)
             .padding(.horizontal, isCompact ? 14 : style.horizontalPadding)
             .padding(.vertical, isCompact ? 10 : style.verticalPadding)
-            .glassEffect(.regular, in: RoundedRectangle(cornerRadius: 24, style: .continuous))
+            .glassEffect(.regular.tint(colorScheme == .dark
+                ? Color(uiColor: .systemBackground).opacity(0.75) : .clear),
+                in: RoundedRectangle(cornerRadius: 24, style: .continuous))
     }
 
     @ViewBuilder
@@ -213,6 +216,7 @@ struct AdaptiveBar<Controls: View, Actions: View, Footer: View>: View {
                 actionButtons
             }
             .lineLimit(1)
+            .fixedSize(horizontal: true, vertical: false)
             scrollRow {
                 controls
                 actionButtons

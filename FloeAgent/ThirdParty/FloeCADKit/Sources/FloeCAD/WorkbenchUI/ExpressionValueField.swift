@@ -69,7 +69,11 @@ struct ExpressionValueField: View {
             // Tapping the field opens the pad rather than the system keyboard,
             // which on an iPad covers the bar the field is in.
             .contentShape(Rectangle())
-            .onTapGesture { if !usingSystemKeyboard { padOpen = true } }
+            .onTapGesture {
+                // The inset's padding is part of the visible hit region too.
+                if usingSystemKeyboard { focused = true }
+                else { padOpen = true }
+            }
             .numericKeypad(
                 isPresented: $padOpen,
                 text: $text,
