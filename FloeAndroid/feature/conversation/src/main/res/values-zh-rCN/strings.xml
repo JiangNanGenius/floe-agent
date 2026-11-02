@@ -393,4 +393,5 @@
     <string name="user_question_waiting">等待你的回答</string>
     <string name="history_results_cleanup_pending">任务已删除，部分已保存结果仍待清理。</string>
     <string name="history_results_cleanup_failed">任务已删除，部分已保存结果未能移除。</string>
+    <string name="menu_execution_target">执行位置</string>
 </resources>

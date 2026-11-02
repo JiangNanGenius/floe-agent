@@ -98,6 +98,8 @@ fun FloeConversationDestination(
      * route. Temporary sessions never receive this action.
      */
     onAttachmentDesign: ((AttachmentDesignRequest) -> Unit)? = null,
+    onOpenExecutionTarget: (() -> Unit)? = null,
+    statusContent: (@Composable () -> Unit)? = null,
 ) {
     val state = holder.snapshot.value
     // Timeline density follows the ACTUAL pane when the host measured one;
@@ -108,8 +110,9 @@ fun FloeConversationDestination(
         ?: (LocalConfiguration.current.screenWidthDp.dp >= FloeLayout.PersistentTwoColumnMinWidth)
 
     Column(modifier = modifier.fillMaxSize().background(Floe.colors.readingSurface)) {
-        ThreadTopBar(holder, onBack)
+        ThreadTopBar(holder, onBack, onOpenExecutionTarget)
         FloeDivider()
+        statusContent?.invoke()
         if (holder.threadSearchVisible) {
             ThreadSearchBar(holder)
         }
@@ -179,7 +182,11 @@ fun FloeConversationDestination(
 /* ---------------------------------- top bar ---------------------------------- */
 
 @Composable
-private fun ThreadTopBar(holder: ConversationFlowHolder, onBack: (() -> Unit)?) {
+private fun ThreadTopBar(
+    holder: ConversationFlowHolder,
+    onBack: (() -> Unit)?,
+    onOpenExecutionTarget: (() -> Unit)?,
+) {
     val state = holder.snapshot.value
     val title = state?.taskTitle?.takeIf { it.isNotEmpty() } ?: stringResource(R.string.thread_title_default)
     var menuExpanded by remember(state?.session) { mutableStateOf(false) }
@@ -280,6 +287,13 @@ private fun ThreadTopBar(holder: ConversationFlowHolder, onBack: (() -> Unit)?) 
                 )
                 FloeChipMenu(expanded = menuExpanded, onDismiss = { menuExpanded = false }) {
                     if (state != null && !state.isTemporary) {
+                        if (onOpenExecutionTarget != null) {
+                            CupertinoMenuEntry(
+                                title = stringResource(R.string.menu_execution_target),
+                                selected = false,
+                                onClick = { menuExpanded = false; onOpenExecutionTarget() },
+                            )
+                        }
                         CupertinoMenuEntry(
                             title = stringResource(if (holder.mediaRefreshInFlight) R.string.menu_refreshing_media else R.string.menu_refresh_media),
                             selected = false,

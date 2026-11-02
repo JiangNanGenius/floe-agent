@@ -41,7 +41,6 @@ import com.floe.android.feature.canvas.ui.design.DesignWorkflowSheet
 import com.floe.android.feature.conversation.AttachmentDesignRequest
 import com.floe.android.feature.conversation.FloeConversationHistoryDestination
 import com.floe.android.feature.conversation.FloeConversationPaneHost
-import com.floe.android.feature.executiontarget.ExecutionTargetButton
 import com.floe.android.feature.executiontarget.ExecutionTargetSheet
 import com.floe.android.feature.toolresults.LocalToolResultDetailSource
 import com.floe.android.feature.taskcontinuity.TaskContinuityBanner
@@ -333,25 +332,17 @@ private fun ConversationDestination(
                 modifier = Modifier.fillMaxSize(),
                 onBack = if (compact) (onBackToOrigin ?: onOpenDrawer) else null,
                 onAttachmentDesign = onAttachmentDesign,
+                onOpenExecutionTarget = if (temporary == null) ({ targetSheetVisible = true }) else null,
+                statusContent = {
+                    if (temporary == null && TaskContinuityPresentation.shouldShowBanner(continuityState)) {
+                        TaskContinuityBanner(
+                            state = continuityState,
+                            onClick = { continuitySheetVisible = true },
+                            modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp),
+                        )
+                    }
+                },
             )
-        }
-        if (temporary == null) {
-            ExecutionTargetButton(
-                state = targetState,
-                onClick = { targetSheetVisible = true },
-                modifier = Modifier
-                    .align(Alignment.TopEnd)
-                    .padding(top = 10.dp, end = 12.dp),
-            )
-            if (TaskContinuityPresentation.shouldShowBanner(continuityState)) {
-                TaskContinuityBanner(
-                    state = continuityState,
-                    onClick = { continuitySheetVisible = true },
-                    modifier = Modifier
-                        .align(Alignment.TopStart)
-                        .padding(top = 10.dp, start = 12.dp),
-                )
-            }
         }
     }
     ExecutionTargetSheet(
