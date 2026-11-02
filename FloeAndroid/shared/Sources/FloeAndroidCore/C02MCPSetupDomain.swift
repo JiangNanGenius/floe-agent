@@ -485,6 +485,13 @@ public protocol C02MCPSetupProjectProviding: Sendable {
 
 public protocol C02MCPSetupEnvironmentProviding: Sendable {
     func environment(id: String) async -> C02MCPSetupEnvironmentFacts?
+    func environment(id: String, project: C02MCPSetupProject) async -> C02MCPSetupEnvironmentFacts?
+}
+
+public extension C02MCPSetupEnvironmentProviding {
+    func environment(id: String, project: C02MCPSetupProject) async -> C02MCPSetupEnvironmentFacts? {
+        await environment(id: id)
+    }
 }
 
 // MARK: - Template identity (fixed App-owned source)
@@ -1849,7 +1856,7 @@ public actor C02MCPSetupCenter {
                                      retryable: false)
         }
         let rootIdentity = C02MCPSetupWorkspaceStager.projectRootIdentity(project.rootURL)
-        guard let facts = await dependencies.environments.environment(id: environmentID) else {
+        guard let facts = await dependencies.environments.environment(id: environmentID, project: project) else {
             throw C02MCPSetupFailure(.environmentMissing,
                                      message: "The selected environment no longer exists.",
                                      retryable: true)

@@ -812,6 +812,7 @@ public final class G02InstalledComposition: @unchecked Sendable {
                 projectLibrary: projectLibrary,
                 storageRootPath: cluster.identity.root.path,
                 environmentRegistry: environmentRegistry,
+                runtimeEnvironments: C02MCPSetupRuntimeEnvironmentProvider(epoch: epoch),
                 jobs: backgroundJobs,
                 jobContexts: nil,
                 mcpDomain: mcpDomain,

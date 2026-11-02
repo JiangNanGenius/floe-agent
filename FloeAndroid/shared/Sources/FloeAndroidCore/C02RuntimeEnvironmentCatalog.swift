@@ -31,21 +31,25 @@ public enum C02RuntimeEnvironmentCatalog {
     }
 
     public static func read(ownership: C02TargetOwnership) async throws -> [Row] {
-        guard ownership.rootEpoch > 0,
-              G02NativeRootEpoch.readback() == ownership.rootEpoch else {
+        try await read(workspaceRoot: ownership.workspaceRoot, epoch: ownership.rootEpoch)
+    }
+
+    public static func read(workspaceRoot: URL, epoch: UInt64) async throws -> [Row] {
+        guard epoch > 0,
+              G02NativeRootEpoch.readback() == epoch else {
             throw C02ExecutionTargetError.rootEpochUnavailable
         }
         let projectID = LinuxShellProjectMapping.projectID(
-            forCanonicalCoreWorkspaceRoot: ownership.workspaceRoot)
+            forCanonicalCoreWorkspaceRoot: workspaceRoot)
         let payload = try JSONSerialization.data(withJSONObject: [
-            "action": "catalog", "epoch": ownership.rootEpoch,
+            "action": "catalog", "epoch": epoch,
             "projectID": projectID.uuidString
         ], options: [.sortedKeys])
         let bytes = try await LinuxShellMailbox.shared.submit(
             operation: C01LinuxEnvironmentMailboxHost.operation,
             payload: payload, timeoutMillis: 15_000)
         guard bytes.count <= 65_536,
-              G02NativeRootEpoch.readback() == ownership.rootEpoch else {
+              G02NativeRootEpoch.readback() == epoch else {
             throw C02ExecutionTargetError.rootEpochUnavailable
         }
         return try decode(bytes, projectID: projectID)

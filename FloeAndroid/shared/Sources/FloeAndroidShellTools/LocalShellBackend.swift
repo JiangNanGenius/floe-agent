@@ -98,6 +98,8 @@ public struct ShellRunRequest: Sendable {
     public var sessionID: String
     public var runID: UUID?
     public var toolEnvironment: ToolEnvironment?
+    /// Explicit run target, preserved even without a materialized ToolEnvironment.
+    public var environmentID: String?
     // D2: Android-only additive owner field (see file header).
     /// Runtime-issued conversation identity, carried unchanged from the
     /// trusted `ToolContext`. Model code can never set this: it is threaded
@@ -126,7 +128,8 @@ public struct ShellRunRequest: Sendable {
         toolEnvironment: ToolEnvironment? = nil,
         conversationID: UUID? = nil,
         trackingHook: LinuxShellCallTrackingHook? = nil,
-        toolCallID: String? = nil
+        toolCallID: String? = nil,
+        environmentID: String? = nil
     ) {
         self.command = command
         self.cwd = cwd
@@ -142,6 +145,7 @@ public struct ShellRunRequest: Sendable {
         self.conversationID = conversationID
         self.trackingHook = trackingHook
         self.toolCallID = toolCallID
+        self.environmentID = environmentID
     }
 }
 

@@ -580,6 +580,13 @@ public struct C02MCPSetupMCPDomainCommitter: C02MCPSetupConnectionCommitting {
 
 public protocol C02MCPSetupEnvironmentListing: Sendable {
     func environments(ownerID: String) async -> [C02MCPSetupEnvironmentFacts]
+    func environments(project: C02MCPSetupProject) async -> [C02MCPSetupEnvironmentFacts]
+}
+
+public extension C02MCPSetupEnvironmentListing {
+    func environments(project: C02MCPSetupProject) async -> [C02MCPSetupEnvironmentFacts] {
+        await environments(ownerID: C02MCPSetupWorkspaceStager.projectRootIdentity(project.rootURL))
+    }
 }
 
 /// Honest absence of the C01 Linux environment registry. Project listing
@@ -687,8 +694,7 @@ public struct C02MCPSetupProjectCatalogAdapter: C02MCPSetupProjectProviding {
     }
 
     public func environments(project: C02MCPSetupProject) async throws -> [C02MCPSetupEnvironmentOption] {
-        let owner = C02MCPSetupWorkspaceStager.projectRootIdentity(project.rootURL)
-        return await self.environments.environments(ownerID: owner).map { fact in
+        return await self.environments.environments(project: project).map { fact in
             C02MCPSetupEnvironmentOption(
                 id: fact.id,
                 label: fact.label,
@@ -835,6 +841,7 @@ public enum C02MCPSetupIntegration {
         projectLibrary: C01ProjectLibrary,
         storageRootPath: String,
         environmentRegistry: EnvironmentRegistry?,
+        runtimeEnvironments: (any C02MCPSetupEnvironmentListing & C02MCPSetupEnvironmentProviding)? = nil,
         jobs: BackgroundJobService,
         jobContexts: (any C02MCPSetupExecutionContextProviding)?,
         mcpDomain: MCPDomain,
@@ -848,7 +855,9 @@ public enum C02MCPSetupIntegration {
         liveEpoch: @escaping @Sendable () -> UInt64
     ) -> C02MCPSetupInstallation {
         let environments: any C02MCPSetupEnvironmentListing & C02MCPSetupEnvironmentProviding
-        if let environmentRegistry {
+        if let runtimeEnvironments {
+            environments = runtimeEnvironments
+        } else if let environmentRegistry {
             environments = C02MCPSetupEnvironmentRegistryProvider(
                 registry: environmentRegistry)
         } else {

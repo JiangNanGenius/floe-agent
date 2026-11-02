@@ -64,6 +64,11 @@ final class C02TaskContinuityStoreTests: XCTestCase {
 
     func testSchemaIsTypedUnavailableBeforeRegistration() async throws {
         try await withDatabase { database in
+            // Deliberately missing table, rather than expecting production
+            // migrate() to omit the now-registered v52 table.
+            try await database.writer { db in
+                try db.execute(sql: "DROP TABLE task_continuity_pauses")
+            }
             let store = C02SQLiteTaskContinuityStore(database: database)
             do {
                 _ = try await store.activePause(taskID: UUID())

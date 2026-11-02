@@ -176,6 +176,36 @@ public actor LocalShellService {
                 truncated: false, stderrTruncated: false, durationMs: 0
             ))
         }
+        var mergedEnvironment = environmentDefaults
+        for (key, value) in environment { mergedEnvironment[key] = value }
+        let mergedRemoteEnvironment = mergedEnvironment
+        // C02: a run pinned to a configured SSH target executes through the
+        // real C05 transport adapter. nil keeps the existing local Linux path
+        // byte-for-byte. The remote result is journaled through the SAME
+        // operation journal; a transport loss after dispatch is an unknown
+        // outcome, never a fake clean exit.
+        let remoteStarted = Date()
+        if let remote = await C02RemoteShellRouting.shared.execute(
+            C02RemoteShellSeamRequest(
+                command: command,
+                cwd: cwd,
+                environment: mergedRemoteEnvironment,
+                stdin: stdin,
+                timeout: normalizedTimeout(timeout, isBackground: isBackground),
+                maxOutputBytes: normalizedOutputCap(maxOutputBytes),
+                isBackground: isBackground,
+                context: context
+            )
+        ) {
+            await record(
+                outcome: remote,
+                command: command,
+                cwd: cwd,
+                context: context,
+                durationMs: Int(Date().timeIntervalSince(remoteStarted) * 1000)
+            )
+            return .outcome(remote)
+        }
         let resolvedRoot: URL?
         if let provided = context.workspaceRootURL {
             resolvedRoot = provided
@@ -187,8 +217,6 @@ public actor LocalShellService {
         }
         do { _ = try ShellInputValidation.directory(cwd: cwd, root: root) }
         catch { return .outcome(.failed(message: String(describing: error))) }
-        var mergedEnvironment = environmentDefaults
-        for (key, value) in environment { mergedEnvironment[key] = value }
         // The backend session key is the runtime-issued per-CLIENT scope, not
         // the bare provider tool-call id: a parent run and two delegated
         // children of the same task may legitimately all be handed provider
@@ -212,7 +240,8 @@ public actor LocalShellService {
             toolEnvironment: context.environment,
             conversationID: context.conversationID,   // A1 (see file header)
             trackingHook: trackingHook,               // A1b
-            toolCallID: context.toolCallID
+            toolCallID: context.toolCallID,
+            environmentID: context.environmentID
         )
         // A1b: attach ledger ownership BEFORE the awaited dispatch; the
         // settlement runs only after the REAL backend return + journal

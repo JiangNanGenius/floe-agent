@@ -1,9 +1,8 @@
 {
   "schema": 1,
   "owner": "Main integration only",
-  "registeredSchemaVersion": 51,
-  "nextCoordinatedSchemaVersion": 52,
-  "status": "declarative fragments only; register once after all code fields are known, before final APK",
+  "registeredSchemaVersion": 52,
+  "status": "Registered once as v52_android_code_closure; unified Swift/runtime verification pending",
   "preserve": [
     "v1-v51 registry",
     "G09-R2 selected_at",
@@ -27,9 +26,7 @@
       "sha256": "f8dc1cedc3574fd513d0079f6cdfeb68bbbbcc9ab03e1d404887e5ea3df5b20a"
     }
   ],
-  "pendingInputs": [
-    "C07 full-data restore additions if required",
-    "C02 MCP install/config additions if required",
-    "C07 application entry additions if required"
-  ]
+  "pendingInputs": [],
+  "registration": "shared/Sources/FloePersistence/Migrations/V52AndroidCodeClosure.swift",
+  "registrationSha256": "8b3cc29080e2b689859c9eebe1f1b42083cd596abea6cc96369c40bdbc2c0375"
 }

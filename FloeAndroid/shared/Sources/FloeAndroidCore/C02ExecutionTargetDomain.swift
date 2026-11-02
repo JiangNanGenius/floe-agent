@@ -1884,6 +1884,53 @@ public actor C02ExecutionTargetDomain {
         return try await pin(target: target, runID: runID, ownership: ownership)
     }
 
+    /// Host-only adoption of an environment already owned by this task/project.
+    /// This never creates a container or probes a remote host. A stored target
+    /// always wins; ordinary chat can continue when no unambiguous local exists.
+    public func resolveUsingExistingEnvironment(
+        taskID: UUID, runID: UUID, preferredEnvironmentID: String? = nil
+    ) async throws -> C02ResolvedExecutionTarget? {
+        try await requireLiveEpoch()
+        if try await store.target(taskID: taskID) != nil {
+            return try await resolveForRun(taskID: taskID, runID: runID)
+        }
+        let taskPolicy = try await policy.policy(taskID: taskID)
+        guard !taskPolicy.isTemporary, taskPolicy.isOrdinary else {
+            throw C02ExecutionTargetError.temporaryTaskRefused
+        }
+        guard let owner = try await ownership.ownership(taskID: taskID), owner.rootEpoch == epoch else {
+            throw C02ExecutionTargetError.workspaceOwnershipMismatch
+        }
+        if let migration = try await store.activeMigration(taskID: taskID), !migration.phase.isCommitted {
+            throw C02ExecutionTargetError.migrationAlreadyActive
+        }
+        let available = try await environments.localEnvironments(taskID: taskID, ownership: owner)
+            .filter { $0.isQualified(ownership: owner) }
+        let matches: [C02LocalEnvironmentFacts]
+        if let preferredEnvironmentID {
+            matches = available.filter { $0.id == preferredEnvironmentID }
+        } else {
+            let sessions = available.filter { $0.kind == "session" }
+            matches = sessions.isEmpty ? available.filter { $0.kind == "project" } : sessions
+        }
+        guard matches.count == 1, let environment = matches.first else { return nil }
+        let target = try await createTarget(taskID: taskID,
+            selection: C02ExecutionTargetSelection(kind: .localLinux,
+                environmentID: environment.id, remoteHostID: nil, explicitUserChoice: false),
+            ownership: owner, policy: taskPolicy, provenance: .adoptedExistingEnvironment)
+        // insertInitial is first-writer-wins, including a concurrent explicit
+        // selection. Validate and pin that actual winner, never our draft.
+        try await validateExistingTarget(target, ownership: owner)
+        return try await pin(target: target, runID: runID, ownership: owner)
+    }
+
+    public func hasUsableLocalEnvironment(taskID: UUID) async throws -> Bool {
+        try await requireLiveEpoch()
+        guard let owner = try await ownership.ownership(taskID: taskID), owner.rootEpoch == epoch else { return false }
+        return try await environments.localEnvironments(taskID: taskID, ownership: owner)
+            .contains { $0.isQualified(ownership: owner) }
+    }
+
     /// First-run explicit target creation without a run. The UI calls this
     /// before the first send; execution still resolves through `resolveForRun`.
     public func initialize(

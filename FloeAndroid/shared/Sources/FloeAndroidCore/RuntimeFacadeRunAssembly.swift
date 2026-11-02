@@ -320,7 +320,11 @@ extension FacadeRunDomain {
         guard before.runtimeUidBoundaryVerified, before.engineConnected,
               before.mailboxEpochBound, before.rootfsQualified,
               before.singleWorkloadContractAcknowledged else { return }
-        if before.workspaceMappingSynced && before.leaseAuthorityQualified { return }
+        if before.workspaceMappingSynced && before.leaseAuthorityQualified,
+           let targets = components.executionTargets,
+           (try? await targets.domain.hasUsableLocalEnvironment(taskID: conversationID)) == true {
+            return
+        }
         var request: [String: Any] = [
             "runID": runID.uuidString,
             "conversationID": conversationID.uuidString,
@@ -424,10 +428,25 @@ extension FacadeRunDomain {
         // pair returns instantly, so non-Linux chat is never delayed and a
         // refused/unsettled preflight simply keeps this run's Linux discovery
         // honestly unqualified — never a failed run, never assumed success.
-        if !temporary, !isNotes {
+        let savedExecutionTarget: C02ExecutionTarget?
+        if !temporary, !isNotes, let targets = components.executionTargets {
+            savedExecutionTarget = try? await targets.domain.executionTarget(taskID: conversationID)
+        } else {
+            savedExecutionTarget = nil
+        }
+        if !temporary, !isNotes, savedExecutionTarget?.kind != .ssh {
             await linuxWorkspaceFirstUsePreflight(runID: runID,
                                                   conversationID: conversationID,
                                                   environmentID: environmentID)
+        }
+        // Bind only an existing, verified task environment. Failure narrows
+        // executable discovery; it does not prevent ordinary text chat.
+        let resolvedExecutionTarget: C02ResolvedExecutionTarget?
+        if !temporary, !isNotes, let targets = components.executionTargets {
+            resolvedExecutionTarget = try? await targets.domain.resolveUsingExistingEnvironment(
+                taskID: conversationID, runID: runID, preferredEnvironmentID: environmentID)
+        } else {
+            resolvedExecutionTarget = nil
         }
         // The persisted task policy row was committed by the ORIGINAL
         // prepare (or an earlier turn); the service policy is rebuilt from
@@ -458,11 +477,16 @@ extension FacadeRunDomain {
         // allowlist (RunToolAssembly owns the intersection; the runtime
         // STILL re-validates every main/child call for temporary runs).
         let modeRaw = RunLaunchMode(rawValue: mode.rawValue) ?? .chat
-        let ceiling = toolAssembly.allowedToolNames(
+        var ceiling = toolAssembly.allowedToolNames(
             taskPolicy: taskPolicy,
             hostCeiling: hostToolCeiling,
             mode: modeRaw,
             temporary: temporary)
+        if !temporary, !isNotes, components.executionTargets != nil, resolvedExecutionTarget == nil {
+            let executableNames: Set<String> = ["exec.shell", "jobs.submit"]
+            let available = ceiling ?? components.registry.allDescriptors.map(\.name)
+            ceiling = available.filter { !executableNames.contains($0) }
+        }
         let toolsEnabled = ceiling.map { !$0.isEmpty } ?? true
         // The ORIGINAL provider adapter: the host/test factory override when
         // injected, otherwise the ORIGINAL ProviderAdapterFactory coverage
@@ -526,7 +550,8 @@ extension FacadeRunDomain {
             ceiling: ceiling,
             toolsEnabled: toolsEnabled,
             temporary: temporary,
-            environmentID: environmentID)
+            environmentID: resolvedExecutionTarget?.target.kind == .localLinux
+                ? resolvedExecutionTarget?.target.environmentID : environmentID)
         if !temporary, !isNotes {
             // Original persisted conversation/workspace ownership selects this
             // root. No App-root, first-project or temporary-directory fallback.
@@ -597,6 +622,9 @@ extension FacadeRunDomain {
                 // nothing) and nothing else: no workspace, plan, goal, memory,
                 // profile, listing or project instructions.
                 workspaceName: (temporary || isNotes) ? nil : workspaceName,
+                executionTarget: resolvedExecutionTarget.map {
+                    "\($0.target.kind.rawValue):\($0.target.environmentID) revision=\($0.target.revision)"
+                },
                 availableToolNames: ceiling,
                 skillInstructions: isNotes ? notes?.contextText : nil,
                 taskResources: mediaTaskContext),

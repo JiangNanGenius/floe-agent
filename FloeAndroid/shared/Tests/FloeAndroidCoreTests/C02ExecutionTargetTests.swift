@@ -149,7 +149,7 @@ final class C02ExecutionTargetTests: XCTestCase {
             XCTAssertEqual(again.revision, 1)
         }
         let empty = try DatabaseManager.inMemory()
-        try await empty.migrate()
+        // Deliberately unregistered DB: production migrate() now includes v52.
         let store = C02SQLiteExecutionTargetStore(database: empty)
         do {
             _ = try await store.target(taskID: UUID())
@@ -528,6 +528,49 @@ final class C02ExecutionTargetTests: XCTestCase {
             } catch let error as C02ExecutionTargetError {
                 XCTAssertEqual(error, .targetSelectionRequired)
             }
+        }
+    }
+
+    func testHostAdoptsOnlyTheExactExistingEnvironmentAndPinsIt() async throws {
+        try await withFixture { fixture in
+            let harness = try await makeHarness(fixture: fixture)
+            let resolved = try await harness.domain.resolveUsingExistingEnvironment(
+                taskID: harness.taskID, runID: harness.runID, preferredEnvironmentID: "env-a")
+            XCTAssertEqual(resolved?.target.environmentID, "env-a")
+            XCTAssertEqual(resolved?.target.provenance, .adoptedExistingEnvironment)
+            XCTAssertEqual(resolved?.pin.environmentID, "env-a")
+            let again = try await harness.domain.resolveUsingExistingEnvironment(
+                taskID: harness.taskID, runID: harness.runID, preferredEnvironmentID: "env-b")
+            XCTAssertEqual(again?.target.environmentID, "env-a")
+        }
+    }
+
+    func testAmbiguousOrMissingLocalEnvironmentDoesNotCreateATarget() async throws {
+        try await withFixture { fixture in
+            let ambiguous = try await makeHarness(fixture: fixture)
+            let result = try await ambiguous.domain.resolveUsingExistingEnvironment(
+                taskID: ambiguous.taskID, runID: ambiguous.runID)
+            XCTAssertNil(result)
+            let target = try await ambiguous.domain.executionTarget(taskID: ambiguous.taskID)
+            XCTAssertNil(target)
+            let missing = try await makeHarness(fixture: fixture, localFacts: [])
+            let absent = try await missing.domain.resolveUsingExistingEnvironment(
+                taskID: missing.taskID, runID: missing.runID)
+            XCTAssertNil(absent)
+        }
+    }
+
+    func testHostAdoptionPreservesExplicitSSHSelection() async throws {
+        try await withFixture { fixture in
+            let harness = try await makeHarness(fixture: fixture)
+            let hosts = try await harness.environments.remoteHosts(taskID: harness.taskID)
+            let selected = try await harness.domain.initialize(taskID: harness.taskID,
+                selection: C02ExecutionTargetSelection(kind: .ssh, environmentID: nil,
+                    remoteHostID: hosts[0].id, explicitUserChoice: true))
+            let result = try await harness.domain.resolveUsingExistingEnvironment(
+                taskID: harness.taskID, runID: harness.runID, preferredEnvironmentID: "env-a")
+            XCTAssertEqual(result?.target.kind, .ssh)
+            XCTAssertEqual(result?.target.environmentID, selected.environmentID)
         }
     }
 

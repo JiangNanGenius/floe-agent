@@ -995,15 +995,21 @@ public final class C02RemoteShellBridge: @unchecked Sendable {
         } catch {
             return .failed(message: "transport=ssh status=targetUnavailable reason=executionTargetReadFailed")
         }
-        guard let target else { return nil }
+        guard let target else {
+            return .failed(message: "No execution target was bound to this run. Select an environment and start a new run.")
+        }
         switch target.kind {
         case .localLinux:
             // The existing LocalShellService path owns local Linux. It may run
             // only when the run is pinned to this exact target revision.
             do {
-                guard let pin = try await domain.runTargetPin(runID: request.context.runID),
+                let resolved = try await domain.resolveForRun(
+                    taskID: taskID, runID: request.context.runID)
+                let pin = resolved.pin
+                guard resolved.target.kind == .localLinux,
                       pin.targetRevision == target.revision,
-                      pin.environmentID == target.environmentID else {
+                      pin.environmentID == target.environmentID,
+                      request.context.environmentID == target.environmentID else {
                     return .failed(message: "transport=ssh status=targetNotPinned\nThe run has no matching execution-target pin; nothing was executed.")
                 }
                 return nil
