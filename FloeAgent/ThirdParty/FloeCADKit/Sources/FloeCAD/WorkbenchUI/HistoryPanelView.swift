@@ -142,6 +142,7 @@ struct HistoryPanelView: View {
         case .extrude: return "square.stack.3d.up"
         case .draftExtrude: return "square.stack.3d.up.trianglebadge.exclamationmark"
         case .boolean: return "circle.lefthalf.filled"
+        case .split: return "rectangle.split.2x1"
         case .pushPull: return "hand.draw"
         case .moveFace: return "arrow.up.and.down.and.arrow.left.and.right"
         case .scaleFace: return "arrow.down.left.and.arrow.up.right"

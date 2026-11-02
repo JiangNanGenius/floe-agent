@@ -2048,3 +2048,208 @@ final class CADFeaturePlaneReferenceTests: XCTestCase {
         XCTAssertEqual(document.session.document.features.nodes.count, 2)
     }
 }
+
+/// M24: real exact split, persisted cutter identity and fixed result ids.
+@MainActor
+final class CADSplitHistoryTests: XCTestCase {
+    private var directory: URL!
+    override func setUp() async throws {
+        directory = FileManager.default.temporaryDirectory.appendingPathComponent("CADSplit-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    }
+    override func tearDown() async throws { try? FileManager.default.removeItem(at: directory) }
+    private func document() async throws -> FloeCADDocument {
+        try await FloeCADDocument.create(at: directory.appendingPathComponent("Part.floecad"), name: "Split part")
+    }
+    @discardableResult
+    private func box(_ document: FloeCADDocument) -> FeatureNode {
+        let id = UUID()
+        let sketch = Sketch(name: "Source", plane: .ground,
+            entities: [.rect(id: id, min: .zero, max: SIMD2(40, 20))])
+        let feature = FeatureNode(name: "Plate", kind: .extrude(
+            profile: ProfileRef(sketchID: sketch.id, entityIDs: [id], holeEntityIDs: [], seedPoint: SIMD2(5, 5)),
+            plane: PlaneRef(source: .sketch(sketch.id)), distance: Expr(value: 20), symmetric: false,
+            boolean: BooleanIntent(op: .newBody, resolvedTargets: []), extraProfiles: []), outputBodyIDs: [BodyID()])
+        document.session.recordAndRebuild([feature], extra: [AddSketchCommand(sketch: sketch)], title: "Plate")
+        XCTAssertTrue(document.session.lastEvalErrors.isEmpty)
+        return feature
+    }
+    private func execute(_ document: FloeCADDocument, args: [String: Any]) throws -> FeatureNode {
+        let result = document.executeJSON(try JSONSerialization.data(withJSONObject: ["op": "feature.split", "args": args]))
+        XCTAssertTrue(result.isOK, "\(result.errorCode ?? ""): \(result.message ?? "")")
+        guard result.isOK else { throw CADDocumentError(code: result.errorCode ?? "split", message: result.message ?? "Split failed") }
+        return try XCTUnwrap(document.session.document.features.nodes.last)
+    }
+    private func volumes(_ document: FloeCADDocument, ids: [BodyID], expected: [Double],
+                         file: StaticString = #filePath, line: UInt = #line) throws {
+        XCTAssertEqual(ids.count, expected.count, file: file, line: line)
+        for (id, value) in zip(ids, expected) {
+            let body = try XCTUnwrap(document.session.document.body(with: id), file: file, line: line)
+            let solid = try XCTUnwrap(body.brep, file: file, line: line)
+            XCTAssertEqual(abs(OCCTKernel.volume(solid)), value, accuracy: 1e-3, file: file, line: line)
+        }
+    }
+    private func evaluate(_ document: DesignDocument, cache: inout EvalCache) -> EvalResult {
+        var revision: UInt64 = 0
+        return document.features.evaluate(sketches: document.sketches, planes: document.planes,
+            naming: SignatureNaming(), nextRevision: { revision += 1; return revision }, cache: &cache)
+    }
+
+    func testPlaneAndSourceEditsRebuildTheSameTwoResultsWithUndoAndReopen() async throws {
+        let document = try await document(); defer { document.close() }
+        let source = box(document), target = try XCTUnwrap(source.outputBodyIDs.first)
+        let cutter = Sketch(name: "Cutter", plane: .readable(origin: SIMD3(0, 8, 0), normal: SIMD3(0, 1, 0)))
+        document.session.perform(AddSketchCommand(sketch: cutter))
+        let undo = document.session.undoStack.undoCommands.count
+        let split = try execute(document, args: ["bodyID": target.raw.uuidString, "sketchID": cutter.id.raw.uuidString])
+        XCTAssertEqual(split.outputBodyIDs.first, target)
+        XCTAssertEqual(document.session.undoStack.undoCommands.count, undo + 1)
+        try volumes(document, ids: split.outputBodyIDs, expected: [9600, 6400])
+        XCTAssertTrue(document.session.performWithSketchRebuild(ChangeSketchPlaneCommand(sketch: cutter,
+            after: .readable(origin: SIMD3(0, 5, 0), normal: SIMD3(0, 1, 0))), sketchID: cutter.id))
+        XCTAssertTrue(document.session.lastEvalErrors.isEmpty)
+        try volumes(document, ids: split.outputBodyIDs, expected: [12000, 4000])
+        let changed = CADParameterService(document: document).handle(action: "update", args: [
+            "feature_id": source.id.raw.uuidString, "changes": ["distance": 25]])
+        XCTAssertEqual(changed["ok"] as? Bool, true, "\(changed)")
+        try volumes(document, ids: split.outputBodyIDs, expected: [16000, 4000])
+        document.session.undo(); try volumes(document, ids: split.outputBodyIDs, expected: [12000, 4000])
+        document.session.redo(); try volumes(document, ids: split.outputBodyIDs, expected: [16000, 4000])
+        let saved = await document.save(); XCTAssertTrue(saved.succeeded, saved.error ?? "")
+        let url = document.url; document.close()
+        let opened = try await FloeCADDocument.open(at: url); defer { opened.close() }
+        XCTAssertEqual(opened.session.document.features.node(split.id)?.outputBodyIDs, split.outputBodyIDs)
+        try volumes(opened, ids: split.outputBodyIDs, expected: [16000, 4000])
+        let again = CADParameterService(document: opened).handle(action: "update", args: [
+            "feature_id": source.id.raw.uuidString, "changes": ["distance": 22]])
+        XCTAssertEqual(again["ok"] as? Bool, true, "\(again)")
+        try volumes(opened, ids: split.outputBodyIDs, expected: [13600, 4000])
+    }
+
+    func testProfileKeepsEntityIdentityAndDoesNotSubstituteADeletedCutter() async throws {
+        let document = try await document(); defer { document.close() }
+        let source = box(document), target = try XCTUnwrap(source.outputBodyIDs.first), entity = UUID()
+        let cutter = Sketch(name: "Profile cutter", plane: .ground,
+            entities: [.rect(id: entity, min: .zero, max: SIMD2(20, 20))])
+        document.session.perform(AddSketchCommand(sketch: cutter))
+        let split = try execute(document, args: ["bodyID": target.raw.uuidString,
+            "sketchID": cutter.id.raw.uuidString, "seedPoint": [5, 5]])
+        guard case let .split(reference, definition) = split.kind else { return XCTFail("Missing split") }
+        XCTAssertEqual(reference.producer, source.id)
+        XCTAssertEqual(definition.profile?.entityIDs, [entity])
+        try volumes(document, ids: split.outputBodyIDs, expected: [8000, 8000])
+        let changed = CADParameterService(document: document).handle(action: "updateSketchEntity", args: [
+            "sketch_id": cutter.id.raw.uuidString, "entity_id": entity.uuidString, "max": [12, 20]])
+        XCTAssertEqual(changed["ok"] as? Bool, true, "\(changed)")
+        try volumes(document, ids: split.outputBodyIDs, expected: [4800, 11200])
+        var cache = EvalCache()
+        XCTAssertTrue(evaluate(document.session.document, cache: &cache).errors.isEmpty)
+        var removed = document.session.document
+        let index = try XCTUnwrap(removed.sketches.firstIndex { $0.id == cutter.id })
+        // A new region at the same seed is different intent, never a repair.
+        removed.sketches[index].entities = [.rect(id: UUID(), min: .zero, max: SIMD2(12, 20))]
+        let rejected = evaluate(removed, cache: &cache)
+        XCTAssertNotNil(rejected.errors[split.id])
+        XCTAssertNil(rejected.bodies.first { $0.id == split.outputBodyIDs[1] })
+        let untouched = try XCTUnwrap(rejected.bodies.first { $0.id == target })
+        XCTAssertEqual(OCCTKernel.volume(try XCTUnwrap(untouched.brep)), 16000, accuracy: 1e-3)
+        try volumes(document, ids: split.outputBodyIDs, expected: [4800, 11200])
+    }
+
+    func testNativeCutterPickerCreatesTheSamePersistedFeatureAndOneUndo() async throws {
+        let document = try await document(); defer { document.close() }
+        let source = box(document), target = try XCTUnwrap(source.outputBodyIDs.first)
+        let plane = ConstructionPlane(plane: .readable(origin: SIMD3(0, 8, 0), normal: SIMD3(0, 1, 0)), size: 100)
+        document.session.perform(AddConstructionPlaneCommand(plane: plane))
+        let model = document.viewModel(); model.selection = [target]
+        let undo = document.session.undoStack.undoCommands.count
+        model.beginSplitCutterPick()
+        model.handle(.tap(ray: Ray(origin: SIMD3(20, 100, -10), direction: SIMD3(0, -1, 0))))
+        let split = try XCTUnwrap(document.session.document.features.nodes.last)
+        guard case let .split(_, cutter) = split.kind else { return XCTFail("Native split must record history") }
+        XCTAssertEqual(cutter.plane, PlaneRef(source: .construction(plane.id)))
+        XCTAssertEqual(model.selection, Set(split.outputBodyIDs))
+        XCTAssertEqual(document.session.undoStack.undoCommands.count, undo + 1)
+        try volumes(document, ids: split.outputBodyIDs, expected: [9600, 6400])
+        document.session.undo()
+        XCTAssertNil(document.session.document.features.node(split.id))
+        XCTAssertEqual(document.session.document.bodies.count, 1)
+        document.session.redo()
+        try volumes(document, ids: split.outputBodyIDs, expected: [9600, 6400])
+    }
+
+    func testImportedSourceIsCapturedInSameUndoAndFailedSplitKeepsOriginal() async throws {
+        let document = try await document(); defer { document.close() }
+        let solid = try XCTUnwrap(OCCTKernel.primitiveShape(.box(width: 40, depth: 20, height: 20), placement: .identity))
+        var imported = Body(name: "Imported", euclidMesh: .init([]), revision: 0)
+        XCTAssertTrue(imported.adoptBRep(solid))
+        document.session.perform(AddBodyCommand(body: imported, title: "Import"))
+        let bytes = try XCTUnwrap(OCCTKernel.serialize(solid)), undo = document.session.undoStack.undoCommands.count
+        let failed = document.executeJSON(try JSONSerialization.data(withJSONObject: ["op": "feature.split", "args": [
+            "bodyID": imported.id.raw.uuidString, "planeOrigin": [0, 100, 0], "planeNormal": [0, 1, 0]]]))
+        XCTAssertFalse(failed.isOK)
+        XCTAssertTrue(document.session.document.features.nodes.isEmpty)
+        XCTAssertEqual(document.session.undoStack.undoCommands.count, undo)
+        XCTAssertEqual(OCCTKernel.serialize(try XCTUnwrap(document.session.document.body(with: imported.id)?.brep)), bytes)
+        let split = try execute(document, args: ["bodyID": imported.id.raw.uuidString,
+            "planeOrigin": [0, 8, 0], "planeNormal": [0, 1, 0]])
+        XCTAssertEqual(document.session.document.features.nodes.count, 2)
+        XCTAssertEqual(document.session.undoStack.undoCommands.count, undo + 1)
+        guard case .baseSolid = document.session.document.features.nodes[0].kind else { return XCTFail("Original root missing") }
+        document.session.undo()
+        XCTAssertTrue(document.session.document.features.nodes.isEmpty)
+        XCTAssertEqual(OCCTKernel.serialize(try XCTUnwrap(document.session.document.body(with: imported.id)?.brep)), bytes)
+        document.session.redo()
+        XCTAssertEqual(document.session.document.features.nodes.last?.outputBodyIDs, split.outputBodyIDs)
+    }
+
+    func testSplitReferencesMergeAndMissingPlaneCannotReuseCachedHalves() async throws {
+        let document = try await document(); defer { document.close() }
+        let source = box(document), target = try XCTUnwrap(source.outputBodyIDs.first)
+        let plane = ConstructionPlane(plane: .readable(origin: SIMD3(0, 8, 0), normal: SIMD3(0, 1, 0)), size: 100)
+        document.session.perform(AddConstructionPlaneCommand(plane: plane))
+        let split = try execute(document, args: ["bodyID": target.raw.uuidString, "planeID": plane.id.raw.uuidString])
+        let insertion = try ProjectMergeKit.insert(document.session.document, into: DesignDocument(), translation: SIMD3(100, 30, -40))
+        let mapped = try XCTUnwrap(insertion.document.features.nodes.last)
+        XCTAssertNotEqual(mapped.outputBodyIDs, split.outputBodyIDs)
+        XCTAssertFalse(mapped.referencedConstructionPlaneIDs.contains(plane.id))
+        var cache = EvalCache()
+        let result = evaluate(insertion.document, cache: &cache)
+        XCTAssertTrue(result.errors.isEmpty, "\(result.errors)")
+        for (id, volume) in zip(mapped.outputBodyIDs, [9600.0, 6400.0]) {
+            let output = try XCTUnwrap(result.bodies.first { $0.id == id })
+            XCTAssertEqual(OCCTKernel.volume(try XCTUnwrap(output.brep)), volume, accuracy: 1e-3)
+        }
+        var broken = insertion.document; broken.planes = []
+        let rejected = evaluate(broken, cache: &cache)
+        XCTAssertNotNil(rejected.errors[mapped.id])
+        XCTAssertNil(rejected.bodies.first { $0.id == mapped.outputBodyIDs[1] })
+    }
+
+    func testSplitFormatFuturePayloadAndParserRejectMalformedCutter() async throws {
+        let document = try await document(); defer { document.close() }
+        XCTAssertEqual(CADDocumentFormat.requiredFormat(document: document.session.document), 1)
+        let source = box(document), target = try XCTUnwrap(source.outputBodyIDs.first)
+        let split = try execute(document, args: ["bodyID": target.raw.uuidString,
+            "planeOrigin": [0, 8, 0], "planeNormal": [0, 1, 0]])
+        XCTAssertEqual(CADDocumentFormat.requiredFormat(document: document.session.document), 7)
+        let encoder = JSONEncoder()
+        var object = try XCTUnwrap(JSONSerialization.jsonObject(with: encoder.encode(split.kind)) as? [String: Any])
+        var payload = try XCTUnwrap(object["split"] as? [String: Any])
+        var cutter = try XCTUnwrap(payload["cutter"] as? [String: Any])
+        cutter["version"] = 2; payload["cutter"] = cutter; object["split"] = payload
+        var row = CADFeatureRecord(featureID: split.id.raw, orderIndex: 1, name: "Split", suppressed: false,
+            kind: try JSONSerialization.data(withJSONObject: object), outputBodyIDs: try encoder.encode(split.outputBodyIDs.map(\.raw)))
+        let bytes = row.kind
+        XCTAssertTrue(try CADDocumentFormat.assess(planes: [], sketches: [], features: [row]).opaqueFeatures.contains(split.id.raw))
+        XCTAssertEqual(row.kind, bytes)
+        cutter["version"] = true; payload["cutter"] = cutter; object["split"] = payload
+        row.kind = try JSONSerialization.data(withJSONObject: object)
+        XCTAssertThrowsError(try CADDocumentFormat.assess(planes: [], sketches: [], features: [row]))
+        for extra: [String: Any] in [["planeNormal": [0, 1, 0]], ["planeOrigin": [0, 8, 0], "planeNormal": [0, 0, 0]],
+            ["planeID": UUID().uuidString, "sketchID": UUID().uuidString], ["planeOrigin": [0, 8, 0], "planeNormal": [0, 1, 0], "seedPoint": [1, 1]]] {
+            var args = extra; args["bodyID"] = target.raw.uuidString
+            if case .success = AgentExec.parse(["op": "feature.split", "args": args]) { XCTFail("Malformed cutter accepted") }
+        }
+    }
+}

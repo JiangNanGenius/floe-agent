@@ -453,6 +453,9 @@ final class CADCommandExecutor {
                                tools: tools.map { bodyRef($0, session) }),
                 outputBodyIDs: [BodyID()]), on: viewModel)
 
+        case let .split(bodyID, plane, seed):
+            return split(bodyID: bodyID, plane: plane, profileSeed: seed, on: viewModel)
+
         case let .sweep(sketchID, seed, spine, booleanOp, targets, helix, path):
             guard session.document.sketches.contains(where: { $0.id == sketchID }) else {
                 return execMissing("sketch", sketchID.raw.uuidString)
@@ -567,6 +570,49 @@ final class CADCommandExecutor {
             for item in items { session.perform(SetItemVisibilityCommand(item: item, isHidden: hidden)) }
             return execOK(viewModel, ["count": items.count, "undoSteps": items.count])
         }
+    }
+
+    private func split(bodyID: BodyID, plane: PlaneRef, profileSeed: SIMD2<Double>?,
+                       on viewModel: EditorViewModel) -> AgentResponse {
+        let session = viewModel.session
+        guard let body = session.document.body(with: bodyID) else { return execMissing("body", bodyID.raw.uuidString) }
+        guard body.brep != nil else {
+            return .failure(422, "Unprocessable Entity", error: "exact_solid_required",
+                message: "Split history needs a closed exact solid.")
+        }
+        let profile: ProfileRef?
+        if let seed = profileSeed {
+            guard case let .sketch(sketchID) = plane.source,
+                  session.document.sketches.contains(where: { $0.id == sketchID }) else {
+                return .failure(422, "Unprocessable Entity", error: "missing_profile",
+                    message: "The selected cutter profile is unavailable.")
+            }
+            let value = execProfileRef(sketchID: sketchID, seed: seed, in: session)
+            guard !value.entityIDs.isEmpty else {
+                return .failure(422, "Unprocessable Entity", error: "missing_profile",
+                    message: "The selected cutter profile is unavailable.")
+            }
+            profile = value
+        } else { profile = nil }
+        let cutter = SplitCutterDefinition(plane: plane, profile: profile)
+        let target: BodyRef
+        let prefix: [FeatureNode]
+        if let writer = session.lastBodyWriters[bodyID] {
+            target = BodyRef(producer: writer, bodyID: bodyID); prefix = []
+        } else {
+            do {
+                let source = try NativeBodySource(capturing: body)
+                let base = FeatureNode(name: FloeCADStrings.text("cad.feature.importedBody", "Imported body"),
+                    kind: .baseSolid(source: source), outputBodyIDs: [bodyID])
+                target = BodyRef(producer: base.id, bodyID: bodyID); prefix = [base]
+            } catch {
+                return .failure(422, "Unprocessable Entity", error: "source_preservation_failed",
+                    message: error.localizedDescription)
+            }
+        }
+        let node = FeatureNode(name: FloeCADStrings.text("cad.cmd.model.split", "Split Body"),
+            kind: .split(target: target, cutter: cutter), outputBodyIDs: [bodyID, BodyID()])
+        return record(node, on: viewModel, prefix: prefix)
     }
 
     /// Append a node and evaluate it. Reports the eval errors rather than a bare

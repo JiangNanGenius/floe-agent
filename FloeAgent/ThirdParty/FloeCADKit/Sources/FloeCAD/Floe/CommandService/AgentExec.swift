@@ -111,6 +111,7 @@ nonisolated enum AgentExecOp: Sendable, Equatable {
     /// `AgentBridge` maps it on the far side of the hop. Validated here anyway,
     /// so a typo is a 400 and never a silent no-op.
     case boolean(kind: String, target: BodyID, tools: [BodyID])
+    case split(body: BodyID, plane: PlaneRef, profileSeed: SIMD2<Double>?)
     /// Edges are 1-based kernel edge indices from `GET /v1/edges?body=` —
     /// the same numbering the whole identity layer shares
     /// (TOPO_NAMING_HISTORY_DESIGN step 4b unblocked expressing this over
@@ -199,7 +200,7 @@ nonisolated enum AgentExec {
     static let opNames = [
         "sketch.create", "sketch.addEntities", "sketch.addText",
         "feature.extrude", "feature.revolve", "feature.hole",
-        "feature.pattern", "feature.mirror", "feature.transform", "feature.boolean",
+        "feature.pattern", "feature.mirror", "feature.transform", "feature.boolean", "feature.split",
         "feature.fillet", "feature.chamfer", "feature.shell",
         "feature.sweep", "feature.loft", "feature.pushPull",
         "feature.moveFace",
@@ -250,6 +251,7 @@ nonisolated enum AgentExec {
         case "feature.mirror":     return parseMirror(args)
         case "feature.transform":  return parseTransform(args)
         case "feature.boolean":    return parseBoolean(args)
+        case "feature.split":      return parseSplit(args)
         case "feature.fillet":     return parseBlend(args, isFillet: true)
         case "feature.chamfer":    return parseBlend(args, isFillet: false)
         case "feature.shell":      return parseShell(args)
@@ -510,6 +512,35 @@ nonisolated enum AgentExec {
                 totalAngle: (try angleDegrees(a, "totalAngleDegrees", default: 360)) * .pi / 180,
                 rotateInstances: a["rotateInstances"] as? Bool ?? true)
             return .success(.pattern(body: body, spec: spec))
+        } catch let e as AgentExecError { return .failure(e) } catch { return .failure(unexpected) }
+    }
+
+    private static func parseSplit(_ a: [String: Any]) -> Result<AgentExecOp, AgentExecError> {
+        do {
+            let body = BodyID(raw: try uuid(a, "bodyID"))
+            let choices = [a["planeID"] != nil, a["sketchID"] != nil,
+                a["planeOrigin"] != nil || a["planeNormal"] != nil].filter { $0 }.count
+            guard choices == 1 else {
+                throw AgentExecError(code: "bad_cutter", message: "Choose one planeID, sketchID, or planeOrigin and planeNormal.")
+            }
+            let reference: PlaneRef
+            if a["planeID"] != nil { reference = PlaneRef(source: .construction(ConstructionPlaneID(raw: try uuid(a, "planeID")))) }
+            else if a["sketchID"] != nil { reference = PlaneRef(source: .sketch(SketchID(raw: try uuid(a, "sketchID")))) }
+            else {
+                guard a["planeOrigin"] != nil, a["planeNormal"] != nil else {
+                    throw AgentExecError(code: "bad_cutter", message: "Provide both planeOrigin and planeNormal.")
+                }
+                let origin = try vector3(a, "planeOrigin"), normal = try vector3(a, "planeNormal")
+                guard simd_length(normal) > 1e-9 else {
+                    throw AgentExecError(code: "degenerate_plane", message: "planeNormal must be nonzero.")
+                }
+                reference = PlaneRef(source: .explicit(plane(origin: origin, normal: simd_normalize(normal))))
+            }
+            let seed = a["seedPoint"] != nil ? try vector2(a, "seedPoint") : nil
+            if seed != nil, a["sketchID"] == nil {
+                throw AgentExecError(code: "bad_cutter", message: "A profile seedPoint needs its sketchID.")
+            }
+            return .success(.split(body: body, plane: reference, profileSeed: seed))
         } catch let e as AgentExecError { return .failure(e) } catch { return .failure(unexpected) }
     }
 

@@ -1579,6 +1579,14 @@ nonisolated extension KernelOps {
     /// after both OCCT results and their render meshes have been validated.
     static func exactSplit(body: Body, plane: SketchPlane, profile: Profile? = nil,
                            holes: [Profile] = []) throws -> (Body, Body) {
+        let result = try exactSplitWithAncestry(body: body, plane: plane, profile: profile, holes: holes)
+        return (result.first, result.second)
+    }
+
+    static func exactSplitWithAncestry(body: Body, plane: SketchPlane, profile: Profile? = nil,
+                                     holes: [Profile] = [], secondID: BodyID = BodyID()) throws ->
+        (first: Body, second: Body, firstAncestry: ShapeAncestry, secondAncestry: ShapeAncestry) {
+        try FeaturePlaneReference.validate(plane)
         guard let local = body.brep,
               let world = OCCTKernel.transformed(local, by: body.transform) else { throw ExactEditError.refused }
         let bounds = body.euclidMesh().transformed(by: body.transform.euclid).bounds
@@ -1601,12 +1609,12 @@ nonisolated extension KernelOps {
                 xAxis: plane.xAxis, yAxis: plane.yAxis, normal: plane.normal)
         }
         guard let cutter,
-              case let .success(a) = OCCTKernel.booleanResult(world, cutter, op: 2), a.solidCount == 1,
-              case let .success(b) = OCCTKernel.booleanResult(world, cutter, op: 1), b.solidCount == 1
+              case let .success(a) = OCCTKernel.booleanResultWithAncestry(world, cutter, op: 2), a.outcome.solidCount == 1,
+              case let .success(b) = OCCTKernel.booleanResultWithAncestry(world, cutter, op: 1), b.outcome.solidCount == 1
         else { throw ExactEditError.refused }
         var first = Body(id: body.id, name: body.name, euclidMesh: body.euclidMesh(), revision: 0)
-        var second = Body(name: body.name, euclidMesh: body.euclidMesh(), revision: 0)
-        guard first.adoptBRep(a.handle), second.adoptBRep(b.handle) else { throw ExactEditError.refused }
-        return (first.keepingAppearance(of: body), second.keepingAppearance(of: body))
+        var second = Body(id: secondID, name: body.name, euclidMesh: body.euclidMesh(), revision: 0)
+        guard first.adoptBRep(a.outcome.handle), second.adoptBRep(b.outcome.handle) else { throw ExactEditError.refused }
+        return (first.keepingAppearance(of: body), second.keepingAppearance(of: body), a.ancestry, b.ancestry)
     }
 }

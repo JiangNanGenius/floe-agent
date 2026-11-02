@@ -6718,8 +6718,9 @@ final class EditorViewModel {
         let tiles = worldPlaneTiles + constructionPlaneTiles
         if let hit = PlanePicking.pick(ray: ray, tiles: tiles) {
             if body.brep != nil {
-                do { performExactSplit(of: body, halves: try KernelOps.exactSplit(body: body, plane: hit.tile.plane)) }
-                catch { errorMessage = (error as? KernelOps.ExactEditError)?.message ?? "Exact split failed." }
+                let reference = hit.tile.planeID.map { PlaneRef(source: .construction($0)) }
+                    ?? PlaneRef(source: .explicit(hit.tile.plane))
+                performExactSplit(of: body, plane: reference)
                 return
             }
             let halves = KernelOps.split(body: world, byPlane: hit.tile.plane)
@@ -6728,8 +6729,8 @@ final class EditorViewModel {
         }
         if let fill = profileHit(ray: ray) {
             if body.brep != nil {
-                do { performExactSplit(of: body, halves: try KernelOps.exactSplit(body: body, plane: fill.plane, profile: fill.profile, holes: fill.holes)) }
-                catch { errorMessage = (error as? KernelOps.ExactEditError)?.message ?? "Exact split failed." }
+                performExactSplit(of: body, plane: PlaneRef(source: .sketch(fill.sketchID)),
+                    seed: fill.profile.interiorPoint)
                 return
             }
             let halves = KernelOps.split(
@@ -6739,17 +6740,17 @@ final class EditorViewModel {
         }
     }
 
-    private func performExactSplit(of body: Body, halves: (Body, Body)) {
-        var document = session.document
-        var first = halves.0
-        var second = halves.1
-        first.name = document.uniqueBodyName(base: "\(body.name) A")
-        second.name = document.uniqueBodyName(base: "\(body.name) B")
-        second.meshRevision = document.nextRevision()
-        session.perform(CompositeCommand(title: "Split", commands: [
-            ReplaceBodyCommand(title: "Split", before: body, after: first),
-            AddBodyCommand(body: second, title: "Split")]))
-        selection = [first.id, second.id]
+    private func performExactSplit(of body: Body, plane: PlaneRef, seed: SIMD2<Double>? = nil) {
+        let response = CADCommandExecutor(viewModel: self).run(.split(body: body.id,
+            plane: plane, profileSeed: seed))
+        guard response.status == 200, let feature = session.document.features.nodes.last,
+              case .split = feature.kind else {
+            let payload = (try? JSONSerialization.jsonObject(with: response.body)) as? [String: Any]
+            errorMessage = payload?["message"] as? String
+                ?? FloeCADStrings.text("cad.error.splitNoCut", "The cutter doesn't pass through the body — nothing to split.")
+            return
+        }
+        selection = Set(feature.outputBodyIDs)
         mode = .idle
         session.save()
     }
@@ -20493,6 +20494,7 @@ final class EditorViewModel {
             return f("cad.feature.draftExtrude", "Draft %@ mm @ %@°", fmt(distance.value), fmt(taperAngle.value))
         case let .boolean(op, _, _):
             return localizedBooleanName(op)
+        case .split: return FloeCADStrings.text("cad.cmd.model.split", "Split Body")
         case let .pushPull(_, distance, mode):
             if mode == .cylinderRadial {
                 return f("cad.feature.radialOffsetDistance", "Radial offset %@ mm", fmt(distance.value))

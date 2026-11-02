@@ -97,7 +97,10 @@ nonisolated enum ProjectMergeKit {
             guard collisions.isEmpty else {
                 throw MergeError.associativeVariableCollision(collisions.sorted())
             }
-            for node in guest.features.nodes { try node.kind.operationPlaneReference?.validate() }
+            for node in guest.features.nodes {
+                try node.kind.operationPlaneReference?.validate()
+                if case let .split(_, cutter) = node.kind { try cutter.validate() }
+            }
             for plane in guest.planes {
                 guard let definition = plane.definition else { continue }
                 switch definition {
@@ -308,6 +311,8 @@ nonisolated enum ProjectMergeKit {
                     case let .hole(target, _, _, _), let .thread(target, _): local.remove(target.bodyID)
                     case let .boolean(_, target, tools):
                         local.remove(target.bodyID); local.subtract(tools.map(\.bodyID))
+                    case let .split(target, _):
+                        local.remove(target.bodyID); local.subtract(node.outputBodyIDs)
                     case .transform, .pushPull, .moveFace, .scaleFace, .rotateFace,
                          .draftFace, .chamfer, .fillet, .shell, .deleteFace, .replaceFace:
                         break // each preserves the input's body-local geometry frame
@@ -736,6 +741,9 @@ nonisolated enum ProjectMergeKit {
                     profile: remap(profile), plane: remap(plane, translation: t),
                     distance: distance, taperAngle: taperAngle,
                     symmetric: symmetric, boolean: remap(boolean))
+            case let .split(target, cutter):
+                return .split(target: remap(target), cutter: SplitCutterDefinition(
+                    plane: remap(cutter.plane, translation: t), profile: cutter.profile.map(remap), version: cutter.version))
             case let .revolve(profile, plane, axis, angle, boolean):
                 return .revolve(
                     profile: remap(profile), plane: remap(plane, translation: t),

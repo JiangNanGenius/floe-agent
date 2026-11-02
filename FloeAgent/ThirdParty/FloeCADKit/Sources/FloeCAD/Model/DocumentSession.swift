@@ -1481,7 +1481,7 @@ final class DocumentSession {
                     storedUnit: "deg", expr: angle))
             }
             return slots
-        case .primitive, .baseSolid, .sweep, .loft, .boolean, .transform, .mirror, .pattern,
+        case .primitive, .baseSolid, .sweep, .loft, .boolean, .split, .transform, .mirror, .pattern,
              .moveFace, .deleteFace, .replaceFace:
             return []
         }
@@ -1571,7 +1571,7 @@ final class DocumentSession {
                 return nil
             }
             return .hole(target: target, profile: profile, plane: plane, spec: updated)
-        case .primitive, .baseSolid, .sweep, .loft, .boolean, .transform, .mirror, .pattern,
+        case .primitive, .baseSolid, .sweep, .loft, .boolean, .split, .transform, .mirror, .pattern,
              .moveFace, .deleteFace, .replaceFace:
             return nil
         }

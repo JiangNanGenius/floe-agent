@@ -4502,6 +4502,7 @@ public final class CADParameterService {
             return [target.bodyID]
         case let .hole(target, _, _, _), let .thread(target, _):
             return [target.bodyID]
+        case let .split(target, _): return [target.bodyID]
         case let .transform(body, _), let .chamfer(body, _, _),
              let .fillet(body, _, _), let .shell(body, _, _), let .deleteFace(body, _):
             return [body.bodyID]
@@ -5092,6 +5093,10 @@ public final class CADParameterService {
             kindName = "boolean"
             add("boolean_kind", "unitless", String(describing: kind), editable: false)
             add("tool_count", "unitless", tools.count, editable: false)
+        case let .split(_, cutter):
+            kindName = "split"
+            add("cutter", "unitless", (try? JSONSerialization.jsonObject(with: JSONEncoder().encode(cutter))) ?? NSNull(),
+                editable: false)
         case let .transform(_, delta):
             kindName = "transform"
             vector("translation", delta.translation, "mm")
@@ -5282,6 +5287,7 @@ public final class CADParameterService {
              let .loft(_, boolean):
             return boolean.resolvedTargets
         case let .hole(target, _, _, _), let .thread(target, _): return [target]
+        case let .split(target, _): return [target]
         case let .transform(body, _), let .mirror(body, _, _),
              let .pattern(body, _), let .chamfer(body, _, _),
              let .fillet(body, _, _), let .shell(body, _, _),

@@ -383,6 +383,9 @@ nonisolated enum FeatureKind: Codable, Sendable {
                helix: HelixSpec?, path: SweepPathDefinition? = nil)
     case loft(sections: [ProfileRef], boolean: BooleanIntent)
     case boolean(kind: BooleanKind, target: BodyRef, tools: [BodyRef])
+    /// Two deterministic outputs. The first preserves target.bodyID and the
+    /// second is minted once in outputBodyIDs, never during replay.
+    case split(target: BodyRef, cutter: SplitCutterDefinition)
     case transform(body: BodyRef, delta: Transform3D)
     case mirror(body: BodyRef, plane: PlaneRef, keepOriginal: Bool)
     case pattern(body: BodyRef, spec: PatternSpec)
@@ -438,6 +441,7 @@ nonisolated extension FeatureKind {
         switch self {
         case let .draftFace(_, _, _, _, reference), let .replaceFace(_, _, _, _, reference):
             return reference
+        case let .split(_, cutter): return FeaturePlaneReference(source: .plane(cutter.plane))
         default: return nil
         }
     }
@@ -503,6 +507,9 @@ nonisolated extension FeatureNode {
             for ref in sections { ids.insert(ref.sketchID) }
         case let .mirror(_, plane, _):
             addPlane(plane)
+        case let .split(_, cutter):
+            addPlane(cutter.plane)
+            if let profile = cutter.profile { ids.insert(profile.sketchID) }
         case .primitive, .baseSolid, .thread, .boolean, .transform, .pattern, .pushPull, .moveFace,
              .scaleFace, .rotateFace, .draftFace, .chamfer, .fillet, .shell,
              .deleteFace, .replaceFace:
@@ -524,6 +531,7 @@ nonisolated extension FeatureNode {
              let .revolve(_, plane, _, _, _), let .sweep(_, plane, _, _, _, _),
              let .hole(_, _, plane, _), let .mirror(_, plane, _):
             add(plane)
+        case let .split(_, cutter): add(cutter.plane)
         case .primitive, .baseSolid, .thread, .loft, .boolean, .transform, .pattern, .pushPull, .moveFace,
              .scaleFace, .rotateFace, .draftFace, .chamfer, .fillet, .shell,
              .deleteFace, .replaceFace:
@@ -573,6 +581,7 @@ nonisolated extension FeatureNode {
             return [target.bodyID] + tools.map(\.bodyID)
         case let .hole(target, _, _, _), let .thread(target, _):
             return [target.bodyID]
+        case let .split(target, _): return [target.bodyID]
         case let .transform(body, _), let .mirror(body, _, _), let .pattern(body, _),
              let .chamfer(body, _, _), let .fillet(body, _, _), let .shell(body, _, _),
              let .deleteFace(body, _):
@@ -941,6 +950,9 @@ nonisolated extension FeatureGraph {
                 into: &state, next: nextRevision)
         case let .boolean(kind, target, tools):
             evalBoolean(node, kind: kind, target: target, tools: tools, into: &state, next: nextRevision)
+        case let .split(target, cutter):
+            evalSplit(node, target: target, cutter: cutter, plane: operationPlane,
+                      into: &state, next: nextRevision)
         case let .pushPull(face, distance, mode):
             evalPushPull(node, face: face, distance: distance, mode: mode, into: &state, next: nextRevision)
         case let .moveFace(face, delta):
@@ -2418,6 +2430,60 @@ nonisolated extension FeatureGraph {
         if !outNames.isEmpty { state.kernelNames[result.id] = outNames }
         for (ref, resolved) in upgrades {
             proposeUpgrade(node, ref: ref, resolved: resolved, into: &state)
+        }
+    }
+
+    // MARK: Split Body
+
+    private func evalSplit(_ node: FeatureNode, target: BodyRef, cutter: SplitCutterDefinition,
+                           plane: SketchPlane?, into state: inout EvalState,
+                           next nextRevision: () -> UInt64) {
+        guard node.outputBodyIDs.count == 2, node.outputBodyIDs[0] == target.bodyID,
+              node.outputBodyIDs[1] != target.bodyID,
+              state.bodies[node.outputBodyIDs[1]] == nil,
+              let body = state.bodies[target.bodyID], body.brep != nil,
+              let plane else {
+            state.errors[node.id] = .brokenRef("Split source, cutter or result identities are unavailable.")
+            return
+        }
+        do {
+            try cutter.validate()
+            var profile: Profile?
+            var holes: [Profile] = []
+            if let reference = cutter.profile {
+                guard let sketch = state.sketch(reference.sketchID) else {
+                    throw CADDocumentFormatError.malformedAssociation("split-sketch")
+                }
+                let ids = Set(sketch.entities.map(\.id))
+                let required = Set(reference.entityIDs + reference.holeEntityIDs.flatMap { $0 })
+                // Do not let resolveProfile's legacy seed fallback replace a
+                // deleted cutter with another region occupying that point.
+                guard required.isSubset(of: ids), let resolved = state.resolveProfile(reference) else {
+                    throw CADDocumentFormatError.malformedAssociation("split-profile")
+                }
+                profile = resolved.outer
+                holes = resolved.holes
+            }
+            let halves = try KernelOps.exactSplitWithAncestry(body: body, plane: plane, profile: profile,
+                holes: holes, secondID: node.outputBodyIDs[1])
+            let inputNames = state.kernelNames[body.id] ?? [:]
+            var first = halves.first, second = halves.second
+            first.name = body.name; second.name = body.name + " B"
+            first.meshRevision = nextRevision(); second.meshRevision = nextRevision()
+            // Both halves are ready before either PUT. Names derive only
+            // from actual OCCT input ancestry; the temporary cutter has none.
+            for (output, ancestry) in [(first, halves.firstAncestry), (second, halves.secondAncestry)] {
+                guard let solid = output.brep else { throw KernelOps.ExactEditError.refused }
+                let names = ElementNaming.composeNames(operation: node.id, ancestry: ancestry,
+                    inputNames: [inputNames, [:]], adjacency: OCCTKernel.edgeFaceAdjacency(solid))
+                var table = state.naming.faceTable(for: output, createdBy: node.id, scheme: .generic)
+                table = ElementNaming.attach(names, to: table,
+                    channel: OCCTKernel.renderMeshFaceChannel(from: solid), body: output)
+                state.put(output, table: table)
+                state.kernelNames[output.id] = names
+            }
+        } catch {
+            state.errors[node.id] = .kernelFailure("Split: \(error.localizedDescription)")
         }
     }
 

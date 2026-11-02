@@ -63,6 +63,49 @@ nonisolated struct PlaneRef: Codable, Hashable, Sendable {
     var source: Source
 }
 
+/// A versioned split cutter. A profile always belongs to the referenced
+/// sketch plane; its original entity ids survive replay instead of a mesh.
+nonisolated struct SplitCutterDefinition: Codable, Sendable {
+    static var supportedVersion: Int { 1 }
+    let version: Int
+    var plane: PlaneRef
+    var profile: ProfileRef?
+
+    init(plane: PlaneRef, profile: ProfileRef? = nil, version: Int = Self.supportedVersion) {
+        self.version = version
+        self.plane = plane
+        self.profile = profile
+    }
+
+    private enum CodingKeys: String, CodingKey { case version, plane, profile }
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        version = try c.decode(Int.self, forKey: .version)
+        guard version == Self.supportedVersion else {
+            throw AssociativeGeometryError.unsupportedSemanticVersion(version)
+        }
+        plane = try c.decode(PlaneRef.self, forKey: .plane)
+        profile = try c.decodeIfPresent(ProfileRef.self, forKey: .profile)
+        try validate()
+    }
+
+    func validate() throws {
+        guard version == Self.supportedVersion else {
+            throw AssociativeGeometryError.unsupportedSemanticVersion(version)
+        }
+        if case let .explicit(value) = plane.source { try FeaturePlaneReference.validate(value) }
+        if let profile {
+            guard case let .sketch(sketchID) = plane.source, sketchID == profile.sketchID,
+                  !profile.entityIDs.isEmpty,
+                  Set(profile.entityIDs).count == profile.entityIDs.count,
+                  profile.holeEntityIDs.allSatisfy({ !$0.isEmpty && Set($0).count == $0.count }),
+                  profile.seedPoint.map({ $0.x.isFinite && $0.y.isFinite }) ?? true else {
+                throw CADDocumentFormatError.malformedAssociation("split-cutter")
+            }
+        }
+    }
+}
+
 /// A direct edit's neutral/target plane. Named faces retain the exact writer
 /// version and the existing face-local attachment; a replay never substitutes
 /// the last world-space display plane when that source no longer resolves.

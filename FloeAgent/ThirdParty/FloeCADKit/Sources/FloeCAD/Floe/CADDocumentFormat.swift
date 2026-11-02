@@ -691,6 +691,13 @@ nonisolated enum CADDocumentFormat {
         // before any commit. A non-encodable hole must FAIL the transaction,
         // never be silently dropped by a try?-encode row update.
         for node in document.features.nodes {
+            if case let .split(target, cutter) = node.kind {
+                try cutter.validate()
+                guard node.outputBodyIDs.count == 2, node.outputBodyIDs.first == target.bodyID,
+                      node.outputBodyIDs[0] != node.outputBodyIDs[1] else {
+                    throw CADDocumentFormatError.malformedAssociation("split-results")
+                }
+            }
             if let reference = node.kind.operationPlaneReference {
                 try reference.validate()
                 _ = try encoder.encode(node.kind)
@@ -930,6 +937,34 @@ nonisolated enum CADDocumentFormat {
             // for the M08 consumer identity BEFORE the hole contract below.
             guard let object = try? JSONSerialization.jsonObject(with: row.kind) as? [String: Any] else {
                 continue
+            }
+            if let split = object["split"] as? [String: Any] {
+                result.requiredVersion = max(result.requiredVersion, operationPlaneReferenceVersion)
+                guard let cutter = split["cutter"] as? [String: Any],
+                      let number = cutter["version"] as? NSNumber,
+                      CFGetTypeID(number) != CFBooleanGetTypeID(),
+                      let version = Int(exactly: number.doubleValue), version > 0 else {
+                    throw CADDocumentFormatError.malformedAssociation("split-cutter")
+                }
+                if version > SplitCutterDefinition.supportedVersion {
+                    result.opaqueFeatures.insert(row.featureID)
+                    continue
+                }
+                guard let plane = cutter["plane"] as? [String: Any],
+                      let source = plane["source"] as? [String: Any], source.count == 1 else {
+                    throw CADDocumentFormatError.malformedAssociation("split-plane")
+                }
+                if !Set(source.keys).isSubset(of: ["ground", "explicit", "construction", "sketch"]) {
+                    result.opaqueFeatures.insert(row.featureID)
+                    continue
+                }
+                do {
+                    let definition = try JSONDecoder().decode(SplitCutterDefinition.self,
+                        from: JSONSerialization.data(withJSONObject: cutter))
+                    try definition.validate()
+                } catch {
+                    throw CADDocumentFormatError.malformedAssociation("split-cutter")
+                }
             }
             for kind in ["draftFace", "replaceFace"] {
                 guard let payload = object[kind] as? [String: Any],
