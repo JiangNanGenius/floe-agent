@@ -2,7 +2,7 @@
 <resources>
     <string name="desktop_assist_title">桌面协助</string>
     <string name="desktop_assist_cards">安全凭据卡</string>
-    <string name="desktop_assist_cards_footer">凭据卡保存在设备的凭据保险库中。只有密码和通用令牌卡可以输入到远程桌面，并且只能用于绑定的主机。模型不会收到明文。</string>
+    <string name="desktop_assist_cards_footer">仅向你授权的远程主机输入已保存的凭据，不向模型显示其内容。</string>
     <string name="desktop_assist_add">添加卡片</string>
     <string name="desktop_assist_empty">还没有安全凭据卡。</string>
     <string name="desktop_assist_loading">正在加载卡片</string>
@@ -35,8 +35,8 @@
     <string name="desktop_assist_notice_unavailable">运行环境尚未就绪，请重试</string>
     <string name="desktop_assist_ocr_title">文字识别</string>
     <string name="desktop_assist_ocr_ready">Linux 文字识别已可用</string>
-    <string name="desktop_assist_ocr_pending">文字识别会在任务首次连接 VNC 或 RDP 时准备</string>
-    <string name="desktop_assist_ocr_body">clickElement 的文字锚点由任务 Linux 环境中的 Tesseract 生成。截图不会离开设备，也不会调用云端 OCR 模型。如果缺少引擎，Floe 会在连接时通过任务 shell 安装免费的 tesseract-ocr 包。</string>
+    <string name="desktop_assist_ocr_pending">首次远程连接时准备文字识别</string>
+    <string name="desktop_assist_ocr_body">在本机识别远程屏幕的文字。首次使用可能需要下载免费组件。</string>
     <string name="desktop_assist_missing_host">未知主机</string>
     <string name="desktop_assist_saving">正在保存</string>
     <string name="desktop_assist_not_typing_allowed">不能用于远程输入</string>

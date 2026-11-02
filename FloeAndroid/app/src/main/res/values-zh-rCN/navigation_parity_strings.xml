@@ -4,4 +4,7 @@
     <string name="settings_execution_environment">执行环境</string>
     <string name="settings_remote_connections">远程</string>
     <string name="settings_system_capabilities">系统能力</string>
+    <string name="settings_connections">连接</string>
+    <string name="settings_services_devices">服务与设备</string>
+    <string name="settings_network_diagnostics">网络诊断</string>
 </resources>

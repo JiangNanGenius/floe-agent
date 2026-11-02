@@ -514,6 +514,7 @@ class SettingsRolePreferencesTest {
         exchange.preferencesGet = preferencesDoc(mode = "shared", routing = false)
         // The user dirties ONLY routing.
         host.settings.roles.setAutonomousImageRouting(false)
+        assertTrue("Scalar-only routing change must expose Save", host.settings.roles.state.value.hasDraftChanges)
         host.settings.roles.select(
             SettingsRoleModelController.RoleSlot.VISION, "44444444-4444-4444-4444-444444444444")
         host.settings.roles.save()

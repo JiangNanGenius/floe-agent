@@ -268,7 +268,10 @@ internal class C06SystemServicesHostController(
             withContext(ioDispatcher) {
                 client.pushAvailability(owner(epoch), availability)
             }
-        } catch (_: SystemServicesClientFailure) {
+        } catch (failure: SystemServicesClientFailure) {
+            // Typed diagnostic code only; no provider data, record, URI or credential.
+            runCatching { android.util.Log.w("FloeC06SystemServices",
+                "Availability refused: " + failure.code.filter { it.isLetterOrDigit() || it == '_' }.take(64)) }
             null
         }
         _state.update { current ->

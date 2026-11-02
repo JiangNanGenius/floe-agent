@@ -4,4 +4,7 @@
     <string name="settings_execution_environment">Execution environment</string>
     <string name="settings_remote_connections">Remote</string>
     <string name="settings_system_capabilities">System capabilities</string>
+    <string name="settings_connections">Connections</string>
+    <string name="settings_services_devices">Services &amp; devices</string>
+    <string name="settings_network_diagnostics">Network diagnostics</string>
 </resources>

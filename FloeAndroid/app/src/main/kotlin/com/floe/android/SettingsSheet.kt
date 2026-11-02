@@ -612,12 +612,16 @@ private fun SettingsSectionContent(
     when (section) {
         FloeSettingsSection.GENERAL -> {
             GeneralSettingsPage(themeMode, onThemeModeChange)
+            C03VoiceSettingsCard(runtimeHost?.voiceOrNull())
             if (runtimeHost != null) {
                 SettingsHostPages.DefaultsPage(runtimeHost.settings)
             }
         }
         FloeSettingsSection.PROVIDERS -> ProvidersSettingsPage()
-        FloeSettingsSection.AUXILIARY -> C03VoiceSettingsCard(runtimeHost?.voiceOrNull())
+        FloeSettingsSection.AUXILIARY -> {
+            if (runtimeHost != null) SettingsHostPages.AuxiliaryPage(runtimeHost.settings)
+            else HostPendingPage(R.string.settings_skills_pending)
+        }
         FloeSettingsSection.EXECUTION -> com.floe.android.host.linux.LocalRuntimeSettingsCard()
         FloeSettingsSection.REMOTE -> RemoteOperationalSettingsPage(runtimeHost)
         FloeSettingsSection.SYSTEM_CAPABILITIES -> SystemOperationalSettingsPage(runtimeHost)
@@ -861,7 +865,7 @@ private fun settingsIcon(section: FloeSettingsSection) = when (section) {
     FloeSettingsSection.WEB_SEARCH -> FloeIcons.Magnifier
     FloeSettingsSection.DESKTOP_ASSIST -> FloeIcons.DeviceLocal
     FloeSettingsSection.DIAGNOSTICS -> FloeIcons.Stethoscope
-    FloeSettingsSection.AUXILIARY -> FloeIcons.Mic
+    FloeSettingsSection.AUXILIARY -> FloeIcons.Photo
     FloeSettingsSection.EXECUTION -> FloeIcons.Terminal
     FloeSettingsSection.REMOTE -> FloeIcons.DeviceLocal
     FloeSettingsSection.SYSTEM_CAPABILITIES -> FloeIcons.Gearshape

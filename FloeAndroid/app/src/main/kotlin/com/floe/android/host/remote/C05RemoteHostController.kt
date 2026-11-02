@@ -139,7 +139,9 @@ internal class C05RemoteHostController(
                     }
                     return@launch
                 }
-                val owner = ownerFor(token) ?: return@launch
+                // This is the independently fenced profile-list load lane,
+                // not an SSH/VNC request token (their sequence counters differ).
+                val owner = ownerForEpoch(token.epoch)
                 // The screen lists every durable host profile, including
                 // VNC-only rows that deliberately have no SSH identity.
                 val hosts = withContext(ioDispatcher) {

@@ -52,17 +52,22 @@ internal class SystemServicesLane(
         if (!running.compareAndSet(false, true)) return epoch == boundEpoch
         epoch = boundEpoch
         try {
-            if (bridge.bind(boundEpoch) != 0) {
+            val bindResult = bridge.bind(boundEpoch)
+            if (bindResult != 0) {
+                runCatching { log("System-service bind refused: $bindResult") }
                 running.set(false)
                 epoch = 0
                 return false
             }
-            if (bridge.laneReady(boundEpoch) != 0) {
+            val readyResult = bridge.laneReady(boundEpoch)
+            if (readyResult != 0) {
+                runCatching { log("System-service readiness refused: $readyResult") }
                 running.set(false)
                 epoch = 0
                 return false
             }
-        } catch (_: Throwable) {
+        } catch (failure: Throwable) {
+            runCatching { log("System-service startup failed: ${failure.javaClass.simpleName}") }
             running.set(false)
             epoch = 0
             return false

@@ -17,10 +17,12 @@ import com.floe.android.feature.desktopassist.DesktopAssistSettingsPage
 @Composable
 internal fun RemoteOperationalSettingsPage(host: RuntimeHost?) {
     var open by rememberSaveable { mutableStateOf<String?>(null) }
-    Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp)) {
-        FloeSettingsSectionCard(title = stringResource(R.string.settings_remote_connections)) {
+    Column(Modifier.fillMaxWidth().padding(vertical = 8.dp)) {
+        Box(Modifier.padding(horizontal = 16.dp)) {
+        FloeSettingsSectionCard(title = stringResource(R.string.settings_connections)) {
             FloeValueRow(stringResource(com.floe.android.feature.remote.R.string.remote_hosts_title), "") { open = "remote" }
             FloeValueRow(stringResource(com.floe.android.feature.rdp.R.string.rdp_title), "") { open = "rdp" }
+        }
         }
         if (host != null) {
             LaunchedEffect(host.desktopAssist) { host.desktopAssist.ensureLoaded() }
@@ -35,7 +37,7 @@ internal fun RemoteOperationalSettingsPage(host: RuntimeHost?) {
 internal fun SystemOperationalSettingsPage(host: RuntimeHost?) {
     var open by rememberSaveable { mutableStateOf<String?>(null) }
     Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp)) {
-        FloeSettingsSectionCard(title = stringResource(R.string.settings_system_capabilities)) {
+        FloeSettingsSectionCard(title = stringResource(R.string.settings_services_devices)) {
             FloeValueRow(stringResource(com.floe.android.feature.mail.R.string.mail_title), "") { open = "mail" }
             FloeValueRow(stringResource(com.floe.android.feature.calendar.R.string.calendar_title), "") { open = "calendar" }
             FloeValueRow(stringResource(com.floe.android.feature.devicecommunication.R.string.devices_title), "") { open = "devices" }
@@ -43,7 +45,7 @@ internal fun SystemOperationalSettingsPage(host: RuntimeHost?) {
         }
         Spacer(Modifier.height(16.dp))
         FloeSettingsSectionCard(title = stringResource(R.string.network_workbench)) {
-            FloeValueRow(stringResource(R.string.network_workbench), "") { open = "network" }
+            FloeValueRow(stringResource(R.string.settings_network_diagnostics), "") { open = "network" }
         }
     }
     open?.let { SettingsOperationalSheet(it, host) { open = null } }

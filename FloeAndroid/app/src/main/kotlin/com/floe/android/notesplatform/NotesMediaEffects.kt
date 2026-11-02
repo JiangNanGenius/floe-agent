@@ -1359,10 +1359,15 @@ internal class NotesMediaEffects(
             if (closed.get()) throw NotesPlatformErrors.failed("sessionClosed")
             if (pageIndex !in 0 until session.pageCount) throw NotesPlatformErrors.failed("pageOutOfRange")
             val page = PdfPageId(pageIndex)
-            val box = session.pageBox(page) ?: throw NotesPlatformErrors.failed("pageUnavailable")
+            val box = session.pageBox(page) ?: run {
+                runCatching { android.util.Log.w("FloeNotesPdf", "Page geometry unavailable: $pageIndex") }
+                throw NotesPlatformErrors.failed("pageUnavailable")
+            }
             val zoom = PdfRenderPlanner.zoomPercentForWidth(box, targetWidthPx.coerceIn(32, 8192))
             val result = session.renderPage(page, zoom)
             if (result !is PdfPageRenderResult.Ready) {
+                runCatching { android.util.Log.w("FloeNotesPdf", "Page render refused: " +
+                    (result as? PdfPageRenderResult.Failed)?.failure?.name) }
                 throw NotesPlatformErrors.failed("render:" + (result as? PdfPageRenderResult.Failed)?.failure?.name)
             }
             try {

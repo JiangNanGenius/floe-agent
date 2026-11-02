@@ -2,7 +2,7 @@
 <resources>
     <string name="desktop_assist_title">Desktop Assist</string>
     <string name="desktop_assist_cards">Secure credential cards</string>
-    <string name="desktop_assist_cards_footer">Cards live in the device credential vault. Only password and generic-token cards can be typed into a remote desktop, and only for the host they are scoped to. The model never receives the secret.</string>
+    <string name="desktop_assist_cards_footer">Use saved credentials only on the remote host you authorize. Their contents are never shown to the model.</string>
     <string name="desktop_assist_add">Add card</string>
     <string name="desktop_assist_empty">No secure credential cards yet.</string>
     <string name="desktop_assist_loading">Loading cards</string>
@@ -35,8 +35,8 @@
     <string name="desktop_assist_notice_unavailable">The runtime is not ready; try again</string>
     <string name="desktop_assist_ocr_title">Text recognition</string>
     <string name="desktop_assist_ocr_ready">Linux text recognition is available</string>
-    <string name="desktop_assist_ocr_pending">Text recognition is prepared on the first VNC or RDP connection in a task</string>
-    <string name="desktop_assist_ocr_body">Text anchors for clickElement come from Tesseract inside the task Linux environment. The screenshot never leaves the device and no cloud OCR model is called. If the engine is missing, Floe installs the free tesseract-ocr package through the task shell during connect.</string>
+    <string name="desktop_assist_ocr_pending">Ready to prepare on your first remote connection</string>
+    <string name="desktop_assist_ocr_body">Screen text is recognized on this device. First use may download a free component.</string>
     <string name="desktop_assist_missing_host">Unknown host</string>
     <string name="desktop_assist_saving">Saving</string>
     <string name="desktop_assist_not_typing_allowed">Not usable for remote typing</string>
