@@ -680,6 +680,138 @@ final class CADParameterCorrectnessTests: XCTestCase {
         }).index
     }
 
+    func testNewPlanarEditCapturesUnownedNativeSourceInOneUndoAndReopensSameIDs() async throws {
+        let document = try await makeDocument(); defer { document.close() }
+        let handle = try XCTUnwrap(OCCTKernel.primitiveShape(
+            .box(width: 40, depth: 20, height: 10), placement: .identity))
+        let id = BodyID()
+        var sourceBody = Body(id: id, name: "Imported exact box", transform: .identity,
+            primitive: nil, render: RenderMesh(positions: [], normals: [], indices: []), revision: 0)
+        XCTAssertTrue(sourceBody.adoptBRep(handle))
+        document.session.perform(AddBodyCommand(body: sourceBody))
+        let originalBytes = try XCTUnwrap(OCCTKernel.serialize(handle))
+        let top = try XCTUnwrap(OCCTKernel.faceInfo(handle).first { $0.normal.y > 0.99 })
+        let undoBefore = document.session.undoStack.undoCommands.count
+        try run(document, "feature.pushPull", ["bodyID": id.raw.uuidString,
+            "face": [top.index], "distance": 2])
+        XCTAssertEqual(document.session.document.features.nodes.count, 2)
+        XCTAssertEqual(document.session.undoStack.undoCommands.count, undoBefore + 1)
+        XCTAssertEqual(try volume(document), 9_600, accuracy: 1e-4)
+        let nodes = document.session.document.features.nodes
+        guard case let .baseSolid(source) = nodes[0].kind,
+              case let .pushPull(reference, _, _) = nodes[1].kind else {
+            return XCTFail("Capture and edit must share the exact source, never flatten an existing feature")
+        }
+        let name = try XCTUnwrap(reference.elementName)
+        guard case let .immutableSourceFace(version, digest, _) = name.source else {
+            return XCTFail("A new native face needs a verified immutable source identity")
+        }
+        XCTAssertEqual(version, 1); XCTAssertEqual(digest, source.sha256)
+        XCTAssertEqual(reference.body.producer, nodes[0].id)
+        XCTAssertEqual(reference.creator, nodes[0].id)
+        let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys]
+        let recorded = try encoder.encode(document.session.document.features)
+        document.session.undo()
+        XCTAssertTrue(document.session.document.features.nodes.isEmpty)
+        XCTAssertEqual(try body(document).id, id)
+        XCTAssertEqual(try volume(document), 8_000, accuracy: 1e-4)
+        XCTAssertEqual(OCCTKernel.serialize(try XCTUnwrap(try body(document).brep)), originalBytes)
+        document.session.redo()
+        XCTAssertEqual(try encoder.encode(document.session.document.features), recorded)
+        XCTAssertEqual(try volume(document), 9_600, accuracy: 1e-4)
+        let saved = await document.save(); XCTAssertTrue(saved.succeeded, saved.error ?? "")
+        let url = document.url; document.close()
+        let reopened = try await FloeCADDocument.open(at: url); defer { reopened.close() }
+        XCTAssertEqual(try body(reopened).id, id)
+        XCTAssertEqual(try encoder.encode(reopened.session.document.features), recorded)
+        XCTAssertEqual(try volume(reopened), 9_600, accuracy: 1e-4)
+        var replayRevision: UInt64 = 0
+        let rebuilt = reopened.session.document.features.evaluate(sketches: [], planes: [],
+            naming: SignatureNaming(), nextRevision: { replayRevision += 1; return replayRevision })
+        XCTAssertTrue(rebuilt.errors.isEmpty, "\(rebuilt.errors)")
+        XCTAssertEqual(abs(OCCTKernel.volume(try XCTUnwrap(rebuilt.bodies.first?.brep))), 9_600, accuracy: 1e-4)
+    }
+
+    func testHistoryFaceRepickUsesConsumedInputNamesAndRejectsLateSelection() async throws {
+        let document = try await makeDocument(); defer { document.close() }
+        let id = BodyID()
+        let source = FeatureNode(name: "Box", kind: .primitive(
+            spec: .box(width: 40, depth: 20, height: 10), placement: .identity), outputBodyIDs: [id])
+        document.session.recordAndRebuild([source], title: "Box")
+        let top = try XCTUnwrap(OCCTKernel.faceInfo(try XCTUnwrap(try body(document).brep)).first { $0.normal.y > 0.99 })
+        try run(document, "feature.pushPull", ["bodyID": id.raw.uuidString,
+            "face": [top.index], "distance": 2])
+        let editID = try XCTUnwrap(document.session.document.features.nodes.last?.id)
+        let model = document.viewModel()
+        XCTAssertTrue(model.beginFeatureFaceEdit(editID), model.errorMessage ?? "")
+        model.handle(.tap(ray: Ray(origin: SIMD3(0, 50, 0), direction: SIMD3(0, -1, 0))))
+        guard case let .pushPull(topRef, _, _)? = document.session.document.features.node(editID)?.kind else {
+            return XCTFail("Repick lost the existing feature")
+        }
+        XCTAssertEqual(topRef.signature.centroid.y, 10, accuracy: 1e-5,
+            "History must pick the consumed cap, not the already pushed cap at y=12")
+        XCTAssertTrue(try XCTUnwrap(topRef.elementName).isStableFaceIdentity)
+        XCTAssertEqual(topRef.body.producer, source.id)
+        XCTAssertTrue(model.beginFeatureFaceEdit(editID), model.errorMessage ?? "")
+        model.handle(.tap(ray: Ray(origin: SIMD3(100, 5, 0), direction: SIMD3(-1, 0, 0))))
+        XCTAssertNil(model.errorMessage)
+        XCTAssertEqual(try volume(document), 8_400, accuracy: 1e-4)
+        guard case let .pushPull(sideRef, _, _)? = document.session.document.features.node(editID)?.kind else {
+            return XCTFail("Repick replaced the feature ID")
+        }
+        XCTAssertGreaterThan(sideRef.signature.normal.x, 0.99)
+        XCTAssertTrue(try XCTUnwrap(sideRef.elementName).isStableFaceIdentity)
+        let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys]
+        let beforeLateTap = try encoder.encode(document.session.document.features)
+        XCTAssertTrue(model.beginFeatureFaceEdit(editID))
+        let beforeRename = try body(document)
+        document.session.perform(RenameItemCommand(item: .body(id), before: beforeRename.name, after: "Changed during pick"))
+        let undo = document.session.undoStack.undoCommands.count
+        model.handle(.tap(ray: Ray(origin: SIMD3(0, 50, 0), direction: SIMD3(0, -1, 0))))
+        XCTAssertNotNil(model.errorMessage, "A changed generation must ask the user to reselect")
+        if case .pickingFeatureFace = model.mode { XCTFail("A stale pick must release its old input snapshot") }
+        XCTAssertEqual(try encoder.encode(document.session.document.features), beforeLateTap)
+        XCTAssertEqual(document.session.undoStack.undoCommands.count, undo)
+        XCTAssertEqual(try volume(document), 8_400, accuracy: 1e-4)
+    }
+
+    func testNewFaceEditRefusesUnqualifiedOwnedSweepWithoutFlatteningOrMutation() async throws {
+        let document = try await makeDocument(); defer { document.close() }
+        let sketch = Sketch(plane: .ground, entities: [.rect(id: UUID(), min: SIMD2(-2, -2), max: SIMD2(2, 2))])
+        document.session.perform(AddSketchCommand(sketch: sketch))
+        let id = BodyID()
+        let sweep = FeatureNode(name: "Bent sweep", kind: .sweep(
+            profile: ProfileRef(sketchID: sketch.id, entityIDs: [], holeEntityIDs: [], seedPoint: .zero),
+            plane: PlaneRef(source: .sketch(sketch.id)),
+            spine: [PointWrapper(SIMD3(0, 0, 0)), PointWrapper(SIMD3(0, 12, 0)), PointWrapper(SIMD3(12, 24, 0))],
+            boolean: BooleanIntent(op: .newBody, resolvedTargets: []), helix: nil), outputBodyIDs: [id])
+        document.session.recordAndRebuild([sweep], title: "Bent sweep")
+        XCTAssertTrue(document.session.lastEvalErrors.isEmpty)
+        let before = try body(document), brep = try XCTUnwrap(before.brep)
+        let face = try XCTUnwrap(OCCTKernel.faceInfo(brep).first { candidate in
+            guard let signature = candidate.signature, case .planar = signature.kind else { return false }
+            return document.session.lastKernelNames[id]?[candidate.index]?.isStableFaceIdentity != true
+        })
+        let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys]
+        let graph = try encoder.encode(document.session.document.features)
+        let bytes = try XCTUnwrap(OCCTKernel.serialize(brep))
+        let undo = document.session.undoStack.undoCommands.count
+        let generation = document.session.changeCount
+        let saved = await document.save(); XCTAssertTrue(saved.succeeded)
+        let response = CADCommandExecutor(viewModel: document.viewModel()).run(
+            .pushPull(body: id, face: face.index, distance: 1, radial: false))
+        XCTAssertEqual(response.status, 409, String(decoding: response.body, as: UTF8.self))
+        XCTAssertTrue(String(decoding: response.body, as: UTF8.self).contains("face_identity_unavailable"))
+        XCTAssertEqual(try encoder.encode(document.session.document.features), graph)
+        XCTAssertEqual(document.session.undoStack.undoCommands.count, undo)
+        XCTAssertEqual(document.session.changeCount, generation)
+        XCTAssertEqual(OCCTKernel.serialize(try XCTUnwrap(try body(document).brep)), bytes)
+        XCTAssertFalse(document.hasUnsavedChanges)
+        XCTAssertFalse(document.session.document.features.nodes.contains {
+            if case .baseSolid = $0.kind { return true }; return false
+        }, "An owned parametric model must never be replaced with a frozen copy to fabricate names")
+    }
+
     func testImportedBoreRadiusEditRetainsExactSourceOneUndoAndReopen() async throws {
         let document = try await makeDocument(); defer { document.close() }
         let id = try await importedBoredPlate(document)

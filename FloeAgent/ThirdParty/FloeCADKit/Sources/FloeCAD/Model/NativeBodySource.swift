@@ -77,6 +77,18 @@ nonisolated struct NativeBodySource: Codable, Sendable {
         }
     }
 
+    /// Map a new selection to the verified readback of this immutable blob.
+    /// The live body's face ordinal is never assumed to survive copying/read.
+    func names(forCurrentFaces indices: [Int], on body: Body, creator: FeatureID) throws -> [Int: ElementName] {
+        if indices.isEmpty { return [:] }
+        guard let names = CADFaceNamingSnapshot.namesForImmutableArchive(body: body, archive: brepData,
+            creator: creator, indices: Set(indices), existing: [:]),
+              indices.allSatisfy({ names[$0]?.isStableFaceIdentity == true }) else {
+            throw Failure(message: "The selected faces could not be preserved in the original exact source.")
+        }
+        return names
+    }
+
     func translated(by offset: SIMD3<Double>) -> Self {
         var copy = self
         copy.placement.translation += offset

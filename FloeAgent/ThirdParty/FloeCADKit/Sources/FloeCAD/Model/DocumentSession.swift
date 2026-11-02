@@ -208,7 +208,7 @@ final class DocumentSession {
         let existing = table.nativeFaceNames ?? [:]
         guard wanted.contains(where: { existing[$0]?.isStableFaceIdentity != true }) else { return table }
         guard let archive = serializedBrep(for: body),
-              let names = CADFaceNamingSnapshot.captureMaterialNames(body: body, archive: archive,
+              let names = CADFaceNamingSnapshot.namesForImmutableArchive(body: body, archive: archive,
                 creator: lastBodyWriters[body.id] ?? FeatureID(raw: body.id.raw),
                 indices: wanted, existing: existing) else { return table }
         let captured = CADFaceNamingSnapshot.prepare(table, for: body, names: names)

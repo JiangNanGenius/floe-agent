@@ -3100,7 +3100,12 @@ final class EditorViewModel {
         )
         let replace = ReplaceBodyCommand(title: "Move Face", before: before, after: after)
 
-        if let node = moveFaceFeatureNode(session: s, worldDelta: worldDelta) {
+        let faceNode = moveFaceFeatureNode(session: s, worldDelta: worldDelta)
+        guard faceNode != nil || featureNode(owning: s.bodyID) == nil else {
+            rejectUnprovenFacePreview(s.source)
+            return
+        }
+        if let node = faceNode {
             session.perform(CompositeCommand(
                 title: "Move Face", commands: [replace, AppendFeatureCommand(node: node)]))
         } else {
@@ -3140,7 +3145,12 @@ final class EditorViewModel {
             let after = try KernelOps.exactMoveFace(body: s.source, face: face,
                                                     delta: localDelta, revision: 0)
             let replace = ReplaceBodyCommand(title: "Move Face", before: s.source, after: after)
-            if let node = moveFaceFeatureNode(session: s, worldDelta: worldDelta) {
+            let faceNode = moveFaceFeatureNode(session: s, worldDelta: worldDelta)
+            guard faceNode != nil || featureNode(owning: s.bodyID) == nil else {
+                rejectUnprovenFacePreview(s.source)
+                return
+            }
+            if let node = faceNode {
                 session.perform(CompositeCommand(title: "Move Face", commands: [replace, AppendFeatureCommand(node: node)]))
             } else { session.perform(replace) }
             toolContext = nil
@@ -3330,7 +3340,12 @@ final class EditorViewModel {
             primitive: nil, euclidMesh: scaled, revision: 0)
         let replace = ReplaceBodyCommand(title: "Scale Face", before: before, after: after)
 
-        if let node = scaleFaceFeatureNode(session: s, factor: factor) {
+        let faceNode = scaleFaceFeatureNode(session: s, factor: factor)
+        guard faceNode != nil || featureNode(owning: s.bodyID) == nil else {
+            rejectUnprovenFacePreview(s.source)
+            return
+        }
+        if let node = faceNode {
             session.perform(CompositeCommand(
                 title: "Scale Face", commands: [replace, AppendFeatureCommand(node: node)]))
         } else {
@@ -3482,7 +3497,12 @@ final class EditorViewModel {
             primitive: nil, euclidMesh: rotated, revision: 0)
         let replace = ReplaceBodyCommand(title: "Rotate Face", before: before, after: after)
 
-        if let node = rotateFaceFeatureNode(session: s, angle: angle, axis: axis) {
+        let faceNode = rotateFaceFeatureNode(session: s, angle: angle, axis: axis)
+        guard faceNode != nil || featureNode(owning: s.bodyID) == nil else {
+            rejectUnprovenFacePreview(s.source)
+            return
+        }
+        if let node = faceNode {
             session.perform(CompositeCommand(
                 title: "Rotate Face", commands: [replace, AppendFeatureCommand(node: node)]))
         } else {
@@ -5962,7 +5982,10 @@ final class EditorViewModel {
                 Self.shellFaceRef(face: $0, bodyRef: bodyRef, creator: bodyRef.producer,
                                   elementName: mintElementName(body: input, triangle: $0.triangles.first))
             }
-            guard faceRefs.count == shellSelectedFaces.count else { return }
+            guard faceRefs.count == shellSelectedFaces.count else {
+                errorMessage = Self.faceIdentityUnavailableMessage
+                return
+            }
             let after = FeatureKind.shell(
                 body: bodyRef, openFaces: faceRefs, thickness: Expr(value: shellThickness))
             prepareForHistoryChange()
@@ -5998,7 +6021,10 @@ final class EditorViewModel {
                                       body: source,
                                       triangle: $0.triangles.first))
             }
-            guard faceRefs.count == shellSelectedFaces.count else { return }
+            guard faceRefs.count == shellSelectedFaces.count else {
+                errorMessage = Self.faceIdentityUnavailableMessage
+                return
+            }
             let node = FeatureNode(
                 name: "Shell",
                 kind: .shell(
@@ -6568,10 +6594,10 @@ final class EditorViewModel {
         } else {
             return nil
         }
-        return FaceRef(
-            body: bodyRef, creator: creator,
-            role: .derived(index: 0), signature: signature,
-            elementName: face.elementName ?? elementName)
+        guard let name = [face.elementName, elementName].compactMap({ $0 })
+            .first(where: \.isStableFaceIdentity) else { return nil }
+        return FaceRef(body: bodyRef, creator: name.creator,
+            role: .derived(index: 0), signature: signature, elementName: name)
     }
 
     /// Distance from a point to a segment (both body-local).
@@ -8436,6 +8462,8 @@ final class EditorViewModel {
     /// The body a face re-pick resolves against: the node's CONSUMED input,
     /// replayed — the document's copy already carries the push / move.
     private var featureFaceEditSource: Body?
+    private var featureFaceEditTable: FaceTable?
+    private var featureFaceEditGeneration: Int?
 
     /// The `FaceRef` a node's face operand holds, for the kinds that have one.
     private static func faceOperand(of kind: FeatureKind) -> FaceRef? {
@@ -8460,13 +8488,16 @@ final class EditorViewModel {
             errorMessage = "A radial push/pull follows a cylindrical face — re-pick is planar-only for now."
             return false
         }
-        guard let source = session.inputBody(for: id, bodyID: face.body.bodyID) else {
+        guard let input = session.inputState(before: id), input.errors.isEmpty,
+              let source = input.bodies.first(where: { $0.id == face.body.bodyID }) else {
             errorMessage = "Couldn't rebuild the shape this \(node.name.lowercased()) started from."
             return false
         }
         cancelTransientPicks()
         cancelTool()
         featureFaceEditSource = source
+        featureFaceEditTable = input.faceTables[source.id]
+        featureFaceEditGeneration = session.changeCount
         selection = session.document.body(with: face.body.bodyID) != nil ? [face.body.bodyID] : []
         mode = .pickingFeatureFace(id)
         return true
@@ -8474,6 +8505,8 @@ final class EditorViewModel {
 
     func cancelFeatureFacePick() {
         featureFaceEditSource = nil
+        featureFaceEditTable = nil
+        featureFaceEditGeneration = nil
         if case .pickingFeatureFace = mode { mode = .idle }
     }
 
@@ -8563,7 +8596,8 @@ final class EditorViewModel {
 
     /// A planar `FaceRef` on `source` from a seed triangle — the signature
     /// `pushPullFaceRef` mints, without needing a tool context.
-    private func planarFaceRef(on source: Body, seedTriangle seed: Int, bodyRef: BodyRef) -> FaceRef? {
+    private func planarFaceRef(on source: Body, seedTriangle seed: Int, bodyRef: BodyRef,
+                               table: FaceTable? = nil) -> FaceRef? {
         guard let face = FaceTopology.planarFace(in: source.render, seedTriangle: seed) else { return nil }
         let n = SIMD3<Double>(Double(face.normal.x), Double(face.normal.y), Double(face.normal.z))
         var area = abs(Profile.signedArea(face.outline))
@@ -8578,8 +8612,9 @@ final class EditorViewModel {
         } else {
             role = .derived(index: 0)
         }
-        return FaceRef(body: bodyRef, creator: bodyRef.producer, role: role, signature: signature,
-                       elementName: mintElementName(body: source, triangle: seed))
+        guard let name = mintElementName(body: source, triangle: seed, table: table),
+              name.isStableFaceIdentity else { return nil }
+        return FaceRef(body: bodyRef, creator: name.creator, role: role, signature: signature, elementName: name)
     }
 
     private func handleFeatureFaceTap(featureID: FeatureID, ray: Ray) {
@@ -8587,6 +8622,11 @@ final class EditorViewModel {
               let current = Self.faceOperand(of: node.kind),
               let source = featureFaceEditSource
         else { cancelFeatureFacePick(); return }
+        guard featureFaceEditGeneration == session.changeCount else {
+            cancelFeatureFacePick()
+            errorMessage = Self.faceIdentityUnavailableMessage
+            return
+        }
         guard let hit = HitTester.pickBody(ray: ray, in: scene) else { return }
         // The edit stays on its own body.
         guard hit.bodyID == current.body.bodyID else { return }
@@ -8597,9 +8637,10 @@ final class EditorViewModel {
             meshRevision: source.meshRevision, modelMatrix: source.transform.matrixFloat,
             baseColor: SIMD4(0.72, 0.74, 0.78, 1), selectionState: SelectionStateNone.rawValue)])
         guard let originalHit = HitTester.pickBody(ray: ray, in: originalScene),
-              let ref = planarFaceRef(on: source, seedTriangle: originalHit.triangleIndex, bodyRef: current.body)
+              let ref = planarFaceRef(on: source, seedTriangle: originalHit.triangleIndex, bodyRef: current.body,
+                                       table: featureFaceEditTable)
         else {
-            errorMessage = FloeCADStrings.text("cad.error.repickPlanarOnly", "Tap a flat face — only planar faces can be re-picked here.")
+            errorMessage = Self.faceIdentityUnavailableMessage
             return
         }
         let after: FeatureKind
@@ -10047,8 +10088,11 @@ final class EditorViewModel {
                 let after = try KernelOps.exactPushPull(body: source, face: face,
                     distance: localDistance, revision: 0)
                 let replace = ReplaceBodyCommand(title: "Push/Pull", before: source, after: after)
-                if let owner = featureNode(owning: sourceID),
-                   let ref = pushPullFaceRef(context: context, source: source, creator: owner.id) {
+                if let owner = featureNode(owning: sourceID) {
+                    guard let ref = pushPullFaceRef(context: context, source: source, creator: owner.id) else {
+                        rejectUnprovenFacePreview(source)
+                        return
+                    }
                     let node = FeatureNode(name: "Push/Pull", kind: .pushPull(face: ref,
                         distance: Expr(value: localDistance), mode: .planarAxial), outputBodyIDs: [sourceID])
                     session.perform(CompositeCommand(title: "Push/Pull", commands: [replace, AppendFeatureCommand(node: node)]))
@@ -10092,9 +10136,11 @@ final class EditorViewModel {
         // the pushed face by geometric signature so it follows the geometry after
         // an upstream edit. Cylinder-radial pulls (tranche 2) and face ops on
         // non-feature bodies are skipped (couldn't be faithfully replayed).
-        if context.cylinderFace == nil,
-           let owner = featureNode(owning: sourceID),
-           let faceRef = pushPullFaceRef(context: context, source: source, creator: owner.id) {
+        if context.cylinderFace == nil, let owner = featureNode(owning: sourceID) {
+            guard let faceRef = pushPullFaceRef(context: context, source: source, creator: owner.id) else {
+                rejectUnprovenFacePreview(source)
+                return
+            }
             let node = FeatureNode(
                 name: "Push/Pull",
                 kind: .pushPull(
@@ -19287,7 +19333,7 @@ final class EditorViewModel {
             kind: .planar, normal: n, centroid: centroid,
             area: max(area, 0), planeOffset: simd_dot(n, centroid))
         // Role is only a resolve tiebreak; box faces get a precise role, others
-        // fall back to derived (signature alone still resolves above threshold).
+        // use a derived role, which still requires a qualified recorded name.
         let role: FaceRole
         if case .primitive(let spec, _)? = session.document.features.node(creator)?.kind,
            case .box = spec {
@@ -19295,25 +19341,52 @@ final class EditorViewModel {
         } else {
             role = .derived(index: 0)
         }
-        return FaceRef(
-            body: BodyRef(producer: creator, bodyID: source.id),
-            creator: creator, role: role, signature: signature,
-            elementName: mintElementName(body: source, triangle: seed))
+        guard let name = mintElementName(body: source, triangle: seed), name.isStableFaceIdentity else { return nil }
+        return FaceRef(body: BodyRef(producer: creator, bodyID: source.id),
+            creator: name.creator, role: role, signature: signature, elementName: name)
     }
 
     /// The kernel-history name of the face containing `triangle` on `body`,
     /// read from the last APPLIED rebuild's face tables
     /// (TOPO_NAMING_HISTORY_DESIGN step 4). Nil is normal — a fresh load, a
-    /// mesh-path body, an unnamed face — and mints a legacy ref. The
+    /// mesh-path body or an unnamed face. A new persistent edit then refuses. The
     /// revision guard is what makes this safe: live tools replace bodies
     /// without re-evaluating, and a name looked up in a table describing an
     /// OLDER render would be WRONG, which is worse than none.
-    private func mintElementName(body: Body, triangle: Int?) -> ElementName? {
-        guard let triangle,
-              session.lastNamingRevisions[body.id] == body.meshRevision
-        else { return nil }
-        return session.lastFaceTables[body.id]?.entries
-            .first { $0.triangles.contains(triangle) }?.elementName
+    private func mintElementName(body: Body, triangle: Int?, table inputTable: FaceTable? = nil) -> ElementName? {
+        guard let triangle else { return nil }
+        let table: FaceTable
+        if let inputTable { table = inputTable }
+        else {
+            guard session.lastNamingRevisions[body.id] == body.meshRevision,
+                  let current = session.lastFaceTables[body.id] else { return nil }
+            table = current
+        }
+        if table.nativeBodyID == body.id, table.nativeMeshRevision == body.meshRevision,
+           let channel = table.nativeFaceChannel, channel.count == body.render.triangleCount,
+           channel.indices.contains(triangle),
+           let name = table.nativeFaceNames?[Int(channel[triangle])], name.isStableFaceIdentity {
+            return name
+        }
+        guard let name = table.entries.first(where: { $0.triangles.contains(triangle) })?.elementName,
+              name.isStableFaceIdentity else { return nil }
+        return name
+    }
+
+    private static var faceIdentityUnavailableMessage: String {
+        FloeCADStrings.text("cad.material.target.reselectFaceHint",
+            "This selection doesn't match one stable face. Reselect a single face.")
+    }
+
+    /// Rejecting a new persistent edit must not leave its transient preview
+    /// in the document or downgrade an existing parametric body to raw mesh.
+    private func rejectUnprovenFacePreview(_ source: Body) {
+        session.preview { document in
+            if let index = document.bodyIndex(of: source.id) {
+                document.bodies[index] = source.keepingAppearance(of: document.bodies[index])
+            }
+        }
+        errorMessage = Self.faceIdentityUnavailableMessage
     }
 
     /// The kernel-history identity of the picked mesh edge on `body` — its

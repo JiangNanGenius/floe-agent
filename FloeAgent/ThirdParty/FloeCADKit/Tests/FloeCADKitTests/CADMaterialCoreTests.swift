@@ -793,13 +793,21 @@ final class CADMaterialCoreTests: XCTestCase {
         XCTAssertEqual(reopened.modelSHA256, modelSHA)
         XCTAssertNil(reopened.session.lastFaceTables[bodyID], "Derived material tables are not a graph rebuild")
         XCTAssertEqual(try verify(reopened), actualGroups)
+        let revisionBeforeRename = reopened.revision
+        let renamed = try XCTUnwrap(reopened.session.document.body(with: bodyID))
+        reopened.session.perform(RenameItemCommand(item: .body(bodyID),
+            before: renamed.name, after: "Renamed coplanar walls"))
+        XCTAssertTrue(reopened.hasUnsavedChanges, "Exercise a real second write, not a clean-save no-op")
         let resaved = await reopened.save()
         XCTAssertTrue(resaved.succeeded, resaved.error ?? "")
-        XCTAssertEqual(reopened.modelSHA256, modelSHA)
+        XCTAssertGreaterThan(reopened.revision, revisionBeforeRename)
+        let renamedSHA = reopened.modelSHA256
+        XCTAssertNotEqual(renamedSHA, modelSHA)
         reopened.close()
         let twiceReopened = try await FloeCADDocument.open(at: url)
         defer { twiceReopened.close() }
-        XCTAssertEqual(twiceReopened.modelSHA256, modelSHA)
+        XCTAssertEqual(twiceReopened.modelSHA256, renamedSHA)
+        XCTAssertEqual(twiceReopened.session.document.body(with: bodyID)?.name, "Renamed coplanar walls")
         XCTAssertEqual(try verify(twiceReopened), actualGroups,
             "The immutable archive namespace must survive a second save/read, not a fresh live BRep hash")
         let oldBindings = try XCTUnwrap(twiceReopened.session.document.body(with: bodyID)).materialFaceBindings

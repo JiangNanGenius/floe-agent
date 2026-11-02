@@ -154,11 +154,11 @@ nonisolated struct CADFaceNamingSnapshot: Codable, Sendable {
         })
     }
 
-    /// New explicit material intent may name a face in the SAME immutable
-    /// archive the session will save. This is not a live BRep hash used across
-    /// rebuilds: the archive bytes stay cached unchanged, and an actual rebuild
-    /// discards this material-only table. Old keys are never upgraded here.
-    static func captureMaterialNames(body: Body, archive: Data, creator: FeatureID,
+    /// Map a new explicit selection into a verified immutable archive. The
+    /// caller either retains those exact bytes as a baseSolid replay source or
+    /// uses the session's cached save blob for a material-only table (discarded
+    /// on rebuild). This never promotes an old key or trusts live face ordinals.
+    static func namesForImmutableArchive(body: Body, archive: Data, creator: FeatureID,
                                      indices: Set<Int>, existing: [Int: ElementName]) -> [Int: ElementName]? {
         guard let live = body.brep, !archive.isEmpty,
               let frozen = OCCTKernel.deserialize(archive),

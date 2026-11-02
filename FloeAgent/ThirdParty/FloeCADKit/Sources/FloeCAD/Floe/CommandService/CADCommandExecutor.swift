@@ -761,14 +761,15 @@ final class CADCommandExecutor {
         // NO revision guard here: sub-shape GEOMETRY (adjacency, face info)
         // is read from the CURRENT brep and cannot be stale. Only the
         // retained NAME maps can be, and `freshNames` handles that — a
-        // stale map yields refs without names, never wrong geometry. (The
+        // stale map refuses new persistent references, never wrong geometry. (The
         // old blanket stale_identity 409 made every undo a dead end.)
         return .ok(body: body, brep: brep)
     }
 
     /// The body's kernel-face names ONLY when they describe its current
     /// revision — the same staleness rule the interactive mint sites use. A
-    /// stale map yields [:], and refs simply go name-less.
+    /// stale map yields [:], so a new persistent edit must refuse rather
+    /// than manufacture a name-less reference.
     private func freshNames(for body: Body,
                             _ session: DocumentSession) -> [Int: ElementName] {
         guard session.lastNamingRevisions[body.id] == body.meshRevision else {
@@ -1228,10 +1229,11 @@ final class CADCommandExecutor {
         case let .ok(body, brep): context = (body, brep)
         case let .reply(reply): return reply
         }
-        let ref = bodyRef(bodyID, session)
+        var ref = bodyRef(bodyID, session)
         let refs: [FaceRef]
+        let prefix: [FeatureNode]
         switch mintFaceRefs(openFaces, context: context, bodyRef: ref, session) {
-        case let .ok(minted): refs = minted
+        case let .ok(minted, owner, sources): refs = minted; ref = owner; prefix = sources
         case let .reply(reply): return reply
         }
         let node = FeatureNode(
@@ -1239,7 +1241,7 @@ final class CADCommandExecutor {
             kind: .shell(body: ref, openFaces: refs,
                          thickness: Expr(value: thickness)),
             outputBodyIDs: [bodyID])
-        return record(node, on: viewModel)
+        return record(node, on: viewModel, prefix: prefix)
     }
 
     /// The direct-modeling single-face ops (push/pull, move/scale/rotate face)
@@ -1261,28 +1263,12 @@ final class CADCommandExecutor {
             return .failure(422, "Unprocessable Entity", error: "bad_radial_offset",
                 message: "Select an existing cylindrical face and a non-zero offset that keeps its radius positive.")
         }
-        var prefix: [FeatureNode] = []
-        let reference: BodyRef
-        let name: ElementName?
-        if let owner = session.document.features.nodes.last(where: { $0.outputBodyIDs.contains(bodyID) }) {
-            reference = BodyRef(producer: owner.id, bodyID: bodyID)
-            name = freshNames(for: body, session)[face]
-        } else {
-            do {
-                let source = try NativeBodySource(capturing: body)
-                let base = FeatureNode(name: FloeCADStrings.text("cad.feature.importedBody", "Imported body"),
-                    kind: .baseSolid(source: source), outputBodyIDs: [bodyID])
-                prefix = [base]
-                reference = BodyRef(producer: base.id, bodyID: bodyID)
-                name = ElementName(creator: base.id,
-                    source: .immutableSourceFace(version: 1, sha256: source.sha256, index: face))
-            } catch {
-                return .failure(422, "Unprocessable Entity", error: "source_preservation_failed",
-                    message: error.localizedDescription)
-            }
+        let ref: FaceRef
+        let prefix: [FeatureNode]
+        switch mintFaceRefs([face], context: (body, solid), bodyRef: bodyRef(bodyID, session), session) {
+        case let .ok(refs, _, sources): ref = refs[0]; prefix = sources
+        case let .reply(reply): return reply
         }
-        let ref = FaceRef(body: reference, creator: name?.creator ?? reference.producer,
-            role: .derived(index: face), signature: signature, elementName: name)
         return record(FeatureNode(name: FloeCADStrings.text("cad.feature.radialOffset", "Radial offset"),
             kind: .pushPull(face: ref, distance: Expr(value: distance), mode: .cylinderRadial),
             outputBodyIDs: [bodyID]), on: viewModel,
@@ -1302,10 +1288,11 @@ final class CADCommandExecutor {
         case let .ok(body, brep): context = (body, brep)
         case let .reply(reply): return reply
         }
-        let ref = bodyRef(bodyID, session)
+        var ref = bodyRef(bodyID, session)
         let refs: [FaceRef]
+        let prefix: [FeatureNode]
         switch mintFaceRefs([face], context: context, bodyRef: ref, session) {
-        case let .ok(minted): refs = minted
+        case let .ok(minted, owner, sources): refs = minted; ref = owner; prefix = sources
         case let .reply(reply): return reply
         }
         let feature = kind(refs[0])
@@ -1324,7 +1311,7 @@ final class CADCommandExecutor {
             return .failure(422, "Unprocessable Entity", error: "exact_edit_unsupported", message: refusal.message)
         }
         return record(FeatureNode(name: name, kind: feature,
-                                  outputBodyIDs: [bodyID]), on: viewModel)
+                                  outputBodyIDs: [bodyID]), on: viewModel, prefix: prefix)
     }
 
     /// feature.deleteFace: remove the named kernel faces and let OCCT heal
@@ -1341,16 +1328,17 @@ final class CADCommandExecutor {
         case let .ok(body, brep): context = (body, brep)
         case let .reply(reply): return reply
         }
-        let ref = bodyRef(bodyID, session)
+        var ref = bodyRef(bodyID, session)
         let refs: [FaceRef]
+        let prefix: [FeatureNode]
         switch mintFaceRefs(faces, context: context, bodyRef: ref, session) {
-        case let .ok(minted): refs = minted
+        case let .ok(minted, owner, sources): refs = minted; ref = owner; prefix = sources
         case let .reply(reply): return reply
         }
         return record(FeatureNode(
             name: "Delete Face",
             kind: .deleteFace(body: ref, faces: refs),
-            outputBodyIDs: [bodyID]), on: viewModel)
+            outputBodyIDs: [bodyID]), on: viewModel, prefix: prefix)
     }
 
     /// feature.draftFace: taper an existing face about its intersection with a
@@ -1370,10 +1358,11 @@ final class CADCommandExecutor {
         case let .ok(body, brep): context = (body, brep)
         case let .reply(reply): return reply
         }
-        let ref = bodyRef(bodyID, session)
+        var ref = bodyRef(bodyID, session)
         let refs: [FaceRef]
+        let prefix: [FeatureNode]
         switch mintFaceRefs([face], context: context, bodyRef: ref, session) {
-        case let .ok(minted): refs = minted
+        case let .ok(minted, owner, sources): refs = minted; ref = owner; prefix = sources
         case let .reply(reply): return reply
         }
         return record(FeatureNode(
@@ -1382,7 +1371,7 @@ final class CADCommandExecutor {
                              neutralOrigin: PointWrapper(neutralOrigin),
                              neutralNormal: PointWrapper(neutralNormal),
                              angle: Expr(value: degrees)),
-            outputBodyIDs: [bodyID]), on: viewModel)
+            outputBodyIDs: [bodyID]), on: viewModel, prefix: prefix)
     }
 
     /// feature.replaceFace: extend/trim one face onto a world plane
@@ -1401,10 +1390,11 @@ final class CADCommandExecutor {
         case let .ok(body, brep): context = (body, brep)
         case let .reply(reply): return reply
         }
-        let ref = bodyRef(bodyID, session)
+        var ref = bodyRef(bodyID, session)
         let refs: [FaceRef]
+        let prefix: [FeatureNode]
         switch mintFaceRefs([face], context: context, bodyRef: ref, session) {
-        case let .ok(minted): refs = minted
+        case let .ok(minted, owner, sources): refs = minted; ref = owner; prefix = sources
         case let .reply(reply): return reply
         }
         return record(FeatureNode(
@@ -1413,13 +1403,13 @@ final class CADCommandExecutor {
                                targetOrigin: PointWrapper(targetOrigin),
                                targetNormal: PointWrapper(targetNormal),
                                flip: flip),
-            outputBodyIDs: [bodyID]), on: viewModel)
+            outputBodyIDs: [bodyID]), on: viewModel, prefix: prefix)
     }
 
     /// Mint real FaceRefs (signature + name) for kernel face indices — the
     /// shared back half of shell / deleteFace / replaceFace over exec.
     private enum MintedRefs {
-        case ok([FaceRef])
+        case ok([FaceRef], BodyRef, [FeatureNode])
         case reply(AgentResponse)
     }
 
@@ -1433,7 +1423,28 @@ final class CADCommandExecutor {
         // along only when the retained maps are fresh.
         let infos = Dictionary(uniqueKeysWithValues:
             OCCTKernel.faceInfo(context.brep).map { ($0.index, $0) })
-        let names = freshNames(for: context.body, session)
+        let reference: BodyRef
+        let prefix: [FeatureNode]
+        let names: [Int: ElementName]
+        if session.document.features.nodes.contains(where: { $0.outputBodyIDs.contains(context.body.id) }) {
+            // Never flatten an existing parametric body to fabricate names.
+            reference = BodyRef(producer: session.lastBodyWriters[context.body.id] ?? ref.producer,
+                bodyID: context.body.id)
+            prefix = []
+            names = freshNames(for: context.body, session)
+        } else {
+            do {
+                let source = try NativeBodySource(capturing: context.body)
+                let base = FeatureNode(name: FloeCADStrings.text("cad.feature.importedBody", "Imported body"),
+                    kind: .baseSolid(source: source), outputBodyIDs: [context.body.id])
+                names = try source.names(forCurrentFaces: indices, on: context.body, creator: base.id)
+                reference = BodyRef(producer: base.id, bodyID: context.body.id)
+                prefix = [base]
+            } catch {
+                return .reply(.failure(422, "Unprocessable Entity", error: "source_preservation_failed",
+                    message: error.localizedDescription))
+            }
+        }
         var refs: [FaceRef] = []
         for index in indices {
             guard let info = infos[index] else {
@@ -1447,11 +1458,14 @@ final class CADCommandExecutor {
                                               + "cannot express (torus/sphere/swept) — pick a planar "
                                               + "or cylindrical face from /v1/faces."))
             }
-            refs.append(FaceRef(body: ref, creator: ref.producer,
-                                role: .derived(index: 0), signature: signature,
-                                elementName: names[index]))
+            guard let name = names[index], name.isStableFaceIdentity else {
+                return .reply(.failure(409, "Conflict", error: "face_identity_unavailable",
+                    message: "This face has no preserved source identity. Reselect a named face or edit the existing feature parameters."))
+            }
+            refs.append(FaceRef(body: reference, creator: name.creator,
+                                role: .derived(index: 0), signature: signature, elementName: name))
         }
-        return .ok(refs)
+        return .ok(refs, reference, prefix)
     }
 
     // MARK: - Geometry health (/v1/check — docs/FREECAD_PLAYBOOK.md D1)
