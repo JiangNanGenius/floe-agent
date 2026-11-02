@@ -1047,6 +1047,7 @@ class ConversationHostController internal constructor(
         entry: ConversationFlowHolderEntry,
     ) {
         val retiredSession = entry.holder.session
+        taskExports.remove(conversationId)?.cancel()
         host.scope.launch(host.ioDispatcher) { host.attachments.drainSession(retiredSession) }
         eventPumps.values.filter { it.runID in entry.builder.runIds() }
             .forEach { it.close() }
@@ -4611,10 +4612,55 @@ class ConversationHostController internal constructor(
 
     // ------------------------------------------------------------ thread menu
 
+    private val taskExports = ConcurrentHashMap<String, Job>()
+
     override fun exportStructuredConversation(session: ConversationSessionToken): Boolean {
         val entry = holders[session.conversationId] ?: return false
-        host.shareText(ConversationWire.exportMarkdown(entry.builder), "text/markdown")
-        entry.holder.applyExportSettled(null)
+        val context = host.appContextOrNull ?: return false
+        val epoch = host.nativeRootEpoch() ?: return false
+        if (entry.builder.isTemporary || !ownCurrentEntry(entry, session.conversationId, session.sessionEpoch) ||
+            taskExports.containsKey(session.conversationId)) return false
+        val job = host.scope.launch(host.ioDispatcher, start = kotlinx.coroutines.CoroutineStart.LAZY) {
+            var file: java.io.File? = null
+            var shared = false
+            try {
+                file = com.floe.android.host.dataexchange.C08TaskTranscriptExport.create(
+                    context.cacheDir, session.conversationId, epoch,
+                    current = { host.nativeRootEpoch() == epoch && ownCurrentEntry(entry, session.conversationId, session.sessionEpoch) })
+                kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main.immediate) {
+                    check(host.nativeRootEpoch() == epoch && ownCurrentEntry(entry, session.conversationId, session.sessionEpoch))
+                    val uri = androidx.core.content.FileProvider.getUriForFile(context,
+                        context.packageName + ".taskexports", file!!)
+                    val send = android.content.Intent(android.content.Intent.ACTION_SEND).apply {
+                        type = "application/x-ndjson"
+                        putExtra(android.content.Intent.EXTRA_STREAM, uri)
+                        clipData = android.content.ClipData.newRawUri("Task transcript", uri)
+                        addFlags(android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                    }
+                    context.startActivity(android.content.Intent.createChooser(send, null)
+                        .addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK))
+                    shared = true
+                    entry.holder.applyExportSettled(null)
+                }
+            } catch (cancelled: kotlinx.coroutines.CancellationException) {
+                if (!shared) file?.delete()
+                throw cancelled
+            } catch (_: Exception) {
+                if (!shared) file?.delete()
+                kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main.immediate) {
+                    if (ownCurrentEntry(entry, session.conversationId, session.sessionEpoch)) {
+                        entry.holder.applyExportSettled(context.getString(com.floe.android.R.string.task_transcript_export_failed))
+                    }
+                }
+            } finally {
+                taskExports.remove(session.conversationId, kotlinx.coroutines.currentCoroutineContext()[Job])
+                kotlinx.coroutines.withContext(kotlinx.coroutines.NonCancellable + kotlinx.coroutines.Dispatchers.Main.immediate) {
+                    if (ownCurrentEntry(entry, session.conversationId, session.sessionEpoch)) entry.holder.applyExportSettled(null)
+                }
+            }
+        }
+        taskExports[session.conversationId] = job
+        job.start()
         return true
     }
 

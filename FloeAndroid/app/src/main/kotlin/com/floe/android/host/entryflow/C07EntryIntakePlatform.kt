@@ -465,7 +465,7 @@ internal class C07EntryNotesImporter(
                 } catch (error: Throwable) {
                     throw mapNotesError(error)
                 }
-                if (created.id != documentID) {
+                if (!created.id.equals(documentID, ignoreCase = true)) {
                     throw C07EntryImportException(C07EntryRefusal.FAILED)
                 }
             }
@@ -489,7 +489,7 @@ internal class C07EntryNotesImporter(
                         fileName = item.displayName,
                     ),
                 )
-                if (created.id != documentID) {
+                if (!created.id.equals(documentID, ignoreCase = true)) {
                     throw C07EntryImportException(C07EntryRefusal.FAILED)
                 }
             } catch (error: Throwable) {

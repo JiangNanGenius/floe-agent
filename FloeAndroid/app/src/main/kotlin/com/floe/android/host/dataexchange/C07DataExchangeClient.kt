@@ -208,6 +208,9 @@ internal class C07DataExchangeClient(
             put("expectedRevision", revision)
         }.getString("jobID")
 
+    fun taskExportBegin(owner: C07ExchangeOwner, conversationID: String): String =
+        exchange("c07.document.exportTask", owner) { put("conversationID", conversationID) }.getString("jobID")
+
     fun status(owner: C07ExchangeOwner, jobID: String): C07Job {
         val response = exchange("c07.job.status", owner) { put("jobID", jobID) }
         val planObject = response.optJSONObject("plan")

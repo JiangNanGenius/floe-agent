@@ -1,0 +1,4 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="task_transcript_export_failed">The task couldn’t be exported. Try again or free some storage.</string>
+</resources>

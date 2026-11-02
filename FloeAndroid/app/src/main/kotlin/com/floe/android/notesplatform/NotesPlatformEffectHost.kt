@@ -60,6 +60,12 @@ fun NotesPlatformEffectHost(
         stateKey = "notesplatform.launch.office",
         pending = pending[NotesLaunchLane.OFFICE_VIEWER],
     )
+    NotesLauncherSlot(
+        host = host,
+        lane = NotesLaunchLane.ENGINEERING_VIEWER,
+        stateKey = "notesplatform.launch.engineering",
+        pending = pending[NotesLaunchLane.ENGINEERING_VIEWER],
+    )
     Box(modifier)
 }
 

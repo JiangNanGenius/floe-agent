@@ -29,7 +29,7 @@ public enum C07DataExchangeBridge {
         "c07.restore.stageCommit", "c07.restore.stageAbort",
         "c07.restore.inspect", "c07.restore.commit", "c07.restore.abort",
         "c07.restore.pending", "c07.restore.recover",
-        "c07.document.exportNote", "c07.document.exportCanvas",
+        "c07.document.exportNote", "c07.document.exportCanvas", "c07.document.exportTask",
         "c07.document.canvases",
     ]
 
@@ -283,6 +283,12 @@ public enum C07DataExchangeBridge {
                     "details": Array(report.details.prefix(16)),
                 ])
 
+            case "c07.document.exportTask":
+                let context = try block(seconds: 10) { try await domain.makeContext(owner: owner) }.get()
+                let conversationID = try c07UUID(object["conversationID"])
+                let job = block(seconds: 10) { await domain.startTaskExport(context: context, conversationID: conversationID) }
+                return reply(["jobID": try job.get().uuidString])
+
             case "c07.document.exportCanvas":
                 let context = try block(seconds: 10) {
                     try await domain.makeContext(owner: owner)
@@ -390,7 +396,7 @@ public enum C07DataExchangeBridge {
                 "c07.restore.stageCommit", "c07.restore.stageAbort",
                 "c07.restore.inspect", "c07.restore.commit", "c07.restore.abort",
                 "c07.restore.pending", "c07.restore.recover",
-                "c07.document.exportNote", "c07.document.exportCanvas",
+                "c07.document.exportNote", "c07.document.exportCanvas", "c07.document.exportTask",
                 "c07.document.canvases",
             ],
             "limits": [

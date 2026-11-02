@@ -18,6 +18,7 @@ import kotlinx.coroutines.withContext
 enum class NotesLaunchLane {
     OPEN_DOCUMENT,
     OFFICE_VIEWER,
+    ENGINEERING_VIEWER,
 }
 
 data class NotesLaunchResult(val resultCode: Int, val data: Intent?)

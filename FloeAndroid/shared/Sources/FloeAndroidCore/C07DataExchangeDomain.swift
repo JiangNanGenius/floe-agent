@@ -1037,6 +1037,25 @@ public actor C07DataExchangeDomain {
         return id
     }
 
+    func startTaskExport(context: C07DataExchangeContext, conversationID: UUID) -> UUID {
+        let id = UUID()
+        let destination = context.exportsRoot.appendingPathComponent("\(id.uuidString).jsonl")
+        jobs[id] = Job(id: id, kind: "taskExport", phase: .building)
+        jobs[id]?.task = Task.detached(priority: .userInitiated) { [weak self] in
+            guard let self else { return }
+            do {
+                try await C08TaskTranscript.export(database: context.database, conversationID: conversationID, to: destination)
+                let digest = try C07Digest.file(destination)
+                await self.finishFileJob(id, url: destination, bytes: digest.byteCount, sha: digest.sha256, warnings: [], manifest: nil)
+            } catch {
+                C07FileSystem.removeIfPresent(destination)
+                let code = error is CancellationError ? "cancelled" : (error as? C07DataExchangeError)?.code ?? "internal"
+                await self.finishFailure(id, code: code)
+            }
+        }
+        return id
+    }
+
     // MARK: Upload staging
 
     func stageBegin(context: C07DataExchangeContext, byteCount: Int64) throws -> UUID {
@@ -1420,7 +1439,10 @@ public actor C07DataExchangeDomain {
     private func finishFileJob(_ id: UUID, url: URL, bytes: Int64, sha: String,
                                warnings: [String],
                                manifest: C07BackupManifest?) {
-        guard var job = jobs[id] else { return }
+        guard var job = jobs[id], job.phase != .cancelled else {
+            C07FileSystem.removeIfPresent(url)
+            return
+        }
         job.phase = .ready
         job.fileURL = url
         job.fileByteCount = bytes

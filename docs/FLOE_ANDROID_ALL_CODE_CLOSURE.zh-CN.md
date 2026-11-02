@@ -317,3 +317,16 @@ The resolver regenerated 22 changed lockfiles and additive verification metadata
 固定版 OpenSSL／FreeRDP 已生产为实际 ARM64 静态库，检查了全部归档成员架构及真实定义符号。修正构建脚本的编译器路径、版本标记、版本化头文件目录、PIC 和嵌入库符号可见性，保留原始来源与摘要。
 
 当前仍不是全代码收口：新环境的 MCP 依赖自动准备、活动 Linux 环境的新输入传递、手记封面／阅读模式与剩余操作台账尚待完成。实际 APK、三星／平板及公开更新链路尚未验收；没有发布新 Release。
+
+
+## 2026-11-03: stored task exports and internal Notes CAD preview
+
+Task export now reads original persisted messages, parts, runs, usage/errors and per-run events through recorded watermarks into a bounded JSONL job. It retains stored tool summaries and artifact references, cannot reconstruct missing raw output, and does not embed artifact files. Original C07 ownership, cancellation and chunk reads remain authoritative; verified length/hash precede read-only FileProvider sharing.
+
+Fixed Kotlin/Swift UUID case differences that created a note but falsely reported failure. Notes engineering attachments now reuse the internal C04 offline renderer with verified staged resources, rather than ACTION_VIEW importing the attachment back into Floe.
+
+Actual checks: Swift 6.4.1 ARM64 release object compilation/linking passed; Full/Play Kotlin compilation and targeted C07/task-export regressions passed. Six host behavioral checks exercised the production redaction function. New APK export/render/install acceptance remains pending.
+
+Prior device evidence: two independent Samsung terminals retained their output. One Ark Agent Plan / ark-code-latest activation returned stdout and exit status through interactive shell, but the original exec.shell was hidden by the environment-catalog receipt defect and is NOT accepted by that result. The repaired real catalog and cross-day chronology were observed on the following candidate without another paid call.
+
+Still open: shared PDF/images currently use generic attachments and must reconnect to existing native Notes import; the original 183-operation ledger needs reconciliation; positive full-download, delta-fallback and installer acceptance remain required. The tablet App has no Root grant; emulator su presence is not Root acceptance. No new public Release has been published.

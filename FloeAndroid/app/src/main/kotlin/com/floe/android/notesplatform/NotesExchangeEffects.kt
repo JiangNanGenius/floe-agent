@@ -261,6 +261,7 @@ internal class NotesExchangeEffects(
         if (request.resourceID.isBlank()) {
             return NotesOpenAttachmentOutcome.Failed(NotesPortFailure(NotesPortFailure.NOT_FOUND, "resource"))
         }
+        val expectedEpoch = (context.applicationContext as? com.floe.android.FloeApplication)?.runtimeHost?.nativeRootEpoch()
         return try {
             val work = withContext(ioDispatcher) {
                 val directory = NotesPlatformFiles.newWorkDirectory(sharesRoot, "attach")
@@ -281,6 +282,24 @@ internal class NotesExchangeEffects(
                 }
             }
             val (directory, entry, mediaType) = work
+            val format = com.floe.android.host.cad.C04CadFormat.fromPath(entry.displayName)
+            if (format != null && format != com.floe.android.host.cad.C04CadFormat.FLOECAD) {
+                try {
+                    val app = context.applicationContext as? com.floe.android.FloeApplication
+                        ?: throw NotesPlatformErrors.failed("notesHostUnavailable")
+                    val epoch = expectedEpoch?.takeIf { app.runtimeHost?.nativeRootEpoch() == it }
+                        ?: throw NotesPlatformErrors.cancelled("rootStopped")
+                    val intent = Intent(context, NotesEngineeringPreviewActivity::class.java)
+                        .putExtra(NotesEngineeringPreviewActivity.TOKEN, entry.token)
+                        .putExtra(NotesEngineeringPreviewActivity.EPOCH, epoch)
+                    val result = broker.launch(NotesLaunchLane.ENGINEERING_VIEWER, intent)
+                    if (result.data?.getBooleanExtra("rendered", false) == true) return NotesOpenAttachmentOutcome.Opened
+                    if (result.data?.getBooleanExtra("failed", false) == true) {
+                        return NotesOpenAttachmentOutcome.Failed(NotesPortFailure(NotesPortFailure.UNAVAILABLE, "engineeringPreviewFailed"))
+                    }
+                    throw NotesPlatformErrors.cancelled("previewClosed")
+                } finally { NotesShareRegistry.release(entry.token) }
+            }
             val uri = NotesShareRegistry.uriFor(context, entry.token)
             val view = Intent(Intent.ACTION_VIEW).apply {
                 setDataAndType(uri, mediaType)
@@ -290,7 +309,8 @@ internal class NotesExchangeEffects(
             val handlers = runCatching {
                 context.packageManager.queryIntentActivities(view, 0)
             }.getOrNull().orEmpty()
-            if (handlers.isEmpty()) {
+            val externalHandlers = handlers.filter { it.activityInfo?.packageName != context.packageName }
+            if (externalHandlers.isEmpty()) {
                 NotesShareRegistry.release(entry.token)
                 NotesPlatformFiles.deleteQuietly(directory)
                 return NotesOpenAttachmentOutcome.Unavailable(
@@ -298,7 +318,14 @@ internal class NotesExchangeEffects(
                 )
             }
             try {
-                broker.launchExternal(view)
+                val first = externalHandlers.first().activityInfo
+                view.setClassName(first.packageName, first.name)
+                val options = externalHandlers.drop(1).map { resolved ->
+                    Intent(view).setClassName(resolved.activityInfo.packageName, resolved.activityInfo.name)
+                }
+                val chooser = Intent.createChooser(view, null)
+                if (options.isNotEmpty()) chooser.putExtra(Intent.EXTRA_INITIAL_INTENTS, options.toTypedArray())
+                broker.launchExternal(chooser)
             } catch (error: Throwable) {
                 NotesShareRegistry.release(entry.token)
                 NotesPlatformFiles.deleteQuietly(directory)
