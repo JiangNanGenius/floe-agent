@@ -102,19 +102,7 @@ enum AdaptiveBarStyle {
         }
     }
 
-    var shadowRadius: CGFloat {
-        switch self {
-        case .panel: 10
-        case .capsule: 8
-        }
-    }
 
-    var shadowY: CGFloat {
-        switch self {
-        case .panel: 3
-        case .capsule: 2
-        }
-    }
 }
 
 struct AdaptiveBar<Controls: View, Actions: View, Footer: View>: View {
@@ -158,13 +146,12 @@ struct AdaptiveBar<Controls: View, Actions: View, Footer: View>: View {
 
     var body: some View {
         content
-            .transformEnvironment(\.font) { if isCompact { $0 = .subheadline } }
-            .transformEnvironment(\.controlSize) { if isCompact { $0 = .small } }
-            .padding(.horizontal, isCompact ? 12 : style.horizontalPadding)
-            .padding(.vertical, isCompact ? 8 : style.verticalPadding)
-            .background(.regularMaterial, in: background)
-            .shadow(color: .black.opacity(0.15),
-                    radius: style.shadowRadius, y: style.shadowY)
+            .font(.subheadline)
+            .controlSize(.regular)
+            .environment(\.cadInlineValueAppearance, true)
+            .padding(.horizontal, isCompact ? 14 : style.horizontalPadding)
+            .padding(.vertical, isCompact ? 10 : style.verticalPadding)
+            .glassEffect(.regular, in: RoundedRectangle(cornerRadius: 24, style: .continuous))
     }
 
     @ViewBuilder
@@ -184,7 +171,10 @@ struct AdaptiveBar<Controls: View, Actions: View, Footer: View>: View {
                                 Label(FloeCADStrings.text("cad.ui.common.options", "Options"), systemImage: "slider.horizontal.3")
                                     .labelStyle(.iconOnly)
                             }
-                            .buttonStyle(.bordered)
+                            .buttonStyle(.borderless)
+                            .font(.body)
+                            .padding(.vertical, 6)
+                            .contentShape(Rectangle())
                             .accessibilityIdentifier("CADToolOptionsButton")
                             .accessibilityAddTraits(compactOptionsExpanded ? .isSelected : [])
                         }
@@ -231,15 +221,8 @@ struct AdaptiveBar<Controls: View, Actions: View, Footer: View>: View {
     }
 
     private var actionButtons: some View {
-        actions.buttonStyle(.bordered).controlSize(.small)
-    }
-
-    private var background: AnyShape {
-        if isCompact || style == .panel {
-            AnyShape(RoundedRectangle(cornerRadius: 16))
-        } else {
-            AnyShape(Capsule())
-        }
+        actions.buttonStyle(.borderless).controlSize(.regular)
+            .font(.subheadline.weight(.semibold))
     }
 
     private func compactFlow<Content: View>(@ViewBuilder _ content: () -> Content) -> some View {
@@ -323,5 +306,47 @@ extension AdaptiveBar where Actions == EmptyView, Footer == EmptyView {
          @ViewBuilder controls: () -> Controls) {
         self.init(style: style, spacing: spacing, showsFooter: false,
                   controls: controls, actions: { EmptyView() }, footer: { EmptyView() })
+    }
+}
+
+private struct CADInlineValueAppearanceKey: EnvironmentKey {
+    static let defaultValue = false
+}
+
+extension EnvironmentValues {
+    var cadInlineValueAppearance: Bool {
+        get { self[CADInlineValueAppearanceKey.self] }
+        set { self[CADInlineValueAppearanceKey.self] = newValue }
+    }
+}
+
+/// Quiet inspector values on the system floating bar. The visible inset is
+/// smaller than its hit region; changing the surface never changes parsing,
+/// focus, numeric-pad ownership or the live binding.
+struct CADBarValueAppearance: ViewModifier {
+    @Environment(\.cadInlineValueAppearance) private var inline
+    let width: CGFloat
+    let focused: Bool
+
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        if inline {
+            content
+                .textFieldStyle(.plain)
+                .font(.body.monospacedDigit())
+                .padding(.horizontal, 8)
+                .padding(.vertical, 6)
+                .frame(width: width)
+                .background(Color(uiColor: .tertiarySystemFill),
+                            in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                .overlay {
+                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                        .strokeBorder(focused ? Color.accentColor : .clear, lineWidth: 1.5)
+                }
+                .frame(minHeight: 44)
+                .contentShape(Rectangle())
+        } else {
+            content.textFieldStyle(.roundedBorder).frame(width: width)
+        }
     }
 }

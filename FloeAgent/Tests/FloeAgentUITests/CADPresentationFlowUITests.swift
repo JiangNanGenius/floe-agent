@@ -2136,13 +2136,15 @@ final class CADAdvancedPatternNativeFlowUITests: XCTestCase {
     func testNativePatternSourceAndPathMenusApplyFeature() { check(compact: false) }
     func testCompactPatternSourceAndPathMenusCancel() { check(compact: true) }
     func testCompactLargeTextPatternSourceAndPathMenusCancel() { check(compact: true, largeText: true) }
+    func testNativePatternControlsInDarkAppearance() { check(compact: false, dark: true) }
 
-    private func check(compact: Bool, largeText: Bool = false) {
+    private func check(compact: Bool, largeText: Bool = false, dark: Bool = false) {
         continueAfterFailure = false
         XCUIDevice.shared.orientation = .landscapeLeft
         let app = XCUIApplication()
         app.launchArguments = ["-AppleLanguages", "(en)", "-AppleLocale", "en_US", "-ui-testing",
             "--ui-test-cad-fixture", "--ui-test-cad-uninstanced"]
+        if dark { app.launchArguments.append("--ui-test-cad-dark") }
         app.launchArguments += compact ? ["--ui-test-cad-compact"] : ["-ui-testing-ipad"]
         if largeText { app.launchArguments.append("--ui-test-cad-large-text") }
         app.launch(); defer { app.terminate() }
@@ -2242,8 +2244,9 @@ final class CADAdvancedBlendNativeFlowUITests: XCTestCase {
     func testAdvancedBlendMenusAndFieldsAtRegularWidth() { check(compact: false) }
     func testAdvancedBlendMenusAndFieldsInCompactDefaultText() { check(compact: true, centimeters: true) }
     func testAdvancedBlendMenusAndFieldsInCompactLargeText() { check(compact: true, largeText: true) }
+    func testAdvancedBlendControlsInCompactDarkAppearance() { check(compact: true, dark: true) }
 
-    private func check(compact: Bool, largeText: Bool = false, centimeters: Bool = false) {
+    private func check(compact: Bool, largeText: Bool = false, centimeters: Bool = false, dark: Bool = false) {
         continueAfterFailure = false
         XCUIDevice.shared.orientation = .landscapeLeft
         let app = XCUIApplication()
@@ -2251,6 +2254,7 @@ final class CADAdvancedBlendNativeFlowUITests: XCTestCase {
             "--ui-test-cad-fixture", "--ui-test-cad-uninstanced"]
         app.launchArguments += compact ? ["--ui-test-cad-compact"] : ["-ui-testing-ipad"]
         if largeText { app.launchArguments.append("--ui-test-cad-large-text") }
+        if dark { app.launchArguments.append("--ui-test-cad-dark") }
         // Launch-argument defaults are process-local; do not alter saved preferences.
         if centimeters { app.launchArguments += ["-floe.cad.unit", "cm"] }
         app.launch(); defer { app.terminate() }

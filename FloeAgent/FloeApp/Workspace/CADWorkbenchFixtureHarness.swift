@@ -773,6 +773,7 @@ struct CADWorkbenchFixtureHarness: View {
                 value = .accessibility1
             }
         }
+        .preferredColorScheme(ProcessInfo.processInfo.arguments.contains("--ui-test-cad-dark") ? .dark : nil)
         // Group is transparent. Give the harness its own accessibility
         // container so this marker does not overwrite the real readback,
         // slider and menu identifiers below it.

@@ -906,12 +906,12 @@ struct FloeCADEditorView: View {
             }
             if let advanced = viewModel.blendAdvancedMode {
                 HStack(alignment: .top, spacing: 12) {
-                    compactBlendValue(advanced == .variableFillet
+                    blendValueControl(advanced == .variableFillet
                         ? FloeCADStrings.text("cad.blend.endRadius", "End radius")
                         : FloeCADStrings.text("cad.blend.short.firstDistance", "Distance 1"),
                         value: Binding(get: { viewModel.blendValue }, set: { viewModel.blendValue = max(0, $0) }),
                         kind: .length, identifier: "BlendValueField")
-                    compactBlendValue(advanced == .variableFillet
+                    blendValueControl(advanced == .variableFillet
                         ? FloeCADStrings.text("cad.blend.middleRadius", "Middle radius")
                         : advanced == .distanceAngleChamfer ? FloeCADStrings.text("cad.feature.angle", "Angle")
                         : FloeCADStrings.text("cad.blend.short.secondDistance", "Distance 2"),
@@ -928,7 +928,7 @@ struct FloeCADEditorView: View {
                     .accessibilityIdentifier("BlendSwapSides")
                 }
             } else {
-                compactBlendValue(kind.valueLabel,
+                blendValueControl(kind.valueLabel,
                     value: Binding(get: { viewModel.blendValue }, set: { viewModel.blendValue = max(0, $0) }),
                     kind: .length, identifier: "BlendValueField")
             }
@@ -941,7 +941,7 @@ struct FloeCADEditorView: View {
         }
     }
 
-    private func compactBlendValue(_ label: String, value: Binding<Double>,
+    private func blendValueControl(_ label: String, value: Binding<Double>,
                                    kind: ExpressionValueField.Kind, identifier: String) -> some View {
         VStack(alignment: .leading, spacing: 4) {
             Text(label).font(.caption).foregroundStyle(.barLabel)
@@ -949,77 +949,58 @@ struct FloeCADEditorView: View {
             HStack(spacing: 6) {
                 ExpressionValueField(placeholder: kind == .plain ? "°" : settings.unit.symbol,
                     value: value, kind: kind, clamp: nil, identifier: identifier)
+                    .accessibilityLabel("\(label), \(kind == .plain ? "°" : settings.unit.symbol)")
                 Text(kind == .plain ? "°" : settings.unit.symbol).font(.caption).foregroundStyle(.barLabel)
             }
         }
     }
 
     private func regularBlendBar(_ kind: BlendKind, _ viewModel: EditorViewModel) -> some View {
-        let value = Binding(
-            get: { viewModel.blendValue },
-            set: { viewModel.blendValue = max(0, $0) })
-        return AdaptiveBar(style: .capsule, spacing: 12) {
-            blendModeMenu(kind, viewModel)
-            Image(systemName: kind == .chamfer ? "square.on.circle" : "circle.circle")
-            // When the kernel refused the current size/pick, say WHY — the
-            // typed diagnostic replaces the count until the preview is valid
-            // again. Concrete color, not hierarchical .secondary (gotcha 10).
-            if let failure = viewModel.blendPreviewFailure,
-               !viewModel.blendSelectedEdges.isEmpty {
-                Text(failure)
-                    .font(.subheadline)
-                    .foregroundStyle(.orange)
-                    .lineLimit(2)
-                    .accessibilityIdentifier("BlendFailureHint")
-            } else {
-                Text(viewModel.blendSelectedEdges.isEmpty
-                     ? "Tap edges to \(kind.title.lowercased())"
-                     : "\(viewModel.blendSelectedEdges.count) edge\(viewModel.blendSelectedEdges.count == 1 ? "" : "s") selected")
-                    .font(.subheadline)
-                    .fixedSize()
-            }
-            Divider().frame(height: 20)
-            Text(viewModel.blendAdvancedMode == .variableFillet
-                 ? FloeCADStrings.text("cad.blend.endRadius", "End radius") : kind.valueLabel)
-                .font(.caption).foregroundStyle(.barLabel).fixedSize()
-            // Text, applied live, arithmetic allowed — see ExpressionValueField.
-            ExpressionValueField(placeholder: settings.unit.symbol, value: value,
-                                 clamp: nil, identifier: "BlendValueField")
-            Text(settings.unit.symbol).font(.caption).foregroundStyle(.barLabel).fixedSize()
-            if let advanced = viewModel.blendAdvancedMode {
-                Text(advanced == .variableFillet ? FloeCADStrings.text("cad.blend.middleRadius", "Middle radius")
-                     : advanced == .distanceAngleChamfer ? FloeCADStrings.text("cad.feature.angle", "Angle")
-                     : FloeCADStrings.text("cad.blend.secondDistance", "Second distance"))
-                    .font(.caption).foregroundStyle(.barLabel).fixedSize()
-                ExpressionValueField(placeholder: advanced == .distanceAngleChamfer ? "°" : settings.unit.symbol,
-                    value: Binding(get: { viewModel.blendSecondValue }, set: { viewModel.blendSecondValue = $0 }),
-                    kind: advanced == .distanceAngleChamfer ? .plain : .length,
-                    clamp: nil, identifier: "BlendSecondValueField")
-                if !advanced.isFillet {
-                    Toggle(FloeCADStrings.text("cad.blend.swapSides", "Swap sides"), isOn: Binding(
-                        get: { viewModel.blendSwapSupport }, set: { viewModel.blendSwapSupport = $0 }))
-                        .toggleStyle(.button).controlSize(.small).accessibilityIdentifier("BlendSwapSides")
+        AdaptiveBar(style: .capsule, spacing: 20) {
+            VStack(alignment: .leading, spacing: 4) {
+                blendModeMenu(kind, viewModel)
+                if let failure = viewModel.blendPreviewFailure, !viewModel.blendSelectedEdges.isEmpty {
+                    Text(failure).font(.caption).foregroundStyle(.orange).lineLimit(2)
+                        .accessibilityIdentifier("BlendFailureHint")
+                } else {
+                    Text(viewModel.blendSelectedEdges.isEmpty
+                        ? FloeCADStrings.text("cad.blend.pickEdges", "Tap edges")
+                        : String(format: FloeCADStrings.text("cad.blend.edgeCount", "%ld edges"), viewModel.blendSelectedEdges.count))
+                        .font(.caption).foregroundStyle(.barLabel)
                 }
             }
-            // While dragging, show the kernel-derived ceiling the drag is
-            // clamped to, so the stop doesn't read as a stuck gesture.
+            blendValueControl(viewModel.blendAdvancedMode == .variableFillet
+                ? FloeCADStrings.text("cad.blend.endRadius", "End radius") : kind.valueLabel,
+                value: Binding(get: { viewModel.blendValue }, set: { viewModel.blendValue = max(0, $0) }),
+                kind: .length, identifier: "BlendValueField")
+            if let advanced = viewModel.blendAdvancedMode {
+                blendValueControl(advanced == .variableFillet
+                    ? FloeCADStrings.text("cad.blend.middleRadius", "Middle radius")
+                    : advanced == .distanceAngleChamfer ? FloeCADStrings.text("cad.feature.angle", "Angle")
+                    : FloeCADStrings.text("cad.blend.secondDistance", "Second distance"),
+                    value: Binding(get: { viewModel.blendSecondValue }, set: { viewModel.blendSecondValue = $0 }),
+                    kind: advanced == .distanceAngleChamfer ? .plain : .length,
+                    identifier: "BlendSecondValueField")
+                if !advanced.isFillet {
+                    Toggle(isOn: Binding(get: { viewModel.blendSwapSupport }, set: { viewModel.blendSwapSupport = $0 })) {
+                        Label(FloeCADStrings.text("cad.blend.swapSides", "Swap sides"), systemImage: "arrow.left.arrow.right")
+                    }
+                    .toggleStyle(.button).labelStyle(.iconOnly)
+                    .accessibilityLabel(FloeCADStrings.text("cad.blend.swapSides", "Swap sides"))
+                    .accessibilityIdentifier("BlendSwapSides")
+                }
+            }
             if let cap = viewModel.blendDragMax {
                 Text("max \(settings.unit.display(fromMM: cap), format: .number.precision(.fractionLength(0...1)))")
-                    .font(.caption)
-                    .foregroundStyle(.barLabel)
-                    .fixedSize()
+                    .font(.caption).foregroundStyle(.barLabel).fixedSize()
                     .accessibilityIdentifier("BlendMaxHint")
             }
+            Spacer(minLength: 0)
         } actions: {
             Button("Cancel") { viewModel.cancelBlend() }
-                .buttonStyle(.bordered)
-                .controlSize(.small)
-                .keyboardShortcut(.cancelAction)
-                .accessibilityIdentifier("BlendCancel")
+                .keyboardShortcut(.cancelAction).accessibilityIdentifier("BlendCancel")
             Button("Apply") { viewModel.commitBlend() }
-                .buttonStyle(.borderedProminent)
-                .controlSize(.small)
-                .disabled(!viewModel.canCommitBlend)
+                .buttonStyle(.borderedProminent).disabled(!viewModel.canCommitBlend)
                 .accessibilityIdentifier("BlendApply")
         }
     }

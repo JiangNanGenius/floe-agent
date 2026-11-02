@@ -62,8 +62,7 @@ struct NumericInputBar: View {
     private var isCompact: Bool { horizontalSizeClass == .compact }
 
     private var fieldLayout: AnyLayout {
-        isCompact ? AnyLayout(VStackLayout(alignment: .leading, spacing: 4))
-                  : AnyLayout(HStackLayout(spacing: 6))
+        AnyLayout(VStackLayout(alignment: .leading, spacing: 2))
     }
 
     var body: some View {
@@ -652,8 +651,7 @@ struct NumericInputBar: View {
                 TextField(FloeCADStrings.text("cad.ui.common.distance", "Distance"), text: $extrudeDistanceText)
                 .keyboardType(.numbersAndPunctuation)
                 .autocorrectionDisabled()
-                .textFieldStyle(.roundedBorder)
-                .frame(width: 90)
+                .modifier(CADBarValueAppearance(width: 90, focused: extrudeDistanceFocused || extrudeDistancePadOpen))
                 .focused($extrudeDistanceFocused)
                 .onAppear { extrudeDistanceText = extrudeDistanceDisplay(context.distance) }
                 // A drag on the arrow moves the distance under the field;
