@@ -195,7 +195,7 @@ EOF
       --without-dpdk \
       ac_cv_linux_vers=2 \
       >/dev/null
-    make -j"$(sysctl -n hw.ncpu 2>/dev/null || nproc)" >/dev/null
+    make -j"${FLOE_NATIVE_JOBS:-6}" >/dev/null
     make install >/dev/null
   )
 
@@ -219,7 +219,7 @@ EOF
       --disable-smb \
       >/dev/null
     make CSRC="fptype.c tcpdump.c floe_capture_guard.c" \
-      -j"$(sysctl -n hw.ncpu 2>/dev/null || nproc)" >/dev/null
+      -j"${FLOE_NATIVE_JOBS:-6}" >/dev/null
   )
 
   local built="$OUT/work/tcpdump-${TCPDUMP_VERSION}/tcpdump"
