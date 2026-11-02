@@ -372,7 +372,8 @@ internal object AndroidIcmpTraceroute {
                 throw IOException("ICMP socket closed")
             }
             if ((events and OsConstants.POLLERR) != 0) {
-                val frame = IcmpErrorQueueNative.read(fd)
+                val frame = try { IcmpErrorQueueNative.read(fd) }
+                catch (failure: LinkageError) { throw IOException("ICMP error receiver unavailable", failure) }
                 val error = frame?.let { IcmpErrorQueue.parse(it, target.address, identifier, sequence) }
                 if (error != null) {
                     val rttMs = ((System.nanoTime() - sentAtNanos).coerceAtLeast(0L)) / 1_000_000.0

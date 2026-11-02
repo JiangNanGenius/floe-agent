@@ -160,6 +160,7 @@ public final class G04ArchiveOperationRegistry: @unchecked Sendable {
         let token: CancellationToken
         var progress: ArchiveProgress?
         var cancelled: Bool
+        var reserved: Bool
     }
 
     public static let shared = G04ArchiveOperationRegistry()
@@ -169,11 +170,29 @@ public final class G04ArchiveOperationRegistry: @unchecked Sendable {
 
     public init() {}
 
+    /// Reserve before detached lease acquisition so an immediate stop cannot
+    /// disappear between JNI dispatch and the engine's first instruction.
+    public func reserve(owner: G04ArchiveOwner, operationID: UUID) -> Bool {
+        lock.lock(); defer { lock.unlock() }
+        guard records[operationID] == nil else { return false }
+        records[operationID] = Record(owner: owner, token: CancellationToken(),
+                                      progress: nil, cancelled: false, reserved: true)
+        return true
+    }
+
     public func begin(owner: G04ArchiveOwner, operationID: UUID, parent: CancellationToken) -> CancellationToken {
         let token = parent.derived()
         lock.lock()
-        records[operationID] = Record(owner: owner, token: token, progress: nil, cancelled: false)
+        if let prior = records[operationID], prior.owner != owner || !prior.reserved {
+            lock.unlock()
+            token.cancel()
+            return token
+        }
+        let cancelled = records[operationID]?.cancelled == true
+        records[operationID] = Record(owner: owner, token: token, progress: nil,
+                                      cancelled: cancelled, reserved: false)
         lock.unlock()
+        if cancelled { token.cancel() }
         return token
     }
 
@@ -269,6 +288,12 @@ public final class G04ArchivePreviewRegistry: @unchecked Sendable {
         lock.unlock()
     }
 
+    public func retainedForDiscard(_ previewID: UUID, owner: G04ArchiveOwner) -> Session? {
+        lock.lock(); defer { lock.unlock() }
+        guard sessions[previewID]?.owner == owner else { return nil }
+        return sessions[previewID]
+    }
+
     /// True when the session was live and is now removed; the caller then
     /// deletes the staged bytes through the workspace lease.
     @discardableResult
@@ -292,7 +317,7 @@ public enum G04ArchiveBridge {
     /// Seconds one blocking extract/decompress may hold its JNI thread;
     /// the App-side controller owns a wider view-level timeout, and an
     /// engine that ignores cancellation still fails bounded by this gate.
-    static let operationSeconds: UInt64 = 600
+    static let operationSeconds: Int = 600
 
     public static func handle(requestData: Data,
                               fallbackRequestID: String?,
@@ -438,9 +463,13 @@ public enum G04ArchiveBridge {
               ArchiveBrowserService.nativeFormats.contains(format) else {
             throw G04ArchiveError.unsupportedFormat
         }
-        return try leasedJSONObject(owner, intent: .fileMutation, path: destination, wait: wait) { service, cancellation in
+        guard operations.reserve(owner: owner, operationID: operationID) else {
+            throw G04ArchiveError.invalidOperationID
+        }
+        return try leasedJSONObject(owner, intent: .fileMutation, path: destination, wait: wait,
+                                    onSettled: { operations.end(operationID) }) { service, cancellation in
             let token = operations.begin(owner: owner, operationID: operationID, parent: cancellation)
-            defer { operations.end(operationID) }
+            guard !token.isCancelled else { throw G04ArchiveError.cancelled }
             let browser = ArchiveBrowserService(rootProvider: { service.guardResolver.rootURL })
             let summary: String
             do {
@@ -473,9 +502,13 @@ public enum G04ArchiveBridge {
             // single-file payload is the only valid input here.
             throw G04ArchiveError.unsupportedFormat
         }
-        return try leasedJSONObject(owner, intent: .fileMutation, path: destination, wait: wait) { service, cancellation in
+        guard operations.reserve(owner: owner, operationID: operationID) else {
+            throw G04ArchiveError.invalidOperationID
+        }
+        return try leasedJSONObject(owner, intent: .fileMutation, path: destination, wait: wait,
+                                    onSettled: { operations.end(operationID) }) { service, cancellation in
             let token = operations.begin(owner: owner, operationID: operationID, parent: cancellation)
-            defer { operations.end(operationID) }
+            guard !token.isCancelled else { throw G04ArchiveError.cancelled }
             let browser = ArchiveBrowserService(rootProvider: { service.guardResolver.rootURL })
             let summary: String
             do {
@@ -555,15 +588,20 @@ public enum G04ArchiveBridge {
                                wait: Bool) throws -> [String: Any] {
         let owner = try G04ArchiveOwner.parse(object["owner"])
         let previewID = try previewIdentifier(object)
-        guard let session = previews.takeForDiscard(previewID, owner: owner) else {
+        guard let session = previews.retainedForDiscard(previewID, owner: owner) else {
             return ["discarded": 0]
         }
         guard let directory = session.directory else {
+            previews.takeForDiscard(previewID, owner: owner)
             return ["discarded": 1]
         }
         return try leasedJSONObject(owner, intent: .fileMutation, path: directory, wait: wait) { service, _ in
             let url = service.guardResolver.rootURL.appendingPathComponent(directory, isDirectory: true)
-            try? FileManager.default.removeItem(at: url)
+            do { try FileManager.default.removeItem(at: url) }
+            catch let error as NSError where error.domain == NSCocoaErrorDomain && error.code == NSFileNoSuchFileError {
+                // Idempotent physical absence is evidence, unlike an ignored IO error.
+            }
+            previews.takeForDiscard(previewID, owner: owner)
             return ["discarded": 1]
         }
     }
@@ -695,9 +733,10 @@ public enum G04ArchiveBridge {
         intent: G04WorkspaceIntent,
         path: String?,
         wait: Bool,
+        onSettled: @escaping @Sendable () -> Void = {},
         _ body: @escaping @Sendable (WorkspaceFileService, CancellationToken) async throws -> [String: Any]
     ) throws -> [String: Any] {
-        let data: Data = try leased(owner, intent: intent, path: path, wait: wait) { service, cancellation in
+        let data: Data = try leased(owner, intent: intent, path: path, wait: wait, onSettled: onSettled) { service, cancellation in
             let object = try await body(service, cancellation)
             return try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])
         }
@@ -711,16 +750,19 @@ public enum G04ArchiveBridge {
                                     intent: G04WorkspaceIntent,
                                     path: String?,
                                     wait: Bool,
+                                    onSettled: @escaping @Sendable () -> Void = {},
                                     _ body: @escaping @Sendable (WorkspaceFileService, CancellationToken) async throws -> T) throws -> T {
         guard let installed = G02RuntimeComposition.shared.installedComposition,
               installed.epoch == G02NativeRootEpoch.readback(),
               G02NativeRootEpoch.readback() == owner.nativeEpoch else {
+            onSettled()
             throw G04ArchiveError.retired
         }
         let access = G04WorkspaceComposition.liveAccess(epoch: installed.epoch, installed: installed)
         let box = G04ArchiveBox<T>()
         let gate = DispatchSemaphore(value: 0)
         Task.detached(priority: .userInitiated) {
+            defer { onSettled(); gate.signal() }
             do {
                 let lease = try await access.acquire(owner: owner.workspaceOwner,
                                                      intent: intent, relativePath: path)
@@ -736,7 +778,6 @@ public enum G04ArchiveBridge {
             } catch {
                 box.value = .failure(G04ArchiveErasedError(error))
             }
-            gate.signal()
         }
         if wait {
             let outcome = gate.wait(timeout: .now() + .seconds(operationSeconds))

@@ -6,7 +6,7 @@
     "fixedIOSDonor": "a59b4d4005f616c611df67fab7620e9853c525b9"
   },
   "status": "Live source closure index; original IDs/statuses retained; scope replacement and source/runtime acceptance are separate",
-  "sourceCheckpoint": "99e4d2888a360cbe5c464f0f94751689b830aef3",
+  "sourceCheckpoint": "7e584e5ede04434f6e5693af0f871e391b514d01",
   "operationCount": 183,
   "noNewReleaseBeforeClosure": true,
   "operations": [
@@ -17,8 +17,8 @@
       "originalOperation": "JVM calls the shared Swift policy core through the JNI round trip; the same TaskPolicy decides on both platforms",
       "originalStatus": "component_verified",
       "required": true,
-      "codeReview": "pending per-operation UI/service/runtime-storage/failure reconciliation",
-      "qualification": "not newly verified this round"
+      "codeReview": "present-source-connected at 7e584e5ede04434f6e5693af0f871e391b514d01; original shared policy/channel/design or child/job ownership composition inspected",
+      "qualification": "Source-connected review only. No new child/model/background cloud execution, physical Full/Play APK exclusion or whole-App visual acceptance; reuse prior evidence only where the boundary remains unchanged."
     },
     {
       "id": "FND-FLAVOR-EXCLUDE",
@@ -27,8 +27,8 @@
       "originalOperation": "full/play flavors physically exclude phone-control and Root modules from the Play artifact",
       "originalStatus": "component_verified",
       "required": true,
-      "codeReview": "pending per-operation UI/service/runtime-storage/failure reconciliation",
-      "qualification": "not newly verified this round"
+      "codeReview": "present-source-connected at 7e584e5ede04434f6e5693af0f871e391b514d01; original shared policy/channel/design or child/job ownership composition inspected",
+      "qualification": "Source-connected review only. No new child/model/background cloud execution, physical Full/Play APK exclusion or whole-App visual acceptance; reuse prior evidence only where the boundary remains unchanged."
     },
     {
       "id": "FND-VISUAL-TOKENS",
@@ -37,8 +37,8 @@
       "originalOperation": "Compose renders Floe semantic colors, typography, grouped surfaces and selection mapped from the iOS design system",
       "originalStatus": "component_verified",
       "required": true,
-      "codeReview": "pending per-operation UI/service/runtime-storage/failure reconciliation",
-      "qualification": "not newly verified this round"
+      "codeReview": "present-source-connected at 7e584e5ede04434f6e5693af0f871e391b514d01; original shared policy/channel/design or child/job ownership composition inspected",
+      "qualification": "Source-connected review only. No new child/model/background cloud execution, physical Full/Play APK exclusion or whole-App visual acceptance; reuse prior evidence only where the boundary remains unchanged."
     },
     {
       "id": "PRV-CONFIG-VALIDATE",
@@ -307,8 +307,8 @@
       "originalOperation": "Delegate a bounded subagent task with explicit outcome and handoff artifact",
       "originalStatus": "planned",
       "required": true,
-      "codeReview": "pending per-operation UI/service/runtime-storage/failure reconciliation",
-      "qualification": "not newly verified this round"
+      "codeReview": "present-source-connected at 7e584e5ede04434f6e5693af0f871e391b514d01; original shared policy/channel/design or child/job ownership composition inspected",
+      "qualification": "Source-connected review only. No new child/model/background cloud execution, physical Full/Play APK exclusion or whole-App visual acceptance; reuse prior evidence only where the boundary remains unchanged."
     },
     {
       "id": "SUB-CHILD-ISOLATION",
@@ -317,8 +317,8 @@
       "originalOperation": "Cancel one child without touching siblings; budgets enforced",
       "originalStatus": "planned",
       "required": true,
-      "codeReview": "pending per-operation UI/service/runtime-storage/failure reconciliation",
-      "qualification": "not newly verified this round"
+      "codeReview": "present-source-connected at 7e584e5ede04434f6e5693af0f871e391b514d01; original shared policy/channel/design or child/job ownership composition inspected",
+      "qualification": "Source-connected review only. No new child/model/background cloud execution, physical Full/Play APK exclusion or whole-App visual acceptance; reuse prior evidence only where the boundary remains unchanged."
     },
     {
       "id": "JOB-BACKGROUND-LIFECYCLE",
@@ -327,8 +327,8 @@
       "originalOperation": "Background jobs are owned by services, not view lifetime; stop owned workers before deleting references",
       "originalStatus": "planned",
       "required": true,
-      "codeReview": "pending per-operation UI/service/runtime-storage/failure reconciliation",
-      "qualification": "not newly verified this round"
+      "codeReview": "present-source-connected at 7e584e5ede04434f6e5693af0f871e391b514d01; original shared policy/channel/design or child/job ownership composition inspected",
+      "qualification": "Source-connected review only. No new child/model/background cloud execution, physical Full/Play APK exclusion or whole-App visual acceptance; reuse prior evidence only where the boundary remains unchanged."
     },
     {
       "id": "JOB-SHARED-ENV",
@@ -337,8 +337,8 @@
       "originalOperation": "Jobs and subagents share the resolved environment without leaking between tasks",
       "originalStatus": "planned",
       "required": true,
-      "codeReview": "pending per-operation UI/service/runtime-storage/failure reconciliation",
-      "qualification": "not newly verified this round",
+      "codeReview": "present-source-connected at 7e584e5ede04434f6e5693af0f871e391b514d01; original shared policy/channel/design or child/job ownership composition inspected",
+      "qualification": "Source-connected review only. No new child/model/background cloud execution, physical Full/Play APK exclusion or whole-App visual acceptance; reuse prior evidence only where the boundary remains unchanged.",
       "implementationOwner": "job-dcfe69f82e5b4cc1; actual Linux/interface completion pending"
     },
     {
@@ -426,8 +426,8 @@
       "originalOperation": "Bounded safe archive extraction rejecting traversal; staged commit only after verification",
       "originalStatus": "planned",
       "required": true,
-      "codeReview": "implementation-gap-confirmed at 66d3b8b2f9e1c89a790ca7a37d3fb216f06a871a; source audit only, qualification remains separate",
-      "qualification": "Needs bounded source-only package for actual archive entry/service wiring; not platform unsupported and not device passed.",
+      "codeReview": "source-connected in reviewed working batch after7e584e5; Archive document entry -> Application-owned controller -> additive host bridge -> original G04 lease and ArchiveBrowserService/ArchiveEngine; reserved cancellation, physical settlement and staged preview disposal",
+      "qualification": "Full/Play App/runtime Kotlin and ARM64 Swift6 Core objects passed; focused JVM evidence as recorded in UI_TASK_BATCH_VERIFICATION_20261103.json. Native product/JNI linkage, new APK and affected device behavior remain pending; no release or new cloud test.",
       "previousCodeReviews": [
         "pending per-operation UI/service/runtime-storage/failure reconciliation"
       ],
@@ -2235,8 +2235,8 @@
       "originalOperation": "Save admission validation and reopen round trip, including after a crash",
       "originalStatus": "planned",
       "required": true,
-      "codeReview": "partial at immutable 4437d379ec34a3d846ea5a634675ec763ec789ae; static source only, not acceptance",
-      "qualification": "not newly verified this round",
+      "codeReview": "source-connected in reviewed working batch after7e584e5; Manual original-save -> verified working copy -> native same-lease CAS/readback -> existing provider push with correlated pending/conflict outcomes",
+      "qualification": "Full/Play App/runtime Kotlin and ARM64 Swift6 Core objects passed; focused JVM evidence as recorded in UI_TASK_BATCH_VERIFICATION_20261103.json. Native product/JNI linkage, new APK and affected device behavior remain pending; no release or new cloud test.",
       "sourceReview": {
         "androidCommit": "4437d379ec34a3d846ea5a634675ec763ec789ae",
         "iosDonorCommit": "a59b4d4005f616c611df67fab7620e9853c525b9",
@@ -2631,8 +2631,8 @@
       "originalOperation": "Ping/traceroute path diagnostics",
       "originalStatus": "planned",
       "required": true,
-      "codeReview": "partial-implementation-gap-traceroute at 66d3b8b2f9e1c89a790ca7a37d3fb216f06a871a; actual source chain inspected",
-      "qualification": "No new real radio/server/speed/root capture traffic performed in this source review. Existing exact component evidence retained; Root App acceptance remains controlled-emulator only and pending.",
+      "codeReview": "source-connected in reviewed working batch after7e584e5; Existing ping plus actual bounded Linux error-queue traceroute; captured network, real socket identity and request owner retained",
+      "qualification": "Full/Play App/runtime Kotlin and ARM64 Swift6 Core objects passed; focused JVM evidence as recorded in UI_TASK_BATCH_VERIFICATION_20261103.json. Native product/JNI linkage, new APK and affected device behavior remain pending; no release or new cloud test.",
       "previousCodeReviews": [
         "pending per-operation UI/service/runtime-storage/failure reconciliation"
       ],
@@ -3387,8 +3387,8 @@
       "originalOperation": "Settings separate cache vs installed/environment storage with accurate metering",
       "originalStatus": "planned",
       "required": true,
-      "codeReview": "implementation-gap-confirmed at 66d3b8b2f9e1c89a790ca7a37d3fb216f06a871a; current Settings UI/source inspection",
-      "qualification": "Not newly device verified; do not close from engine/source presence alone.",
+      "codeReview": "source-connected in reviewed working batch after7e584e5; Data management -> secondary storage page -> bounded App and authenticated companion inventory; logical/allocated/shared/partial/unknown remain distinct",
+      "qualification": "Full/Play App/runtime Kotlin and ARM64 Swift6 Core objects passed; focused JVM evidence as recorded in UI_TASK_BATCH_VERIFICATION_20261103.json. Native product/JNI linkage, new APK and affected device behavior remain pending; no release or new cloud test.",
       "previousCodeReviews": [
         "pending per-operation UI/service/runtime-storage/failure reconciliation"
       ],
@@ -3401,8 +3401,8 @@
       "originalOperation": "Safe cleanup with retention rules; running/needed artifacts deferred with stated purpose",
       "originalStatus": "planned",
       "required": true,
-      "codeReview": "implementation-gap-confirmed at 66d3b8b2f9e1c89a790ca7a37d3fb216f06a871a; current Settings UI/source inspection",
-      "qualification": "Not newly device verified; do not close from engine/source presence alone.",
+      "codeReview": "source-connected in reviewed working batch after7e584e5; Explicit Settings action -> authenticated companion maintenance fence -> actual UID census -> existing marked expired installer sweep; installed/user/recovery/verified archive files retained",
+      "qualification": "Full/Play App/runtime Kotlin and ARM64 Swift6 Core objects passed; focused JVM evidence as recorded in UI_TASK_BATCH_VERIFICATION_20261103.json. Native product/JNI linkage, new APK and affected device behavior remain pending; no release or new cloud test.",
       "previousCodeReviews": [
         "pending per-operation UI/service/runtime-storage/failure reconciliation"
       ],
@@ -5551,6 +5551,119 @@
             "shared/Sources/FloeAndroidDataExchange/C07OwnedDataIntegrity.swift": "fc182e9f9917a6ccf15bffffb99d41b6c64c998af5e994991e73f8aa3eb171d0"
           },
           "qualification": "Source-connected review only; no new paid speech request, microphone/audio playback, real personal backup/restore, destructive data action or device migration acceptance this round. Prior component evidence reusable only for unchanged boundary."
+        }
+      ],
+      "sourceOnly": true,
+      "compiled": false,
+      "deviceVerified": false
+    },
+    "foundation-jobs7-20261103": {
+      "androidCommit": "7e584e5ede04434f6e5693af0f871e391b514d01",
+      "iosReference": "36f63bf400dfaa3a127259eac006b38d72516390",
+      "operations": [
+        {
+          "id": "FND-SHARED-CORE",
+          "entry": "Existing App/runtime composition and task tool/control entry",
+          "chain": "Actual Kotlin SwiftCore.exchange -> original JNI bridge -> common native policy/model modules; no Kotlin shadow tool authority.",
+          "evidence": [
+            "core/swiftbridge/src/main/kotlin/com/floe/android/bridge/SwiftCore.kt",
+            "core/swiftbridge/src/main/cpp/floe_jni.cpp",
+            "shared/Sources/FloeAndroidCore/QualificationSeam.swift"
+          ],
+          "evidenceSha256": {
+            "core/swiftbridge/src/main/kotlin/com/floe/android/bridge/SwiftCore.kt": "34e34e4e1544ede420944dfe14c59f6cbd153d9224e939e10da3caf1dcf7d61b",
+            "core/swiftbridge/src/main/cpp/floe_jni.cpp": "f7a602ad692a38f85ed083ccc4e35ccaf1d975858d2a1d771ebcf12cbb29ef5c",
+            "shared/Sources/FloeAndroidCore/QualificationSeam.swift": "f5efb3c8924243b0d2fcb75a80694e2b65c9ea56ceb071116bd021142d50301b"
+          },
+          "qualification": "Source-connected review only. No new child/model/background cloud execution, physical Full/Play APK exclusion or whole-App visual acceptance; reuse prior evidence only where the boundary remains unchanged."
+        },
+        {
+          "id": "FND-FLAVOR-EXCLUDE",
+          "entry": "Existing App/runtime composition and task tool/control entry",
+          "chain": "Gradle common/full/play separation; phone-control and root feature dependencies only fullImplementation. Actual signed APK/manifest/ELF exclusion remains a final artifact gate.",
+          "evidence": [
+            "app/build.gradle.kts"
+          ],
+          "evidenceSha256": {
+            "app/build.gradle.kts": "d5b3f8c3c057c04a4352bcc160238f7ce3eab6d997ad71a3687269abfed99446"
+          },
+          "qualification": "Source-connected review only. No new child/model/background cloud execution, physical Full/Play APK exclusion or whole-App visual acceptance; reuse prior evidence only where the boundary remains unchanged."
+        },
+        {
+          "id": "FND-VISUAL-TOKENS",
+          "entry": "Existing App/runtime composition and task tool/control entry",
+          "chain": "Existing Floe semantic colors/type and material source/controller consumed by shared chrome and page sheets; Haze1.7.3 with explicit older-device fallback. Presence is not pixel parity or fresh screenshot acceptance.",
+          "evidence": [
+            "core/designsystem/src/main/kotlin/com/floe/android/design/FloeColors.kt",
+            "core/designsystem/src/main/kotlin/com/floe/android/design/FloeType.kt",
+            "core/designsystem/src/main/kotlin/com/floe/android/design/FloeMaterial.kt",
+            "core/designsystem/src/main/kotlin/com/floe/android/design/FloeSheet.kt"
+          ],
+          "evidenceSha256": {
+            "core/designsystem/src/main/kotlin/com/floe/android/design/FloeColors.kt": "48595f94a6cf5bf8c473b43f22ea7ae9b200a236c73311b97c70f020dd008f6b",
+            "core/designsystem/src/main/kotlin/com/floe/android/design/FloeType.kt": "a988e3caf56d1380e87e8428e80c05f77ab5eb30895cd4c69db8791151e95571",
+            "core/designsystem/src/main/kotlin/com/floe/android/design/FloeMaterial.kt": "fa48b45e28d5e2ec11d61708591488963c4d950eba5333f8ef22430ccb31ab90",
+            "core/designsystem/src/main/kotlin/com/floe/android/design/FloeSheet.kt": "d9ffdc511faec4afa044180197226f0bbf9ca013a36fe57805977b9802f1bf3f"
+          },
+          "qualification": "Source-connected review only. No new child/model/background cloud execution, physical Full/Play APK exclusion or whole-App visual acceptance; reuse prior evidence only where the boundary remains unchanged."
+        },
+        {
+          "id": "SUB-DELEGATE",
+          "entry": "Existing App/runtime composition and task tool/control entry",
+          "chain": "Actual per-run RunToolAssembly registers original delegate tool/SubagentRunner with real child store and state accounting, retired only at terminal.",
+          "evidence": [
+            "shared/Sources/FloeAndroidCore/RuntimeFacadeRunAssembly.swift",
+            "shared/Sources/FloeAgentRuntime/SubagentRunner.swift"
+          ],
+          "evidenceSha256": {
+            "shared/Sources/FloeAndroidCore/RuntimeFacadeRunAssembly.swift": "6ba6b11bea3026fa4f4be56f0f11c5989e20d402d09c4d54dfcf59e6520a3bf1",
+            "shared/Sources/FloeAgentRuntime/SubagentRunner.swift": "5ce0a6e2a4785f5462fe73767da8675c9120eae5396a11f77edb4f4160cec357"
+          },
+          "qualification": "Source-connected review only. No new child/model/background cloud execution, physical Full/Play APK exclusion or whole-App visual acceptance; reuse prior evidence only where the boundary remains unchanged."
+        },
+        {
+          "id": "SUB-CHILD-ISOLATION",
+          "entry": "Existing App/runtime composition and task tool/control entry",
+          "chain": "Derived child-local cancellation, shared budget reservation and actual dispatched results; a child cancel does not cancel parent/siblings.",
+          "evidence": [
+            "shared/Sources/FloeAgentRuntime/SubagentRunner.swift"
+          ],
+          "evidenceSha256": {
+            "shared/Sources/FloeAgentRuntime/SubagentRunner.swift": "5ce0a6e2a4785f5462fe73767da8675c9120eae5396a11f77edb4f4160cec357"
+          },
+          "qualification": "Source-connected review only. No new child/model/background cloud execution, physical Full/Play APK exclusion or whole-App visual acceptance; reuse prior evidence only where the boundary remains unchanged."
+        },
+        {
+          "id": "JOB-BACKGROUND-LIFECYCLE",
+          "entry": "Existing App/runtime composition and task tool/control entry",
+          "chain": "G02DomainServices composes original BackgroundJobService with real shell settlement gate, output spool and G03 live ownership; durable interrupted recovery and bounded drain retain unknown physical work.",
+          "evidence": [
+            "shared/Sources/FloeAndroidCore/G02DomainServices.swift",
+            "shared/Sources/FloeAndroidCore/RuntimeFacadeJobBindings.swift",
+            "shared/Sources/FloeAndroidCore/G03JobLifecycle.swift"
+          ],
+          "evidenceSha256": {
+            "shared/Sources/FloeAndroidCore/G02DomainServices.swift": "79e3378eceb7df18f7869dd05409f63e8e45098fbe8523eb06adcfb4619d611f",
+            "shared/Sources/FloeAndroidCore/RuntimeFacadeJobBindings.swift": "4d80b15ce73c33151f1097e44f44fe0907dd660f0112fd928fc6eed46baacdb1",
+            "shared/Sources/FloeAndroidCore/G03JobLifecycle.swift": "199aba5fdd1a007ace4a063ca51aa6e3a09fc96d97fd7e4a96b67ebbec612ef4"
+          },
+          "qualification": "Source-connected review only. No new child/model/background cloud execution, physical Full/Play APK exclusion or whole-App visual acceptance; reuse prior evidence only where the boundary remains unchanged."
+        },
+        {
+          "id": "JOB-SHARED-ENV",
+          "entry": "Existing App/runtime composition and task tool/control entry",
+          "chain": "Actual jobs submission freezes original environmentID/task/workspace/call provenance; child tool contexts carry parent-owned environment and scoped cancellation, not first-project or host interpreter fallback.",
+          "evidence": [
+            "shared/Sources/FloeAndroidJobTools/BackgroundJobTools.swift",
+            "shared/Sources/FloeAgentRuntime/SubagentRunner.swift",
+            "shared/Sources/FloeAndroidCore/RuntimeFacadeRunAssembly.swift"
+          ],
+          "evidenceSha256": {
+            "shared/Sources/FloeAndroidJobTools/BackgroundJobTools.swift": "e9906874298f58fc526ced865e29ce0ce3267852c59bce6c82e0dcc7eda0fc84",
+            "shared/Sources/FloeAgentRuntime/SubagentRunner.swift": "5ce0a6e2a4785f5462fe73767da8675c9120eae5396a11f77edb4f4160cec357",
+            "shared/Sources/FloeAndroidCore/RuntimeFacadeRunAssembly.swift": "6ba6b11bea3026fa4f4be56f0f11c5989e20d402d09c4d54dfcf59e6520a3bf1"
+          },
+          "qualification": "Source-connected review only. No new child/model/background cloud execution, physical Full/Play APK exclusion or whole-App visual acceptance; reuse prior evidence only where the boundary remains unchanged."
         }
       ],
       "sourceOnly": true,

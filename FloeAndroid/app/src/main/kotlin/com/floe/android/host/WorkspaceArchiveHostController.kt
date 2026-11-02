@@ -23,6 +23,12 @@ import java.util.concurrent.ConcurrentHashMap
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.cancelAndJoin
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.delay
@@ -79,11 +85,13 @@ internal object WorkspaceArchiveFormat {
      * .decompressedName` + the original `.unpacked` fallback. */
     internal fun decompressDestinationFor(relativePath: String): String {
         val name = relativePath.substringAfterLast('/')
-        val format = formatFor(relativePath) ?: return "$name.unpacked"
+        val format = formatFor(relativePath)
+        require(format != null && kind(format) == WorkspaceArchiveFormatKind.SINGLE_FILE) {
+            "Only single-file compression has a decompressed filename"
+        }
         val suffix = ".$format"
-        if (!name.lowercase().endsWith(suffix)) return "$name.unpacked"
         val stem = name.dropLast(suffix.length)
-        return if (stem.isEmpty()) "$name.unpacked" else stem
+        return if (stem.isEmpty()) "uncompressed" else stem
     }
 }
 
@@ -427,6 +435,10 @@ internal class WorkspaceArchiveHostClient(
     private fun call(request: JsonObject): JsonObject {
         val raw = try {
             transport.exchange(request.toString())
+        } catch (error: WorkspaceArchiveHostFailure) {
+            throw error
+        } catch (error: CancellationException) {
+            throw error
         } catch (error: Throwable) {
             throw WorkspaceArchiveHostFailure(
                 if (error is LinkageError || error is UnsatisfiedLinkError) "coreUnavailable" else "transport")
@@ -442,8 +454,14 @@ internal class WorkspaceArchiveHostClient(
             throw WorkspaceArchiveHostFailure(code)
         }
         val version = response.int("version")
-        if (version != null && version != VERSION) {
+        if (version != VERSION) {
             throw WorkspaceArchiveHostFailure("unsupportedVersion")
+        }
+        val operation = response.string("operation")
+        val requestID = response.string("requestID")
+        if ((operation != null && operation != request.string("operation")) ||
+            (requestID != null && requestID != request.string("requestID"))) {
+            throw WorkspaceArchiveHostFailure("invalidResponse")
         }
         return response
     }
@@ -487,6 +505,15 @@ internal class WorkspaceArchiveHostController(
     private val mutableState = MutableStateFlow<WorkspaceArchiveState>(WorkspaceArchiveState.Idle)
     private val mutablePreview = MutableStateFlow<WorkspaceArchivePreviewState>(WorkspaceArchivePreviewState.Idle)
     private val jobs = ConcurrentHashMap.newKeySet<Job>()
+    private val jobOwners = ConcurrentHashMap<Job, ActiveSession>()
+    private val outstandingOperations = ConcurrentHashMap.newKeySet<UUID>()
+    private val cancellationRequests = ConcurrentHashMap.newKeySet<UUID>()
+    private data class RetiredPreview(val owner: Owner, val id: UUID)
+    private val retainedPreviews = ConcurrentHashMap.newKeySet<RetiredPreview>()
+    private val cleanupOwners = ConcurrentHashMap<Job, RetiredPreview>()
+    private val previewSerial = Mutex()
+    private var previewSelection = 0L
+    private var retiredEpoch: Long? = null
     private var active: ActiveSession? = null
     private var previewID: UUID? = null
     private var inflightOperationID: UUID? = null
@@ -501,39 +528,29 @@ internal class WorkspaceArchiveHostController(
         val format: String,
     )
 
-    fun open(owner: Owner, relativePath: String, token: Long): Boolean {
+    fun open(owner: Owner, relativePath: String, token: Long): Boolean = synchronized(lock) {
         val format = WorkspaceArchiveFormat.formatFor(relativePath)
         val kind = format?.let(WorkspaceArchiveFormat::kind)
-        if (!ownerCurrent(owner)) {
-            publishListingFailure(owner, relativePath, format, ArchiveFailure.OWNER,
-                detail = "owner", retryable = false, token = token)
-            return false
+        if (!ownerCurrent(owner) || owner.nativeEpoch == retiredEpoch || format == null || kind == null) {
+            retireActiveLocked()
+            publishListingFailure(owner, relativePath, format,
+                if (!ownerCurrent(owner) || owner.nativeEpoch == retiredEpoch) ArchiveFailure.OWNER else ArchiveFailure.UNSUPPORTED,
+                detail = null, retryable = false, token = token)
+            return@synchronized false
         }
-        if (format == null || kind == null) {
-            publishListingFailure(owner, relativePath, format, ArchiveFailure.UNSUPPORTED,
-                detail = format ?: "extension", retryable = false, token = token)
-            return false
+        val existing = active
+        if (existing != null && existing.token == token && existing.owner == owner &&
+            existing.relativePath == relativePath && mutableState.value !is WorkspaceArchiveState.ListingFailed) {
+            return@synchronized true
         }
-        synchronized(lock) {
-            val existing = active
-            if (existing != null && existing.token == token &&
-                existing.owner == owner && existing.relativePath == relativePath &&
-                mutableState.value !is WorkspaceArchiveState.ListingFailed
-            ) {
-                // Rotation/recomposition reuses the live session; a failed
-                // listing never reuses it (retry must re-dispatch).
-                return true
-            }
-            existing?.let { retireLocked(it) }
-            discardPreviewStagingLocked()
-            val created = ActiveSession(token, owner, relativePath, format)
-            active = created
-            mutableState.value = WorkspaceArchiveState.Listing(token, fileName(relativePath))
-            mutablePreview.value = WorkspaceArchivePreviewState.Idle
-            previewID = UUID.randomUUID()
-            trackJob(scope.launch(ioDispatcher) { runListing(created) })
-        }
-        return true
+        retireActiveLocked()
+        val created = ActiveSession(token, owner, relativePath, format)
+        active = created
+        mutableState.value = WorkspaceArchiveState.Listing(token, fileName(relativePath))
+        mutablePreview.value = WorkspaceArchivePreviewState.Idle
+        previewID = UUID.randomUUID()
+        launchOwnedLocked(created) { runListing(created) }
+        true
     }
 
     fun retry(token: Long) {
@@ -543,124 +560,108 @@ internal class WorkspaceArchiveHostController(
         open(owner, failed.path, token)
     }
 
-    fun close(token: Long) {
-        synchronized(lock) {
-            val session = active ?: return
-            if (session.token != token) return
-            // Discard staging while the owner identity is still available.
-            discardPreviewStagingLocked()
-            active = null
-            previewID = null
-            inflightOperationID?.let { id -> clientSafe { it.cancel(id) } }
-            inflightOperationID = null
-            mutableState.value = WorkspaceArchiveState.Idle
-            mutablePreview.value = WorkspaceArchivePreviewState.Idle
-        }
-        jobs.forEach { it.cancel() }
-        jobs.clear()
+    fun close(token: Long) = synchronized(lock) {
+        if (active?.token == token) retireActiveLocked()
     }
 
     /** Confirmed extraction into a NEW workspace destination. The exact
      *  destination is derived here (and unit-tested) so the UI cannot pass
      *  an overwrite candidate; the engine still refuses a collision. */
-    fun extractConfirmed(token: Long) {
-        val session = synchronized(lock) {
-            val current = active ?: return
-            if (current.token != token) return
-            if (mutableState.value !is WorkspaceArchiveState.Listed) return
-            current
-        }
-        val kind = WorkspaceArchiveFormat.kind(session.format) ?: return
+    fun extractConfirmed(token: Long) = synchronized(lock) {
+        val session = active ?: return@synchronized
+        val listed = mutableState.value as? WorkspaceArchiveState.Listed ?: return@synchronized
+        if (session.token != token || listed.extracting != null || !ownerCurrent(session.owner)) return@synchronized
+        val kind = WorkspaceArchiveFormat.kind(session.format) ?: return@synchronized
         val destination = when (kind) {
-            WorkspaceArchiveFormatKind.CONTAINER ->
-                WorkspaceArchiveFormat.extractDestinationFor(session.relativePath)
-            WorkspaceArchiveFormatKind.SINGLE_FILE ->
-                WorkspaceArchiveFormat.decompressDestinationFor(session.relativePath)
+            WorkspaceArchiveFormatKind.CONTAINER -> WorkspaceArchiveFormat.extractDestinationFor(session.relativePath)
+            WorkspaceArchiveFormatKind.SINGLE_FILE -> WorkspaceArchiveFormat.decompressDestinationFor(session.relativePath)
         }
-        val operationID = UUID.randomUUID()
-        synchronized(lock) {
-            val listed = mutableState.value as? WorkspaceArchiveState.Listed ?: return
-            inflightOperationID = operationID
-            mutableState.value = listed.copy(
-                extracting = ArchiveProgressSnapshot("running", 0, null, 0, false),
-                extractReceipt = null,
-                extractFailure = null,
-            )
-        }
-        trackJob(scope.launch(ioDispatcher) {
-            runExtract(session, destination, operationID, kind)
-        })
+        val id = UUID.randomUUID()
+        inflightOperationID = id
+        mutableState.value = listed.copy(extracting = ArchiveProgressSnapshot("running", 0, null, 0, false),
+            extractReceipt = null, extractFailure = null)
+        launchOwnedLocked(session) { runExtract(session, destination, id, kind) }
     }
 
     /** Real cancellation: trips the token the engine polls and stops the
      *  local job; the typed failure the UI shows is CANCELLED, never a
      *  hidden success. */
-    fun cancelExtract(token: Long) {
-        val session = synchronized(lock) { active } ?: return
-        if (session.token != token) return
-        inflightOperationID?.let { id -> clientSafe { it.cancel(id) } }
-        jobs.forEach { it.cancel() }
+    fun cancelExtract(token: Long) = synchronized(lock) {
+        val session = active ?: return@synchronized
+        if (session.token != token) return@synchronized
+        val id = inflightOperationID ?: return@synchronized
+        // Keep the blocking JNI job owned until the engine really answers.
+        // Native reservation remembers cancellation even before lease acquire.
+        cancellationRequests.add(id)
+        launchOwnedLocked(session) { sendCancellation(id) }
     }
 
-    fun previewEntry(entryPath: String) {
-        val session = synchronized(lock) { active } ?: return
-        val preview = previewID ?: return
+    fun previewEntry(entryPath: String) = synchronized(lock) {
+        val session = active ?: return@synchronized
+        val preview = previewID ?: return@synchronized
+        val selection = ++previewSelection
         mutablePreview.value = WorkspaceArchivePreviewState.Loading(entryPath)
-        trackJob(scope.launch(ioDispatcher) {
-            try {
-                val result = client.previewEntry(session.owner, session.relativePath, entryPath, preview)
-                mutablePreview.value = result
-            } catch (failure: WorkspaceArchiveHostFailure) {
-                mutablePreview.value = WorkspaceArchivePreviewState.Failed(
-                    entryPath, mapFailure(failure.code), failure.code)
+        launchOwnedLocked(session) {
+            previewSerial.withLock {
+                val admitted = synchronized(lock) { active === session && previewID == preview &&
+                    previewSelection == selection && ownerCurrent(session.owner) }
+                if (!admitted) return@withLock
+                try {
+                    val result = client.previewEntry(session.owner, session.relativePath, entryPath, preview)
+                    synchronized(lock) {
+                        if (active === session && previewID == preview && previewSelection == selection && ownerCurrent(session.owner)) {
+                            mutablePreview.value = result
+                        }
+                    }
+                } catch (failure: WorkspaceArchiveHostFailure) {
+                    synchronized(lock) {
+                        if (active === session && previewID == preview && previewSelection == selection && ownerCurrent(session.owner)) {
+                            mutablePreview.value = WorkspaceArchivePreviewState.Failed(entryPath, mapFailure(failure.code), failure.code)
+                        }
+                    }
+                }
             }
-        })
-    }
-
-    /** Closes the preview pane and drops its hidden staging through the
-     *  trusted bridge; the next selection stages once more. */
-    fun discardPreviewEntry() {
-        synchronized(lock) {
-            val session = active ?: return
-            discardPreviewStagingLocked()
-            previewID = UUID.randomUUID()
-            mutablePreview.value = WorkspaceArchivePreviewState.Idle
-            session
         }
     }
 
-    fun prepareForRootStop(timeoutMillis: Long = 8_000L): Boolean =
-        withContext(NonCancellable) {
-            synchronized(lock) {
-                // Discard staging while the owner identity is still available.
-                discardPreviewStagingLocked()
-                active = null
-                previewID = null
-                inflightOperationID?.let { id -> clientSafe { it.cancel(id) } }
-                inflightOperationID = null
-                mutableState.value = WorkspaceArchiveState.Idle
-                mutablePreview.value = WorkspaceArchivePreviewState.Idle
-            }
-            val pending = synchronized(lock) { jobs.toList() }
-            pending.forEach { it.cancel() }
-            // Preview staging removal is best effort at the root-stop gate;
-            // the Swift registry keeps staging under the hidden
-            // `.floe-archive-preview` root and never promotes it.
-            try {
-                withTimeoutOrNull(timeoutMillis) {
-                    pending.forEach { it.join() }
-                    true
+    fun discardPreviewEntry() = synchronized(lock) {
+        val session = active ?: return@synchronized
+        val id = previewID ?: return@synchronized
+        val pending = jobOwners.entries.filter { it.value === session }.map { it.key }
+        previewID = UUID.randomUUID()
+        previewSelection++
+        mutablePreview.value = WorkspaceArchivePreviewState.Idle
+        queueRetirementLocked(RetiredPreview(session.owner, id), pending, null, cancelJobs = false)
+    }
+
+    suspend fun prepareForRootStop(timeoutMillis: Long = 8_000L): Boolean =
+        withContext(NonCancellable + ioDispatcher) {
+            val pending = synchronized(lock) {
+                retiredEpoch = currentNativeEpoch() ?: active?.owner?.nativeEpoch ?: retiredEpoch
+                retireActiveLocked()
+                retainedPreviews.toList().filter { it !in cleanupOwners.values }.forEach {
+                    queueRetirementLocked(it, emptyList(), null, cancelJobs = false)
                 }
-            } catch (_: CancellationException) {
-                false
+                jobs.toList()
+            }
+            val drained = withTimeoutOrNull(timeoutMillis) {
+                pending.forEach { it.join() }
+                true
             } ?: false
+            if (!drained) return@withContext false
+            // A bridge timeout is not physical settlement. The native registry
+            // removes this identity only from the detached task's finalizer.
+            outstandingOperations.toList().forEach { id ->
+                if (nativeOperationSettled(id)) outstandingOperations.remove(id)
+            }
+            outstandingOperations.isEmpty()
         }
 
     private suspend fun runListing(session: ActiveSession) {
         try {
             val listing = client.listing(session.owner, session.relativePath)
             synchronized(lock) {
-                if (active?.token != session.token) return
+                if (active !== session || !ownerCurrent(session.owner)) return
                 mutableState.value = WorkspaceArchiveState.Listed(
                     token = session.token,
                     fileName = fileName(session.relativePath),
@@ -673,10 +674,12 @@ internal class WorkspaceArchiveHostController(
             }
         } catch (failure: WorkspaceArchiveHostFailure) {
             if (failure.code == "cancelled") return
-            publishListingFailure(session.owner, session.relativePath, session.format,
-                mapFailure(failure.code), detail = failure.code,
-                retryable = failure.code == "transport" || failure.code == "failed",
-                token = session.token)
+            synchronized(lock) {
+                if (active !== session || !ownerCurrent(session.owner)) return
+                publishListingFailure(session.owner, session.relativePath, session.format,
+                    mapFailure(failure.code), detail = failure.code,
+                    retryable = failure.code == "transport" || failure.code == "failed", token = session.token)
+            }
         }
     }
 
@@ -686,18 +689,25 @@ internal class WorkspaceArchiveHostController(
         operationID: UUID,
         kind: WorkspaceArchiveFormatKind,
     ) {
+        currentCoroutineContext().ensureActive()
+        outstandingOperations.add(operationID)
         val poller = scope.launch(ioDispatcher) {
             while (true) {
                 delay(pollIntervalMillis)
                 val snapshot = runCatching { client.progress(operationID) }.getOrNull() ?: continue
                 synchronized(lock) {
                     val listed = mutableState.value as? WorkspaceArchiveState.Listed ?: return@synchronized
-                    if (active?.token != session.token) return@synchronized
+                    if (active !== session || !ownerCurrent(session.owner)) return@synchronized
                     mutableState.value = listed.copy(extracting = snapshot)
                 }
             }
         }
         try {
+            if (operationID in cancellationRequests) {
+                publishExtractFailure(session, ArchiveFailure.CANCELLED, "cancelled", retryable = false)
+                return
+            }
+            currentCoroutineContext().ensureActive()
             val receipt = when (kind) {
                 WorkspaceArchiveFormatKind.CONTAINER ->
                     client.extract(session.owner, session.relativePath, destination, operationID)
@@ -705,7 +715,7 @@ internal class WorkspaceArchiveHostController(
                     client.decompress(session.owner, session.relativePath, destination, operationID)
             }
             synchronized(lock) {
-                if (active?.token != session.token) return
+                if (active !== session || !ownerCurrent(session.owner)) return
                 val listed = mutableState.value as? WorkspaceArchiveState.Listed ?: return
                 inflightOperationID = null
                 mutableState.value = listed.copy(
@@ -716,13 +726,15 @@ internal class WorkspaceArchiveHostController(
             }
         } catch (failure: WorkspaceArchiveHostFailure) {
             if (failure.code == "cancelled") {
-                publishExtractFailure(session.token, ArchiveFailure.CANCELLED, "cancelled", retryable = false)
+                publishExtractFailure(session, ArchiveFailure.CANCELLED, "cancelled", retryable = false)
             } else {
-                publishExtractFailure(session.token, mapFailure(failure.code), failure.code,
+                publishExtractFailure(session, mapFailure(failure.code), failure.code,
                     retryable = failure.code == "transport" || failure.code == "failed")
             }
         } finally {
-            poller.cancel()
+            withContext(NonCancellable) { poller.cancelAndJoin() }
+            cancellationRequests.remove(operationID)
+            if (nativeOperationSettled(operationID)) outstandingOperations.remove(operationID)
         }
     }
 
@@ -752,10 +764,10 @@ internal class WorkspaceArchiveHostController(
         }
     }
 
-    private fun publishExtractFailure(token: Long, failure: ArchiveFailure, detail: String?, retryable: Boolean) {
+    private fun publishExtractFailure(session: ActiveSession, failure: ArchiveFailure, detail: String?, retryable: Boolean) {
         synchronized(lock) {
             val listed = mutableState.value as? WorkspaceArchiveState.Listed ?: return
-            if (active?.token != token) return
+            if (active !== session || !ownerCurrent(session.owner)) return
             inflightOperationID = null
             mutableState.value = listed.copy(
                 extracting = null,
@@ -764,27 +776,81 @@ internal class WorkspaceArchiveHostController(
         }
     }
 
-    private fun retireLocked(session: ActiveSession) {
-        jobs.forEach { it.cancel() }
-        jobs.clear()
+    private fun retireActiveLocked() {
+        val session = active ?: return
+        val preview = previewID?.let { RetiredPreview(session.owner, it) }
+        val operation = inflightOperationID
+        val pending = jobOwners.entries.filter { it.value === session }.map { it.key }
+        active = null
+        previewID = null
+        previewSelection++
+        inflightOperationID = null
+        mutableState.value = WorkspaceArchiveState.Idle
+        mutablePreview.value = WorkspaceArchivePreviewState.Idle
+        queueRetirementLocked(preview, pending, operation, cancelJobs = true)
     }
 
-    /** Best-effort removal of the hidden preview staging through the
-     *  trusted bridge; must be called under [lock] with [active] still set
-     *  when the owner identity is needed. */
-    private fun discardPreviewStagingLocked() {
-        val id = previewID ?: return
-        val owner = active?.owner ?: return
-        clientSafe { it.previewDiscard(owner, id) }
+    private fun queueRetirementLocked(preview: RetiredPreview?, pending: List<Job>,
+                                      operation: UUID?, cancelJobs: Boolean) {
+        if (preview != null) retainedPreviews.add(preview)
+        if (operation != null) cancellationRequests.add(operation)
+        if (cancelJobs) pending.forEach { it.cancel() }
+        val cleanup = scope.launch(ioDispatcher, start = CoroutineStart.LAZY) {
+            withContext(NonCancellable) {
+                if (operation != null) sendCancellation(operation)
+                pending.forEach { it.join() }
+                if (operation != null) cancellationRequests.remove(operation)
+                if (preview != null) {
+                    try {
+                        client.previewDiscard(preview.owner, preview.id)
+                        retainedPreviews.remove(preview)
+                    } catch (_: WorkspaceArchiveHostFailure) {
+                        // Keep the reference for explicit cleanup/recovery.
+                        // Settled files are not live jobs and never invented as deleted.
+                    }
+                }
+            }
+        }
+        trackJob(cleanup, preview = preview)
+        cleanup.start()
     }
 
-    private fun clientSafe(call: (WorkspaceArchiveHostClient) -> Unit) {
-        runCatching { call(client) }
+    private suspend fun sendCancellation(id: UUID) {
+        // Retry only the idempotent local stop when the operation has not yet
+        // crossed JNI. Never replay extraction or turn an uncertain stop into success.
+        withTimeoutOrNull(2_000L) {
+            while (true) {
+                try { client.cancel(id); return@withTimeoutOrNull }
+                catch (failure: WorkspaceArchiveHostFailure) {
+                    if (failure.code != "invalidOperationID" || id !in outstandingOperations) return@withTimeoutOrNull
+                }
+                delay(25)
+            }
+        }
     }
 
-    private fun trackJob(job: Job) {
+    private fun nativeOperationSettled(id: UUID): Boolean = try {
+        client.progress(id)
+        false
+    } catch (failure: WorkspaceArchiveHostFailure) {
+        failure.code == "invalidOperationID" || failure.code == "unsupportedVersion" || failure.code == "needsCoreUpdate"
+    }
+
+    private fun launchOwnedLocked(session: ActiveSession, body: suspend () -> Unit) {
+        if (active !== session || session.owner.nativeEpoch == retiredEpoch) return
+        val job = scope.launch(ioDispatcher, start = CoroutineStart.LAZY) {
+            currentCoroutineContext().ensureActive()
+            body()
+        }
+        trackJob(job, session)
+        job.start()
+    }
+
+    private fun trackJob(job: Job, session: ActiveSession? = null, preview: RetiredPreview? = null) {
         jobs.add(job)
-        job.invokeOnCompletion { jobs.remove(job) }
+        if (session != null) jobOwners[job] = session
+        if (preview != null) cleanupOwners[job] = preview
+        job.invokeOnCompletion { jobs.remove(job); jobOwners.remove(job); cleanupOwners.remove(job) }
     }
 
     private fun ownerCurrent(owner: Owner): Boolean =

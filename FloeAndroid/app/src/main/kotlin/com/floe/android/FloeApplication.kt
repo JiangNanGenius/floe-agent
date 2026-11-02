@@ -400,6 +400,9 @@ class FloeApplication : Application() {
         private set
 
     private val hostScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+    internal val storageSettings by lazy {
+        com.floe.android.host.storage.StorageSettingsHost(this, hostScope)
+    }
 
     override fun onCreate() {
         super.onCreate()

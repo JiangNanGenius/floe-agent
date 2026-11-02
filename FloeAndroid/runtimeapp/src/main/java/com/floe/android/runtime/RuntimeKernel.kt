@@ -58,6 +58,9 @@ class RuntimeKernel(context: Context) {
     // the read-only `status` metadata path merely READS the fence.
     private val fence = RuntimeStoppingFence { hasOwnedWork() }
     private val pendingInstallID = AtomicReference<String?>()
+    // Reserved under receipts before IO starts; new executable admissions
+    // stay fenced until actual cleanup settles. Inventory never starts a guest.
+    private val storageMaintenanceID = AtomicReference<String?>()
     // G07.3A: concurrent starts each have their own pending wire id; a
     // session-less stop may address any ONE of them by exact id.
     private val pendingShellIDs: MutableSet<String> = java.util.concurrent.ConcurrentHashMap.newKeySet()
@@ -145,7 +148,9 @@ class RuntimeKernel(context: Context) {
             requestStop(request)
             return JSONObject().put("state", "stop_requested")
         }
-        val metadataOnly = request.operation == "install.status" || request.operation == "environment.list"
+        val storageControl = request.operation == RuntimeWire.STORAGE_INVENTORY ||
+            request.operation == RuntimeWire.STORAGE_CLEANUP
+        val metadataOnly = request.operation == "install.status" || request.operation == "environment.list" || storageControl
         // G03-R3 cleanup lane: data-deletion obligations must stay serviceable
         // while shell/model admission is fenced (the caller carries NO
         // foreground permit for them). This exemption is ONLY for the typed
@@ -159,6 +164,14 @@ class RuntimeKernel(context: Context) {
         check(!fence.isStopping) { "Runtime is stopping" }
         synchronized(receipts) {
             receipts[request.id]?.let { return JSONObject(it.toString()) }
+            if (request.operation == RuntimeWire.STORAGE_CLEANUP && hasOwnedWork()) {
+                return JSONObject().put("state", "completed").put("result",
+                    JSONObject().put("status", "deferred").put("reason", "activeWork")
+                        .put("reclaimedBytes", JSONObject.NULL))
+            }
+            check(storageMaintenanceID.get() == null || metadataOnly || cleanupLane) {
+                "Storage maintenance is in progress"
+            }
             if (request.operation == "install.start" || request.operation == RuntimeWire.PREFLIGHT) {
                 // Install / first-use preflight stay EXCLUSIVE: they rewrite or
                 // mirror shared state and must never race a live workload.
@@ -178,6 +191,7 @@ class RuntimeKernel(context: Context) {
                 receipts.remove(evict.key)
             }
             receipts[request.id] = JSONObject().put("requestID", request.id).put("state", "queued")
+            if (request.operation == RuntimeWire.STORAGE_CLEANUP) storageMaintenanceID.set(request.id)
             count.incrementAndGet() // reserve admission before another Binder call
             if (request.operation == "install.start") pendingInstallID.set(request.id)
             if (request.operation == "shell.start" || request.operation == "stdio.start") {
@@ -203,16 +217,23 @@ class RuntimeKernel(context: Context) {
                     // that arrived while the pump thread was still draining
                     // converges at the actual completion instead of leaking a
                     // stale fence into the next admission.
-                    val runtime = operations ?: LinuxRuntimeOperations(
-                        context, onOwnedWorkReleased = { fence.settleAfterOwnedWorkReleased() },
-                    ).also { operations = it }
-                    if (traceStart) RuntimeExecutionTrace.mark(Stage.KERNEL_OPERATIONS_READY)
-                    check(!fence.isStopping && request.id !in targetStoppedIDs &&
-                        (metadataOnly || cleanupLane || foregroundAllowed()))
-                    if (traceStart) RuntimeExecutionTrace.mark(Stage.KERNEL_EXECUTE_ENTER)
-                    val result = runtime.execute(request, workspaceGrant) {
-                        fence.isStopping || request.id in targetStoppedIDs ||
-                            (!metadataOnly && !foregroundAllowed())
+                    val result = if (storageControl) {
+                        RuntimeStorageOperations(context).execute(request,
+                            idle = { operations?.hasOwnedWork() != true &&
+                                operations?.ownedRequestIDs().orEmpty().isEmpty() },
+                            cancelled = { fence.isStopping || request.id in targetStoppedIDs })
+                    } else {
+                        val runtime = operations ?: LinuxRuntimeOperations(
+                            context, onOwnedWorkReleased = { fence.settleAfterOwnedWorkReleased() },
+                        ).also { operations = it }
+                        if (traceStart) RuntimeExecutionTrace.mark(Stage.KERNEL_OPERATIONS_READY)
+                        check(!fence.isStopping && request.id !in targetStoppedIDs &&
+                            (metadataOnly || cleanupLane || foregroundAllowed()))
+                        if (traceStart) RuntimeExecutionTrace.mark(Stage.KERNEL_EXECUTE_ENTER)
+                        runtime.execute(request, workspaceGrant) {
+                            fence.isStopping || request.id in targetStoppedIDs ||
+                                (!metadataOnly && !foregroundAllowed())
+                        }
                     }
                     if (traceStart) RuntimeExecutionTrace.mark(Stage.KERNEL_RESULT_READY)
                     RuntimeWire.bounded(result.toString())
@@ -243,6 +264,7 @@ class RuntimeKernel(context: Context) {
                         }
                     update(request.id, failed)
                 } finally {
+                    storageMaintenanceID.compareAndSet(request.id, null)
                     pendingInstallID.compareAndSet(request.id, null)
                     pendingShellIDs.remove(request.id)
                     pendingPreflightID.compareAndSet(request.id, null)
@@ -256,6 +278,7 @@ class RuntimeKernel(context: Context) {
                 }
             }
         } catch (_: RejectedExecutionException) {
+            storageMaintenanceID.compareAndSet(request.id, null)
             pendingInstallID.compareAndSet(request.id, null)
             pendingShellIDs.remove(request.id)
             pendingPreflightID.compareAndSet(request.id, null)

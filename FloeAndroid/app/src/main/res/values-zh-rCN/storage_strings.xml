@@ -1,0 +1,29 @@
+<resources>
+    <string name="storage_data_management">数据管理</string>
+    <string name="storage_title">存储空间</string>
+    <string name="storage_usage_and_cleanup">容量与清理</string>
+    <string name="storage_usage">已用空间</string>
+    <string name="storage_refresh">刷新</string>
+    <string name="storage_app_installed">应用安装文件</string>
+    <string name="storage_app_data">应用数据</string>
+    <string name="storage_app_cache">应用缓存</string>
+    <string name="storage_runtime_base">Linux 基础系统</string>
+    <string name="storage_runtime_environments">环境与已安装软件</string>
+    <string name="storage_runtime_workspaces">Linux 工作区文件</string>
+    <string name="storage_runtime_installer">Linux 安装文件</string>
+    <string name="storage_runtime_cache">Linux 缓存</string>
+    <string name="storage_runtime_other">其他 Linux 数据</string>
+    <string name="storage_unknown">未知</string>
+    <string name="storage_partial_size">至少 %1$s</string>
+    <string name="storage_runtime_busy">Linux 正在使用中，请在任务结束后刷新容量。</string>
+    <string name="storage_runtime_unknown">暂时无法读取 Linux 容量，应用容量单独显示。</string>
+    <string name="storage_measurement_note">按文件实际占用统计，共享文件仅计一次；未完整统计或无法读取的部分会单独标明。</string>
+    <string name="storage_cleanup">未使用的临时文件</string>
+    <string name="storage_preserved">保留文档、恢复副本、已安装环境和校验过的安装档案。</string>
+    <string name="storage_clean_unused">清理未使用的临时文件</string>
+    <string name="storage_nothing_to_clean">没有移除未使用的临时文件。</string>
+    <string name="storage_cleaned_size">已移除 %1$s 未使用的临时文件。</string>
+    <string name="storage_cleanup_busy">Linux 正在使用中或暂时无法确认空闲，已暂缓清理。</string>
+    <string name="storage_cleanup_retained">暂时无法确认完整容量或文件归属，已保留文件。</string>
+    <string name="storage_cleanup_unknown">暂时无法确认清理结果，请先刷新容量再决定是否重试。</string>
+</resources>

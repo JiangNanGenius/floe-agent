@@ -122,7 +122,7 @@ class OfficeSaveOriginalHostTest {
         assertEquals(OfficeSaveOriginalHandoffPolicy.SAVE_ORIGINAL_REFUSED, answer)
         assertTrue(port.calls.get().isEmpty())
         assertNull(fake.committed.get())
-        assertFalse(fake.released.get(), "no facts acquired -> nothing to release")
+        assertFalse("no facts acquired -> nothing to release", fake.released.get())
     }
 
     @Test
@@ -138,7 +138,7 @@ class OfficeSaveOriginalHostTest {
         val answer = runBlocking { host.accept(notice()) }
         assertEquals(OfficeSaveOriginalHandoffPolicy.SAVE_ORIGINAL_REJECTED, answer)
         assertTrue(port.calls.get().isEmpty())
-        assertTrue(fake.released.get(), "the in-flight fence releases on every path")
+        assertTrue("the in-flight fence releases on every path", fake.released.get())
     }
 
     @Test

@@ -268,6 +268,22 @@ struct G04ArchiveOperationRegistryTests {
         #expect(snapshot?.cancelled == false)
     }
 
+    @Test func cancellationBeforeLeaseAcquisitionIsRetainedUntilActualSettlement() {
+        let registry = G04ArchiveOperationRegistry()
+        let owner = try! G04ArchiveOwner(taskID: UUID(), workspaceID: UUID(), nativeEpoch: 1, hostGeneration: 1)
+        let id = UUID()
+        let parent = CancellationToken()
+        #expect(registry.reserve(owner: owner, operationID: id))
+        #expect(!registry.reserve(owner: owner, operationID: id))
+        #expect(registry.cancel(id))
+        let engine = registry.begin(owner: owner, operationID: id, parent: parent)
+        #expect(engine.isCancelled)
+        #expect(!parent.isCancelled)
+        #expect(registry.snapshot(id)?.cancelled == true)
+        registry.end(id)
+        #expect(registry.snapshot(id) == nil)
+    }
+
     @Test func cancelAllScopesByOwner() {
         let registry = G04ArchiveOperationRegistry()
         let ownerA = try! G04ArchiveOwner(

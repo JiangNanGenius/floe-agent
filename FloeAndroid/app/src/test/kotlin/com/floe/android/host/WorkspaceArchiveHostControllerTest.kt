@@ -113,8 +113,13 @@ class WorkspaceArchiveHostControllerTest {
         assertEquals("report-unpacked", WorkspaceArchiveFormat.extractDestinationFor("docs/report.zip"))
         assertEquals("archive-unpacked", WorkspaceArchiveFormat.extractDestinationFor(".zip"))
         assertEquals("log", WorkspaceArchiveFormat.decompressDestinationFor("docs/log.gz"))
-        assertEquals("data", WorkspaceArchiveFormat.decompressDestinationFor("docs/data.tar.gz"))
-        assertEquals("blob.unpacked", WorkspaceArchiveFormat.decompressDestinationFor("docs/blob"))
+        // Fixed iOS ArchiveBrowserView invokes this only for gz/bz2/xz.
+        // A tar container must never produce a pretend single-file destination.
+        assertTrue(runCatching { WorkspaceArchiveFormat.decompressDestinationFor("docs/data.tar.gz") }
+            .exceptionOrNull() is IllegalArgumentException)
+        assertTrue(runCatching { WorkspaceArchiveFormat.decompressDestinationFor("docs/blob") }
+            .exceptionOrNull() is IllegalArgumentException)
+        assertEquals(".log", WorkspaceArchiveFormat.decompressDestinationFor("docs/.log.gz"))
     }
 
     // ---- tree -----------------------------------------------------------
@@ -188,7 +193,7 @@ class WorkspaceArchiveHostControllerTest {
         assertTrue(h.transport.calls.isEmpty())
     }
 
-    @Test fun refusedListingMapsTheTypedFailureAndRetryReopens() = runBlocking {
+    @Test fun retiredListingKeepsOwnerFailureAndDoesNotReplay() = runBlocking {
         val h = harness()
         h.transport.failures["g04.archive.listing"] = WorkspaceArchiveHostFailure("retired")
         val o = owner()
@@ -200,7 +205,23 @@ class WorkspaceArchiveHostControllerTest {
         h.transport.failures.clear()
         h.transport.responses["g04.archive.listing"] = listingResponse()
         h.controller.retry(1)
+        assertEquals(failed, h.controller.state.value)
+        assertEquals(1, h.transport.calls.count { it.contains("g04.archive.listing") })
+    }
+
+    @Test fun transportFailureRetryReopensWithTheSameCurrentOwner() = runBlocking {
+        val h = harness()
+        h.transport.failures["g04.archive.listing"] = WorkspaceArchiveHostFailure("transport")
+        val o = owner()
+        assertTrue(h.controller.open(o, "docs/report.zip", token = 1))
+        val failed = h.controller.state.value as WorkspaceArchiveState.ListingFailed
+        assertEquals(ArchiveFailure.TRANSPORT, failed.failure)
+        assertTrue(failed.retryable)
+        h.transport.failures.clear()
+        h.transport.responses["g04.archive.listing"] = listingResponse()
+        h.controller.retry(1)
         assertTrue(h.controller.state.value is WorkspaceArchiveState.Listed)
+        assertEquals(2, h.transport.calls.count { it.contains("g04.archive.listing") })
     }
 
     @Test fun needsCoreUpdateMapsToTheTypedSurface() = runBlocking {

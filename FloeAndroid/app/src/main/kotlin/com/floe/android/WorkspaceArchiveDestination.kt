@@ -135,7 +135,7 @@ internal fun WorkspaceArchiveDestination(
         )
         FloeDivider()
         when (val value = current) {
-            null, is WorkspaceArchiveState.Listing -> ArchiveLoading(
+            null, WorkspaceArchiveState.Idle, is WorkspaceArchiveState.Listing -> ArchiveLoading(
                 text = stringResource(R.string.archive_reading),
             )
             is WorkspaceArchiveState.ListingFailed -> ArchiveFailureSurface(
