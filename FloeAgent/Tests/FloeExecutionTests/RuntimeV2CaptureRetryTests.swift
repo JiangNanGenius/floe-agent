@@ -27,6 +27,34 @@ final class RuntimeV2CaptureRetryTests: XCTestCase {
 
     private let baseImageID = "base-image"
 
+    func testConfirmedStopWithUnconfirmedGuestWritebackStillCapturesDiskAndReleasesLease() async throws {
+        _ = try await store.prepareAndRecover(build: "test")
+        let manifest = try await makeVerifiedBaseImage(imageID: baseImageID)
+        let digest = try XCTUnwrap(manifest.rootfsDigest)
+        let environmentID = "env-interrupted-sync"
+        let runtimeID = "rt-interrupted-sync"
+        try await registerEnvironment(environmentID, rootfsDigest: digest)
+        try await bootEnvironment(environmentID: environmentID, runtimeID: runtimeID,
+                                  markerOffset: 2 << 20, marker: Data(repeating: 0x5D, count: 4096))
+        let integrator: any LinuxGuestRuntimeV2Integrating = RuntimeV2GuestIntegrator(store: store, build: "test")
+        let outcome = await integrator.completeStoppedGuestResult(environmentID: environmentID,
+            runtimeID: runtimeID, imageID: baseImageID, filesystemSynchronized: false)
+        guard case .captured(let generation) = outcome else {
+            return XCTFail("A confirmed stopped disk must be captured even after interrupted writeback: \(outcome)")
+        }
+        XCTAssertGreaterThan(generation, 0)
+        let shutdown = try await store.deltas.lastShutdown(environmentID: environmentID)
+        XCTAssertEqual(shutdown?.clean, false)
+        XCTAssertEqual(shutdown?.deltaGeneration, generation)
+        XCTAssertTrue(shutdown?.detail?.contains("writeback was not confirmed") == true)
+        let holder = try await store.leases.holder(environmentID: environmentID)
+        XCTAssertNil(holder)
+        XCTAssertFalse(FileManager.default.fileExists(atPath:
+            try layout.runtimeVMDirectory(runtimeID: runtimeID).path))
+        let delta = try await store.deltas.loadDelta(environmentID: environmentID)
+        XCTAssertGreaterThan(delta?.presentBlocks ?? 0, 0)
+    }
+
     override func setUp() async throws {
         root = FileManager.default.temporaryDirectory
             .appendingPathComponent("runtime-v2-capture-retry-\(UUID().uuidString)", isDirectory: true)

@@ -126921,6 +126921,40 @@
           }
         }
       }
+    },
+    "execution.linux_guest.pending_writes_not_confirmed": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The environment stopped before all file changes were confirmed. Recent changes may be missing."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "环境已停止，但部分文件更改未能确认保存，最近的更改可能丢失。"
+          }
+        }
+      }
+    },
+    "execution.linux_guest.finish_saving_before_resource_change": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Files could not finish saving. Retry before changing the environment resources."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "文件尚未完成保存，请稍后重试调整运行资源。"
+          }
+        }
+      }
     }
   },
   "version": "1.0"

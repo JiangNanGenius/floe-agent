@@ -41,6 +41,11 @@ public struct LinuxGuestSessionHandle: Sendable {
     /// that reached it despite the pool refusal surfaces as an error and
     /// the restart rolls back instead of booting a silently different shape.
     public var setVCPUs: (@Sendable (Int) throws -> Void)?
+    /// A real guest kernel can still own dirty pages after a command exits.
+    /// Flushing the host disk alone does not commit those pages. Native
+    /// TinyEMU handles require a guest sync before an intentional halt;
+    /// scripted transports without a guest filesystem leave this false.
+    public var requiresGuestSyncBeforeStop: Bool
 
     public init(
         transport: any LinuxGuestConsoleTransport,
@@ -52,7 +57,8 @@ public struct LinuxGuestSessionHandle: Sendable {
         removeForward: @escaping @Sendable (LinuxGuestServiceForward) throws -> Void,
         emulatorCPUSample: @escaping @Sendable () -> LinuxGuestEmulatorCPUSample? = { nil },
         setRAMMB: (@Sendable (Int) -> Void)? = nil,
-        setVCPUs: (@Sendable (Int) throws -> Void)? = nil
+        setVCPUs: (@Sendable (Int) throws -> Void)? = nil,
+        requiresGuestSyncBeforeStop: Bool = false
     ) {
         self.transport = transport
         self.start = start
@@ -64,6 +70,7 @@ public struct LinuxGuestSessionHandle: Sendable {
         self.emulatorCPUSample = emulatorCPUSample
         self.setRAMMB = setRAMMB
         self.setVCPUs = setVCPUs
+        self.requiresGuestSyncBeforeStop = requiresGuestSyncBeforeStop
     }
 }
 
@@ -946,9 +953,15 @@ public actor TinyEMULinuxGuestRegistry {
         environmentID: String,
         runtimeID: String,
         imageID: String,
-        clean: Bool
+        clean: Bool,
+        filesystemSynchronized: Bool = true
     ) async -> RuntimeV2StopOutcome {
-        await runtimeV2.completeStopResult(
+        if clean {
+            return await runtimeV2.completeStoppedGuestResult(
+                environmentID: environmentID, runtimeID: runtimeID, imageID: imageID,
+                filesystemSynchronized: filesystemSynchronized)
+        }
+        return await runtimeV2.completeStopResult(
             environmentID: environmentID, runtimeID: runtimeID, imageID: imageID, clean: clean
         )
     }
@@ -2379,7 +2392,8 @@ public actor TinyEMULinuxGuestRegistry {
         maxOutputBytes: Int,
         cancellation: CancellationToken?
     ) async throws -> LinuxCommandResult {
-        if isLifecycleTransactionInFlight(environmentID: environmentID) {
+        if isLifecycleTransactionInFlight(environmentID: environmentID)
+            || isShapeChangeInFlight(environmentID: environmentID) {
             // A hard restart owns the environment across its stop → start
             // window: a command must not attach to the outgoing or incoming
             // instance.
@@ -2563,6 +2577,8 @@ public actor TinyEMULinuxGuestRegistry {
         session: Session
     ) async -> Bool {
         var session = session
+        let guestSynchronized = await synchronizeGuestFilesystemBeforeStop(
+            environmentID: environmentID, session: session)
         await session.channel.close()
         await session.handle.close()
         // Truthful stop: the engine may have refused to destroy a VM whose
@@ -2607,7 +2623,7 @@ public actor TinyEMULinuxGuestRegistry {
         // counters are deliberately left to their balanced increment/decrement
         // pairs, so a stale defer can never hide a future command.
         spawnedServices[environmentID] = nil
-        var stopSavedCleanly = true
+        var stopSavedCleanly = guestSynchronized
         if let runtimeV2, let runtimeID = session.runtimeID {
             // Confirmed stop: flush + capture the delta, record the shutdown,
             // sweep the runtime dir and release the lease. The result is
@@ -2619,11 +2635,13 @@ public actor TinyEMULinuxGuestRegistry {
             // disk until the repair completes).
             let outcome = await runtimeV2StopOutcome(
                 runtimeV2, environmentID: environmentID, runtimeID: runtimeID,
-                imageID: session.descriptor.imageID, clean: true
+                imageID: session.descriptor.imageID, clean: true,
+                filesystemSynchronized: guestSynchronized
             )
-            stopSavedCleanly = recordStopOutcome(
+            let captured = recordStopOutcome(
                 outcome, environmentID: environmentID, action: action, runtimeID: runtimeID
             )
+            stopSavedCleanly = guestSynchronized && captured
             await runtimeV2.releaseSlot(environmentID: environmentID, runtimeID: runtimeID)
         }
         // The VM stopped AND its runtime disk/slot work is done: nothing can
@@ -2637,11 +2655,50 @@ public actor TinyEMULinuxGuestRegistry {
             // The disk and shares are untouched; only runtime state was dropped.
             lastImpacts[environmentID] =
                 "\(action): guest runtime for \(environmentID) stopped and destroyed; persistent disk and shares preserved; other environments untouched"
+        } else if !guestSynchronized {
+            let detail = FloeL10n.l("execution.linux_guest.pending_writes_not_confirmed")
+            lastErrors[environmentID] = lastErrors[environmentID].map { "\($0); \(detail)" } ?? detail
+            lastImpacts[environmentID] =
+                "\(action): \(detail); existing disk and shares retained"
         }
         FloeLogger(category: .tools).info(
             "Linux guest \(action) environment=\(environmentID) activeGuests=\(guestReservations.count) reservedRAMMB=\(reservedGuestRAMMB) stopSavedCleanly=\(stopSavedCleanly)"
         )
         return false
+    }
+
+    /// The lifecycle owner has already fenced new commands. Commit the
+    /// kernel's dirty filesystem pages before destroying its RAM, rather
+    /// than only fsyncing the backing file after those pages were lost.
+    /// A busy or poisoned guest still stops within the normal bounded
+    /// channel contract, but is never reported as a clean shutdown.
+    private func synchronizeGuestFilesystemBeforeStop(
+        environmentID: String, session: Session
+    ) async -> Bool {
+        guard session.handle.requiresGuestSyncBeforeStop,
+              await session.handle.isRunning() else { return true }
+        let hadWriters = (activeCommands[environmentID] ?? 0) > 0
+            || !(spawnedServices[environmentID]?.isEmpty ?? true)
+        let channel = session.channel
+        do {
+            // Cleanup must complete even when the initiating task was
+            // cancelled. An unstructured task owns this bounded operation;
+            // no caller's scoped credential ticket may reach /bin/sync.
+            let sync = Task {
+                try await SensitiveProcessEnvironmentCarrier.$pending.withValue(nil) {
+                    try await channel.run(argv: ["/bin/sync"], deadline: .seconds(10),
+                                          maxOutputBytes: 4096, cancellation: nil)
+                }
+            }
+            let result = try await sync.value
+            return result.exitCode == 0 && !hadWriters
+                && (activeCommands[environmentID] ?? 0) == 0
+                && (spawnedServices[environmentID]?.isEmpty ?? true)
+        } catch {
+            FloeLogger(category: .tools).warning(
+                "Linux guest filesystem synchronization not confirmed environment=\(environmentID)")
+            return false
+        }
     }
 
     /// Stops guests started by this task id (task ownership teardown).
@@ -3317,6 +3374,18 @@ public actor TinyEMULinuxGuestRegistry {
         // honoured before the stop, and a registered teardown always wins.
         try Task.checkCancellation()
         try requireShapeChangeOwnership(environmentID: environmentID)
+        if session.handle.requiresGuestSyncBeforeStop {
+            guard (activeCommands[environmentID] ?? 0) == 0,
+                  spawnedServices[environmentID]?.isEmpty ?? true,
+                  !terminalSessions.values.contains(where: { $0.environmentID == environmentID }) else {
+                throw LinuxGuestError.guestBusy(environmentID: environmentID)
+            }
+            guard await synchronizeGuestFilesystemBeforeStop(environmentID: environmentID, session: session) else {
+                throw LinuxGuestError.invalidConfiguration(
+                    FloeL10n.l("execution.linux_guest.finish_saving_before_resource_change"))
+            }
+            try requireShapeChangeOwnership(environmentID: environmentID)
+        }
         await session.handle.stop()
         try requireShapeChangeOwnership(environmentID: environmentID)
         let changeLabel = vcpus == nil ? "memory-tier change" : "shape change"
@@ -3409,7 +3478,8 @@ public actor TinyEMULinuxGuestRegistry {
         columns: Int,
         rows: Int
     ) async throws {
-        if isLifecycleTransactionInFlight(environmentID: environmentID) {
+        if isLifecycleTransactionInFlight(environmentID: environmentID)
+            || isShapeChangeInFlight(environmentID: environmentID) {
             // A hard restart owns the environment across its stop → start
             // window: a new interactive session must not attach to the
             // outgoing or incoming instance.

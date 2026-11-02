@@ -192,6 +192,13 @@ public protocol LinuxGuestRuntimeV2Integrating: Sendable {
     func completeStopResult(
         environmentID: String, runtimeID: String, imageID: String, clean: Bool
     ) async -> RuntimeV2StopOutcome
+    /// The VM is confirmed stopped. Guest writeback and host delta capture
+    /// are separate facts: even interrupted guest writeback still captures
+    /// the stopped backing bytes, with an unclean shutdown record.
+    func completeStoppedGuestResult(
+        environmentID: String, runtimeID: String, imageID: String,
+        filesystemSynchronized: Bool
+    ) async -> RuntimeV2StopOutcome
     /// VERIFIED repair resolution for an environment the store excludes after
     /// a failed stop capture: provenance + content verification of the
     /// preserved bytes, capture into the environment delta, durable commit.
@@ -202,6 +209,13 @@ public protocol LinuxGuestRuntimeV2Integrating: Sendable {
 }
 
 public extension LinuxGuestRuntimeV2Integrating {
+    func completeStoppedGuestResult(
+        environmentID: String, runtimeID: String, imageID: String,
+        filesystemSynchronized: Bool
+    ) async -> RuntimeV2StopOutcome {
+        await completeStopResult(environmentID: environmentID, runtimeID: runtimeID,
+                                 imageID: imageID, clean: true)
+    }
     /// Conservative default: a substrate that does not implement the pure
     /// mapping cannot advertise an environment share. It must never be read
     /// as "fall back to legacy" — a v2 boot does not mount that layer.
@@ -999,8 +1013,17 @@ public actor RuntimeV2GuestIntegrator: LinuxGuestRuntimeV2Integrating {
         )
     }
 
+    public func completeStoppedGuestResult(
+        environmentID: String, runtimeID: String, imageID: String,
+        filesystemSynchronized: Bool
+    ) async -> RuntimeV2StopOutcome {
+        await completeStopReporting(environmentID: environmentID, runtimeID: runtimeID,
+            imageID: imageID, clean: true, filesystemSynchronized: filesystemSynchronized)
+    }
+
     private func completeStopReporting(
-        environmentID: String, runtimeID: String, imageID: String, clean: Bool
+        environmentID: String, runtimeID: String, imageID: String, clean: Bool,
+        filesystemSynchronized: Bool = true
     ) async -> RuntimeV2StopOutcome {
         guard clean else {
             try? await store.deltas.recordShutdown(
@@ -1079,8 +1102,10 @@ public actor RuntimeV2GuestIntegrator: LinuxGuestRuntimeV2Integrating {
                 try await store.deltas.recordShutdown(
                     RuntimeV2DeltaStore.ShutdownRecord(
                         environmentID: environmentID, runtimeID: runtimeID,
-                        stoppedAt: Date(), clean: true,
-                        deltaGeneration: info.header.generation
+                        stoppedAt: Date(), clean: filesystemSynchronized,
+                        deltaGeneration: info.header.generation,
+                        detail: filesystemSynchronized ? nil
+                            : "The VM stopped, but guest filesystem writeback was not confirmed. The stopped disk bytes were captured."
                     ),
                     environmentID: environmentID
                 )

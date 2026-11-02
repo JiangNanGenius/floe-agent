@@ -1082,6 +1082,8 @@ targets:
       # Linux command timeout/reap and internal Python compatibility use the
       # production App-linked execution module; no second package build.
       - path: Tests/FloeExecutionTests/LinuxGuestBackendTests.swift
+      - path: Tests/FloeExecutionTests/LinuxGuestShapeLifecycleTests.swift
+      - path: Tests/FloeExecutionTests/RuntimeV2CaptureRetryTests.swift
       # Per-boot guest loopback startup provisioning: scripted-console
       # regression for the registry seam (no engine, no image).
       - path: Tests/FloeExecutionTests/LinuxGuestLoopbackProvisioningTests.swift

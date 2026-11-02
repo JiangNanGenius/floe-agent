@@ -836,7 +836,8 @@ public struct TinyEMUGuestSessionFactory: Sendable {
             // Same stop → restart boundary as RAM: the registry's shape-change
             // path validates through RuntimeVMPool then applies both, and the
             // machine re-checks its OWN release gate before accepting a count.
-            setVCPUs: { try machine.setVCPUs($0) }
+            setVCPUs: { try machine.setVCPUs($0) },
+            requiresGuestSyncBeforeStop: true
         )
     }
 }

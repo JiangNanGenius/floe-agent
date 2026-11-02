@@ -172,6 +172,7 @@ final class FakeSessionLedger: @unchecked Sendable {
 
 struct FakeSessionFactory: LinuxGuestSessionCreating {
     let ledger: FakeSessionLedger
+    var requiresGuestSyncBeforeStop = false
     let handler: @Sendable (String, String) -> [Data]
 
     func makeSession(
@@ -191,7 +192,8 @@ struct FakeSessionFactory: LinuxGuestSessionCreating {
             close: { await state.didStop() },
             isRunning: { await state.running },
             addForward: { _ in },
-            removeForward: { _ in }
+            removeForward: { _ in },
+            requiresGuestSyncBeforeStop: requiresGuestSyncBeforeStop
         )
     }
 }
@@ -751,6 +753,96 @@ final class TestFlag: @unchecked Sendable {
 // MARK: - Registry
 
 final class LinuxGuestRegistryTests: XCTestCase {
+    func testRealFilesystemStopSynchronizesWithoutConsumingTheCallersCredentialTicket() async throws {
+        let ledger = FakeSessionLedger()
+        let factory = FakeSessionFactory(ledger: ledger, requiresGuestSyncBeforeStop: true) { _, token in
+            token.hasPrefix("hello-") ? caps(token) : reply(token, stdout: "", stderr: "", exit: 0)
+        }
+        let registry = makeRegistry(descriptors: ["env-1": makeDescriptor(id: "env-1")],
+                                    images: ["test-image": makeImage()], factory: factory)
+        _ = try await registry.start(environmentID: "env-1", taskID: nil)
+        let console = try XCTUnwrap(ledger.console(for: "env-1"))
+        let before = TestLinuxGuestConsole.tokens(in: console.written, name: "EXEC").count
+        let ticket = SensitiveProcessEnvironmentTicket(try SensitiveProcessEnvironment(
+            ["FLOE_TEST_SENTINEL": "synthetic-only"]))
+        let cleanup = Task {
+            while !Task.isCancelled { await Task.yield() }
+            await SensitiveProcessEnvironmentCarrier.$pending.withValue(ticket) {
+                await registry.stop(environmentID: "env-1")
+            }
+        }
+        cleanup.cancel()
+        await cleanup.value
+        XCTAssertFalse(ticket.wasConsumed)
+        XCTAssertEqual(TestLinuxGuestConsole.tokens(in: console.written, name: "EXEC").count, before + 1)
+        XCTAssertTrue(TestLinuxGuestConsole.tokens(in: console.written, name: "EXECENV").isEmpty)
+        let encodedWords = String(decoding: console.written, as: UTF8.self).split(whereSeparator: \.isWhitespace)
+        XCTAssertTrue(encodedWords.contains { word in
+            guard let bytes = Data(base64Encoded: String(word)) else { return false }
+            return bytes.range(of: Data("/bin/sync".utf8)) != nil
+        })
+        let state = await registry.status(environmentID: "env-1")
+        XCTAssertFalse(state.running)
+        XCTAssertNil(state.lastError)
+    }
+
+    func testFailedGuestWritebackStopsButNeverReportsCleanSave() async throws {
+        let failSync = TestFlag()
+        let ledger = FakeSessionLedger()
+        let factory = FakeSessionFactory(ledger: ledger, requiresGuestSyncBeforeStop: true) { _, token in
+            token.hasPrefix("hello-") ? caps(token)
+                : reply(token, stdout: "", stderr: "", exit: failSync.value ? 5 : 0)
+        }
+        let registry = makeRegistry(descriptors: ["env-1": makeDescriptor(id: "env-1")],
+                                    images: ["test-image": makeImage()], factory: factory)
+        _ = try await registry.start(environmentID: "env-1", taskID: nil)
+        failSync.value = true
+        await registry.stop(environmentID: "env-1")
+        let state = await registry.status(environmentID: "env-1")
+        XCTAssertFalse(state.running)
+        XCTAssertTrue(state.lastError?.contains(FloeL10n.l("execution.linux_guest.pending_writes_not_confirmed")) == true)
+        XCTAssertFalse(state.lastResetSharedImpact?.contains("stopped and destroyed") == true)
+        let reserved = await registry.reservedGuestRAMMB
+        XCTAssertEqual(reserved, 0)
+    }
+
+    func testPendingWritebackKeepsTheSameLifecycleOwnerUntilTheReply() async throws {
+        let ledger = FakeSessionLedger()
+        let factory = FakeSessionFactory(ledger: ledger, requiresGuestSyncBeforeStop: true) { _, token in
+            token.hasPrefix("hello-") ? caps(token) : reply(token, stdout: "", stderr: "", exit: 0)
+        }
+        let registry = makeRegistry(descriptors: ["env-1": makeDescriptor(id: "env-1")],
+                                    images: ["test-image": makeImage()], factory: factory)
+        _ = try await registry.start(environmentID: "env-1", taskID: nil)
+        let console = try XCTUnwrap(ledger.console(for: "env-1"))
+        let before = TestLinuxGuestConsole.tokens(in: console.written, name: "EXEC").count
+        console.setHandler { token in token.hasPrefix("hello-") ? caps(token) : [] }
+        let stop = Task { await registry.stop(environmentID: "env-1") }
+        let deadline = Date().addingTimeInterval(3)
+        while Date() < deadline,
+              TestLinuxGuestConsole.tokens(in: console.written, name: "EXEC").count == before {
+            await Task.yield()
+        }
+        let tokens = TestLinuxGuestConsole.tokens(in: console.written, name: "EXEC")
+        guard tokens.count == before + 1, let pending = tokens.last else {
+            await stop.value
+            return XCTFail("The stop never reached guest filesystem writeback")
+        }
+        do {
+            _ = try await registry.start(environmentID: "env-1", taskID: nil)
+            XCTFail("A new VM must not start over the stopping guest's disk")
+        } catch let error as LinuxGuestError {
+            if case .guestBusy = error { } else { XCTFail("Unexpected refusal: \(error)") }
+        } catch {
+            XCTFail("Unexpected refusal: \(error)")
+        }
+        console.push(reply(pending, stdout: "", stderr: "", exit: 0))
+        await stop.value
+        let state = await registry.status(environmentID: "env-1")
+        XCTAssertFalse(state.running)
+        XCTAssertEqual(ledger.sessionCount(for: "env-1"), 1)
+    }
+
     private func makeRegistry(
         descriptors: [String: LinuxGuestEnvironmentDescriptor],
         images: [String: LinuxGuestImage],
