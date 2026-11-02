@@ -153,8 +153,8 @@ final class DocumentSession {
 
     /// The one authoritative face-range table for per-face materials on
     /// `body`. Trust order:
-    /// 1. a post-rebuild naming table whose revision matches the body;
-    /// 2. a table this session already prepared for the same mesh revision;
+    /// 1. a verified material table for the same handle/render/revision;
+    /// 2. a post-rebuild naming table whose revision matches the body;
     /// 3. a table derived from the body's actual restored render.
     ///
     /// Derivation requires the analytic B-rep that the stored signature names,
@@ -170,14 +170,17 @@ final class DocumentSession {
         guard let current = document.body(with: body.id), current.meshRevision == body.meshRevision,
               current.render == body.render, current.brep === body.brep else { return nil }
         let liveTable = lastNamingRevisions[body.id] == body.meshRevision ? lastFaceTables[body.id] : nil
-        if let liveTable, liveTable.nativeFaceSignatures != nil { return liveTable }
-        guard preparingForAssignment || !body.materialFaceBindings.isEmpty else { return liveTable }
-        guard body.brep != nil else { return liveTable }
+        // A verified saved/current-archive material table can additionally
+        // name a freshly assigned generic face. Geometry rebuilds clear it;
+        // never replace it with a weaker live table for the SAME generation.
         if let prepared = preparedFaceRangeTables[body.id],
            prepared.meshRevision == body.meshRevision,
            prepared.render == body.render, prepared.brep === body.brep {
             return prepared.table.entries.isEmpty ? nil : prepared.table
         }
+        if let liveTable, liveTable.nativeFaceSignatures != nil { return liveTable }
+        guard preparingForAssignment || !body.materialFaceBindings.isEmpty else { return liveTable }
+        guard body.brep != nil else { return liveTable }
         // Validate only when preparing a new revision, rather than walking
         // the entire triangle buffer on every viewport refresh. Persisted
         // meshes are input too: non-finite values must never reach topology
@@ -194,6 +197,24 @@ final class DocumentSession {
         preparedFaceRangeTables[body.id] = PreparedFaceRangeTable(
             meshRevision: body.meshRevision, render: body.render, brep: body.brep, table: table)
         return table.entries.isEmpty ? nil : table
+    }
+
+    /// Explicit NEW material assignments only. Keep the feature graph and
+    /// existing bindings intact; bind a missing generic name to a verified
+    /// immutable archive rather than inventing ancestry for an old key.
+    func faceRangeTable(forNewMaterialAssignment body: Body, faces: [Int]) -> FaceTable? {
+        guard let table = faceRangeTable(for: body, preparingForAssignment: true) else { return nil }
+        let wanted = Set(faces)
+        let existing = table.nativeFaceNames ?? [:]
+        guard wanted.contains(where: { existing[$0]?.isStableFaceIdentity != true }) else { return table }
+        guard let archive = serializedBrep(for: body),
+              let names = CADFaceNamingSnapshot.captureMaterialNames(body: body, archive: archive,
+                creator: lastBodyWriters[body.id] ?? FeatureID(raw: body.id.raw),
+                indices: wanted, existing: existing) else { return table }
+        let captured = CADFaceNamingSnapshot.prepare(table, for: body, names: names)
+        preparedFaceRangeTables[body.id] = PreparedFaceRangeTable(meshRevision: body.meshRevision,
+            render: body.render, brep: body.brep, table: captured)
+        return captured
     }
 
     /// Batch form for exports. Every table comes from `faceRangeTable(for:)`

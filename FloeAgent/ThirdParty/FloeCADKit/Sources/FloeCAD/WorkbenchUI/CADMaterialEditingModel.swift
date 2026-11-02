@@ -846,7 +846,8 @@ final class CADMaterialDraftModel {
                     "Face materials need an exact solid; use a whole-body material for this mesh.")
                 return
             }
-            let candidates = CADFaceMaterialResolver.candidates(for: body, table: document.session.faceRangeTable(for: body, preparingForAssignment: true))
+            let assignmentTable = document.session.faceRangeTable(forNewMaterialAssignment: body, faces: [faceIndex])
+            let candidates = CADFaceMaterialResolver.candidates(for: body, table: assignmentTable)
             let expectedSignature = identity.resolvedSignature ?? identity.signature
             guard let signature = candidates.first(where: { $0.index == faceIndex })?.signature,
                   CADMaterialTargetResolver.signaturesMatch(signature,

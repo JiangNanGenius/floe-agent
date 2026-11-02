@@ -140,15 +140,59 @@ nonisolated struct CADFaceNamingSnapshot: Codable, Sendable {
         return result
     }
 
-    private static func nativeWitnesses(_ handle: BRepHandle) -> [Int: NativeFaceWitness]? {
+    private static func nativeBoundaries(_ handle: BRepHandle) -> [Int: String]? {
         let native = OCCTKernel.renderMesh(from: handle)
         let render = RenderMesh(positions: native.positions, normals: native.normals, indices: native.indices)
-        let channel = OCCTKernel.renderMeshFaceChannel(from: handle)
-        guard let boundaries = boundaryDigests(render: render, channel: channel) else { return nil }
+        return boundaryDigests(render: render, channel: OCCTKernel.renderMeshFaceChannel(from: handle))
+    }
+
+    private static func nativeWitnesses(_ handle: BRepHandle) -> [Int: NativeFaceWitness]? {
+        guard let boundaries = nativeBoundaries(handle) else { return nil }
         return Dictionary(uniqueKeysWithValues: OCCTKernel.faceInfo(handle).compactMap { face in
             guard let signature = face.signature, let boundary = boundaries[face.index] else { return nil }
             return (face.index, NativeFaceWitness(boundarySHA256: boundary, signature: signature))
         })
+    }
+
+    /// New explicit material intent may name a face in the SAME immutable
+    /// archive the session will save. This is not a live BRep hash used across
+    /// rebuilds: the archive bytes stay cached unchanged, and an actual rebuild
+    /// discards this material-only table. Old keys are never upgraded here.
+    static func captureMaterialNames(body: Body, archive: Data, creator: FeatureID,
+                                     indices: Set<Int>, existing: [Int: ElementName]) -> [Int: ElementName]? {
+        guard let live = body.brep, !archive.isEmpty,
+              let frozen = OCCTKernel.deserialize(archive),
+              let currentBoundaries = nativeBoundaries(live),
+              let frozenBoundaries = nativeBoundaries(frozen) else { return nil }
+        let currentFaces = OCCTKernel.faceInfo(live)
+        let frozenFaces = OCCTKernel.faceInfo(frozen)
+        guard !currentFaces.isEmpty, currentFaces.count == frozenFaces.count,
+              currentBoundaries.count == currentFaces.count,
+              frozenBoundaries.count == frozenFaces.count else { return nil }
+        let grouped = Dictionary(grouping: frozenFaces, by: { frozenBoundaries[$0.index] ?? "" })
+        var mapping: [Int: Int] = [:]
+        for face in currentFaces {
+            guard let boundary = currentBoundaries[face.index] else { return nil }
+            let matches = (grouped[boundary] ?? []).filter { candidate in
+                switch (face.signature, candidate.signature) {
+                case let (a?, b?): return SignatureNaming.exactSignature(a, b)
+                case (nil, nil): return true
+                default: return false
+                }
+            }
+            guard matches.count == 1, let match = matches.first else { return nil }
+            mapping[face.index] = match.index
+        }
+        guard Set(mapping.values).count == mapping.count else { return nil }
+        let source = digest(archive)
+        var result = existing
+        for index in indices where result[index]?.isStableFaceIdentity != true {
+            guard currentFaces.contains(where: { $0.index == index && $0.signature != nil }),
+                  let archivedIndex = mapping[index] else { return nil }
+            result[index] = ElementName(creator: creator,
+                source: .immutableSourceFace(version: 1, sha256: source, index: archivedIndex))
+        }
+        return result
     }
 
     static func encode(table: FaceTable, body: Body, mesh: Data, brep: Data?) -> Data? {

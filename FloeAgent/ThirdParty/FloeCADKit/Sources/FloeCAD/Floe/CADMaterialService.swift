@@ -534,7 +534,7 @@ public final class CADMaterialService {
                              "Body '\(body.name)' has no face \(missing.map(String.init).joined(separator: ", ")). "
                                 + "Re-query kind=faces for current indices.")
         }
-        let table = document.session.faceRangeTable(for: body, preparingForAssignment: true)
+        let table = document.session.faceRangeTable(forNewMaterialAssignment: body, faces: indices)
         let candidates = CADFaceMaterialResolver.candidates(for: body, table: table)
         var bindings: [CADFaceMaterialBinding] = []
         var newKeys: [CADFaceKey] = []
@@ -615,7 +615,7 @@ public final class CADMaterialService {
         case .success(let value):
             material = value
         }
-        let table = document.session.faceRangeTable(for: body, preparingForAssignment: true)
+        let table = document.session.faceRangeTable(forNewMaterialAssignment: body, faces: indices)
         let candidates = CADFaceMaterialResolver.candidates(for: body, table: table)
         var bindings: [CADFaceMaterialBinding] = []
         var newKeys: [CADFaceKey] = []

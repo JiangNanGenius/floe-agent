@@ -793,6 +793,28 @@ final class CADMaterialCoreTests: XCTestCase {
         XCTAssertEqual(reopened.modelSHA256, modelSHA)
         XCTAssertNil(reopened.session.lastFaceTables[bodyID], "Derived material tables are not a graph rebuild")
         XCTAssertEqual(try verify(reopened), actualGroups)
+        let resaved = await reopened.save()
+        XCTAssertTrue(resaved.succeeded, resaved.error ?? "")
+        XCTAssertEqual(reopened.modelSHA256, modelSHA)
+        reopened.close()
+        let twiceReopened = try await FloeCADDocument.open(at: url)
+        defer { twiceReopened.close() }
+        XCTAssertEqual(twiceReopened.modelSHA256, modelSHA)
+        XCTAssertEqual(try verify(twiceReopened), actualGroups,
+            "The immutable archive namespace must survive a second save/read, not a fresh live BRep hash")
+        let oldBindings = try XCTUnwrap(twiceReopened.session.document.body(with: bodyID)).materialFaceBindings
+        twiceReopened.session.editFeature(sweep.id, to: .sweep(
+            profile: ProfileRef(sketchID: sketch.id, entityIDs: [], holeEntityIDs: [], seedPoint: .zero),
+            plane: PlaneRef(source: .sketch(sketch.id)),
+            spine: [PointWrapper(SIMD3(0, 0, 0)), PointWrapper(SIMD3(12, 24, 0))],
+            boolean: BooleanIntent(op: .newBody, resolvedTargets: []), helix: nil))
+        XCTAssertTrue(twiceReopened.session.lastEvalErrors.isEmpty)
+        let changed = try XCTUnwrap(twiceReopened.session.document.body(with: bodyID))
+        XCTAssertEqual(changed.materialFaceBindings, oldBindings, "Rebuild must retain old intent without rewriting it")
+        let afterRebuild = CADFaceMaterialResolver.assessGroups(in: changed,
+            table: twiceReopened.session.faceRangeTable(for: changed), tableRevision: changed.meshRevision)
+        XCTAssertTrue(afterRebuild.groups.isEmpty, "A regenerated sweep cannot borrow the prior immutable source namespace")
+        XCTAssertEqual(afterRebuild.issues.count, 2)
     }
 
     func testFaceNamingSnapshotOnlyRestoresExactStoredGeometryAndDoesNotChangeModelIdentity() async throws {
