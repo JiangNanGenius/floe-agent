@@ -84,6 +84,28 @@ final class CADMaterialCoreTests: XCTestCase {
         XCTAssertEqual((read["appearance"] as? [String: Any])?["active_environment"] as? String, "dark")
     }
 
+    func testClosedEnvironmentOwnerCannotReadMutateOrAddHistory() async throws {
+        let document = try await FloeCADDocument.create(
+            at: workDir.appendingPathComponent("closed-environment.floecad"), name: "Closed environment")
+        _ = try makeBox(document)
+        let service = CADMaterialService(document: document)
+        let before = document.session.document.sceneSettingsData
+        let change = document.liveChangeCount
+        let undo = document.session.undoStack.undoCommands.count
+        document.close()
+        var draft = document.viewAppearance
+        draft.activeEnvironment = .dark
+        XCTAssertFalse(document.applyViewAppearance(draft))
+        for action in ["environment.read", "environment.update"] {
+            let result = service.handle(action: action, args: ["active_environment": "dark"])
+            XCTAssertEqual(result["ok"] as? Bool, false)
+            XCTAssertEqual(result["error"] as? String, "document_closed")
+        }
+        XCTAssertEqual(document.session.document.sceneSettingsData, before)
+        XCTAssertEqual(document.liveChangeCount, change)
+        XCTAssertEqual(document.session.undoStack.undoCommands.count, undo)
+    }
+
     func testEnvironmentInvalidOrStalePayloadsAreAtomic() async throws {
         let document = try await FloeCADDocument.create(
             at: workDir.appendingPathComponent("environment-invalid.floecad"), name: "Environment validation")

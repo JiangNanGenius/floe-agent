@@ -181,7 +181,7 @@ extension FloeCADDocument {
         let appearance = appearance.sanitized
         // Equality is semantic: JSON key order is not a new user edit, and
         // selecting the already active look must not add an empty undo step.
-        guard session.writeBlock == nil, appearance != viewAppearance else { return false }
+        guard !isClosed, session.writeBlock == nil, appearance != viewAppearance else { return false }
         let before = session.document.sceneSettingsData
         var settings = before.flatMap {
             try? JSONDecoder().decode(CADSceneSettings.self, from: $0)

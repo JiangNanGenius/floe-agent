@@ -47,8 +47,12 @@ public final class CADMaterialService {
 
     public func handle(action: String, args: [String: Any]) -> [String: Any] {
         if let refusal = CADServiceOperations.readOnlyRefusal(document: document, kind: "material", action: action) { return refusal }
-        if action == "environment.read" || action == "environment.update",
-           let failure = environmentPinFailure(args) { return failure }
+        if action == "environment.read" || action == "environment.update" {
+            guard !document.isClosed else {
+                return Self.fail("document_closed", "Reopen the document before changing or reading its environment.")
+            }
+            if let failure = environmentPinFailure(args) { return failure }
+        }
         if let failure = revisionPinFailure(args) { return failure }
         switch action {
         case "list": return list(args)
