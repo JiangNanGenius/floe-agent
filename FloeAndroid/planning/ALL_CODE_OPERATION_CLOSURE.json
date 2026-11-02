@@ -318,8 +318,11 @@
       "originalOperation": "Resolve session→project→shared→base with an explicit write layer; never silently choose a temp dir or the first project",
       "originalStatus": "planned",
       "required": true,
-      "codeReview": "pending per-operation UI/service/runtime-storage/failure reconciliation",
-      "qualification": "not newly verified this round"
+      "codeReview": "present-source-connected at 66d3b8b2f9e1c89a790ca7a37d3fb216f06a871a; source audit only, qualification remains separate",
+      "qualification": "Existing exact code26 terminal uses real task workspace; every layer placement/migration branch not newly device verified.",
+      "previousCodeReviews": [
+        "pending per-operation UI/service/runtime-storage/failure reconciliation"
+      ]
     },
     {
       "id": "WSF-FILE-OPS-SAF",
@@ -328,8 +331,11 @@
       "originalOperation": "Full file operations under a persisted, reused SAF grant without re-prompting per operation (no-root file workbench, plan section 21)",
       "originalStatus": "planned",
       "required": true,
-      "codeReview": "pending per-operation UI/service/runtime-storage/failure reconciliation",
-      "qualification": "not newly verified this round"
+      "codeReview": "present-source-connected at 66d3b8b2f9e1c89a790ca7a37d3fb216f06a871a; source audit only, qualification remains separate",
+      "qualification": "Existing component evidence reusable; real persistent-grant reuse/revocation/provider-specific file operations not newly replayed this round.",
+      "previousCodeReviews": [
+        "pending per-operation UI/service/runtime-storage/failure reconciliation"
+      ]
     },
     {
       "id": "WSF-REVISION-CONFLICT",
@@ -338,8 +344,11 @@
       "originalOperation": "Revision conflict detection with recovery copies instead of silent clobber",
       "originalStatus": "planned",
       "required": true,
-      "codeReview": "pending per-operation UI/service/runtime-storage/failure reconciliation",
-      "qualification": "not newly verified this round"
+      "codeReview": "present-source-connected at 66d3b8b2f9e1c89a790ca7a37d3fb216f06a871a; source audit only, qualification remains separate",
+      "qualification": "Manual Office original-save UI gap is separately owned and not closed by this file-service code; provider conflict hardware flow pending.",
+      "previousCodeReviews": [
+        "pending per-operation UI/service/runtime-storage/failure reconciliation"
+      ]
     },
     {
       "id": "WSF-SAFE-EXTRACT",
@@ -348,8 +357,12 @@
       "originalOperation": "Bounded safe archive extraction rejecting traversal; staged commit only after verification",
       "originalStatus": "planned",
       "required": true,
-      "codeReview": "pending per-operation UI/service/runtime-storage/failure reconciliation",
-      "qualification": "not newly verified this round"
+      "codeReview": "implementation-gap-confirmed at 66d3b8b2f9e1c89a790ca7a37d3fb216f06a871a; source audit only, qualification remains separate",
+      "qualification": "Needs bounded source-only package for actual archive entry/service wiring; not platform unsupported and not device passed.",
+      "previousCodeReviews": [
+        "pending per-operation UI/service/runtime-storage/failure reconciliation"
+      ],
+      "remainingImplementation": "Restore safe original archive list/extract to real Android model/UI entry with existing task authority; no duplicate archive engine."
     },
     {
       "id": "WSF-EXPORT",
@@ -358,8 +371,11 @@
       "originalOperation": "Export/copy task results to a user-chosen destination",
       "originalStatus": "planned",
       "required": true,
-      "codeReview": "pending per-operation UI/service/runtime-storage/failure reconciliation",
-      "qualification": "not newly verified this round"
+      "codeReview": "present-source-connected at 66d3b8b2f9e1c89a790ca7a37d3fb216f06a871a; source audit only, qualification remains separate",
+      "qualification": "Real Ark-generated file is visible in App task files, but final user-destination export has not newly been device verified.",
+      "previousCodeReviews": [
+        "pending per-operation UI/service/runtime-storage/failure reconciliation"
+      ]
     },
     {
       "id": "WSF-NETWORK-MOUNT",
@@ -368,9 +384,12 @@
       "originalOperation": "Network file sources inside the file workbench",
       "originalStatus": "planned",
       "required": true,
-      "codeReview": "pending per-operation UI/service/runtime-storage/failure reconciliation",
-      "qualification": "not newly verified this round",
-      "implementationOwner": "job-51e41b60f71a433d"
+      "codeReview": "present-source-connected at 66d3b8b2f9e1c89a790ca7a37d3fb216f06a871a; source audit only, qualification remains separate",
+      "qualification": "No new live NAS/server call this round; no private endpoint or credential copied to evidence.",
+      "implementationOwner": "job-51e41b60f71a433d",
+      "previousCodeReviews": [
+        "pending per-operation UI/service/runtime-storage/failure reconciliation"
+      ]
     },
     {
       "id": "IDE-TREE-EDIT",
@@ -379,8 +398,8 @@
       "originalOperation": "File tree plus multi-tab code editing in one workbench",
       "originalStatus": "planned",
       "required": true,
-      "codeReview": "present-source-connected at immutable 4437d379ec34a3d846ea5a634675ec763ec789ae; static source only, not acceptance",
-      "qualification": "not newly verified this round",
+      "codeReview": "present-source-connected at 66d3b8b2f9e1c89a790ca7a37d3fb216f06a871a; immutable editor evidence reused and changed boundary reviewed",
+      "qualification": "Samsung candidate12 task file tree -> existing generated text file -> full-screen editor shows exact original marker; edit/save/multi-tab cases not newly device-verified",
       "sourceReview": {
         "androidCommit": "4437d379ec34a3d846ea5a634675ec763ec789ae",
         "iosDonorCommit": "a59b4d4005f616c611df67fab7620e9853c525b9",
@@ -422,7 +441,10 @@
         "gaps": [],
         "dependencies": [],
         "qualification": "source-only; unicode byte-exactness not device-tested"
-      }
+      },
+      "previousCodeReviews": [
+        "present-source-connected at immutable 4437d379ec34a3d846ea5a634675ec763ec789ae; static source only, not acceptance"
+      ]
     },
     {
       "id": "IDE-SEARCH-REPLACE",
@@ -431,8 +453,8 @@
       "originalOperation": "Workspace search and replace with hit preview",
       "originalStatus": "planned",
       "required": true,
-      "codeReview": "present-source-connected at immutable 4437d379ec34a3d846ea5a634675ec763ec789ae; static source only, not acceptance",
-      "qualification": "not newly verified this round",
+      "codeReview": "present-source-connected at 66d3b8b2f9e1c89a790ca7a37d3fb216f06a871a; immutable editor evidence reused and changed boundary reviewed",
+      "qualification": "Current Full/Play compilation and actual source-bound native producer evidence; no new whole-IDE device acceptance",
       "sourceReview": {
         "androidCommit": "4437d379ec34a3d846ea5a634675ec763ec789ae",
         "iosDonorCommit": "a59b4d4005f616c611df67fab7620e9853c525b9",
@@ -474,7 +496,10 @@
         "gaps": [],
         "dependencies": [],
         "qualification": "source-only; CJK/case behavior not device-tested"
-      }
+      },
+      "previousCodeReviews": [
+        "present-source-connected at immutable 4437d379ec34a3d846ea5a634675ec763ec789ae; static source only, not acceptance"
+      ]
     },
     {
       "id": "IDE-UNDO-DRAFT",
@@ -483,8 +508,8 @@
       "originalOperation": "Per-editor undo; drafts survive tab switch",
       "originalStatus": "planned",
       "required": true,
-      "codeReview": "present-source-connected at immutable 4437d379ec34a3d846ea5a634675ec763ec789ae; static source only, not acceptance",
-      "qualification": "not newly verified this round",
+      "codeReview": "present-source-connected at 66d3b8b2f9e1c89a790ca7a37d3fb216f06a871a; immutable editor evidence reused and changed boundary reviewed",
+      "qualification": "Current Full/Play compilation and actual source-bound native producer evidence; no new whole-IDE device acceptance",
       "sourceReview": {
         "androidCommit": "4437d379ec34a3d846ea5a634675ec763ec789ae",
         "iosDonorCommit": "a59b4d4005f616c611df67fab7620e9853c525b9",
@@ -521,7 +546,10 @@
         "gaps": [],
         "dependencies": [],
         "qualification": "source-only; rotation/draft behavior not executed"
-      }
+      },
+      "previousCodeReviews": [
+        "present-source-connected at immutable 4437d379ec34a3d846ea5a634675ec763ec789ae; static source only, not acceptance"
+      ]
     },
     {
       "id": "IDE-ENCODING-LINES",
@@ -530,8 +558,8 @@
       "originalOperation": "Preserve CRLF, UTF-8 BOM and long lines across open→edit→save→reopen",
       "originalStatus": "planned",
       "required": true,
-      "codeReview": "present-source-connected at immutable 4437d379ec34a3d846ea5a634675ec763ec789ae; static source only, not acceptance",
-      "qualification": "not newly verified this round",
+      "codeReview": "present-source-connected at 66d3b8b2f9e1c89a790ca7a37d3fb216f06a871a; immutable editor evidence reused and changed boundary reviewed",
+      "qualification": "Current Full/Play compilation and actual source-bound native producer evidence; no new whole-IDE device acceptance",
       "sourceReview": {
         "androidCommit": "4437d379ec34a3d846ea5a634675ec763ec789ae",
         "iosDonorCommit": "a59b4d4005f616c611df67fab7620e9853c525b9",
@@ -568,7 +596,10 @@
         "gaps": [],
         "dependencies": [],
         "qualification": "source-only; host test referenced but not run; device rendering of 4096-char line not verified"
-      }
+      },
+      "previousCodeReviews": [
+        "present-source-connected at immutable 4437d379ec34a3d846ea5a634675ec763ec789ae; static source only, not acceptance"
+      ]
     },
     {
       "id": "IDE-DIFF",
@@ -577,8 +608,8 @@
       "originalOperation": "Diff view of pending edits/changes",
       "originalStatus": "planned",
       "required": true,
-      "codeReview": "present-source-connected at immutable 4437d379ec34a3d846ea5a634675ec763ec789ae; static source only, not acceptance",
-      "qualification": "not newly verified this round",
+      "codeReview": "present-source-connected at 66d3b8b2f9e1c89a790ca7a37d3fb216f06a871a; immutable editor evidence reused and changed boundary reviewed",
+      "qualification": "Current Full/Play compilation and actual source-bound native producer evidence; no new whole-IDE device acceptance",
       "sourceReview": {
         "androidCommit": "4437d379ec34a3d846ea5a634675ec763ec789ae",
         "iosDonorCommit": "a59b4d4005f616c611df67fab7620e9853c525b9",
@@ -617,7 +648,10 @@
         ],
         "dependencies": [],
         "qualification": "source-only"
-      }
+      },
+      "previousCodeReviews": [
+        "present-source-connected at immutable 4437d379ec34a3d846ea5a634675ec763ec789ae; static source only, not acceptance"
+      ]
     },
     {
       "id": "IDE-RUN-LOG-PREVIEW",
@@ -626,8 +660,8 @@
       "originalOperation": "Run code through the resolved Linux environment with log capture and web preview",
       "originalStatus": "planned",
       "required": true,
-      "codeReview": "gated-c01 at immutable 4437d379ec34a3d846ea5a634675ec763ec789ae; static source only, not acceptance",
-      "qualification": "not newly verified this round",
+      "codeReview": "present-source-connected at 66d3b8b2f9e1c89a790ca7a37d3fb216f06a871a; immutable editor evidence reused and changed boundary reviewed",
+      "qualification": "Current Full/Play compilation and actual source-bound native producer evidence; no new whole-IDE device acceptance",
       "implementationOwner": "job-dcfe69f82e5b4cc1; actual Linux/interface completion pending",
       "sourceReview": {
         "androidCommit": "4437d379ec34a3d846ea5a634675ec763ec789ae",
@@ -674,7 +708,10 @@
           "C01"
         ],
         "qualification": "source-only; no run executed"
-      }
+      },
+      "previousCodeReviews": [
+        "gated-c01 at immutable 4437d379ec34a3d846ea5a634675ec763ec789ae; static source only, not acceptance"
+      ]
     },
     {
       "id": "IDE-TERMINAL-EMBED",
@@ -683,8 +720,8 @@
       "originalOperation": "Terminal panel inside the IDE shares the workspace session",
       "originalStatus": "planned",
       "required": true,
-      "codeReview": "gated-c01 at immutable 4437d379ec34a3d846ea5a634675ec763ec789ae; static source only, not acceptance",
-      "qualification": "not newly verified this round",
+      "codeReview": "present-source-connected at 66d3b8b2f9e1c89a790ca7a37d3fb216f06a871a; immutable editor evidence reused and changed boundary reviewed",
+      "qualification": "Current Full/Play compilation and actual source-bound native producer evidence; no new whole-IDE device acceptance",
       "implementationOwner": "job-dcfe69f82e5b4cc1; actual Linux/interface completion pending",
       "sourceReview": {
         "androidCommit": "4437d379ec34a3d846ea5a634675ec763ec789ae",
@@ -731,7 +768,10 @@
           "C01"
         ],
         "qualification": "source-only; no terminal session opened"
-      }
+      },
+      "previousCodeReviews": [
+        "gated-c01 at immutable 4437d379ec34a3d846ea5a634675ec763ec789ae; static source only, not acceptance"
+      ]
     },
     {
       "id": "IDE-LANG-SUPPORT",
@@ -740,8 +780,8 @@
       "originalOperation": "Language-aware handling for representative source types",
       "originalStatus": "planned",
       "required": true,
-      "codeReview": "present-source-connected at immutable 4437d379ec34a3d846ea5a634675ec763ec789ae; static source only, not acceptance",
-      "qualification": "not newly verified this round",
+      "codeReview": "present-source-connected at 66d3b8b2f9e1c89a790ca7a37d3fb216f06a871a; immutable editor evidence reused and changed boundary reviewed",
+      "qualification": "Current Full/Play compilation and actual source-bound native producer evidence; no new whole-IDE device acceptance",
       "sourceReview": {
         "androidCommit": "4437d379ec34a3d846ea5a634675ec763ec789ae",
         "iosDonorCommit": "a59b4d4005f616c611df67fab7620e9853c525b9",
@@ -778,7 +818,10 @@
         "gaps": [],
         "dependencies": [],
         "qualification": "source-only; language features not device-tested"
-      }
+      },
+      "previousCodeReviews": [
+        "present-source-connected at immutable 4437d379ec34a3d846ea5a634675ec763ec789ae; static source only, not acceptance"
+      ]
     },
     {
       "id": "LNX-GUEST-LIFECYCLE",
@@ -941,8 +984,11 @@
       "originalOperation": "Git credentials only in approved platform storage",
       "originalStatus": "planned",
       "required": true,
-      "codeReview": "pending per-operation UI/service/runtime-storage/failure reconciliation",
-      "qualification": "not newly verified this round"
+      "codeReview": "present-source-connected at 66d3b8b2f9e1c89a790ca7a37d3fb216f06a871a; source audit only, qualification remains separate",
+      "qualification": "Existing credential component checks reused; no new real-account Git push authorized/performed by this review.",
+      "previousCodeReviews": [
+        "pending per-operation UI/service/runtime-storage/failure reconciliation"
+      ]
     },
     {
       "id": "NOT-STORAGE-INDEP",
@@ -3466,6 +3512,782 @@
       "tests": "3 host poll concurrency +4 original fast-exit +3 runtime export-gap tests passed; compiler/package/native-byte evidence separate",
       "sourceOnly": false,
       "deviceCoverage": "only explicitly stated actual scenarios; not all five complete device acceptance"
+    },
+    "ide8-20261103": {
+      "previousAuditSource": "4437d379ec34a3d846ea5a634675ec763ec789ae",
+      "androidCommit": "66d3b8b2f9e1c89a790ca7a37d3fb216f06a871a",
+      "operations": [
+        {
+          "id": "IDE-TREE-EDIT",
+          "family": "IDE",
+          "requirement": "File tree plus multi-tab code editing in one workbench; unicode content preserved byte-exactly",
+          "required": true,
+          "chain": {
+            "ui": "WorkspaceFilesPane tree + FloeIdeWorkspace tabs/editor; full-window document on phone",
+            "host": "G04IdeHostAdapter (open/list/tabs/edit) over G04WorkspaceBridgeClient",
+            "serviceRuntime": "Swift G04WorkspaceDocumentSession owns text/tabs/revisions; WorkspaceFileService bounds reads/writes",
+            "storage": "task workspace files",
+            "resultFailure": "typed staleRevision/conflict/unsupportedContent; drafts retained"
+          },
+          "evidence": [
+            {
+              "path": "FloeAndroid/feature/ide/src/main/kotlin/com/floe/android/feature/ide/FloeIdeWorkspace.kt",
+              "line": 69,
+              "note": "phone list-first policy + tabs"
+            },
+            {
+              "path": "FloeAndroid/app/src/main/kotlin/com/floe/android/host/G04IdeHostAdapter.kt",
+              "line": 192,
+              "note": "open/reopen/save/undo/redo/close/tree/list commands"
+            },
+            {
+              "path": "FloeAndroid/shared/Sources/FloeAndroidCore/G04WorkspaceDocumentSession.swift",
+              "line": 409,
+              "note": "open reads the complete file through the workspace service"
+            },
+            {
+              "path": "FloeAndroid/shared/Sources/FloeAndroidCore/G04WorkspaceDocumentSession.swift",
+              "line": 307,
+              "note": "move keeps tab ids/drafts"
+            },
+            {
+              "path": "FloeAndroid/app/src/main/kotlin/com/floe/android/WorkspaceFilesPane.kt",
+              "line": 190,
+              "note": "full-window document presentation on phone; tree behind folder control"
+            }
+          ],
+          "gaps": [],
+          "dependencies": [],
+          "qualification": "Samsung candidate12 task file tree -> existing generated text file -> full-screen editor shows exact original marker; edit/save/multi-tab cases not newly device-verified",
+          "previousState": "present-source-connected",
+          "state": "present-source-connected",
+          "androidCommit": "66d3b8b2f9e1c89a790ca7a37d3fb216f06a871a",
+          "evidenceReuse": {
+            "unchanged": [
+              {
+                "path": "FloeAndroid/feature/ide/src/main/kotlin/com/floe/android/feature/ide/FloeIdeWorkspace.kt",
+                "line": 69,
+                "note": "phone list-first policy + tabs"
+              },
+              {
+                "path": "FloeAndroid/app/src/main/kotlin/com/floe/android/host/G04IdeHostAdapter.kt",
+                "line": 192,
+                "note": "open/reopen/save/undo/redo/close/tree/list commands"
+              },
+              {
+                "path": "FloeAndroid/shared/Sources/FloeAndroidCore/G04WorkspaceDocumentSession.swift",
+                "line": 409,
+                "note": "open reads the complete file through the workspace service"
+              },
+              {
+                "path": "FloeAndroid/shared/Sources/FloeAndroidCore/G04WorkspaceDocumentSession.swift",
+                "line": 307,
+                "note": "move keeps tab ids/drafts"
+              },
+              {
+                "path": "FloeAndroid/app/src/main/kotlin/com/floe/android/WorkspaceFilesPane.kt",
+                "line": 190,
+                "note": "full-window document presentation on phone; tree behind folder control"
+              }
+            ],
+            "changedReviewed": []
+          },
+          "changedBoundaryReview": "Only WorkspaceFileService strict text read/search and restored WorkspaceTextEdit.apply changed; full-file editor decode/check/CAS unchanged. Network apply requires entityTag and exact metadata-sized read; local apply authorizes path, rejects host scope, rechecks SHA, preserves full UTF8 text/BOM and atomic write. Exact diff reviewed.",
+          "evidenceSha256": {
+            "FloeAndroid/feature/ide/src/main/kotlin/com/floe/android/feature/ide/FloeIdeWorkspace.kt": "884c18176c6747401538957702aeb9e8a9ae3ac55a3a620cee3f811dd860b79b",
+            "FloeAndroid/app/src/main/kotlin/com/floe/android/host/G04IdeHostAdapter.kt": "b22b0c3b181e53afa0d75e73a74e93e474b59eac53034b76b0955d5fcbb81204",
+            "FloeAndroid/shared/Sources/FloeAndroidCore/G04WorkspaceDocumentSession.swift": "29f0b1f7bd5ae7bc68c3d8a314852725bd0ca787b7197960af6f1de7e324ca15",
+            "FloeAndroid/app/src/main/kotlin/com/floe/android/WorkspaceFilesPane.kt": "21b64a7a430831c9db9b23fc31adc7a7d097a151fc10e6af702aeb449c305bb6"
+          }
+        },
+        {
+          "id": "IDE-SEARCH-REPLACE",
+          "family": "IDE",
+          "requirement": "Workspace search and replace with hit preview; CJK and case sensitivity behave as documented",
+          "required": true,
+          "chain": {
+            "ui": "find/replace bar (case/whole-word) + workspace search results panel",
+            "host": "IdePresenter.find/replace/requestWorkspaceSearch -> G04IdeHostAdapter",
+            "serviceRuntime": "G04WorkspaceDocumentSession find/replace (NSString ranges); WorkspaceFileService.search over text files",
+            "storage": "workspace files/documents",
+            "resultFailure": "staleRevision/unsupportedContent typed; no silent partial replacement"
+          },
+          "evidence": [
+            {
+              "path": "FloeAndroid/feature/ide/src/main/kotlin/com/floe/android/feature/ide/IdePresenter.kt",
+              "line": 1095,
+              "note": "find request with case/whole-word"
+            },
+            {
+              "path": "FloeAndroid/feature/ide/src/main/kotlin/com/floe/android/feature/ide/IdePresenter.kt",
+              "line": 591,
+              "note": "workspace search request"
+            },
+            {
+              "path": "FloeAndroid/feature/ide/src/main/kotlin/com/floe/android/feature/ide/ui/IdeEditorArea.kt",
+              "line": 498,
+              "note": "match-case/whole-word UI"
+            },
+            {
+              "path": "FloeAndroid/shared/Sources/FloeAndroidCore/G04WorkspaceDocumentSession.swift",
+              "line": 533,
+              "note": "case-sensitive/insensitive match, whole-word check"
+            },
+            {
+              "path": "FloeAndroid/shared/Sources/FloeWorkspace/WorkspaceFileService.swift",
+              "line": 404,
+              "note": "bounded line search with context; skips secret/large files"
+            }
+          ],
+          "gaps": [],
+          "dependencies": [],
+          "qualification": "Current Full/Play compilation and actual source-bound native producer evidence; no new whole-IDE device acceptance",
+          "previousState": "present-source-connected",
+          "state": "present-source-connected",
+          "androidCommit": "66d3b8b2f9e1c89a790ca7a37d3fb216f06a871a",
+          "evidenceReuse": {
+            "unchanged": [
+              {
+                "path": "FloeAndroid/feature/ide/src/main/kotlin/com/floe/android/feature/ide/IdePresenter.kt",
+                "line": 1095,
+                "note": "find request with case/whole-word"
+              },
+              {
+                "path": "FloeAndroid/feature/ide/src/main/kotlin/com/floe/android/feature/ide/IdePresenter.kt",
+                "line": 591,
+                "note": "workspace search request"
+              },
+              {
+                "path": "FloeAndroid/feature/ide/src/main/kotlin/com/floe/android/feature/ide/ui/IdeEditorArea.kt",
+                "line": 498,
+                "note": "match-case/whole-word UI"
+              },
+              {
+                "path": "FloeAndroid/shared/Sources/FloeAndroidCore/G04WorkspaceDocumentSession.swift",
+                "line": 533,
+                "note": "case-sensitive/insensitive match, whole-word check"
+              }
+            ],
+            "changedReviewed": [
+              {
+                "path": "FloeAndroid/shared/Sources/FloeWorkspace/WorkspaceFileService.swift",
+                "line": 404,
+                "note": "bounded line search with context; skips secret/large files"
+              }
+            ]
+          },
+          "changedBoundaryReview": "Only WorkspaceFileService strict text read/search and restored WorkspaceTextEdit.apply changed; full-file editor decode/check/CAS unchanged. Network apply requires entityTag and exact metadata-sized read; local apply authorizes path, rejects host scope, rechecks SHA, preserves full UTF8 text/BOM and atomic write. Exact diff reviewed.",
+          "evidenceSha256": {
+            "FloeAndroid/feature/ide/src/main/kotlin/com/floe/android/feature/ide/IdePresenter.kt": "2e46bb4b4c251784376e920eab3ff8dfd5c67ce41d839a4089797731973ea488",
+            "FloeAndroid/feature/ide/src/main/kotlin/com/floe/android/feature/ide/ui/IdeEditorArea.kt": "03420b7cd1e5fbefcc235ce9d4496828ea6156750f9ded415c74f96645326db2",
+            "FloeAndroid/shared/Sources/FloeAndroidCore/G04WorkspaceDocumentSession.swift": "29f0b1f7bd5ae7bc68c3d8a314852725bd0ca787b7197960af6f1de7e324ca15",
+            "FloeAndroid/shared/Sources/FloeWorkspace/WorkspaceFileService.swift": "63abb04773c6aea280b584051c45e8e52d4dd5c9ac322c1a78c22b01b61584d1"
+          }
+        },
+        {
+          "id": "IDE-UNDO-DRAFT",
+          "family": "IDE",
+          "requirement": "Per-editor undo; drafts survive tab switch; no draft loss on rotation or view recreation",
+          "required": true,
+          "chain": {
+            "ui": "undo/redo controls; tabs; recovery panel",
+            "host": "IdePresenter undo/redo; G04IdeHostAdapter; Application-owned G04WorkspaceEditorController bindings",
+            "serviceRuntime": "G04WorkspaceDocumentSession undo/redo history + RAM drafts; close/save CAS",
+            "storage": "native RAM drafts + workspace recovery files",
+            "resultFailure": "historyUnavailable/staleRevision/conflict; draft preserved"
+          },
+          "evidence": [
+            {
+              "path": "FloeAndroid/shared/Sources/FloeAndroidCore/G04WorkspaceDocumentSession.swift",
+              "line": 113,
+              "note": "Root-owned RAM drafts survive view/tab reconstruction"
+            },
+            {
+              "path": "FloeAndroid/shared/Sources/FloeAndroidCore/G04WorkspaceDocumentSession.swift",
+              "line": 662,
+              "note": "undo/redo history with revision checks"
+            },
+            {
+              "path": "FloeAndroid/app/src/main/kotlin/com/floe/android/host/G04WorkspaceEditorController.kt",
+              "line": 24,
+              "note": "Application-owned projections; view disappearance does not discard unsent typing"
+            },
+            {
+              "path": "FloeAndroid/app/src/main/kotlin/com/floe/android/WorkspaceFilesPane.kt",
+              "line": 287,
+              "note": "presenter keeps tabs/dirty buffers/undo lineage/recovery rows"
+            }
+          ],
+          "gaps": [],
+          "dependencies": [],
+          "qualification": "Current Full/Play compilation and actual source-bound native producer evidence; no new whole-IDE device acceptance",
+          "previousState": "present-source-connected",
+          "state": "present-source-connected",
+          "androidCommit": "66d3b8b2f9e1c89a790ca7a37d3fb216f06a871a",
+          "evidenceReuse": {
+            "unchanged": [
+              {
+                "path": "FloeAndroid/shared/Sources/FloeAndroidCore/G04WorkspaceDocumentSession.swift",
+                "line": 113,
+                "note": "Root-owned RAM drafts survive view/tab reconstruction"
+              },
+              {
+                "path": "FloeAndroid/shared/Sources/FloeAndroidCore/G04WorkspaceDocumentSession.swift",
+                "line": 662,
+                "note": "undo/redo history with revision checks"
+              },
+              {
+                "path": "FloeAndroid/app/src/main/kotlin/com/floe/android/host/G04WorkspaceEditorController.kt",
+                "line": 24,
+                "note": "Application-owned projections; view disappearance does not discard unsent typing"
+              },
+              {
+                "path": "FloeAndroid/app/src/main/kotlin/com/floe/android/WorkspaceFilesPane.kt",
+                "line": 287,
+                "note": "presenter keeps tabs/dirty buffers/undo lineage/recovery rows"
+              }
+            ],
+            "changedReviewed": []
+          },
+          "changedBoundaryReview": "Only WorkspaceFileService strict text read/search and restored WorkspaceTextEdit.apply changed; full-file editor decode/check/CAS unchanged. Network apply requires entityTag and exact metadata-sized read; local apply authorizes path, rejects host scope, rechecks SHA, preserves full UTF8 text/BOM and atomic write. Exact diff reviewed.",
+          "evidenceSha256": {
+            "FloeAndroid/shared/Sources/FloeAndroidCore/G04WorkspaceDocumentSession.swift": "29f0b1f7bd5ae7bc68c3d8a314852725bd0ca787b7197960af6f1de7e324ca15",
+            "FloeAndroid/app/src/main/kotlin/com/floe/android/host/G04WorkspaceEditorController.kt": "f3eed4f75c2b3f582284ea410eda9a3487449894cf4f7c431ace609cb342c419",
+            "FloeAndroid/app/src/main/kotlin/com/floe/android/WorkspaceFilesPane.kt": "21b64a7a430831c9db9b23fc31adc7a7d097a151fc10e6af702aeb449c305bb6"
+          }
+        },
+        {
+          "id": "IDE-ENCODING-LINES",
+          "family": "IDE",
+          "requirement": "Preserve CRLF, UTF-8 BOM and long lines across open->edit->save->reopen; crlf stays crlf unless changed; BOM kept; one 4096-char line renders",
+          "required": true,
+          "chain": {
+            "ui": "Sora editor with long-line/scroll handling",
+            "host": "G04IdeHostAdapter open/save",
+            "serviceRuntime": "WorkspaceTextEdit.decode re-attaches BOM; WorkspaceFileService writes UTF-8 preserving the in-memory CRLF; G04WorkspaceDocumentSession CAS save",
+            "storage": "workspace file",
+            "resultFailure": "staleRevision/conflict; draft retained"
+          },
+          "evidence": [
+            {
+              "path": "FloeAndroid/shared/Sources/FloeWorkspace/Tools/TextEditTools.swift",
+              "line": 34,
+              "note": "strict UTF-8 decode + BOM re-attach for byte-exact round trip; names the original host test"
+            },
+            {
+              "path": "FloeAndroid/shared/Sources/FloeWorkspace/WorkspaceFileService.swift",
+              "line": 307,
+              "note": "readFileForEditing loads the complete text"
+            },
+            {
+              "path": "FloeAndroid/shared/Sources/FloeWorkspace/WorkspaceFileService.swift",
+              "line": 1177,
+              "note": "performWrite writes Data(content.utf8) atomically (BOM is kept as U+FEFF in the string)"
+            },
+            {
+              "path": "FloeAndroid/shared/Sources/FloeAndroidCore/G04WorkspaceDocumentSession.swift",
+              "line": 689,
+              "note": "save with expectedMtime/SHA CAS"
+            }
+          ],
+          "gaps": [],
+          "dependencies": [],
+          "qualification": "Current Full/Play compilation and actual source-bound native producer evidence; no new whole-IDE device acceptance",
+          "previousState": "present-source-connected",
+          "state": "present-source-connected",
+          "androidCommit": "66d3b8b2f9e1c89a790ca7a37d3fb216f06a871a",
+          "evidenceReuse": {
+            "unchanged": [
+              {
+                "path": "FloeAndroid/shared/Sources/FloeAndroidCore/G04WorkspaceDocumentSession.swift",
+                "line": 689,
+                "note": "save with expectedMtime/SHA CAS"
+              }
+            ],
+            "changedReviewed": [
+              {
+                "path": "FloeAndroid/shared/Sources/FloeWorkspace/Tools/TextEditTools.swift",
+                "line": 34,
+                "note": "strict UTF-8 decode + BOM re-attach for byte-exact round trip; names the original host test"
+              },
+              {
+                "path": "FloeAndroid/shared/Sources/FloeWorkspace/WorkspaceFileService.swift",
+                "line": 307,
+                "note": "readFileForEditing loads the complete text"
+              },
+              {
+                "path": "FloeAndroid/shared/Sources/FloeWorkspace/WorkspaceFileService.swift",
+                "line": 1177,
+                "note": "performWrite writes Data(content.utf8) atomically (BOM is kept as U+FEFF in the string)"
+              }
+            ]
+          },
+          "changedBoundaryReview": "Only WorkspaceFileService strict text read/search and restored WorkspaceTextEdit.apply changed; full-file editor decode/check/CAS unchanged. Network apply requires entityTag and exact metadata-sized read; local apply authorizes path, rejects host scope, rechecks SHA, preserves full UTF8 text/BOM and atomic write. Exact diff reviewed.",
+          "evidenceSha256": {
+            "FloeAndroid/shared/Sources/FloeWorkspace/Tools/TextEditTools.swift": "ef022762a416ffd5370cabf454499db3ccab9a4123b9f4cab562549fc3d36a0f",
+            "FloeAndroid/shared/Sources/FloeWorkspace/WorkspaceFileService.swift": "63abb04773c6aea280b584051c45e8e52d4dd5c9ac322c1a78c22b01b61584d1",
+            "FloeAndroid/shared/Sources/FloeAndroidCore/G04WorkspaceDocumentSession.swift": "29f0b1f7bd5ae7bc68c3d8a314852725bd0ca787b7197960af6f1de7e324ca15"
+          }
+        },
+        {
+          "id": "IDE-DIFF",
+          "family": "IDE",
+          "requirement": "Diff view of pending edits/changes; IDE diff matches the Git view of the same change",
+          "required": true,
+          "chain": {
+            "ui": "diff overlay with additions/removals/stats",
+            "host": "IdePresenter.requestLoadDiff -> G04IdeHostAdapter.LoadDiff -> content part `diff`",
+            "serviceRuntime": "G04WorkspaceDocumentSession.diffText (baseline vs draft; bounded LCS)",
+            "storage": "native draft/baseline",
+            "resultFailure": "typed diff error; stale revision refused"
+          },
+          "evidence": [
+            {
+              "path": "FloeAndroid/feature/ide/src/main/kotlin/com/floe/android/feature/ide/IdePresenter.kt",
+              "line": 980,
+              "note": "requestLoadDiff"
+            },
+            {
+              "path": "FloeAndroid/app/src/main/kotlin/com/floe/android/host/G04IdeHostAdapter.kt",
+              "line": 300,
+              "note": "LoadDiff reads the `diff` content part"
+            },
+            {
+              "path": "FloeAndroid/shared/Sources/FloeAndroidCore/G04WorkspaceDocumentSession.swift",
+              "line": 812,
+              "note": "diffText baseline vs draft; large inputs use one whole-change hunk"
+            },
+            {
+              "path": "FloeAndroid/feature/ide/src/main/kotlin/com/floe/android/feature/ide/ui/IdeEditorArea.kt",
+              "line": 710,
+              "note": "unified diff overlay"
+            }
+          ],
+          "gaps": [
+            "The diff is produced by the workspace diff routine, not by libgit2; byte-identity with the Git view of the same change is not proven here."
+          ],
+          "dependencies": [],
+          "qualification": "Current Full/Play compilation and actual source-bound native producer evidence; no new whole-IDE device acceptance",
+          "previousState": "present-source-connected",
+          "state": "present-source-connected",
+          "androidCommit": "66d3b8b2f9e1c89a790ca7a37d3fb216f06a871a",
+          "evidenceReuse": {
+            "unchanged": [
+              {
+                "path": "FloeAndroid/feature/ide/src/main/kotlin/com/floe/android/feature/ide/IdePresenter.kt",
+                "line": 980,
+                "note": "requestLoadDiff"
+              },
+              {
+                "path": "FloeAndroid/app/src/main/kotlin/com/floe/android/host/G04IdeHostAdapter.kt",
+                "line": 300,
+                "note": "LoadDiff reads the `diff` content part"
+              },
+              {
+                "path": "FloeAndroid/shared/Sources/FloeAndroidCore/G04WorkspaceDocumentSession.swift",
+                "line": 812,
+                "note": "diffText baseline vs draft; large inputs use one whole-change hunk"
+              },
+              {
+                "path": "FloeAndroid/feature/ide/src/main/kotlin/com/floe/android/feature/ide/ui/IdeEditorArea.kt",
+                "line": 710,
+                "note": "unified diff overlay"
+              }
+            ],
+            "changedReviewed": []
+          },
+          "changedBoundaryReview": "Only WorkspaceFileService strict text read/search and restored WorkspaceTextEdit.apply changed; full-file editor decode/check/CAS unchanged. Network apply requires entityTag and exact metadata-sized read; local apply authorizes path, rejects host scope, rechecks SHA, preserves full UTF8 text/BOM and atomic write. Exact diff reviewed.",
+          "evidenceSha256": {
+            "FloeAndroid/feature/ide/src/main/kotlin/com/floe/android/feature/ide/IdePresenter.kt": "2e46bb4b4c251784376e920eab3ff8dfd5c67ce41d839a4089797731973ea488",
+            "FloeAndroid/app/src/main/kotlin/com/floe/android/host/G04IdeHostAdapter.kt": "b22b0c3b181e53afa0d75e73a74e93e474b59eac53034b76b0955d5fcbb81204",
+            "FloeAndroid/shared/Sources/FloeAndroidCore/G04WorkspaceDocumentSession.swift": "29f0b1f7bd5ae7bc68c3d8a314852725bd0ca787b7197960af6f1de7e324ca15",
+            "FloeAndroid/feature/ide/src/main/kotlin/com/floe/android/feature/ide/ui/IdeEditorArea.kt": "03420b7cd1e5fbefcc235ce9d4496828ea6156750f9ded415c74f96645326db2"
+          }
+        },
+        {
+          "id": "IDE-RUN-LOG-PREVIEW",
+          "family": "IDE",
+          "requirement": "Run code through the resolved Linux environment with log capture and web preview; execution goes through exec.shell in the resolved environment; no host interpreter fallback",
+          "required": true,
+          "chain": {
+            "ui": "IDE Run + preview actions; terminal shows run output",
+            "host": "G04IdeHostAdapter.Run (saves draft first) -> G04TerminalHostController.runDraft; OpenPreview -> BrowserHostController",
+            "serviceRuntime": "G04TerminalDomain.runDraft uses G04LanguageRunPolicy + the Linux backend; requires isCapabilityQualified; opens a real terminal session",
+            "storage": "workspace file + terminal output",
+            "resultFailure": "unsavedDraft/engineUnqualified/engineSlotBusy/backendUnavailable typed; no fallback"
+          },
+          "evidence": [
+            {
+              "path": "FloeAndroid/app/src/main/kotlin/com/floe/android/host/G04IdeHostAdapter.kt",
+              "line": 306,
+              "note": "Run saves the draft then dispatches runDraft"
+            },
+            {
+              "path": "FloeAndroid/shared/Sources/FloeAndroidCore/G04TerminalDomain.swift",
+              "line": 330,
+              "note": "runDraft through the original exec.session/shell path"
+            },
+            {
+              "path": "FloeAndroid/shared/Sources/FloeAndroidCore/G04TerminalDomain.swift",
+              "line": 373,
+              "note": "hard gate: RuntimeFacadeLinuxBindings.isCapabilityQualified"
+            },
+            {
+              "path": "FloeAndroid/app/src/main/kotlin/com/floe/android/host/G04WorkspaceEditorController.kt",
+              "line": 127,
+              "note": "web preview through browser requestWorkspacePreview"
+            },
+            {
+              "path": "FloeAndroid/app/src/main/kotlin/com/floe/android/host/BrowserHostController.kt",
+              "line": 301,
+              "note": "real previewFile host call"
+            }
+          ],
+          "gaps": [],
+          "dependencies": [
+            "C01"
+          ],
+          "qualification": "Current Full/Play compilation and actual source-bound native producer evidence; no new whole-IDE device acceptance",
+          "previousState": "gated-c01",
+          "state": "present-source-connected",
+          "androidCommit": "66d3b8b2f9e1c89a790ca7a37d3fb216f06a871a",
+          "evidenceReuse": {
+            "unchanged": [
+              {
+                "path": "FloeAndroid/app/src/main/kotlin/com/floe/android/host/G04IdeHostAdapter.kt",
+                "line": 306,
+                "note": "Run saves the draft then dispatches runDraft"
+              },
+              {
+                "path": "FloeAndroid/shared/Sources/FloeAndroidCore/G04TerminalDomain.swift",
+                "line": 330,
+                "note": "runDraft through the original exec.session/shell path"
+              },
+              {
+                "path": "FloeAndroid/shared/Sources/FloeAndroidCore/G04TerminalDomain.swift",
+                "line": 373,
+                "note": "hard gate: RuntimeFacadeLinuxBindings.isCapabilityQualified"
+              },
+              {
+                "path": "FloeAndroid/app/src/main/kotlin/com/floe/android/host/G04WorkspaceEditorController.kt",
+                "line": 127,
+                "note": "web preview through browser requestWorkspacePreview"
+              },
+              {
+                "path": "FloeAndroid/app/src/main/kotlin/com/floe/android/host/BrowserHostController.kt",
+                "line": 301,
+                "note": "real previewFile host call"
+              }
+            ],
+            "changedReviewed": []
+          },
+          "changedBoundaryReview": "Only WorkspaceFileService strict text read/search and restored WorkspaceTextEdit.apply changed; full-file editor decode/check/CAS unchanged. Network apply requires entityTag and exact metadata-sized read; local apply authorizes path, rejects host scope, rechecks SHA, preserves full UTF8 text/BOM and atomic write. Exact diff reviewed.",
+          "evidenceSha256": {
+            "FloeAndroid/app/src/main/kotlin/com/floe/android/host/G04IdeHostAdapter.kt": "b22b0c3b181e53afa0d75e73a74e93e474b59eac53034b76b0955d5fcbb81204",
+            "FloeAndroid/shared/Sources/FloeAndroidCore/G04TerminalDomain.swift": "5f518d568c08bedf1b97eadc069da466f5295734cfb2e0fb587b2448bd254c52",
+            "FloeAndroid/app/src/main/kotlin/com/floe/android/host/G04WorkspaceEditorController.kt": "f3eed4f75c2b3f582284ea410eda9a3487449894cf4f7c431ace609cb342c419",
+            "FloeAndroid/app/src/main/kotlin/com/floe/android/host/BrowserHostController.kt": "a615c7eaaa749399e7bdb46c2cd56dcbe96184a10697ab34ba25d4e2e5dd7b9f"
+          },
+          "dependencyResolution": "The former source gate was pending C01 code. C01 now has actual owned Linux transport/PTY/managed services/owned socket readiness and web-preview code; source gate removed. Live IDE run/port-preview still needs its own device scenario, not inferred from shell exit0."
+        },
+        {
+          "id": "IDE-TERMINAL-EMBED",
+          "family": "IDE",
+          "requirement": "Terminal panel inside the IDE shares the workspace session; Ctrl-C, resize and cancellation correct; Chinese IME in embedded editor covered by P1.8",
+          "required": true,
+          "chain": {
+            "ui": "IDE bottom accessory terminal + terminal tabs; editor IME/CJK handling in Sora",
+            "host": "WorkspaceTerminalPane + Application-owned G04TerminalHostController/attachOrOpen",
+            "serviceRuntime": "real terminal engine + PTY session in the Linux backend; ordered writes + true resize",
+            "storage": "task workspace/session",
+            "resultFailure": "typed refused/timeout/stopped; session survives view dismissal"
+          },
+          "evidence": [
+            {
+              "path": "FloeAndroid/app/src/main/kotlin/com/floe/android/WorkspaceFilesPane.kt",
+              "line": 397,
+              "note": "one attached terminal accessory for the IDE surface"
+            },
+            {
+              "path": "FloeAndroid/app/src/main/kotlin/com/floe/android/WorkspaceFilesPane.kt",
+              "line": 466,
+              "note": "same owned terminal as the inspector; view dismissal never closes it"
+            },
+            {
+              "path": "FloeAndroid/feature/terminal/src/main/kotlin/com/floe/android/feature/terminal/TerminalInputEncoder.kt",
+              "line": 14,
+              "note": "Ctrl-C ETX, IME/control-byte input"
+            },
+            {
+              "path": "FloeAndroid/feature/terminal/src/main/kotlin/com/floe/android/feature/terminal/G04TerminalEngine.kt",
+              "line": 136,
+              "note": "real resize to backend bounds"
+            },
+            {
+              "path": "FloeAndroid/app/src/main/kotlin/com/floe/android/host/G04TerminalHostController.kt",
+              "line": 1267,
+              "note": "attachOrOpen with workspaceID"
+            }
+          ],
+          "gaps": [],
+          "dependencies": [
+            "C01"
+          ],
+          "qualification": "Current Full/Play compilation and actual source-bound native producer evidence; no new whole-IDE device acceptance",
+          "previousState": "gated-c01",
+          "state": "present-source-connected",
+          "androidCommit": "66d3b8b2f9e1c89a790ca7a37d3fb216f06a871a",
+          "evidenceReuse": {
+            "unchanged": [
+              {
+                "path": "FloeAndroid/app/src/main/kotlin/com/floe/android/WorkspaceFilesPane.kt",
+                "line": 397,
+                "note": "one attached terminal accessory for the IDE surface"
+              },
+              {
+                "path": "FloeAndroid/app/src/main/kotlin/com/floe/android/WorkspaceFilesPane.kt",
+                "line": 466,
+                "note": "same owned terminal as the inspector; view dismissal never closes it"
+              },
+              {
+                "path": "FloeAndroid/feature/terminal/src/main/kotlin/com/floe/android/feature/terminal/TerminalInputEncoder.kt",
+                "line": 14,
+                "note": "Ctrl-C ETX, IME/control-byte input"
+              },
+              {
+                "path": "FloeAndroid/feature/terminal/src/main/kotlin/com/floe/android/feature/terminal/G04TerminalEngine.kt",
+                "line": 136,
+                "note": "real resize to backend bounds"
+              },
+              {
+                "path": "FloeAndroid/app/src/main/kotlin/com/floe/android/host/G04TerminalHostController.kt",
+                "line": 1267,
+                "note": "attachOrOpen with workspaceID"
+              }
+            ],
+            "changedReviewed": []
+          },
+          "changedBoundaryReview": "Only WorkspaceFileService strict text read/search and restored WorkspaceTextEdit.apply changed; full-file editor decode/check/CAS unchanged. Network apply requires entityTag and exact metadata-sized read; local apply authorizes path, rejects host scope, rechecks SHA, preserves full UTF8 text/BOM and atomic write. Exact diff reviewed.",
+          "evidenceSha256": {
+            "FloeAndroid/app/src/main/kotlin/com/floe/android/WorkspaceFilesPane.kt": "21b64a7a430831c9db9b23fc31adc7a7d097a151fc10e6af702aeb449c305bb6",
+            "FloeAndroid/feature/terminal/src/main/kotlin/com/floe/android/feature/terminal/TerminalInputEncoder.kt": "c781ce66486c0f2350514a5e36cb4037dfa4ec119c47706a641fb53510a12fb2",
+            "FloeAndroid/feature/terminal/src/main/kotlin/com/floe/android/feature/terminal/G04TerminalEngine.kt": "2bc8838f9eee6f6089e87ee6cb23f430f23387b4e6a312fd29252d08a07c202b",
+            "FloeAndroid/app/src/main/kotlin/com/floe/android/host/G04TerminalHostController.kt": "13476b89b1cfc9bdb44e91e142f2c66d0063351289c7bac958bc2e5615982b56"
+          },
+          "dependencyResolution": "The former source gate was pending C01 code. C01 now has actual owned Linux transport/PTY/managed services/owned socket readiness and web-preview code; source gate removed. Live IDE run/port-preview still needs its own device scenario, not inferred from shell exit0."
+        },
+        {
+          "id": "IDE-LANG-SUPPORT",
+          "family": "IDE",
+          "requirement": "Language-aware handling for representative source types; unknown extensions degrade to plain text",
+          "required": true,
+          "chain": {
+            "ui": "Sora editor keyword highlighting + completion surface",
+            "host": "G04IdeLanguageBinding (diagnostics/completion) + G04TerminalHostController LSP bridge",
+            "serviceRuntime": "FloeKeywordLanguage per document; G04LanguageServer; unknown -> PLAIN",
+            "storage": "workspace documents",
+            "resultFailure": "languageServerUnavailable refused; plain-text fallback"
+          },
+          "evidence": [
+            {
+              "path": "FloeAndroid/feature/ide/src/main/kotlin/com/floe/android/feature/ide/sora/FloeIdeLanguage.kt",
+              "line": 349,
+              "note": "PLAIN definition"
+            },
+            {
+              "path": "FloeAndroid/feature/ide/src/main/kotlin/com/floe/android/feature/ide/sora/FloeIdeLanguage.kt",
+              "line": 454,
+              "note": "unknown language/extension -> PLAIN"
+            },
+            {
+              "path": "FloeAndroid/app/src/main/kotlin/com/floe/android/host/G04IdeLanguageBinding.kt",
+              "line": 15,
+              "note": "real completion/diagnostics binding"
+            },
+            {
+              "path": "FloeAndroid/shared/Sources/FloeAndroidCore/G04LanguageServer.swift",
+              "line": 326,
+              "note": "LSP document sync over the workspace read/write channel"
+            }
+          ],
+          "gaps": [],
+          "dependencies": [],
+          "qualification": "Current Full/Play compilation and actual source-bound native producer evidence; no new whole-IDE device acceptance",
+          "previousState": "present-source-connected",
+          "state": "present-source-connected",
+          "androidCommit": "66d3b8b2f9e1c89a790ca7a37d3fb216f06a871a",
+          "evidenceReuse": {
+            "unchanged": [
+              {
+                "path": "FloeAndroid/feature/ide/src/main/kotlin/com/floe/android/feature/ide/sora/FloeIdeLanguage.kt",
+                "line": 349,
+                "note": "PLAIN definition"
+              },
+              {
+                "path": "FloeAndroid/feature/ide/src/main/kotlin/com/floe/android/feature/ide/sora/FloeIdeLanguage.kt",
+                "line": 454,
+                "note": "unknown language/extension -> PLAIN"
+              },
+              {
+                "path": "FloeAndroid/app/src/main/kotlin/com/floe/android/host/G04IdeLanguageBinding.kt",
+                "line": 15,
+                "note": "real completion/diagnostics binding"
+              },
+              {
+                "path": "FloeAndroid/shared/Sources/FloeAndroidCore/G04LanguageServer.swift",
+                "line": 326,
+                "note": "LSP document sync over the workspace read/write channel"
+              }
+            ],
+            "changedReviewed": []
+          },
+          "changedBoundaryReview": "Only WorkspaceFileService strict text read/search and restored WorkspaceTextEdit.apply changed; full-file editor decode/check/CAS unchanged. Network apply requires entityTag and exact metadata-sized read; local apply authorizes path, rejects host scope, rechecks SHA, preserves full UTF8 text/BOM and atomic write. Exact diff reviewed.",
+          "evidenceSha256": {
+            "FloeAndroid/feature/ide/src/main/kotlin/com/floe/android/feature/ide/sora/FloeIdeLanguage.kt": "1062c7c380fa26943ad15ac5c0522125bf95f536a6b72b080678e36bd5e55a6f",
+            "FloeAndroid/app/src/main/kotlin/com/floe/android/host/G04IdeLanguageBinding.kt": "b6b0b8cbf014c68a5dd8835a7b851eb73599dc31762d35d80884dfcc60614441",
+            "FloeAndroid/shared/Sources/FloeAndroidCore/G04LanguageServer.swift": "9b23e02bed86661ee1170fedb071633d89ce665f4f10091d26f78d986855ef1d"
+          }
+        }
+      ],
+      "sourceOnly": true,
+      "note": "Original8 identities/statuses preserved. These update old8 source rows, not8 additional previously-unreviewed operations. Device result is only where stated."
+    },
+    "workspace7-20261103": {
+      "androidCommit": "66d3b8b2f9e1c89a790ca7a37d3fb216f06a871a",
+      "iosReference": "36f63bf400dfaa3a127259eac006b38d72516390",
+      "operations": [
+        {
+          "id": "WSF-WRITE-LAYER",
+          "entry": "Task/project environment selection -> existing runtime/workspace authority",
+          "chain": "EnvironmentRegistry.layerStack builds exact session/project/template/shared/base lookup; LinuxExecutionLeaseResolver requires resolved environment and explicit writable layer; trusted Android root rejects absent/temporary fallback. Unknown lookup record is not executable authority.",
+          "evidence": [
+            "shared/Sources/FloeEnvironments/EnvironmentRoots.swift",
+            "shared/Sources/FloeEnvironments/EnvironmentRegistry.swift",
+            "shared/Sources/FloeEnvironments/LinuxExecutionLeaseDescriptor.swift",
+            "shared/Sources/FloeAndroidLinuxAuthority/LinuxAuthorityWire.swift"
+          ],
+          "evidenceSha256": {
+            "shared/Sources/FloeEnvironments/EnvironmentRoots.swift": "b3871c9886567f1c68532f61bdab84349152179daafdd8880d18e13fe9472836",
+            "shared/Sources/FloeEnvironments/EnvironmentRegistry.swift": "3d56f0b53b7e3d73a1ca48145db958619ab26cffe88c4fbce5900ff1510dec54",
+            "shared/Sources/FloeEnvironments/LinuxExecutionLeaseDescriptor.swift": "fa9adfaec6ea7804f0e2b36924d3b9d70d6dec3ab0445ab778c8d4325bdea340",
+            "shared/Sources/FloeAndroidLinuxAuthority/LinuxAuthorityWire.swift": "c8f7084847860a12353db0347e0f1f26c26dc84eb771b51004f7d78c3334011a"
+          },
+          "reviewState": "present-source-connected",
+          "device": "Existing exact code26 terminal uses real task workspace; every layer placement/migration branch not newly device verified."
+        },
+        {
+          "id": "WSF-FILE-OPS-SAF",
+          "entry": "File workbench source panel -> system document/tree picker",
+          "chain": "WorkspaceSourcePanel -> owned WorkspaceSourceHostController lane -> SafGrantGateway accepts actual returned flags -> AndroidSafBackend persists each actually granted flag; provider operations reuse live OS grant checks and broker references. Revoked/read-only/session-only states remain distinct; arbitrary Android-restricted folders are not promised.",
+          "evidence": [
+            "app/src/main/kotlin/com/floe/android/WorkspaceSourcePicker.kt",
+            "app/src/main/kotlin/com/floe/android/host/WorkspaceSourceHostController.kt",
+            "core/safgateway/src/main/java/com/floe/android/safgateway/SafGrantGateway.kt",
+            "core/safgateway/src/main/java/com/floe/android/safgateway/AndroidSafBackend.kt",
+            "core/safgateway/src/main/java/com/floe/android/safgateway/SafProviderOperations.kt"
+          ],
+          "evidenceSha256": {
+            "app/src/main/kotlin/com/floe/android/WorkspaceSourcePicker.kt": "53dde2bd0d463fc5b6a463c067977049f12e81112b3e6dfe0718b2e8d7e605dc",
+            "app/src/main/kotlin/com/floe/android/host/WorkspaceSourceHostController.kt": "b4010f6a7e0e6cfcdca55283b86e11012a5405557de17cf1aee44a93e9c564fe",
+            "core/safgateway/src/main/java/com/floe/android/safgateway/SafGrantGateway.kt": "db03d5a8d146ad60f614841912fc7374cd8dcbc6c20d2446494b449779626166",
+            "core/safgateway/src/main/java/com/floe/android/safgateway/AndroidSafBackend.kt": "42df7caad07f3c83a2faefa6f60cf9ccdb489cbd316cad16497a949a06aefb76",
+            "core/safgateway/src/main/java/com/floe/android/safgateway/SafProviderOperations.kt": "85ccd0f9c852836f4eeec38c976b83904f3d72a79a50475886b40e152b29bfde"
+          },
+          "reviewState": "present-source-connected",
+          "device": "Existing component evidence reusable; real persistent-grant reuse/revocation/provider-specific file operations not newly replayed this round."
+        },
+        {
+          "id": "WSF-REVISION-CONFLICT",
+          "entry": "File editor/provider save -> existing recovery panel",
+          "chain": "Native workspace CAS and source journal47 own revision and snapshot identity. Provider save uses prepared frozen bytes, second fresh observation, one-time native permit and actual provider readback; missing/unknown readback remains pending with recovery, not success or automatic replay.",
+          "evidence": [
+            "app/src/main/kotlin/com/floe/android/host/WorkspaceSourceHostController.kt",
+            "shared/Sources/FloeAndroidCore/G04WorkspaceSourceCoordinator.swift",
+            "shared/Sources/FloeAndroidCore/G04WorkspaceSourceHostAPI.swift",
+            "shared/Sources/FloePersistence/Migrations/V47AndroidWorkspaceSources.swift"
+          ],
+          "evidenceSha256": {
+            "app/src/main/kotlin/com/floe/android/host/WorkspaceSourceHostController.kt": "b4010f6a7e0e6cfcdca55283b86e11012a5405557de17cf1aee44a93e9c564fe",
+            "shared/Sources/FloeAndroidCore/G04WorkspaceSourceCoordinator.swift": "4963709267aeb5aec54bb2bfc5189071f571fe3583d09df02e46e34d9577c81d",
+            "shared/Sources/FloeAndroidCore/G04WorkspaceSourceHostAPI.swift": "9cad2de98d699c4711fd5f7ad118acbca90fcec1d3958f7768d7f6288f020bad",
+            "shared/Sources/FloePersistence/Migrations/V47AndroidWorkspaceSources.swift": "4ffbb728280d23332b4b5145c95d8c8e223894dc9f09741fbc12bca81ccfb086"
+          },
+          "reviewState": "present-source-connected",
+          "device": "Manual Office original-save UI gap is separately owned and not closed by this file-service code; provider conflict hardware flow pending."
+        },
+        {
+          "id": "WSF-EXPORT",
+          "entry": "File workbench sources -> export target tree -> export confirmation",
+          "chain": "exportToAcceptedTree validates accepted export purpose/path/name -> native egress snapshot -> bounded transfer -> provider create/readback -> second native export verification. Reports ok only after matching exact bytes; mismatch retains created document and returns conflict.",
+          "evidence": [
+            "app/src/main/kotlin/com/floe/android/WorkspaceSourcePicker.kt",
+            "app/src/main/kotlin/com/floe/android/host/WorkspaceSourceHostController.kt",
+            "core/safgateway/src/main/java/com/floe/android/safgateway/SafWorkingCopyService.kt"
+          ],
+          "evidenceSha256": {
+            "app/src/main/kotlin/com/floe/android/WorkspaceSourcePicker.kt": "53dde2bd0d463fc5b6a463c067977049f12e81112b3e6dfe0718b2e8d7e605dc",
+            "app/src/main/kotlin/com/floe/android/host/WorkspaceSourceHostController.kt": "b4010f6a7e0e6cfcdca55283b86e11012a5405557de17cf1aee44a93e9c564fe",
+            "core/safgateway/src/main/java/com/floe/android/safgateway/SafWorkingCopyService.kt": "e021ae45ed96896d9828bac66873466065b4f18b426d8c62f70949d38bba7a7b"
+          },
+          "reviewState": "present-source-connected",
+          "device": "Real Ark-generated file is visible in App task files, but final user-destination export has not newly been device verified."
+        },
+        {
+          "id": "WSF-NETWORK-MOUNT",
+          "entry": "Files menu -> network sources secondary sheet",
+          "chain": "Original NetworkWorkspaceHostController -> native G04NetworkWorkspace with durable metadata-only mount configs, opaque vault reference, original WebDAV/SMB/SFTP adapters and source import/save/recovery paths; exact owner/epoch and physical operation settlement retained.",
+          "evidence": [
+            "app/src/main/kotlin/com/floe/android/WorkspaceFilesPane.kt",
+            "app/src/main/kotlin/com/floe/android/host/NetworkWorkspaceHostController.kt",
+            "shared/Sources/FloeAndroidCore/G04NetworkWorkspace.swift",
+            "shared/Sources/FloeWorkspace/NetworkWorkspaceMount.swift"
+          ],
+          "evidenceSha256": {
+            "app/src/main/kotlin/com/floe/android/WorkspaceFilesPane.kt": "21b64a7a430831c9db9b23fc31adc7a7d097a151fc10e6af702aeb449c305bb6",
+            "app/src/main/kotlin/com/floe/android/host/NetworkWorkspaceHostController.kt": "eac997d5d186bf90e4d1be373a73c1b607741f14d8755465af84b607b68ff48c",
+            "shared/Sources/FloeAndroidCore/G04NetworkWorkspace.swift": "30852fa56eee7ed5ed7be7f1f45f022d115bf878f90424a4f646bd19e66edcb3",
+            "shared/Sources/FloeWorkspace/NetworkWorkspaceMount.swift": "680780f523703c5616b0df319700d07f3c6b16f8c01132ff6b0d16c97caaae06"
+          },
+          "reviewState": "present-source-connected",
+          "device": "No new live NAS/server call this round; no private endpoint or credential copied to evidence."
+        },
+        {
+          "id": "WSF-SAFE-EXTRACT",
+          "entry": "Archive classified into full-window document destination",
+          "chain": "ArchiveEngine and original WorkspaceArchiveTool implement bounded staging, CRC/path/link containment and non-overwrite commit, but current Android C08 registration omits workspace.archive and ARCHIVE destination is a typed fallback cover. Engine presence alone does not close reachable list/extract workflow.",
+          "evidence": [
+            "shared/Sources/FloeWorkspace/ArchiveEngine.swift",
+            "shared/Sources/FloeWorkspace/Tools/ArchiveTool.swift",
+            "shared/Sources/FloeAndroidCore/C08WorkspaceFileToolBindings.swift",
+            "app/src/main/kotlin/com/floe/android/WorkspaceDocumentDestination.kt"
+          ],
+          "evidenceSha256": {
+            "shared/Sources/FloeWorkspace/ArchiveEngine.swift": "0c6189c3b558e266c7114262b15c1b3fd1b1d009645604c2423c9b3aac0bb7cd",
+            "shared/Sources/FloeWorkspace/Tools/ArchiveTool.swift": "f37f44374eac684d3c402ae0bccb03bf0bd8a71d482f68c42b134f9da685e797",
+            "shared/Sources/FloeAndroidCore/C08WorkspaceFileToolBindings.swift": "7b646a3b24916f7edf202041307ea35239c98a3309cc10608bf5996bf1460bb3",
+            "app/src/main/kotlin/com/floe/android/WorkspaceDocumentDestination.kt": "0a7b8e5abed1a277714e0833aa85d0e02b8a8d57d412fc2950dab6b5b0774bb5"
+          },
+          "reviewState": "implementation-gap-confirmed",
+          "device": "Needs bounded source-only package for actual archive entry/service wiring; not platform unsupported and not device passed."
+        },
+        {
+          "id": "GIT-CRED-STORE",
+          "entry": "Settings Git account -> existing credential editor; native Git remote operations",
+          "chain": "GitHubCredentialHostController -> original GitHubCredentialStore -> AndroidKeystoreCredentialStore. Native G04GitCredentialLease consumes the same opaque SecretGateway reference under actual root-owned physical work; tokens absent from UI projection/metadata.",
+          "evidence": [
+            "app/src/main/kotlin/com/floe/android/host/GitHubCredentialHostController.kt",
+            "core/credentials/src/main/kotlin/com/floe/android/credentials/GitHubCredentialStore.kt",
+            "shared/Sources/FloeAndroidCore/G04GitCredentialLease.swift"
+          ],
+          "evidenceSha256": {
+            "app/src/main/kotlin/com/floe/android/host/GitHubCredentialHostController.kt": "28e2683b88f820e8a7e858e8fadb4142e65c82191d1460347cc0df3e9ff77067",
+            "core/credentials/src/main/kotlin/com/floe/android/credentials/GitHubCredentialStore.kt": "71c60e691187977cb15a43865d151a4cb9d42d6944424f12ed6cb03d5b1e2031",
+            "shared/Sources/FloeAndroidCore/G04GitCredentialLease.swift": "f59fb1e87fff7cdd5c0f6fb53aa8e92d1bf48d945ccb26550bdb8dc922606b53"
+          },
+          "reviewState": "present-source-connected",
+          "device": "Existing credential component checks reused; no new real-account Git push authorized/performed by this review."
+        }
+      ]
     }
   },
   "implementationBatches": {
