@@ -154,8 +154,8 @@ nonisolated enum MeasureKit {
             // sees, so the readout matches the drawing.
             polylineLength(SketchEntity.splinePoints(points, closed: closed), closed: closed)
         case let .exactCurve(_, definition):
-            let points = (try? definition.tessellatedPoints()) ?? []
-            return polylineLength(points, closed: definition.interval.periodic)
+            polylineLength((try? definition.tessellatedPoints()) ?? [],
+                           closed: definition.interval.periodic)
         }
     }
 
