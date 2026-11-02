@@ -86,7 +86,7 @@ class C04CadCaptureExportTest {
             onOpenInput?.invoke()
             val bytes = target ?: return null
             val value = bytes.copyOf()
-            if (corruptReadBack && value.isNotEmpty()) value[value.size - 1] = 0
+            if (corruptReadBack && value.isNotEmpty()) value[value.size - 1] = (value.last().toInt() xor 1).toByte()
             return ByteArrayInputStream(value)
         }
 

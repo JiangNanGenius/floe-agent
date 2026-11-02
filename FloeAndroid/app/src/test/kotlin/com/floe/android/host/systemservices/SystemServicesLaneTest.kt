@@ -150,7 +150,7 @@ class SystemServicesLaneTest {
         }
         assertEquals(claim, completed!!.first)
         val response = JSONObject(String(completed.second!!, Charsets.UTF_8))
-        assertEquals(true, response.optBoolean("ok"))
+        assertEquals(response.toString(), true, response.optBoolean("ok"))
         assertEquals(-33.8688, response.optDouble("latitude"), 0.0001)
         assertEquals(true, response.optBoolean("precise"))
         assertEquals(0, bridge.statuses[claim])
@@ -171,7 +171,7 @@ class SystemServicesLaneTest {
                 .put("claimEpoch", 7)
                 .put("operation", "contacts.scan")
                 .put("offset", 0)
-                .put("limit", 100),
+                .put("limit", 50),
         )
         val completed = withTimeout(5_000) {
             while (true) {

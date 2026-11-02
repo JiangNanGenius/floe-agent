@@ -824,8 +824,21 @@ internal class C04FloecadPackageReader(
         if (extension !in C04FloecadLimits.BLOB_EXTENSIONS) throw fail
     }
 
+    private fun readPrefix(file: File, count: Int): ByteArray? = try {
+        FileInputStream(file).use { input ->
+            val bytes = ByteArray(count)
+            var offset = 0
+            while (offset < count) {
+                val read = input.read(bytes, offset, count - offset)
+                if (read <= 0) break
+                offset += read
+            }
+            bytes.copyOf(offset)
+        }
+    } catch (_: Exception) { null }
+
     private fun isSixteenBitPng(file: File): Boolean {
-        val header = readBounded(file, 26) ?: return false
+        val header = readPrefix(file, 26) ?: return false
         if (header.size < 26) return false
         if (header[0] != 0x89.toByte() || header[1] != 0x50.toByte() ||
             header[2] != 0x4E.toByte() || header[3] != 0x47.toByte()
@@ -834,7 +847,7 @@ internal class C04FloecadPackageReader(
     }
 
     private fun imageMediaType(file: File): String? {
-        val header = readBounded(file, 16) ?: return null
+        val header = readPrefix(file, 16) ?: return null
         if (header.size >= 8 && header[0] == 0x89.toByte() && header[1] == 0x50.toByte() &&
             header[2] == 0x4E.toByte() && header[3] == 0x47.toByte()
         ) return "image/png"

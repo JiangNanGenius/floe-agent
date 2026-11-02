@@ -564,7 +564,7 @@ internal class C03RecognitionLifecycle {
         if (clean.isEmpty()) {
             state = C03DictationState.FAILED
             terminalEmitted = true
-            return false
+            return true
         }
         sawResult = true
         state = C03DictationState.COMPLETED

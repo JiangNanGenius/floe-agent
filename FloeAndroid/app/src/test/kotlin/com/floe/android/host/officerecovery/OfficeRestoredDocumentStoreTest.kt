@@ -78,7 +78,7 @@ class OfficeRestoredDocumentStoreTest {
         assertEquals(OfficeRestoredDocument.Kind.VERIFIED_OUTPUT, document.kind)
         val verified = store.verifiedFile(document)
         assertNotNull(verified)
-        assertEquals(file.absolutePath, verified!!.absolutePath)
+        assertEquals(file.canonicalPath, verified!!.absolutePath)
 
         var opened: OfficeRestoredDocument? = null
         val port = object : OfficeRestoredDocumentOpenPort {
@@ -89,7 +89,7 @@ class OfficeRestoredDocumentStoreTest {
                 observedBytes: Long,
             ): OfficeRestoredOpenResult {
                 opened = document
-                assertEquals(file.absolutePath, path.absolutePath)
+                assertEquals(file.canonicalPath, path.absolutePath)
                 assertEquals(sha(bytes), observedSha256)
                 assertEquals(bytes.size.toLong(), observedBytes)
                 return OfficeRestoredOpenResult.Accepted("session")

@@ -35,6 +35,9 @@ class HostLaunchAndFenceTest {
             return when {
                 request.contains("\"operation\":\"effect.poll\"") -> {
                     val receipt = receiptOf(request)
+                    if (receipt == "op:v1:providers") {
+                        return """{"version":3,"requestID":"$correlation","ok":true,"schema":"floe.effect-cursor/3","correlationID":"$correlation","cursor":{"operationReceiptID":"$receipt","sequence":1},"effects":[{"sequence":1,"kind":"accepted","value":{"rows":[{"id":"$PROVIDER_ID","kind":"custom","wireProtocol":"openAIChatCompletions","baseURL":"https://example.invalid/v1","displayName":"Fixture","isEnabled":true,"allowsPlainHTTP":false,"syncRevision":1,"secret":{"configured":true}}]}}],"hasMore":false,"resyncRequired":false}"""
+                    }
                     if (receipt == "op:v1:cget") {
                         // Conversation preload: the REAL session reply carries
                         // the row revision the launch CAS needs.
@@ -43,9 +46,11 @@ class HostLaunchAndFenceTest {
                     if (failNextLaunch) {
                         """{"version":3,"requestID":"$correlation","ok":true,"schema":"floe.effect-cursor/3","correlationID":"$correlation","cursor":{"operationReceiptID":"$receipt","sequence":1},"effects":[{"sequence":1,"kind":"rejected","code":"needsConfiguration","detail":[{"key":"reason","value":"provider_unusable"}]}],"hasMore":false,"resyncRequired":false}"""
                     } else {
-                        """{"version":3,"requestID":"$correlation","ok":true,"schema":"floe.effect-cursor/3","correlationID":"$correlation","cursor":{"operationReceiptID":"$receipt","sequence":2},"effects":[{"sequence":1,"kind":"prepared","value":{"conversationID":"c1","runID":"r1"}},{"sequence":2,"kind":"accepted","value":{"conversationID":"c1","runID":"r1","launched":true}}],"hasMore":false,"resyncRequired":false}"""
+                        """{"version":3,"requestID":"$correlation","ok":true,"schema":"floe.effect-cursor/3","correlationID":"$correlation","cursor":{"operationReceiptID":"$receipt","sequence":2},"effects":[{"sequence":1,"kind":"prepared","detail":[{"key":"conversationID","value":"c1"},{"key":"runID","value":"r1"},{"key":"resourceID","value":"run.r1"},{"key":"version","value":"preparing"}]},{"sequence":2,"kind":"accepted","value":{"conversationID":"c1","runID":"r1","launched":true}}],"hasMore":false,"resyncRequired":false}"""
                     }
                 }
+                request.contains("\"command\":\"config.providers.list\"") ->
+                    """{"version":3,"ok":true,"queued":true,"correlationID":"$correlation","operationReceiptID":"op:v1:providers"}"""
                 request.contains("\"command\":\"conversation.get\"") ->
                     """{"version":3,"ok":true,"queued":true,"correlationID":"$correlation","operationReceiptID":"op:v1:cget"}"""
                 else -> """{"version":3,"ok":true,"queued":true,"correlationID":"$correlation","operationReceiptID":"op:v1:run1"}"""
@@ -208,6 +213,11 @@ class HostLaunchAndFenceTest {
     fun preparedEchoesExactlyOnceWithRealCommittedIds() = runBlocking {
         val host = testHost(LaunchExchange())
         host.onBootstrapCapability(com.floe.android.RuntimeBootstrapCapability.OwnedStoreReady)
+        host.onDomainAvailability("providerConfigurationDomain", true, emptyList())
+        host.providers.refreshProviders()
+        kotlinx.coroutines.withTimeout(2_000) {
+            while (host.providers.destination.value.list.conversationProviders.isEmpty()) delay(10)
+        }
         host.onDomainAvailability("conversationDomain", true, emptyList())
         host.onDomainAvailability("runDomain", true, emptyList())
         val holder = host.conversations.holderFor("c1", isTemporary = false, incarnationId = null)

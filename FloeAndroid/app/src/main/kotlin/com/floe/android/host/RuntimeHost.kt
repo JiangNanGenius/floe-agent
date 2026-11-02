@@ -1058,27 +1058,29 @@ class RuntimeHost internal constructor(
                 if (c05RdpDelegate.isInitialized()) {
                     c05Rdp.onOwnedStoreReady()
                 }
-                // C05 devices: the engine/tool-pump lane follows the ACTUAL
-                // accepted epoch and must be available to configured model
-                // tools even if the Devices screen was never opened.
-                c05Devices.onOwnedStoreReady()
-                // C06: the mail lane is App-owned, so it starts on the real
-                // accepted store generation even when the Mail screen has not
-                // been opened (configured model mail tools need it). It does
-                // not open a socket until an operation is requested.
-                c06Mail.onOwnedStoreReady()
-                // C06: the calendar/todo controller owns the real provider
-                // lane and the local reminder transport. It starts on the
-                // accepted store generation even when the Calendar screen has
-                // not been opened (configured model calendar tools need it);
-                // it performs no provider query until work is requested.
-                c06Calendar.onOwnedStoreReady()
-                // C06: system services follow the ACTUAL accepted epoch so
-                // configured model tools work even when the screen was never
-                // opened. No permission prompt or platform read happens until
-                // an explicit tool or UI action; the capability push is the
-                // only startup work.
-                c06SystemServices.onOwnedStoreReady()
+                if (appContextOrNull != null) {
+                    // C05 devices: the engine/tool-pump lane follows the ACTUAL
+                    // accepted epoch and must be available to configured model
+                    // tools even if the Devices screen was never opened.
+                    c05Devices.onOwnedStoreReady()
+                    // C06: the mail lane is App-owned, so it starts on the real
+                    // accepted store generation even when the Mail screen has not
+                    // been opened (configured model mail tools need it). It does
+                    // not open a socket until an operation is requested.
+                    c06Mail.onOwnedStoreReady()
+                    // C06: the calendar/todo controller owns the real provider
+                    // lane and the local reminder transport. It starts on the
+                    // accepted store generation even when the Calendar screen has
+                    // not been opened (configured model calendar tools need it);
+                    // it performs no provider query until work is requested.
+                    c06Calendar.onOwnedStoreReady()
+                    // C06: system services follow the ACTUAL accepted epoch so
+                    // configured model tools work even when the screen was never
+                    // opened. No permission prompt or platform read happens until
+                    // an explicit tool or UI action; the capability push is the
+                    // only startup work.
+                    c06SystemServices.onOwnedStoreReady()
+                }
                 // C07 only reacts if the settings surface already created
                 // the controller; no backup/restore work starts implicitly.
                 if (c07DataExchangeDelegate.isInitialized()) {

@@ -7,6 +7,7 @@ import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.json.boolean
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
@@ -124,7 +125,7 @@ class SettingsRolePreferencesTest {
     ): String {
         fun uuidOrNull(value: String?): String =
             value?.let { "\"$it\"" } ?: "null"
-        return """{"revision":{"resourceID":"preferences","version":$syncRevision},"preferences":{""" +
+        return """{"revision":{"resourceID":"preferences","version":"$syncRevision"},"preferences":{""" +
             """"onboardingStatus":"completed",""" +
             """"defaultAgentModelID":${uuidOrNull(defaultAgent)},""" +
             """"generalAuxiliaryLLMModelID":${uuidOrNull(auxiliary)},""" +
@@ -147,7 +148,7 @@ class SettingsRolePreferencesTest {
         val exchange = CaptureExchange(
             initialPreferencesGet = preferencesDoc(),
             saveEffect = { _, _ ->
-                "{\"version\":3,\"requestID\":\"CORRELATION\",\"ok\":true,\"schema\":\"floe.effect-cursor/3\",\"correlationID\":\"CORRELATION\",\"cursor\":{\"operationReceiptID\":\"op:v1:save\",\"sequence\":1},\"effects\":[{\"sequence\":1,\"kind\":\"accepted\",\"page\":{\"revision\":{\"resourceID\":\"preferences\",\"version\":8},\"preferences\":{}}}],\"hasMore\":false,\"resyncRequired\":false}"
+                "{\"version\":3,\"requestID\":\"CORRELATION\",\"ok\":true,\"schema\":\"floe.effect-cursor/3\",\"correlationID\":\"CORRELATION\",\"cursor\":{\"operationReceiptID\":\"op:v1:save\",\"sequence\":1},\"effects\":[{\"sequence\":1,\"kind\":\"accepted\",\"page\":{\"revision\":{\"resourceID\":\"preferences\",\"version\":\"8\"},\"preferences\":{}}}],\"hasMore\":false,\"resyncRequired\":false}"
             },
         )
         val host = testHost(exchange)
@@ -176,7 +177,7 @@ class SettingsRolePreferencesTest {
         val exchange = CaptureExchange(
             initialPreferencesGet = preferencesDoc(),
             saveEffect = { _, _ ->
-                "{\"version\":3,\"requestID\":\"CORRELATION\",\"ok\":true,\"schema\":\"floe.effect-cursor/3\",\"correlationID\":\"CORRELATION\",\"cursor\":{\"operationReceiptID\":\"op:v1:save\",\"sequence\":1},\"effects\":[{\"sequence\":1,\"kind\":\"accepted\",\"page\":{\"revision\":{\"resourceID\":\"preferences\",\"version\":8},\"preferences\":{}}}],\"hasMore\":false,\"resyncRequired\":false}"
+                "{\"version\":3,\"requestID\":\"CORRELATION\",\"ok\":true,\"schema\":\"floe.effect-cursor/3\",\"correlationID\":\"CORRELATION\",\"cursor\":{\"operationReceiptID\":\"op:v1:save\",\"sequence\":1},\"effects\":[{\"sequence\":1,\"kind\":\"accepted\",\"page\":{\"revision\":{\"resourceID\":\"preferences\",\"version\":\"8\"},\"preferences\":{}}}],\"hasMore\":false,\"resyncRequired\":false}"
             },
         )
         val host = testHost(exchange)
@@ -204,7 +205,8 @@ class SettingsRolePreferencesTest {
             (payload["canvasAgentModelID"] as JsonPrimitive).content)
         assertEquals(SettingsRoleModelController.MODE_SEPARATE,
             (payload["auxiliaryImageMode"] as JsonPrimitive).content)
-        assertEquals(true, (payload["autonomousImageRouting"] as JsonPrimitive).content)
+        assertTrue(!(payload["autonomousImageRouting"] as JsonPrimitive).isString)
+        assertEquals(true, (payload["autonomousImageRouting"] as JsonPrimitive).boolean)
         // Only the drafted slot changed; syncRevision is echoed for the
         // writer's full-snapshot CAS gate.
         assertEquals("44444444-4444-4444-4444-444444444444",
@@ -218,7 +220,7 @@ class SettingsRolePreferencesTest {
     fun staleCasRefusesAndPreservesDraftForRetry() = runBlocking {
         var saveCalls = 0
         val successFrame =
-            "{\"version\":3,\"requestID\":\"CORRELATION\",\"ok\":true,\"schema\":\"floe.effect-cursor/3\",\"correlationID\":\"CORRELATION\",\"cursor\":{\"operationReceiptID\":\"op:v1:save\",\"sequence\":1},\"effects\":[{\"sequence\":1,\"kind\":\"accepted\",\"page\":{\"revision\":{\"resourceID\":\"preferences\",\"version\":8},\"preferences\":{}}}],\"hasMore\":false,\"resyncRequired\":false}"
+            "{\"version\":3,\"requestID\":\"CORRELATION\",\"ok\":true,\"schema\":\"floe.effect-cursor/3\",\"correlationID\":\"CORRELATION\",\"cursor\":{\"operationReceiptID\":\"op:v1:save\",\"sequence\":1},\"effects\":[{\"sequence\":1,\"kind\":\"accepted\",\"page\":{\"revision\":{\"resourceID\":\"preferences\",\"version\":\"8\"},\"preferences\":{}}}],\"hasMore\":false,\"resyncRequired\":false}"
         val staleFrame =
             "{\"version\":3,\"requestID\":\"CORRELATION\",\"ok\":true,\"schema\":\"floe.effect-cursor/3\",\"correlationID\":\"CORRELATION\",\"cursor\":{\"operationReceiptID\":\"op:v1:save\",\"sequence\":1},\"effects\":[{\"sequence\":1,\"kind\":\"rejected\",\"code\":\"staleRevision\",\"detail\":[{\"key\":\"reason\",\"value\":\"preferencesCasGate\"}]}],\"hasMore\":false,\"resyncRequired\":false}"
         val exchange = CaptureExchange(
@@ -257,7 +259,7 @@ class SettingsRolePreferencesTest {
         val host = testHost(CaptureExchange(
             initialPreferencesGet = preferencesDoc(),
             saveEffect = { _, _ ->
-                "{\"version\":3,\"requestID\":\"CORRELATION\",\"ok\":true,\"schema\":\"floe.effect-cursor/3\",\"correlationID\":\"CORRELATION\",\"cursor\":{\"operationReceiptID\":\"op:v1:save\",\"sequence\":1},\"effects\":[{\"sequence\":1,\"kind\":\"accepted\",\"page\":{\"revision\":{\"resourceID\":\"preferences\",\"version\":8},\"preferences\":{}}}],\"hasMore\":false,\"resyncRequired\":false}"
+                "{\"version\":3,\"requestID\":\"CORRELATION\",\"ok\":true,\"schema\":\"floe.effect-cursor/3\",\"correlationID\":\"CORRELATION\",\"cursor\":{\"operationReceiptID\":\"op:v1:save\",\"sequence\":1},\"effects\":[{\"sequence\":1,\"kind\":\"accepted\",\"page\":{\"revision\":{\"resourceID\":\"preferences\",\"version\":\"8\"},\"preferences\":{}}}],\"hasMore\":false,\"resyncRequired\":false}"
             },
         ))
         val roles = host.settings.roles
@@ -305,7 +307,7 @@ class SettingsRolePreferencesTest {
         val exchange = CaptureExchange(
             initialPreferencesGet = preferencesDoc(defaultAgent = "99999999-9999-9999-9999-999999999999"),
             saveEffect = { _, _ ->
-                "{\"version\":3,\"requestID\":\"CORRELATION\",\"ok\":true,\"schema\":\"floe.effect-cursor/3\",\"correlationID\":\"CORRELATION\",\"cursor\":{\"operationReceiptID\":\"op:v1:save\",\"sequence\":1},\"effects\":[{\"sequence\":1,\"kind\":\"accepted\",\"page\":{\"revision\":{\"resourceID\":\"preferences\",\"version\":8},\"preferences\":{}}}],\"hasMore\":false,\"resyncRequired\":false}"
+                "{\"version\":3,\"requestID\":\"CORRELATION\",\"ok\":true,\"schema\":\"floe.effect-cursor/3\",\"correlationID\":\"CORRELATION\",\"cursor\":{\"operationReceiptID\":\"op:v1:save\",\"sequence\":1},\"effects\":[{\"sequence\":1,\"kind\":\"accepted\",\"page\":{\"revision\":{\"resourceID\":\"preferences\",\"version\":\"8\"},\"preferences\":{}}}],\"hasMore\":false,\"resyncRequired\":false}"
             },
         )
         val host = testHost(exchange)
@@ -332,7 +334,7 @@ class SettingsRolePreferencesTest {
         val exchange = CaptureExchange(
             initialPreferencesGet = preferencesDoc(mode = "shared"),
             saveEffect = { _, _ ->
-                "{\"version\":3,\"requestID\":\"CORRELATION\",\"ok\":true,\"schema\":\"floe.effect-cursor/3\",\"correlationID\":\"CORRELATION\",\"cursor\":{\"operationReceiptID\":\"op:v1:save\",\"sequence\":1},\"effects\":[{\"sequence\":1,\"kind\":\"accepted\",\"page\":{\"revision\":{\"resourceID\":\"preferences\",\"version\":8},\"preferences\":{}}}],\"hasMore\":false,\"resyncRequired\":false}"
+                "{\"version\":3,\"requestID\":\"CORRELATION\",\"ok\":true,\"schema\":\"floe.effect-cursor/3\",\"correlationID\":\"CORRELATION\",\"cursor\":{\"operationReceiptID\":\"op:v1:save\",\"sequence\":1},\"effects\":[{\"sequence\":1,\"kind\":\"accepted\",\"page\":{\"revision\":{\"resourceID\":\"preferences\",\"version\":\"8\"},\"preferences\":{}}}],\"hasMore\":false,\"resyncRequired\":false}"
             },
         )
         val host = testHost(exchange)
@@ -367,7 +369,7 @@ class SettingsRolePreferencesTest {
         val exchange = CaptureExchange(
             initialPreferencesGet = preferencesDoc(),
             saveEffect = { _, _ ->
-                "{\"version\":3,\"requestID\":\"CORRELATION\",\"ok\":true,\"schema\":\"floe.effect-cursor/3\",\"correlationID\":\"CORRELATION\",\"cursor\":{\"operationReceiptID\":\"op:v1:save\",\"sequence\":1},\"effects\":[{\"sequence\":1,\"kind\":\"accepted\",\"page\":{\"revision\":{\"resourceID\":\"preferences\",\"version\":8},\"preferences\":{}}}],\"hasMore\":false,\"resyncRequired\":false}"
+                "{\"version\":3,\"requestID\":\"CORRELATION\",\"ok\":true,\"schema\":\"floe.effect-cursor/3\",\"correlationID\":\"CORRELATION\",\"cursor\":{\"operationReceiptID\":\"op:v1:save\",\"sequence\":1},\"effects\":[{\"sequence\":1,\"kind\":\"accepted\",\"page\":{\"revision\":{\"resourceID\":\"preferences\",\"version\":\"8\"},\"preferences\":{}}}],\"hasMore\":false,\"resyncRequired\":false}"
             },
         )
         val host = testHost(exchange)
@@ -445,13 +447,9 @@ class SettingsRolePreferencesTest {
 
     @Test
     fun staleSavePreservesNewerSameSlotChoiceForRetry() = runBlocking {
-        var saveCalls = 0
         val exchange = CaptureExchange(
             initialPreferencesGet = preferencesDoc(),
-            saveEffect = { _, _ ->
-                saveCalls++
-                if (saveCalls == 1) successFrame() else staleFrame()
-            },
+            saveEffect = { _, _ -> staleFrame() },
         )
         val host = testHost(exchange)
         host.onBootstrapCapability(com.floe.android.RuntimeBootstrapCapability.OwnedStoreReady)
@@ -497,7 +495,8 @@ class SettingsRolePreferencesTest {
         // Untouched scalars carry the FRESH document values.
         assertEquals(SettingsRoleModelController.MODE_SHARED,
             (payload["auxiliaryImageMode"] as JsonPrimitive).content)
-        assertEquals(false, (payload["autonomousImageRouting"] as JsonPrimitive).content)
+        assertTrue(!(payload["autonomousImageRouting"] as JsonPrimitive).isString)
+        assertEquals(false, (payload["autonomousImageRouting"] as JsonPrimitive).boolean)
     }
 
     @Test
@@ -521,7 +520,8 @@ class SettingsRolePreferencesTest {
         kotlinx.coroutines.delay(300)
         val payload = exchange.saveEnvelopes().single()["payload"] as JsonObject
         // Routing: dirty intent → the working value is written.
-        assertEquals(false, (payload["autonomousImageRouting"] as JsonPrimitive).content)
+        assertTrue(!(payload["autonomousImageRouting"] as JsonPrimitive).isString)
+        assertEquals(false, (payload["autonomousImageRouting"] as JsonPrimitive).boolean)
         // Mode: clean → the FRESH document value wins over our stale
         // working snapshot (separate).
         assertEquals(SettingsRoleModelController.MODE_SHARED,
@@ -622,7 +622,7 @@ class SettingsRolePreferencesTest {
     }
 
     private fun successFrame() =
-        "{\"version\":3,\"requestID\":\"CORRELATION\",\"ok\":true,\"schema\":\"floe.effect-cursor/3\",\"correlationID\":\"CORRELATION\",\"cursor\":{\"operationReceiptID\":\"op:v1:save\",\"sequence\":1},\"effects\":[{\"sequence\":1,\"kind\":\"accepted\",\"page\":{\"revision\":{\"resourceID\":\"preferences\",\"version\":8},\"preferences\":{}}}],\"hasMore\":false,\"resyncRequired\":false}"
+        "{\"version\":3,\"requestID\":\"CORRELATION\",\"ok\":true,\"schema\":\"floe.effect-cursor/3\",\"correlationID\":\"CORRELATION\",\"cursor\":{\"operationReceiptID\":\"op:v1:save\",\"sequence\":1},\"effects\":[{\"sequence\":1,\"kind\":\"accepted\",\"page\":{\"revision\":{\"resourceID\":\"preferences\",\"version\":\"8\"},\"preferences\":{}}}],\"hasMore\":false,\"resyncRequired\":false}"
 
     private fun staleFrame() =
         "{\"version\":3,\"requestID\":\"CORRELATION\",\"ok\":true,\"schema\":\"floe.effect-cursor/3\",\"correlationID\":\"CORRELATION\",\"cursor\":{\"operationReceiptID\":\"op:v1:save\",\"sequence\":1},\"effects\":[{\"sequence\":1,\"kind\":\"rejected\",\"code\":\"staleRevision\",\"detail\":[{\"key\":\"reason\",\"value\":\"preferencesCasGate\"}]}],\"hasMore\":false,\"resyncRequired\":false}"

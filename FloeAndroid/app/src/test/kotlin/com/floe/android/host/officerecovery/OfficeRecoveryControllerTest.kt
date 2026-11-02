@@ -102,7 +102,7 @@ class OfficeRecoveryControllerTest {
             return candidate
         }
 
-        fun candidate(working: ByteArray = docx(), withOutput: Boolean = false, phase: OfficeRecoveryPhase = OfficeRecoveryPhase.EDITING): OfficeRecoveryCandidate {
+        fun candidate(working: ByteArray = docx(), withOutput: Boolean = false, phase: OfficeRecoveryPhase? = null): OfficeRecoveryCandidate {
             val id = UUID.randomUUID().toString()
             val dir = File(workingRoot, id)
             check(dir.mkdirs())
@@ -119,7 +119,7 @@ class OfficeRecoveryControllerTest {
                 id = id,
                 createdAtMillis = System.currentTimeMillis(),
                 updatedAtMillis = System.currentTimeMillis(),
-                phase = phase,
+                phase = phase ?: if (withOutput) OfficeRecoveryPhase.EXPORT_READY else OfficeRecoveryPhase.EDITING,
                 route = OfficeRecoveryRoute.WORKSPACE,
                 displayName = "Notes.docx",
                 format = "docx",
@@ -139,6 +139,8 @@ class OfficeRecoveryControllerTest {
                 outputFormat = if (outputFile != null) "docx" else null,
                 outputOpId = if (outputFile != null) "export-1" else null,
                 outputNativeGeneration = if (outputFile != null) 7L else 0L,
+                savedWorkingCopySha256 = if (phase == OfficeRecoveryPhase.SAVED) sha(working) else null,
+                destinationVerified = phase == OfficeRecoveryPhase.SAVED,
                 originSessionToken = token,
             )
             journal.add(candidate)

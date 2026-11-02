@@ -628,3 +628,8 @@ dependencies {
     androidTestImplementation(libs.androidx.test.junit)
     androidTestImplementation(libs.androidx.test.runner)
 }
+
+// Bound the unified JVM suite while allowing its 48 MiB ink-limit fixtures.
+tasks.withType<Test>().configureEach {
+    maxHeapSize = "1g"
+}

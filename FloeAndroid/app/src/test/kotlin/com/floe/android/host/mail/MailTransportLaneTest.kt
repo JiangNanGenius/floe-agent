@@ -21,9 +21,10 @@ import org.junit.Test
 private class FakeBridge(
     private val descriptor: String,
     private val stop: Boolean = false,
+    private val following: String? = null,
 ) : MailTransportBridge {
     private val claims = AtomicInteger(0)
-    val completed = mutableListOf<Pair<Long, Int>>()
+    val completed = java.util.concurrent.CopyOnWriteArrayList<Pair<Long, Int>>()
     var laneClosedEpoch: Long = 0
     var boundEpoch: Long = 0
     var nextCalls = 0
@@ -32,9 +33,18 @@ private class FakeBridge(
     override fun laneReady(epoch: Long): Int = 0
     override fun next(timeoutMillis: Int): Long {
         nextCalls += 1
-        return if (claims.getAndIncrement() == 0) 1L else -1L
+        val index = claims.getAndIncrement()
+        if (index == 0) return 1L
+        if (index == 1 && following != null) {
+            var remaining = 1_000
+            while (completed.none { it.first == 1L } && remaining-- > 0) Thread.sleep(1)
+            if (completed.none { it.first == 1L }) return -1L
+            return 2L
+        }
+        Thread.sleep(timeoutMillis.toLong())
+        return 0L
     }
-    override fun describe(claim: Long): String = descriptor
+    override fun describe(claim: Long): String = if (claim == 2L) following!! else descriptor
     override fun takeWrite(claim: Long, length: Int): ByteArray = ByteArray(length) { it.toByte() }
     override fun complete(claim: Long, status: Int, data: ByteArray?): Int {
         completed += claim to status
@@ -123,7 +133,7 @@ class MailTransportLaneTest {
 
     @Test
     fun writePullsTheBoundedPayloadAndWritesIt() = runBlocking {
-        val bridge = FakeBridge(descriptor("write", writeLength = 4))
+        val bridge = FakeBridge(descriptor("open"), following = descriptor("write", writeLength = 4).replace("\"claim\":1", "\"claim\":2"))
         val socket = FakeSocket()
         val lane = MailTransportLane(
             scope = CoroutineScope(Dispatchers.Unconfined + SupervisorJob()),

@@ -122,6 +122,6 @@ class MediaWorkbenchAuthorityMappingTest {
             ),
         ).toPlatform()
         assertTrue(accepted is AuthorityDecision.Accepted)
-        assertEquals(4, (accepted as AuthorityDecision.Accepted).grant.revision)
+        assertEquals(4L, (accepted as AuthorityDecision.Accepted).grant.revision)
     }
 }

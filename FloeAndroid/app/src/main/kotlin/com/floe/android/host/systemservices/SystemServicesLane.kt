@@ -188,7 +188,7 @@ internal class SystemServicesLane(
         val field = request.optString("field", "any").takeIf { it.isNotBlank() }
         val scanToken = request.optString("scanToken", "").takeIf { it.isNotBlank() }
         val offset = request.optInt("offset", 0)
-        val limit = request.optInt("limit", 100)
+        val limit = request.optInt("limit", 50)
         val page = engine.contactsScan(query, field, scanToken, offset, limit)
         val rows = JSONArray()
         var encodedBytes = 0

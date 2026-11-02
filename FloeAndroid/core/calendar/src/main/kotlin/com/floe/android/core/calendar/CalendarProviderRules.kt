@@ -78,7 +78,7 @@ object CalendarProviderRules {
     fun occurrenceToken(eventID: Long, startMillis: Long): String {
         require(eventID > 0)
         val seconds = Math.floorDiv(startMillis, 1_000L) * 1_000L
-        return "$eventID@${UTC_INSTANT.format(Instant.ofEpochMilli(seconds))}"
+        return "$eventID@${Instant.ofEpochMilli(seconds)}"
     }
 
     fun parseOccurrenceToken(raw: String): Pair<Long, Long>? {
