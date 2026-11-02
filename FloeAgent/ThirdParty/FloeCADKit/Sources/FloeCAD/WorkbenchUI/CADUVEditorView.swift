@@ -16,8 +16,11 @@ final class CADUVEditorModel {
     var selectedIslands: Set<UInt32> = []
     var yaw: Double = 0.6
     var pitch: Double = -0.4
-    var moveU: Double = 0, moveV: Double = 0, rotation: Double = 0
-    var scaleU: Double = 1, scaleV: Double = 1
+    var moveU: Double = 0
+    var moveV: Double = 0
+    var rotation: Double = 0
+    var scaleU: Double = 1
+    var scaleV: Double = 1
     var resolution = 512
     var isBusy = false
     var errorMessage: String?
