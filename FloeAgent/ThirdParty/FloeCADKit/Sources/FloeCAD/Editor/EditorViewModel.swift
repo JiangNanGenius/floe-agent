@@ -5765,9 +5765,21 @@ final class EditorViewModel {
             else { after = kind == .fillet
                 ? .fillet(body: bodyRef, edges: edgeRefs, radius: Expr(value: blendValue))
                 : .chamfer(body: bodyRef, edges: edgeRefs, setback: Expr(value: blendValue)) }
+            let checkpoint = session.captureEditCheckpoint()
+            let previousErrors = session.lastEvalErrors
             prepareForHistoryChange()
             resetBlendState()
             session.editFeature(featureID, to: after)
+            let introduced = session.lastEvalErrors.filter { id, error in
+                guard let old = previousErrors[id] else { return true }
+                return String(describing: old) != String(describing: error)
+            }
+            if !introduced.isEmpty || (definition != nil && session.document.body(with: bodyID)?.brep == nil) {
+                session.restoreEditCheckpoint(checkpoint)
+                mode = .selected(bodyID); selection = [bodyID]
+                errorMessage = FloeCADStrings.text("cad.blend.invalidDefinition", "Check the sizes and selected edges.")
+                return
+            }
             session.save()
             mode = .selected(bodyID)
             selection = [bodyID]

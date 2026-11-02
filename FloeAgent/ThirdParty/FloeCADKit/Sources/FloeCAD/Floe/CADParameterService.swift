@@ -5290,7 +5290,7 @@ public final class CADParameterService {
         switch kind {
         case .primitive, .extrude, .draftExtrude, .revolve, .pattern,
              .pushPull, .scaleFace, .rotateFace, .draftFace, .chamfer,
-             .fillet, .shell, .hole, .thread, .sweep, .replaceFace, .mirror:
+             .fillet, .advancedBlend, .shell, .hole, .thread, .sweep, .replaceFace, .mirror:
             return true
         default:
             return false
@@ -5318,7 +5318,7 @@ public final class CADParameterService {
         case let .split(target, _): return [target]
         case let .transform(body, _), let .mirror(body, _, _),
              let .pattern(body, _), let .chamfer(body, _, _),
-             let .fillet(body, _, _), let .shell(body, _, _),
+             let .fillet(body, _, _), let .advancedBlend(body, _, _), let .shell(body, _, _),
              let .deleteFace(body, _):
             return [body]
         case .primitive, .baseSolid,

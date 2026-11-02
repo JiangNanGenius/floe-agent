@@ -3056,6 +3056,30 @@ final class CADAdvancedBlendDocumentTests: XCTestCase {
         XCTAssertEqual(OCCTKernel.volume(try XCTUnwrap(result.bodies.first?.brep)), 8000, accuracy: 1e-6)
     }
 
+    func testNativeInvalidHistoryEditRestoresGeometryAndExistingUndoRedo() async throws {
+        let doc = try await document(); defer { doc.close() }
+        let (_, target, _, edge) = try box(doc)
+        let feature = try run(doc, "feature.chamfer", ["bodyID": target.raw.uuidString, "edges": [edge], "setback": 2, "secondDistance": 4])
+        let reply = CADParameterService(document: doc).handle(action: "update", args: [
+            "feature_id": feature.id.raw.uuidString, "changes": ["second_distance": 3]])
+        XCTAssertEqual(reply["ok"] as? Bool, true, "\(reply)")
+        doc.session.undo()
+        let undo = doc.session.undoStack.undoCommands.count, redo = doc.session.undoStack.redoCommands.count
+        XCTAssertGreaterThan(redo, 0)
+        let before = try law(doc, feature.id)
+        let bytes = try XCTUnwrap(OCCTKernel.serialize(try XCTUnwrap(doc.session.document.body(with: target)?.brep)))
+        let model = doc.viewModel(); XCTAssertTrue(model.beginBlendEdit(feature.id))
+        model.blendSecondValue = 10000
+        XCTAssertFalse(model.canCommitBlend); XCTAssertNil(model.blendPreview)
+        model.commitBlend()
+        XCTAssertEqual(try law(doc, feature.id), before)
+        XCTAssertEqual(OCCTKernel.serialize(try XCTUnwrap(doc.session.document.body(with: target)?.brep)), bytes)
+        XCTAssertEqual(doc.session.undoStack.undoCommands.count, undo)
+        XCTAssertEqual(doc.session.undoStack.redoCommands.count, redo)
+        XCTAssertNotNil(model.errorMessage)
+        XCTAssertTrue(doc.session.lastEvalErrors.isEmpty)
+    }
+
     func testSemanticVersionIsIntentBasedFutureOpaqueAndBooleanVersionRefused() async throws {
         let doc = try await document(); defer { doc.close() }
         let (_, target, _, edge) = try box(doc)
