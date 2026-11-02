@@ -1057,9 +1057,9 @@ static Handle(Geom_Curve) OS3DSketchCurveDefinition(
         }
         if (!std::isfinite(wantedFirst) || !std::isfinite(wantedLast)
             || wantedLast - wantedFirst <= 1e-12) return Handle(Geom_Curve)();
-        // OCCT explicitly supports Segment outside the original B-spline
-        // bounds. This is exact polynomial extrapolation of the same basis,
-        // not a refit through new points.
+        // Continue the original endpoint polynomials. Pinned OCCT Segment
+        // refuses external knots, so retain the basis through exact Bezier
+        // domain conversion rather than fitting any new points.
         if (!closedBasis && (wantedFirst < begin || wantedLast > end)) {
             bs = OS3DExactSplineDomain(bs, wantedFirst, wantedLast);
         }

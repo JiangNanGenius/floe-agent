@@ -185,7 +185,7 @@ final class CADExactCurveClosureTests: XCTestCase {
             near(try extended.point(at: 0), points[0])
             near(try extended.point(at: 1), points[points.count - 1])
             for u in [0.12, 0.29, 0.51, 0.78, 0.93] {
-                near(try extended.point(at: u), original.point(at: u), accuracy: 1e-7)
+                near(try extended.point(at: u), try original.point(at: u), accuracy: 1e-7)
             }
         }
     }
