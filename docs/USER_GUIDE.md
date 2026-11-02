@@ -259,6 +259,8 @@ Available operations depend on the file format; unavailable options explain why.
 
 On iPad, Office uses the full toolbar when the editor is wide enough and a compact layout in narrow split views. Opening the keyboard does not switch the layout by itself.
 
+In 3D Present, open Environment to import a panoramic environment image, adjust rotation and brightness, and add or edit named scene lights. Applying changes is undoable and saves them with the document; still images and videos use the same scene appearance.
+
 **Office autosave in Notes.** Completed edits save after you pause; a pen contact still down defers saving until you lift it. A failed save keeps the editing copy so you can retry.
 
 **View a specific region.** The assistant can read an Excel sheet and cell range (such as `A1:N30`), or a Word/PowerPoint page and optional rectangle, including content outside the screen. Ask it to list sheets or pages first if needed. Floe saves completed edits before returning the region image from that saved version; use a vision-capable model to view it. Lift the pen or retry if the editor is busy.

@@ -1,0 +1,42 @@
+{
+  "images": [
+    {
+      "file": "hdri-original.png",
+      "sha256": "fe2a7f57dfcb354c32044f166e7a54d192446bada3e38bcde894c730688a013f",
+      "source_run": "mixed283-hdri-lights",
+      "source_attachment": "7A9E8418-9D54-4AC2-8E1D-DA6F04887729.png",
+      "original_bytes": true,
+      "synthetic_fixture": true,
+      "root_visually_reviewed": true
+    },
+    {
+      "file": "hdri-rotated-brighter.png",
+      "sha256": "e63e34fc6ecc4b0514f1937584421632b5321b9accf24bc4f96cb900e42421c5",
+      "source_run": "mixed283-hdri-lights",
+      "source_attachment": "58D400B3-4FAD-4996-9FD3-3EE51AB8395D.png",
+      "original_bytes": true,
+      "synthetic_fixture": true,
+      "root_visually_reviewed": true
+    },
+    {
+      "file": "actual-movie-frame.png",
+      "sha256": "d6dc96cea51bfc858b5cd8b9d99328799e94daf7434364bdf4760822e43b0d58",
+      "source_run": "mixed283-hdri-lights",
+      "source_attachment": "C3D4DF17-156C-4686-9204-DE0D492674F2.png",
+      "original_bytes": true,
+      "synthetic_fixture": true,
+      "root_visually_reviewed": true
+    },
+    {
+      "file": "named-light-inspector.png",
+      "sha256": "d6cd6c508f6321343299681765eef17253096408bb6a3ae0a12cfb6ff66504bf",
+      "source_run": "ui287-native-light-choice",
+      "source_attachment": "7C3CCF5E-B983-40CA-BD17-7C5DECF6D674.png",
+      "original_bytes": true,
+      "synthetic_fixture": true,
+      "root_visually_reviewed": true
+    }
+  ],
+  "physical_device": false,
+  "original_failures_retained": true
+}

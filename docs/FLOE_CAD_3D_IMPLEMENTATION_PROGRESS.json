@@ -7725,15 +7725,31 @@
       "package": "experience",
       "implementation": {
         "stage": "F",
-        "status": "planned",
-        "source_changes": [],
-        "verification": [],
-        "limitations": []
+        "status": "accepted_original_criterion",
+        "source_changes": [
+          "84b6323b965eb492e3300c97f32c15152d8e6edd",
+          "2a711b40ef94a103deaa0d50213918f9c027793e",
+          "9d67598a089aac72c30bc2f712ab71c41efe6ba4"
+        ],
+        "verification": [
+          {
+            "evidence": "docs/qualification/cad-hdri-scene-lights-20261103/README.md",
+            "scope": "ActualApp Swift6 objects, native state/render/output and native UI; explicit failed recovery stages retained",
+            "physical_device": false
+          }
+        ],
+        "limitations": [
+          "App-hosted Simulator evidence only; no physical-device quality/performance claim",
+          "Only self-contained readable panoramic2:1image up to64MiB/16megapixels",
+          "Eight dynamic lights; directional/spot shadows only; presetlights replace custom list, never silently add pastlimit",
+          "Engineering Edit remains simplified; authored map/lights feed actual Present/still/movie",
+          "No new paid LLM request; shared generic material tool/service routing and earlier X35 live-model evidence reused honestly"
+        ]
       },
       "alignment_review": {
-        "disposition": "partial",
+        "disposition": "accepted_original_criterion",
         "existing": "已有真实IBL与反射，环境图由外观配置程序生成。",
-        "remaining": "生成环境仅256×128八位RGB渐变；没有导入HDRI、旋转、独立反射/背景/曝光设置的正式模型。",
+        "remaining": "",
         "evidence": [
           {
             "path": "FloeAgent/ThirdParty/FloeCADKit/Sources/FloeCAD/Presentation/CADPresentationResourceCache.swift",
@@ -7746,15 +7762,23 @@
           {
             "path": "FloeAgent/ThirdParty/FloeCADKit/Sources/FloeCAD/Presentation/CADPresentationCore.swift",
             "line": 215
+          },
+          {
+            "path": "docs/qualification/cad-hdri-scene-lights-20261103/README.md",
+            "kind": "current_actual_qualification",
+            "exists_at_review": true
           }
         ],
         "notes": "Preserved 17ecc baseline support/gap; checked scoped current source and relevant deltas only. Not a repository-wide rerun.",
-        "evidence_level": "baseline_plus_verified_delta",
-        "acceptance_pending": "本地HDRI导入→旋转/强度→保存重开→截图/视频一致，资源丢失明确提示。"
+        "evidence_level": "actual_App_native_UI_and_render_output",
+        "acceptance_pending": "",
+        "verified_delta": "Actual HDR import/rotation/light changes, undo/save/reopen and real still/movie/UI paths"
       },
       "current_acceptance": {
-        "original_criterion_accepted": false,
-        "source_changes": []
+        "original_criterion_accepted": true,
+        "evidence": "docs/qualification/cad-hdri-scene-lights-20261103/README.md",
+        "original_criterion_text_unchanged": true,
+        "whole106_complete": false
       },
       "verification_plan": {
         "priority": "P2",
@@ -7792,15 +7816,31 @@
       "package": "experience",
       "implementation": {
         "stage": "F",
-        "status": "planned",
-        "source_changes": [],
-        "verification": [],
-        "limitations": []
+        "status": "accepted_original_criterion",
+        "source_changes": [
+          "84b6323b965eb492e3300c97f32c15152d8e6edd",
+          "2a711b40ef94a103deaa0d50213918f9c027793e",
+          "9d67598a089aac72c30bc2f712ab71c41efe6ba4"
+        ],
+        "verification": [
+          {
+            "evidence": "docs/qualification/cad-hdri-scene-lights-20261103/README.md",
+            "scope": "ActualApp Swift6 objects, native state/render/output and native UI; explicit failed recovery stages retained",
+            "physical_device": false
+          }
+        ],
+        "limitations": [
+          "App-hosted Simulator evidence only; no physical-device quality/performance claim",
+          "Only self-contained readable panoramic2:1image up to64MiB/16megapixels",
+          "Eight dynamic lights; directional/spot shadows only; presetlights replace custom list, never silently add pastlimit",
+          "Engineering Edit remains simplified; authored map/lights feed actual Present/still/movie",
+          "No new paid LLM request; shared generic material tool/service routing and earlier X35 live-model evidence reused honestly"
+        ]
       },
       "alignment_review": {
-        "disposition": "partial",
+        "disposition": "accepted_original_criterion",
         "existing": "Present按统一环境参数创建方向主光和派生方向补光，主光支持阴影。",
-        "remaining": "灯不是可独立命名/定位/调色/开关/动画的场景对象；没有点光/聚光/面积灯编辑模型。",
+        "remaining": "",
         "evidence": [
           {
             "path": "FloeAgent/ThirdParty/FloeCADKit/Sources/FloeCAD/Presentation/CADPresentationEntityBuilder.swift",
@@ -7813,15 +7853,23 @@
           {
             "path": "FloeAgent/ThirdParty/FloeCADKit/Sources/FloeCAD/Presentation/CADPresentationCore.swift",
             "line": 215
+          },
+          {
+            "path": "docs/qualification/cad-hdri-scene-lights-20261103/README.md",
+            "kind": "current_actual_qualification",
+            "exists_at_review": true
           }
         ],
         "notes": "Preserved 17ecc baseline support/gap; checked scoped current source and relevant deltas only. Not a repository-wide rerun.",
-        "evidence_level": "baseline_plus_verified_delta",
-        "acceptance_pending": "创建多个灯、调整位置颜色强度并命名，UI/LLM、撤销、保存和动画产物一致。"
+        "evidence_level": "actual_App_native_UI_and_render_output",
+        "acceptance_pending": "",
+        "verified_delta": "Actual HDR import/rotation/light changes, undo/save/reopen and real still/movie/UI paths"
       },
       "current_acceptance": {
-        "original_criterion_accepted": false,
-        "source_changes": []
+        "original_criterion_accepted": true,
+        "evidence": "docs/qualification/cad-hdri-scene-lights-20261103/README.md",
+        "original_criterion_text_unchanged": true,
+        "whole106_complete": false
       },
       "verification_plan": {
         "priority": "P2",
@@ -9786,7 +9834,7 @@
     "license_delta": "GLTFKit2 ownMIT/cgltfMIT do notclear precompiled libktx4.2.1 etcdec exception; prefer existing O3DV+same-r176 localGLTFLoader qualification"
   },
   "current_integration_verification": {
-    "source": "6fa5ca80c0ee66cc13737d39afa31cee0e24244d",
+    "source": "9d67598a089aac72c30bc2f712ab71c41efe6ba4",
     "all_106_retained": true,
     "all_106_accepted": false,
     "release_ready": false,
@@ -9819,8 +9867,8 @@
       "actual_OBJ": "真实OBJ/MTL/PNG显示、缺失贴图及仅资源变化后的旧帧拒绝通过。",
       "scope": "本地实际渲染与资源来源；不冒充原生可编辑BRep，也不代替真实LLM视觉连续编辑。"
     },
-    "accepted_original_criteria": 75,
-    "pending_original_criteria": 31,
+    "accepted_original_criteria": 77,
+    "pending_original_criteria": 29,
     "device_acceptance": "iPad通过的功能复用验收，iPhone仅确认界面；不使用用户手机。",
     "latest_native_batch": {
       "source": "582810ed58f8d3d63e23967909b74898af502c60",
@@ -10131,6 +10179,16 @@
       "near_limit_triangles": 480000,
       "whole106_complete": false,
       "unchanged_passed_paths_reused": true
+    },
+    "HDRI_and_scene_lights": {
+      "source": "9d67598a089aac72c30bc2f712ab71c41efe6ba4",
+      "evidence": "docs/qualification/cad-hdri-scene-lights-20261103/README.md",
+      "actualAppCompile": true,
+      "nativeDistinct": 11,
+      "relevantNativeUI": 2,
+      "physicalDevice": false,
+      "newPaidRequests": 0,
+      "originalFailuresRetained": true
     }
   },
   "verification_strategy": {
@@ -10224,6 +10282,51 @@
       ],
       "original_33_classification_retained": true,
       "upgrade_rules_unchanged": true
+    },
+    "appearance_upgrade": {
+      "ids": [
+        "X16",
+        "X17"
+      ],
+      "from": "light",
+      "to": "heavy",
+      "reason": "New persisted resource/light semantics require writer-floor, opaque-future, cancellation and actual render/export qualification. Original allocation retained."
+    },
+    "remaining_after_hdri_lights_batch": {
+      "heavy": 24,
+      "light_or_reuse": 5,
+      "pending_ids": [
+        "M03",
+        "M04",
+        "M16",
+        "M17",
+        "M22",
+        "M29",
+        "M30",
+        "E03",
+        "E04",
+        "E10",
+        "E12",
+        "E14",
+        "E20",
+        "E22",
+        "E23",
+        "E38",
+        "X01",
+        "X02",
+        "X03",
+        "X04",
+        "X10",
+        "X11",
+        "X12",
+        "X18",
+        "X19",
+        "X26",
+        "X27",
+        "X34",
+        "X37"
+      ],
+      "original33AllocationPreserved": true
     }
   }
 }
