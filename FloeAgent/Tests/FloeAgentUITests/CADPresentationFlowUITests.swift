@@ -119,9 +119,11 @@ final class CADPresentationFlowUITests: XCTestCase {
         let environment = app.buttons["CADPresentEnvironment"]
         XCTAssertTrue(environment.waitForExistence(timeout: 30)); environment.tap()
         func reveal(_ element: XCUIElement) {
+            let form = app.collectionViews["CADEnvironmentForm"]
+            XCTAssertTrue(form.waitForExistence(timeout: 10))
             for _ in 0..<7 {
                 if element.exists && element.isHittable { return }
-                app.swipeUp()
+                form.swipeUp()
             }
             XCTAssertTrue(element.exists && element.isHittable)
         }

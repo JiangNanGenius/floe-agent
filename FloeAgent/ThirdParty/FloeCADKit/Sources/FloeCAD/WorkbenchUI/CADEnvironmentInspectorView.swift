@@ -152,6 +152,7 @@ struct CADEnvironmentInspectorView: View {
                     .accessibilityIdentifier("CADEnvironmentReset")
                 }
             }
+            .accessibilityIdentifier("CADEnvironmentForm")
             .navigationTitle(FloeCADStrings.text("cad.environment.title", "Environment"))
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {

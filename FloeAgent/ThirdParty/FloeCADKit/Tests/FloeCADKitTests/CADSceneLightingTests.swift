@@ -244,7 +244,8 @@ final class CADSceneLightingTests: XCTestCase {
         let stage = try await CADPresentationEntityBuilder(cache: cache).build(scene: scene).stage
         XCTAssertEqual(stage.children.filter { $0.name.hasPrefix("CADPresentationLight-") }.count, 2)
         let a = try XCTUnwrap(stage.children.first { $0.name == "CADPresentationLight-\(point.id)" } as? PointLight)
-        XCTAssertEqual(a.position, SIMD3<Float>(0.01, 0.02, 0.03))
+        XCTAssertEqual(simd_length(a.position - SIMD3<Float>(0.01, 0.02, 0.03)), 0, accuracy: 1e-8,
+                       "Millimetre-to-metre Float conversion must preserve placement to 0.00001 mm")
         XCTAssertEqual(a.light.intensity, 250, accuracy: 1e-5)
         XCTAssertEqual(a.light.attenuationRadius, 0.75, accuracy: 1e-5)
         let b = try XCTUnwrap(stage.children.first { $0.name == "CADPresentationLight-\(spot.id)" } as? SpotLight)
