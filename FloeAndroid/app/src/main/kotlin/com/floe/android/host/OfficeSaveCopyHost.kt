@@ -16,18 +16,39 @@ import com.floe.android.core.officeengine.OfficeSaveOperation
 import com.floe.android.core.officeengine.OfficeSaveReceipt
 import com.floe.android.core.officeengine.OfficeSaveRequest
 import com.floe.android.core.officeengine.OfficeSaveState
+import com.floe.android.host.officerecovery.OfficeRecoveryCandidate
+import com.floe.android.host.officerecovery.OfficeRecoveryDestinationCheck
+import com.floe.android.host.officerecovery.OfficeRecoveryExportOutcome
+import com.floe.android.host.officerecovery.OfficeRecoveryExportPort
+import com.floe.android.host.officerecovery.OfficeRecoveryJournal
+import com.floe.android.host.officerecovery.OfficeRecoveryJournalSink
+import com.floe.android.host.officerecovery.OfficeRecoveryOriginalState
+import com.floe.android.host.officerecovery.OfficeRecoveryPrepareOutcome
+import com.floe.android.host.officerecovery.OfficeRecoverySaveFacts
+import com.floe.android.host.officerecovery.OfficeRecoveryVerifiedSource
+import com.floe.android.host.officerecovery.OFFICE_RECOVERY_MIME_BY_FORMAT
 import com.floe.android.safgateway.AndroidSafBackend
+import com.floe.android.safgateway.PickAcceptResult
 import com.floe.android.safgateway.PickRequestSpec
 import com.floe.android.safgateway.SafCancelToken
+import com.floe.android.safgateway.SafDocumentRef
+import com.floe.android.safgateway.SafFailure
 import com.floe.android.safgateway.SafGatewayService
 import com.floe.android.safgateway.SafOutcome
+import com.floe.android.safgateway.SafUriRef
 import com.floe.android.safgateway.SafPickerIntents
 import com.floe.android.safgateway.SafPlatformBackend
 import java.io.File
 import java.io.FileInputStream
 import java.nio.file.Files
 import java.util.Locale
+import java.util.UUID
 import java.util.concurrent.atomic.AtomicLong
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 /**
  * A prepared save-target picker for the FOREGROUND module viewer to launch.
@@ -86,8 +107,11 @@ internal data class OfficeSaveCopySettlement(
  * waiting operation and releases the controller only after every scheduled IO
  * drained (quiescence, never a mid-IO clear). Nothing on these paths deletes
  * a working copy, a module-verified output or an uncertain provider
- * destination; recoverable bytes stay the App's retention obligation and a
- * user-visible recovery flow is explicitly PENDING, not claimed.
+ * destination. C08 adds the durable [com.floe.android.host.officerecovery.OfficeRecoveryJournal]
+ * and the App-owned review/action flow: receipts are persisted before a
+ * picker can be prepared, the exact target before provider IO, and only a
+ * destination read-back yields SAVED. Process loss mid-write stays UNCERTAIN
+ * and is never retried automatically.
  */
 internal class OfficeSaveCopyHandoff(
     private val service: SafGatewayService,
@@ -119,6 +143,12 @@ internal class OfficeSaveCopyHandoff(
      * behavior and assertion byte-identical.
      */
     private val receiptObserver: (OfficeSaveReceipt) -> Unit = {},
+    /** Durable recoverability ledger; null preserves the pre-C08 behavior. */
+    private val recoveryJournal: OfficeRecoveryJournalSink? = null,
+    /** AI-lane exports are not offered as manual recovery candidates. */
+    private val journalEligibility: (sessionToken: String, opId: String) -> Boolean = { _, _ -> true },
+    /** Fired OUTSIDE the lock when one exact session is removed (drained or immediate). */
+    private val onSessionQuiescent: (sessionToken: String) -> Unit = {},
 ) {
 
     private companion object {
@@ -158,6 +188,8 @@ internal class OfficeSaveCopyHandoff(
         val original: OfficeSaveCopyOriginal?,
         /** Lock-free liveness probe of the owning viewer operation. */
         val ownerAlive: () -> Boolean,
+        /** Recovery candidate this exact session's working copy belongs to. */
+        val recoveryCandidateId: String?,
     ) {
         val ordinal = AtomicLong(0)
         val outputs = LinkedHashMap<String, OfficeSaveReceipt>()
@@ -185,6 +217,7 @@ internal class OfficeSaveCopyHandoff(
         sessionToken: String,
         displayName: String,
         original: OfficeSaveCopyOriginal?,
+        recoveryCandidateId: String? = null,
         ownerAlive: () -> Boolean,
     ): Boolean = synchronized(lock) {
         if (sessions.containsKey(sessionToken)) {
@@ -213,7 +246,9 @@ internal class OfficeSaveCopyHandoff(
             diagnostic = bad
             return false
         }
-        sessions[sessionToken] = Session(sessionToken, controller, displayName, original, ownerAlive)
+        sessions[sessionToken] = Session(
+            sessionToken, controller, displayName, original, ownerAlive, recoveryCandidateId,
+        )
         true
     }
 
@@ -226,6 +261,7 @@ internal class OfficeSaveCopyHandoff(
     fun endSession(sessionToken: String) {
         val settlements = ArrayList<OfficeSaveCopySettlement>()
         var becameIdle = false
+        var removed = false
         synchronized(lock) {
             val s = sessions[sessionToken]
                 ?: return
@@ -248,6 +284,7 @@ internal class OfficeSaveCopyHandoff(
             if (s.pendingIo == 0) {
                 sessions.remove(sessionToken)
                 becameIdle = sessions.isEmpty()
+                removed = true
             }
         }
         // Sink OUTSIDE the host lock: the settlement is a synchronous binder
@@ -260,7 +297,18 @@ internal class OfficeSaveCopyHandoff(
             settlements.forEach(settlementSink)
         } finally {
             if (becameIdle) notifySessionsIdle()
+            if (removed) notifySessionQuiescent(sessionToken)
         }
+    }
+
+    /** One exact session is gone after all of its scheduled IO drained. */
+    private fun notifySessionQuiescent(sessionToken: String) {
+        runCatching { onSessionQuiescent(sessionToken) }.onFailure { diagnostic = it }
+    }
+
+    /** True while this exact session still owns scheduled transfer IO. */
+    fun isSessionBusy(sessionToken: String): Boolean = synchronized(lock) {
+        sessions[sessionToken]?.let { it.pendingIo > 0 || !it.ended } ?: false
     }
 
     /** Idle notification runs outside the host lock; its own failure never masks an original one. */
@@ -286,6 +334,28 @@ internal class OfficeSaveCopyHandoff(
         ) {
             return false
         }
+        // C08: refresh the durable working-copy fingerprint after a real
+        // FLUSHED/UNMODIFIED receipt. This is best-effort (the receipt flow is
+        // unchanged); a journal write failure is diagnostic, never a claim.
+        if (receipt.operation == OfficeSaveOperation.WORKING_COPY_FLUSH &&
+            (receipt.state == OfficeSaveState.FLUSHED || receipt.state == OfficeSaveState.UNMODIFIED) &&
+            receipt.workingCopySha256 != null &&
+            journalEligibility(receipt.sessionToken, receipt.opId)
+        ) {
+            val candidateId = synchronized(lock) {
+                sessions[receipt.sessionToken]?.takeIf { !it.ended && it.ownerAlive() }?.recoveryCandidateId
+            }
+            val journal = recoveryJournal
+            if (candidateId != null && journal != null) {
+                runCatching {
+                    journal.recordFlush(
+                        candidateId,
+                        receipt.workingCopySha256,
+                        receipt.workingCopyBytes,
+                    )
+                }.onFailure { diagnostic = it }
+            }
+        }
         // Additive Office AI lane observer FIRST for every shape-validated
         // receipt (Main host20). Its failure can never break the Save-Copy
         // filter below (observer work is the AI waiter table only).
@@ -309,6 +379,22 @@ internal class OfficeSaveCopyHandoff(
         return synchronized(lock) {
             val session = sessions[receipt.sessionToken] ?: return false
             if (session.ended || !session.ownerAlive()) return false
+            val candidateId = session.recoveryCandidateId
+            val journal = recoveryJournal
+            if (candidateId != null && journal != null &&
+                journalEligibility(receipt.sessionToken, receipt.opId)
+            ) {
+                // The verified output identity must be durable BEFORE the
+                // handoff can ever expose a picker. A refused journal write is
+                // an honest refusal (the module keeps its own output).
+                val persisted = runCatching {
+                    journal.recordOutputReady(candidateId, receipt)
+                }.getOrDefault(false)
+                if (!persisted) {
+                    diagnostic = "recovery journal refused staged output for op ${receipt.opId}"
+                    return false
+                }
+            }
             session.outputs[receipt.opId] = receipt
             while (session.outputs.size > MAX_TRACKED) session.outputs.remove(session.outputs.keys.first())
             true
@@ -409,11 +495,55 @@ internal class OfficeSaveCopyHandoff(
         val accepted = result.resultCode == RESULT_OK
         val uriString = if (accepted) result.uriString else null
         val flags = if (accepted) result.resultFlags else 0
+        // C08: persist TRANSFERRING + the exact destination BEFORE any
+        // provider write can start. A journal failure aborts without writing.
+        val transferJournal = recoveryJournal
+        if (accepted && uriString != null && session.recoveryCandidateId != null &&
+            transferJournal != null && journalEligibility(session.sessionToken, result.opId)
+        ) {
+            val persisted = runCatching {
+                transferJournal.markTransferStarted(
+                    session.recoveryCandidateId,
+                    result.opId,
+                    uriString,
+                )
+            }.getOrDefault(false)
+            if (!persisted) {
+                var becameIdle = false
+                var removed = false
+                val settlement = synchronized(lock) {
+                    session.pendingIo -= 1
+                    record.delivered = false
+                    val built = if (record.moduleSettled) null else {
+                        record.moduleSettled = true
+                        OfficeSaveCopySettlement(
+                            record.identity.operation, record.identity.sessionToken,
+                            record.nativeGeneration, OfficeHostSaveVerdict.COPY_FAILED,
+                            "recovery-journal-unavailable",
+                        )
+                    }
+                    if (session.ended && session.pendingIo == 0) {
+                        sessions.remove(session.sessionToken)
+                        becameIdle = sessions.isEmpty()
+                        removed = true
+                    }
+                    built
+                }
+                try {
+                    settlement?.let(settlementSink)
+                } finally {
+                    if (becameIdle) notifySessionsIdle()
+                    if (removed) notifySessionQuiescent(session.sessionToken)
+                }
+                return true
+            }
+        }
         val scheduled = runCatching {
             scheduler { cancel -> runDelivery(session, record, uriString, flags, cancel) }
         }.getOrDefault(false)
         if (!scheduled) {
             var becameIdle = false
+            var removed = false
             val settlement = synchronized(lock) {
                 session.pendingIo -= 1
                 record.delivered = false
@@ -428,6 +558,7 @@ internal class OfficeSaveCopyHandoff(
                 if (session.ended && session.pendingIo == 0) {
                     sessions.remove(session.sessionToken)
                     becameIdle = sessions.isEmpty()
+                    removed = true
                 }
                 built
             }
@@ -435,6 +566,7 @@ internal class OfficeSaveCopyHandoff(
                 settlement?.let(settlementSink)
             } finally {
                 if (becameIdle) notifySessionsIdle()
+                if (removed) notifySessionQuiescent(session.sessionToken)
             }
         }
         return true
@@ -466,6 +598,42 @@ internal class OfficeSaveCopyHandoff(
                 detail = unexpected.javaClass.simpleName,
             )
         }
+        val candidateId = session.recoveryCandidateId
+        val settlementJournal = recoveryJournal
+        if (candidateId != null && settlementJournal != null && outcome !is OfficeSaveCopyOutcome.Stale) {
+            val facts = when (outcome) {
+                is OfficeSaveCopyOutcome.CopiedVerified -> OfficeRecoverySaveFacts(
+                    saved = true,
+                    uncertain = false,
+                    code = null,
+                    destinationUri = outcome.destination.uri.uriString,
+                    destinationSha256 = outcome.destinationSha256,
+                    destinationBytes = outcome.bytes,
+                )
+                is OfficeSaveCopyOutcome.Cancelled -> OfficeRecoverySaveFacts(
+                    saved = false,
+                    uncertain = outcome.partialWritePossible,
+                    code = if (outcome.partialWritePossible) "cancelled-mid-write" else "cancelled",
+                    destinationUri = outcome.targetUri?.uriString,
+                    destinationSha256 = null,
+                    destinationBytes = 0L,
+                )
+                is OfficeSaveCopyOutcome.Failed -> OfficeRecoverySaveFacts(
+                    saved = false,
+                    uncertain = outcome.partialWritePossible,
+                    code = outcome.code,
+                    destinationUri = outcome.ownedTargetUri?.uriString,
+                    destinationSha256 = null,
+                    destinationBytes = 0L,
+                )
+                is OfficeSaveCopyOutcome.Stale -> null
+            }
+            if (facts != null) {
+                runCatching {
+                    settlementJournal.settleSave(candidateId, record.identity.operation, facts)
+                }.onFailure { diagnostic = it }
+            }
+        }
         val settlement = synchronized(lock) {
             if (record.moduleSettled) {
                 null // a duplicate/late body never announces twice
@@ -494,14 +662,17 @@ internal class OfficeSaveCopyHandoff(
             sinkFailure = sink
         }
         var becameIdle = false
+        var removed = false
         synchronized(lock) {
             session.pendingIo -= 1
             if (session.ended && session.pendingIo == 0) {
                 sessions.remove(session.sessionToken)
                 becameIdle = sessions.isEmpty()
+                removed = true
             }
         }
         if (becameIdle) notifySessionsIdle()
+        if (removed) notifySessionQuiescent(session.sessionToken)
         sinkFailure?.let { throw it }
     }
 
@@ -565,13 +736,53 @@ internal class OfficeSaveCopyHandoff(
  * lifetime owns the drain. The engine command connection is bound only while
  * at least one EDIT session is open and released when the last closes.
  */
-internal class OfficeSaveCopyHost(context: Context) {
+internal class OfficeSaveCopyHost(
+    context: Context,
+    private val scope: CoroutineScope,
+    private val recoveryJournal: OfficeRecoveryJournal? = null,
+) : OfficeRecoveryExportPort {
 
     private val appContext = context.applicationContext
     private val backend = AndroidSafBackend(appContext)
     private val gatewayService = SafGatewayService(backend, releaseBroker = SharedUriGrantAuthority.broker)
     private val stagingRoot = File(appContext.applicationInfo.dataDir, "files/OfficeSaveCopyScratch")
     private val outputsRoot = File(appContext.noBackupFilesDir, "floe-office-outputs")
+
+    /** Fired when one exact viewer session is fully drained (see handoff). */
+    @Volatile
+    private var sessionQuiescentListener: ((String) -> Unit)? = null
+
+    private class RecoveryExportOp(
+        val candidateId: String,
+        val controller: OfficeSaveCopyController,
+        val identity: OfficeSaveCopyIdentity,
+        val scratchDir: File,
+    ) {
+        @Volatile var delivering: Boolean = false
+    }
+
+    private class DestinationReauthOp(
+        val candidateId: String,
+        val spec: PickRequestSpec,
+    )
+
+    private val recoveryLock = Any()
+    private val recoveryOps = LinkedHashMap<String, RecoveryExportOp>()
+    private val destinationReauthOps = LinkedHashMap<String, DestinationReauthOp>()
+
+    init {
+        // A previous process may have died mid-preparation. No transfer can be
+        // running in THIS process yet, and the Office engine process never uses
+        // this directory, so only one-off recovery scratch is removed. Disk IO
+        // runs off-main; a failure is harmless (bounded private scratch).
+        scope.launch(Dispatchers.IO) {
+            runCatching {
+                stagingRoot.listFiles()
+                    ?.filter { it.isDirectory && it.name.startsWith("recovery-") }
+                    ?.forEach { dir -> dir.listFiles()?.forEach { it.delete() }; dir.delete() }
+            }
+        }
+    }
 
     /** The single Office AI lane receipt observer (host20): set by the
      * RuntimeHost-owned pump for its bound epoch and cleared on retire.
@@ -594,6 +805,9 @@ internal class OfficeSaveCopyHost(context: Context) {
         settlementSink = ::deliverSettlement,
         onSessionsIdle = ::releaseIdleConnection,
         receiptObserver = { receipt -> aiReceiptObserver?.invoke(receipt) },
+        recoveryJournal = recoveryJournal,
+        journalEligibility = { token, opId -> !isAiOwnedOperation(token, opId) },
+        onSessionQuiescent = { token -> sessionQuiescentListener?.invoke(token) },
     )
 
     /** The single parent endpoint the module fences by same-UID + descriptor. */
@@ -754,11 +968,22 @@ internal class OfficeSaveCopyHost(context: Context) {
         sessionToken: String,
         displayName: String,
         original: OfficeSaveCopyOriginal?,
+        recoveryCandidateId: String?,
         ownerAlive: () -> Boolean,
     ): Boolean {
-        if (!handoff.beginSession(sessionToken, displayName, original, ownerAlive)) return false
+        if (!handoff.beginSession(
+                sessionToken, displayName, original, recoveryCandidateId, ownerAlive,
+            )
+        ) {
+            return false
+        }
         ensureConnected()
         return true
+    }
+
+    /** Installs the single App-owned "one session fully drained" listener. */
+    internal fun setSessionQuiescentListener(listener: ((String) -> Unit)?) {
+        sessionQuiescentListener = listener
     }
 
     /** Closes one exact session; releases the controller's IO ownership at drain.
@@ -790,6 +1015,364 @@ internal class OfficeSaveCopyHost(context: Context) {
 
     /** Last internal handoff/transport failure, for explicit diagnostic views only. */
     fun lastDiagnostic(): Any? = handoff.diagnostic ?: settlementDiagnostic
+
+    // ------------------------------------------------------------------
+    // C08 recovery export port (OfficeRecoveryExportPort)
+    // ------------------------------------------------------------------
+
+    /**
+     * Prepare ONE App-owned recovery export of the exact module-verified
+     * output. This reuses the SAME [OfficeSaveCopyController] and SAF gateway
+     * as the viewer Save-Copy flow; no second save system is created. The
+     * returned spec is launched only by the foreground recovery effect.
+     */
+    override fun prepare(
+        candidate: OfficeRecoveryCandidate,
+        source: OfficeRecoveryVerifiedSource,
+    ): OfficeRecoveryPrepareOutcome {
+        val format = source.format.lowercase(Locale.ROOT)
+        val mime = OFFICE_RECOVERY_MIME_BY_FORMAT[format]
+            ?: return OfficeRecoveryPrepareOutcome.Refused("format")
+        if (!recoveryOutputIsOwned(source.path) ||
+            source.bytes !in 1..OfficeSaveCopySource.MAX_BYTES ||
+            !Regex("^[0-9a-f]{64}$").matches(source.sha256)
+        ) {
+            return OfficeRecoveryPrepareOutcome.Refused("source")
+        }
+        val suffix = UUID.randomUUID().toString().replace("-", "").take(24)
+        val requestId = "recovery-$suffix"
+        val sessionToken = "recovery-session-$suffix"
+        val scratch = File(stagingRoot, "recovery-$requestId")
+        val usable = runCatching {
+            (scratch.isDirectory || scratch.mkdirs()) && !Files.isSymbolicLink(scratch.toPath())
+        }.getOrDefault(false)
+        if (!usable) return OfficeRecoveryPrepareOutcome.Refused("storage")
+        val identity = try {
+            OfficeSaveCopyIdentity(sessionToken, requestId, 1L)
+        } catch (_: IllegalArgumentException) {
+            runCatching { scratch.delete() }
+            return OfficeRecoveryPrepareOutcome.Refused("identity")
+        }
+        val original = candidate.originalUri?.let { uri ->
+            runCatching { OfficeSaveCopyOriginal(SafUriRef(uri), candidate.originalDocumentId) }.getOrNull()
+        }
+        val displayName = recoverySuggestedName(candidate.displayName, format)
+        val controller = try {
+            OfficeSaveCopyController(gatewayService, backend, sessionToken, scratch)
+        } catch (_: IllegalArgumentException) {
+            runCatching { scratch.delete() }
+            return OfficeRecoveryPrepareOutcome.Refused("storage")
+        }
+        val saveSource = try {
+            OfficeSaveCopySource.create(
+                identity = identity,
+                expectedSha256 = source.sha256,
+                lengthBytes = source.bytes,
+                mimeType = mime,
+                suggestedName = displayName,
+                original = original,
+                lease = null,
+            ) { FileInputStream(File(source.path)) }
+        } catch (_: IllegalArgumentException) {
+            runCatching { scratch.delete() }
+            return OfficeRecoveryPrepareOutcome.Refused("source")
+        }
+        val prepared = controller.prepare(saveSource)
+        if (prepared !is OfficeSaveCopyPrepareResult.Prepared) {
+            runCatching { scratch.delete() }
+            return OfficeRecoveryPrepareOutcome.Refused("prepare")
+        }
+        val op = RecoveryExportOp(candidate.id, controller, identity, scratch)
+        synchronized(recoveryLock) {
+            recoveryOps[requestId] = op
+        }
+        return OfficeRecoveryPrepareOutcome.Ready(requestId, prepared.spec)
+    }
+
+    /**
+     * Deliver the ACTUAL picker result and run the real acceptance, bounded
+     * stream write and destination read-back on the gateway IO context. The
+     * callback carries the honest App-side outcome; this method returning true
+     * means only "scheduled/started".
+     */
+    override fun deliver(
+        requestId: String,
+        uriString: String?,
+        resultFlags: Int,
+        callback: (OfficeRecoveryExportOutcome) -> Unit,
+    ): Boolean {
+        val op = synchronized(recoveryLock) { recoveryOps[requestId] } ?: return false
+        op.delivering = true
+        val scheduled = runCatching {
+            gatewayService.submit { cancel ->
+                val outcome = try {
+                    val delivery = op.controller.deliverPickResult(uriString, resultFlags, op.identity)
+                    when (delivery) {
+                        is OfficeSaveCopyDelivery.TargetAccepted ->
+                            op.controller.transfer(op.identity, cancel)
+                        else -> op.controller.settledOutcome()
+                            ?.takeIf { it.identity == op.identity }
+                            ?: OfficeSaveCopyOutcome.Stale(op.identity, "delivery did not bind")
+                    }
+                } catch (unexpected: RuntimeException) {
+                    // An unexpected unwind may have happened after acceptance,
+                    // so the destination is kept UNCERTAIN rather than labeled
+                    // failed; nothing is retried automatically.
+                    OfficeSaveCopyOutcome.Failed(
+                        op.identity,
+                        code = "recovery-transaction-unexpected",
+                        stage = OfficeSaveCopyStage.TRANSFERRING,
+                        detail = unexpected.javaClass.simpleName,
+                        ownedTargetUri = uriString?.let { runCatching { SafUriRef(it) }.getOrNull() },
+                        partialWritePossible = true,
+                    )
+                }
+                val mapped = recoveryOutcome(requestId, outcome)
+                try {
+                    callback(mapped)
+                } finally {
+                    op.delivering = false
+                    cleanupRecoveryOp(requestId)
+                }
+                SafOutcome.success(Unit)
+            }
+            true
+        }.getOrDefault(false)
+        if (!scheduled) {
+            op.delivering = false
+            try {
+                callback(OfficeRecoveryExportOutcome.Failed(requestId, "scheduler-unavailable"))
+            } finally {
+                cleanupRecoveryOp(requestId)
+            }
+        }
+        return true
+    }
+
+    override fun cancel(requestId: String) {
+        var target: RecoveryExportOp? = null
+        synchronized(recoveryLock) {
+            destinationReauthOps.remove(requestId)
+            val current = recoveryOps[requestId] ?: return
+            if (current.delivering) return
+            recoveryOps.remove(requestId)
+            target = current
+        }
+        target?.let(::deleteRecoveryScratch)
+    }
+
+    override fun hasActiveFor(candidateId: String): Boolean = synchronized(recoveryLock) {
+        recoveryOps.values.any { it.candidateId == candidateId }
+    }
+
+    override fun isSessionBusy(sessionToken: String): Boolean = handoff.isSessionBusy(sessionToken)
+
+    override fun prepareDestinationReauthorization(
+        candidate: OfficeRecoveryCandidate,
+    ): OfficeRecoveryPrepareOutcome {
+        val format = (candidate.outputFormat ?: candidate.format).lowercase(Locale.ROOT)
+        val mime = OFFICE_RECOVERY_MIME_BY_FORMAT[format]
+            ?: return OfficeRecoveryPrepareOutcome.Refused("format")
+        val requestId = "reauth-" + UUID.randomUUID().toString().replace("-", "").take(24)
+        val spec = try {
+            gatewayService.grants.pickerForOpenDocument(listOf(mime))
+        } catch (_: IllegalArgumentException) {
+            return OfficeRecoveryPrepareOutcome.Refused("picker")
+        }
+        synchronized(recoveryLock) {
+            destinationReauthOps[requestId] = DestinationReauthOp(candidate.id, spec)
+        }
+        return OfficeRecoveryPrepareOutcome.Ready(requestId, spec)
+    }
+
+    /**
+     * Accept the re-picked destination through the SAME gateway, then require
+     * the exact destination identity AND byte equality. A different file is
+     * never treated as the previous destination; no write occurs here.
+     */
+    override fun deliverDestinationReauthorization(
+        requestId: String,
+        uriString: String?,
+        resultFlags: Int,
+        expectedUri: String,
+        expectedSha256: String,
+        expectedBytes: Long,
+    ): OfficeRecoveryDestinationCheck {
+        val op = synchronized(recoveryLock) { destinationReauthOps.remove(requestId) }
+            ?: return OfficeRecoveryDestinationCheck.Unavailable("stale")
+        val accepted = try {
+            gatewayService.grants.acceptPickResult(op.spec, uriString, resultFlags)
+        } catch (_: RuntimeException) {
+            return OfficeRecoveryDestinationCheck.Unavailable("acceptance-failed")
+        }
+        return when (accepted) {
+            is PickAcceptResult.Cancelled -> OfficeRecoveryDestinationCheck.Unavailable("cancelled")
+            is PickAcceptResult.Rejected -> OfficeRecoveryDestinationCheck.GrantRequired(accepted.reason)
+            is PickAcceptResult.Accepted -> {
+                if (accepted.uri.uriString != expectedUri) {
+                    OfficeRecoveryDestinationCheck.Differs(null, null, "identity-mismatch")
+                } else {
+                    checkDestination(accepted.uri.uriString, expectedSha256, expectedBytes)
+                }
+            }
+        }
+    }
+
+    /**
+     * Read the uncertain destination back under a LIVE grant. It never
+     * persists/takes a grant, never writes, and never deletes. Missing/expired
+     * access is reported as GrantRequired so the UI can offer a deliberate
+     * new-copy save instead of silently re-taking authority.
+     */
+    override fun checkDestination(
+        uriString: String,
+        expectedSha256: String,
+        expectedBytes: Long,
+    ): OfficeRecoveryDestinationCheck {
+        val target = runCatching { SafDocumentRef(null, null, null, SafUriRef(uriString)) }.getOrNull()
+            ?: return OfficeRecoveryDestinationCheck.Unavailable("invalid-uri")
+        val operation = runCatching {
+            gatewayService.submit { cancel ->
+                gatewayService.operations.streamRead(
+                    target,
+                    OfficeSaveCopySource.MAX_BYTES,
+                    null,
+                    cancel,
+                ) { _, _ -> }
+            }
+        }.getOrNull() ?: return OfficeRecoveryDestinationCheck.Unavailable("scheduler-unavailable")
+        return when (val outcome = operation.await(30_000L)) {
+            is SafOutcome.Failure -> when (val failure = outcome.failure) {
+                SafFailure.GrantMissing, SafFailure.Revoked ->
+                    OfficeRecoveryDestinationCheck.GrantRequired(failure.code)
+                is SafFailure.RePickRequired ->
+                    OfficeRecoveryDestinationCheck.GrantRequired(failure.code)
+                SafFailure.NotFound ->
+                    OfficeRecoveryDestinationCheck.Differs(null, null, "not-found")
+                is SafFailure.SizeLimitExceeded ->
+                    OfficeRecoveryDestinationCheck.Differs(null, null, "size-limit")
+                else -> OfficeRecoveryDestinationCheck.Unavailable(failure.code)
+            }
+            is SafOutcome.Success -> {
+                val summary = outcome.value
+                if (summary.completed && summary.bytes == expectedBytes && summary.sha256 == expectedSha256) {
+                    OfficeRecoveryDestinationCheck.Verified(summary.sha256, summary.bytes)
+                } else {
+                    OfficeRecoveryDestinationCheck.Differs(summary.bytes, summary.sha256, "content-differs")
+                }
+            }
+        }
+    }
+
+    /**
+     * Probe whether the provider original still has the source fingerprint.
+     * This is a read under the EXISTING live grant only; it never trusts the
+     * persisted URI string and never re-takes access.
+     */
+    override fun probeOriginal(
+        uriString: String,
+        expectedSha256: String,
+        expectedBytes: Long,
+    ): OfficeRecoveryOriginalState {
+        val source = runCatching { SafDocumentRef(null, null, null, SafUriRef(uriString)) }.getOrNull()
+            ?: return OfficeRecoveryOriginalState.UNAVAILABLE
+        val operation = runCatching {
+            gatewayService.submit { cancel ->
+                gatewayService.operations.streamRead(
+                    source,
+                    OfficeSaveCopySource.MAX_BYTES,
+                    null,
+                    cancel,
+                ) { _, _ -> }
+            }
+        }.getOrNull() ?: return OfficeRecoveryOriginalState.UNAVAILABLE
+        return when (val outcome = operation.await(30_000L)) {
+            is SafOutcome.Failure -> when (outcome.failure) {
+                SafFailure.GrantMissing, SafFailure.Revoked -> OfficeRecoveryOriginalState.UNAVAILABLE
+                is SafFailure.RePickRequired -> OfficeRecoveryOriginalState.UNAVAILABLE
+                SafFailure.NotFound -> OfficeRecoveryOriginalState.CHANGED
+                is SafFailure.SizeLimitExceeded -> OfficeRecoveryOriginalState.CHANGED
+                else -> OfficeRecoveryOriginalState.UNAVAILABLE
+            }
+            is SafOutcome.Success -> {
+                val summary = outcome.value
+                if (summary.completed && summary.bytes == expectedBytes && summary.sha256 == expectedSha256) {
+                    OfficeRecoveryOriginalState.UNCHANGED
+                } else {
+                    OfficeRecoveryOriginalState.CHANGED
+                }
+            }
+        }
+    }
+
+    private fun recoveryOutcome(
+        requestId: String,
+        outcome: OfficeSaveCopyOutcome,
+    ): OfficeRecoveryExportOutcome = when (outcome) {
+        is OfficeSaveCopyOutcome.CopiedVerified -> OfficeRecoveryExportOutcome.Saved(
+            requestId,
+            outcome.destination.uri.uriString,
+            outcome.destinationSha256,
+            outcome.bytes,
+        )
+        is OfficeSaveCopyOutcome.Cancelled -> if (outcome.partialWritePossible) {
+            OfficeRecoveryExportOutcome.Uncertain(
+                requestId,
+                outcome.targetUri?.uriString,
+                "cancelled-mid-write",
+            )
+        } else {
+            OfficeRecoveryExportOutcome.Cancelled(requestId, "cancelled")
+        }
+        is OfficeSaveCopyOutcome.Failed -> if (outcome.partialWritePossible) {
+            OfficeRecoveryExportOutcome.Uncertain(
+                requestId,
+                outcome.ownedTargetUri?.uriString,
+                outcome.code,
+            )
+        } else {
+            OfficeRecoveryExportOutcome.Failed(requestId, outcome.code)
+        }
+        is OfficeSaveCopyOutcome.Stale -> OfficeRecoveryExportOutcome.Stale(requestId, outcome.reason)
+    }
+
+    private fun recoveryOutputIsOwned(path: String): Boolean {
+        if (path.isEmpty() || path.length > 4096 || path.contains('\u0000') || !File(path).isAbsolute) return false
+        val file = runCatching { File(path).canonicalFile }.getOrNull() ?: return false
+        val root = runCatching { outputsRoot.canonicalFile }.getOrNull() ?: return false
+        return !Files.isSymbolicLink(File(path).toPath()) &&
+            file.isFile &&
+            file.path.startsWith(root.path + File.separator)
+    }
+
+    private fun recoverySuggestedName(raw: String?, format: String): String {
+        val trimmed = raw?.trim().orEmpty()
+        val base = trimmed
+            .substringAfterLast('/')
+            .substringAfterLast('\\')
+            .substringBeforeLast('.', trimmed)
+            .takeIf { it.isNotBlank() && it.length <= 220 }
+        val name = ((base ?: "office-copy") + "." + format).take(240)
+        return if (OfficeSaveCopySource.isUnsafeDisplaySegment(name)) "office-copy.$format" else name
+    }
+
+    private fun cleanupRecoveryOp(requestId: String) {
+        var target: RecoveryExportOp? = null
+        synchronized(recoveryLock) {
+            val current = recoveryOps[requestId] ?: return
+            if (current.delivering) return
+            recoveryOps.remove(requestId)
+            target = current
+        }
+        target?.let(::deleteRecoveryScratch)
+    }
+
+    private fun deleteRecoveryScratch(op: RecoveryExportOp) {
+        runCatching {
+            op.scratchDir.listFiles()?.forEach { it.delete() }
+            op.scratchDir.delete()
+        }
+    }
 
     private fun ensureConnected() = synchronized(bindLock) {
         if (bound) return

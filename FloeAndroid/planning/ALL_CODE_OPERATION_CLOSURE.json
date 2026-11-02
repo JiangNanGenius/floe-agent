@@ -2127,6 +2127,16 @@
         ],
         "dependencies": [],
         "qualification": "source-only; crash behavior not tested"
+      },
+      "currentImplementation": {
+        "state": "source-integrated-unqualified",
+        "batch": "c08-office-recovery",
+        "behavior": "Durable private working/export journal; actual staged output and verified destination receipt; cold-start uncertain state never auto-retries; measured later working bytes remain unresolved; safe capacity reclaim; original save-copy transaction and manual recovery re-entry",
+        "sourceFiles": 14,
+        "testsRun": false,
+        "compiled": false,
+        "deviceVerified": false,
+        "limits": "Recoverable persisted working/export bytes, not a guarantee for unflushed engine RAM edits. Same original/URI grants must be revalidated; no metadata-based task authority."
       }
     },
     {

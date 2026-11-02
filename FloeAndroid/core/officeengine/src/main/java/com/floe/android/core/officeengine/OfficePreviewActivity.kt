@@ -227,6 +227,14 @@ class OfficePreviewActivity : ComponentActivity(), OfficeEngineService.OfficeEng
     private var viewerUrl: String? by mutableStateOf(null)
     private var localFailure: Pair<OfficeFailureCode, String?>? by mutableStateOf(null)
     private var showDirtyCloseSheet by mutableStateOf(false)
+
+    /**
+     * C08: the user chose the dirty sheet's explicit Discard action. It is
+     * carried out ONLY in this Activity result so the App can distinguish a
+     * deliberate discard from a process-loss/unknown close. It never deletes
+     * anything here; the App owns its retained artifacts.
+     */
+    private var userDiscarded = false
     private var diagnosticEvents: List<OfficeSessionDiagnostics.Event> by mutableStateOf(emptyList())
 
     /**
@@ -576,7 +584,8 @@ class OfficePreviewActivity : ComponentActivity(), OfficeEngineService.OfficeEng
         // Only the explicit Discard choice or a verified App COPY_SAVED
         // close-save bypasses it. Native FLUSHED/UNMODIFIED/ModifiedStatus
         // facts describe the PRIVATE working copy only and never authorize a
-        // close (no original writeback or user-visible recovery exists yet).
+        // close (the App recovery review exists, but it never turns a private
+        // working-copy fact into a completed save or an automatic close).
         val state = editState
         if (request?.permission == OfficePermission.EDIT &&
             (state?.documentModified == true || everEnteredEditMode) &&
@@ -623,6 +632,7 @@ class OfficePreviewActivity : ComponentActivity(), OfficeEngineService.OfficeEng
      * that exact op.
      */
     private fun startSaveCopy(forClose: Boolean) {
+        userDiscarded = false
         val token = request?.sessionToken ?: return
         val format = request?.format?.fileExtension ?: return
         val opId = newOpId("export")
@@ -918,6 +928,7 @@ class OfficePreviewActivity : ComponentActivity(), OfficeEngineService.OfficeEng
      * any recovery data retained. No SAF, URI or path is created here.
      */
     private fun startInternalSaveAndClose() {
+        userDiscarded = false
         if (closeSavePhase != null || pdfBusyKey != null) return
         // Never start a working-copy flush underneath an external Save-Copy
         // picker/settlement: the two destinations must not interleave.
@@ -1054,7 +1065,13 @@ class OfficePreviewActivity : ComponentActivity(), OfficeEngineService.OfficeEng
      */
     private fun discardAndClose() {
         showDirtyCloseSheet = false
-        request?.sessionToken?.let { service?.requestClose(it, "user-back", userInitiated = true) }
+        val token = request?.sessionToken
+        val engine = service
+        if (token == null || engine == null) return
+        // Mark the result only when an exact close request was actually
+        // issued; a failed keep-editing path must not tag a later save.
+        userDiscarded = true
+        engine.requestClose(token, "user-back", userInitiated = true)
     }
 
     private fun freezeDocumentInput() {
@@ -1240,6 +1257,7 @@ class OfficePreviewActivity : ComponentActivity(), OfficeEngineService.OfficeEng
         val isCloseSave = closeAfterExportOpId == settlement.opId
         when (settlement.verdict) {
             OfficeHostSaveVerdict.COPY_SAVED -> {
+                userDiscarded = false
                 if (isCloseSave) {
                     closeAfterExportOpId = null
                     closeSavePhase = null
@@ -1364,6 +1382,7 @@ class OfficePreviewActivity : ComponentActivity(), OfficeEngineService.OfficeEng
                     ArrayList(outcome.saveReceiptDescriptors),
                 )
             }
+            if (userDiscarded) putExtra(EXTRA_USER_DISCARDED, true)
         }
         val resultCode = if (outcome.failure == null) RESULT_OK else RESULT_CANCELED
         setResult(resultCode, data)
@@ -1377,6 +1396,9 @@ class OfficePreviewActivity : ComponentActivity(), OfficeEngineService.OfficeEng
          *  delay is honest and cheap; the query itself is a tiny same-UID
          *  binder round-trip on a dedicated thread. */
         private const val APPROVAL_NOTICE_POLL_MS = 1_000L
+
+        /** App-owned recovery result flag: explicit user discard (never a save). */
+        const val EXTRA_USER_DISCARDED = "com.floe.android.office.USER_DISCARDED"
 
         internal fun intentFor(context: Context, request: OfficePreviewRequest): Intent =
             Intent(context, OfficePreviewActivity::class.java).apply {

@@ -90,6 +90,7 @@ import com.floe.android.feature.providers.FloeProviderSettingsDestination
 import com.floe.android.host.AttachmentPickerEffect
 import com.floe.android.host.LocalNetworkPermissionEffect
 import com.floe.android.host.RuntimeHost
+import com.floe.android.host.officerecovery.OfficeRecoveryEffect
 import com.floe.android.host.RuntimeHostProvider
 import com.floe.android.host.SkillsFolderPickerEffect
 import com.floe.android.host.creative.GenerationForegroundOwner
@@ -143,7 +144,13 @@ private fun FloeShellContent(
 ) {
     val application = androidx.compose.ui.platform.LocalContext.current.applicationContext as? FloeApplication
     val officePreviews = application?.officePreviews
-    if (officePreviews != null) OfficePreviewEffect(officePreviews, themeMode)
+    if (officePreviews != null) {
+        OfficePreviewEffect(officePreviews, themeMode)
+        // C08: durable interrupted-Office-save review. Mounted beside the
+        // existing preview effect; the controller owns discovery/actions and
+        // performs nothing until the user chooses.
+        OfficeRecoveryEffect(officePreviews.recovery)
+    }
     if (application != null) {
         NotesPdfPasswordDialog(application.notesPdfPasswords)
         val notesPlatform by application.notesPlatform.collectAsState()
@@ -833,6 +840,10 @@ private fun FloeShellContent(
             // strip disappears with it. Provider-pick opens have no owner
             // and never show it.
             val officeState = officePreviews?.state?.collectAsState()?.value
+            val recoveryState = officePreviews?.recovery?.state?.collectAsState()?.value
+            val recoveryEntry = recoveryState != null &&
+                !recoveryState.visible &&
+                recoveryState.candidates.any { it.unresolved }
             val visibleConversationId =
                 (selection as? SidebarSelection.Conversation)?.conversationId
             val ownedReturnTarget = officeState?.ownedReturn?.takeIf { target ->
@@ -871,6 +882,37 @@ private fun FloeShellContent(
                         Spacer(Modifier.width(10.dp))
                         FloeText(
                             text = stringResource(R.string.office_return_action),
+                            style = Floe.typography.bodyEmphasized,
+                            color = Floe.colors.accent,
+                        )
+                    }
+                }
+                if (recoveryEntry) {
+                    // Bounded re-entry after the recovery sheet is dismissed:
+                    // the review stays discoverable without a process restart.
+                    val zhRecovery = java.util.Locale.getDefault().language == "zh"
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .heightIn(min = 44.dp)
+                            .clickable { officePreviews?.recovery?.show() }
+                            .semantics {
+                                contentDescription = if (zhRecovery) "恢复 Office 文档" else "Recover Office document"
+                            }
+                            .padding(horizontal = 16.dp, vertical = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        FloeText(
+                            text = if (zhRecovery) "恢复 Office 文档" else "Recover Office document",
+                            modifier = Modifier.weight(1f),
+                            style = Floe.typography.metadata,
+                            color = Floe.colors.label,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                        Spacer(Modifier.width(10.dp))
+                        FloeText(
+                            text = if (zhRecovery) "查看" else "Review",
                             style = Floe.typography.bodyEmphasized,
                             color = Floe.colors.accent,
                         )
