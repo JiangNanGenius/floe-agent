@@ -597,6 +597,138 @@ final class LinuxRunnerEnvironmentRealGuestTests: XCTestCase {
         }
     }
 
+    /// The packaged component has a NEW image identity, not the first test's
+    /// fixture overlay. Import its complete, digest-bound ZIP through the real
+    /// installer, then adopt the SAME old writable disk. Only the existing
+    /// DEBUG catalog fixture seam supplies the unpublished ID/digest pair;
+    /// public download/catalog qualification stays separate until publication.
+    func testImportedRunnerComponentAdoptsExistingDiskAcrossImageIdentityChange() async throws {
+        let variables = ProcessInfo.processInfo.environment
+        guard variables["FLOE_RUNNER21_COMPONENT_ADOPTION"] == "1" else {
+            throw XCTSkip("Opt-in real component adoption is not enabled.")
+        }
+        let imagesRoot = URL(fileURLWithPath: try XCTUnwrap(variables["FLOE_RUNNER21_IMAGES_ROOT"]),
+                             isDirectory: true)
+        let newSource = URL(fileURLWithPath: try XCTUnwrap(variables["FLOE_RUNNER21_NEW_IMAGE_ROOT"]),
+                            isDirectory: true)
+        let newArchive = URL(fileURLWithPath: try XCTUnwrap(variables["FLOE_RUNNER21_NEW_ARCHIVE"]))
+        let archiveSHA512 = try XCTUnwrap(variables["FLOE_RUNNER21_NEW_ARCHIVE_SHA512"])
+        let expectedComponent = try JSONDecoder().decode(LinuxGuestImage.self,
+            from: Data(contentsOf: newSource.appendingPathComponent("manifest.json")))
+        let baseSource = imagesRoot.appendingPathComponent(LinuxGuestImageDistributionCatalog.defaultImageID)
+        let owned = imagesRoot.deletingLastPathComponent().appendingPathComponent("adoption-\(UUID().uuidString)")
+        let writable = owned.appendingPathComponent("environment", isDirectory: true)
+        let workspace = owned.appendingPathComponent("workspace", isDirectory: true)
+        for directory in [writable, workspace] {
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        }
+        let began = Date()
+        func phase(_ name: String) {
+            print("FLOE_RUNNER21_ADOPTION_PHASE \(name) seconds=\(Date().timeIntervalSince(began))")
+        }
+        let installer = LinuxGuestImageInstallationService(root: owned.appendingPathComponent("installation"))
+        let environmentID = "runner21-adoption-\(UUID().uuidString)"
+        let descriptor = LinuxGuestEnvironmentDescriptor(
+            id: environmentID, ownerID: environmentID, taskID: "runner21-adoption",
+            writableDirectory: writable,
+            shares: [.init(tag: LinuxGuestShare.environmentTag, hostDirectory: writable),
+                     .init(tag: LinuxGuestShare.workspaceTag, hostDirectory: workspace)],
+            imageID: LinuxGuestImageDistributionCatalog.defaultImageID,
+            ramMB: 256, vcpus: 1, networkEnabled: true)
+        let provider = RunnerImportedDescriptor(descriptor: descriptor)
+        let registry = TinyEMULinuxGuestRegistry(
+            environments: provider, images: FileLinuxGuestImageResolver(root: installer.imagesDirectory),
+            limits: LinuxGuestLimits(runnerProbeTimeout: 120), targetDiskCapacityBytes: 17_179_869_184)
+        func run(_ command: String) async throws -> LinuxCommandResult {
+            try await registry.run(environmentID: environmentID, argv: ["/bin/sh", "-c", command],
+                workingDirectory: "/workspace", standardInput: nil, timeout: 120,
+                maxOutputBytes: 64 * 1024, cancellation: nil)
+        }
+        func cleanup() async throws {
+            await registry.stop(environmentID: environmentID)
+            let status = await registry.status(environmentID: environmentID)
+            let reserved = await registry.reservedGuestRAMMB
+            XCTAssertFalse(status.running)
+            XCTAssertEqual(reserved, 0)
+            guard !status.running, reserved == 0 else {
+                throw RunnerQualificationFailure.liveFixtureRetained(owned.path)
+            }
+            try FileManager.default.removeItem(at: owned)
+        }
+        do {
+            LinuxGuestImageDistributionCatalog.registerTestEntry(LinuxGuestTrustedImage(
+                id: expectedComponent.id, archiveURL: newArchive, archiveSHA512: archiveSHA512,
+                provenance: try XCTUnwrap(expectedComponent.provenance)))
+            defer { LinuxGuestImageDistributionCatalog.clearTestEntries() }
+            let base = try await installer.importDirectory(at: baseSource)
+            phase("base.imported")
+            let component = try await installer.importArchive(at: newArchive,
+                expectedSHA512: archiveSHA512, expectedImageID: expectedComponent.id)
+            phase("component.imported")
+            XCTAssertNotEqual(component.id, base.id)
+            let runner = try XCTUnwrap(component.runnerArtifact)
+            XCTAssertTrue(component.runnerCapabilities?.contains("env=1") == true)
+            XCTAssertTrue(component.compatibleOrigins?.contains(where: { $0.imageID == base.id }) == true)
+            let manifestURL = installer.imagesDirectory.appendingPathComponent(component.id)
+                .appendingPathComponent("manifest.json")
+            let manifest = try XCTUnwrap(JSONSerialization.jsonObject(
+                with: Data(contentsOf: manifestURL)) as? [String: Any])
+            XCTAssertEqual(manifest["smp_capable"] as? Bool, true)
+            XCTAssertEqual(manifest["max_vcpus"] as? Int, 3)
+            let template = try XCTUnwrap(manifest["template"] as? [String: Any])
+            XCTAssertEqual(template["id"] as? String, "basic")
+            XCTAssertEqual(template["verified"] as? Bool, true)
+
+            _ = try await registry.start(environmentID: environmentID, taskID: descriptor.taskID)
+            let written = try await run("printf 'preserved-across-image-id' > /var/tmp/floe-component-owned; "
+                + "dpkg-query -W -f='${Package} ${Version}\\n' python3 nodejs")
+            XCTAssertEqual(written.exitCode, 0, written.stderr)
+            let originURL = LinuxGuestRuntimeImagePreparer.environmentDiskDirectory(
+                writableDirectory: writable, environmentID: environmentID).appendingPathComponent("origin.json")
+            let originalOrigin = try Data(contentsOf: originURL)
+            await registry.stop(environmentID: environmentID)
+            phase("base.stopped")
+
+            await provider.selectImage(component.id)
+            _ = try await registry.start(environmentID: environmentID, taskID: descriptor.taskID)
+            phase("component.adopted")
+            let actual = try await run("test \"$(cat /var/tmp/floe-component-owned)\" = preserved-across-image-id "
+                + "&& sha512sum /usr/local/bin/floe-exec")
+            XCTAssertEqual(actual.exitCode, 0, actual.stderr)
+            XCTAssertTrue(actual.stdout.hasPrefix(runner.sha512), actual.stdout)
+            let packages = try await run("dpkg-query -W -f='${Package} ${Version}\\n' python3 nodejs")
+            XCTAssertEqual(packages.exitCode, 0, packages.stderr)
+            XCTAssertEqual(packages.stdout, written.stdout)
+            XCTAssertEqual(try Data(contentsOf: originURL), originalOrigin)
+            let current = await registry.status(environmentID: environmentID)
+            XCTAssertEqual(current.imageID, component.id)
+            let measured = try XCTUnwrap(LinuxGuestRuntimeImagePreparer.recordedRunnerCapabilities(
+                writableDirectory: writable, environmentID: environmentID))
+            XCTAssertTrue(measured.contains("runner=2.1.0"), measured)
+            XCTAssertTrue(measured.split(separator: " ").contains("env=1"), measured)
+            let isolated = try await Self.sensitiveRun(registry, environmentID, value: "synthetic-adoption")
+            XCTAssertEqual(isolated.exitCode, 0, isolated.stderr)
+            XCTAssertEqual(isolated.stdout, "synthetic-adoption")
+            await registry.stop(environmentID: environmentID)
+            _ = try await registry.start(environmentID: environmentID, taskID: descriptor.taskID)
+            let reopened = try await run("cat /var/tmp/floe-component-owned")
+            XCTAssertEqual(reopened.exitCode, 0, reopened.stderr)
+            XCTAssertEqual(reopened.stdout, "preserved-across-image-id")
+            XCTAssertEqual(try Data(contentsOf: originURL), originalOrigin)
+            let receipt = XCTAttachment(string: "base=\(base.id)\ncomponent=\(component.id)\n"
+                + "actualCAPS=\(measured)\nrunnerSHA512=\(runner.sha512)\n"
+                + "scope=actual ZIP import and old writable-disk adoption; DEBUG fixture ID/digest only; public download pending")
+            receipt.name = "runner21-component-image-adoption"; receipt.lifetime = .keepAlways; add(receipt)
+            try await cleanup()
+            phase("owned.cleanup.complete")
+        } catch {
+            let originalError = error
+            do { try await cleanup() }
+            catch { XCTFail("Fixture retained after cleanup failure: \(error)") }
+            throw originalError
+        }
+    }
+
     private nonisolated static func sensitiveRun(_ registry: TinyEMULinuxGuestRegistry,
                                                  _ environmentID: String, value: String) async throws -> LinuxCommandResult {
         let ticket = SensitiveProcessEnvironmentTicket(try SensitiveProcessEnvironment(["FLOE_R21_SYNTHETIC": value]))
@@ -619,6 +751,15 @@ private struct RunnerCandidate: Decodable, Sendable {
 
 private struct RunnerOwnedDescriptor: LinuxGuestEnvironmentProviding {
     let descriptor: LinuxGuestEnvironmentDescriptor
+    func linuxGuestEnvironment(id: String) async -> LinuxGuestEnvironmentDescriptor? {
+        descriptor.id == id ? descriptor : nil
+    }
+}
+
+private actor RunnerImportedDescriptor: LinuxGuestEnvironmentProviding {
+    private var descriptor: LinuxGuestEnvironmentDescriptor
+    init(descriptor: LinuxGuestEnvironmentDescriptor) { self.descriptor = descriptor }
+    func selectImage(_ imageID: String) { descriptor.imageID = imageID }
     func linuxGuestEnvironment(id: String) async -> LinuxGuestEnvironmentDescriptor? {
         descriptor.id == id ? descriptor : nil
     }
