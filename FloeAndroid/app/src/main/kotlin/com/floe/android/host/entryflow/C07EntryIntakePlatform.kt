@@ -437,6 +437,7 @@ internal data class C07EntryImportRequest(
 internal class C07EntryNotesImporter(
     private val resolver: ContentResolver,
     private val cacheDir: File,
+    private val visualMedia: suspend () -> com.floe.android.feature.notes.ui.api.NotesMediaPort,
 ) {
     private val officeMimes = setOf(
         "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
@@ -474,13 +475,19 @@ internal class C07EntryNotesImporter(
         for (item in request.items.filter { it.kind == C07EntryItemKind.FILE }) {
             currentCoroutineContext().ensureActive()
             val documentID = c07StableDocumentID(request.intakeID, "file:${item.index}")
-            if (noteExists(notes, documentID)) {
+            val visual = item.mimeType == "application/pdf" || item.mimeType.startsWith("image/")
+            if (!visual && noteExists(notes, documentID)) {
                 saved += 1
                 continue
             }
             val resource = importResource(notes, item, budget)
             try {
-                val created = notes.createDocument(
+                val created = if (visual) {
+                    com.floe.android.feature.notes.ui.state.NotesVisualResourceImport.create(
+                        notes, visualMedia(), resource.resourceID, item.displayName,
+                        C07SharePolicy.noteTitle(item.displayName), documentID,
+                    )
+                } else notes.createDocument(
                     NotesCreateDocument(
                         kind = kindFor(item.mimeType),
                         title = C07SharePolicy.noteTitle(item.displayName),
@@ -492,6 +499,9 @@ internal class C07EntryNotesImporter(
                 if (!created.id.equals(documentID, ignoreCase = true)) {
                     throw C07EntryImportException(C07EntryRefusal.FAILED)
                 }
+                // Duplicate import may reuse an already-completed note's
+                // original resource. Only unreferenced staging is discarded.
+                runCatching { notes.discardUnreferencedResource(resource.resourceID) }
             } catch (error: Throwable) {
                 try { notes.discardUnreferencedResource(resource.resourceID) } catch (_: Throwable) { }
                 throw mapNotesError(error)

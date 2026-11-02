@@ -100,7 +100,9 @@ class NotesEngineeringPreviewActivity : ComponentActivity() {
                     Spacer(Modifier.height(8.dp))
                     if (failed) FloeText(stringResource(R.string.workspace_document_cad_failed_title), style = Floe.typography.body)
                     else if (!ready) FloeText(stringResource(R.string.workspace_document_cad_rendering), style = Floe.typography.body)
-                    if (prepared) AndroidView(modifier = Modifier.fillMaxWidth().weight(1f), factory = { makeWebView() })
+                    if (prepared) Box(Modifier.fillMaxWidth().weight(1f)) {
+                        AndroidView(modifier = Modifier.fillMaxSize(), factory = { makeWebView() })
+                    }
                     else Spacer(Modifier.weight(1f))
                     FloeText(stringResource(if (format == C04CadFormat.DXF || format == C04CadFormat.DWG)
                         R.string.workspace_document_cad_hint_2d else R.string.workspace_document_cad_hint_3d), style = Floe.typography.metadata)
@@ -139,6 +141,10 @@ class NotesEngineeringPreviewActivity : ComponentActivity() {
         val server = C04CadWebAssetServer(this, registry)
         return WebView(this).also { view ->
             web = view
+            view.layoutParams = android.view.ViewGroup.LayoutParams(
+                android.view.ViewGroup.LayoutParams.MATCH_PARENT,
+                android.view.ViewGroup.LayoutParams.MATCH_PARENT,
+            )
             view.settings.apply {
                 javaScriptEnabled = true; domStorageEnabled = false; databaseEnabled = false
                 allowFileAccess = false; allowContentAccess = false

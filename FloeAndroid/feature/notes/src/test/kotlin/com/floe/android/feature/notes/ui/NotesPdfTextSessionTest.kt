@@ -128,8 +128,8 @@ class NotesPdfTextSessionTest {
     )
 
     private class FakeHandle(
-        private val outcome: suspend (Int) -> NotesPdfPageTextOutcome,
         private val started: CompletableDeferred<Unit>? = null,
+        private val outcome: suspend (Int) -> NotesPdfPageTextOutcome,
     ) : NotesPdfHandle {
         override val documentID: String = "doc-1"
         override val resourceID: String = "resource-1"

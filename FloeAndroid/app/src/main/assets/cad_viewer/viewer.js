@@ -50,11 +50,30 @@ function fail(code, message) {
 
 function readyWith(facts) {
   if (disposed) return;
+  const rect = view.getBoundingClientRect();
+  const canvas = view.querySelector('canvas');
+  if (rect.width < 2 || rect.height < 2 || !canvas || canvas.width < 2 || canvas.height < 2) {
+    fail('emptyViewport', 'The preview surface has no visible size.');
+    return;
+  }
   ready = true;
   frameSequence = Math.max(frameSequence, 1);
   status.hidden = true;
   errorBox.hidden = true;
-  post({ type: 'ready', facts: { ...facts, rendered: true, frameSequence } });
+  post({ type: 'ready', facts: { ...facts, rendered: true, frameSequence,
+    viewportWidth: Math.round(rect.width), viewportHeight: Math.round(rect.height) } });
+}
+
+// WebView can execute the document before its Compose surface is measured.
+// Constructing a 3D camera at zero height must not produce a ready receipt.
+async function waitForViewport() {
+  const deadline = performance.now() + 10000;
+  while (!disposed && performance.now() < deadline) {
+    const rect = view.getBoundingClientRect();
+    if (rect.width >= 2 && rect.height >= 2) return;
+    await new Promise(resolve => setTimeout(resolve, 40));
+  }
+  throw new Error('emptyViewport');
 }
 
 function waitFrames(count = 2) {
@@ -543,6 +562,7 @@ async function load() {
     manifest = await manifestResponse.json();
     if (!manifest || manifest.session !== session) throw new Error('manifestSession');
     document.body.classList.toggle('dark', manifest.options?.theme === 'dark');
+    await waitForViewport();
     const mainBytes = await fetchVerified(manifest.main);
     const files = [fileFor(manifest.main, mainBytes)];
     for (const entry of manifest.resources ?? []) {

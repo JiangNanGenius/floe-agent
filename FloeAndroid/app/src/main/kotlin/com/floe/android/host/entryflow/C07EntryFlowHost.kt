@@ -60,6 +60,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
@@ -896,7 +897,19 @@ internal object C07EntryFlowHost {
             return
         }
         publishShare(intake, EntrySharePhase.WORKING, destination = EntryShareDestination.NOTES)
-        val importer = C07EntryNotesImporter(appContext.contentResolver, appContext.cacheDir)
+        val importer = C07EntryNotesImporter(appContext.contentResolver, appContext.cacheDir) {
+            val app = appContext.applicationContext as? FloeApplication
+                ?: throw C07EntryImportException(C07EntryRefusal.NOTES_UNAVAILABLE)
+            withContext(Dispatchers.Main.immediate) { app.ensureNotesPlatform() }
+            val state = withTimeoutOrNull(15_000) {
+                app.notesPlatform.first {
+                    it is com.floe.android.NotesPlatformLoadState.Ready ||
+                        it is com.floe.android.NotesPlatformLoadState.Failed
+                }
+            }
+            (state as? com.floe.android.NotesPlatformLoadState.Ready)?.host?.media
+                ?: throw C07EntryImportException(C07EntryRefusal.NOTES_UNAVAILABLE)
+        }
         activeJob = scope.launch {
             try {
                 val saved = withContext(io) {

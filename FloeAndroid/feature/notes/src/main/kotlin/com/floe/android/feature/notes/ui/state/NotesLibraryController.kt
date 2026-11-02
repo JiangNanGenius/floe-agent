@@ -738,122 +738,34 @@ internal class NotesLibraryController(
         picked: NotesPickedFile,
         title: String,
         notebookID: String?,
-    ): Boolean {
-        val resource = importPickedAsResource(picked)
-        val record = service.resourceMetadata(resource.resourceID)
-        val handle: NotesPdfHandle = when (val outcome = ports.media.openPdf(
-            NotesPdfOpenRequest(
-                documentID = "",
-                resourceID = resource.resourceID,
-                sha256 = record.hash,
-                byteCount = record.byteCount,
-                fileName = picked.fileName,
-                mediaType = record.mediaType,
-                read = resources.reader(),
-            ),
-        )) {
-            is NotesPdfOpenOutcome.Opened -> outcome.handle
-            NotesPdfOpenOutcome.PasswordRequired ->
-                throw NotesException("passwordRequired", "passwordProtected")
-            is NotesPdfOpenOutcome.Unavailable ->
-                throw NotesPortFailureException(outcome.failure)
-            is NotesPdfOpenOutcome.Failed ->
-                throw NotesPortFailureException(outcome.failure)
-        }
-        try {
-            if (handle.pageCount <= 0) throw NotesException("invalidDocument", "emptyPdf")
-            val document = service.createDocument(
-                NotesCreateDocument(
-                    kind = NoteDocumentKind.NOTEBOOK,
-                    title = title,
-                    notebookID = notebookID,
-                    documentID = UUID.randomUUID().toString(),
-                ),
-            )
-            var revision = document.revision
-            var current = document
-            val pages = (0 until handle.pageCount).map { index ->
-                val size = handle.pageSize(index)
-                NotePage(
-                    id = UUID.randomUUID().toString(),
-                    width = (size?.widthPt ?: 612f).toDouble().coerceIn(1.0, 16_384.0),
-                    height = (size?.heightPt ?: 792f).toDouble().coerceIn(1.0, 16_384.0),
-                    backgroundResourceID = resource.resourceID,
-                    pdfPageIndex = index,
-                )
-            }
-            // A new notebook starts with one native placeholder page. Replace
-            // it with the first PDF page; inserting the PDF after it would
-            // leave an empty cover and shift every imported page by one.
-            importedNotebookPageEdits(
-                placeholderPageID = current.pages.firstOrNull()?.id,
-                pages = pages,
-            ).chunked(40).forEach { edits ->
-                current = service.apply(
-                    NotesApplyRequest(
-                        documentID = document.id,
-                        expectedRevision = revision,
-                        title = "Import PDF",
-                        edits = edits,
-                        requestID = UUID.randomUUID().toString(),
-                    ),
-                )
-                revision = current.revision
-            }
-            notice = NotesLibraryNotice.IMPORTED_PDF
-            load(initial = false)
-            onOpenDocument(document.id, null)
-            return true
-        } finally {
-            runCatching { handle.close() }
-        }
-    }
+    ): Boolean = importVisual(picked, title, notebookID, pdf = true)
 
     private suspend fun importImage(
         picked: NotesPickedFile,
         title: String,
         notebookID: String?,
+    ): Boolean = importVisual(picked, title, notebookID, pdf = false)
+
+    private suspend fun importVisual(
+        picked: NotesPickedFile,
+        title: String,
+        notebookID: String?,
+        pdf: Boolean,
     ): Boolean {
-        val info = ports.media.probeImage(
-            NotesImageProbeRequest(
-                fileName = picked.fileName,
-                mediaType = picked.mediaType,
-                byteCount = picked.byteCount,
-                read = picked.read,
-            ),
-        ) ?: throw NotesException("unsupportedAction", "imageFormat")
-        // Probe consumed no service resource; import the exact original bytes.
         val resource = importPickedAsResource(picked)
-        val width = 768.0
-        val height = (width * info.height.toDouble() / info.width.toDouble().coerceAtLeast(1.0))
-            .coerceIn(1.0, 16_384.0)
-        val document = service.createDocument(
-            NotesCreateDocument(
-                kind = NoteDocumentKind.NOTEBOOK,
-                title = title,
+        try {
+            val document = NotesVisualResourceImport.create(
+                service, ports.media, resource.resourceID, picked.fileName, title,
                 notebookID = notebookID,
-                documentID = UUID.randomUUID().toString(),
-            ),
-        )
-        val page = NotePage(
-            id = UUID.randomUUID().toString(),
-            width = width,
-            height = height,
-            backgroundResourceID = resource.resourceID,
-        )
-        val importedDocument = service.apply(
-            NotesApplyRequest(
-                documentID = document.id,
-                expectedRevision = document.revision,
-                title = "Import image",
-                edits = importedNotebookPageEdits(document.pages.firstOrNull()?.id, listOf(page)),
-                requestID = UUID.randomUUID().toString(),
-            ),
-        )
-        notice = NotesLibraryNotice.IMPORTED
-        load(initial = false)
-        onOpenDocument(document.id, importedDocument.pages.firstOrNull()?.id)
-        return true
+            )
+            notice = if (pdf) NotesLibraryNotice.IMPORTED_PDF else NotesLibraryNotice.IMPORTED
+            load(initial = false)
+            onOpenDocument(document.id, document.pages.firstOrNull()?.id)
+            return true
+        } finally {
+            // References keep original bytes on success or uncertain native commit.
+            runCatching { service.discardUnreferencedResource(resource.resourceID) }
+        }
     }
 
     /**
