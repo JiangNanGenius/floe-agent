@@ -1,17 +1,17 @@
 # 安卓全应用代码收口
 
-状态：C01–C08 全应用代码收口推进中，使用普通任务模式；固定复用基线 `a59b4d4005f616c611df67fab7620e9853c525b9`。源码检查点已推进至 `a74e135b`，当前计划／进度更新为 `8229501`；尚未执行本轮全应用编译或设备验收。Alpha22／构建24是历史交付记录，本轮未重新核验其公开下载和安装状态。全代码收口前只推源码检查点，不发布新公开 Release；G09-R2完成事实保留，原G09-R3立即发包安排由本计划替代。
+状态：C01–C08 全应用代码收口推进中，使用普通任务模式；固定复用基线 `a59b4d4005f616c611df67fab7620e9853c525b9`。最近源码检查点为 `692cc0946af3c6b0e113386afa97d4ad481aeb75`。本轮仅完成必要的原生管道链接、源码语法与迁移 SQL 定向检查；尚未完成 Swift/Kotlin 整体编译或设备验收。Alpha22／构建24是历史交付记录，本轮未重新核验其公开下载和安装状态。全代码收口前只推源码检查点，不发布新公开 Release；G09-R2完成事实保留，原G09-R3立即发包安排由本计划替代。下方较早检查点按其当时源码阅读，当前状态以本节和末尾增量记录为准。
 
 | 批次 | 代码范围 | 当前状态 |
 | --- | --- | --- |
-| C01 | 会话置顶、供应商地区保存、项目库／任务归属、模型终端会话、环境状态、长运行服务与网页预览 | 置顶、地区与项目源码已集成；Linux 会话／服务／预览原任务继续，最近一次观察仍排队 |
-| C02 | 执行目标固定／迁移、存储／提问审批／结果连续性、浏览器隔离、完整Hub与MCP | Hub、结果分页、连续性与 MCP 原有工厂适配源码已集成；目标准入、真实 Linux／stdio 接口和配置入口仍待闭合 |
+| C01 | 会话置顶、供应商地区保存、项目库／任务归属、模型终端会话、环境状态、长运行服务与网页预览 | 置顶、地区、项目、多会话、持久服务／预览及环境目录源码已集成；任务目标已接入，MCP专用运行上下文与后续集中验收未完成 |
+| C02 | 执行目标固定／迁移、存储／提问审批／结果连续性、浏览器隔离、完整Hub与MCP | Hub、结果分页、连续性、目标固定／迁移及真实 stdio 管道源码已集成；MCP无模型运行上下文、HTTP服务适配与新绑定入口仍待闭合 |
 | C03 | 系统默认／可选云语音、文件转录字幕、媒体图库保存与缺失编辑／转场／HEIC能力 | 语音、图像／图库、视频共同合成与 HDR 边界已源码集成；待集中编译、测试和 Android 验收 |
 | C04 | .floecad、DWG/DXF与既定通用3D格式只读预览，真实视口与截图 | 离线查看器、原生目录包、BRep 派生表面与截图保存已源码集成；待集中编译和 Android 验收 |
 | C05 | SSH／VNC及TCP/Telnet、BLE GATT与USB串口 | SSH／SFTP、VNC／RDP、TCP／Telnet、BLE／USB 和桌面辅助源码已集成；真实环境归属与文件暂存仍依赖 C01，原生生产及运行验收待集中完成 |
-| C06 | 邮件、日历、待办、系统数据与硬件接口、VPN／Root抓包 | 系统服务、邮件、日历待办、抓包与 Root 守护源码已集成；统一迁移及真实助手／网络／硬件验收待完成 |
-| C07 | 分享／深链／通知返回、引导、备份交换／反馈、布局图标与材质 | 材质、数据交换基础与完整入口源码已集成；持久用户数据／描述符安全流和实际接收格式覆盖两个实施包继续 |
-| C08 | 既有操作台账逐项闭合、迁移／渠道／许可与最终源码冻结 | 原183项编号保留；固定源码33项编辑操作对账已完成；补已确认缺口、统一迁移52与源码冻结 |
+| C06 | 邮件、日历、待办、系统数据与硬件接口、VPN／Root抓包 | 系统服务、邮件、日历待办、抓包与 Root 守护源码已集成；统一迁移52已登记，真实助手／网络／硬件验收待完成 |
+| C07 | 分享／深链／通知返回、引导、备份交换／反馈、布局图标与材质 | 材质、分享入口、持久用户数据、MCP定义及Office保存副本交换源码已集成；描述符目录修复已合入，待集中备份恢复与权限验收 |
+| C08 | 既有操作台账逐项闭合、迁移／渠道／许可与最终源码冻结 | 原183项编号保留；固定源码33项编辑操作静态对账已完成；统一迁移52已登记，剩余逐项对账、代码缺口和最终冻结待完成 |
 
 语音只使用Android系统接口及用户配置的云服务，不内置、下载或维护App本地语音模型，保留已保存选择，默认系统语音。PDF本地预览，模型通过任务所属Linux的exec.shell自行寻找、安装和使用通用工具处理文件，验证成果后回App查看；不增加原生PDF编辑工具别名，现有手记功能保留。CAD仅查看，包含原生.floecad目录包，不增加建模。暂不建设双端实时同步，完成显式备份、导入导出和文档包交换，默认不携带凭据。
 
@@ -20,6 +20,8 @@
 每批先完成连贯代码，只在确切接口／编译阻塞处提前检查；收齐后集中编译与定向测试，复用未改组件证据。实施任务按实际输入和互斥写域派发，不预排依赖队列；构建串行。每个阶段源码推送后读回远端；仅删除本任务确认不用的生成物，保留交付／回滚／故障证据及马上使用的缓存。
 
 复杂调查、跨模块实现和有完整交付边界的工作交给 OpenCode，默认 Normal／auto。已完成任务中的少量、原因和影响清楚的小修复，以及测试后的定点修正，由主协调者直接实施并做对应检查，避免高于修复本身的交接成本；仍有活动写入者时先交回该所有者，不并发抢改。短改动若原因未明或影响较广，仍按调查／实施包处理。
+
+当前临时执行约定：用户已要求验证由主协调者负责。OpenCode 暂停期间由主协调者接管既有源码及剩余实现，不预排、恢复或绕过派发限制。恢复委派须以用户解除限制为准；不把服务暂停变成其他实现的等待条件。
 
 代码收口之后再构建同源ARM64核心和实际使用的一份Full APK，完成三星与最新平板的代表性流程、更新和增量核验，Root只在受控模拟器验收。通过后发布下一空闲Android预发布版本，保留iOS Latest，附件只放安装包和必要更新／校验／源码许可文件。
 
@@ -259,3 +261,14 @@ Writer revision actions now use observed engine state. Version review shows text
 ### Notes selected-resource task input
 
 An explicit Notes action now creates an ordinary task through the existing conversation creator, prepares a bounded selection receipt and seeds its composer. Creating this task needs no configured model. On first send, the original committed run owner stages the selected resource bytes before model execution; Notes originals and assistant state stay separate. Main completed the UI/host/Core connection after taking over implementation, required live owner admission and shared receipt synchronization, and authored bounded-receipt and ownership regressions. The 474 English/Chinese resource keys match and XML parses; Kotlin/Swift compilation, regression execution and device use remain unverified. Existing live project workspaces still need their separate safe new-input handoff; a fresh task uses the original initial import.
+
+
+## 2026-11-02：执行目标、真实目录与统一迁移增量
+
+- `34a44d2`：真实 stdin/stdout/stderr 三管道、MCP生命周期和按项目查询的运行时环境目录已源码集成。主协调者修复缺失头文件及 Swift 范围表达式；NDK ARM64 共享库在严格警告配置下编译链接通过，JNI导出和16 KiB段对齐已检查。该证据不等同于Swift/Kotlin整包构建或设备行为。
+- `692cc094`：普通运行可接纳当前任务已经拥有、唯一可确定的Linux环境，并持久固定目标；显式SSH选择保留。缺少可用目标时保留普通聊天，执行入口被收窄，不猜第一项环境。模型命令经现有shell服务进入相同目标校验和操作日志，环境ID继续传给真实后端。
+- MCP向导新增按实际项目复查运行时目录的适配，验证命令时不再使用定时任务留下的缓存或跨进程的Core路径散列替代运行时所有者。无上下文查询不会返回猜测的记录；旧组件缺少真实层格式信息时不虚构版本。
+- 第52次迁移从三份既定且摘要匹配的声明生成并一次登记，加入执行目标／迁移／运行固定／远程派发回执、存储暂停恢复及独立待办表。历史1–51及原媒体选择修复不改写。当前定向SQLite验证覆盖创建、重复、旧值／二进制内容保留、外键拒绝和失败事务回滚；Swift/GRDB实际迁移与设备升级仍待验收。
+- 前序手记任务输入与Office恢复副本代码保留：手记资源按真实任务／版本暂存，Office副本沿描述符目录事务恢复。阅读模式／封面、MCP专用运行上下文、HTTP服务适配和新stdio绑定入口仍是真实代码缺口；它们没有被记作平台限制或已完成。
+
+下一实施顺序：补齐不依赖模型账户的MCP原作业上下文与服务适配；完成新绑定入口和活动Linux会话的新输入传递；补手记阅读／封面与183项剩余对账；冻结源码后统一编译、设备与发行验收。未完成代码收口前不发布新Release。

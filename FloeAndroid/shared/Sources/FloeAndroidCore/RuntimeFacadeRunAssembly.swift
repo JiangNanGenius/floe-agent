@@ -437,12 +437,14 @@ extension FacadeRunDomain {
         if !temporary, !isNotes, savedExecutionTarget?.kind != .ssh {
             await linuxWorkspaceFirstUsePreflight(runID: runID,
                                                   conversationID: conversationID,
-                                                  environmentID: environmentID)
+                                                  environmentID: savedExecutionTarget?.kind == .localLinux
+                                                    ? savedExecutionTarget?.environmentID : environmentID)
         }
         // Bind only an existing, verified task environment. Failure narrows
         // executable discovery; it does not prevent ordinary text chat.
         let resolvedExecutionTarget: C02ResolvedExecutionTarget?
-        if !temporary, !isNotes, let targets = components.executionTargets {
+        if !temporary, !isNotes, let targets = components.executionTargets,
+           savedExecutionTarget != nil || RuntimeFacadeLinuxBindings.shared.isCapabilityQualified {
             resolvedExecutionTarget = try? await targets.domain.resolveUsingExistingEnvironment(
                 taskID: conversationID, runID: runID, preferredEnvironmentID: environmentID)
         } else {
@@ -484,8 +486,8 @@ extension FacadeRunDomain {
             temporary: temporary)
         if !temporary, !isNotes, components.executionTargets != nil, resolvedExecutionTarget == nil {
             let executableNames: Set<String> = ["exec.shell", "jobs.submit"]
-            let available = ceiling ?? components.registry.allDescriptors.map(\.name)
-            ceiling = available.filter { !executableNames.contains($0) }
+            let available = ceiling ?? Set(components.registry.allDescriptors.map(\.name))
+            ceiling = available.subtracting(executableNames)
         }
         let toolsEnabled = ceiling.map { !$0.isEmpty } ?? true
         // The ORIGINAL provider adapter: the host/test factory override when
