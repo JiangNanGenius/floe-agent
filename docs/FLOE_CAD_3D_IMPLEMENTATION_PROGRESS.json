@@ -2621,6 +2621,13 @@
         "observed": "面材质使用实际名称或唯一精确签名；编辑／展示／GLB／OBJ共用实际三角范围。真实扫掠相邻共面壁独立着色，尺寸变更、失面拒绝、撤销及重开通过。精确保存字节内按完整原生面边界唯一验证重开映射，不借此跨重建猜测身份。查询如实报告有名称但无显示范围的缺口。",
         "whole_M26_accepted": false,
         "scope": "实际App、固定iPad Simulator与实际GPU见证；非实体设备性能或发布验收。"
+      },
+      "material_range_edge_verification": {
+        "source": "d8b975b17316fed79fd3486be8ef6aac313f9c96",
+        "actual_native_passed": true,
+        "scope": "195 actual71 material cases plus current198 core pass. New assignments without display ranges refuse before mutation; empty render never reports saved bindings complete.",
+        "whole_M26_accepted": false,
+        "remaining": "Generic/legacy references with equal partial signatures still need a source identity witness."
       }
     },
     {
@@ -7735,10 +7742,52 @@
       "package": "experience",
       "implementation": {
         "stage": "F",
-        "status": "planned",
-        "source_changes": [],
-        "verification": [],
-        "limitations": []
+        "status": "accepted_actual_native_UI",
+        "source_changes": [
+          "f74416bc0ff48ad22e461c6e55eaaeb448335174",
+          "7bea0821568d2f9ac75754ff3cf1a0b427e5c6cc",
+          "d8b975b17316fed79fd3486be8ef6aac313f9c96"
+        ],
+        "verification": [
+          {
+            "source": "d8b975b17316fed79fd3486be8ef6aac313f9c96",
+            "criterion": "X32",
+            "criterion_accepted": true,
+            "shared_command": "UI and assistant edit the same saved environment, key light direction and intensity, background, floor and shadows.",
+            "actual_native_previous": {
+              "passed": 149,
+              "failed": 0,
+              "skipped": 0,
+              "selector_omission_preserved": true,
+              "completion": "Three methods were omitted by incorrect class names; completed separately with the same artifact, 3/3. The original coverage failure remains."
+            },
+            "actual_UI": {
+              "passed": 1,
+              "failed": 0,
+              "skipped": 0,
+              "seconds": 62.511,
+              "scope": "Preview, cancel, apply, undo, redo and process reopen."
+            },
+            "actual_current_native": {
+              "passed": 37,
+              "failed": 0,
+              "skipped": 0
+            },
+            "observed": "The actual engineering viewport projects the same saved environment as Present; real pixel change and undo restoration pass. No-op history, invalid types, stale revisions, closed owners and unknown formats are covered.",
+            "original_failures_preserved": [
+              "196: engineering ignored saved environment; before/after pixels identical",
+              "196/197: incorrect test class names omitted selectors; original coverage failure retained."
+            ],
+            "limits": [
+              "No HDRI or independent scene light claim (X16/X17).",
+              "No physical performance, whole106 or release claim."
+            ]
+          }
+        ],
+        "limitations": [
+          "No HDRI or independent scene light claim (X16/X17).",
+          "No physical performance, whole106 or release claim."
+        ]
       },
       "alignment_review": {
         "disposition": "partial",
@@ -7765,6 +7814,11 @@
         "notes": "Preserved 17ecc baseline support/gap; checked scoped current source and relevant deltas only. Not a repository-wide rerun.",
         "evidence_level": "baseline_plus_verified_delta",
         "acceptance_pending": "同一环境命令供UI与LLM使用，预览/授权/undo/save/reopen/capture完整一致。"
+      },
+      "current_alignment": {
+        "status": "accepted",
+        "observed": "Same document command, actual rendering, public tool save/reopen and full native inspector lifecycle passed.",
+        "original_baseline_preserved": true
       }
     },
     {
@@ -8481,7 +8535,7 @@
     "license_delta": "GLTFKit2 ownMIT/cgltfMIT do notclear precompiled libktx4.2.1 etcdec exception; prefer existing O3DV+same-r176 localGLTFLoader qualification"
   },
   "current_integration_verification": {
-    "source": "f15dfdf03365134af4f67be6632cc1bd96e73f5b",
+    "source": "d8b975b17316fed79fd3486be8ef6aac313f9c96",
     "all_106_retained": true,
     "all_106_accepted": false,
     "release_ready": false,
@@ -8514,18 +8568,20 @@
       "actual_OBJ": "真实OBJ/MTL/PNG显示、缺失贴图及仅资源变化后的旧帧拒绝通过。",
       "scope": "本地实际渲染与资源来源；不冒充原生可编辑BRep，也不代替真实LLM视觉连续编辑。"
     },
-    "accepted_original_criteria": 56,
-    "pending_original_criteria": 50,
+    "accepted_original_criteria": 57,
+    "pending_original_criteria": 49,
     "device_acceptance": "iPad通过的功能复用验收，iPhone仅确认界面；不使用用户手机。",
     "latest_native_batch": {
-      "source": "f15dfdf03365134af4f67be6632cc1bd96e73f5b",
+      "source": "d8b975b17316fed79fd3486be8ef6aac313f9c96",
+      "actual_App_build_passed": true,
+      "actual_App_build_seconds": 110.633,
       "native": {
-        "passed": 69,
+        "passed": 37,
         "failed": 0,
         "skipped": 0,
-        "seconds": 59.104
+        "seconds": 33.547
       },
-      "scope": "M26材质／保存重开／实际GPU定向批次，整项仍待"
+      "scope": "X32 current owner fence; reuse prior 149 native and 1 actual UI cases without double counting."
     },
     "real_model_editing": {
       "source": "a587571a755989b001e78c16a4fcfd64e23ba8d5",
@@ -8649,6 +8705,55 @@
         "skipped": 0
       },
       "scope": "Configured unlisted Agent Plan image ID reaches the existing adapter without discovery or developer account gating; 507 real native features page past 500 rows without changing stored identity. Controlled HTTP only; no new paid generation."
+    },
+    "environment_tool_verification": {
+      "source": "d8b975b17316fed79fd3486be8ef6aac313f9c96",
+      "criterion": "X32",
+      "criterion_accepted": true,
+      "shared_command": "UI and assistant edit the same saved environment, key light direction and intensity, background, floor and shadows.",
+      "actual_native_previous": {
+        "passed": 149,
+        "failed": 0,
+        "skipped": 0,
+        "selector_omission_preserved": true,
+        "completion": "Three methods were omitted by incorrect class names; completed separately with the same artifact, 3/3. The original coverage failure remains."
+      },
+      "actual_UI": {
+        "passed": 1,
+        "failed": 0,
+        "skipped": 0,
+        "seconds": 62.511,
+        "scope": "Preview, cancel, apply, undo, redo and process reopen."
+      },
+      "actual_current_native": {
+        "passed": 37,
+        "failed": 0,
+        "skipped": 0
+      },
+      "observed": "The actual engineering viewport projects the same saved environment as Present; real pixel change and undo restoration pass. No-op history, invalid types, stale revisions, closed owners and unknown formats are covered.",
+      "original_failures_preserved": [
+        "196: engineering ignored saved environment; before/after pixels identical",
+        "196/197: incorrect test class names omitted selectors; original coverage failure retained."
+      ],
+      "limits": [
+        "No HDRI or independent scene light claim (X16/X17).",
+        "No physical performance, whole106 or release claim."
+      ]
+    },
+    "v59_file_migration_verification": {
+      "source": "7bea0821568d2f9ac75754ff3cf1a0b427e5c6cc",
+      "passed": 2,
+      "failed": 0,
+      "skipped": 0,
+      "scope": "Actual file-backed V58 to V59: legacy Skill and credential references, profile, repeat migration/reopen, and real DDL failure rollback/resume.",
+      "limits": "Not all10 Bridge/Skill end-to-end gates. Canonical database never downgraded."
+    },
+    "material_range_edge_verification": {
+      "source": "d8b975b17316fed79fd3486be8ef6aac313f9c96",
+      "actual_native_passed": true,
+      "scope": "195 actual71 material cases plus current198 core pass. New assignments without display ranges refuse before mutation; empty render never reports saved bindings complete.",
+      "whole_M26_accepted": false,
+      "remaining": "Generic/legacy references with equal partial signatures still need a source identity witness."
     }
   }
 }
