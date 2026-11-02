@@ -1120,12 +1120,14 @@ final class CADParameterCorrectnessTests: XCTestCase {
         let source = try XCTUnwrap(document.session.document.features.nodes.last)
         let current = try body(document)
         XCTAssertNil(current.brep, "Fixture must exercise the supported mesh-only path")
-        let table = document.session.naming.faceTable(
-            for: current, createdBy: source.id, scheme: .generic)
+        let table = try XCTUnwrap(document.session.lastFaceTables[current.id])
         let top = try XCTUnwrap(table.entries.max { $0.signature.normal.y < $1.signature.normal.y })
         XCTAssertGreaterThan(top.signature.normal.y, 0.99)
+        XCTAssertTrue(top.elementName?.isStableFaceIdentity == true,
+                      "The authored end-section plane must identify the real mesh loft cap")
         let ref = FaceRef(body: BodyRef(producer: source.id, bodyID: current.id),
-                          creator: source.id, role: top.role, signature: top.signature)
+                          creator: source.id, role: top.role, signature: top.signature,
+                          elementName: top.elementName)
         let node = FeatureNode(
             name: "Rotate Face",
             kind: .rotateFace(face: ref, angle: Expr(value: degrees * .pi / 180),

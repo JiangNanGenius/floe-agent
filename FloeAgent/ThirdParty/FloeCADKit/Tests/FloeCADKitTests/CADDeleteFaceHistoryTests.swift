@@ -270,9 +270,14 @@ final class CADDeleteFaceHistoryTests: XCTestCase {
         XCTAssertTrue(SignatureNaming.exactSignature(signatureA, signatureB),
                       "Different 2x2 and 4x1 boundaries really collide under the old partial fingerprint")
         let naming = SignatureNaming()
-        var ref = FaceRef(body: BodyRef(producer: source.id, bodyID: bodyID), creator: source.id,
-                          role: .derived(index: 0), signature: signatureA)
+        let beforeTable = try XCTUnwrap(a.faceTables[bodyID])
         let table = try XCTUnwrap(b.faceTables[bodyID])
+        let renderedTopA = try XCTUnwrap(beforeTable.entries.first { $0.signature.normal.y > 0.99 })
+        let renderedTopB = try XCTUnwrap(table.entries.first { $0.signature.normal.y > 0.99 })
+        XCTAssertTrue(SignatureNaming.exactSignature(renderedTopA.signature, renderedTopB.signature),
+                      "The live-pick fingerprint must also collide in the actual adopted render")
+        var ref = FaceRef(body: BodyRef(producer: source.id, bodyID: bodyID), creator: source.id,
+                          role: .derived(index: 0), signature: renderedTopA.signature)
         let pick = try XCTUnwrap(naming.resolve(ref, in: after, table: table),
                                 "Current selection geometry must remain available")
         XCTAssertNotNil(pick.elementName, "Today's semantic name must not become an old unrecorded intent")

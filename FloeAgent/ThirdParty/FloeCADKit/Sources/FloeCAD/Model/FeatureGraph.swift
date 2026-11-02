@@ -2987,7 +2987,8 @@ nonisolated extension FeatureGraph {
                                        outer: sections[0].profile, holes: [])
         } ?? [:]
         emitFullSolid(node, mesh: mesh, brep: brep, kernelNames: names,
-                      boolean: boolean, scheme: .generic,
+                      boolean: boolean, scheme: .loftCaps(
+                        start: sections[0].plane, end: sections[sections.count - 1].plane),
                       into: &state, next: nextRevision)
     }
 

@@ -76,6 +76,8 @@ nonisolated enum FaceScheme: Sendable {
     case primitive(PrimitiveSpec)
     case extrude(Profile)
     case revolve
+    /// Authored end-section planes of a loft, including its mesh-only path.
+    case loftCaps(start: SketchPlane, end: SketchPlane)
     case generic
 }
 
@@ -192,8 +194,21 @@ nonisolated struct SignatureNaming: TopoNaming {
     func faceTable(for body: Body, createdBy: FeatureID, scheme: FaceScheme) -> FaceTable {
         let faces = Self.enumerate(body.render)
         let roles = assignRoles(faces: faces, scheme: scheme)
-        let entries = zip(faces, roles).map { face, role in
+        var entries = zip(faces, roles).map { face, role in
             FaceTable.Entry(role: role, signature: face.signature, triangles: face.triangles)
+        }
+        if case .loftCaps = scheme {
+            for index in entries.indices {
+                let role = entries[index].role
+                let end: Bool
+                switch role {
+                case .extrudeStartCap: end = false
+                case .extrudeEndCap: end = true
+                default: continue
+                }
+                guard entries.filter({ $0.role == role }).count == 1 else { continue }
+                entries[index].elementName = ElementName(creator: createdBy, source: .profileCap(end: end))
+            }
         }
         return FaceTable(entries: entries)
     }
@@ -500,6 +515,24 @@ nonisolated struct SignatureNaming: TopoNaming {
             }
         case let .extrude(profile):
             return rolesForExtrude(profile, faces: faces)
+        case let .loftCaps(start, end):
+            var roles = Self.derivedRoles(faces)
+            var claims: [Int: [FaceRole]] = [:]
+            for (plane, role) in [(start, FaceRole.extrudeStartCap), (end, FaceRole.extrudeEndCap)] {
+                guard simd_length_squared(plane.normal) > 1e-18 else { continue }
+                let normal = simd_normalize(plane.normal)
+                for (index, face) in faces.enumerated() where face.planar != nil {
+                    let point = face.signature.centroid
+                    let tolerance = max(1e-5, simd_length(point) * Double(Float.ulpOfOne) * 2)
+                    guard abs(simd_dot(normal, face.signature.normal)) >= 1 - 1e-6,
+                          abs(simd_dot(point - plane.origin, normal)) <= tolerance else { continue }
+                    claims[index, default: []].append(role)
+                }
+            }
+            // Only an unambiguous authored end plane can name a cap. Neither
+            // area order nor a face ordinal supplies the construction role.
+            for (index, candidates) in claims where candidates.count == 1 { roles[index] = candidates[0] }
+            return roles
         case .revolve, .generic:
             return Self.derivedRoles(faces)
         }
