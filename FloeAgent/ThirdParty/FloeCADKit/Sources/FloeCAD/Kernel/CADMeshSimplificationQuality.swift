@@ -19,6 +19,7 @@ nonisolated enum CADMeshSimplificationQuality {
     struct Protection: Sendable {
         let vertices: Set<Int>
         let boundaryEdges: [(SIMD3<Float>, SIMD3<Float>)]
+        let eulerCharacteristic: Int
     }
     struct Report: Sendable {
         let sampledDistanceMM: Double
@@ -29,6 +30,7 @@ nonisolated enum CADMeshSimplificationQuality {
         let closedOrientedVolumes: Bool
         let topologyPreserved: Bool
         let boundaryEdgesBefore, boundaryEdgesAfter: Int
+        let eulerBefore, eulerAfter: Int
         let appearancePreserved: Bool
         let protectedVertices: Int
 
@@ -47,6 +49,8 @@ nonisolated enum CADMeshSimplificationQuality {
                 "topologyPreserved": topologyPreserved,
                 "boundaryEdgeCountBefore": boundaryEdgesBefore,
                 "boundaryEdgeCountAfter": boundaryEdgesAfter,
+                "eulerCharacteristicBefore": eulerBefore,
+                "eulerCharacteristicAfter": eulerAfter,
                 "uvAndHardEdgeSeamsPreserved": appearancePreserved,
                 "protectedVertexCount": protectedVertices,
             ]
@@ -71,11 +75,13 @@ nonisolated enum CADMeshSimplificationQuality {
             } else { attributes[p] = (n, uv) }
         }
         var edges: [Edge: Int] = [:]
+        var usedPositions: Set<Position> = []
         for t in 0..<mesh.triangleCount {
             if shouldStop() { return nil }
             let a = Position(mesh.positions[Int(mesh.indices[t * 3])])
             let b = Position(mesh.positions[Int(mesh.indices[t * 3 + 1])])
             let c = Position(mesh.positions[Int(mesh.indices[t * 3 + 2])])
+            usedPositions.formUnion([a,b,c])
             for (u, v) in [(a,b),(b,c),(c,a)] where u != v { edges[Edge(u,v), default: 0] += 1 }
         }
         var boundary: [(SIMD3<Float>, SIMD3<Float>)] = []
@@ -91,7 +97,8 @@ nonisolated enum CADMeshSimplificationQuality {
             if shouldStop() { return nil }
             if seams.contains(Position(mesh.positions[i])) { vertices.insert(i) }
         }
-        return Protection(vertices: vertices, boundaryEdges: boundary)
+        return Protection(vertices: vertices, boundaryEdges: boundary,
+                          eulerCharacteristic: usedPositions.count - edges.count + mesh.triangleCount)
     }
 
     static func inspect(before: RenderMesh, after: RenderMesh, protection: Protection, scale: Double = 1,
@@ -103,6 +110,7 @@ nonisolated enum CADMeshSimplificationQuality {
               let ba = directed(b, a, shouldStop: shouldStop),
               let afterProtection = self.protection(after, shouldStop: shouldStop) else { return nil }
         let topologyPreserved = sameTopology(a.topology, b.topology)
+            && protection.eulerCharacteristic == afterProtection.eulerCharacteristic
         let boundary: Double?
         if protection.boundaryEdges.isEmpty && afterProtection.boundaryEdges.isEmpty { boundary = 0 }
         else if protection.boundaryEdges.isEmpty || afterProtection.boundaryEdges.isEmpty { boundary = nil }
@@ -137,7 +145,9 @@ nonisolated enum CADMeshSimplificationQuality {
                       boundaryDistanceMM: boundary.map { $0 * scale }, signedVolumeBeforeMM3: va * pow(scale,3), signedVolumeAfterMM3: vb * pow(scale,3),
                       closedOrientedVolumes: a.topology.isWatertight && b.topology.isWatertight,
                       topologyPreserved: topologyPreserved, boundaryEdgesBefore: a.topology.boundaryEdgeCount,
-                      boundaryEdgesAfter: b.topology.boundaryEdgeCount, appearancePreserved: appearance,
+                      boundaryEdgesAfter: b.topology.boundaryEdgeCount,
+                      eulerBefore: protection.eulerCharacteristic, eulerAfter: afterProtection.eulerCharacteristic,
+                      appearancePreserved: appearance,
                       protectedVertices: protection.vertices.count)
     }
 

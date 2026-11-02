@@ -763,6 +763,30 @@ final class CADScriptAndMeshTests: XCTestCase {
         return RenderMesh(positions:p,normals:n,indices:indices,texcoords:uv)
     }
 
+    @MainActor
+    func testSimplificationDetectsLostClosedThroughHoleAndAvoidsNoOpUndo() async throws {
+        let ring = texturedAnnularSlab(), cube = integrityCube()
+        let protection = try XCTUnwrap(CADMeshSimplificationQuality.protection(ring, shouldStop:{ false }))
+        let report = try XCTUnwrap(CADMeshSimplificationQuality.inspect(before:ring,after:cube,
+            protection:protection,shouldStop:{ false }))
+        XCTAssertTrue(report.closedOrientedVolumes, "Both surfaces are closed; that alone cannot preserve holes")
+        XCTAssertEqual(report.eulerBefore, 0)
+        XCTAssertEqual(report.eulerAfter, 2)
+        XCTAssertFalse(report.topologyPreserved)
+
+        let document = try await makeDocument("ProtectedNoOp")
+        defer { document.close() }
+        let body = addRenderBody(document,name:"Hard cube",render:cube)
+        let count = document.session.changeCount, undo = document.session.undoStack.undoCommands.count
+        let reply = await CADMeshService(document:document).handleAsync(action:"simplify",
+            args:["bodyID":body.id.raw.uuidString,"ratio":0.5])
+        XCTAssertEqual(reply["ok"] as? Bool,true,reply["message"] as? String ?? "")
+        XCTAssertEqual(reply["mutated"] as? Bool,false)
+        XCTAssertEqual(document.session.changeCount,count)
+        XCTAssertEqual(document.session.undoStack.undoCommands.count,undo)
+        XCTAssertEqual(document.session.document.body(with:body.id)?.render,cube)
+    }
+
     // MARK: 9. Combine / transform / material / image / text
 
     @MainActor

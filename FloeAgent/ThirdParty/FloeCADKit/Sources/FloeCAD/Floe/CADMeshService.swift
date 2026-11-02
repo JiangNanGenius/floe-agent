@@ -1349,6 +1349,7 @@ public final class CADMeshService {
             guard let before = document.session.document.body(with: replacement.id) else {
                 return Self.sourceChangedReply()
             }
+            if case .simplify = plan, before.render == replacement.render { continue }
             var after = before
             after.render = replacement.render
             after.edges = replacement.edges
@@ -1387,7 +1388,7 @@ public final class CADMeshService {
             return reply
         case .simplify:
             title = "Simplify Mesh"
-            mutated = true
+            mutated = !pairs.isEmpty
             entries = simplifyEntries.map(\.payload)
             performReplacements(pairs, title: title)
             return ["ok": true,
@@ -1789,7 +1790,10 @@ public final class CADMeshService {
                         guard candidate.triangleCount >= 4 else { break }
                         let candidateTopology = CADInterferenceMeshGeometry.build(
                             positions: candidate.positions, indices: candidate.indices).topology
+                        guard let candidateProtection = CADMeshSimplificationQuality.protection(
+                            candidate, shouldStop: serviceCancel) else { return interrupted() }
                         if CADMeshSimplificationQuality.sameTopology(originalTopology, candidateTopology),
+                           candidateProtection.eulerCharacteristic == protection.eulerCharacteristic,
                            candidate.triangleCount <= (best?.triangleCount ?? before) {
                             best = candidate
                             bestCell = cell

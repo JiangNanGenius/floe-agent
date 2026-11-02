@@ -17,9 +17,9 @@ nonisolated struct RenderMesh: Sendable, Equatable {
     var indices: [UInt32]
     /// Per-vertex texture coordinates (Metal convention: (0,0) is the image's
     /// top-left), present only on meshes that arrived with a texture — an
-    /// imported OBJ/glTF/USDZ. Modelled bodies have none; every geometry op
-    /// that rebuilds a mesh drops them, which is right: a boolean or blend
-    /// has no way to carry a photo across the new faces.
+    /// imported OBJ/glTF/USDZ. Modelled bodies normally have none. Simplify
+    /// carries chart-local UVs and protects seams; topology-changing boolean
+    /// or blend operations cannot carry a photo across newly created faces.
     var texcoords: [SIMD2<Float>]? = nil
 
     var triangleCount: Int { indices.count / 3 }
