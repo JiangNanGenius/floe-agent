@@ -917,6 +917,61 @@ nonisolated enum CADInterferenceGeometry {
 
     // MARK: Triangles
 
+    /// Actual self-contact beyond a shared mesh vertex/edge. Uses the same
+    /// segment/triangle predicates as assembly inspection; normal adjacent
+    /// facets are not counted as intersecting merely because they touch.
+    static func selfIntersection(
+        _ a: (SIMD3<Double>, SIMD3<Double>, SIMD3<Double>),
+        _ b: (SIMD3<Double>, SIMD3<Double>, SIMD3<Double>), tolerance: Double
+    ) -> Bool {
+        let ap = [a.0, a.1, a.2], bp = [b.0, b.1, b.2]
+        let na = simd_cross(a.1 - a.0, a.2 - a.0), nb = simd_cross(b.1 - b.0, b.2 - b.0)
+        guard simd_length(na) > 1e-18, simd_length(nb) > 1e-18 else { return false }
+        let normal = simd_normalize(na)
+        if simd_length(simd_cross(normal, simd_normalize(nb))) < 1e-10 {
+            guard abs(simd_dot(b.0 - a.0, normal)) <= tolerance else { return false }
+            var dropped = 0
+            for axis in 1..<3 where abs(normal[axis]) > abs(normal[dropped]) { dropped = axis }
+            let keep = [0, 1, 2].filter { $0 != dropped }
+            let aa = ap.map { SIMD2($0[keep[0]], $0[keep[1]]) }
+            let bb = bp.map { SIMD2($0[keep[0]], $0[keep[1]]) }
+            // Strict separating-axis overlap rejects mere shared boundaries
+            // but catches duplicate triangles and overlap next to a shared edge.
+            for points in [aa, bb] {
+                for i in 0..<3 {
+                    let edge = points[(i + 1) % 3] - points[i]
+                    guard simd_length(edge) > 1e-18 else { return false }
+                    let axis = simd_normalize(SIMD2(-edge.y, edge.x))
+                    let av = aa.map { simd_dot($0, axis) }, bv = bb.map { simd_dot($0, axis) }
+                    if min(av.max()!, bv.max()!) - max(av.min()!, bv.min()!) <= tolerance { return false }
+                }
+            }
+            return true
+        }
+        let shared = ap.filter { p in bp.contains { simd_length(p - $0) <= tolerance } }
+        let longestEdge = (0..<3).map { max(simd_length(ap[($0 + 1) % 3] - ap[$0]),
+                                             simd_length(bp[($0 + 1) % 3] - bp[$0])) }.max() ?? 1
+        let relativeTolerance = max(1e-12, min(1e-8, tolerance / max(longestEdge, 1e-12)))
+        func isSharedBoundary(_ point: SIMD3<Double>) -> Bool {
+            if shared.contains(where: { simd_length(point - $0) <= tolerance }) { return true }
+            if shared.count >= 2 {
+                let delta = shared[1] - shared[0], length = simd_length_squared(delta)
+                if length > 0 {
+                    let t = max(0, min(1, simd_dot(point - shared[0], delta) / length))
+                    return simd_length(point - shared[0] - delta * t) <= tolerance
+                }
+            }
+            return false
+        }
+        for i in 0..<3 {
+            if let hit = segmentTriangle(ap[i], ap[(i + 1) % 3], bp, epsilon: relativeTolerance),
+               !isSharedBoundary(hit.point) { return true }
+            if let hit = segmentTriangle(bp[i], bp[(i + 1) % 3], ap, epsilon: relativeTolerance),
+               !isSharedBoundary(hit.point) { return true }
+        }
+        return false
+    }
+
     private struct TriangleDistance {
         var distanceSquared: Double
         var pointA: SIMD3<Double>

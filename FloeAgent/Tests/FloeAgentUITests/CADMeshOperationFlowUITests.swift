@@ -52,6 +52,10 @@ final class CADMeshOperationFlowUITests: XCTestCase {
             "--ui-test-cad-face-rotation-reset",
             "--ui-test-cad-mesh-panel-flow",
         ]
+        if name.contains("testCleanupInspectionIsVisibleBeforeAndAfterApply") {
+            app.launchArguments.removeAll { $0.hasPrefix("--ui-test-cad-face-rotation") || $0 == "--ui-test-cad-mesh-panel-flow" }
+            app.launchArguments.append("--ui-test-cad-mesh-integrity")
+        }
         app.launch()
     }
 
@@ -61,6 +65,28 @@ final class CADMeshOperationFlowUITests: XCTestCase {
     }
 
     // MARK: - Tests
+
+    func testCleanupInspectionIsVisibleBeforeAndAfterApply() throws {
+        guard openMeshPanel() else { return }
+        let repair = app.buttons["Repair"].firstMatch
+        guard reveal(repair, defaultDirection: .towardBottom) else { fail("Repair must be reachable"); return }
+        repair.tap()
+        guard waitForPendingPreview(titled: "Repair", timeout: 20) else { return }
+        let previewWarning = app.staticTexts["Unresolved mesh issues were found."].firstMatch
+        guard require(previewWarning.exists, "Preview must disclose the remaining defects"),
+              reveal(pendingApplyButton, defaultDirection: .towardBottom) else { return }
+        snapshot("Mesh inspection — preview keeps unresolved defects visible")
+        pendingApplyButton.tap()
+        let warning = app.descendants(matching: .any).matching(identifier: "CADMeshIntegrityWarning").firstMatch
+        guard require(warning.waitForExistence(timeout: 20), "Cleanup must not claim a complete repair"),
+              reveal(warning, defaultDirection: .towardBottom) else { return }
+        let details = app.buttons["Inspection details"].firstMatch
+        guard reveal(details, defaultDirection: .towardBottom) else { fail("Inspection details must be reachable"); return }
+        details.tap()
+        XCTAssertTrue(app.descendants(matching: .any).matching(NSPredicate(
+            format: "label CONTAINS %@", "Self-intersections")).firstMatch.exists)
+        snapshot("Mesh inspection — applied cleanup shows actual remaining issues")
+    }
 
     func testCancelDuringRepairPublishesNoLatePreviewOrOutcome() throws {
         guard openMeshPanel(), let started = startHeavyPreview("Repair") else { return }
@@ -408,7 +434,7 @@ final class CADMeshOperationFlowUITests: XCTestCase {
                     return false
                 }
             }
-            if panelOutcome.exists {
+            if panelOutcome.exists || app.descendants(matching: .any).matching(identifier: "CADMeshIntegrityWarning").firstMatch.exists {
                 fail("a cancelled operation published a late outcome: \(panelOutcome.label)")
                 return false
             }

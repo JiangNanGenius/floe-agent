@@ -169,7 +169,7 @@ nonisolated enum CADMeshPlan: Sendable {
                  inputs: [CADMeshInputSnapshot],
                  inputExactness: String,
                  brepBodyCount: Int)
-    case repair(inputs: [CADMeshInputSnapshot], tolerance: Double)
+    case repair(inputs: [CADMeshInputSnapshot], tolerance: Double, request: CADMeshRepairRequest)
     case simplify(inputs: [CADMeshInputSnapshot], ratio: Double?, tolerance: Double?)
 
     var action: String {
@@ -185,7 +185,7 @@ nonisolated enum CADMeshPlan: Sendable {
         switch self {
         case .combine(let inputs, _): return inputs
         case .boolean(_, let inputs, _, _): return inputs
-        case .repair(let inputs, _): return inputs
+        case .repair(let inputs, _, _): return inputs
         case .simplify(let inputs, _, _): return inputs
         }
     }
@@ -201,13 +201,18 @@ nonisolated struct CADMeshRepairEntry: Sendable {
     let afterTriangles: Int
     let weldedVertices: Int
     let removedTriangles: Int
+    let beforeIntegrity: CADMeshIntegrity.Report
+    let afterIntegrity: CADMeshIntegrity.Report
 
     var payload: [String: Any] {
         ["bodyID": bodyID.raw.uuidString,
          "beforeTriangles": beforeTriangles,
          "afterTriangles": afterTriangles,
          "weldedVertices": weldedVertices,
-         "removedTriangles": removedTriangles]
+         "removedTriangles": removedTriangles,
+         "beforeIntegrity": beforeIntegrity.payload,
+         "afterIntegrity": afterIntegrity.payload,
+         "repairComplete": !afterIntegrity.unresolved]
     }
 }
 
@@ -242,6 +247,7 @@ nonisolated enum CADMeshComputation: Sendable {
     case cancelled
     case timedOut
     case refused(code: String, message: String)
+    case repairUnavailable(entries: [CADMeshRepairEntry], request: String)
     case combine(mesh: Euclid.Mesh,
                  render: RenderMesh,
                  edges: FeatureEdgeSet,
@@ -622,6 +628,13 @@ public final class CADMeshService {
             return limitTime()
         case .refused(let code, let message):
             return Self.fail(code, message)
+        case .repairUnavailable(let entries, let request):
+            var reply = Self.fail("unsupported_mesh_repair",
+                "The requested \(request) repair is unavailable. Inspection found unresolved defects; nothing changed. Welding and normal recomputation are not hole filling or topology repair.")
+            reply["bodies"] = entries.map(\.payload)
+            reply["repairComplete"] = false
+            reply["mutated"] = false
+            return reply
         case .combine(let mesh, let render, let edges, let hash, let snapshot):
             return commitResult(plan: plan, args: args, source: source,
                                 cancellation: cancellation,
@@ -853,7 +866,15 @@ public final class CADMeshService {
         } else {
             tolerance = 1e-3
         }
-        return .heavy(.repair(inputs: snapshot(bodies), tolerance: tolerance))
+        let request: CADMeshRepairRequest
+        if let raw = args["defect"] {
+            guard let value = raw as? String, let parsed = CADMeshRepairRequest(rawValue: value) else {
+                return .refusal(Self.fail("bad_request",
+                    "'defect' must be cleanup, holes, selfIntersections, orientation, nonManifold or all."))
+            }
+            request = parsed
+        } else { request = .cleanup }
+        return .heavy(.repair(inputs: snapshot(bodies), tolerance: tolerance, request: request))
     }
 
     private func prepareSimplify(_ args: [String: Any]) -> CADMeshPreparation {
@@ -1304,7 +1325,9 @@ public final class CADMeshService {
                                triangleCount: previewTriangleCount,
                                revision: document.store.revision,
                                changeCount: document.session.changeCount,
-                               extra: [:])
+                               extra: repairEntries.isEmpty ? [:] : [
+                                "bodies": repairEntries.map(\.payload),
+                                "repairComplete": repairEntries.allSatisfy { !$0.afterIntegrity.unresolved }])
         if let refusal = gate.refusal { return refusal }
         if let reply = gate.reply { return reply }
         if let fence = commitFence(plan, source: source, cancellation: cancellation) {
@@ -1332,17 +1355,26 @@ public final class CADMeshService {
         let mutated: Bool
         let entries: [[String: Any]]
         switch plan {
-        case .repair(_, let tolerance):
+        case .repair(_, let tolerance, let request):
             title = "Repair Mesh"
             mutated = !pairs.isEmpty
             entries = repairEntries.map(\.payload)
             performReplacements(pairs, title: title)
-            return ["ok": true,
+            let complete = repairEntries.allSatisfy { !$0.afterIntegrity.unresolved }
+            var reply: [String: Any] = ["ok": true,
                     "action": "repair",
                     "mutated": mutated,
                     "exactness": "mesh",
                     "tolerance": tolerance,
+                    "requestedDefect": request.rawValue,
+                    "repairComplete": complete,
                     "bodies": entries]
+            if !complete {
+                reply["message"] = request == .cleanup || request == .all
+                    ? "Mesh cleanup completed. Unresolved defects are listed in afterIntegrity; hole filling, self-intersection removal and topology/orientation repair were not performed."
+                    : "The requested defect was not found. Other unresolved defects remain; nothing changed."
+            }
+            return reply
         case .simplify:
             title = "Simplify Mesh"
             mutated = true
@@ -1604,13 +1636,38 @@ public final class CADMeshService {
                             edges: FeatureEdgeExtractor.edges(from: render),
                             previewHash: hash, previewSnapshot: snapshot)
 
-        case .repair(let inputs, let tolerance):
+        case .repair(let inputs, let tolerance, let request):
             guard !serviceCancel() else { return interrupted() }
             var replacements: [CADMeshReplacement] = []
             var entries: [CADMeshRepairEntry] = []
             var previewMeshes: [RenderMesh] = []
+            var inspected: [(CADMeshInputSnapshot, CADMeshIntegrity.Report)] = []
             for input in inputs {
+                guard let report = CADMeshIntegrity.inspect(input.render, shouldStop: serviceCancel) else {
+                    return interrupted()
+                }
+                inspected.append((input, report))
+            }
+            if inspected.contains(where: { $0.1.requiresUnsupportedRepair(request) }) {
+                let reports = inspected.map { input, report in
+                    CADMeshRepairEntry(bodyID: input.id, beforeTriangles: input.triangleCount,
+                        afterTriangles: input.triangleCount, weldedVertices: 0, removedTriangles: 0,
+                        beforeIntegrity: report, afterIntegrity: report)
+                }
+                return .repairUnavailable(entries: reports, request: request.rawValue)
+            }
+            for (input, beforeIntegrity) in inspected {
                 guard !serviceCancel() else { return interrupted() }
+                if request != .cleanup && request != .all {
+                    // A specific issue was not found. No unrelated cleanup is
+                    // authorized by that request, so keep the mesh unchanged.
+                    previewMeshes.append(input.render)
+                    entries.append(CADMeshRepairEntry(bodyID: input.id,
+                        beforeTriangles: input.triangleCount, afterTriangles: input.triangleCount,
+                        weldedVertices: 0, removedTriangles: 0,
+                        beforeIntegrity: beforeIntegrity, afterIntegrity: beforeIntegrity))
+                    continue
+                }
                 guard let welded = weldAndClean(input.render,
                                                 tolerance: tolerance,
                                                 clock: clock,
@@ -1624,11 +1681,16 @@ public final class CADMeshService {
                                     message: "Repairing '\(input.name)' would remove every triangle; nothing changed.")
                 }
                 previewMeshes.append(welded.mesh)
+                guard let afterIntegrity = CADMeshIntegrity.inspect(welded.mesh, shouldStop: serviceCancel) else {
+                    return interrupted()
+                }
                 entries.append(CADMeshRepairEntry(bodyID: input.id,
                                                   beforeTriangles: input.render.triangleCount,
                                                   afterTriangles: welded.mesh.triangleCount,
                                                   weldedVertices: welded.weldedVertices,
-                                                  removedTriangles: welded.removedTriangles))
+                                                  removedTriangles: welded.removedTriangles,
+                                                  beforeIntegrity: beforeIntegrity,
+                                                  afterIntegrity: afterIntegrity))
                 guard welded.weldedVertices > 0 || welded.removedTriangles > 0 else {
                     continue
                 }

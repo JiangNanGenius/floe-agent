@@ -280,7 +280,7 @@ struct CADMeshPanelView: View {
                     .accessibilityIdentifier("CADMeshCancelOperation")
                 }
             }
-            PanelOutcome(reply: outcome)
+            repairOutcomeView
         }
         .onDisappear {
             // A panel switch can hide this view without discarding its @State.
@@ -424,6 +424,9 @@ struct CADMeshPanelView: View {
             let triangles = reply["triangleCount"] as? Int ?? 0
             lines.append(FloeCADStrings.format("cad.workbench.mesh.previewTriangles",
                                                "%@ triangles in the result", triangles))
+            if reply["repairComplete"] as? Bool == false {
+                lines.append(FloeCADStrings.text("cad.mesh.cleanupIncomplete", "Unresolved mesh issues were found."))
+            }
             if destructive && !downgradeAcknowledged {
                 lines.append(FloeCADStrings.text("cad.workbench.mesh.downgradeHint",
                                                  "Analytic bodies will be refused unless “Allow destructive mesh edits” is on."))
@@ -438,6 +441,49 @@ struct CADMeshPanelView: View {
                                            previewRevision: reply["previewRevision"] as? Int,
                                            previewChangeCount: reply["previewChangeCount"] as? Int)
         }
+    }
+
+    @ViewBuilder
+    private var repairOutcomeView: some View {
+        if outcome["repairComplete"] as? Bool == false {
+            Label(FloeCADStrings.text(
+                outcome["ok"] as? Bool == false ? "cad.mesh.repairUnavailable" : "cad.mesh.cleanupIncomplete",
+                outcome["ok"] as? Bool == false
+                    ? "These issues could not be repaired automatically. The original model is unchanged."
+                    : "Unresolved mesh issues were found."), systemImage: "exclamationmark.triangle")
+                .font(.callout).foregroundStyle(.orange)
+                .accessibilityIdentifier("CADMeshIntegrityWarning")
+        } else {
+            PanelOutcome(reply: outcome)
+        }
+        if !repairReports.isEmpty {
+            DisclosureGroup(FloeCADStrings.text("cad.mesh.inspectDetails", "Inspection details")) {
+                integrityCount("cad.mesh.openEdges", "Open edges", key: "boundaryEdgeCount")
+                integrityCount("cad.mesh.nonManifoldEdges", "Non-manifold edges", key: "nonManifoldEdgeCount")
+                integrityCount("cad.mesh.selfIntersections", "Self-intersections", key: "selfIntersectionPairCount")
+                integrityCount("cad.mesh.degenerates", "Degenerate triangles", key: "degenerateTriangleCount")
+                LabeledContent(FloeCADStrings.text("cad.mesh.orientation", "Face orientation"),
+                    value: FloeCADStrings.text(needsOrientationReview ? "cad.mesh.needsReview" : "cad.mesh.noIssue",
+                        needsOrientationReview ? "Needs review" : "No issue found"))
+            }
+        }
+    }
+
+    private var repairReports: [[String: Any]] {
+        (outcome["bodies"] as? [[String: Any]] ?? []).compactMap { $0["afterIntegrity"] as? [String: Any] }
+    }
+
+    private var needsOrientationReview: Bool {
+        repairReports.contains { report in
+            ["inconsistentWinding", "reversedClosedShell", "orientationNeedsReview"].contains {
+                report[$0] as? Bool == true
+            }
+        }
+    }
+
+    private func integrityCount(_ key: String, _ fallback: String, key field: String) -> some View {
+        LabeledContent(FloeCADStrings.text(key, fallback),
+                       value: String(repairReports.reduce(0) { $0 + ($1[field] as? Int ?? 0) }))
     }
 
     private func applyPending(_ operation: PendingMeshOperation) {

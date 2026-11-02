@@ -386,6 +386,173 @@ final class CADScriptAndMeshTests: XCTestCase {
 
     // MARK: 8. Repair / simplify / normals / boundary
 
+    private func integrityCube() -> RenderMesh {
+        EuclidBridge.renderMesh(from: .cube(center: Vector(0, 0, 0), size: Vector(2, 2, 2)))
+    }
+
+    private func integrityCrossing() -> RenderMesh {
+        RenderMesh(positions: [[-1, 0, 0], [1, 0, 0], [0, 1, 0],
+                               [0, 0.2, -1], [0, 0.2, 1], [0, -0.5, 0]],
+                   normals: Array(repeating: [0, 0, 1], count: 6), indices: [0, 1, 2, 3, 4, 5])
+    }
+
+    func testMeshIntegrityDistinguishesOpenEdgesWindingAndNonManifold() throws {
+        let cube = integrityCube()
+        let healthy = try XCTUnwrap(CADMeshIntegrity.inspect(cube, shouldStop: { false }))
+        XCTAssertFalse(healthy.unresolved)
+        XCTAssertEqual(healthy.selfIntersectionPairs, 0)
+        var open = cube; open.indices.removeLast(6)
+        let hole = try XCTUnwrap(CADMeshIntegrity.inspect(open, shouldStop: { false }))
+        XCTAssertEqual(hole.boundaryEdges, 4)
+        var reversed = cube
+        for i in stride(from: 0, to: reversed.indices.count, by: 3) {
+            reversed.indices.swapAt(i + 1, i + 2)
+        }
+        let inward = try XCTUnwrap(CADMeshIntegrity.inspect(reversed, shouldStop: { false }))
+        XCTAssertTrue(inward.reversedClosedShell)
+        XCTAssertFalse(inward.inconsistentWinding)
+        var inconsistent = cube; inconsistent.indices.swapAt(1, 2)
+        XCTAssertTrue(try XCTUnwrap(CADMeshIntegrity.inspect(inconsistent, shouldStop: { false })).inconsistentWinding)
+        var nonManifold = cube; nonManifold.indices.append(contentsOf: cube.indices.prefix(3))
+        let bad = try XCTUnwrap(CADMeshIntegrity.inspect(nonManifold, shouldStop: { false }))
+        XCTAssertEqual(bad.nonManifoldEdges, 3)
+        XCTAssertGreaterThan(bad.selfIntersectionPairs, 0, "A duplicate facet is overlapping geometry")
+    }
+
+    func testMeshSelfIntersectionKeepsSharedBoundariesAndFindsActualOverlap() throws {
+        let a = (SIMD3<Double>(0, 0, 0), SIMD3<Double>(2, 0, 0), SIMD3<Double>(0, 2, 0))
+        let adjacent = (a.1, SIMD3<Double>(2, 2, 0), a.2)
+        let overlap = (a.0, a.1, SIMD3<Double>(1, 0.5, 0))
+        XCTAssertFalse(CADInterferenceGeometry.selfIntersection(a, adjacent, tolerance: 1e-9))
+        XCTAssertTrue(CADInterferenceGeometry.selfIntersection(a, overlap, tolerance: 1e-9))
+        XCTAssertTrue(CADInterferenceGeometry.selfIntersection(a, a, tolerance: 1e-9))
+        let vertexTouch = (a.0, SIMD3<Double>(0, -1, 1), SIMD3<Double>(0, -1, -1))
+        XCTAssertFalse(CADInterferenceGeometry.selfIntersection(a, vertexTouch, tolerance: 1e-9))
+        // The supporting planes can straddle while the actual triangles are far apart.
+        let separated = (SIMD3<Double>(0.5, 10, -1), SIMD3<Double>(0.5, 10, 1), SIMD3<Double>(0.5, 11, 0))
+        XCTAssertFalse(CADInterferenceGeometry.selfIntersection(a, separated, tolerance: 1e-9))
+        let crossing = try XCTUnwrap(CADMeshIntegrity.inspect(integrityCrossing(), shouldStop: { false }))
+        XCTAssertEqual(crossing.selfIntersectionPairs, 1)
+        XCTAssertEqual(crossing.witnesses, [[0, 1]])
+    }
+
+    func testUnavailableTargetedRepairPreservesGeometryUndoAndRedo() async throws {
+        let base = integrityCube()
+        var open = base; open.indices.removeLast(6)
+        var inward = base
+        for i in stride(from: 0, to: inward.indices.count, by: 3) { inward.indices.swapAt(i + 1, i + 2) }
+        var nonManifold = base; nonManifold.indices.append(contentsOf: base.indices.prefix(3))
+        for (defect, mesh) in [("holes", open), ("orientation", inward),
+                               ("nonManifold", nonManifold), ("selfIntersections", integrityCrossing())] {
+            let document = try await makeDocument("Refuse-\(defect)")
+            defer { document.close() }
+            let body = addRenderBody(document, name: "Original", render: mesh)
+            _ = addRenderBody(document, name: "Redo witness", render: base)
+            document.session.undo()
+            XCTAssertTrue(document.session.undoStack.canRedo)
+            let count = document.session.changeCount
+            let reply = await CADMeshService(document: document).handleAsync(action: "repair", args: [
+                "bodyID": body.id.raw.uuidString, "defect": defect])
+            XCTAssertEqual(reply["ok"] as? Bool, false, "\(defect): \(reply)")
+            XCTAssertEqual(reply["error"] as? String, "unsupported_mesh_repair")
+            XCTAssertEqual(reply["repairComplete"] as? Bool, false)
+            XCTAssertEqual(document.session.document.body(with: body.id)?.render, mesh)
+            XCTAssertEqual(document.session.changeCount, count)
+            XCTAssertTrue(document.session.undoStack.canRedo)
+            XCTAssertEqual((reply["bodies"] as? [[String: Any]])?.count, 1)
+            document.session.redo()
+            XCTAssertEqual(document.summary().bodyCount, 2)
+        }
+    }
+
+    func testCleanupReportsRemainingDefectsInPreviewApplyUndoAndReopen() async throws {
+        let document = try await makeDocument("IncompleteCleanup")
+        let positions: [SIMD3<Float>] = [[0,0,0], [1,0,0], [0,1,0], [0,0,0], [1,0,0], [2,0,0]]
+        let original = RenderMesh(positions: positions,
+            normals: Array(repeating: [0,0,1], count: positions.count), indices: [0,1,2,3,4,5])
+        let body = addRenderBody(document, name: "Open", render: original)
+        let service = CADMeshService(document: document)
+        let count = document.session.changeCount
+        let preview = await service.handleAsync(action: "repair", args: ["bodyID": body.id.raw.uuidString, "preview": true])
+        XCTAssertEqual(preview["ok"] as? Bool, true)
+        XCTAssertEqual(preview["repairComplete"] as? Bool, false)
+        XCTAssertEqual(document.session.changeCount, count)
+        let previewEntry = try XCTUnwrap((preview["bodies"] as? [[String: Any]])?.first)
+        let before = try XCTUnwrap(previewEntry["beforeIntegrity"] as? [String: Any])
+        let after = try XCTUnwrap(previewEntry["afterIntegrity"] as? [String: Any])
+        XCTAssertEqual(before["degenerateTriangleCount"] as? Int, 1)
+        XCTAssertEqual(after["degenerateTriangleCount"] as? Int, 0)
+        XCTAssertEqual(after["boundaryEdgeCount"] as? Int, 3)
+        let reply = await service.handleAsync(action: "repair", args: [
+            "bodyID": body.id.raw.uuidString,
+            "expectedPreviewHash": try XCTUnwrap(preview["previewHash"] as? String),
+            "expectedChangeCount": count, "expectedRevision": document.store.revision])
+        XCTAssertEqual(reply["ok"] as? Bool, true, "\(reply)")
+        XCTAssertEqual(reply["mutated"] as? Bool, true)
+        XCTAssertEqual(reply["repairComplete"] as? Bool, false)
+        XCTAssertNotNil(reply["message"])
+        let cleaned = try XCTUnwrap(document.session.document.body(with: body.id)?.render)
+        XCTAssertEqual(cleaned.triangleCount, 1)
+        document.session.undo(); XCTAssertEqual(document.session.document.body(with: body.id)?.render, original)
+        document.session.redo(); XCTAssertEqual(document.session.document.body(with: body.id)?.render, cleaned)
+        let saved = await document.save()
+        XCTAssertTrue(saved.succeeded)
+        let url = document.url; document.close()
+        let reopened = try await FloeCADDocument.open(at: url); defer { reopened.close() }
+        XCTAssertEqual(reopened.session.document.body(with: body.id)?.render, cleaned)
+    }
+
+    func testAbsentRequestedDefectDoesNotApplyUnrelatedCleanup() async throws {
+        let document = try await makeDocument("NoUnrelatedCleanup"); defer { document.close() }
+        let source = integrityCrossing()
+        let body = addRenderBody(document, name: "Crossing", render: source)
+        let count = document.session.changeCount
+        // Orientation is not guessed for an open surface. A request for a
+        // non-manifold repair must not weld or fix unrelated crossing facets.
+        let reply = await CADMeshService(document: document).handleAsync(action: "repair", args: [
+            "bodyID": body.id.raw.uuidString, "defect": "nonManifold"])
+        XCTAssertEqual(reply["ok"] as? Bool, true)
+        XCTAssertEqual(reply["mutated"] as? Bool, false)
+        XCTAssertEqual(reply["repairComplete"] as? Bool, false)
+        XCTAssertEqual(document.session.document.body(with: body.id)?.render, source)
+        XCTAssertEqual(document.session.changeCount, count)
+    }
+
+    func testInterruptedMeshInspectionDoesNotPublishZeroDefects() {
+        var checkpoints = 0
+        let result = CADMeshIntegrity.inspect(integrityCube(), shouldStop: {
+            checkpoints += 1
+            return checkpoints > 5
+        })
+        XCTAssertNil(result)
+        XCTAssertGreaterThan(checkpoints, 5)
+    }
+
+    func testMeshIntegrityClassificationSurvivesScaleAndTranslation() throws {
+        for scale: Float in [0.001, 1, 1000] {
+            var cube = integrityCube(), crossing = integrityCrossing()
+            let translation = SIMD3<Float>(37, -19, 8) * scale
+            cube.positions = cube.positions.map { $0 * scale + translation }
+            crossing.positions = crossing.positions.map { $0 * scale + translation }
+            XCTAssertFalse(try XCTUnwrap(CADMeshIntegrity.inspect(cube, shouldStop: { false })).unresolved)
+            XCTAssertEqual(try XCTUnwrap(CADMeshIntegrity.inspect(crossing, shouldStop: { false })).selfIntersectionPairs, 1)
+        }
+    }
+
+    func testInwardCavityIsAmbiguousRatherThanMislabelledReversedOuterShell() throws {
+        var outer = integrityCube(), inner = integrityCube()
+        inner.positions = inner.positions.map { $0 * 0.5 }
+        for i in stride(from: 0, to: inner.indices.count, by: 3) { inner.indices.swapAt(i + 1, i + 2) }
+        let offset = UInt32(outer.positions.count)
+        outer.positions += inner.positions; outer.normals += inner.normals
+        outer.indices += inner.indices.map { $0 + offset }
+        let report = try XCTUnwrap(CADMeshIntegrity.inspect(outer, shouldStop: { false }))
+        XCTAssertEqual(report.boundaryEdges, 0)
+        XCTAssertEqual(report.selfIntersectionPairs, 0)
+        XCTAssertFalse(report.reversedClosedShell)
+        XCTAssertTrue(report.ambiguousShellOrientation)
+    }
+
     func testMeshRepairSimplifyNormalsAndBoundary() async throws {
         let document = try await makeDocument("MeshQuality")
         let service = CADMeshService(document: document)

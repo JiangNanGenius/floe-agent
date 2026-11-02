@@ -429,6 +429,14 @@
         "source_changes": [
           "c129466a81532b6d439e32c287352c6e17386e8d"
         ]
+      },
+      "verification_plan": {
+        "priority": "P1",
+        "level": "heavy",
+        "sharedGroup": "existing-correctness",
+        "implementationAndEvidenceSeparate": true,
+        "originalAcceptanceUnchanged": true,
+        "upgradeIf": null
       }
     },
     {
@@ -504,6 +512,14 @@
         "source_changes": [
           "c129466a81532b6d439e32c287352c6e17386e8d"
         ]
+      },
+      "verification_plan": {
+        "priority": "P1",
+        "level": "heavy",
+        "sharedGroup": "existing-correctness",
+        "implementationAndEvidenceSeparate": true,
+        "originalAcceptanceUnchanged": true,
+        "upgradeIf": null
       }
     },
     {
@@ -1791,6 +1807,14 @@
       "current_acceptance": {
         "original_criterion_accepted": false,
         "source_changes": []
+      },
+      "verification_plan": {
+        "priority": "P2",
+        "level": "heavy",
+        "sharedGroup": "new-specialist-evaluation",
+        "implementationAndEvidenceSeparate": true,
+        "originalAcceptanceUnchanged": true,
+        "upgradeIf": null
       }
     },
     {
@@ -1884,6 +1908,14 @@
       "current_acceptance": {
         "original_criterion_accepted": false,
         "source_changes": []
+      },
+      "verification_plan": {
+        "priority": "P2",
+        "level": "heavy",
+        "sharedGroup": "new-specialist-evaluation",
+        "implementationAndEvidenceSeparate": true,
+        "originalAcceptanceUnchanged": true,
+        "upgradeIf": null
       }
     },
     {
@@ -2454,6 +2486,14 @@
           "806beb9e0799a8bd1c0f8d4bc2fbe4beacc15606",
           "9df3e771dffa46f1b9441221f159a9bdb7baf433"
         ]
+      },
+      "verification_plan": {
+        "priority": "P1",
+        "level": "heavy",
+        "sharedGroup": "existing-correctness",
+        "implementationAndEvidenceSeparate": true,
+        "originalAcceptanceUnchanged": true,
+        "upgradeIf": null
       }
     },
     {
@@ -3209,6 +3249,14 @@
       "current_acceptance": {
         "original_criterion_accepted": false,
         "source_changes": []
+      },
+      "verification_plan": {
+        "priority": "P2",
+        "level": "heavy",
+        "sharedGroup": "new-specialist-evaluation",
+        "implementationAndEvidenceSeparate": true,
+        "originalAcceptanceUnchanged": true,
+        "upgradeIf": null
       }
     },
     {
@@ -3303,6 +3351,14 @@
       "current_acceptance": {
         "original_criterion_accepted": false,
         "source_changes": []
+      },
+      "verification_plan": {
+        "priority": "P1",
+        "level": "light",
+        "sharedGroup": "integration-evidence",
+        "implementationAndEvidenceSeparate": true,
+        "originalAcceptanceUnchanged": true,
+        "upgradeIf": "New document format, shared persistence change or new geometry/simulation evaluation kernel requires heavy validation."
       }
     },
     {
@@ -3499,6 +3555,14 @@
       "current_acceptance": {
         "original_criterion_accepted": false,
         "source_changes": []
+      },
+      "verification_plan": {
+        "priority": "P1",
+        "level": "heavy",
+        "sharedGroup": "assembly-document-data",
+        "implementationAndEvidenceSeparate": true,
+        "originalAcceptanceUnchanged": true,
+        "upgradeIf": null
       }
     },
     {
@@ -3572,6 +3636,14 @@
       "current_acceptance": {
         "original_criterion_accepted": false,
         "source_changes": []
+      },
+      "verification_plan": {
+        "priority": "P1",
+        "level": "heavy",
+        "sharedGroup": "assembly-document-data",
+        "implementationAndEvidenceSeparate": true,
+        "originalAcceptanceUnchanged": true,
+        "upgradeIf": null
       }
     },
     {
@@ -4070,6 +4142,14 @@
       "current_acceptance": {
         "original_criterion_accepted": false,
         "source_changes": []
+      },
+      "verification_plan": {
+        "priority": "P1",
+        "level": "heavy",
+        "sharedGroup": "assembly-document-data",
+        "implementationAndEvidenceSeparate": true,
+        "originalAcceptanceUnchanged": true,
+        "upgradeIf": null
       }
     },
     {
@@ -4223,6 +4303,14 @@
       "current_acceptance": {
         "original_criterion_accepted": false,
         "source_changes": []
+      },
+      "verification_plan": {
+        "priority": "P2",
+        "level": "heavy",
+        "sharedGroup": "new-specialist-evaluation",
+        "implementationAndEvidenceSeparate": true,
+        "originalAcceptanceUnchanged": true,
+        "upgradeIf": null
       }
     },
     {
@@ -4367,6 +4455,14 @@
       "current_acceptance": {
         "original_criterion_accepted": false,
         "source_changes": []
+      },
+      "verification_plan": {
+        "priority": "P2",
+        "level": "heavy",
+        "sharedGroup": "new-specialist-evaluation",
+        "implementationAndEvidenceSeparate": true,
+        "originalAcceptanceUnchanged": true,
+        "upgradeIf": null
       }
     },
     {
@@ -4807,6 +4903,14 @@
       "current_acceptance": {
         "original_criterion_accepted": false,
         "source_changes": []
+      },
+      "verification_plan": {
+        "priority": "P1",
+        "level": "heavy",
+        "sharedGroup": "assembly-document-data",
+        "implementationAndEvidenceSeparate": true,
+        "originalAcceptanceUnchanged": true,
+        "upgradeIf": null
       }
     },
     {
@@ -4965,6 +5069,14 @@
       "current_acceptance": {
         "original_criterion_accepted": false,
         "source_changes": []
+      },
+      "verification_plan": {
+        "priority": "P1",
+        "level": "heavy",
+        "sharedGroup": "assembly-document-data",
+        "implementationAndEvidenceSeparate": true,
+        "originalAcceptanceUnchanged": true,
+        "upgradeIf": null
       }
     },
     {
@@ -5033,6 +5145,14 @@
       "current_acceptance": {
         "original_criterion_accepted": false,
         "source_changes": []
+      },
+      "verification_plan": {
+        "priority": "P1",
+        "level": "heavy",
+        "sharedGroup": "assembly-document-data",
+        "implementationAndEvidenceSeparate": true,
+        "originalAcceptanceUnchanged": true,
+        "upgradeIf": null
       }
     },
     {
@@ -6357,6 +6477,14 @@
       "current_acceptance": {
         "original_criterion_accepted": false,
         "source_changes": []
+      },
+      "verification_plan": {
+        "priority": "P2",
+        "level": "heavy",
+        "sharedGroup": "new-specialist-evaluation",
+        "implementationAndEvidenceSeparate": true,
+        "originalAcceptanceUnchanged": true,
+        "upgradeIf": null
       }
     },
     {
@@ -6553,6 +6681,14 @@
       "current_acceptance": {
         "original_criterion_accepted": false,
         "source_changes": []
+      },
+      "verification_plan": {
+        "priority": "P1",
+        "level": "heavy",
+        "sharedGroup": "assembly-document-data",
+        "implementationAndEvidenceSeparate": true,
+        "originalAcceptanceUnchanged": true,
+        "upgradeIf": null
       }
     },
     {
@@ -6608,6 +6744,14 @@
       "current_acceptance": {
         "original_criterion_accepted": false,
         "source_changes": []
+      },
+      "verification_plan": {
+        "priority": "P2",
+        "level": "heavy",
+        "sharedGroup": "new-specialist-evaluation",
+        "implementationAndEvidenceSeparate": true,
+        "originalAcceptanceUnchanged": true,
+        "upgradeIf": null
       }
     },
     {
@@ -6667,6 +6811,14 @@
       "current_acceptance": {
         "original_criterion_accepted": false,
         "source_changes": []
+      },
+      "verification_plan": {
+        "priority": "P2",
+        "level": "heavy",
+        "sharedGroup": "new-specialist-evaluation",
+        "implementationAndEvidenceSeparate": true,
+        "originalAcceptanceUnchanged": true,
+        "upgradeIf": null
       }
     },
     {
@@ -6722,6 +6874,14 @@
       "current_acceptance": {
         "original_criterion_accepted": false,
         "source_changes": []
+      },
+      "verification_plan": {
+        "priority": "P2",
+        "level": "heavy",
+        "sharedGroup": "new-specialist-evaluation",
+        "implementationAndEvidenceSeparate": true,
+        "originalAcceptanceUnchanged": true,
+        "upgradeIf": null
       }
     },
     {
@@ -6785,6 +6945,14 @@
       "current_acceptance": {
         "original_criterion_accepted": false,
         "source_changes": []
+      },
+      "verification_plan": {
+        "priority": "P1",
+        "level": "heavy",
+        "sharedGroup": "existing-correctness",
+        "implementationAndEvidenceSeparate": true,
+        "originalAcceptanceUnchanged": true,
+        "upgradeIf": null
       }
     },
     {
@@ -6848,6 +7016,14 @@
       "current_acceptance": {
         "original_criterion_accepted": false,
         "source_changes": []
+      },
+      "verification_plan": {
+        "priority": "P1",
+        "level": "heavy",
+        "sharedGroup": "existing-correctness",
+        "implementationAndEvidenceSeparate": true,
+        "originalAcceptanceUnchanged": true,
+        "upgradeIf": null
       }
     },
     {
@@ -7143,6 +7319,14 @@
       "current_acceptance": {
         "original_criterion_accepted": false,
         "source_changes": []
+      },
+      "verification_plan": {
+        "priority": "P2",
+        "level": "light",
+        "sharedGroup": "appearance-resources",
+        "implementationAndEvidenceSeparate": true,
+        "originalAcceptanceUnchanged": true,
+        "upgradeIf": "New document format, shared persistence change or new geometry/simulation evaluation kernel requires heavy validation."
       }
     },
     {
@@ -7198,6 +7382,14 @@
       "current_acceptance": {
         "original_criterion_accepted": false,
         "source_changes": []
+      },
+      "verification_plan": {
+        "priority": "P2",
+        "level": "heavy",
+        "sharedGroup": "new-specialist-evaluation",
+        "implementationAndEvidenceSeparate": true,
+        "originalAcceptanceUnchanged": true,
+        "upgradeIf": null
       }
     },
     {
@@ -7262,6 +7454,14 @@
       "current_acceptance": {
         "original_criterion_accepted": false,
         "source_changes": []
+      },
+      "verification_plan": {
+        "priority": "P1",
+        "level": "heavy",
+        "sharedGroup": "assembly-document-data",
+        "implementationAndEvidenceSeparate": true,
+        "originalAcceptanceUnchanged": true,
+        "upgradeIf": null
       }
     },
     {
@@ -7517,6 +7717,14 @@
       "current_acceptance": {
         "original_criterion_accepted": false,
         "source_changes": []
+      },
+      "verification_plan": {
+        "priority": "P2",
+        "level": "light",
+        "sharedGroup": "appearance-resources",
+        "implementationAndEvidenceSeparate": true,
+        "originalAcceptanceUnchanged": true,
+        "upgradeIf": "New document format, shared persistence change or new geometry/simulation evaluation kernel requires heavy validation."
       }
     },
     {
@@ -7576,6 +7784,14 @@
       "current_acceptance": {
         "original_criterion_accepted": false,
         "source_changes": []
+      },
+      "verification_plan": {
+        "priority": "P2",
+        "level": "light",
+        "sharedGroup": "appearance-resources",
+        "implementationAndEvidenceSeparate": true,
+        "originalAcceptanceUnchanged": true,
+        "upgradeIf": "New document format, shared persistence change or new geometry/simulation evaluation kernel requires heavy validation."
       }
     },
     {
@@ -7640,6 +7856,14 @@
       "current_acceptance": {
         "original_criterion_accepted": false,
         "source_changes": []
+      },
+      "verification_plan": {
+        "priority": "P2",
+        "level": "light",
+        "sharedGroup": "appearance-resources",
+        "implementationAndEvidenceSeparate": true,
+        "originalAcceptanceUnchanged": true,
+        "upgradeIf": "New document format, shared persistence change or new geometry/simulation evaluation kernel requires heavy validation."
       }
     },
     {
@@ -7704,6 +7928,14 @@
       "current_acceptance": {
         "original_criterion_accepted": false,
         "source_changes": []
+      },
+      "verification_plan": {
+        "priority": "P1",
+        "level": "heavy",
+        "sharedGroup": "assembly-document-data",
+        "implementationAndEvidenceSeparate": true,
+        "originalAcceptanceUnchanged": true,
+        "upgradeIf": null
       }
     },
     {
@@ -8245,6 +8477,14 @@
       "current_acceptance": {
         "original_criterion_accepted": false,
         "source_changes": []
+      },
+      "verification_plan": {
+        "priority": "P2",
+        "level": "heavy",
+        "sharedGroup": "new-specialist-evaluation",
+        "implementationAndEvidenceSeparate": true,
+        "originalAcceptanceUnchanged": true,
+        "upgradeIf": null
       }
     },
     {
@@ -8307,6 +8547,14 @@
       "current_acceptance": {
         "original_criterion_accepted": false,
         "source_changes": []
+      },
+      "verification_plan": {
+        "priority": "P2",
+        "level": "heavy",
+        "sharedGroup": "new-specialist-evaluation",
+        "implementationAndEvidenceSeparate": true,
+        "originalAcceptanceUnchanged": true,
+        "upgradeIf": null
       }
     },
     {
@@ -8884,6 +9132,14 @@
           "e39cccab complete canonical CAD schema + page-readable hashed help",
           "97d31ecb real CFBoolean discrimination and nontrapping exact integer help selectors"
         ]
+      },
+      "verification_plan": {
+        "priority": "P1",
+        "level": "light",
+        "sharedGroup": "integration-evidence",
+        "implementationAndEvidenceSeparate": true,
+        "originalAcceptanceUnchanged": true,
+        "upgradeIf": "New document format, shared persistence change or new geometry/simulation evaluation kernel requires heavy validation."
       }
     },
     {
@@ -9096,6 +9352,14 @@
       "current_acceptance": {
         "original_criterion_accepted": false,
         "source_changes": []
+      },
+      "verification_plan": {
+        "priority": "P1",
+        "level": "light",
+        "sharedGroup": "integration-evidence",
+        "implementationAndEvidenceSeparate": true,
+        "originalAcceptanceUnchanged": true,
+        "upgradeIf": "New document format, shared persistence change or new geometry/simulation evaluation kernel requires heavy validation."
       }
     }
   ],
@@ -9818,5 +10082,88 @@
       "canonical_simulator_shutdown": true,
       "physical_phone_used": false
     }
+  },
+  "verification_strategy": {
+    "adopted": "2026-11-03",
+    "all106_required_before_release": true,
+    "heavy": 26,
+    "light_or_reuse": 7,
+    "groups": [
+      {
+        "group": "existing-correctness",
+        "priority": "P1",
+        "level": "heavy",
+        "ids": [
+          "M03",
+          "M04",
+          "M22",
+          "X05",
+          "X06"
+        ]
+      },
+      {
+        "group": "assembly-document-data",
+        "priority": "P1",
+        "level": "heavy",
+        "ids": [
+          "E03",
+          "E04",
+          "E10",
+          "E20",
+          "E22",
+          "E23",
+          "X01",
+          "X12",
+          "X19"
+        ]
+      },
+      {
+        "group": "new-specialist-evaluation",
+        "priority": "P2",
+        "level": "heavy",
+        "ids": [
+          "M16",
+          "M17",
+          "M29",
+          "E12",
+          "E14",
+          "E38",
+          "X02",
+          "X03",
+          "X04",
+          "X11",
+          "X26",
+          "X27"
+        ]
+      },
+      {
+        "group": "appearance-resources",
+        "priority": "P2",
+        "level": "light",
+        "ids": [
+          "X10",
+          "X16",
+          "X17",
+          "X18"
+        ]
+      },
+      {
+        "group": "integration-evidence",
+        "priority": "P1",
+        "level": "light",
+        "ids": [
+          "M30",
+          "X34",
+          "X37"
+        ]
+      }
+    ],
+    "rules": [
+      "Reuse source-bound existing evidence for unchanged paths.",
+      "Run shared transaction/resource/cancellation checks once per affected batch.",
+      "Light validation still needs real functionality/output; escalate on format, persistence or evaluator changes.",
+      "Compile and run relevant checks after coherent implementation batches; no full regression per small fix.",
+      "Use only canonical iPad; iPhone scope is compact layout."
+    ]
   }
 }

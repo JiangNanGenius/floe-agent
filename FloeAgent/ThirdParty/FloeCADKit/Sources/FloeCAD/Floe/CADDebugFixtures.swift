@@ -35,6 +35,9 @@ public enum CADDebugFixtures {
         /// A mesh-only holed loft with a 30° face-rotation feature, so the
         /// History row can display/edit that real parameter.
         case meshFaceRotation
+        /// Open crossing triangles plus one degenerate facet, for the real
+        /// cleanup preview and remaining-issues UI. No verdict is injected.
+        case meshRepairIssues
     }
 
     public static func seed(_ scenario: Scenario, in document: FloeCADDocument) throws {
@@ -45,6 +48,17 @@ public enum CADDebugFixtures {
             try seedArcSplineLoop(in: document, conflicting: true)
         case .meshFaceRotation:
             try seedMeshFaceRotation(in: document)
+        case .meshRepairIssues:
+            let positions: [SIMD3<Float>] = [
+                [-10, 0, 0], [10, 0, 0], [0, 10, 0],
+                [0, 2, -10], [0, 2, 10], [0, -5, 0],
+                [20, 0, 0], [21, 0, 0], [22, 0, 0]]
+            let render = RenderMesh(positions: positions,
+                normals: Array(repeating: [0, 0, 1], count: positions.count),
+                indices: [0, 1, 2, 3, 4, 5, 6, 7, 8])
+            document.session.perform(AddBodyCommand(
+                body: Body(id: BodyID(), name: "Inspection mesh", transform: .identity,
+                           primitive: nil, render: render, revision: 1), title: "Add inspection mesh"))
         }
     }
 

@@ -234,6 +234,12 @@ enum CADQualificationFixture {
                                     scenario: .conflictingArcSplineLoop)
     }
 
+    @MainActor
+    static func openMeshRepairIssues() async throws -> FloeCADDocument {
+        try await openSeededFixture(fileName: "mesh-inspection.floecad", name: "Mesh inspection",
+                                    scenario: .meshRepairIssues)
+    }
+
     /// M19 native UI fixture: a mesh-only holed loft with a real 30°
     /// `.rotateFace` feature. `reset` re-seeds the deterministic package; the
     /// second launch opens the first launch's saved 45° package unchanged.
@@ -827,6 +833,8 @@ struct CADWorkbenchFixtureHarness: View {
                     document = try await CADQualificationFixture.openSplineLoop()
                 } else if arguments.contains("--ui-test-cad-sketch-conflict") {
                     document = try await CADQualificationFixture.openSplineConflict()
+                } else if arguments.contains("--ui-test-cad-mesh-integrity") {
+                    document = try await CADQualificationFixture.openMeshRepairIssues()
                 } else if arguments.contains("--ui-test-cad-face-rotation") {
                     document = try await CADQualificationFixture.openFaceRotation(
                         reset: arguments.contains("--ui-test-cad-face-rotation-reset"))

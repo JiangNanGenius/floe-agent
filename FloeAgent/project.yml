@@ -1408,6 +1408,8 @@ targets:
       - path: ThirdParty/FloeCADKit/Tests/FloeCADKitTests/CADIGESSurfaceRoundTripTests.swift
       - path: ThirdParty/FloeCADKit/Tests/FloeCADKitTests/CADIGESTests.swift
       - path: ThirdParty/FloeCADKit/Tests/FloeCADKitTests/CADMeshPreviewConsentTests.swift
+      - path: ThirdParty/FloeCADKit/Tests/FloeCADKitTests/CADScriptAndMeshTests.swift
+      - path: ThirdParty/FloeCADKit/Tests/FloeCADKitTests/CADPreviewBindingTests.swift
       # Original X28 (animation export options UI → real exporter settings →
       # media read-back): options mapping/persistence tests plus the App-host
       # RealityKit export read-back fixture. Regenerate with gen_project.sh.
