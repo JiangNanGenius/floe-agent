@@ -81,6 +81,40 @@ final class OfficeInkCardLoopUITests: XCTestCase {
         "墨卡闭环-\(format.fileSuffix)-\(token)"
     }
 
+    /// Actual pinned Office frontend through the normal Notes/Edit entry.
+    /// Uses no injected edit/ink and keeps all other library documents intact.
+    func testWideIPadMiniUsesCompleteOfficeNotebookbar() throws {
+        continueAfterFailure = false
+        XCUIDevice.shared.orientation = .landscapeLeft
+        let token = String(UUID().uuidString.lowercased().filter { $0.isHexDigit }.prefix(8))
+        let title = ownedTitle(format: .word, token: token)
+        let app = XCUIApplication()
+        app.launchArguments = ["-AppleLanguages", "(en)", "-AppleLocale", "en_US", "-ui-testing", "-ui-testing-ipad",
+            "--ui-test-skip-onboarding", "--ui-test-batch-fixture", Format.word.launchArgument,
+            "--ui-test-office-ink-card-token", token]
+        app.launch(); defer { app.terminate() }
+        let notes = app.staticTexts["sidebar.notes"].firstMatch
+        XCTAssertTrue(notes.waitForExistence(timeout: 30)); notes.tap()
+        revealCard(app, kind: "office", title: title).tap()
+        let edit = app.buttons["office.preview.edit"]
+        XCTAssertTrue(edit.waitForExistence(timeout: 90))
+        XCTAssertTrue(waitUntil(timeout: 90) { edit.isEnabled && edit.isHittable })
+        edit.tap()
+        let web = app.webViews.firstMatch
+        XCTAssertTrue(web.waitForExistence(timeout: 90))
+        XCTAssertGreaterThanOrEqual(web.frame.width, 600, "This check requires an actually wide editor, not a narrow card")
+        let home = web.descendants(matching: .any).matching(NSPredicate(format: "label == %@", "Home")).firstMatch
+        let insert = web.descendants(matching: .any).matching(NSPredicate(format: "label == %@", "Insert")).firstMatch
+        XCTAssertTrue(home.waitForExistence(timeout: 90), app.debugDescription)
+        XCTAssertTrue(insert.exists, app.debugDescription)
+        XCTAssertLessThan(home.frame.minY, web.frame.minY + 250)
+        XCTAssertLessThan(abs(home.frame.minY - insert.frame.minY), 15,
+            "The genuine notebookbar tabs must occupy the same toolbar row")
+        attach(XCUIScreen.main.screenshot().image, name: "Office actual wide iPad mini notebookbar")
+        let back = app.buttons["office.editor.back"]
+        XCTAssertTrue(back.isEnabled && back.isHittable); back.tap()
+    }
+
     func testWordSavedInkReachesActualLibraryCardFromMainApp() throws {
         try runInkCardLoop(format: .word, casePrefix: "ink-card-word")
     }

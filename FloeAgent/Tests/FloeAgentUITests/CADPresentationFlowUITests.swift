@@ -2154,9 +2154,15 @@ final class CADAdvancedPatternNativeFlowUITests: XCTestCase {
             path.tap(); app.buttons["No path"].tap()
             let spacing = app.textFields["PatternSpacing"]
             XCTAssertTrue(spacing.exists && spacing.isHittable)
-            spacing.tap()
+            // The text box's centre is before a short value. Put the caret
+            // after it, matching the existing native numeric-field helper.
+            spacing.coordinate(withNormalizedOffset: CGVector(dx: 1, dy: 0.5))
+                .withOffset(CGVector(dx: -4, dy: 0)).tap()
             let old = spacing.value as? String ?? "0"
-            spacing.typeText(String(repeating: XCUIKeyboardKey.delete.rawValue, count: old.count) + "20\n")
+            spacing.typeText(String(repeating: XCUIKeyboardKey.delete.rawValue, count: old.count))
+            spacing.typeText("20\n")
+            XCTAssertEqual(Double(spacing.value as? String ?? ""), 20,
+                "Apply must test the intended20mm, never an accidentally prefixed206mm")
             apply.tap()
         }
         let gone = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: apply)

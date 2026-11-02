@@ -464,10 +464,54 @@ final class OfficeExplicitSaveBridge: NSObject, WKScriptMessageHandler {
             throw CocoaError(.featureUnsupported)
         }
         let content = webView.configuration.userContentController
+        content.addUserScript(WKUserScript(source: adaptiveTabletLayoutScript(
+            isPad: UIDevice.current.userInterfaceIdiom == .pad),
+            injectionTime: .atDocumentStart, forMainFrameOnly: true))
         content.addUserScript(WKUserScript(
             source: embeddedControlsScript, injectionTime: .atDocumentStart, forMainFrameOnly: true))
         content.addUserScript(WKUserScript(
             source: inkBridgeScript, injectionTime: .atDocumentStart, forMainFrameOnly: true))
+    }
+
+    /// Native layout adapter, installed before the pinned page initializes
+    /// its own mode object. iPad mini's744pt short edge does not make a wide
+    /// editor a phone. Keep the real touch/platform and permission behavior;
+    /// only the small-screen predicate uses available CSS width on an iPad.
+    static func adaptiveTabletLayoutScript(isPad: Bool) -> String {
+        let nativeTablet = isPad ? "true" : "false"
+        return #"""
+        (() => {
+            if (!\#(nativeTablet) || window.floeOfficeTabletLayoutInstalled) return;
+            const descriptor = Object.getOwnPropertyDescriptor(window, 'mode');
+            if (descriptor && !descriptor.configurable) return;
+            let current = window.mode;
+            const adapt = (mode) => {
+                if (!mode || typeof mode.isSmallScreenDevice !== 'function' || mode.floeTabletLayoutAdapted) return mode;
+                const original = mode.isSmallScreenDevice;
+                mode.isSmallScreenDevice = function(...args) {
+                    if (!window.ThisIsTheiOSApp || window.ThisIsTheWindowsApp || window.ThisIsTheQtApp ||
+                        window.ThisIsTheMacOSApp || !window.L?.Browser?.mobile || window.L.Browser.cypressTest ||
+                        mode.isChromebook?.()) return original.apply(this, args);
+                    const width = window.innerWidth;
+                    return Number.isFinite(width) && width > 0 ? width < 600 : original.apply(this, args);
+                };
+                Object.defineProperty(mode, 'floeTabletLayoutAdapted', { value: true });
+                return mode;
+            };
+            Object.defineProperty(window, 'mode', {
+                configurable: true, enumerable: true,
+                get: () => current,
+                set: (mode) => { current = adapt(mode); }
+            });
+            current = adapt(current);
+            window.floeOfficeTabletLayoutInstalled = true;
+            window.addEventListener('resize', () => {
+                if (typeof window.deviceFormFactor === 'string' && typeof current?.getDeviceFormFactor === 'function') {
+                    window.deviceFormFactor = current.getDeviceFormFactor();
+                }
+            });
+        })();
+        """#
     }
 
     // FLOE_EMBEDDED_CONTROLS_SCRIPT_BEGIN

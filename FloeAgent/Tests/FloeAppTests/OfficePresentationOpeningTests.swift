@@ -494,4 +494,87 @@ struct OfficeStageDiagnosticsTests {
         #expect(text.contains("at="))
     }
 }
+
+#if canImport(WebKit)
+import WebKit
+
+@Suite("FloeApp.OfficeTabletLayout", .serialized)
+@MainActor
+struct OfficeTabletLayoutTests {
+    private func page(width: CGFloat, height: CGFloat, isPad: Bool) async throws -> WKWebView {
+        let configuration = WKWebViewConfiguration()
+        configuration.userContentController.addUserScript(WKUserScript(
+            source: OfficeExplicitSaveBridge.adaptiveTabletLayoutScript(isPad: isPad),
+            injectionTime: .atDocumentStart, forMainFrameOnly: true))
+        let web = WKWebView(frame: CGRect(x: 0, y: 0, width: width, height: height), configuration: configuration)
+        web.loadHTMLString(#"""
+        <html><head><meta name="viewport" content="width=device-width, initial-scale=1"></head><body>
+        <script>
+        window.ThisIsTheiOSApp = true;
+        window.L = { Browser: { mobile: true, cypressTest: false } };
+        window.mode = {
+          isChromebook: () => false,
+          isSmallScreenDevice: function() {
+            if (window.ThisIsTheWindowsApp || window.ThisIsTheQtApp || window.ThisIsTheMacOSApp || this.isChromebook()) return false;
+            if (window.L.Browser.mobile && window.L.Browser.cypressTest) return true;
+            return window.L.Browser.mobile && (screen.width < 768 || screen.height < 768);
+          },
+          isTablet: function() { return window.L.Browser.mobile && !this.isSmallScreenDevice(); },
+          getDeviceFormFactor: function() { return this.isSmallScreenDevice() ? 'mobile' : this.isTablet() ? 'tablet' : 'desktop'; }
+        };
+        window.deviceFormFactor = window.mode.getDeviceFormFactor();
+        window.layoutFixtureReady = true;
+        </script></body></html>
+        """#, baseURL: nil)
+        for _ in 0..<300 {
+            if (try? await web.evaluateJavaScript("window.layoutFixtureReady === true")) as? Bool == true { return web }
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        throw CocoaError(.coderReadCorrupt)
+    }
+
+    @Test("Wide iPad mini portrait and landscape retain the tablet toolbar; narrow editors stay compact")
+    func miniAndNarrowWidths() async throws {
+        for width in [CGFloat(744), CGFloat(1133), CGFloat(390)] {
+            let web = try await page(width: width, height: 700, isPad: true)
+            let measured = try #require(try await web.evaluateJavaScript("window.innerWidth") as? Double)
+            #expect(abs(measured - Double(width)) < 1)
+            let mode = try #require(try await web.evaluateJavaScript("window.mode.getDeviceFormFactor()") as? String)
+            #expect(mode == (width >= 600 ? "tablet" : "mobile"))
+            #expect(try await web.evaluateJavaScript("window.floeOfficeTabletLayoutInstalled === true") as? Bool == true)
+            web.stopLoading()
+        }
+    }
+
+    @Test("Keyboard height does not turn a wide iPad into a phone and viewport changes keep the same page")
+    func heightAndResizePreservePage() async throws {
+        let web = try await page(width: 1133, height: 200, isPad: true)
+        #expect(try await web.evaluateJavaScript("window.mode.getDeviceFormFactor()") as? String == "tablet")
+        _ = try await web.evaluateJavaScript("window.savedDocumentIdentity = 'unchanged';")
+        web.frame.size.width = 390
+        var compact = false
+        for _ in 0..<100 {
+            compact = (try? await web.evaluateJavaScript("window.mode.getDeviceFormFactor()")) as? String == "mobile"
+            if compact { break }
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        #expect(compact)
+        _ = try await web.evaluateJavaScript("window.dispatchEvent(new Event('resize'))")
+        #expect(try await web.evaluateJavaScript("window.deviceFormFactor") as? String == "mobile")
+        #expect(try await web.evaluateJavaScript("window.savedDocumentIdentity") as? String == "unchanged")
+        web.stopLoading()
+    }
+
+    @Test("The native iPad adapter preserves phone and desktop platform decisions")
+    func otherPlatformsKeepOriginalPredicate() async throws {
+        let phone = try await page(width: 1133, height: 700, isPad: false)
+        #expect(try await phone.evaluateJavaScript("window.mode.isSmallScreenDevice() === (window.L.Browser.mobile && (screen.width < 768 || screen.height < 768))") as? Bool == true)
+        #expect(try await phone.evaluateJavaScript("window.floeOfficeTabletLayoutInstalled === true") as? Bool == false)
+        let desktop = try await page(width: 390, height: 200, isPad: true)
+        _ = try await desktop.evaluateJavaScript("window.ThisIsTheMacOSApp = true")
+        #expect(try await desktop.evaluateJavaScript("window.mode.isSmallScreenDevice()") as? Bool == false)
+        phone.stopLoading(); desktop.stopLoading()
+    }
+}
+#endif
 #endif
