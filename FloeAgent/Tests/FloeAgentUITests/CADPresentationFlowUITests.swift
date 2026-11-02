@@ -1989,6 +1989,10 @@ final class CADExternalProjectionNativeFlowUITests: XCTestCase {
         app.launch()
         XCTAssertTrue(app.buttons["UndoButton"].waitForExistence(timeout: 60), app.debugDescription)
         waitState(app, ["ready=true"])
+        if app.alerts.firstMatch.exists {
+            let okay = app.alerts.buttons["OK"]
+            XCTAssertTrue(okay.exists); okay.tap()
+        }
         return app
     }
 

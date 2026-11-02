@@ -93,11 +93,13 @@ public struct CADExternalProjectionReadbackPanel: View {
         }
         .task {
             for _ in 0..<100 {
-                if let camera = document.viewModel().cameraControl {
+                if let camera = document.viewModel().cameraControl,
+                   let sketch = document.viewModel().activeSketch,
+                   camera.worldToScreenPoint(sketch.plane.origin) != nil {
                     camera.fitTo(bounds: (SIMD3(-10, -5, -70), SIMD3(110, 10, 10)))
                     try? await Task.sleep(for: .milliseconds(600))
                     if Task.isCancelled { return }
-                    if let sketch = document.viewModel().activeSketch { camera.moveCameraHeadOn(to: sketch.plane) }
+                    camera.moveCameraHeadOn(to: sketch.plane)
                     try? await Task.sleep(for: .milliseconds(500))
                     if !Task.isCancelled { cameraReady = true }
                     return

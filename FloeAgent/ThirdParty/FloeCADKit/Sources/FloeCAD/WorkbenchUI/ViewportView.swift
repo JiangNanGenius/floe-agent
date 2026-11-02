@@ -114,7 +114,9 @@ final class ViewportCoordinator: NSObject, ViewportGestureDelegate, ViewportCame
         // bindings is a re-presentation of that viewport (the fullscreen
         // cover); remember it so a dismantle can hand the camera back. (T7W)
         presenter = viewModel.cameraControl as? ViewportCoordinator
-        viewModel.cameraControl = self
+        // SwiftUI may construct a coordinator without ever mounting its view.
+        // Such an object has no renderer or viewport and must not take the
+        // live camera binding (or clear it again when its weak owner dies).
     }
 
     /// The pose the latest explicit view command is flying to (nil when no
@@ -224,18 +226,10 @@ final class ViewportCoordinator: NSObject, ViewportGestureDelegate, ViewportCame
             ? .orthographic
             : .perspective(fovY: TurntableCamera.defaultFovY)
 
-        // Strong capture on purpose: the coordinator can be torn down before
-        // the parent view's onDisappear, but the renderer stays usable for
-        // offscreen thumbnail capture as long as the view model lives.
-        viewModel.thumbnailProvider = { renderer.makeThumbnailPNG() }
-        viewModel.screenshotProvider = { width, height, transparent, showGrid in
-            renderer.makeThumbnailPNG(
-                width: width,
-                height: height,
-                transparentBackground: transparent,
-                showGrid: showGrid
-            )
-        }
+        // The first attached viewport also supports headless capture. A later
+        // cover claims all shared bindings only when it enters the window;
+        // merely constructing/attaching it cannot displace a visible owner.
+        if viewModel.cameraControl == nil { bindSharedViewport() }
 
         // A migrated legacy scene opens on its authored camera, exactly as the
         // old director framed it; a resize must not re-fit that view (no

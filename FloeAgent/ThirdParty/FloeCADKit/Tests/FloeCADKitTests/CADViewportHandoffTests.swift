@@ -66,6 +66,30 @@ final class CADViewportHandoffTests: XCTestCase {
     /// The reported sequence: presenter on Front, fullscreen must start there,
     /// fullscreen camera changes must come back, and the shared bindings must
     /// end on the visible presenter.
+    func testUnattachedCoordinatorCannotStealOrClearTheLiveCameraBinding() async throws {
+        let document = try await makeDocument("Unattached owner")
+        defer { document.close() }
+        addCube(document)
+        let model = document.viewModel()
+        let view = MTKView(frame: CGRect(x: 0, y: 0, width: 400, height: 300))
+        let visible = ViewportCoordinator(viewModel: model)
+        visible.attach(to: view)
+        visible.viewportDidEnterWindow()
+        XCTAssertTrue(model.cameraControl === visible)
+        do {
+            let unused = ViewportCoordinator(viewModel: model)
+            XCTAssertNil(unused.renderer)
+            XCTAssertTrue(model.cameraControl === visible,
+                "Creating a SwiftUI coordinator without a view cannot claim the shared camera")
+            model.cameraControl?.animateToStandardView(.front)
+            XCTAssertNotNil(visible.pendingCameraTarget)
+            XCTAssertNil(unused.pendingCameraTarget)
+        }
+        XCTAssertTrue(model.cameraControl === visible,
+            "Deallocating an unused coordinator must not clear a weak shared binding")
+        XCTAssertNotNil(model.cameraControl?.worldToScreenPoint(.zero))
+    }
+
     func testFullscreenStartsAtPresenterCameraAndHandsBack() async throws {
         let document = try await makeDocument("Handoff")
         defer { document.close() }
