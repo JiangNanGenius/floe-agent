@@ -129574,6 +129574,22 @@
     "cad.sketch.curve.refused": {
       "en": "The curve could not be edited. The original is unchanged.",
       "zh-Hans": "无法完成曲线编辑，原曲线已保留。"
+    },
+    "cad.ui.common.more": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "More"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "更多"
+          }
+        }
+      }
     }
   },
   "version": "1.0"

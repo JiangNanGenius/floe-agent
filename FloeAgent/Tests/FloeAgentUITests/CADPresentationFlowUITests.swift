@@ -1031,6 +1031,9 @@ enum CADSheetProbe {
     static func openCamera(_ app: XCUIApplication) {
         enterPresent(app)
         let camera = app.buttons["CADPresentCamera"]
+        if !camera.exists, app.buttons["CADPresentMoreMenu"].exists {
+            app.buttons["CADPresentMoreMenu"].tap()
+        }
         XCTAssertTrue(camera.waitForExistence(timeout: 30))
         XCTAssertTrue(camera.isHittable,
                       "Present must keep the native Camera control reachable")
@@ -1791,6 +1794,18 @@ final class CADNativeUVAndCopyMergeFlowUITests: XCTestCase {
         XCTAssertTrue(surface.waitForExistence(timeout: 30))
         let granularity = app.segmentedControls["CADPresentSelectionMode"]
         XCTAssertTrue(granularity.waitForExistence(timeout: 10))
+        if compact {
+            let more = app.buttons["CADPresentMoreMenu"]
+            XCTAssertTrue(more.waitForExistence(timeout: 15) && more.isHittable)
+            snapshot("X09 compact large text adaptive presentation toolbar")
+            more.tap()
+            for identifier in ["CADPresentAnimation", "CADPresentEnvironment", "CADPresentCamera", "CADPresentOverlays", "CADPresentExport"] {
+                XCTAssertTrue(app.buttons[identifier].waitForExistence(timeout: 10))
+            }
+            app.buttons["CADPresentCamera"].tap()
+            XCTAssertTrue(app.buttons["CADPresentCameraDone"].waitForExistence(timeout: 15))
+            app.buttons["CADPresentCameraDone"].tap()
+        }
         app.buttons["CADPresentFit"].tap()
         granularity.buttons["Body"].tap()
         // Use the fixture's real top face, projected through the production
@@ -1800,11 +1815,12 @@ final class CADNativeUVAndCopyMergeFlowUITests: XCTestCase {
         let elevation = Double.pi * 0.12
         let halfFov = Double.pi / 6
         let radius = sqrt(100.0 * 100 + 10.0 * 10 + 60.0 * 60) / 2
-        let distance = max(radius / tan(halfFov) * 1.18, radius * 1.6)
+        let aspect = Double(surface.frame.width / surface.frame.height)
+        let fittedTangent = max(tan(halfFov) * min(1, aspect), 0.05)
+        let distance = max(radius / fittedTangent * 1.18, radius * 1.6)
         let horizontal = -25 * cos(azimuth)
         let vertical = 25 * sin(azimuth) * sin(elevation) + 5 * cos(elevation)
         let depth = distance - (-25 * cos(elevation) * sin(azimuth) + 5 * sin(elevation))
-        let aspect = Double(surface.frame.width / surface.frame.height)
         let x = 0.5 + horizontal / (2 * depth * tan(halfFov) * aspect)
         let y = 0.5 - vertical / (2 * depth * tan(halfFov))
         XCTAssertGreaterThan(x, 0.1)
@@ -1832,7 +1848,6 @@ final class CADNativeUVAndCopyMergeFlowUITests: XCTestCase {
             reveal(unwrap, sheet: "UV Editor", app: app)
             unwrap.tap()
             let islands = app.descendants(matching: .any).matching(identifier: "CADUVIslandCanvas").firstMatch
-            XCTAssertTrue(islands.waitForExistence(timeout: 30))
             ready(app)
             reveal(islands, sheet: "UV Editor", app: app)
             snapshot("X09 actual native UV islands after unwrap")

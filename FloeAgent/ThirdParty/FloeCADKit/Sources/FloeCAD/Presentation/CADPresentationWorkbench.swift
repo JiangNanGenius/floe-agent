@@ -1326,6 +1326,75 @@ struct CADPresentationWorkbenchContent: View {
     }
 
     private var presentToolbar: some View {
+        ViewThatFits(in: .horizontal) {
+            fullPresentToolbar
+            compactPresentToolbar
+        }
+        .padding(6)
+        .background(.regularMaterial, in: Capsule())
+        .padding(.horizontal, 12)
+        .padding(.bottom, 16)
+    }
+
+    private var compactPresentToolbar: some View {
+        HStack(spacing: 4) {
+            presentIconButton(FloeCADStrings.text("cad.ui.tool.material", "Material"),
+                              symbol: "paintpalette", identifier: "CADPresentMaterial") {
+                openMaterialInspector()
+            }
+            presentIconButton(FloeCADStrings.text("cad.present.fit", "Fit"),
+                              symbol: "arrow.up.left.and.arrow.down.right",
+                              identifier: "CADPresentFit") {
+                handle.fit()
+            }
+            Menu {
+                Button(FloeCADStrings.text("cad.animation.title", "Animation"),
+                       systemImage: "timeline.selection") {
+                    showTimeline.toggle()
+                    if showTimeline { refreshAnimation(attach: playback.clipID == nil) }
+                }
+                .accessibilityIdentifier("CADPresentAnimation")
+                Button(FloeCADStrings.text("cad.present.environment", "Environment"),
+                       systemImage: "sun.max") {
+                    showEnvironmentInspector = true
+                }
+                .accessibilityIdentifier("CADPresentEnvironment")
+                Button(FloeCADStrings.text("cad.present.camera", "Camera"), systemImage: "camera") {
+                    playback.stop()
+                    showCameraSheet = true
+                }
+                .accessibilityIdentifier("CADPresentCamera")
+                Button(FloeCADStrings.text("cad.present.overlays", "Overlays"),
+                       systemImage: "square.3.layers.3d") {
+                    showOverlays = true
+                }
+                .accessibilityIdentifier("CADPresentOverlays")
+                presentationExportMenu
+            } label: {
+                Image(systemName: "ellipsis")
+                    .font(.callout.weight(.medium))
+                    .padding(10)
+                    .frame(minWidth: 44, minHeight: 44)
+            }
+            .accessibilityLabel(FloeCADStrings.text("cad.ui.common.more", "More"))
+            .accessibilityIdentifier("CADPresentMoreMenu")
+        }
+        .fixedSize(horizontal: true, vertical: false)
+    }
+
+    private func presentIconButton(_ title: String, symbol: String, identifier: String,
+                                   action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Image(systemName: symbol)
+                .font(.callout.weight(.medium))
+                .padding(10)
+                .frame(minWidth: 44, minHeight: 44)
+        }
+        .accessibilityLabel(title)
+        .accessibilityIdentifier(identifier)
+    }
+
+    private var fullPresentToolbar: some View {
         HStack(spacing: 4) {
             presentButton(FloeCADStrings.text("cad.animation.title", "Animation"),
                           symbol: "timeline.selection",
@@ -1359,51 +1428,53 @@ struct CADPresentationWorkbenchContent: View {
                           identifier: "CADPresentOverlays") {
                 showOverlays = true
             }
-            Menu {
-                Button {
-                    exportPNG()
-                } label: {
-                    Label(FloeCADStrings.text("cad.present.export.png", "PNG image"),
-                          systemImage: "photo")
-                }
-                Button {
-                    openExportOptions(format: .mp4)
-                } label: {
-                    Label(FloeCADStrings.text("cad.animation.export.video", "MP4 video"),
-                          systemImage: "film")
-                }
-                .disabled(animationState.activeClip == nil
-                          || exportHandle != nil || exportStarting)
-
-                Button {
-                    openExportOptions(format: .pngSequence)
-                } label: {
-                    Label(FloeCADStrings.text("cad.animation.export.frames",
-                                               "PNG frames (ZIP)"),
-                          systemImage: "square.stack.3d.up")
-                }
-                .disabled(animationState.activeClip == nil
-                          || exportHandle != nil || exportStarting)
-                .accessibilityIdentifier("CADAnimationExportFrames")
-
-                Button {
-                    exportGLB()
-                } label: {
-                    Label(FloeCADStrings.text("cad.present.export.glb", "GLB model"),
-                          systemImage: "cube")
-                }
-            } label: {
-                Label(FloeCADStrings.text("cad.present.export", "Export"),
-                      systemImage: "square.and.arrow.up")
-                    .font(.callout.weight(.medium))
-                    .padding(.horizontal, 12)
-                    .frame(minHeight: 38)
-            }
-            .accessibilityIdentifier("CADPresentExport")
+            presentationExportMenu
         }
-        .padding(6)
-        .background(.regularMaterial, in: Capsule())
-        .padding(.bottom, 16)
+        .fixedSize(horizontal: true, vertical: false)
+    }
+
+    private var presentationExportMenu: some View {
+        Menu {
+            Button {
+                exportPNG()
+            } label: {
+                Label(FloeCADStrings.text("cad.present.export.png", "PNG image"),
+                      systemImage: "photo")
+            }
+            Button {
+                openExportOptions(format: .mp4)
+            } label: {
+                Label(FloeCADStrings.text("cad.animation.export.video", "MP4 video"),
+                      systemImage: "film")
+            }
+            .disabled(animationState.activeClip == nil
+                      || exportHandle != nil || exportStarting)
+
+            Button {
+                openExportOptions(format: .pngSequence)
+            } label: {
+                Label(FloeCADStrings.text("cad.animation.export.frames",
+                                           "PNG frames (ZIP)"),
+                      systemImage: "square.stack.3d.up")
+            }
+            .disabled(animationState.activeClip == nil
+                      || exportHandle != nil || exportStarting)
+            .accessibilityIdentifier("CADAnimationExportFrames")
+
+            Button {
+                exportGLB()
+            } label: {
+                Label(FloeCADStrings.text("cad.present.export.glb", "GLB model"),
+                      systemImage: "cube")
+            }
+        } label: {
+            Label(FloeCADStrings.text("cad.present.export", "Export"),
+                  systemImage: "square.and.arrow.up")
+                .font(.callout.weight(.medium))
+                .padding(.horizontal, 12)
+                .frame(minHeight: 38)
+        }
+        .accessibilityIdentifier("CADPresentExport")
     }
 
     private func presentButton(_ title: String, symbol: String, identifier: String,
