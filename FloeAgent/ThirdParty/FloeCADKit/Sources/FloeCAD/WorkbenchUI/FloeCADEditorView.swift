@@ -2446,6 +2446,12 @@ struct FloeCADEditorView: View {
             } label: {
                 Label("Fit View", systemImage: "arrow.up.left.and.arrow.down.right")
             }
+            Button {
+                showSettings = true
+            } label: {
+                Label("Settings", systemImage: "gearshape")
+            }
+            .accessibilityIdentifier("CADCompactSettingsButton")
             Menu {
                 ForEach(StandardView.allCases) { standard in
                     Button(standard.rawValue) {
@@ -2558,11 +2564,6 @@ struct FloeCADEditorView: View {
                 viewModel.openCommandSearch()
             } label: {
                 Label("Command Search", systemImage: "magnifyingglass")
-            }
-            Button {
-                showSettings = true
-            } label: {
-                Text("Settings")
             }
         } label: {
             ZStack {
