@@ -455,7 +455,7 @@ struct CADMeshPanelView: View {
                 .font(.callout).foregroundStyle(.orange)
                 .accessibilityIdentifier("CADMeshIntegrityWarning")
         } else {
-            PanelOutcome(reply: outcome)
+            PanelOutcome(reply: localizedOutcome)
         }
         if !repairReports.isEmpty {
             DisclosureGroup(FloeCADStrings.text("cad.mesh.inspectDetails", "Inspection details")) {
@@ -474,6 +474,19 @@ struct CADMeshPanelView: View {
             }
             .accessibilityIdentifier("CADMeshSimplificationDetails")
         }
+    }
+
+    private var localizedOutcome: [String: Any] {
+        let messages: [String: (String, String)] = [
+            "face_material_simplification_unavailable": ("cad.mesh.faceMaterialsUnavailable", "These face materials cannot be preserved. The model is unchanged."),
+            "simplification_inspection_failed": ("cad.mesh.inspectionFailed", "Could not finish checking the model. Try again."),
+            "simplification_changes_features": ("cad.mesh.changeTooLarge", "This would change a boundary or seam. Try less simplification."),
+            "limit_time": ("cad.mesh.processingTimedOut", "Processing timed out. Try a smaller selection."),
+        ]
+        guard let code = outcome["error"] as? String, let entry = messages[code] else { return outcome }
+        var reply = outcome
+        reply["message"] = FloeCADStrings.text(entry.0, entry.1)
+        return reply
     }
 
     private func simplificationLines(_ reply: [String: Any]) -> [String] {

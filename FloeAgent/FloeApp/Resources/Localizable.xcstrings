@@ -130938,6 +130938,70 @@
           }
         }
       }
+    },
+    "cad.mesh.faceMaterialsUnavailable": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "These face materials cannot be preserved. The model is unchanged."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "无法保留这些面的材质，模型未更改。"
+          }
+        }
+      }
+    },
+    "cad.mesh.inspectionFailed": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Could not finish checking the model. Try again."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "未能完成模型检查，请重试。"
+          }
+        }
+      }
+    },
+    "cad.mesh.changeTooLarge": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This would change a boundary or seam. Try less simplification."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "这会改变边界或接缝，请减小简化幅度。"
+          }
+        }
+      }
+    },
+    "cad.mesh.processingTimedOut": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Processing timed out. Try a smaller selection."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "处理超时，请减少选择的内容后重试。"
+          }
+        }
+      }
     }
   },
   "version": "1.0"
