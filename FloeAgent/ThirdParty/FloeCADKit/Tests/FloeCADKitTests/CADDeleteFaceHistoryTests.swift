@@ -263,15 +263,24 @@ final class CADDeleteFaceHistoryTests: XCTestCase {
             revision += 1; return revision
         }
         XCTAssertTrue(a.errors.isEmpty && b.errors.isEmpty)
-        let before = try XCTUnwrap(a.bodies.first), after = try XCTUnwrap(b.bodies.first)
+        var before = try XCTUnwrap(a.bodies.first), after = try XCTUnwrap(b.bodies.first)
+        // Primitive display meshes are independent of the OCCT tessellation.
+        // This fixture needs the actual adopted native channel, not a guessed
+        // correspondence between Euclid triangles and native face indices.
+        XCTAssertTrue(before.adoptBRep(try XCTUnwrap(before.brep)))
+        XCTAssertTrue(after.adoptBRep(try XCTUnwrap(after.brep)))
         let topA = try XCTUnwrap(OCCTKernel.faceInfo(try XCTUnwrap(before.brep)).first { $0.normal.y > 0.99 })
         let topB = try XCTUnwrap(OCCTKernel.faceInfo(try XCTUnwrap(after.brep)).first { $0.normal.y > 0.99 })
         let signatureA = try XCTUnwrap(topA.signature), signatureB = try XCTUnwrap(topB.signature)
         XCTAssertTrue(SignatureNaming.exactSignature(signatureA, signatureB),
                       "Different 2x2 and 4x1 boundaries really collide under the old partial fingerprint")
         let naming = SignatureNaming()
-        let beforeTable = try XCTUnwrap(a.faceTables[bodyID])
-        let table = try XCTUnwrap(b.faceTables[bodyID])
+        let beforeTable = ElementNaming.attach(try XCTUnwrap(a.kernelNames[bodyID]),
+            to: naming.faceTable(for: before, createdBy: source.id, scheme: .primitive(.box(width: 2, depth: 2, height: 1))),
+            channel: OCCTKernel.renderMeshFaceChannel(from: try XCTUnwrap(before.brep)), body: before)
+        let table = ElementNaming.attach(try XCTUnwrap(b.kernelNames[bodyID]),
+            to: naming.faceTable(for: after, createdBy: source.id, scheme: .primitive(.box(width: 4, depth: 1, height: 1))),
+            channel: OCCTKernel.renderMeshFaceChannel(from: try XCTUnwrap(after.brep)), body: after)
         let renderedTopA = try XCTUnwrap(beforeTable.entries.first { $0.signature.normal.y > 0.99 })
         let renderedTopB = try XCTUnwrap(table.entries.first { $0.signature.normal.y > 0.99 })
         XCTAssertTrue(SignatureNaming.exactSignature(renderedTopA.signature, renderedTopB.signature),

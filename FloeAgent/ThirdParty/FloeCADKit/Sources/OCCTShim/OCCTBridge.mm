@@ -87,6 +87,7 @@
 #include <Geom_CylindricalSurface.hxx>
 #include <Geom2d_Line.hxx>
 #include <BRepLib.hxx>
+#include <BRepClass3d_SolidClassifier.hxx>
 #include <gp_Ax3.hxx>
 #include <BRepBuilderAPI_TransitionMode.hxx>
 #include <BRepBuilderAPI_MakePolygon.hxx>
@@ -3334,8 +3335,27 @@ static double OS3DSpanExactArea(const TopoDS_Face &face) {
             > std::max(1e-7, expectedArea*1e-8)) return nil;
         const gp_Pnt o = c.Location();
         const gp_Dir n = c.Axis().Direction(), x = c.Position().XDirection();
+        // A cylinder's parametric frame can be indirect, and an extrusion can
+        // reverse the face. Orientation alone does not identify a bore. Ask
+        // which radial side contains actual material in an oriented solid.
+        TopTools_IndexedMapOfShape solids;
+        TopExp::MapShapes(shape->_shape, TopAbs_SOLID, solids);
+        if (solids.Extent() != 1) return nil;
+        TopoDS_Solid solid = TopoDS::Solid(solids(1));
+        if (!BRepLib::OrientClosedSolid(solid)) return nil;
+        const gp_Pnt onSurface = surface.Value((u0 + u1) / 2, (v0 + v1) / 2);
+        const gp_Pnt onAxis = o.Translated(gp_Vec(n).Multiplied((v0 + v1) / 2));
+        gp_Vec radial(onAxis, onSurface);
+        if (radial.Magnitude() <= Precision::Confusion()) return nil;
+        radial.Normalize();
+        const double step = std::max(1e-5, c.Radius() * 1e-5);
+        BRepClass3d_SolidClassifier inward(solid, onSurface.Translated(radial.Multiplied(-step)), Precision::Confusion());
+        BRepClass3d_SolidClassifier outward(solid, onSurface.Translated(radial.Multiplied(step)), Precision::Confusion());
+        const bool external = inward.State() == TopAbs_IN && outward.State() == TopAbs_OUT;
+        const bool internal = outward.State() == TopAbs_IN && inward.State() == TopAbs_OUT;
+        if (!external && !internal) return nil;
         const double values[13] = {c.Radius(), o.X(), o.Y(), o.Z(), n.X(), n.Y(), n.Z(),
-            x.X(), x.Y(), x.Z(), v0, v1, face.Orientation() == TopAbs_REVERSED ? 1.0 : 0.0};
+            x.X(), x.Y(), x.Z(), v0, v1, internal ? 1.0 : 0.0};
         for (double value : values) if (!std::isfinite(value)) return nil;
         return [NSData dataWithBytes:values length:sizeof(values)];
     } catch (...) { return nil; }
