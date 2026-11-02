@@ -99,6 +99,14 @@ nonisolated struct CADViewAppearance: Codable, Equatable, Sendable {
 
     static let `default` = CADViewAppearance()
 
+    var activeSettings: CADViewEnvironmentSettings {
+        switch activeEnvironment {
+        case .studio: studio
+        case .daylight: daylight
+        case .dark: dark
+        }
+    }
+
     var sanitized: CADViewAppearance {
         var copy = self
         copy.schemaVersion = Self.currentSchemaVersion

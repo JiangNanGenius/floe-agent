@@ -849,6 +849,24 @@ final class Renderer: NSObject, MTKViewDelegate {
                     Float(lighting.fillPositionX), Float(lighting.fillPositionY),
                     Float(lighting.fillPositionZ), 12_000) // attenuation radius
             }
+            // The inspector/assistant own one saved appearance. Project its
+            // active key light and background into the engineering renderer
+            // without rewriting legacy lighting, camera or document bytes.
+            if let presentation = appearance.presentation {
+                let settings = presentation.sanitized.activeSettings
+                let color = settings.backgroundColor
+                frame.backgroundTop = SIMD4(Float(color[0]), Float(color[1]), Float(color[2]), 1)
+                frame.backgroundBottom = frame.backgroundTop
+                frame.lightParams.w = 1
+                let values = settings.lightDirection
+                let key = SIMD3<Double>(values[0], values[1], values[2])
+                let length = simd_length(key)
+                if length.isFinite, length > 1e-8 {
+                    frame.keyLightDirection = SIMD4(SIMD3<Float>(-key / length), 0)
+                }
+                frame.lightParams.x = Float(settings.lightIntensity)
+                frame.lightParams.z = 1
+            }
         }
         // The grid follows the zoom (bug report abb6ea37): at a fixed 1 mm
         // pitch and 120 mm fade radius it vanished as soon as the view pulled

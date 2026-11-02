@@ -390,17 +390,14 @@ enum CADPresentationSceneBuilder {
 
     nonisolated static func environment(from appearance: CADViewAppearance) -> CADPresentationEnvironment {
         let clean = appearance.sanitized
-        let settings: CADViewEnvironmentSettings
-        switch clean.activeEnvironment {
-        case .studio: settings = clean.studio
-        case .daylight: settings = clean.daylight
-        case .dark: settings = clean.dark
-        }
-        let direction = settings.lightDirection.count == 3
-            ? SIMD3(Float(settings.lightDirection[0]),
-                    Float(settings.lightDirection[1]),
-                    Float(settings.lightDirection[2]))
-            : SIMD3(0.35, 0.55, 0.75)
+        let settings = clean.activeSettings
+        let rawDirection = SIMD3<Double>(settings.lightDirection[0],
+                                        settings.lightDirection[1], settings.lightDirection[2])
+        let length = simd_length(rawDirection)
+        // Normalize before narrowing. A valid Double direction can overflow
+        // Float even though its normalized direction is perfectly usable.
+        let direction = length.isFinite && length > 1e-8
+            ? SIMD3<Float>(rawDirection / length) : SIMD3(0.35, 0.55, 0.75)
         let background = settings.backgroundColor.count == 3
             ? SIMD3(Float(settings.backgroundColor[0]),
                     Float(settings.backgroundColor[1]),

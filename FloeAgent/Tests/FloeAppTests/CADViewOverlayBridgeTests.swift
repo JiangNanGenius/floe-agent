@@ -202,6 +202,70 @@ final class CADViewOverlayBridgeTests: XCTestCase {
         XCTAssertTrue(reopened.viewOverlayState.measurements.isEmpty)
     }
 
+    func testEnvironmentToolSharesInspectorStateAndCommitsThroughRealHost() async throws {
+        let tool = CadDocumentTool(host: makeCenter())
+        let context = makeContext()
+        let document = try await createDocument(tool: tool, context: context)
+        func environmentReply(_ output: ToolExecutionOutput) throws -> [String: Any] {
+            let range = try XCTUnwrap(output.summary.range(of: "cad.document material: "))
+            return try XCTUnwrap(try JSONSerialization.jsonObject(
+                with: Data(output.summary[range.upperBound...].utf8)) as? [String: Any])
+        }
+        let before = document.viewAppearance
+        let beforeCount = document.liveChangeCount
+        let undoCount = document.session.undoStack.undoCommands.count
+        let read = try await execute(tool, [
+            "action": "material", "path": "Overlay.floecad",
+            "payload": try payloadString(["action": "environment.read"]),
+        ], context: context)
+        XCTAssertEqual(try environmentReply(read)["ok"] as? Bool, true)
+        XCTAssertEqual(document.liveChangeCount, beforeCount)
+        let mutation = try await execute(tool, [
+            "action": "material", "path": "Overlay.floecad", "revision": document.revision,
+            "payload": try payloadString([
+                "action": "environment.update", "expected_change_count": beforeCount,
+                "active_environment": "daylight", "settings": [
+                    "light_intensity": 2.0, "light_direction": [1.0, 2.0, 3.0],
+                    "background_color": [0.1, 0.2, 0.3]],
+                "shadows_enabled": false,
+            ]),
+        ], context: context)
+        let committed = try environmentReply(mutation)
+        XCTAssertEqual(committed["ok"] as? Bool, true, "\(committed)")
+        XCTAssertEqual(committed["mutated"] as? Bool, true)
+        XCTAssertEqual(committed["saved"] as? Bool, true)
+        XCTAssertEqual(document.session.undoStack.undoCommands.count, undoCount + 1)
+        let expected = document.viewAppearance
+        XCTAssertEqual(expected.activeEnvironment, .daylight)
+        XCTAssertEqual(expected.daylight.lightDirection, [1, 2, 3])
+        let current = document.liveChangeCount
+        let captured = try document.captureViewportPNG(width: 640, height: 480)
+        XCTAssertEqual(captured.changeCount, current)
+        XCTAssertEqual(document.liveChangeCount, current)
+        let png = XCTAttachment(data: captured.pngData, uniformTypeIdentifier: "public.png")
+        png.name = "X32 actual tool host committed environment"
+        png.lifetime = .keepAlways
+        add(png)
+        let undo = try await execute(tool, [
+            "action": "material", "path": "Overlay.floecad",
+            "payload": try payloadString(["action": "undo"]),
+        ], context: context)
+        XCTAssertEqual(try environmentReply(undo)["saved"] as? Bool, true)
+        XCTAssertEqual(document.viewAppearance, before)
+        let redo = try await execute(tool, [
+            "action": "material", "path": "Overlay.floecad",
+            "payload": try payloadString(["action": "redo"]),
+        ], context: context)
+        XCTAssertEqual(try environmentReply(redo)["saved"] as? Bool, true)
+        XCTAssertEqual(document.viewAppearance, expected)
+        let identity = document.modelSHA256
+        await FloeCAD3DBridge.shared.releaseDocument(at: documentURL)
+        let reopened = try await FloeCADDocument.open(at: documentURL)
+        defer { reopened.close() }
+        XCTAssertEqual(reopened.viewAppearance, expected)
+        XCTAssertEqual(reopened.modelSHA256, identity)
+    }
+
     func testSceneActionRevisionPinAndTemporaryReadOnly() async throws {
         let center = makeCenter()
         let tool = CadDocumentTool(host: center)

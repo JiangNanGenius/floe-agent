@@ -167,10 +167,19 @@ final class EditorViewModel {
     /// it to re-run their layout as the camera orbits/animates.
     var cameraEpoch = 0
 
-    /// Persisted legacy-scene presentation (a migrated Canvas 3D scene),
-    /// decoded from the session on attach. Drives the viewport appearance
-    /// (background, light rig, grid, shadows) and the opening camera.
-    private(set) var sceneSettings: CADSceneSettings?
+    /// A parsed mirror of the current shared document, keyed by its actual
+    /// bytes. Ordinary service edits and undo can update those bytes without
+    /// reattaching the editor; a cached editor must not keep an older look.
+    @ObservationIgnored private var cachedSceneSettingsData: Data?
+    @ObservationIgnored private var cachedSceneSettings: CADSceneSettings?
+    var sceneSettings: CADSceneSettings? {
+        let data = session.document.sceneSettingsData
+        if data != cachedSceneSettingsData {
+            cachedSceneSettingsData = data
+            cachedSceneSettings = data.flatMap { try? JSONDecoder().decode(CADSceneSettings.self, from: $0) }
+        }
+        return cachedSceneSettings
+    }
 
     /// The camera a migrated legacy scene was authored with. The viewport
     /// coordinator applies it on open instead of the automatic fit.
@@ -182,11 +191,7 @@ final class EditorViewModel {
     /// `sceneSettingsData` changed (facade `importLegacyScene`, an overlay
     /// edit in Present, undo/redo).
     func reloadSceneSettings() {
-        if let data = session.document.sceneSettingsData {
-            sceneSettings = try? JSONDecoder().decode(CADSceneSettings.self, from: data)
-        } else {
-            sceneSettings = nil
-        }
+        _ = sceneSettings
         reloadViewOverlayFromDocument()
     }
 
@@ -2559,8 +2564,12 @@ final class EditorViewModel {
         // directional shadow). The user's own toggle still wins when already on.
         scene.appearance = sceneSettings
         scene.showsGrid = sceneSettings?.showsGrid ?? true
-        scene.groundShadow = groundShadowEnabled
-            || (sceneSettings?.lighting?.castsShadows ?? false)
+        if let presentation = sceneSettings?.presentation {
+            scene.groundShadow = presentation.shadowsEnabled && presentation.floorVisible
+        } else {
+            scene.groundShadow = groundShadowEnabled
+                || (sceneSettings?.lighting?.castsShadows ?? false)
+        }
         if let section = displaySection {
             let plane = section.plane
             let n = simd_normalize(section.basePlane.normal)

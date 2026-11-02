@@ -180,6 +180,28 @@ final class CADMaterialCoreTests: XCTestCase {
         }
     }
 
+    #if canImport(SwiftUI) && canImport(RealityKit) && canImport(UIKit)
+    func testLargeDoubleEnvironmentDirectionsReachPresentAsFiniteUnitVectors() async throws {
+        let document = try await FloeCADDocument.create(
+            at: workDir.appendingPathComponent("environment-direction.floecad"), name: "Finite direction")
+        defer { document.close() }
+        _ = try makeBox(document)
+        let vector = [1e100, 2e100, -3e100]
+        let reply = CADMaterialService(document: document).handle(action: "environment.update", args: [
+            "settings": ["light_direction": vector],
+        ])
+        XCTAssertEqual(reply["ok"] as? Bool, true, "\(reply)")
+        XCTAssertEqual(document.viewAppearance.studio.lightDirection, vector)
+        let stage = CADPresentationSceneBuilder.build(snapshot: document.sceneSnapshot(), documentKey: "finite-test")
+        let direction = stage.environment.lightDirectionModel
+        XCTAssertTrue(direction.x.isFinite && direction.y.isFinite && direction.z.isFinite)
+        XCTAssertEqual(simd_length(direction), 1, accuracy: 1e-6)
+        let capture = try document.captureViewportPNG(width: 320, height: 240)
+        XCTAssertFalse(capture.pngData.isEmpty)
+        XCTAssertEqual(capture.changeCount, document.liveChangeCount)
+    }
+    #endif
+
     private func run(_ document: FloeCADDocument, _ json: String,
                      file: StaticString = #filePath, line: UInt = #line) throws -> [String: Any] {
         let outcome = document.executeJSON(Data(json.utf8))

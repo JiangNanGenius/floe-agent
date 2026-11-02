@@ -32,11 +32,7 @@ struct CADEnvironmentInspectorView: View {
     }
 
     private var settings: CADViewEnvironmentSettings {
-        switch draft.activeEnvironment {
-        case .studio: draft.studio
-        case .daylight: draft.daylight
-        case .dark: draft.dark
-        }
+        draft.activeSettings
     }
 
     var body: some View {

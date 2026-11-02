@@ -8,10 +8,12 @@
 #if canImport(SwiftUI) && canImport(UIKit)
 import Foundation
 import Testing
+import XCTest
+import GRDB
 import FloeCore
 import FloeIOSAutomation
 import FloeModels
-import FloePersistence
+@testable import FloePersistence
 import FloeSkills
 import FloeSync
 import FloeTools
@@ -533,4 +535,170 @@ struct IOSBridgeIntegrationTests {
         #expect(output.ephemeralSensitiveOutput == nil)
     }
 }
+
+
+/// File-backed released v58 schema → the production v59 migrator. This
+/// touches synthetic fixtures only, never the App's shared database/Keychain.
+@MainActor
+final class SkillConfigurationMigrationAppTests: XCTestCase {
+    private var directory: URL!
+    override func setUp() async throws {
+        directory = FileManager.default.temporaryDirectory.appendingPathComponent("FloeV59Migration-\(UUID())")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    }
+    override func tearDown() async throws {
+        if let directory { try FileManager.default.removeItem(at: directory) }
+    }
+
+    private func version58File(_ path: URL, collision: Bool = false) throws {
+        let queue = try DatabaseQueue(path: path.path)
+        defer { try? queue.close() }
+        var migrator = DatabaseMigrator()
+        // Frozen released baseline. Use the real historical registrations;
+        // never create an "old" fixture by deleting tables from v59.
+        V1Initial.register(into: &migrator)
+        V2ConfigSync.register(into: &migrator)
+        V3AgentDaily.register(into: &migrator)
+        V4ModelPreferences.register(into: &migrator)
+        V5Workspace.register(into: &migrator)
+        V6AppSettings.register(into: &migrator)
+        V7WorkbenchIntelligence.register(into: &migrator)
+        V8TaskOwnership.register(into: &migrator)
+        V9HarnessAndPermissions.register(into: &migrator)
+        V10ConversationContinuity.register(into: &migrator)
+        V11ArchiveCredentials.register(into: &migrator)
+        V12RunningInputs.register(into: &migrator)
+        V13PersonalizationMemory.register(into: &migrator)
+        V14PlanGoalControls.register(into: &migrator)
+        V15ProviderDisplayName.register(into: &migrator)
+        V16ProviderCompatibilityAndPackageReview.register(into: &migrator)
+        V17ModelReasoningEffort.register(into: &migrator)
+        V18RunUsageDimensions.register(into: &migrator)
+        V19DetailedRunUsage.register(into: &migrator)
+        V20RunResponseTiming.register(into: &migrator)
+        V21MemoryLifecycle.register(into: &migrator)
+        V22RemoteDevices.register(into: &migrator)
+        V23ModelPickerVisibility.register(into: &migrator)
+        V24VideoModelRouting.register(into: &migrator)
+        V25DeferredSyncPayloads.register(into: &migrator)
+        V26CreativeMediaJobs.register(into: &migrator)
+        V27CloudReleaseModes.register(into: &migrator)
+        V28CanvasModelRouting.register(into: &migrator)
+        V29ModelUseSurfaces.register(into: &migrator)
+        V30MemoryOrganization.register(into: &migrator)
+        V31TimelinePerformance.register(into: &migrator)
+        V32CanvasRunContexts.register(into: &migrator)
+        V33GeneratedAssetReservations.register(into: &migrator)
+        V34RunConversationModes.register(into: &migrator)
+        V35GeneralAuxiliaryLLM.register(into: &migrator)
+        V36LocalWorkspaceCleanup.register(into: &migrator)
+        V37TaskChecklists.register(into: &migrator)
+        V38ImageAutonomy.register(into: &migrator)
+        V39BackgroundJobs.register(into: &migrator)
+        V40ExecutionEnvironments.register(into: &migrator)
+        V41ConversationPurpose.register(into: &migrator)
+        V42MediaJobOwners.register(into: &migrator)
+        V43MediaJobIdempotency.register(into: &migrator)
+        V44ConversationSearchIndexRepair.register(into: &migrator)
+        V45AssetReferenceOps.register(into: &migrator)
+        V46TaskLifecycle.register(into: &migrator)
+        V47ShortcutInbox.register(into: &migrator)
+        V48SystemAlarms.register(into: &migrator)
+        V49ChildRunCheckpoints.register(into: &migrator)
+        V50ScheduleCleanupReminders.register(into: &migrator)
+        V51ChatPreferences.register(into: &migrator)
+        V52PersonalizationRetention.register(into: &migrator)
+        V53ConversationVisibility.register(into: &migrator)
+        V54JobAdvisoryGroups.register(into: &migrator)
+        V55ConversationPinning.register(into: &migrator)
+        V56UserQuestions.register(into: &migrator)
+        V57SchedulePresentation.register(into: &migrator)
+        V58TaskExecutionBindings.register(into: &migrator)
+        try migrator.migrate(queue)
+        try queue.write { db in
+            XCTAssertEqual(try Int.fetchOne(db, sql: "PRAGMA user_version"), 58)
+            XCTAssertFalse(try db.tableExists("skill_config_profiles"))
+            try db.execute(sql: """
+                INSERT INTO skills (id,name,version,status,skill_markdown,manifest_json,
+                    source_url,source_digest,rewritten_digest,rewrite_model_id,created_at,updated_at)
+                VALUES ('v58-skill','Saved name','1.2.3','enabled','synthetic fixture','{}',
+                    'https://github.com/example/skills/blob/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/sample/SKILL.md',
+                    'v58-source','v58-reviewed','v58-reviewer','2026-01-01T00:00:00.000Z','2026-01-01T00:00:00.000Z')
+                """)
+            try db.execute(sql: """
+                INSERT INTO credential_records (id,kind,owner_kind,label,keychain_account,
+                    synchronizable,device_bound,created_at,updated_at)
+                VALUES ('00000000-0000-0000-0000-000000000001','genericToken','vault',
+                    'Synthetic reference only','synthetic.v58.migration',0,0,
+                    '2026-01-01T00:00:00.000Z','2026-01-01T00:00:00.000Z')
+                """)
+            if collision { try db.execute(sql: "CREATE TABLE skill_config_entries (sentinel TEXT)") }
+        }
+    }
+
+    func testReleasedV58FileRetainsSkillsAndCredentialReferencesAfterV59AndReopen() async throws {
+        let path = directory.appendingPathComponent("upgrade.sqlite")
+        try version58File(path)
+        let database = try DatabaseManager(path: path)
+        try await database.migrate()
+        let store = SkillConfigurationStore(database: database, officialSources: [])
+        let saved = try await store.saveVariables(
+            skillID: "v58-skill", values: ["endpoint": "https://example.invalid"], expectedRevision: nil)
+        XCTAssertEqual(saved.revision, 1)
+        try await database.migrate()
+        let reopened = try DatabaseManager(path: path)
+        try await reopened.migrate()
+        let row = try await reopened.reader { db in
+            (try Int.fetchOne(db, sql: "PRAGMA user_version"),
+             try String.fetchOne(db, sql: "SELECT name FROM skills WHERE id='v58-skill'"),
+             try String.fetchOne(db, sql: "SELECT keychain_account FROM credential_records"),
+             try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM skill_config_profiles"),
+             try Row.fetchAll(db, sql: "PRAGMA foreign_key_check").count)
+        }
+        XCTAssertEqual(row.0, 59)
+        XCTAssertEqual(row.1, "Saved name")
+        XCTAssertEqual(row.2, "synthetic.v58.migration")
+        XCTAssertEqual(row.3, 1)
+        XCTAssertEqual(row.4, 0)
+        let snapshot = try await SkillConfigurationStore(database: reopened, officialSources: []).snapshot(skillID: "v58-skill")
+        XCTAssertEqual(snapshot.profile?.revision, 1)
+        XCTAssertEqual(snapshot.entries.first?.value, "https://example.invalid")
+    }
+
+    func testRealV59DDLFailureRollsBackAndCanResumeWithoutDataLoss() async throws {
+        let path = directory.appendingPathComponent("rollback.sqlite")
+        try version58File(path, collision: true)
+        let database = try DatabaseManager(path: path)
+        do {
+            try await database.migrate()
+            XCTFail("The deliberate entries-table collision must fail the real v59 transaction")
+        } catch {
+            XCTAssertTrue(String(describing: error).contains("already exists"), "\(error)")
+        }
+        let failed = try await database.reader { db in
+            (try Int.fetchOne(db, sql: "PRAGMA user_version"),
+             try db.tableExists("skill_config_installations"), try db.tableExists("skill_config_profiles"),
+             try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM grdb_migrations WHERE identifier='v59_skill_configuration'"),
+             try String.fetchOne(db, sql: "SELECT name FROM skills WHERE id='v58-skill'"))
+        }
+        XCTAssertEqual(failed.0, 58)
+        XCTAssertFalse(failed.1)
+        XCTAssertFalse(failed.2)
+        XCTAssertEqual(failed.3, 0)
+        XCTAssertEqual(failed.4, "Saved name")
+        // Repair only the injected synthetic collision; migration must resume
+        // without half-created profiles or any loss of old metadata.
+        try await database.writer { db in try db.execute(sql: "DROP TABLE skill_config_entries") }
+        try await database.migrate()
+        let repaired = try await database.reader { db in
+            (try Int.fetchOne(db, sql: "PRAGMA user_version"),
+             try db.tableExists("skill_config_installations"),
+             try String.fetchOne(db, sql: "SELECT keychain_account FROM credential_records"))
+        }
+        XCTAssertEqual(repaired.0, 59)
+        XCTAssertTrue(repaired.1)
+        XCTAssertEqual(repaired.2, "synthetic.v58.migration")
+    }
+}
+
 #endif
