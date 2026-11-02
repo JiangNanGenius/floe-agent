@@ -8754,6 +8754,23 @@
       "scope": "195 actual71 material cases plus current198 core pass. New assignments without display ranges refuse before mutation; empty render never reports saved bindings complete.",
       "whole_M26_accepted": false,
       "remaining": "Generic/legacy references with equal partial signatures still need a source identity witness."
+    },
+    "linux_runner_lifecycle_20261102": {
+      "app_source_sha": "577c09bc966e7b19303d4f81f20d278f0a7071c3",
+      "runner_build_source_sha": "35e35efef508bca5cb9f960192a51707e7a5c0ce",
+      "producer_source_sha": "78cbee35",
+      "actual_App_object_build_passed": true,
+      "actual_App_native": {
+        "passed": 50,
+        "failed": 0,
+        "skipped": 0
+      },
+      "actual_component_protocol_checks": 55,
+      "actual_RISCV_environment_checks": 65,
+      "component_download_delivery_verified": false,
+      "full_environment_template_migration_verified": false,
+      "original_criteria_count_unchanged": true,
+      "evidence": "docs/qualification/linux-runner-2.1-20261102/README.md"
     }
   }
 }

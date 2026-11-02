@@ -1,0 +1,293 @@
+{
+  "schema": "floe-linux-guest-runner-update-check/v1",
+  "transcriptBytes": 1715,
+  "serviceTicks": 16,
+  "capsPayload": "runner=2.1.0 protocol=3 maxCommands=8 maxSessions=4 env=1 net=up",
+  "runnerVersion": "2.1.0",
+  "protocol": 3,
+  "maxCommands": 8,
+  "maxSessions": 4,
+  "envSupport": "1",
+  "hostArchive": "none",
+  "capsPayloadRaw": "runner=2.1.0 protocol=3 maxCommands=8 maxSessions=4 env=1 net=up hostArchive=none",
+  "netStatus": "up",
+  "checks": [
+    {
+      "check": "boot clock applied",
+      "expected": true,
+      "seen": true
+    },
+    {
+      "check": "guest network configured with slirp address/route",
+      "expected": true,
+      "seen": true
+    },
+    {
+      "check": "guest kernel created eth0 with the adapter MAC",
+      "expected": true,
+      "seen": true
+    },
+    {
+      "check": "guest userland resolved a name through the guest resolver",
+      "expected": true,
+      "seen": true
+    },
+    {
+      "check": "HELLO answered",
+      "expected": true,
+      "seen": true
+    },
+    {
+      "check": "HELLO end",
+      "expected": true,
+      "seen": true
+    },
+    {
+      "check": "cc1 overlap",
+      "expected": true,
+      "seen": true
+    },
+    {
+      "check": "cc2 overlap",
+      "expected": true,
+      "seen": true
+    },
+    {
+      "check": "cc3 overlap",
+      "expected": true,
+      "seen": true
+    },
+    {
+      "check": "cc4 overlap",
+      "expected": true,
+      "seen": true
+    },
+    {
+      "check": "cc1 end",
+      "expected": true,
+      "seen": true
+    },
+    {
+      "check": "cc2 end",
+      "expected": true,
+      "seen": true
+    },
+    {
+      "check": "cc3 end",
+      "expected": true,
+      "seen": true
+    },
+    {
+      "check": "cc4 end",
+      "expected": true,
+      "seen": true
+    },
+    {
+      "check": "targeted TERM exit 143",
+      "expected": true,
+      "seen": true
+    },
+    {
+      "check": "legacy cancel exit 130 (1)",
+      "expected": true,
+      "seen": true
+    },
+    {
+      "check": "legacy cancel exit 130 (2)",
+      "expected": true,
+      "seen": true
+    },
+    {
+      "check": "channel recovered",
+      "expected": true,
+      "seen": true
+    },
+    {
+      "check": "recovery end",
+      "expected": true,
+      "seen": true
+    },
+    {
+      "check": "ptyA opened",
+      "expected": true,
+      "seen": true
+    },
+    {
+      "check": "ptyB opened",
+      "expected": true,
+      "seen": true
+    },
+    {
+      "check": "ptyA output",
+      "expected": true,
+      "seen": true
+    },
+    {
+      "check": "ptyB output",
+      "expected": true,
+      "seen": true
+    },
+    {
+      "check": "ptyA end",
+      "expected": true,
+      "seen": true
+    },
+    {
+      "check": "ptyB end",
+      "expected": true,
+      "seen": true
+    },
+    {
+      "check": "service pid frame",
+      "expected": true,
+      "seen": true
+    },
+    {
+      "check": "service spawn end",
+      "expected": true,
+      "seen": true
+    },
+    {
+      "check": "unknown alive honest 3",
+      "expected": true,
+      "seen": true
+    },
+    {
+      "check": "unknown kill honest 3",
+      "expected": true,
+      "seen": true
+    },
+    {
+      "check": "final marker",
+      "expected": true,
+      "seen": true
+    },
+    {
+      "check": "final end",
+      "expected": true,
+      "seen": true
+    },
+    {
+      "check": "absent: kernel panic",
+      "expected": false,
+      "seen": false
+    },
+    {
+      "check": "absent: quarantine frame",
+      "expected": false,
+      "seen": false
+    },
+    {
+      "check": "absent: protocol-2 busy rejection",
+      "expected": false,
+      "seen": false
+    },
+    {
+      "check": "absent: command table overflow",
+      "expected": false,
+      "seen": false
+    },
+    {
+      "check": "absent: session table overflow",
+      "expected": false,
+      "seen": false
+    },
+    {
+      "check": "absent: cancelme wrong exit",
+      "expected": false,
+      "seen": false
+    },
+    {
+      "check": "absent: overlap barrier timeout",
+      "expected": false,
+      "seen": false
+    },
+    {
+      "check": "absent: overlap command non-zero exit",
+      "expected": false,
+      "seen": false
+    },
+    {
+      "check": "absent: guest eth0 configuration failed",
+      "expected": false,
+      "seen": false
+    },
+    {
+      "check": "absent: guest network device absent",
+      "expected": false,
+      "seen": false
+    },
+    {
+      "check": "absent: CAPS net=down",
+      "expected": false,
+      "seen": false
+    },
+    {
+      "check": "absent: CAPS net=partial",
+      "expected": false,
+      "seen": false
+    },
+    {
+      "check": "absent: guest device probe missing",
+      "expected": false,
+      "seen": false
+    },
+    {
+      "check": "absent: guest DNS probe failed",
+      "expected": false,
+      "seen": false
+    },
+    {
+      "check": "detached service wrote >=2 ticks to the 9p log",
+      "expected": true,
+      "seen": true,
+      "ticks": 16
+    },
+    {
+      "check": "HELLO token is hello1 and the answer is a framed 0x1e CAPS frame",
+      "expected": true,
+      "seen": true
+    },
+    {
+      "check": "CAPS payload parses as runner=/protocol=/maxCommands=/maxSessions=/env=/net=",
+      "expected": true,
+      "seen": true
+    },
+    {
+      "check": "CAPS advertises per-process environment delivery (env=1)",
+      "expected": true,
+      "seen": true
+    },
+    {
+      "check": "CAPS reports the first-boot network field",
+      "expected": true,
+      "seen": true
+    },
+    {
+      "check": "CAPS network state is up (the guest DNS probe answered)",
+      "expected": true,
+      "seen": true
+    },
+    {
+      "check": "CAPS protocol is exactly 3",
+      "expected": true,
+      "seen": true
+    },
+    {
+      "check": "CAPS allows >=4 concurrent commands (4-way overlap check)",
+      "expected": true,
+      "seen": true
+    },
+    {
+      "check": "CAPS allows >=2 concurrent PTY sessions",
+      "expected": true,
+      "seen": true
+    },
+    {
+      "check": "CAPS runner version is non-empty",
+      "expected": true,
+      "seen": true
+    }
+  ],
+  "failures": 0
+}
