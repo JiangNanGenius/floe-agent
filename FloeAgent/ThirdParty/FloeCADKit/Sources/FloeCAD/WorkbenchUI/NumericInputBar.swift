@@ -104,7 +104,7 @@ struct NumericInputBar: View {
         } else if let body = viewModel.editingPrimitiveBody, let spec = body.primitive {
             AdaptiveBar {
                 Text(spec.displayName)
-                    .font(.headline)
+                    .font(isCompact ? .subheadline.weight(.semibold) : .headline)
                     .fixedSize()
 
                 ForEach(Array(fieldLabels(for: spec).enumerated()), id: \.offset) { index, label in
@@ -154,7 +154,7 @@ struct NumericInputBar: View {
     private var scaleBar: some View {
         AdaptiveBar {
             Text(FloeCADStrings.label("cad.ui.tool.scale", "Scale"))
-                .font(.headline)
+                .font(isCompact ? .subheadline.weight(.semibold) : .headline)
                 .fixedSize()
             BarHint("Uniform, about the body pivot")
 
@@ -204,7 +204,7 @@ struct NumericInputBar: View {
     private var rotateAxisBar: some View {
         AdaptiveBar {
             Text(FloeCADStrings.label("cad.ui.tool.rotate", "Rotate"))
-                .font(.headline)
+                .font(isCompact ? .subheadline.weight(.semibold) : .headline)
                 .fixedSize()
             BarHint("Drag to rotate (5° steps), or type an angle")
 
@@ -254,7 +254,7 @@ struct NumericInputBar: View {
         // own row instead; regular width keeps the original single row.
         return AdaptiveBar(showsFooter: isCompact) {
             Text(FloeCADStrings.label("cad.ui.tool.pattern", "Pattern"))
-                .font(.headline)
+                .font(isCompact ? .subheadline.weight(.semibold) : .headline)
                 .fixedSize()
 
             if !isCompact { patternPickers(axisChoices) }
@@ -503,7 +503,7 @@ struct NumericInputBar: View {
         // so the scroll view never engages and the slider owns the gesture.
         AdaptiveBar(showsFooter: isCompact) {
             Text(image.name)
-                .font(.headline)
+                .font(isCompact ? .subheadline.weight(.semibold) : .headline)
                 .lineLimit(1)
                 .fixedSize()
 
@@ -549,7 +549,7 @@ struct NumericInputBar: View {
     private var polygonBar: some View {
         AdaptiveBar {
             Text(FloeCADStrings.label("cad.ui.tool.polygon", "Polygon"))
-                .font(.headline)
+                .font(isCompact ? .subheadline.weight(.semibold) : .headline)
                 .fixedSize()
             BarHint("Drag from center to a vertex")
 
@@ -587,7 +587,7 @@ struct NumericInputBar: View {
     private func diameterBar(_ context: EditorViewModel.ToolContext, radius: Double) -> some View {
         AdaptiveBar {
             Text(FloeCADStrings.label("cad.ui.diameter.title", "Diameter"))
-                .font(.headline)
+                .font(isCompact ? .subheadline.weight(.semibold) : .headline)
                 .fixedSize()
             HStack(spacing: 6) {
                 Text("⌀")
@@ -625,7 +625,7 @@ struct NumericInputBar: View {
     private func extrudeBarBody(_ context: EditorViewModel.ToolContext) -> some View {
         AdaptiveBar {
             Text(FloeCADStrings.label("cad.ui.tool.extrude", "Extrude"))
-                .font(.headline)
+                .font(isCompact ? .subheadline.weight(.semibold) : .headline)
                 .fixedSize()
 
             HStack(spacing: 6) {
@@ -772,7 +772,7 @@ struct NumericInputBar: View {
         let count = context.sweepPathEntityIDs.count
         return AdaptiveBar {
             Text(FloeCADStrings.label("cad.ui.tool.sweep", "Sweep"))
-                .font(.headline)
+                .font(isCompact ? .subheadline.weight(.semibold) : .headline)
                 .fixedSize()
             Text(count == 0
                 ? "Tap sketch lines or arcs to build the path"
@@ -801,7 +801,7 @@ struct NumericInputBar: View {
         let count = context.loftProfiles.count
         return AdaptiveBar {
             Text(FloeCADStrings.label("cad.ui.tool.loft", "Loft"))
-                .font(.headline)
+                .font(isCompact ? .subheadline.weight(.semibold) : .headline)
                 .fixedSize()
             Text("\(count) section\(count == 1 ? "" : "s") — tap more profile fills")
                 .font(.caption)
@@ -825,7 +825,7 @@ struct NumericInputBar: View {
     private func offsetPlaneBar(_ context: EditorViewModel.ToolContext) -> some View {
         AdaptiveBar {
             Text(FloeCADStrings.label("cad.ui.tool.offsetPlane", "Offset Plane"))
-                .font(.headline)
+                .font(isCompact ? .subheadline.weight(.semibold) : .headline)
                 .fixedSize()
             BarHint("Drag the arrow, or type a distance")
 
@@ -869,7 +869,7 @@ struct NumericInputBar: View {
         let hingeSelection = hinge.x >= hinge.y ? 0 : 1
         return AdaptiveBar {
             Text(FloeCADStrings.label("cad.ui.tool.anglePlane", "Angle Plane"))
-                .font(.headline)
+                .font(isCompact ? .subheadline.weight(.semibold) : .headline)
                 .fixedSize()
             BarHint(FloeCADStrings.text("cad.datum.angleBarHint",
                 "Type an angle; the plane turns about the hinge"))
@@ -931,7 +931,7 @@ struct NumericInputBar: View {
     private func revolveBar(_ context: EditorViewModel.ToolContext) -> some View {
         AdaptiveBar {
             Text(FloeCADStrings.label("cad.ui.tool.revolve", "Revolve"))
-                .font(.headline)
+                .font(isCompact ? .subheadline.weight(.semibold) : .headline)
                 .fixedSize()
             BarHint("Drag to sweep, or type an angle")
 

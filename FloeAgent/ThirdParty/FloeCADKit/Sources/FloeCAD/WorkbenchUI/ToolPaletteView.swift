@@ -110,7 +110,7 @@ struct ToolPaletteView: View {
             }
         }
         .padding(.vertical, verticalPadding)
-        .padding(.horizontal, 10)
+        .padding(.horizontal, horizontalSizeClass == .compact ? 8 : 10)
     }
 
     // MARK: - Entries by context
@@ -623,7 +623,7 @@ struct ToolPaletteView: View {
     private func paletteIcon(_ systemImage: String, label: String) -> some View {
         VStack(spacing: 3) {
             Image(systemName: systemImage)
-                .font(.system(size: 20))
+                .font(.system(size: horizontalSizeClass == .compact ? 19 : 20))
                 .frame(width: 44, height: 30)
             Text(label)
                 .font(.system(size: 9))

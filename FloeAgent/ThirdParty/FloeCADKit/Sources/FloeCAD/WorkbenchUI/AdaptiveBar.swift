@@ -179,8 +179,10 @@ struct AdaptiveBar<Controls: View, Actions: View, Footer: View>: View {
 
     var body: some View {
         content
-            .padding(.horizontal, isCompact ? 14 : style.horizontalPadding)
-            .padding(.vertical, isCompact ? 10 : style.verticalPadding)
+            .transformEnvironment(\.font) { if isCompact { $0 = .subheadline } }
+            .transformEnvironment(\.controlSize) { if isCompact { $0 = .small } }
+            .padding(.horizontal, isCompact ? 12 : style.horizontalPadding)
+            .padding(.vertical, isCompact ? 8 : style.verticalPadding)
             .background(.regularMaterial, in: background)
             .shadow(color: .black.opacity(0.15),
                     radius: style.shadowRadius, y: style.shadowY)
@@ -196,7 +198,7 @@ struct AdaptiveBar<Controls: View, Actions: View, Footer: View>: View {
                 footer
             }
         } else if isCompact {
-            VStack(alignment: .leading, spacing: 8) {
+            VStack(alignment: .leading, spacing: 6) {
                 scrollRow { controls }
                 if hasActions { scrollRow { actions } }
                 if hasFooter { scrollRow { footer } }

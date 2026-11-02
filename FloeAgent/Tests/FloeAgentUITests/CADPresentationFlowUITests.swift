@@ -2114,15 +2114,17 @@ final class CADExternalProjectionNativeFlowUITests: XCTestCase {
 @MainActor
 final class CADAdvancedPatternNativeFlowUITests: XCTestCase {
     func testNativePatternSourceAndPathMenusApplyFeature() { check(compact: false) }
-    func testCompactLargeTextPatternSourceAndPathMenusCancel() { check(compact: true) }
+    func testCompactPatternSourceAndPathMenusCancel() { check(compact: true) }
+    func testCompactLargeTextPatternSourceAndPathMenusCancel() { check(compact: true, largeText: true) }
 
-    private func check(compact: Bool) {
+    private func check(compact: Bool, largeText: Bool = false) {
         continueAfterFailure = false
         XCUIDevice.shared.orientation = .landscapeLeft
         let app = XCUIApplication()
         app.launchArguments = ["-AppleLanguages", "(en)", "-AppleLocale", "en_US", "-ui-testing",
             "--ui-test-cad-fixture", "--ui-test-cad-uninstanced"]
-        app.launchArguments += compact ? ["--ui-test-cad-compact", "--ui-test-cad-large-text"] : ["-ui-testing-ipad"]
+        app.launchArguments += compact ? ["--ui-test-cad-compact"] : ["-ui-testing-ipad"]
+        if largeText { app.launchArguments.append("--ui-test-cad-large-text") }
         app.launch(); defer { app.terminate() }
         XCTAssertTrue(app.buttons["UndoButton"].waitForExistence(timeout: 60))
         toggleItems(app)
@@ -2147,7 +2149,7 @@ final class CADAdvancedPatternNativeFlowUITests: XCTestCase {
         XCTAssertTrue(circle.waitForExistence(timeout: 10) && circle.isHittable); circle.tap()
         let apply = app.buttons["PatternApply"]
         XCTAssertTrue(apply.exists && apply.isHittable)
-        capture(compact ? "M25 compact large text native feature and path controls" : "M25 native feature and exact path controls")
+        capture(compact ? (largeText ? "M25 compact large text native feature and path controls" : "M25 compact default text native feature and path controls") : "M25 native feature and exact path controls")
         if compact {
             app.buttons["PatternCancel"].tap()
         } else {
@@ -2188,19 +2190,28 @@ final class CADAdvancedPatternNativeFlowUITests: XCTestCase {
 @MainActor
 final class CADAdvancedBlendNativeFlowUITests: XCTestCase {
     func testAdvancedBlendMenusAndFieldsAtRegularWidth() { check(compact: false) }
-    func testAdvancedBlendMenusAndFieldsInCompactLargeText() { check(compact: true) }
+    func testAdvancedBlendMenusAndFieldsInCompactDefaultText() { check(compact: true, centimeters: true) }
+    func testAdvancedBlendMenusAndFieldsInCompactLargeText() { check(compact: true, largeText: true) }
 
-    private func check(compact: Bool) {
+    private func check(compact: Bool, largeText: Bool = false, centimeters: Bool = false) {
         continueAfterFailure = false
         XCUIDevice.shared.orientation = .landscapeLeft
         let app = XCUIApplication()
         app.launchArguments = ["-AppleLanguages", "(en)", "-AppleLocale", "en_US", "-ui-testing",
             "--ui-test-cad-fixture", "--ui-test-cad-uninstanced"]
-        app.launchArguments += compact ? ["--ui-test-cad-compact", "--ui-test-cad-large-text"] : ["-ui-testing-ipad"]
+        app.launchArguments += compact ? ["--ui-test-cad-compact"] : ["-ui-testing-ipad"]
+        if largeText { app.launchArguments.append("--ui-test-cad-large-text") }
+        // Launch-argument defaults are process-local; do not alter saved preferences.
+        if centimeters { app.launchArguments += ["-floe.cad.unit", "cm"] }
         app.launch(); defer { app.terminate() }
         XCTAssertTrue(app.buttons["UndoButton"].waitForExistence(timeout: 60))
         let modify = app.buttons["ModifyGroup"]
-        XCTAssertTrue(modify.exists && modify.isHittable); modify.tap()
+        XCTAssertTrue(modify.exists && modify.isHittable)
+        if compact {
+            XCTAssertGreaterThanOrEqual(modify.frame.width, 44)
+            XCTAssertGreaterThanOrEqual(modify.frame.height, 44)
+        }
+        modify.tap()
         app.buttons["ChamferButton"].tap()
         let menu = app.buttons["BlendModeMenu"]
         XCTAssertTrue(menu.waitForExistence(timeout: 15))
@@ -2213,10 +2224,13 @@ final class CADAdvancedBlendNativeFlowUITests: XCTestCase {
         XCTAssertTrue(second.isHittable, app.debugDescription)
         let swap = app.switches["BlendSwapSides"]
         reveal(swap, in: app); XCTAssertTrue(swap.exists && swap.isHittable); swap.tap()
-        capture(compact ? "M21 compact large text two-distance native controls" : "M21 two-distance native controls")
+        capture(compact ? (largeText ? "M21 compact large text two-distance native controls" : "M21 compact default text two-distance native controls") : "M21 two-distance native controls")
         reveal(menu, in: app, left: false); menu.tap()
         app.buttons["Distance-Angle Chamfer"].firstMatch.tap()
         XCTAssertTrue(second.exists)
+        reveal(second, in: app)
+        XCTAssertEqual(Double(second.value as? String ?? ""), 45,
+                       "Angles stay in degrees even when length fields use centimetres")
         capture(compact ? "M21 compact native distance angle" : "M21 native distance angle")
         let cancel = app.buttons["BlendCancel"]
         XCTAssertTrue(cancel.exists && cancel.isHittable); cancel.tap()
@@ -2228,7 +2242,7 @@ final class CADAdvancedBlendNativeFlowUITests: XCTestCase {
         XCTAssertTrue(second.waitForExistence(timeout: 10)); reveal(second, in: app)
         XCTAssertTrue(second.isHittable)
         XCTAssertFalse(app.switches["BlendSwapSides"].exists)
-        capture(compact ? "M21 compact large text variable radius controls" : "M21 variable radius controls")
+        capture(compact ? (largeText ? "M21 compact large text variable radius controls" : "M21 compact default text variable radius controls") : "M21 variable radius controls")
         app.buttons["BlendCancel"].tap()
         XCTAssertFalse(app.buttons["BlendApply"].exists)
         XCTAssertEqual(app.alerts.count, 0)

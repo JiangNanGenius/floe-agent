@@ -924,6 +924,7 @@ struct FloeCADEditorView: View {
                     .font(.caption).foregroundStyle(.barLabel).fixedSize()
                 ExpressionValueField(placeholder: advanced == .distanceAngleChamfer ? "°" : settings.unit.symbol,
                     value: Binding(get: { viewModel.blendSecondValue }, set: { viewModel.blendSecondValue = $0 }),
+                    kind: advanced == .distanceAngleChamfer ? .plain : .length,
                     clamp: nil, identifier: "BlendSecondValueField")
                 if !advanced.isFillet {
                     Toggle(FloeCADStrings.text("cad.blend.swapSides", "Swap sides"), isOn: Binding(
