@@ -388,15 +388,27 @@
       "package": "mechanical",
       "implementation": {
         "stage": "C",
-        "status": "planned",
-        "source_changes": [],
-        "verification": [],
-        "limitations": []
+        "status": "accepted_original_criterion",
+        "source_changes": [
+          "7e3091386a6dc4363da62e0c7292cfdc9fc25abb"
+        ],
+        "verification": [
+          {
+            "evidence": "docs/qualification/cad-exact-general-curves-20261103/README.md",
+            "scope": "Actual Swift6 App objects, exact native geometry and native UI with impact-reviewed reuse and original failures retained",
+            "physical_device": false
+          }
+        ],
+        "limitations": [
+          "Actual App-hosted Simulator behavior; no physical-device performance claim.",
+          "Exact normal offsets require a regular source; tangent corners, collapse and self-intersection refuse atomically.",
+          "No new paid LLM call; existing common CAD routing and earlier live-model proof reused."
+        ]
       },
       "alignment_review": {
-        "disposition": "planned",
+        "disposition": "accepted_original_criterion",
         "existing": "基线已有：SketchTrimmer按交点修剪线/圆/弧，矩形/多边形先拆线；UI有实际trim点击处理。",
-        "remaining": "补椭圆/样条精确修剪、延伸及引用/约束映射，不能把离散交点或2D编辑能力当作3D闭环。",
+        "remaining": "",
         "evidence": [
           {
             "path": "docs/FLOE_CAD_3D_IMPLEMENTATION_PROGRESS.json",
@@ -420,15 +432,15 @@
           }
         ],
         "notes": [],
-        "evidence_level": "baseline_plus_verified_delta",
-        "verified_delta": "本轮没有该原始缺口的新运行通过声明；现有功能仍按基线保留。",
-        "acceptance_pending": "修剪/延伸圆弧、椭圆、样条至选定边界，保持精确曲线和明确ID映射，不静默删除约束。"
+        "evidence_level": "actual_App_native_geometry_and_UI",
+        "verified_delta": "General exact ellipse/spline trim, extend, linked normal offsets, refusal/undo/reopen; native profile materialization",
+        "acceptance_pending": ""
       },
       "current_acceptance": {
-        "original_criterion_accepted": false,
-        "source_changes": [
-          "c129466a81532b6d439e32c287352c6e17386e8d"
-        ]
+        "original_criterion_accepted": true,
+        "evidence": "docs/qualification/cad-exact-general-curves-20261103/README.md",
+        "original_criterion_text_unchanged": true,
+        "whole106_complete": false
       },
       "verification_plan": {
         "priority": "P1",
@@ -471,15 +483,27 @@
       "package": "mechanical",
       "implementation": {
         "stage": "C",
-        "status": "planned",
-        "source_changes": [],
-        "verification": [],
-        "limitations": []
+        "status": "accepted_original_criterion",
+        "source_changes": [
+          "7e3091386a6dc4363da62e0c7292cfdc9fc25abb"
+        ],
+        "verification": [
+          {
+            "evidence": "docs/qualification/cad-exact-general-curves-20261103/README.md",
+            "scope": "Actual Swift6 App objects, exact native geometry and native UI with impact-reviewed reuse and original failures retained",
+            "physical_device": false
+          }
+        ],
+        "limitations": [
+          "Actual App-hosted Simulator behavior; no physical-device performance claim.",
+          "Exact normal offsets require a regular source; tangent corners, collapse and self-intersection refuse atomically.",
+          "No new paid LLM call; existing common CAD routing and earlier live-model proof reused."
+        ]
       },
       "alignment_review": {
-        "disposition": "planned",
+        "disposition": "accepted_original_criterion",
         "existing": "基线已有：SketchOffset支持线链、圆弧、圆、矩形、多边形的距离偏移，含塌缩/自交处理。",
-        "remaining": "用成熟精确曲线后端补椭圆/样条等距偏移和持久关联，量测法向误差及自交/塌缩拒绝。",
+        "remaining": "",
         "evidence": [
           {
             "path": "docs/FLOE_CAD_3D_IMPLEMENTATION_PROGRESS.json",
@@ -503,15 +527,15 @@
           }
         ],
         "notes": [],
-        "evidence_level": "baseline_plus_verified_delta",
-        "verified_delta": "本轮没有该原始缺口的新运行通过声明；现有功能仍按基线保留。",
-        "acceptance_pending": "椭圆/样条偏移沿法线保持设定距离，并能随源曲线变化，失效时报告自交/塌缩。"
+        "evidence_level": "actual_App_native_geometry_and_UI",
+        "verified_delta": "General exact ellipse/spline trim, extend, linked normal offsets, refusal/undo/reopen; native profile materialization",
+        "acceptance_pending": ""
       },
       "current_acceptance": {
-        "original_criterion_accepted": false,
-        "source_changes": [
-          "c129466a81532b6d439e32c287352c6e17386e8d"
-        ]
+        "original_criterion_accepted": true,
+        "evidence": "docs/qualification/cad-exact-general-curves-20261103/README.md",
+        "original_criterion_text_unchanged": true,
+        "whole106_complete": false
       },
       "verification_plan": {
         "priority": "P1",
@@ -9834,7 +9858,7 @@
     "license_delta": "GLTFKit2 ownMIT/cgltfMIT do notclear precompiled libktx4.2.1 etcdec exception; prefer existing O3DV+same-r176 localGLTFLoader qualification"
   },
   "current_integration_verification": {
-    "source": "9d67598a089aac72c30bc2f712ab71c41efe6ba4",
+    "source": "7e3091386a6dc4363da62e0c7292cfdc9fc25abb",
     "all_106_retained": true,
     "all_106_accepted": false,
     "release_ready": false,
@@ -9867,8 +9891,8 @@
       "actual_OBJ": "真实OBJ/MTL/PNG显示、缺失贴图及仅资源变化后的旧帧拒绝通过。",
       "scope": "本地实际渲染与资源来源；不冒充原生可编辑BRep，也不代替真实LLM视觉连续编辑。"
     },
-    "accepted_original_criteria": 77,
-    "pending_original_criteria": 29,
+    "accepted_original_criteria": 79,
+    "pending_original_criteria": 27,
     "device_acceptance": "iPad通过的功能复用验收，iPhone仅确认界面；不使用用户手机。",
     "latest_native_batch": {
       "source": "582810ed58f8d3d63e23967909b74898af502c60",
@@ -10189,6 +10213,17 @@
       "physicalDevice": false,
       "newPaidRequests": 0,
       "originalFailuresRetained": true
+    },
+    "exact_general_curves": {
+      "source": "7e3091386a6dc4363da62e0c7292cfdc9fc25abb",
+      "evidence": "docs/qualification/cad-exact-general-curves-20261103/README.md",
+      "actualAppCompile": true,
+      "nativeDistinct": 50,
+      "relevantNativeUI": 2,
+      "method": "source-reviewed multi-run recovery and reuse",
+      "physicalDevice": false,
+      "newPaidRequests": 0,
+      "originalFailuresRetained": true
     }
   },
   "verification_strategy": {
@@ -10298,6 +10333,40 @@
       "pending_ids": [
         "M03",
         "M04",
+        "M16",
+        "M17",
+        "M22",
+        "M29",
+        "M30",
+        "E03",
+        "E04",
+        "E10",
+        "E12",
+        "E14",
+        "E20",
+        "E22",
+        "E23",
+        "E38",
+        "X01",
+        "X02",
+        "X03",
+        "X04",
+        "X10",
+        "X11",
+        "X12",
+        "X18",
+        "X19",
+        "X26",
+        "X27",
+        "X34",
+        "X37"
+      ],
+      "original33AllocationPreserved": true
+    },
+    "remaining_after_exact_curve_batch": {
+      "heavy": 22,
+      "light_or_reuse": 5,
+      "pending_ids": [
         "M16",
         "M17",
         "M22",
