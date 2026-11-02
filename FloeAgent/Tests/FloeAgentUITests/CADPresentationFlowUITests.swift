@@ -106,6 +106,73 @@ final class CADBackgroundOwnershipFlowUITests: XCTestCase {
 
 @MainActor
 final class CADPresentationFlowUITests: XCTestCase {
+    func testEnvironmentPreviewCancelApplyUndoRedoAndReopen() throws {
+        continueAfterFailure = false
+        XCUIDevice.shared.orientation = .landscapeLeft
+        let app = XCUIApplication()
+        let base = ["-AppleLanguages", "(en)", "-AppleLocale", "en_US",
+                    "-ui-testing", "-ui-testing-ipad", "--ui-test-cad-fixture"]
+        app.launchArguments = base
+        app.launch()
+        defer { app.terminate() }
+        XCTAssertTrue(app.buttons["UndoButton"].waitForExistence(timeout: 60))
+        let mode = app.segmentedControls["CADWorkbenchMode"]
+        mode.buttons["Present"].tap()
+        let environment = app.buttons["CADPresentEnvironment"]
+        XCTAssertTrue(environment.waitForExistence(timeout: 30))
+        environment.tap()
+        let choice = app.segmentedControls["CADEnvironmentKind"]
+        XCTAssertTrue(choice.waitForExistence(timeout: 10))
+        XCTAssertTrue(choice.buttons["Studio"].isSelected)
+        choice.buttons["Dark"].tap()
+        snapshotFaceFlow("X32 actual environment draft")
+        app.buttons["CADEnvironmentCancel"].tap()
+        environment.tap()
+        XCTAssertTrue(choice.waitForExistence(timeout: 10))
+        XCTAssertTrue(choice.buttons["Studio"].isSelected, "Cancel must not persist the preview")
+        choice.buttons["Dark"].tap()
+        app.buttons["CADEnvironmentApply"].tap()
+        snapshotFaceFlow("X32 actual applied dark environment")
+        mode.buttons["Edit"].tap()
+        let undo = app.buttons["UndoButton"]
+        XCTAssertTrue(undo.waitForExistence(timeout: 20))
+        XCTAssertTrue(undo.isEnabled)
+        undo.tap()
+        mode.buttons["Present"].tap()
+        environment.tap()
+        XCTAssertTrue(choice.waitForExistence(timeout: 10))
+        XCTAssertTrue(choice.buttons["Studio"].isSelected, "One undo must restore the inspector's prior values")
+        app.buttons["CADEnvironmentCancel"].tap()
+        mode.buttons["Edit"].tap()
+        let redo = app.buttons["RedoButton"]
+        XCTAssertTrue(redo.waitForExistence(timeout: 10))
+        XCTAssertTrue(redo.isEnabled)
+        redo.tap()
+        mode.buttons["Present"].tap()
+        environment.tap()
+        XCTAssertTrue(choice.waitForExistence(timeout: 10))
+        XCTAssertTrue(choice.buttons["Dark"].isSelected)
+        app.buttons["CADEnvironmentCancel"].tap()
+        snapshotFaceFlow("X32 actual redo restores presentation")
+        // Production scene-phase save, followed by a fresh process reopening
+        // the same package. The fixture is not regenerated on the second launch.
+        XCUIDevice.shared.press(.home)
+        let backgrounded = app.wait(for: .runningBackground, timeout: 5)
+        XCTAssertTrue(backgrounded || app.state == .runningBackgroundSuspended)
+        RunLoop.current.run(until: Date().addingTimeInterval(2))
+        app.terminate()
+        app.launchArguments = base + ["--ui-test-cad-reopen"]
+        app.launch()
+        XCTAssertTrue(app.buttons["UndoButton"].waitForExistence(timeout: 60))
+        app.segmentedControls["CADWorkbenchMode"].buttons["Present"].tap()
+        XCTAssertTrue(environment.waitForExistence(timeout: 30))
+        environment.tap()
+        XCTAssertTrue(choice.waitForExistence(timeout: 10))
+        XCTAssertTrue(choice.buttons["Dark"].isSelected, "Fresh process must read the actual saved environment")
+        snapshotFaceFlow("X32 saved environment reopened in fresh process")
+        app.buttons["CADEnvironmentCancel"].tap()
+    }
+
     func testFirstUnpaintedFaceMaterialOpenAndModeRoundTripKeepSameTarget() throws {
         continueAfterFailure = false
         XCUIDevice.shared.orientation = .landscapeLeft

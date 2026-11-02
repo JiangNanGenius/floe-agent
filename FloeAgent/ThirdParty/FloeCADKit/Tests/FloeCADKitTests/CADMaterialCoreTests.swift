@@ -9,6 +9,7 @@
 
 import XCTest
 import simd
+import ImageIO
 @testable import FloeCAD
 
 @MainActor
@@ -31,6 +32,153 @@ final class CADMaterialCoreTests: XCTestCase {
     }
 
     // MARK: Helpers
+
+    func testEnvironmentServiceAndInspectorCommandShareUndoAndReopen() async throws {
+        let url = workDir.appendingPathComponent("environment.floecad")
+        let document = try await FloeCADDocument.create(at: url, name: "Shared environment")
+        defer { document.close() }
+        let ids = try makeBox(document)
+        let service = CADMaterialService(document: document)
+        var inspectorDraft = document.viewAppearance
+        inspectorDraft.activeEnvironment = .daylight
+        inspectorDraft.daylight.lightIntensity = 2.5
+        XCTAssertTrue(document.applyViewAppearance(inspectorDraft))
+        let count = document.session.undoStack.undoCommands.count
+        let change = document.liveChangeCount
+        let originalBody = try XCTUnwrap(document.session.document.bodies.first)
+        let reply = service.handle(action: "environment.update", args: [
+            "expected_change_count": change, "active_environment": "dark",
+            "settings": ["light_intensity": 3.0, "light_direction": [1.0, 2.0, 3.0],
+                         "background_color": [0.12, 0.24, 0.36]],
+            "floor_visible": false, "floor_color": [0.2, 0.3, 0.4],
+            "floor_size_mm": 750.0, "shadows_enabled": false,
+        ])
+        XCTAssertEqual(reply["ok"] as? Bool, true, "\(reply)")
+        XCTAssertEqual(reply["mutated"] as? Bool, true)
+        XCTAssertEqual(document.session.undoStack.undoCommands.count, count + 1)
+        let expected = document.viewAppearance
+        XCTAssertEqual(expected.activeEnvironment, .dark)
+        XCTAssertEqual(expected.daylight, inspectorDraft.daylight, "Other presets must stay intact")
+        XCTAssertEqual(expected.dark.lightDirection, [1, 2, 3])
+        XCTAssertEqual(document.sceneSnapshot().appearance, expected)
+        let body = try XCTUnwrap(document.session.document.bodies.first)
+        XCTAssertEqual(body.id, originalBody.id)
+        XCTAssertEqual(body.meshRevision, originalBody.meshRevision)
+        XCTAssertEqual(body.render, originalBody.render)
+        XCTAssertTrue(body.brep === originalBody.brep)
+        XCTAssertEqual(body.id.raw.uuidString, ids.bodyID)
+        XCTAssertEqual(service.handle(action: "undo", args: [:])["ok"] as? Bool, true)
+        XCTAssertEqual(document.viewAppearance, inspectorDraft)
+        XCTAssertEqual(service.handle(action: "redo", args: [:])["ok"] as? Bool, true)
+        XCTAssertEqual(document.viewAppearance, expected)
+        let saved = await document.save()
+        XCTAssertTrue(saved.succeeded, saved.error ?? "")
+        let identity = document.modelSHA256
+        document.close()
+        let reopened = try await FloeCADDocument.open(at: url)
+        defer { reopened.close() }
+        XCTAssertEqual(reopened.viewAppearance, expected)
+        XCTAssertEqual(reopened.sceneSnapshot().appearance, expected)
+        XCTAssertEqual(reopened.modelSHA256, identity)
+        let read = CADMaterialService(document: reopened).handle(action: "environment.read", args: [:])
+        XCTAssertEqual((read["appearance"] as? [String: Any])?["active_environment"] as? String, "dark")
+    }
+
+    func testEnvironmentInvalidOrStalePayloadsAreAtomic() async throws {
+        let document = try await FloeCADDocument.create(
+            at: workDir.appendingPathComponent("environment-invalid.floecad"), name: "Environment validation")
+        defer { document.close() }
+        _ = try makeBox(document)
+        let service = CADMaterialService(document: document)
+        let before = document.session.document.sceneSettingsData
+        let appearance = document.viewAppearance
+        let change = document.liveChangeCount
+        let undo = document.session.undoStack.undoCommands.count
+        let invalid: [[String: Any]] = [
+            ["settings": ["light_intensity": true]],
+            ["settings": ["light_intensity": Double.nan]],
+            ["settings": ["light_intensity": 17.0]],
+            ["settings": ["light_direction": [0.0, 0.0, 0.0]]],
+            ["settings": ["light_direction": [1e-300, 0.0, 0.0]]],
+            ["settings": ["light_direction": [1e300, 1e300, 0.0]]],
+            ["settings": ["background_color": [0.0, 0.0, 1.1]]],
+            ["settings": ["background_color": [true, false, true]]],
+            ["settings": ["light_intensity": 2.0, "unknown": 1]],
+            ["active_environment": "studio", "target_environment": "missing"],
+            ["active_environment": NSNull()], ["floor_visible": 1],
+            ["shadows_enabled": "true"], ["floor_size_mm": 9.0],
+            ["floor_color": [0.0, 0.0]], ["hdr": "missing.exr"],
+            ["expected_change_count": change + 1],
+            ["expected_change_count": true], ["expected_revision": document.revision + 1],
+        ]
+        for patch in invalid {
+            let reply = service.handle(action: "environment.update", args: patch)
+            XCTAssertEqual(reply["ok"] as? Bool, false, "\(patch) → \(reply)")
+            XCTAssertEqual(document.session.document.sceneSettingsData, before)
+            XCTAssertEqual(document.viewAppearance, appearance)
+            XCTAssertEqual(document.liveChangeCount, change)
+            XCTAssertEqual(document.session.undoStack.undoCommands.count, undo)
+        }
+    }
+
+    func testEnvironmentReadsAndIdenticalUpdatesPreserveRedoAndBytes() async throws {
+        let document = try await FloeCADDocument.create(
+            at: workDir.appendingPathComponent("environment-noop.floecad"), name: "Environment no-op")
+        defer { document.close() }
+        _ = try makeBox(document)
+        let service = CADMaterialService(document: document)
+        XCTAssertEqual(service.handle(action: "environment.update", args: ["active_environment": "dark"])["mutated"] as? Bool, true)
+        document.session.undo()
+        XCTAssertTrue(document.session.undoStack.canRedo)
+        let before = document.session.document.sceneSettingsData
+        let change = document.liveChangeCount
+        let count = document.session.undoStack.undoCommands.count
+        XCTAssertFalse(document.applyViewAppearance(document.viewAppearance))
+        XCTAssertEqual(service.handle(action: "environment.read", args: [:])["mutated"] as? Bool, false)
+        XCTAssertEqual(service.handle(action: "environment.update", args: [:])["mutated"] as? Bool, false)
+        XCTAssertEqual(service.handle(action: "environment.update", args: ["active_environment": "studio"])["mutated"] as? Bool, false)
+        XCTAssertEqual(document.session.document.sceneSettingsData, before)
+        XCTAssertEqual(document.liveChangeCount, change)
+        XCTAssertEqual(document.session.undoStack.undoCommands.count, count)
+        XCTAssertTrue(document.session.undoStack.canRedo)
+    }
+
+    func testEnvironmentMutationReachesRealViewportPixelsAndRestores() async throws {
+        let document = try await FloeCADDocument.create(
+            at: workDir.appendingPathComponent("environment-capture.floecad"), name: "Environment capture")
+        defer { document.close() }
+        _ = try makeBox(document)
+        let first = try document.captureViewportPNG(width: 640, height: 480)
+        let service = CADMaterialService(document: document)
+        let reply = service.handle(action: "environment.update", args: [
+            "settings": ["background_color": [0.8, 0.02, 0.12],
+                         "light_intensity": 2.0, "light_direction": [-1.0, 1.0, 0.0]],
+        ])
+        XCTAssertEqual(reply["mutated"] as? Bool, true, "\(reply)")
+        let generation = document.liveChangeCount
+        let modified = try document.captureViewportPNG(width: 640, height: 480)
+        XCTAssertEqual(modified.renderer, "engineering")
+        XCTAssertEqual(modified.changeCount, generation)
+        XCTAssertEqual(document.liveChangeCount, generation, "Capture must not edit the document")
+        func pixels(_ capture: CADViewportCaptureResult) throws -> Data {
+            let source = try XCTUnwrap(CGImageSourceCreateWithData(capture.pngData as CFData, nil))
+            let image = try XCTUnwrap(CGImageSourceCreateImageAtIndex(source, 0, nil))
+            XCTAssertEqual(image.width, 640)
+            XCTAssertEqual(image.height, 480)
+            return try XCTUnwrap(image.dataProvider?.data) as Data
+        }
+        XCTAssertNotEqual(try pixels(modified), try pixels(first), "Actual rendered pixels must change")
+        document.session.undo()
+        let restored = try document.captureViewportPNG(width: 640, height: 480)
+        XCTAssertEqual(try pixels(restored), try pixels(first))
+        for (name, capture) in [("X32 original environment", first), ("X32 assistant environment", modified),
+                                ("X32 actual undo restores environment", restored)] {
+            let attachment = XCTAttachment(data: capture.pngData, uniformTypeIdentifier: "public.png")
+            attachment.name = name
+            attachment.lifetime = .keepAlways
+            add(attachment)
+        }
+    }
 
     private func run(_ document: FloeCADDocument, _ json: String,
                      file: StaticString = #filePath, line: UInt = #line) throws -> [String: Any] {

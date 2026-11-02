@@ -132,7 +132,7 @@ public enum OrdinaryDocumentActionProfile {
                         ? .readOnly : nil
                 }
                 if action == "parameters" { return operation == "list" ? .readOnly : nil }
-                if ["list", "read", "unresolved", "libraryList"].contains(operation) { return .readOnly }
+                if ["list", "read", "unresolved", "libraryList", "environment.read"].contains(operation) { return .readOnly }
                 // Export to the personal library actually writes shared state.
                 if operation == "libraryExport", payload["global"] as? Bool != true { return .readOnly }
                 return nil

@@ -120,12 +120,12 @@ struct OrdinaryDocumentActionProfileTests {
         for operation in ["update", "updateSketchEntity", "undo", "redo", "unknown"] {
             #expect(try payloadRole("parameters", operation) == nil)
         }
-        for operation in ["list", "read", "unresolved", "libraryList"] {
+        for operation in ["list", "read", "unresolved", "libraryList", "environment.read"] {
             #expect(try payloadRole("material", operation) == .readOnly)
         }
         #expect(try payloadRole("material", "libraryExport") == .readOnly)
         #expect(try payloadRole("material", "libraryExport", global: true) == nil)
-        for operation in ["create", "update", "remove", "apply", "applyFaces", "mapping", "textures", "libraryImport", "undo", "redo", "unknown"] {
+        for operation in ["create", "update", "remove", "apply", "applyFaces", "mapping", "textures", "libraryImport", "environment.update", "undo", "redo", "unknown"] {
             #expect(try payloadRole("material", operation) == nil)
         }
         for operation in ["report", "instances", "dof", "interference", "interferencePlan", "interferenceStatus", "cancelInterference", "reference", "referenceCandidates", "explodedViews", "previewExplodedView", "resetExplodedView", "hierarchy", "references", "referenceDiagnostics"] {

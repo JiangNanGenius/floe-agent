@@ -13,6 +13,7 @@
 //
 
 import Foundation
+import CoreFoundation
 import simd
 
 @MainActor
@@ -23,7 +24,7 @@ public final class CADMaterialService {
     public static let actions: [String] = [
         "list", "read", "create", "update", "remove", "apply", "applyFaces",
         "reassignFaces", "mapping", "textures", "unresolved", "libraryExport",
-        "libraryImport", "libraryList", "undo", "redo",
+        "libraryImport", "libraryList", "environment.read", "environment.update", "undo", "redo",
     ]
 
     /// Applied appearances are complete copies, not live library links. This
@@ -46,6 +47,8 @@ public final class CADMaterialService {
 
     public func handle(action: String, args: [String: Any]) -> [String: Any] {
         if let refusal = CADServiceOperations.readOnlyRefusal(document: document, kind: "material", action: action) { return refusal }
+        if action == "environment.read" || action == "environment.update",
+           let failure = environmentPinFailure(args) { return failure }
         if let failure = revisionPinFailure(args) { return failure }
         switch action {
         case "list": return list(args)
@@ -62,6 +65,8 @@ public final class CADMaterialService {
         case "libraryExport": return libraryExport(args)
         case "libraryImport": return libraryImport(args)
         case "libraryList": return libraryList(args)
+        case "environment.read": return environmentReply(action: action, mutated: false)
+        case "environment.update": return updateEnvironment(args)
         case "undo": return undo(args)
         case "redo": return redo(args)
         default:
@@ -69,6 +74,137 @@ public final class CADMaterialService {
                              "Unknown material action '\(action)'. Use "
                                 + Self.actions.joined(separator: ", ") + ".")
         }
+    }
+
+    // MARK: - Shared viewport appearance
+
+    /// The same appearance and undo command used by the Environment inspector.
+    /// The payload describes the existing key light and three presets, not
+    /// independent scene lights, HDRI or a second presentation-only document.
+    private func environmentReply(action: String, mutated: Bool) -> [String: Any] {
+        let appearance = document.viewAppearance
+        func settings(_ value: CADViewEnvironmentSettings) -> [String: Any] {
+            ["light_intensity": value.lightIntensity, "light_direction": value.lightDirection,
+             "background_color": value.backgroundColor]
+        }
+        return Self.ok([
+            "action": action, "mutated": mutated,
+            "appearance": [
+                "active_environment": appearance.activeEnvironment.rawValue,
+                "environments": ["studio": settings(appearance.studio),
+                                 "daylight": settings(appearance.daylight), "dark": settings(appearance.dark)],
+                "floor_visible": appearance.floorVisible, "floor_color": appearance.floorColor,
+                "floor_size_mm": appearance.floorSizeMM, "shadows_enabled": appearance.shadowsEnabled,
+            ],
+            "revision": document.revision, "change_count": document.session.changeCount,
+            "can_undo": document.session.undoStack.canUndo, "can_redo": document.session.undoStack.canRedo,
+        ])
+    }
+
+    private func environmentPinFailure(_ args: [String: Any]) -> [String: Any]? {
+        for key in ["revision", "expected_revision", "expected_change_count"] {
+            guard let raw = args[key] else { continue }
+            guard let number = Self.environmentNumber(raw), let value = UInt64(exactly: number) else {
+                return Self.fail("bad_revision", "\(key) must be a nonnegative integer.")
+            }
+            let current = key == "expected_change_count" ? document.session.changeCount : document.revision
+            guard current >= 0, value == UInt64(current) else {
+                return Self.fail("revision_mismatch", "The document changed. Read the environment again before applying it.")
+            }
+        }
+        return nil
+    }
+
+    private func updateEnvironment(_ args: [String: Any]) -> [String: Any] {
+        let allowed: Set<String> = ["action", "op", "revision", "expected_revision", "expected_change_count",
+                                   "active_environment", "target_environment", "settings", "floor_visible",
+                                   "floor_color", "floor_size_mm", "shadows_enabled"]
+        let unknown = Set(args.keys).subtracting(allowed).sorted()
+        guard unknown.isEmpty else {
+            return Self.fail("invalid_environment", "Unknown environment fields: \(unknown.joined(separator: ", ")).")
+        }
+        var next = document.viewAppearance
+        for key in ["active_environment", "target_environment"] where args[key] != nil {
+            guard let name = args[key] as? String, CADViewEnvironmentKind(rawValue: name) != nil else {
+                return Self.fail("invalid_environment", "\(key) must be studio, daylight or dark.")
+            }
+        }
+        if let name = args["active_environment"] as? String,
+           let kind = CADViewEnvironmentKind(rawValue: name) { next.activeEnvironment = kind }
+        let target = (args["target_environment"] as? String).flatMap(CADViewEnvironmentKind.init(rawValue:))
+            ?? next.activeEnvironment
+        if let raw = args["settings"] {
+            guard let patch = raw as? [String: Any],
+                  Set(patch.keys).isSubset(of: ["light_intensity", "light_direction", "background_color"]) else {
+                return Self.fail("invalid_environment", "settings accepts light_intensity, light_direction and background_color.")
+            }
+            var settings: CADViewEnvironmentSettings
+            switch target {
+            case .studio: settings = next.studio
+            case .daylight: settings = next.daylight
+            case .dark: settings = next.dark
+            }
+            if let raw = patch["light_intensity"] {
+                guard let value = Self.environmentNumber(raw), (0...16).contains(value) else {
+                    return Self.fail("invalid_environment", "light_intensity must be a number from 0 to 16.")
+                }
+                settings.lightIntensity = value
+            }
+            if let raw = patch["light_direction"] {
+                guard let value = Self.environmentVector(raw) else {
+                    return Self.fail("invalid_environment", "light_direction must contain three finite numbers and be nonzero.")
+                }
+                let length = simd_length(SIMD3(value[0], value[1], value[2]))
+                guard length.isFinite, length > 1e-8 else {
+                    return Self.fail("invalid_environment", "light_direction must contain three finite numbers and be nonzero.")
+                }
+                settings.lightDirection = value
+            }
+            if let raw = patch["background_color"] {
+                guard let value = Self.environmentVector(raw), value.allSatisfy({ (0...1).contains($0) }) else {
+                    return Self.fail("invalid_environment", "background_color must contain three numbers from 0 to 1.")
+                }
+                settings.backgroundColor = value
+            }
+            switch target {
+            case .studio: next.studio = settings
+            case .daylight: next.daylight = settings
+            case .dark: next.dark = settings
+            }
+        }
+        for key in ["floor_visible", "shadows_enabled"] where args[key] != nil {
+            guard let value = args[key] as? NSNumber, CFGetTypeID(value) == CFBooleanGetTypeID() else {
+                return Self.fail("invalid_environment", "\(key) must be true or false.")
+            }
+            if key == "floor_visible" { next.floorVisible = value.boolValue }
+            else { next.shadowsEnabled = value.boolValue }
+        }
+        if let raw = args["floor_color"] {
+            guard let value = Self.environmentVector(raw), value.allSatisfy({ (0...1).contains($0) }) else {
+                return Self.fail("invalid_environment", "floor_color must contain three numbers from 0 to 1.")
+            }
+            next.floorColor = value
+        }
+        if let raw = args["floor_size_mm"] {
+            guard let value = Self.environmentNumber(raw), (10...200_000).contains(value) else {
+                return Self.fail("invalid_environment", "floor_size_mm must be a number from 10 to 200000.")
+            }
+            next.floorSizeMM = value
+        }
+        let mutated = document.applyViewAppearance(next)
+        return environmentReply(action: "environment.update", mutated: mutated)
+    }
+
+    private static func environmentNumber(_ raw: Any) -> Double? {
+        guard let number = raw as? NSNumber, CFGetTypeID(number) != CFBooleanGetTypeID(),
+              number.doubleValue.isFinite else { return nil }
+        return number.doubleValue
+    }
+
+    private static func environmentVector(_ raw: Any) -> [Double]? {
+        guard let array = raw as? [Any], array.count == 3 else { return nil }
+        let values = array.compactMap(environmentNumber)
+        return values.count == 3 ? values : nil
     }
 
     /// Optional revision pin. The tool/bridge also checks it before touching

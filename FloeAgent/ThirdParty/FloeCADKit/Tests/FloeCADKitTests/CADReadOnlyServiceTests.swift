@@ -46,7 +46,7 @@ final class CADReadOnlyServiceTests: XCTestCase {
         let changeCount = document.liveChangeCount
         let undo = document.session.undoStack.undoCommands.count
         let material = CADMaterialService(document: document)
-        for action in ["create", "update", "remove", "apply", "applyFaces", "reassignFaces", "mapping", "textures", "libraryImport", "undo", "redo"] {
+        for action in ["create", "update", "remove", "apply", "applyFaces", "reassignFaces", "mapping", "textures", "libraryImport", "environment.update", "undo", "redo"] {
             refused(material.handle(action: action, args: [:]))
         }
         let parameters = CADParameterService(document: document)
@@ -75,7 +75,7 @@ final class CADReadOnlyServiceTests: XCTestCase {
         let changeCount = document.liveChangeCount
         let drawings = document.session.document.drawingsData
         let material = CADMaterialService(document: document)
-        for action in ["list", "libraryList", "libraryExport"] {
+        for action in ["list", "libraryList", "libraryExport", "environment.read"] {
             let response = material.handle(action: action, args: [:])
             XCTAssertEqual(response["ok"] as? Bool, true, "\(response)")
         }

@@ -1752,6 +1752,33 @@ struct CadNativeEditToolTests {
         #expect(payload["name"] as? String == "Copper")
     }
 
+    @Test("environment read and update retain the native route and generation pins")
+    func environmentActionsUseTheSharedNativeMaterialRoute() async throws {
+        let host = FakeCadHost()
+        await host.setThreeDReply(#"{"ok":true,"mutated":true,"revision":5,"change_count":8}"#)
+        let tool = CadDocumentTool(host: host)
+        for operation in ["environment.read", "environment.update"] {
+            let payload = String(decoding: try JSONSerialization.data(withJSONObject: [
+                "action": operation, "active_environment": "dark", "expected_change_count": 7,
+            ]), as: UTF8.self)
+            let text = String(decoding: try JSONSerialization.data(withJSONObject: [
+                "action": "material", "path": "part.floecad", "revision": 4, "payload": payload,
+            ]), as: UTF8.self)
+            _ = try await execute(tool, text, context: makeContext())
+        }
+        let requests = await host.threeDRequests
+        #expect(requests.count == 2)
+        for (index, text) in requests.enumerated() {
+            let request = try #require(try JSONSerialization.jsonObject(with: Data(text.utf8)) as? [String: Any])
+            #expect(request["kind"] as? String == "material")
+            #expect(request["revision"] as? Int == 4)
+            let payload = try #require(request["payload"] as? [String: Any])
+            #expect(payload["action"] as? String == (index == 0 ? "environment.read" : "environment.update"))
+            #expect(payload["expected_change_count"] as? Int == 7)
+            #expect(payload["active_environment"] as? String == "dark")
+        }
+    }
+
     @Test("an unknown material action is refused before the host")
     func materialUnknownActionRefused() throws {
         let tool = CadDocumentTool(host: FakeCadHost())

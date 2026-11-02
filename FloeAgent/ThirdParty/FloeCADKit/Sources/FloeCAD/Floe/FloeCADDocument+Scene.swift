@@ -178,11 +178,15 @@ extension FloeCADDocument {
     /// action (the AI material/parameter bridge commits after each mutation).
     @discardableResult
     func applyViewAppearance(_ appearance: CADViewAppearance) -> Bool {
+        let appearance = appearance.sanitized
+        // Equality is semantic: JSON key order is not a new user edit, and
+        // selecting the already active look must not add an empty undo step.
+        guard session.writeBlock == nil, appearance != viewAppearance else { return false }
         let before = session.document.sceneSettingsData
         var settings = before.flatMap {
             try? JSONDecoder().decode(CADSceneSettings.self, from: $0)
         } ?? CADSceneSettings()
-        settings.presentation = appearance.sanitized
+        settings.presentation = appearance
         guard let after = try? JSONEncoder().encode(settings), after != before else {
             return false
         }
