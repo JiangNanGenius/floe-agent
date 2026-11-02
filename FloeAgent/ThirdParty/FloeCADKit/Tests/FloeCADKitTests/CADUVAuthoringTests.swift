@@ -4,6 +4,13 @@
 import Foundation
 import XCTest
 import simd
+#if canImport(UIKit)
+import UIKit
+import CoreGraphics
+import ImageIO
+import UniformTypeIdentifiers
+import Observation
+#endif
 @testable import FloeCAD
 
 @MainActor
@@ -280,6 +287,316 @@ final class CADUVAuthoringTests: XCTestCase {
             XCTAssertNil(try body(doc,id).uvData); XCTAssertEqual(doc.liveChangeCount,count)
         }
     }
+
+    #if canImport(UIKit)
+    /// One complex-surface product chain, using the SAME model methods bound
+    /// to the native sheet's seam/unwrap/transform/preview controls. Pixel
+    /// expectations come from source UVs and projected visible triangles;
+    /// decoding a UIImage alone is never acceptance evidence.
+    func testUVEditorTorusFourColorTextureRealViewportGLBAndNativeReopen() async throws {
+        let (doc,id)=try await document(mesh:Self.torus())
+        var closed=false; defer { if !closed { doc.close() } }
+        let material=CADMaterialService(document:doc)
+        let textureA=try uvProductTexture(cycle:0), textureB=try uvProductTexture(cycle:1)
+        uvProductAttach(textureA,name:"X09 authored four-color grid A.png",type:UTType.png.identifier)
+        uvProductAttach(textureB,name:"X09 authored four-color grid B negative control.png",type:UTType.png.identifier)
+        let created=material.handle(action:"create",args:["name":"X09 four-color grid",
+            "color":[1,1,1,1],"metallic":0,"roughness":1,"uv_mapping":["source":"mesh"],
+            "textures":[["slot":"baseColor","base64":textureA.base64EncodedString(),
+                         "mime_type":"image/png","color_space":"srgb","orientation":"topLeft"]]])
+        XCTAssertEqual(created["ok"] as? Bool,true,"\(created)")
+        let materialID=try XCTUnwrap(created["id"] as? String)
+        let applied=material.handle(action:"apply",args:["bodyID":id.raw.uuidString,"material_id":materialID])
+        XCTAssertEqual(applied["ok"] as? Bool,true,"\(applied)")
+        let model=CADUVEditorModel(document:doc,bodyID:id); defer { model.stop() }
+        await model.refresh()
+        XCTAssertNil(model.errorMessage,model.diagnostic ?? "")
+        let seams=(0..<12).map { CADUVEdge(UInt32($0),UInt32(($0+1)%12)) }
+        for seam in seams {
+            model.selectedEdge=seam
+            model.toggleSeam() // Actual Mark Seam model/command path.
+            await uvProductAwaitEditor(model)
+        }
+        XCTAssertEqual(Set(try XCTUnwrap(model.snapshot).record.seams),Set(seams))
+        model.resolution=512
+        model.run("uv.unwrap",extra:["resolution":model.resolution])
+        await uvProductAwaitEditor(model)
+        let unwrapped=try body(doc,id), initialRecord=try CADUVRecord.decode(XCTUnwrap(unwrapped.uvData))
+        let initialSet=try XCTUnwrap(initialRecord.activeSet)
+        let edgeFaces=try CADUVRecord.edgeFaces(Self.torus())
+        for seam in seams {
+            let faces=try XCTUnwrap(edgeFaces[seam]); XCTAssertEqual(faces.count,2)
+            XCTAssertNotEqual(initialSet.faceCharts[faces[0]],initialSet.faceCharts[faces[1]])
+        }
+        let before=try uvProductCapture(model,document:doc,name:"X09 torus A unwrapped textured viewport.png")
+        model.selectedIslands=Set(initialSet.faceCharts)
+        model.moveU=0.083333333; model.moveV=0.046875
+        model.rotation=17; model.scaleU=0.93; model.scaleV=0.88
+        model.transform() // Actual Apply Transform model/command path.
+        await uvProductAwaitEditor(model)
+        let edited=try body(doc,id), uvBytes=try XCTUnwrap(edited.uvData)
+        let record=try CADUVRecord.decode(uvBytes), set=try XCTUnwrap(record.activeSet)
+        XCTAssertEqual(record.sourceMeshSHA256,initialRecord.sourceMeshSHA256)
+        XCTAssertEqual(record.seams,initialRecord.seams)
+        XCTAssertEqual(set.id,initialSet.id)
+        XCTAssertEqual(edited.render.positions,unwrapped.render.positions)
+        XCTAssertEqual(edited.render.normals,unwrapped.render.normals)
+        XCTAssertEqual(edited.render.indices,unwrapped.render.indices)
+        XCTAssertNotEqual(edited.render.texcoords,unwrapped.render.texcoords)
+        XCTAssertEqual(edited.material?.baseColorTexture,textureA)
+        XCTAssertEqual(edited.material?.verifiedTextureMetadata(for:.baseColor)?.verifiedDigest(for:textureA),CADUVRecord.sha(textureA))
+        let after=try uvProductCapture(model,document:doc,name:"X09 torus B edited islands textured viewport.png")
+        let landmarks=try uvProductLandmarks(document:doc,bodyID:id,before:unwrapped.render,after:edited.render)
+        XCTAssertGreaterThanOrEqual(landmarks.count,12,"Need visible, texture-interior witnesses from the actual curved surface")
+        for color in 0..<4 { XCTAssertGreaterThanOrEqual(landmarks.filter { $0.afterColor == color }.count,2,"Every authored color needs visible UV-bound landmarks") }
+        for point in landmarks {
+            uvProductAssertHue(before.pixels,point:point.pixel,color:point.beforeColor,label:"Before island transform")
+            uvProductAssertHue(after.pixels,point:point.pixel,color:point.afterColor,label:"After island transform")
+        }
+        XCTAssertGreaterThan(uvProductMeanDifference(before.pixels,after.pixels),2,
+                             "A real UV edit must change the actual textured viewport, not metadata alone")
+
+        // Negative control: same geometry/UV/camera, deliberately cycle the
+        // actual material bytes. A grey fallback or stale texture cannot pass.
+        let changed=material.handle(action:"textures",args:["material_id":materialID,"slot":"baseColor",
+            "base64":textureB.base64EncodedString(),"mime_type":"image/png","orientation":"topLeft",
+            "color_space":"srgb","apply_to_applied":true])
+        XCTAssertEqual(changed["ok"] as? Bool,true,"\(changed)")
+        await model.refresh()
+        let negative=try uvProductCapture(model,document:doc,name:"X09 torus C cycled texture negative control.png")
+        for point in landmarks { uvProductAssertHue(negative.pixels,point:point.pixel,color:(point.afterColor+1)%4,label:"Cycled texture control") }
+        XCTAssertGreaterThan(uvProductMeanDifference(after.pixels,negative.pixels),2)
+        let restore=material.handle(action:"textures",args:["material_id":materialID,"slot":"baseColor",
+            "base64":textureA.base64EncodedString(),"mime_type":"image/png","orientation":"topLeft",
+            "color_space":"srgb","apply_to_applied":true])
+        XCTAssertEqual(restore["ok"] as? Bool,true,"\(restore)")
+        await model.refresh()
+        let restored=try uvProductCapture(model,document:doc,name:"X09 torus D original texture restored.png")
+        XCTAssertLessThanOrEqual(uvProductMeanDifference(after.pixels,restored.pixels),1)
+        XCTAssertEqual(try body(doc,id).uvData,uvBytes)
+
+        let glb=GLBExporter.glb(bodies:[try body(doc,id)])
+        let glbUV=try Self.readGLBUVs(glb), authoredUV=try XCTUnwrap(edited.render.texcoords)
+        XCTAssertEqual(glbUV,authoredUV,"Independent accessor floats must equal every active UV corner")
+        XCTAssertEqual(try uvProductGLBBaseColorImage(glb),textureA,
+                       "The material actually used by the GLB primitive must reference the exact authored image")
+        uvProductAttach(glb,name:"X09 edited torus active UV and texture.glb",type:UTType.data.identifier)
+        let outcome=await doc.save(); XCTAssertTrue(outcome.succeeded)
+        let url=doc.url; model.stop(); doc.close(); closed=true
+        let reopened=try await FloeCADDocument.open(at:url); defer { reopened.close() }
+        let reopenedBody=try body(reopened,id)
+        XCTAssertEqual(reopenedBody.uvData,uvBytes)
+        XCTAssertEqual(reopenedBody.render.texcoords,authoredUV)
+        XCTAssertEqual(reopenedBody.material?.baseColorTexture,textureA)
+        XCTAssertTrue(try CADUVRecord.decode(XCTUnwrap(reopenedBody.uvData)).matches(reopenedBody.render))
+        let reopenModel=CADUVEditorModel(document:reopened,bodyID:id); defer { reopenModel.stop() }
+        await reopenModel.refresh()
+        let reopenedCapture=try uvProductCapture(reopenModel,document:reopened,name:"X09 torus E native save reopen textured viewport.png")
+        XCTAssertLessThanOrEqual(uvProductMeanDifference(restored.pixels,reopenedCapture.pixels),1)
+        for point in landmarks { uvProductAssertHue(reopenedCapture.pixels,point:point.pixel,color:point.afterColor,label:"Native reopen") }
+        let reopenedGLB=GLBExporter.glb(bodies:[reopenedBody])
+        XCTAssertEqual(try Self.readGLBUVs(reopenedGLB),authoredUV)
+        XCTAssertEqual(try uvProductGLBBaseColorImage(reopenedGLB),textureA)
+        let manifest:[String:Any]=[
+            "item":"X09","bodyID":id.raw.uuidString,"sourceMeshSHA256":record.sourceMeshSHA256,
+            "uvRecordSHA256":CADUVRecord.sha(uvBytes),"activeSetID":set.id.uuidString,
+            "sourceTextureSHA256":CADUVRecord.sha(textureA),"negativeTextureSHA256":CADUVRecord.sha(textureB),
+            "glbSHA256":CADUVRecord.sha(glb),"seams":record.seams.map { [$0.a,$0.b] },
+            "captures":[before,after,negative,restored,reopenedCapture].map { $0.identity },
+            "landmarks":landmarks.map { $0.json },
+            "assertions":"Unoccluded source-UV hue landmarks before/after transform and color-cycle control; restored/reopened viewport mean channel difference <=1; exact active GLB UV floats and primitive-linked PNG bytes.",
+            "limits":"Production UI model/service and real Metal capture; actual on-screen touch controls remain a separate owner UI gate."
+        ]
+        uvProductAttach(try JSONSerialization.data(withJSONObject:manifest,options:[.sortedKeys,.prettyPrinted]),
+                        name:"X09 torus UV texture capture identities and landmarks.json",type:UTType.json.identifier)
+    }
+
+    /// Observation ends on the model's real completion transition; no sleep,
+    /// fabricated result or new production test API is needed.
+    private func uvProductAwaitEditor(_ model:CADUVEditorModel) async {
+        if model.isBusy {
+            await withCheckedContinuation { (continuation:CheckedContinuation<Void,Never>) in
+                withObservationTracking { _=model.isBusy } onChange: {
+                    Task { @MainActor in continuation.resume() }
+                }
+            }
+        }
+        XCTAssertFalse(model.isBusy)
+        XCTAssertNil(model.errorMessage,model.diagnostic ?? "")
+    }
+
+    private struct UVProductPixels {
+        let width:Int, height:Int
+        let rgba:[UInt8]
+        static func decode(_ png:Data) throws -> Self {
+            let source=try XCTUnwrap(CGImageSourceCreateWithData(png as CFData,nil))
+            let image=try XCTUnwrap(CGImageSourceCreateImageAtIndex(source,0,nil))
+            let w=image.width,h=image.height
+            guard w == 768,h == 512 else { throw CocoaError(.fileReadCorruptFile) }
+            var bytes=[UInt8](repeating:0,count:w*h*4)
+            try bytes.withUnsafeMutableBytes { raw in
+                let context=try XCTUnwrap(CGContext(data:raw.baseAddress,width:w,height:h,bitsPerComponent:8,
+                    bytesPerRow:w*4,space:CGColorSpaceCreateDeviceRGB(),bitmapInfo:CGImageAlphaInfo.premultipliedLast.rawValue))
+                context.draw(image,in:CGRect(x:0,y:0,width:w,height:h))
+            }
+            return Self(width:w,height:h,rgba:bytes)
+        }
+        func mean(at point:CGPoint) -> SIMD3<Double> {
+            let x=Int(point.x.rounded()),y=Int(point.y.rounded())
+            var sum=SIMD3<Double>(repeating:0)
+            for row in y-1...y+1 { for column in x-1...x+1 {
+                let i=(row*width+column)*4
+                sum += SIMD3(Double(rgba[i]),Double(rgba[i+1]),Double(rgba[i+2]))
+            } }
+            return sum/9
+        }
+    }
+    private struct UVProductCapture {
+        let result:CADViewportCaptureResult
+        let pixels:UVProductPixels
+        let name:String
+        var identity:[String:Any] { ["name":name,"renderer":result.renderer,"imageSHA256":result.sha256,
+            "revision":result.revision,"changeCount":result.changeCount,"contentSHA256":result.contentSHA256,
+            "width":result.width,"height":result.height] }
+    }
+    private func uvProductCapture(_ model:CADUVEditorModel,document:FloeCADDocument,name:String) throws -> UVProductCapture {
+        let count=document.liveChangeCount
+        model.capture() // The same Refresh 3D Preview action used by the sheet.
+        XCTAssertNil(model.errorMessage,model.diagnostic ?? "")
+        let modelPNG=try XCTUnwrap(try XCTUnwrap(model.preview).pngData())
+        let captured=try document.captureViewportPNG(width:768,height:512)
+        uvProductAttach(captured.pngData,name:name,type:UTType.png.identifier)
+        XCTAssertEqual(captured.renderer,"engineering")
+        XCTAssertEqual(captured.changeCount,count); XCTAssertEqual(document.liveChangeCount,count)
+        let pixels=try UVProductPixels.decode(captured.pngData)
+        XCTAssertLessThanOrEqual(uvProductMeanDifference(pixels,try UVProductPixels.decode(modelPNG)),1,
+                                 "The editor preview must contain the same actual production-rendered pixels")
+        return UVProductCapture(result:captured,pixels:pixels,name:name)
+    }
+    private func uvProductAttach(_ bytes:Data,name:String,type:String) {
+        let attachment=XCTAttachment(data:bytes,uniformTypeIdentifier:type)
+        attachment.name=name; attachment.lifetime = .keepAlways; add(attachment)
+    }
+    private func uvProductMeanDifference(_ a:UVProductPixels,_ b:UVProductPixels) -> Double {
+        XCTAssertEqual(a.width,b.width); XCTAssertEqual(a.height,b.height)
+        guard a.rgba.count == b.rgba.count else { return .infinity }
+        var total:Double=0
+        for i in stride(from:0,to:a.rgba.count,by:4) {
+            for c in 0..<3 { total += Double(abs(Int(a.rgba[i+c])-Int(b.rgba[i+c]))) }
+        }
+        return total/Double(a.width*a.height*3)
+    }
+    private func uvProductAssertHue(_ pixels:UVProductPixels,point:CGPoint,color:Int,label:String) {
+        let rgb=pixels.mean(at:point),r=rgb.x,g=rgb.y,b=rgb.z
+        let matches:Bool
+        switch color {
+        case 0: matches = r >= 40 && r > 1.4*g && r > 1.4*b
+        case 1: matches = g >= 40 && g > 1.4*r && g > 1.4*b
+        case 2: matches = b >= 30 && b > 1.35*r && b > 1.35*g
+        default: matches = r >= 35 && g >= 35 && min(r,g) > 1.5*b
+        }
+        XCTAssertTrue(matches,"\(label): authored color \(color) at \(point) rendered RGB \(rgb)")
+    }
+
+    private struct UVProductLandmark {
+        let triangle:Int
+        let barycentric:SIMD3<Float>
+        let world:SIMD3<Float>
+        let pixel:CGPoint
+        let beforeUV:SIMD2<Float>,afterUV:SIMD2<Float>
+        let beforeColor:Int,afterColor:Int
+        var json:[String:Any] { ["triangle":triangle,"barycentric":[barycentric.x,barycentric.y,barycentric.z],
+            "worldMM":[world.x,world.y,world.z],"pixel":[pixel.x,pixel.y],
+            "beforeUV":[beforeUV.x,beforeUV.y],"afterUV":[afterUV.x,afterUV.y],
+            "beforeColor":beforeColor,"afterColor":afterColor] }
+    }
+    private func uvProductLandmarks(document:FloeCADDocument,bodyID:BodyID,before:RenderMesh,after:RenderMesh) throws -> [UVProductLandmark] {
+        let scene=document.viewModel().captureScene()
+        let drawable=try XCTUnwrap(scene.bodies.first { $0.id == bodyID })
+        let bounds=try XCTUnwrap(scene.worldBounds)
+        var camera=TurntableCamera()
+        if let saved=scene.appearance?.camera { camera=Renderer.turntableCamera(from:saved) }
+        else { camera.fit(boundsMin:bounds.min,boundsMax:bounds.max,aspect:1.5) }
+        let matrix=camera.viewProjection(aspect:1.5),size=CGSize(width:768,height:512)
+        let beforeUV=try XCTUnwrap(before.texcoords),afterUV=try XCTUnwrap(after.texcoords)
+        func world(_ p:SIMD3<Float>) -> SIMD3<Float> { let v=drawable.modelMatrix*SIMD4(p,1); return SIMD3(v.x,v.y,v.z)/v.w }
+        func project(_ p:SIMD3<Float>) -> CGPoint? {
+            let clip=matrix*SIMD4(p,1); guard clip.w > 0 else { return nil }
+            let x=Double(clip.x/clip.w),y=Double(clip.y/clip.w)
+            guard x.isFinite,y.isFinite else { return nil }
+            return CGPoint(x:(x+1)*384,y:(1-y)*256)
+        }
+        func distance(_ p:CGPoint,_ a:CGPoint,_ b:CGPoint) -> CGFloat {
+            abs((b.x-a.x)*(p.y-a.y)-(b.y-a.y)*(p.x-a.x))/max(hypot(b.x-a.x,b.y-a.y),1e-6)
+        }
+        var result:[UVProductLandmark]=[],perColor=[Int](repeating:0,count:4)
+        let barycentrics:[SIMD3<Float>]=[SIMD3(repeating:1.0/3),SIMD3(0.2,0.3,0.5),SIMD3(0.5,0.2,0.3),SIMD3(0.3,0.5,0.2)]
+        for f in 0..<after.triangleCount {
+            let ids=(0..<3).map { Int(after.indices[f*3+$0]) }
+            let oldIDs=(0..<3).map { Int(before.indices[f*3+$0]) }
+            let corners=ids.map { world(after.positions[$0]) }
+            guard let a=project(corners[0]),let b=project(corners[1]),let c=project(corners[2]) else { continue }
+            for weights in barycentrics {
+                let oldUV=beforeUV[oldIDs[0]]*weights.x+beforeUV[oldIDs[1]]*weights.y+beforeUV[oldIDs[2]]*weights.z
+                let uv=afterUV[ids[0]]*weights.x+afterUV[ids[1]]*weights.y+afterUV[ids[2]]*weights.z
+                guard let oldColor=uvProductColor(at:oldUV),let color=uvProductColor(at:uv),oldColor != color,perColor[color] < 8 else { continue }
+                let p=corners[0]*weights.x+corners[1]*weights.y+corners[2]*weights.z
+                guard let pixel=project(p),pixel.x >= 4,pixel.x < 764,pixel.y >= 4,pixel.y < 508,
+                      min(distance(pixel,a,b),min(distance(pixel,b,c),distance(pixel,c,a))) >= 2 else { continue }
+                let ray=camera.ray(through:pixel,viewportSize:size)
+                guard let hit=HitTester.pickBody(ray:ray,in:scene),hit.bodyID == bodyID,hit.triangleIndex == f else { continue }
+                result.append(UVProductLandmark(triangle:f,barycentric:weights,world:p,pixel:pixel,
+                    beforeUV:oldUV,afterUV:uv,beforeColor:oldColor,afterColor:color))
+                perColor[color] += 1
+            }
+        }
+        return result
+    }
+    private func uvProductColor(at uv:SIMD2<Float>) -> Int? {
+        guard uv.x >= 0,uv.x < 1,uv.y >= 0,uv.y < 1 else { return nil }
+        let x=Int(uv.x*256),y=Int(uv.y*256)
+        guard (6..<26).contains(x%32),(6..<26).contains(y%32) else { return nil }
+        return (x/32+2*(y/32))%4
+    }
+    private func uvProductTexture(cycle:Int) throws -> Data {
+        let colors:[[UInt8]]=[[240,24,24,255],[24,220,40,255],[28,60,240,255],[230,215,20,255]]
+        var bytes=[UInt8](); bytes.reserveCapacity(256*256*4)
+        for y in 0..<256 { for x in 0..<256 {
+            let color=(x/32+2*(y/32)+cycle)%4
+            bytes += x%32 < 2 || y%32 < 2 ? [8,8,8,255] : colors[color]
+        } }
+        let provider=try XCTUnwrap(CGDataProvider(data:Data(bytes) as CFData))
+        let image=try XCTUnwrap(CGImage(width:256,height:256,bitsPerComponent:8,bitsPerPixel:32,bytesPerRow:256*4,
+            space:CGColorSpaceCreateDeviceRGB(),bitmapInfo:CGBitmapInfo(rawValue:CGImageAlphaInfo.last.rawValue),
+            provider:provider,decode:nil,shouldInterpolate:false,intent:.defaultIntent))
+        let output=NSMutableData(),destination=try XCTUnwrap(CGImageDestinationCreateWithData(output,UTType.png.identifier as CFString,1,nil))
+        CGImageDestinationAddImage(destination,image,nil)
+        XCTAssertTrue(CGImageDestinationFinalize(destination))
+        return output as Data
+    }
+    private func uvProductGLBBaseColorImage(_ data:Data) throws -> Data {
+        func u32(_ offset:Int) -> UInt32 { data.withUnsafeBytes { UInt32(littleEndian:$0.loadUnaligned(fromByteOffset:offset,as:UInt32.self)) } }
+        let jsonLength=Int(u32(12)),binaryStart=20+jsonLength+8
+        let object=try XCTUnwrap(JSONSerialization.jsonObject(with:data.subdata(in:20..<20+jsonLength)) as? [String:Any])
+        let meshes=try XCTUnwrap(object["meshes"] as? [[String:Any]])
+        let primitives=try XCTUnwrap(meshes.first?["primitives"] as? [[String:Any]])
+        let materialIndex=try XCTUnwrap(primitives.first?["material"] as? Int)
+        let materials=try XCTUnwrap(object["materials"] as? [[String:Any]])
+        guard materials.indices.contains(materialIndex) else { throw CocoaError(.fileReadCorruptFile) }
+        let pbr=try XCTUnwrap(materials[materialIndex]["pbrMetallicRoughness"] as? [String:Any])
+        let map=try XCTUnwrap(pbr["baseColorTexture"] as? [String:Any]),textureIndex=try XCTUnwrap(map["index"] as? Int)
+        XCTAssertEqual(map["texCoord"] as? Int ?? 0,0,"The primitive-linked image must use active TEXCOORD_0")
+        let textures=try XCTUnwrap(object["textures"] as? [[String:Any]])
+        guard textures.indices.contains(textureIndex) else { throw CocoaError(.fileReadCorruptFile) }
+        let imageIndex=try XCTUnwrap(textures[textureIndex]["source"] as? Int),images=try XCTUnwrap(object["images"] as? [[String:Any]])
+        guard images.indices.contains(imageIndex) else { throw CocoaError(.fileReadCorruptFile) }
+        let viewIndex=try XCTUnwrap(images[imageIndex]["bufferView"] as? Int),views=try XCTUnwrap(object["bufferViews"] as? [[String:Any]])
+        guard views.indices.contains(viewIndex) else { throw CocoaError(.fileReadCorruptFile) }
+        let start=binaryStart+(views[viewIndex]["byteOffset"] as? Int ?? 0),length=try XCTUnwrap(views[viewIndex]["byteLength"] as? Int)
+        guard start >= 0,length >= 0,start+length <= data.count else { throw CocoaError(.fileReadCorruptFile) }
+        return data.subdata(in:start..<start+length)
+    }
+    #endif
 
     private nonisolated static func torus() -> RenderMesh {
         let uCount=24,vCount=12

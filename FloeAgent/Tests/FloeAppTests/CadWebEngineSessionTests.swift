@@ -89,6 +89,93 @@ struct CadWebEngineSessionTests {
         await session.shutdown()
     }
 
+    /// The exact E21 oblique OCS/bulge fixture crosses the real WebKit,
+    /// Worker and newly bundled WASM boundary; no native-only stand-in.
+    @Test func obliqueBulgeTrimOffsetUndoAndSameFormatReopen() async throws {
+        let sample = Data("0\nSECTION\n2\nHEADER\n9\n$ACADVER\n1\nAC1032\n9\n$HANDSEED\n5\nF100\n9\n$INSUNITS\n70\n0\n0\nENDSEC\n0\nSECTION\n2\nENTITIES\n0\nLWPOLYLINE\n5\nF010\n100\nAcDbEntity\n8\n0\n100\nAcDbPolyline\n90\n4\n70\n1\n38\n7\n210\n0\n220\n0.6\n230\n0.8\n10\n0\n20\n0\n42\n0\n91\n1\n10\n20\n20\n0\n42\n1\n91\n2\n10\n20\n20\n10\n42\n0\n91\n3\n10\n0\n20\n10\n42\n1\n91\n4\n0\nLINE\n5\nF011\n100\nAcDbEntity\n8\n0\n100\nAcDbLine\n10\n-10\n20\n16.2\n30\n-3.4\n11\n-10\n21\n-15.8\n31\n20.6\n0\nTEXT\n5\nF012\n100\nAcDbEntity\n8\n0\n100\nAcDbText\n10\n70\n20\n80\n30\n0\n40\n2.5\n1\nUntouched E21\n0\nENDSEC\n0\nEOF\n".utf8)
+        func canonical(_ value: Any) throws -> Data {
+            try JSONSerialization.data(withJSONObject: value, options: [.sortedKeys])
+        }
+        func row(_ info: [String: Any], _ handle: String) throws -> [String: Any] {
+            let entities = try #require(info["entities"] as? [[String: Any]])
+            return try #require(entities.first { $0["handle"] as? String == handle })
+        }
+        func polyline(_ row: [String: Any]) throws -> [String: Any] {
+            let entity = try #require(row["entity"] as? [String: Any])
+            return try #require(entity["LwPolyline"] as? [String: Any])
+        }
+        func check(_ value: [String: Any], closed: Bool, points: [[Double]], bulges: [Double], ids: [Int]) throws {
+            #expect(value["is_closed"] as? Bool == closed)
+            #expect(value["elevation"] as? Double == 7)
+            let normal = try #require(value["normal"] as? [String: Any])
+            #expect(normal["x"] as? Double == 0)
+            #expect(normal["y"] as? Double == 0.6)
+            #expect(normal["z"] as? Double == 0.8)
+            let vertices = try #require(value["vertices"] as? [[String: Any]])
+            #expect(vertices.count == points.count)
+            for (index, vertex) in vertices.enumerated() where points.indices.contains(index) {
+                let location = try #require(vertex["location"] as? [String: Any])
+                let x = try #require(location["x"] as? Double), y = try #require(location["y"] as? Double)
+                let bulge = try #require(vertex["bulge"] as? Double)
+                #expect(abs(x - points[index][0]) < 1e-8)
+                #expect(abs(y - points[index][1]) < 1e-8)
+                #expect(abs(bulge - bulges[index]) < 1e-8)
+                #expect(vertex["vertex_id"] as? Int == ids[index])
+            }
+        }
+        let session = CadWebEngineSession()
+        try await session.start()
+        let saved: Data, trimmed: Data
+        do {
+            _ = try await session.open(bytes: sample, format: "dxf")
+            let before = try object(try await session.inspect(offset: 0, limit: 20))
+            let original = try canonical(row(before, "F010"))
+            let untouched = try canonical(row(before, "F012"))
+            let receipt = try object(try await session.edit(
+                #"{"operation":"offset","handle":"F010","distance":2,"side":[-30,0.2,8.6]}"#))
+            let handle = try #require((receipt["created"] as? [String])?.first)
+            let offset = try object(try await session.inspect(offset: 0, limit: 20))
+            try check(polyline(row(offset, handle)), closed: true,
+                points: [[0,-2],[20,-2],[20,12],[0,12]], bulges: [0,1,0,1], ids: [1,2,3,4])
+            #expect(try canonical(row(offset, "F010")) == original)
+            #expect(try canonical(row(offset, "F012")) == untouched)
+            try await session.undo()
+            #expect(try await entityCount(session) == 3)
+            try await session.redo()
+            #expect(try await entityCount(session) == 4)
+            try await session.undo()
+            _ = try await session.edit(
+                #"{"operation":"trim","handle":"F010","boundary":"F011","pick":[-25,0.2,8.6]}"#)
+            let after = try object(try await session.inspect(offset: 0, limit: 20))
+            try check(polyline(row(after, "F010")), closed: false,
+                points: [[10,10],[0,10],[0,0],[10,0]], bulges: [0,1,0,0], ids: [5,4,1,6])
+            #expect(try canonical(row(after, "F012")) == untouched)
+            trimmed = try canonical(row(after, "F010"))
+            try await session.undo()
+            let undone = try object(try await session.inspect(offset: 0, limit: 20))
+            #expect(try canonical(row(undone, "F010")) == original)
+            try await session.redo()
+            saved = try await session.save()
+            #expect(!saved.isEmpty)
+        } catch {
+            await session.shutdown()
+            throw error
+        }
+        await session.shutdown()
+        let reopened = CadWebEngineSession()
+        try await reopened.start()
+        do {
+            _ = try await reopened.open(bytes: saved, format: "dxf")
+            let restored = try object(try await reopened.inspect(offset: 0, limit: 20))
+            #expect(try canonical(row(restored, "F010")) == trimmed)
+            #expect(try await entityCount(reopened) == 3)
+        } catch {
+            await reopened.shutdown()
+            throw error
+        }
+        await reopened.shutdown()
+    }
+
     @Test func queryRejectsDoubleEncodedRequest() async throws {
         let session = CadWebEngineSession()
         try await session.start()
