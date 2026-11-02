@@ -257,6 +257,8 @@ Saving an Office document in Notes updates its automatic cover from the saved co
 
 Available operations depend on the file format; unavailable options explain why. If loading or saving fails, keep the original and check the error. Compare conflicting versions before saving.
 
+On iPad, Office uses the full toolbar when the editor is wide enough and a compact layout in narrow split views. Opening the keyboard does not switch the layout by itself.
+
 **Office autosave in Notes.** Completed edits save after you pause; a pen contact still down defers saving until you lift it. A failed save keeps the editing copy so you can retry.
 
 **View a specific region.** The assistant can read an Excel sheet and cell range (such as `A1:N30`), or a Word/PowerPoint page and optional rectangle, including content outside the screen. Ask it to list sheets or pages first if needed. Floe saves completed edits before returning the region image from that saved version; use a vision-capable model to view it. Lift the pen or retry if the editor is busy.

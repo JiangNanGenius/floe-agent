@@ -265,6 +265,12 @@
         "evidence_level": "baseline_plus_verified_delta",
         "verified_delta": "本轮没有该原始缺口的新运行通过声明；现有功能仍按基线保留。",
         "acceptance_pending": "同一轮廓中修改弧角、椭圆轴、样条点并删除指定实体；保留其余ID/约束，失败不留半次修改，撤销与重开一致。"
+      },
+      "current_acceptance": {
+        "original_criterion_accepted": true,
+        "source_changes": [
+          "bba63313"
+        ]
       }
     },
     {
@@ -334,6 +340,15 @@
         "evidence_level": "baseline_plus_verified_delta",
         "verified_delta": "本轮没有该原始缺口的新运行通过声明；现有功能仍按基线保留。",
         "acceptance_pending": "用样条与弧构成闭合截面，约束连接与切向后修改尺寸，轮廓不裂开，显示正确剩余DOF与失败原因。"
+      },
+      "current_acceptance": {
+        "original_criterion_accepted": true,
+        "source_changes": [
+          "653d54c6",
+          "d7fda055",
+          "f8c91ddb",
+          "16cbc4c2 actual current App95 + actual87/88; reviewed ef766239 badge/focus correction"
+        ]
       }
     },
     {
@@ -408,6 +423,12 @@
         "evidence_level": "baseline_plus_verified_delta",
         "verified_delta": "本轮没有该原始缺口的新运行通过声明；现有功能仍按基线保留。",
         "acceptance_pending": "修剪/延伸圆弧、椭圆、样条至选定边界，保持精确曲线和明确ID映射，不静默删除约束。"
+      },
+      "current_acceptance": {
+        "original_criterion_accepted": false,
+        "source_changes": [
+          "c129466a81532b6d439e32c287352c6e17386e8d"
+        ]
       }
     },
     {
@@ -477,6 +498,12 @@
         "evidence_level": "baseline_plus_verified_delta",
         "verified_delta": "本轮没有该原始缺口的新运行通过声明；现有功能仍按基线保留。",
         "acceptance_pending": "椭圆/样条偏移沿法线保持设定距离，并能随源曲线变化，失效时报告自交/塌缩。"
+      },
+      "current_acceptance": {
+        "original_criterion_accepted": false,
+        "source_changes": [
+          "c129466a81532b6d439e32c287352c6e17386e8d"
+        ]
       }
     },
     {
@@ -546,6 +573,17 @@
         "evidence_level": "baseline_plus_verified_delta",
         "verified_delta": "本轮没有该原始缺口的新运行通过声明；现有功能仍按基线保留。",
         "acceptance_pending": "投影选定实体边为外部引用，源尺寸变更后同步，源删除显示断引用，能明确断开关联。"
+      },
+      "current_acceptance": {
+        "original_criterion_accepted": true,
+        "source_changes": [
+          "4c97f966008995168e1e3c64dd8e0cc40374df88",
+          "77c271979a0e8b127a4d86a49279b9cc89c1eb66",
+          "d8665b6212108ed76c7ea89ccabd49e4e00c78dd",
+          "ae05e7845ea53df359cb2beeb2b07db080d8c038",
+          "741322f58921dd4a60c89e924e4150598b9a4720",
+          "962dfc4419c5d980ba93bb4f2e2f3d40d8387edb"
+        ]
       }
     },
     {
@@ -615,6 +653,16 @@
         "evidence_level": "baseline_plus_verified_delta",
         "verified_delta": "本轮没有该原始缺口的新运行通过声明；现有功能仍按基线保留。",
         "acceptance_pending": "同一草图按10^-3/1/10^3缩放后约束状态一致；冲突高亮对应实际约束，不把最佳拟合写成满足结果。"
+      },
+      "current_acceptance": {
+        "original_criterion_accepted": true,
+        "source_changes": [
+          "653d54c6",
+          "d7fda055",
+          "f8c91ddb",
+          "Reviewed9ebe26a4 4filebadgecollision/focuspacket integrated; object/nativeUIpending",
+          "16cbc4c2 actual current App95 + actual87/88; reviewed ef766239 badge/focus correction"
+        ]
       }
     },
     {
@@ -755,6 +803,14 @@
         "evidence_level": "baseline_plus_verified_delta",
         "verified_delta": "关联offset datum/支撑事务、命名、格式2、UI/AI服务和有限原生触控/保存重开通过；其余datum定义未覆盖。",
         "acceptance_pending": "偏移/夹角/三点基准面保存引用和参数；修改父几何后平面及下游草图随动，断引用明确失效。"
+      },
+      "current_acceptance": {
+        "original_criterion_accepted": true,
+        "source_changes": [
+          "e39cccab persistent angle and three-point datums through shared service/editor",
+          "6015e581 fixes exact stored-expression and entity-scoped wall fixture contracts after native153",
+          "16e25a06 DEBUG real native form acceptance with product surface IDs"
+        ]
       }
     },
     {
@@ -844,6 +900,15 @@
         "evidence_level": "baseline_plus_verified_delta",
         "verified_delta": "本轮没有该原始缺口的新运行通过声明；现有功能仍按基线保留。",
         "acceptance_pending": "由面/边/两点/两平面创建关联轴和基准点，能复选来源、改偏移并驱动旋转/阵列，重开关系不丢。"
+      },
+      "current_acceptance": {
+        "original_criterion_accepted": true,
+        "source_changes": [
+          "be30d459 R1 R2 R3 associative axis/point definitions, analytic cylinder position, real Revolve/Pattern references and floor2 protection",
+          "5c65a5cd actual compiler import correction",
+          "961399ff stable persisted-value no-change comparison",
+          "af803811 datum presenter extraction after compiler timeout"
+        ]
       }
     },
     {
@@ -950,6 +1015,12 @@
         "evidence_level": "baseline_plus_verified_delta",
         "verified_delta": "圆角/倒角/抽壳/斜拉伸公式重算覆盖补齐，Stage A组件49例通过。",
         "acceptance_pending": "为圆角/倒角/抽壳/斜度拉伸分别绑定w/2，改w后几何/查询/公式同步；撤销、保存重开保持一致。"
+      },
+      "current_acceptance": {
+        "original_criterion_accepted": true,
+        "source_changes": [
+          "33abe3e7 via three-way integration, preserving Build 306 fixes"
+        ]
       }
     },
     {
@@ -1036,6 +1107,12 @@
         "evidence_level": "baseline_plus_verified_delta",
         "verified_delta": "变量/特征/草图扇出合为单事务，7项原生变量面板方法测试及相关组件通过。",
         "acceptance_pending": "一次改变量以一个文档事务更新所有依赖；失败恢复一致；可区分长度/角度变量，命名配置作为后续可选扩展验收。"
+      },
+      "current_acceptance": {
+        "original_criterion_accepted": true,
+        "source_changes": [
+          "33abe3e7 via three-way integration, preserving Build 306 fixes"
+        ]
       }
     },
     {
@@ -1149,6 +1226,16 @@
         "evidence_level": "baseline_plus_verified_delta",
         "verified_delta": "真实模型三轮经同一CAD命令服务完成变量创建/绑定/联动/一次撤销；实际BRep、全部ID与保存重开已核验。",
         "acceptance_pending": false
+      },
+      "current_acceptance": {
+        "original_criterion_accepted": true,
+        "source_changes": [
+          "45d45e8e778765975a18fefd1eb8274e90c367c5",
+          "5c7db399ebc527f9ef4340dad132c7ee19e5e8b5",
+          "0051612c379021b696794094c2e26cf863675490",
+          "bcf434666cd9af1f44272341a5070c869fc15b4e",
+          "b7e93e32614a5ed0a6f55b89284a52716114eb03"
+        ]
       }
     },
     {
@@ -1285,6 +1372,13 @@
         "evidence_level": "baseline_plus_verified_delta",
         "verified_delta": "已验证的是现有OCCT revolve+boolean的9项精确孔刀具资格；新Hole产品语义尚未编译。",
         "acceptance_pending": "创建通孔/盲孔/沉孔/锥沉孔后保留同一孔ID，修改孔型、直径、位置与深度；源面改变后依赖正确重建。"
+      },
+      "current_acceptance": {
+        "original_criterion_accepted": true,
+        "source_changes": [
+          "aee22fd4 H1 source integrated with frozen 22-file hash match; original workspace untouched",
+          "8f90c71e blind-depth same-update guard and3additive continued-hole/source-face tests"
+        ]
       }
     },
     {
@@ -1389,6 +1483,16 @@
         "evidence_level": "baseline_plus_verified_delta",
         "verified_delta": "本轮没有该原始缺口的新运行通过声明；现有功能仍按基线保留。",
         "acceptance_pending": "标准内外螺纹有规格、螺距、旋向、有效长、端部策略；选择已有螺纹改规格，几何/示意模式可区分并能复读。"
+      },
+      "current_acceptance": {
+        "original_criterion_accepted": true,
+        "source_changes": [
+          "33dfe00f8510e1b5971c61922451550ae4da0b8f",
+          "3bb3ff99b312d0302419d208817b7e96937481ec",
+          "ec448f0b9f8b6eaf9d5664328c0339e15eb0f98d",
+          "98dff82b822564312b286b5371d043ee1a6ff8fe",
+          "973e3fd536898efc278073194baaa0bfc2e6c2f8 test-only coordinate recovery"
+        ]
       }
     },
     {
@@ -1474,6 +1578,14 @@
         "evidence_level": "baseline_plus_verified_delta",
         "verified_delta": "本轮没有该原始缺口的新运行通过声明；现有功能仍按基线保留。",
         "acceptance_pending": "创建throughAll切除后把板厚改大，孔仍贯穿；upToNext目标面移动后拉伸自动跟随，重开保持定义。"
+      },
+      "current_acceptance": {
+        "original_criterion_accepted": true,
+        "source_changes": [
+          "eb2bade8",
+          "9adceef8",
+          "582810ed"
+        ]
       }
     },
     {
@@ -1567,6 +1679,15 @@
         "evidence_level": "baseline_plus_verified_delta",
         "verified_delta": "本轮没有该原始缺口的新运行通过声明；现有功能仍按基线保留。",
         "acceptance_pending": "选择原路径改点或替换边后同一sweep随动，能改螺距/圈数，失败保留原实体与引用。"
+      },
+      "current_acceptance": {
+        "original_criterion_accepted": true,
+        "source_changes": [
+          "c693b707",
+          "6343ab78",
+          "f0497592",
+          "943e41f3"
+        ]
       }
     },
     {
@@ -1666,6 +1787,10 @@
         "evidence_level": "baseline_plus_verified_delta",
         "verified_delta": "本轮没有该原始缺口的新运行通过声明；现有功能仍按基线保留。",
         "acceptance_pending": "编辑/重排截面与导轨并保留同一特征ID；带内环放样保持明确精确等级；起止切向/曲率约束可量化检查。"
+      },
+      "current_acceptance": {
+        "original_criterion_accepted": false,
+        "source_changes": []
       }
     },
     {
@@ -1755,6 +1880,10 @@
         "evidence_level": "baseline_plus_verified_delta",
         "verified_delta": "本轮没有该原始缺口的新运行通过声明；现有功能仍按基线保留。",
         "acceptance_pending": "独立开放截面放样成surface，修剪/补面/缝合后检查闭合，再按厚度生成精确实体；各步可撤销重开重建。"
+      },
+      "current_acceptance": {
+        "original_criterion_accepted": false,
+        "source_changes": []
       }
     },
     {
@@ -1876,6 +2005,12 @@
         "evidence_level": "baseline_plus_verified_delta",
         "verified_delta": "精确平面轴向推拉/法向移动/分割保BRep；不支持精确面操作明确拒绝且保持输入，mesh-only原路径保留。",
         "acceptance_pending": "精确带孔曲面实体执行每种面编辑/Split，query analyticBRep、体积与STEP曲面类型保持预期；无法保持时明确拒绝或标示转换且可撤销恢复。"
+      },
+      "current_acceptance": {
+        "original_criterion_accepted": true,
+        "source_changes": [
+          "33abe3e7 via three-way integration, preserving Build 306 fixes"
+        ]
       }
     },
     {
@@ -1992,6 +2127,12 @@
         "evidence_level": "baseline_plus_verified_delta",
         "verified_delta": "面旋转公开degrees与内部radians转换修复并组件验证。",
         "acceptance_pending": "创建30°面旋转→查询30deg→更新45°→实际几何45°，UI/工具/重开一致，避免重复degree/radian转换。"
+      },
+      "current_acceptance": {
+        "original_criterion_accepted": true,
+        "source_changes": [
+          "33abe3e7 via three-way integration, preserving Build 306 fixes"
+        ]
       }
     },
     {
@@ -2077,6 +2218,14 @@
         "evidence_level": "baseline_plus_verified_delta",
         "verified_delta": "本轮没有该原始缺口的新运行通过声明；现有功能仍按基线保留。",
         "acceptance_pending": "选择已有圆柱孔壁改直径，保存为可重放径向offset/参数特征；无草图导入件亦保留BRep和撤销。"
+      },
+      "current_acceptance": {
+        "original_criterion_accepted": true,
+        "source_changes": [
+          "f211285a",
+          "52453aa2",
+          "413bbdaf"
+        ]
       }
     },
     {
@@ -2177,6 +2326,14 @@
         "evidence_level": "baseline_plus_verified_delta",
         "verified_delta": "Actual App169/native16920/20 closes native/legacy skipped selections and named-lookalike fallback; complete receipts, atomic undo/save-reopen, and quantified actual concave exact/mesh behavior pass. Advanced radius/chamfer clauses remain.",
         "acceptance_pending": "多边圆角明确列全部处理/拒绝的边；支持所需两距离倒角/变半径作为扩展，凹边行为与精确等级清楚。"
+      },
+      "current_acceptance": {
+        "original_criterion_accepted": false,
+        "source_changes": [
+          "47d8110bda8e669c8973100cddce9baae1168d1d",
+          "531fb22707f7162bfb897d692f982163e8b7e4ab",
+          "2921b0d4160579fe964ed84575ced9683be4fb13"
+        ]
       }
     },
     {
@@ -2268,6 +2425,13 @@
         "evidence_level": "baseline_plus_verified_delta",
         "verified_delta": "柱面开口及实际壁厚通过原生命令与Editor点选/历史入口验证；修正半圆柱中心轴识别和输入面身份表丢失。",
         "acceptance_pending": "柱面开口部分已通过；本项多区域壁厚仍未闭环。"
+      },
+      "current_acceptance": {
+        "original_criterion_accepted": false,
+        "source_changes": [
+          "806beb9e0799a8bd1c0f8d4bc2fbe4beacc15606",
+          "9df3e771dffa46f1b9441221f159a9bdb7baf433"
+        ]
       }
     },
     {
@@ -2302,15 +2466,27 @@
       "package": "mechanical",
       "implementation": {
         "stage": "C",
-        "status": "planned",
-        "source_changes": [],
-        "verification": [],
-        "limitations": []
+        "status": "accepted_original_criterion",
+        "source_changes": [
+          "9d5beb7c18408f5ce7dbf8f80295343f087e0576",
+          "a52167e67810c4e893d87e5945bbe0a95f7cb098",
+          "240140bd9f00078e7b1dbbb9e3e0a319678149dd"
+        ],
+        "verification": [
+          {
+            "evidence": "docs/qualification/cad-patterns-office-layout-20261103/README.md",
+            "scope": "13 distinct actual native cases pass across original and recovered cases; original failed whole runs retained.",
+            "physical_device": false
+          }
+        ],
+        "limitations": [
+          "Unqualified historical faces refuse instead of rebinding; legacy absolute-plane semantics remain."
+        ]
       },
       "alignment_review": {
-        "disposition": "planned",
+        "disposition": "accepted_original_criterion",
         "existing": "基线已有：有draftExtrude/draftFace、BRep deleteFace healing与replaceFace；源面通过FaceRef可以重解引用。",
-        "remaining": "把拔模中性面、替换面目标从坐标升级为稳定关联引用，验证目标移动及断引用反馈。",
+        "remaining": "",
         "evidence": [
           {
             "path": "docs/FLOE_CAD_3D_IMPLEMENTATION_PROGRESS.json",
@@ -2331,12 +2507,25 @@
             "note": "draftFace中性世界平面说明",
             "kind": "original_audit_anchor_not_reaudited",
             "exists_at_review": true
+          },
+          {
+            "path": "docs/qualification/cad-patterns-office-layout-20261103/README.md",
+            "kind": "current_actual_qualification",
+            "exists_at_review": true
           }
         ],
         "notes": [],
-        "evidence_level": "baseline_plus_verified_delta",
-        "verified_delta": "本轮没有该原始缺口的新运行通过声明；现有功能仍按基线保留。",
-        "acceptance_pending": "源面与目标/中性面都保存稳定引用，移动目标后同特征更新，断引用明确提示。"
+        "evidence_level": "actual_App_native_and_relevant_UI",
+        "verified_delta": "13 distinct actual native cases pass across original and recovered cases; original failed whole runs retained.",
+        "acceptance_pending": ""
+      },
+      "current_acceptance": {
+        "original_criterion_accepted": true,
+        "source_changes": [
+          "9d5beb7c18408f5ce7dbf8f80295343f087e0576",
+          "a52167e67810c4e893d87e5945bbe0a95f7cb098",
+          "240140bd9f00078e7b1dbbb9e3e0a319678149dd"
+        ]
       }
     },
     {
@@ -2376,15 +2565,28 @@
       "package": "mechanical",
       "implementation": {
         "stage": "C",
-        "status": "planned",
-        "source_changes": [],
-        "verification": [],
-        "limitations": []
+        "status": "accepted_original_criterion",
+        "source_changes": [
+          "0a88be26ab28c794ec5d07836c144d0b0635345e",
+          "8a1badc908ae78d3d03424c74516e63fdc27facf",
+          "50a57893acf332db99817b31fd91d12777dbbe35",
+          "fe92f106f8dd609a4431ce39f085e5589aa79959"
+        ],
+        "verification": [
+          {
+            "evidence": "docs/qualification/cad-patterns-office-layout-20261103/README.md",
+            "scope": "6 actual Split cases and 82 distinct relevant checks pass across stages; original failures and omitted-selector evidence retained.",
+            "physical_device": false
+          }
+        ],
+        "limitations": [
+          "Exact Split commits two single-solid outputs; empty, invalid or disconnected cuts refuse atomically."
+        ]
       },
       "alignment_review": {
-        "disposition": "planned",
+        "disposition": "accepted_original_criterion",
         "existing": "基线已有：Split可按平面/草图切实体，保存原体半边并新增另一体，一次undo可恢复。",
-        "remaining": "补持久化Split特征、刀具引用、AI入口与结果ID重建；已有精确Split几何修复不等于Split历史完成。",
+        "remaining": "",
         "evidence": [
           {
             "path": "docs/FLOE_CAD_3D_IMPLEMENTATION_PROGRESS.json",
@@ -2405,12 +2607,26 @@
             "note": "仅替换/新增，不记录Split",
             "kind": "original_audit_anchor_not_reaudited",
             "exists_at_review": true
+          },
+          {
+            "path": "docs/qualification/cad-patterns-office-layout-20261103/README.md",
+            "kind": "current_actual_qualification",
+            "exists_at_review": true
           }
         ],
         "notes": [],
-        "evidence_level": "baseline_plus_verified_delta",
-        "verified_delta": "本轮没有该原始缺口的新运行通过声明；现有功能仍按基线保留。",
-        "acceptance_pending": "Split保留刀具/目标引用与结果ID；改刀具位置或源尺寸重建两体正确，重开后可继续编辑。"
+        "evidence_level": "actual_App_native_and_relevant_UI",
+        "verified_delta": "6 actual Split cases and 82 distinct relevant checks pass across stages; original failures and omitted-selector evidence retained.",
+        "acceptance_pending": ""
+      },
+      "current_acceptance": {
+        "original_criterion_accepted": true,
+        "source_changes": [
+          "0a88be26ab28c794ec5d07836c144d0b0635345e",
+          "8a1badc908ae78d3d03424c74516e63fdc27facf",
+          "50a57893acf332db99817b31fd91d12777dbbe35",
+          "fe92f106f8dd609a4431ce39f085e5589aa79959"
+        ]
       }
     },
     {
@@ -2450,15 +2666,31 @@
       "package": "mechanical",
       "implementation": {
         "stage": "C",
-        "status": "planned",
-        "source_changes": [],
-        "verification": [],
-        "limitations": []
+        "status": "accepted_original_criterion",
+        "source_changes": [
+          "f56f3e2061d35b1f5205d2c2f84e18dac7c41df5",
+          "dccae9c46c66112d9c428ba8ebacae981aab32ad",
+          "01dd5c1c4eb270f22ce65c180244e7ec36126c38",
+          "de5ce8e9ac0870e68263ab0d441f1634fd0c7b68",
+          "627eb7bb555ca24a6fce0fc6cf4ef9bb2fc63653"
+        ],
+        "verification": [
+          {
+            "evidence": "docs/qualification/cad-patterns-office-layout-20261103/README.md",
+            "scope": "Actual native28/28, two additional focused native cases, and recovered native UI2/2 pass. Original mixed UI run remains2passed/2failed.",
+            "physical_device": false
+          }
+        ],
+        "limitations": [
+          "Exact connected line/arc/circle paths; unsupported splines or missing paths refuse.",
+          "Feature seeds use actual hole or union/subtract profile tools; unsupported modifier seeds refuse.",
+          "Native menu selects one original edge; typed API supports ordered chains."
+        ]
       },
       "alignment_review": {
-        "disposition": "planned",
+        "disposition": "accepted_original_criterion",
         "existing": "基线已有：实体有线性/圆周阵列、镜像；草图PatternLink会按种子再生并保留实例ID；body pattern拷贝可保留BRep。",
-        "remaining": "让阵列轴/中心、镜像面引用关联基准并可改，补种子拆分映射及沿曲线/特征级阵列。",
+        "remaining": "",
         "evidence": [
           {
             "path": "docs/FLOE_CAD_3D_IMPLEMENTATION_PROGRESS.json",
@@ -2479,12 +2711,27 @@
             "note": "Body pattern实际求值",
             "kind": "original_audit_anchor_not_reaudited",
             "exists_at_review": true
+          },
+          {
+            "path": "docs/qualification/cad-patterns-office-layout-20261103/README.md",
+            "kind": "current_actual_qualification",
+            "exists_at_review": true
           }
         ],
         "notes": [],
-        "evidence_level": "baseline_plus_verified_delta",
-        "verified_delta": "本轮没有该原始缺口的新运行通过声明；现有功能仍按基线保留。",
-        "acceptance_pending": "镜像/阵列引用关联基准，改轴/平面或源孔参数后各实例更新，种子拆分有明确关联映射。"
+        "evidence_level": "actual_App_native_and_relevant_UI",
+        "verified_delta": "Actual native28/28, two additional focused native cases, and recovered native UI2/2 pass. Original mixed UI run remains2passed/2failed.",
+        "acceptance_pending": ""
+      },
+      "current_acceptance": {
+        "original_criterion_accepted": true,
+        "source_changes": [
+          "f56f3e2061d35b1f5205d2c2f84e18dac7c41df5",
+          "dccae9c46c66112d9c428ba8ebacae981aab32ad",
+          "01dd5c1c4eb270f22ce65c180244e7ec36126c38",
+          "de5ce8e9ac0870e68263ab0d441f1634fd0c7b68",
+          "627eb7bb555ca24a6fce0fc6cf4ef9bb2fc63653"
+        ]
       }
     },
     {
@@ -2684,6 +2931,34 @@
         "scope": "195 actual71 material cases plus current198 core pass. New assignments without display ranges refuse before mutation; empty render never reports saved bindings complete.",
         "whole_M26_accepted": false,
         "remaining": "Generic/legacy references with equal partial signatures still need a source identity witness."
+      },
+      "current_acceptance": {
+        "original_criterion_accepted": true,
+        "source_changes": [
+          "33abe3e7 via three-way integration, preserving Build 306 fixes",
+          "4b4bfb1db1ffadc458a41807f7ff9ac9c3dcc785",
+          "c8140f9c6f56eca73d01a5929256bf036879705e",
+          "0ecb73e9c61de2f60779dd4b8cd2ea3d93ff6875",
+          "50c0bb71173d2f734c012f2b2b1c976eeefbf6f7",
+          "7f5a44b5",
+          "5902ea4da4c6d8871c8edaf0f4158ea0d87b6ce4",
+          "0c505c7b50e9f60c6a8e984762441e24b4187657",
+          "5604c80165a66dcd3d4161598cf1c18c85ea0f48",
+          "fc0fcb1f90d618e96b66856bcd026fa876096efb",
+          "4c0a0446ede32eb0d7ad8e06c6862b8c53868d3b",
+          "246f5f5a71ee28654c0bcbf6319a5b059f9e4801",
+          "cb173b4a9a2a88f3d9c15e5c910e8903022272a8",
+          "eddb4fcdfec6ac63a2fcca7384dc0327381c0c88",
+          "bdb49b892fcb2b31ba258eb1e40906b33970c23f",
+          "f15dfdf03365134af4f67be6632cc1bd96e73f5b",
+          "d97b66d8318cdb57ffc1318028d40ca208561889",
+          "9b67 proof gate (source lineage retained in current native evidence)",
+          "c1937490133a95bd36a9e695760b5159f7c61cb0",
+          "b820dd47860d45cf1c548672d746a5d1e8db77ad",
+          "b786b208f5526f1cb0f0ecaeb801da9492c1cc59",
+          "1ddf7f0a7de763636191573b5881e8128bf654b1",
+          "3f0bd6966e95b406073f0ec81cc8f963b72c6c7f"
+        ]
       }
     },
     {
@@ -2758,6 +3033,10 @@
         "evidence_level": "baseline_plus_verified_delta",
         "verified_delta": "本轮没有该原始缺口的新运行通过声明；现有功能仍按基线保留。",
         "acceptance_pending": "能力发现只宣称实际可执行路径；若保留wrap/offset工具目标，则在UI和Agent都能执行、撤销、重开。"
+      },
+      "current_acceptance": {
+        "original_criterion_accepted": true,
+        "source_changes": []
       }
     },
     {
@@ -2827,6 +3106,12 @@
         "evidence_level": "baseline_plus_verified_delta",
         "verified_delta": "本轮没有该原始缺口的新运行通过声明；现有功能仍按基线保留。",
         "acceptance_pending": "精确、mesh及混合对象布尔明确结果精确等级；失败/取消不留半体，重型对象可安全拒绝并说明。"
+      },
+      "current_acceptance": {
+        "original_criterion_accepted": true,
+        "source_changes": [
+          "6ba8d285"
+        ]
       }
     },
     {
@@ -2898,6 +3183,10 @@
         "evidence_level": "baseline_plus_verified_delta",
         "verified_delta": "本轮没有该原始缺口的新运行通过声明；现有功能仍按基线保留。",
         "acceptance_pending": "用成熟后端完成钣金弯曲/展开/K系数、焊件清单、齿轮专业场景的参数编辑/重开与独立尺寸核验，保留各自许可和平台资格证据。"
+      },
+      "current_acceptance": {
+        "original_criterion_accepted": false,
+        "source_changes": []
       }
     },
     {
@@ -2988,6 +3277,10 @@
         "evidence_level": "baseline_plus_verified_delta",
         "verified_delta": "有限原生workbench真实Items/拖动/精确数值/UndoRedo/重开、Present回调和7张实际截图已验。",
         "acceptance_pending": "对孔/螺纹/曲面/基准等目标分别验证UI选中→LLM读/改→同服务事务→上游重建→保存重开→STEP/量测独立复读，保留失败与截图。"
+      },
+      "current_acceptance": {
+        "original_criterion_accepted": false,
+        "source_changes": []
       }
     },
     {
@@ -3052,6 +3345,12 @@
         "evidence_level": "baseline_plus_verified_delta",
         "verified_delta": "本轮没有该原始缺口的新运行通过声明；现有功能仍按基线保留。",
         "acceptance_pending": "外部零件修改后显式更新两个子装配，保持实例、配合、BOM与缺失引用诊断。"
+      },
+      "current_acceptance": {
+        "original_criterion_accepted": true,
+        "source_changes": [
+          "013391d2"
+        ]
       }
     },
     {
@@ -3116,6 +3415,12 @@
         "evidence_level": "baseline_plus_verified_delta",
         "verified_delta": "本轮没有该原始缺口的新运行通过声明；现有功能仍按基线保留。",
         "acceptance_pending": "同源两实例随源更新，独立副本保持原样；爆炸预览后保存重开基础放置不变。"
+      },
+      "current_acceptance": {
+        "original_criterion_accepted": true,
+        "source_changes": [
+          "013391d2"
+        ]
       }
     },
     {
@@ -3168,6 +3473,10 @@
         "evidence_level": "baseline_plus_verified_delta",
         "verified_delta": "本轮没有该原始缺口的新运行通过声明；现有功能仍按基线保留。",
         "acceptance_pending": "创建铰链或滑块并设限位，拖动/参数修改和重开后仍保持机构约束。"
+      },
+      "current_acceptance": {
+        "original_criterion_accepted": false,
+        "source_changes": []
       }
     },
     {
@@ -3237,6 +3546,10 @@
         "evidence_level": "baseline_plus_verified_delta",
         "verified_delta": "本轮没有该原始缺口的新运行通过声明；现有功能仍按基线保留。",
         "acceptance_pending": "改孔中心和基准面后，同轴/对齐配合跟随正确几何；歧义时明确要求重选。"
+      },
+      "current_acceptance": {
+        "original_criterion_accepted": false,
+        "source_changes": []
       }
     },
     {
@@ -3289,6 +3602,15 @@
         "evidence_level": "baseline_plus_verified_delta",
         "verified_delta": "本轮没有该原始缺口的新运行通过声明；现有功能仍按基线保留。",
         "acceptance_pending": "将已有距离10改15并undo/redo，约束ID和引用不变，保存重开仍15。"
+      },
+      "current_acceptance": {
+        "original_criterion_accepted": true,
+        "source_changes": [
+          "6443c42f",
+          "6443c42f",
+          "716f8c1b",
+          "d78747e8"
+        ]
       }
     },
     {
@@ -3358,6 +3680,15 @@
         "evidence_level": "baseline_plus_verified_delta",
         "verified_delta": "本轮没有该原始缺口的新运行通过声明；现有功能仍按基线保留。",
         "acceptance_pending": "矛盾约束后几何、undo、文件不变；解除冲突后求解与自由度诊断一致。"
+      },
+      "current_acceptance": {
+        "original_criterion_accepted": true,
+        "source_changes": [
+          "6443c42f",
+          "6443c42f",
+          "716f8c1b",
+          "d78747e8"
+        ]
       }
     },
     {
@@ -3458,6 +3789,13 @@
         "evidence_level": "baseline_plus_verified_delta",
         "verified_delta": "本轮没有该原始缺口的新运行通过声明；现有功能仍按基线保留。",
         "acceptance_pending": "按选中组件检查50实例中的指定子集，可取消并显示进度，代次变化拒绝旧结果。"
+      },
+      "current_acceptance": {
+        "original_criterion_accepted": true,
+        "source_changes": [
+          "b281bb0c",
+          "426027be79c6216db21a64c7a5617c6a643d4a3b"
+        ]
       }
     },
     {
@@ -3558,6 +3896,12 @@
         "evidence_level": "baseline_plus_verified_delta",
         "verified_delta": "实际中空网格间隙3/2mm及壁内嵌套、接触和变换见证点通过；补齐真实原生选择与结果界面验收。",
         "acceptance_pending": false
+      },
+      "current_acceptance": {
+        "original_criterion_accepted": true,
+        "source_changes": [
+          "b281bb0c"
+        ]
       }
     },
     {
@@ -3627,6 +3971,15 @@
         "evidence_level": "baseline_plus_verified_delta",
         "verified_delta": "本轮没有该原始缺口的新运行通过声明；现有功能仍按基线保留。",
         "acceptance_pending": "保存两个命名爆炸视图，对应BOM及气泡导出后数量和实例一致，重开仍可继续编辑。"
+      },
+      "current_acceptance": {
+        "original_criterion_accepted": true,
+        "source_changes": [
+          "d006827b",
+          "f5db898c",
+          "651bbc76",
+          "72e97b23"
+        ]
       }
     },
     {
@@ -3691,6 +4044,10 @@
         "evidence_level": "baseline_plus_verified_delta",
         "verified_delta": "本轮没有该原始缺口的新运行通过声明；现有功能仍按基线保留。",
         "acceptance_pending": "驱动一个关节，其他零件由约束求解运动，能检查行程和干涉。"
+      },
+      "current_acceptance": {
+        "original_criterion_accepted": false,
+        "source_changes": []
       }
     },
     {
@@ -3760,6 +4117,17 @@
         "evidence_level": "baseline_plus_verified_delta",
         "verified_delta": "本轮没有该原始缺口的新运行通过声明；现有功能仍按基线保留。",
         "acceptance_pending": "A3同页布置正/俯/侧/剖视图，比例和投影对齐可编辑，改模型后更新全部视图。"
+      },
+      "current_acceptance": {
+        "original_criterion_accepted": true,
+        "source_changes": [
+          "12b5ea75",
+          "752cb78f",
+          "57892702",
+          "c243fc51",
+          "958652ae",
+          "7352115a"
+        ]
       }
     },
     {
@@ -3829,6 +4197,10 @@
         "evidence_level": "baseline_plus_verified_delta",
         "verified_delta": "本轮没有该原始缺口的新运行通过声明；现有功能仍按基线保留。",
         "acceptance_pending": "对带遮挡内孔和曲面的模型，与独立CAD精确投影逐线对照，可切换隐藏线显示。"
+      },
+      "current_acceptance": {
+        "original_criterion_accepted": false,
+        "source_changes": []
       }
     },
     {
@@ -3893,6 +4265,18 @@
         "evidence_level": "baseline_plus_verified_delta",
         "verified_delta": "本轮没有该原始缺口的新运行通过声明；现有功能仍按基线保留。",
         "acceptance_pending": "含BRep与mesh混合总成出完整剖视，或出图前阻止把不完整剖面当完整图纸。"
+      },
+      "current_acceptance": {
+        "original_criterion_accepted": true,
+        "source_changes": [
+          "12b5ea75",
+          "752cb78f",
+          "57892702",
+          "c243fc51",
+          "958652ae",
+          "7352115a",
+          "426027be79c6216db21a64c7a5617c6a643d4a3b"
+        ]
       }
     },
     {
@@ -3957,6 +4341,10 @@
         "evidence_level": "baseline_plus_verified_delta",
         "verified_delta": "本轮没有该原始缺口的新运行通过声明；现有功能仍按基线保留。",
         "acceptance_pending": "双材料装配剖面具有可配置不同剖面线，阶梯切线与剖视标记同步保存导出。"
+      },
+      "current_acceptance": {
+        "original_criterion_accepted": false,
+        "source_changes": []
       }
     },
     {
@@ -4021,6 +4409,18 @@
         "evidence_level": "baseline_plus_verified_delta",
         "verified_delta": "本轮没有该原始缺口的新运行通过声明；现有功能仍按基线保留。",
         "acceptance_pending": "Ø10改Ø8后同一尺寸自动显示Ø8；孔删除后明确悬空，不保留看似有效旧值。"
+      },
+      "current_acceptance": {
+        "original_criterion_accepted": true,
+        "source_changes": [
+          "12b5ea75",
+          "752cb78f",
+          "57892702",
+          "c243fc51",
+          "958652ae",
+          "7352115a",
+          "426027be79c6216db21a64c7a5617c6a643d4a3b"
+        ]
       }
     },
     {
@@ -4101,6 +4501,12 @@
         "evidence_level": "baseline_plus_verified_delta",
         "verified_delta": "本轮没有该原始缺口的新运行通过声明；现有功能仍按基线保留。",
         "acceptance_pending": "建立M6螺纹孔标注、尺寸公差和基准框，改源特征后关联更新，PDF/DXF保留符号。"
+      },
+      "current_acceptance": {
+        "original_criterion_accepted": true,
+        "source_changes": [
+          "fe1bc656f19ebfba86dec37fc5ee9a29b942151a"
+        ]
       }
     },
     {
@@ -4153,6 +4559,15 @@
         "evidence_level": "baseline_plus_verified_delta",
         "verified_delta": "本轮没有该原始缺口的新运行通过声明；现有功能仍按基线保留。",
         "acceptance_pending": "同一零件各实例共享料号/材料，独立件可分配版本，多级BOM更新数量并导出表格。"
+      },
+      "current_acceptance": {
+        "original_criterion_accepted": true,
+        "source_changes": [
+          "d006827b",
+          "f5db898c",
+          "651bbc76",
+          "72e97b23"
+        ]
       }
     },
     {
@@ -4228,6 +4643,12 @@
         "evidence_level": "baseline_plus_verified_delta",
         "verified_delta": "本轮没有该原始缺口的新运行通过声明；现有功能仍按基线保留。",
         "acceptance_pending": "应用同一模板到多张图，修改修订栏/精度后保存重开和PDF/DXF一致。"
+      },
+      "current_acceptance": {
+        "original_criterion_accepted": true,
+        "source_changes": [
+          "fe1bc656f19ebfba86dec37fc5ee9a29b942151a"
+        ]
       }
     },
     {
@@ -4292,6 +4713,10 @@
         "evidence_level": "baseline_plus_verified_delta",
         "verified_delta": "本轮没有该原始缺口的新运行通过声明；现有功能仍按基线保留。",
         "acceptance_pending": "外部PDF/DXF阅读器读回尺寸比例及中文/符号，重开原包可继续编辑同一标注。"
+      },
+      "current_acceptance": {
+        "original_criterion_accepted": true,
+        "source_changes": []
       }
     },
     {
@@ -4356,6 +4781,10 @@
         "evidence_level": "baseline_plus_verified_delta",
         "verified_delta": "本轮没有该原始缺口的新运行通过声明；现有功能仍按基线保留。",
         "acceptance_pending": "打开含块/Xref/样条/填充图纸，支持范围内编辑并保存，其余实体保持且UI清楚标记只读。"
+      },
+      "current_acceptance": {
+        "original_criterion_accepted": false,
+        "source_changes": []
       }
     },
     {
@@ -4437,6 +4866,15 @@
         "evidence_level": "baseline_plus_verified_delta",
         "verified_delta": "本轮没有该原始缺口的新运行通过声明；现有功能仍按基线保留。",
         "acceptance_pending": "对带bulge闭合轮廓偏移和修剪，原拓扑及方向正确，undo和同格式复读一致。"
+      },
+      "current_acceptance": {
+        "original_criterion_accepted": true,
+        "source_changes": [
+          "327a31fe",
+          "dfb9c63f",
+          "6daaa634",
+          "413bbdaf"
+        ]
       }
     },
     {
@@ -4501,6 +4939,10 @@
         "evidence_level": "baseline_plus_verified_delta",
         "verified_delta": "本轮没有该原始缺口的新运行通过声明；现有功能仍按基线保留。",
         "acceptance_pending": "更新已有尺寸文字/位置并修改关联几何，保留句柄与标注关系，保存后同格式可继续编辑。"
+      },
+      "current_acceptance": {
+        "original_criterion_accepted": false,
+        "source_changes": []
       }
     },
     {
@@ -4565,6 +5007,10 @@
         "evidence_level": "baseline_plus_verified_delta",
         "verified_delta": "本轮没有该原始缺口的新运行通过声明；现有功能仍按基线保留。",
         "acceptance_pending": "覆盖真实含字体、布局、对象、Xref样例，成功者由独立CAD复读；失败者原件不变且草稿可导出恢复。"
+      },
+      "current_acceptance": {
+        "original_criterion_accepted": false,
+        "source_changes": []
       }
     },
     {
@@ -4634,6 +5080,15 @@
         "evidence_level": "baseline_plus_verified_delta",
         "verified_delta": "本轮没有该原始缺口的新运行通过声明；现有功能仍按基线保留。",
         "acceptance_pending": "混合BRep/mesh文档导出前展示覆盖清单；独立CAD读回实体数/解析曲面/单位，明确未携带历史。"
+      },
+      "current_acceptance": {
+        "original_criterion_accepted": true,
+        "source_changes": [
+          "d006827b",
+          "f5db898c",
+          "651bbc76",
+          "72e97b23"
+        ]
       }
     },
     {
@@ -4708,6 +5163,15 @@
         "evidence_level": "baseline_plus_verified_delta",
         "verified_delta": "本轮没有该原始缺口的新运行通过声明；现有功能仍按基线保留。",
         "acceptance_pending": "同源3个已放置实例导出后独立查看器对象数与世界位置一致；可选择零件/装配并保可用层级。"
+      },
+      "current_acceptance": {
+        "original_criterion_accepted": true,
+        "source_changes": [
+          "d006827b",
+          "f5db898c",
+          "651bbc76",
+          "72e97b23"
+        ]
       }
     },
     {
@@ -4777,6 +5241,12 @@
         "evidence_level": "baseline_plus_verified_delta",
         "verified_delta": "本轮没有该原始缺口的新运行通过声明；现有功能仍按基线保留。",
         "acceptance_pending": "带开放曲面的IGES可作为可编辑曲面处理并导回，或在导入前明确render-only限制。"
+      },
+      "current_acceptance": {
+        "original_criterion_accepted": true,
+        "source_changes": [
+          "1e7ee892 FilePreview proposal child accessibility; underlying exact OCCT surface import/export unchanged from native146"
+        ]
       }
     },
     {
@@ -4851,6 +5321,12 @@
         "evidence_level": "baseline_plus_verified_delta",
         "verified_delta": "本轮没有该原始缺口的新运行通过声明；现有功能仍按基线保留。",
         "acceptance_pending": "导入前列出可保留/丢弃项，复杂场景的对象位置与材质通过独立比较，未支持数据保持源文件。"
+      },
+      "current_acceptance": {
+        "original_criterion_accepted": false,
+        "source_changes": [
+          "4c97f966008995168e1e3c64dd8e0cc40374df88"
+        ]
       }
     },
     {
@@ -4920,6 +5396,12 @@
         "evidence_level": "baseline_plus_verified_delta",
         "verified_delta": "本轮没有该原始缺口的新运行通过声明；现有功能仍按基线保留。",
         "acceptance_pending": "同一授权文件组经UI与AI导入结果一致；不支持时返回实际缺资源而非静默少件。"
+      },
+      "current_acceptance": {
+        "original_criterion_accepted": true,
+        "source_changes": [
+          "4c97f966008995168e1e3c64dd8e0cc40374df88"
+        ]
       }
     },
     {
@@ -5020,6 +5502,18 @@
         "evidence_level": "baseline_plus_verified_delta",
         "verified_delta": "原生SceneKit USDZ每body材质/六贴图/UV/物理单位、真实能力探测与I/O恢复17例通过，127组件整批无跳过。",
         "acceptance_pending": "使用带UV及六贴图模型分别导出，独立查看器核对映射和材质，未支持属性在保存前提示。"
+      },
+      "current_acceptance": {
+        "original_criterion_accepted": true,
+        "source_changes": [
+          "33abe3e7 via three-way integration, preserving Build 306 fixes",
+          "131bc88f",
+          "1bf77550",
+          "f75d9d61",
+          "787d05bb",
+          "171d0394",
+          "228adc14"
+        ]
       }
     },
     {
@@ -5094,6 +5588,12 @@
         "evidence_level": "baseline_plus_verified_delta",
         "verified_delta": "本轮没有该原始缺口的新运行通过声明；现有功能仍按基线保留。",
         "acceptance_pending": "2mm零件和2m扫描均用明确单位导入，AI/手工/导出复读尺寸保持一致。"
+      },
+      "current_acceptance": {
+        "original_criterion_accepted": true,
+        "source_changes": [
+          "4c97f966008995168e1e3c64dd8e0cc40374df88"
+        ]
       }
     },
     {
@@ -5186,6 +5686,12 @@
         "evidence_level": "baseline_plus_verified_delta",
         "verified_delta": "本轮没有该原始缺口的新运行通过声明；现有功能仍按基线保留。",
         "acceptance_pending": "导入超预算压缩资产前拒绝并保留源；可取消且不留下半模型，测定设备内存峰值和UI响应。"
+      },
+      "current_acceptance": {
+        "original_criterion_accepted": true,
+        "source_changes": [
+          "c647e8f7 owned off-main source read/queued exact import cancellation, preallocation budgets, atomic commit and operation identity"
+        ]
       }
     },
     {
@@ -5273,6 +5779,12 @@
         "evidence_level": "baseline_plus_verified_delta",
         "verified_delta": "9项格式/CAS/故障、18项存储完整性、14项恢复及后续成功提交receipt/代次切片验证。",
         "acceptance_pending": "保存中断/外部提交/关闭竞态后至少一完整版本可打开，失败草稿可恢复且不覆盖较新文件。"
+      },
+      "current_acceptance": {
+        "original_criterion_accepted": true,
+        "source_changes": [
+          "33abe3e7 via three-way integration, preserving Build 306 fixes"
+        ]
       }
     },
     {
@@ -5358,6 +5870,13 @@
         "evidence_level": "baseline_plus_verified_delta",
         "verified_delta": "E39包将缺manifest恢复限制为已复验previous，并保留中断/损坏原字节；尚无面向用户完整恢复选择。",
         "acceptance_pending": "破坏当前document.json后可预览并恢复previous到新包，原损坏包保留，报告未恢复字段。"
+      },
+      "current_acceptance": {
+        "original_criterion_accepted": true,
+        "source_changes": [
+          "33abe3e7 via three-way integration, preserving Build 306 fixes",
+          "f831d9c6 recovery preview/copy and bridge ownership; 85f82f90 concurrent-test isolation/native own fixture; 396d460b and aa7de16a actualAX containment corrections/real persisted fixture"
+        ]
       }
     },
     {
@@ -5454,6 +5973,15 @@
         "evidence_level": "baseline_plus_verified_delta",
         "verified_delta": "完成 Swift6 App 编译及完整原生版本管理界面验收。",
         "acceptance_pending": false
+      },
+      "current_acceptance": {
+        "original_criterion_accepted": true,
+        "source_changes": [
+          "f75e7482",
+          "77af9d74",
+          "12d38af6",
+          "b281bb0c"
+        ]
       }
     },
     {
@@ -5537,6 +6065,15 @@
         "evidence_level": "baseline_plus_verified_delta",
         "verified_delta": "本轮没有该原始缺口的新运行通过声明；现有功能仍按基线保留。",
         "acceptance_pending": "两个副本分别改独立特征，能比较并显式合并，冲突不会静默选一方。"
+      },
+      "current_acceptance": {
+        "original_criterion_accepted": true,
+        "source_changes": [
+          "327a31fe",
+          "dfb9c63f",
+          "6daaa634",
+          "413bbdaf"
+        ]
       }
     },
     {
@@ -5601,6 +6138,13 @@
         "evidence_level": "baseline_plus_verified_delta",
         "verified_delta": "本轮没有该原始缺口的新运行通过声明；现有功能仍按基线保留。",
         "acceptance_pending": "备份含装配材质动画图纸工程，删除原Canvas后恢复，所有源资源与编辑操作正常。"
+      },
+      "current_acceptance": {
+        "original_criterion_accepted": true,
+        "source_changes": [
+          "ac7bb87f",
+          "426027be79c6216db21a64c7a5617c6a643d4a3b"
+        ]
       }
     },
     {
@@ -5691,6 +6235,17 @@
         "evidence_level": "baseline_plus_verified_delta",
         "verified_delta": "提交payload代次pin、成功receipt单次结果、晚提交单调身份与原生numeric cancel磁盘不变已验证。",
         "acceptance_pending": "导出/保存中切后台、关闭与重开，任务归属和数据恢复正确，旧回调不复活已删文档。"
+      },
+      "current_acceptance": {
+        "original_criterion_accepted": true,
+        "source_changes": [
+          "33abe3e7 via three-way integration, preserving Build 306 fixes",
+          "602ca6bd",
+          "39b3a177",
+          "d9ca023f",
+          "d3d1dced",
+          "a583b6b249c391c49880eb7386fb80420d48c1f5"
+        ]
       }
     },
     {
@@ -5757,6 +6312,10 @@
         "evidence_level": "baseline_plus_verified_delta",
         "verified_delta": "本轮没有该原始缺口的新运行通过声明；现有功能仍按基线保留。",
         "acceptance_pending": "选定成熟后端后，CAE材料/载荷/边界条件与CFD/多物理算例独立复算；CAM多轴车铣刀路及加工/碰撞仿真独立验证，保存重开、取消与资源预算通过；不要求机床专属G-code。"
+      },
+      "current_acceptance": {
+        "original_criterion_accepted": false,
+        "source_changes": []
       }
     },
     {
@@ -5892,6 +6451,12 @@
         "evidence_level": "baseline_plus_verified_delta",
         "verified_delta": "实际原始document及required blobs/record SHA/content/model摘要复验；storedIdentity纯只读失败返回nil，18例通过。",
         "acceptance_pending": "保持manifest不变，修改一个仍可解码mesh字节或移走brep后，storedIdentity必须拒绝或显式报告corrupt；只读打开保留证据并可恢复previous，不能把声明摘要当复验结果。"
+      },
+      "current_acceptance": {
+        "original_criterion_accepted": true,
+        "source_changes": [
+          "33abe3e7 via three-way integration, preserving Build 306 fixes"
+        ]
       }
     },
     {
@@ -5943,6 +6508,10 @@
         "notes": "Preserved 17ecc baseline support/gap; checked scoped current source and relevant deltas only. Not a repository-wide rerun.",
         "evidence_level": "baseline_plus_verified_delta",
         "acceptance_pending": "建立稳定顶点/边/面ID，创建→选面挤出→环切→撤销→保存重开后继续编辑。"
+      },
+      "current_acceptance": {
+        "original_criterion_accepted": false,
+        "source_changes": []
       }
     },
     {
@@ -5994,6 +6563,10 @@
         "notes": "Preserved 17ecc baseline support/gap; checked scoped current source and relevant deltas only. Not a repository-wide rerun. Coverage boundary: original106IDs are a fixed audit index, not an exhaustive claim over every Blender feature; visual procedural geometry nodes are a candidate X02 sub-scope, not covered by existing modifier acceptance.",
         "evidence_level": "baseline_plus_verified_delta",
         "acceptance_pending": "控制笼与最终网格分离，修改器开关/顺序及保存重开结果一致。"
+      },
+      "current_acceptance": {
+        "original_criterion_accepted": false,
+        "source_changes": []
       }
     },
     {
@@ -6049,6 +6622,10 @@
         "notes": "Preserved 17ecc baseline support/gap; checked scoped current source and relevant deltas only. Not a repository-wide rerun.",
         "evidence_level": "baseline_plus_verified_delta",
         "acceptance_pending": "用含坏边/非均匀密度扫描网格验证重建、法线、偏差、撤销及重开。"
+      },
+      "current_acceptance": {
+        "original_criterion_accepted": false,
+        "source_changes": []
       }
     },
     {
@@ -6100,6 +6677,10 @@
         "notes": "Preserved 17ecc baseline support/gap; checked scoped current source and relevant deltas only. Not a repository-wide rerun.",
         "evidence_level": "baseline_plus_verified_delta",
         "acceptance_pending": "笔压雕刻→平滑→遮罩→多级细分→撤销→离线保存重开。"
+      },
+      "current_acceptance": {
+        "original_criterion_accepted": false,
+        "source_changes": []
       }
     },
     {
@@ -6159,6 +6740,10 @@
         "notes": "Preserved 17ecc baseline support/gap; checked scoped current source and relevant deltas only. Not a repository-wide rerun.",
         "evidence_level": "baseline_plus_verified_delta",
         "acceptance_pending": "对开洞、自相交、反面、非流形分别检测、修复或明确拒绝，复测剩余缺陷。"
+      },
+      "current_acceptance": {
+        "original_criterion_accepted": false,
+        "source_changes": []
       }
     },
     {
@@ -6218,6 +6803,10 @@
         "notes": "Preserved 17ecc baseline support/gap; checked scoped current source and relevant deltas only. Not a repository-wide rerun.",
         "evidence_level": "baseline_plus_verified_delta",
         "acceptance_pending": "薄壁带孔贴图模型简化后报告距离/体积/边界偏差，并校验材质接缝。"
+      },
+      "current_acceptance": {
+        "original_criterion_accepted": false,
+        "source_changes": []
       }
     },
     {
@@ -6278,6 +6867,18 @@
         "notes": "Preserved 17ecc baseline support/gap; checked scoped current source and relevant deltas only. Not a repository-wide rerun.",
         "evidence_level": "baseline_plus_verified_delta",
         "acceptance_pending": "capabilities明确不可用/替代命令，模型通过文字草图→挤出产生可重开实体。"
+      },
+      "current_acceptance": {
+        "original_criterion_accepted": true,
+        "source_changes": [
+          "6ea0fb98",
+          "e1268807",
+          "e5714771",
+          "6ea0fb98",
+          "95997ce0",
+          "4820c0c5",
+          "e0afea1d4137ab14719f8d94e5248657aea93faf"
+        ]
       }
     },
     {
@@ -6338,6 +6939,13 @@
         "notes": "Preserved 17ecc baseline support/gap; checked scoped current source and relevant deltas only. Not a repository-wide rerun.",
         "evidence_level": "baseline_plus_verified_delta",
         "acceptance_pending": "近上限网格执行布尔/简化时测主线程停顿；用户取消/换任务后不提交迟到结果。"
+      },
+      "current_acceptance": {
+        "original_criterion_accepted": true,
+        "source_changes": [
+          "08d5f744f11f4cac59856a8d7fb359dabc63dfd1",
+          "5dea529e Canvas semantic image and noncollapsing container"
+        ]
       }
     },
     {
@@ -6418,6 +7026,15 @@
         "notes": "Preserved 17ecc baseline support/gap; checked scoped current source and relevant deltas only. Not a repository-wide rerun.",
         "evidence_level": "baseline_plus_verified_delta",
         "acceptance_pending": "复杂曲面标缝→展开→编辑岛→贴图检查→导出与重开保持UV。"
+      },
+      "current_acceptance": {
+        "original_criterion_accepted": true,
+        "source_changes": [
+          "327a31fe",
+          "dfb9c63f",
+          "6daaa634",
+          "413bbdaf"
+        ]
       }
     },
     {
@@ -6481,6 +7098,10 @@
         "notes": "Preserved 17ecc baseline support/gap; checked scoped current source and relevant deltas only. Not a repository-wide rerun.",
         "evidence_level": "baseline_plus_verified_delta",
         "acceptance_pending": "局部绘制→撤销→烘焙→重开与交换格式一致。"
+      },
+      "current_acceptance": {
+        "original_criterion_accepted": false,
+        "source_changes": []
       }
     },
     {
@@ -6532,6 +7153,10 @@
         "notes": "Preserved 17ecc baseline support/gap; checked scoped current source and relevant deltas only. Not a repository-wide rerun.",
         "evidence_level": "baseline_plus_verified_delta",
         "acceptance_pending": "新增每类材质参数均完成UI/LLM、预览、保存和目标格式保真或降级说明。"
+      },
+      "current_acceptance": {
+        "original_criterion_accepted": false,
+        "source_changes": []
       }
     },
     {
@@ -6592,6 +7217,10 @@
         "notes": "Preserved 17ecc baseline support/gap; checked scoped current source and relevant deltas only. Not a repository-wide rerun.",
         "evidence_level": "baseline_plus_verified_delta",
         "acceptance_pending": "多张大图导入应给明确转码选择、内存预算和回读外观，避免静默丢图。"
+      },
+      "current_acceptance": {
+        "original_criterion_accepted": false,
+        "source_changes": []
       }
     },
     {
@@ -6645,6 +7274,18 @@
         "notes": "Preserved 17ecc baseline support/gap; checked scoped current source and relevant deltas only. Not a repository-wide rerun.",
         "evidence_level": "baseline_plus_verified_delta",
         "acceptance_pending": "同一材质用相反方向色彩/法线图，预览/Present/GLB采样位置一致。"
+      },
+      "current_acceptance": {
+        "original_criterion_accepted": true,
+        "source_changes": [
+          "83166ca7",
+          "853c87c1",
+          "9a9ff505",
+          "a5b36897",
+          "ab8e2c1a",
+          "ad50aeef",
+          "d03d309a"
+        ]
       }
     },
     {
@@ -6696,6 +7337,15 @@
         "notes": "Preserved 17ecc baseline support/gap; checked scoped current source and relevant deltas only. Not a repository-wide rerun.",
         "evidence_level": "baseline_plus_verified_delta",
         "acceptance_pending": "同体两面设置不同投影/尺度，已有mesh UV和无UV两组均验证Edit/Present/GLB一致。"
+      },
+      "current_acceptance": {
+        "original_criterion_accepted": true,
+        "source_changes": [
+          "9a9ff505",
+          "a5b36897",
+          "167ea5c5 three actualrenderer source witnesses",
+          "990b182c exactlivecamera 28.55px<32px samplemargin correction"
+        ]
       }
     },
     {
@@ -6755,6 +7405,13 @@
         "notes": "Preserved 17ecc baseline support/gap; checked scoped current source and relevant deltas only. Not a repository-wide rerun.",
         "evidence_level": "baseline_plus_verified_delta",
         "acceptance_pending": "若引入链接材质，明确区分链接/独立副本，批量更新及撤销重开可预期。"
+      },
+      "current_acceptance": {
+        "original_criterion_accepted": true,
+        "source_changes": [
+          "9a9ff505",
+          "a5b36897"
+        ]
       }
     },
     {
@@ -6815,6 +7472,10 @@
         "notes": "Preserved 17ecc baseline support/gap; checked scoped current source and relevant deltas only. Not a repository-wide rerun.",
         "evidence_level": "baseline_plus_verified_delta",
         "acceptance_pending": "本地HDRI导入→旋转/强度→保存重开→截图/视频一致，资源丢失明确提示。"
+      },
+      "current_acceptance": {
+        "original_criterion_accepted": false,
+        "source_changes": []
       }
     },
     {
@@ -6870,6 +7531,10 @@
         "notes": "Preserved 17ecc baseline support/gap; checked scoped current source and relevant deltas only. Not a repository-wide rerun.",
         "evidence_level": "baseline_plus_verified_delta",
         "acceptance_pending": "创建多个灯、调整位置颜色强度并命名，UI/LLM、撤销、保存和动画产物一致。"
+      },
+      "current_acceptance": {
+        "original_criterion_accepted": false,
+        "source_changes": []
       }
     },
     {
@@ -6930,6 +7595,10 @@
         "notes": "research_only describes the remaining offline-rendering extension, not existing realtime rendering. No engine recommendations or web research in this audit.",
         "evidence_level": "baseline_plus_verified_delta",
         "acceptance_pending": "选定质量级别后，确定曝光色彩/采样、取消和输出保真；另行测设备资源。"
+      },
+      "current_acceptance": {
+        "original_criterion_accepted": false,
+        "source_changes": []
       }
     },
     {
@@ -6990,6 +7659,10 @@
         "notes": "Preserved 17ecc baseline support/gap; checked scoped current source and relevant deltas only. Not a repository-wide rerun.",
         "evidence_level": "baseline_plus_verified_delta",
         "acceptance_pending": "场景对象稳定ID/父子变换/资源引用及UI、AI命令共用同一保存权威。"
+      },
+      "current_acceptance": {
+        "original_criterion_accepted": false,
+        "source_changes": []
       }
     },
     {
@@ -7085,6 +7758,17 @@
         "notes": "Latest final qualification supersedes the prior in-progress observer failure section; original failures retained. Body/source/blank native-host touch and mode switching qualified; face/instance actual touch is still separate.",
         "evidence_level": "baseline_plus_verified_delta",
         "acceptance_pending": "Present点选体/面→材质预览→应用→AI读取同一选择，换模式仍保持可验证目标。"
+      },
+      "current_acceptance": {
+        "original_criterion_accepted": true,
+        "source_changes": [
+          "33abe3e7 via three-way integration, preserving Build 306 fixes",
+          "c1322d82 reviewedprivate X20 unpaintedface/nativeBody-Face control+DEBUG uninstancedfixture",
+          "c1322d82",
+          "cd6e846c",
+          "3bb7608d",
+          "989214d8"
+        ]
       }
     },
     {
@@ -7145,6 +7829,16 @@
         "notes": "Preserved 17ecc baseline support/gap; checked scoped current source and relevant deltas only. Not a repository-wide rerun.",
         "evidence_level": "baseline_plus_verified_delta",
         "acceptance_pending": "保存正交和透视镜头、切换/改名并重开，导出保持选定投影与画幅。"
+      },
+      "current_acceptance": {
+        "original_criterion_accepted": true,
+        "source_changes": [
+          "f6f2196c",
+          "2fbbd168",
+          "a5d4e0cb",
+          "c95488ba",
+          "e7ca2405a00b6ca68fa1ec592ce9890d66335118"
+        ]
       }
     },
     {
@@ -7205,6 +7899,14 @@
         "notes": "Preserved 17ecc baseline support/gap; checked scoped current source and relevant deltas only. Not a repository-wide rerun.",
         "evidence_level": "baseline_plus_verified_delta",
         "acceptance_pending": "剖切/测量注记模型分别截图和导出，明确可导出内容或提供对应开关。"
+      },
+      "current_acceptance": {
+        "original_criterion_accepted": true,
+        "source_changes": [
+          "a47107ff X22R3 scene/capture/export integration",
+          "1773881a f8aec98c ace6271d actual compile repairs and raw captures",
+          "160b1273 X22R4 mirror/stage ownership"
+        ]
       }
     },
     {
@@ -7274,6 +7976,12 @@
         "notes": "",
         "evidence_level": "baseline_plus_verified_delta",
         "acceptance_pending": "各新增轨道值持久化、求值不改基线、撤销重开及导出帧一致。"
+      },
+      "current_acceptance": {
+        "original_criterion_accepted": true,
+        "source_changes": [
+          "3aca81fa R1authoring +R2real curve schema/floor guard and GPU frame witness source"
+        ]
       }
     },
     {
@@ -7343,6 +8051,12 @@
         "notes": "UI倍速是transport不是速度曲线；发布树近重复键帧时间桶修正未进入当前树，见alignment_differences。",
         "evidence_level": "baseline_plus_verified_delta",
         "acceptance_pending": "曲线编辑→数值求值→时间线预览→导出逐帧位置与时间一致。"
+      },
+      "current_acceptance": {
+        "original_criterion_accepted": true,
+        "source_changes": [
+          "3aca81fa R1authoring +R2real curve schema/floor guard and GPU frame witness source"
+        ]
       }
     },
     {
@@ -7422,6 +8136,12 @@
         "notes": "不是整个关键帧服务不存在。发布树空invalid target诊断修正未对齐，现有原断言仍要求该行为。",
         "evidence_level": "baseline_plus_verified_delta",
         "acceptance_pending": "UI手动创建零件轨道、移动删除键帧、选插值，AI查询同一数据并可再编辑。"
+      },
+      "current_acceptance": {
+        "original_criterion_accepted": true,
+        "source_changes": [
+          "3aca81fa R1authoring +R2real curve schema/floor guard and GPU frame witness source"
+        ]
       }
     },
     {
@@ -7480,6 +8200,10 @@
         "notes": "",
         "evidence_level": "baseline_plus_verified_delta",
         "acceptance_pending": "引入骨骼/权重/形变文档模型后验证绑定编辑、求值和目标格式动画输出。"
+      },
+      "current_acceptance": {
+        "original_criterion_accepted": false,
+        "source_changes": []
       }
     },
     {
@@ -7538,6 +8262,10 @@
         "notes": "静态碰撞拾取不是PhysicsBody/仿真；未以关键词命中认定闭环。",
         "evidence_level": "baseline_plus_verified_delta",
         "acceptance_pending": "选择仿真范围后保存物理参数/缓存，确定性回放、取消和离线导出。"
+      },
+      "current_acceptance": {
+        "original_criterion_accepted": false,
+        "source_changes": []
       }
     },
     {
@@ -7601,6 +8329,17 @@
         "notes": "",
         "evidence_level": "baseline_plus_verified_delta",
         "acceptance_pending": "UI选竖屏/分辨率/帧率/codec→导出后媒体读回核对实际参数。"
+      },
+      "current_acceptance": {
+        "original_criterion_accepted": true,
+        "source_changes": [
+          "602ca6bd",
+          "39b3a177",
+          "d9ca023f",
+          "5e19cc4e",
+          "a5a30f4a398f61f845f28ee4d1630a1c14dd3130",
+          "a583b6b249c391c49880eb7386fb80420d48c1f5"
+        ]
       }
     },
     {
@@ -7669,6 +8408,12 @@
         "notes": "",
         "evidence_level": "baseline_plus_verified_delta",
         "acceptance_pending": "明确输出类型后读回轨道/Alpha/帧序列，保证时间同步和取消清理。"
+      },
+      "current_acceptance": {
+        "original_criterion_accepted": true,
+        "source_changes": [
+          "267be1c8 PNGZIP,df88e5c9 exact-optionspresentation,1e7ee892 typedwriterstatus"
+        ]
       }
     },
     {
@@ -7737,6 +8482,15 @@
         "notes": "",
         "evidence_level": "baseline_plus_verified_delta",
         "acceptance_pending": "明确前台限制并保留可恢复任务信息；前后台/文档编辑时结果和回执一致。"
+      },
+      "current_acceptance": {
+        "original_criterion_accepted": true,
+        "source_changes": [
+          "a583b6b249c391c49880eb7386fb80420d48c1f5",
+          "8e1f5653fd099179f973a83371d2a8ec5ea0fd75",
+          "55c7ff7a",
+          "20c84225"
+        ]
       }
     },
     {
@@ -7815,6 +8569,15 @@
         "notes": "源码已证风险路径，未复现导出丢件，不写为已发生数据错误。",
         "evidence_level": "baseline_plus_verified_delta",
         "acceptance_pending": "超限/无效mesh/缺纹理场景导出必须阻止或明确带完整性警告，并独立逐体核对。"
+      },
+      "current_acceptance": {
+        "original_criterion_accepted": true,
+        "source_changes": [
+          "c7b4335c",
+          "131bc88f",
+          "1bf77550",
+          "f75d9d61"
+        ]
       }
     },
     {
@@ -7926,6 +8689,14 @@
         "status": "accepted",
         "observed": "Same document command, actual rendering, public tool save/reopen and full native inspector lifecycle passed.",
         "original_baseline_preserved": true
+      },
+      "current_acceptance": {
+        "original_criterion_accepted": true,
+        "source_changes": [
+          "f74416bc0ff48ad22e461c6e55eaaeb448335174",
+          "7bea0821568d2f9ac75754ff3cf1a0b427e5c6cc",
+          "d8b975b17316fed79fd3486be8ef6aac313f9c96"
+        ]
       }
     },
     {
@@ -7998,6 +8769,13 @@
         "notes": "Version2 is the qualified33abe HEAD; version3 is current source-ready H1 overlay, NOT built/tested. Do not count H1tool/schema changes into prior240passes.",
         "evidence_level": "baseline_plus_verified_delta",
         "acceptance_pending": "从唯一catalog派生摘要，逐项比对真实executor和schema，不列必拒动作。"
+      },
+      "current_acceptance": {
+        "original_criterion_accepted": true,
+        "source_changes": [
+          "FloeCAD3DBridge.globalCapabilitiesObject derives service arrays and actual writer version",
+          "CadServiceOperationCatalog replaces legacy arrays, excludes refusing mesh.text, retains complete default pages"
+        ]
       }
     },
     {
@@ -8058,6 +8836,13 @@
         "notes": "Preserved 17ecc baseline support/gap; checked scoped current source and relevant deltas only. Not a repository-wide rerun.",
         "evidence_level": "baseline_plus_verified_delta",
         "acceptance_pending": "分别用工具型MLX与Foundation实测功能可达，UI明确模型能力，不伪造执行或视觉能力。"
+      },
+      "current_acceptance": {
+        "original_criterion_accepted": false,
+        "source_changes": [
+          "e39cccab complete canonical CAD schema + page-readable hashed help",
+          "97d31ecb real CFBoolean discrimination and nontrapping exact integer help selectors"
+        ]
       }
     },
     {
@@ -8122,6 +8907,14 @@
         "notes": "Preserved 17ecc baseline support/gap; checked scoped current source and relevant deltas only. Not a repository-wide rerun.",
         "evidence_level": "baseline_plus_verified_delta",
         "acceptance_pending": "真实模型完成创建→指定已有孔改径→看图修正→撤销→重开继续，长query分页和非视觉降级分别验证。"
+      },
+      "current_acceptance": {
+        "original_criterion_accepted": true,
+        "source_changes": [
+          "70d6bb6f canonical typedrecord serialization preserves exact undoidentity",
+          "a587571a exactsynthetic package attachments before assertions",
+          "4b01a8f3 exact successful visualreceipt association, original strict assertions retained"
+        ]
       }
     },
     {
@@ -8186,6 +8979,10 @@
         "notes": "Preserved 17ecc baseline support/gap; checked scoped current source and relevant deltas only. Not a repository-wide rerun.",
         "evidence_level": "baseline_plus_verified_delta",
         "acceptance_pending": "旧节点迁移保留ID与连接、失败不破坏原件、重复编辑同一包；新节点AI和手动打开同一来源。"
+      },
+      "current_acceptance": {
+        "original_criterion_accepted": true,
+        "source_changes": []
       }
     },
     {
@@ -8254,6 +9051,10 @@
         "notes": "Preserved 17ecc baseline support/gap; checked scoped current source and relevant deltas only. Not a repository-wide rerun.",
         "evidence_level": "baseline_plus_verified_delta",
         "acceptance_pending": "同一代表模型在iPad Pencil/触控、iPhone竖屏、分屏大字完成选择→修改→撤销→保存，保留截图和失败。"
+      },
+      "current_acceptance": {
+        "original_criterion_accepted": false,
+        "source_changes": []
       }
     }
   ],
@@ -8642,7 +9443,7 @@
     "license_delta": "GLTFKit2 ownMIT/cgltfMIT do notclear precompiled libktx4.2.1 etcdec exception; prefer existing O3DV+same-r176 localGLTFLoader qualification"
   },
   "current_integration_verification": {
-    "source": "582810ed58f8d3d63e23967909b74898af502c60",
+    "source": "de5ce8e9ac0870e68263ab0d441f1634fd0c7b68",
     "all_106_retained": true,
     "all_106_accepted": false,
     "release_ready": false,
@@ -8675,8 +9476,8 @@
       "actual_OBJ": "真实OBJ/MTL/PNG显示、缺失贴图及仅资源变化后的旧帧拒绝通过。",
       "scope": "本地实际渲染与资源来源；不冒充原生可编辑BRep，也不代替真实LLM视觉连续编辑。"
     },
-    "accepted_original_criteria": 59,
-    "pending_original_criteria": 47,
+    "accepted_original_criteria": 71,
+    "pending_original_criteria": 35,
     "device_acceptance": "iPad通过的功能复用验收，iPhone仅确认界面；不使用用户手机。",
     "latest_native_batch": {
       "source": "582810ed58f8d3d63e23967909b74898af502c60",
@@ -8902,6 +9703,41 @@
       "original_M14_accepted": true,
       "source": "582810ed58f8d3d63e23967909b74898af502c60",
       "evidence": "docs/qualification/cad-extrusion-ends-20261102/README.md"
+    },
+    "current_item_status_authority": "Each item current_acceptance records the latest decision; baseline observations and dated qualification entries remain historical.",
+    "patterns_and_office_layout": {
+      "source": "de5ce8e9ac0870e68263ab0d441f1634fd0c7b68",
+      "evidence": "docs/qualification/cad-patterns-office-layout-20261103/README.md",
+      "actual_App_build_passed": true,
+      "actual_App_build_seconds": 115.344,
+      "M25_native": {
+        "passed": 28,
+        "failed": 0,
+        "skipped": 0
+      },
+      "M25_additional_focused_native": {
+        "passed": 2,
+        "failed": 0,
+        "skipped": 0
+      },
+      "M25_UI_recovery": {
+        "passed": 2,
+        "failed": 0,
+        "skipped": 0
+      },
+      "original_mixed_run_retained": {
+        "passed": 2,
+        "failed": 2,
+        "skipped": 0
+      },
+      "Office_layout": {
+        "source": "627eb7bb555ca24a6fce0fc6cf4ef9bb2fc63653",
+        "passed": 4,
+        "failed": 0,
+        "skipped": 0
+      },
+      "canonical_simulator_shutdown": true,
+      "physical_device": false
     }
   }
 }
