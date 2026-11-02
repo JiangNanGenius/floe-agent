@@ -1,30 +1,3 @@
-// FloeAndroid FloeWorkspace — narrow Android mirror of the ORIGINAL
-// FloeAgent/Sources/FloeWorkspace/Tools/TextEditTools.swift at immutable
-// public source 3fd597b537590b4e6c11c0a25f413361a66b42b6 (blob
-// d9e3ec69aac7e7bf393e63e2fc6ba846c6919253, also byte-equal at snapshot
-// commit 12e36ba7b41d24634526ea55568fe88e4de26745). G04-R1 files-domain
-// package (job-b6c74b42a49d4f45).
-//
-// Every retained statement is byte-equal to the original. Deltas:
-//   1. `WorkspaceTextEdit.apply(path:expectedSHA256:environment:context:
-//      transform:)` is OMITTED here. It is the agent TOOL-layer read/modify/
-//      write entry and depends on `WorkspaceToolEnvironment`,
-//      `WorkspaceToolSupport`, `ToolContext`-scoped authorization and the
-//      `NetworkWorkspaceMountRegistry` route — the workspace tool/network
-//      adapter closure that the G04-R1 files-domain package intentionally
-//      does NOT own (pending contracts recorded in
-//      Local/Private/android-g04-20261024/r1/files-domain/SOURCE_READY.json).
-//      Main's graph integration restores it by re-linking this file once the
-//      tool/network closure lands; `decode`/`check` are the exact bodies it
-//      calls after any network branch, and their behaviour here is identical.
-//   2. `decode` and `check` are kept verbatim because the ORIGINAL
-//      `WorkspaceFileService.readFileForEditing` and `applyPatch` call
-//      `WorkspaceTextEdit.decode` and the shared read/modify/write CAS path
-//      calls `check` — the text-edit authority would not compile without them.
-//
-// No semantics were added, changed or relaxed: this mirror only moves the
-// pending-boundary line from "file" to "function".
-
 import Foundation
 import FloeCore
 import FloeTools
@@ -32,6 +5,52 @@ import FloeTools
 /// Shared read/modify/write path: never applies a transformation to a partial
 /// read, and binds the write to the exact bytes used by the transformation.
 enum WorkspaceTextEdit {
+    static func apply(
+        path: String, expectedSHA256: String?, environment: WorkspaceToolEnvironment,
+        context: ToolContext, transform: (String) throws -> String
+    ) async throws -> ToolExecutionOutput {
+        try context.cancellation.throwIfCancelled()
+        try WorkspaceToolSupport.rejectHostScope(context.scope)
+        try context.authorizeWorkspacePath(path)
+        let service = try environment.makeService(context: context)
+        if let route = try await environment.networkRoute(path: path, context: context) {
+            let metadata = try await route.adapter.metadata(path: route.relativePath)
+            guard !metadata.isDirectory else { throw WorkspaceToolError.isDirectory(path) }
+            guard metadata.byteCount <= environment.maxWriteBytes else {
+                throw WorkspaceToolError.tooLarge(limit: environment.maxWriteBytes)
+            }
+            let bytes = try await route.adapter.read(path: route.relativePath, offset: 0, limit: environment.maxWriteBytes + 1)
+            guard bytes.count == metadata.byteCount else {
+                throw WorkspaceToolError.invalidArguments("Incomplete read; refresh the file before editing")
+            }
+            let original = try decode(bytes)
+            let digest = WorkspaceFileService.sha256Hex(of: bytes)
+            try check(expectedSHA256, actual: digest)
+            let updated = try transform(original)
+            let data = Data(updated.utf8)
+            guard data.count <= environment.maxWriteBytes else {
+                throw WorkspaceToolError.tooLarge(limit: environment.maxWriteBytes)
+            }
+            guard let entityTag = metadata.entityTag else {
+                throw WorkspaceToolError.invalidArguments("Remote server has no revision token; exact edits require conditional writes")
+            }
+            _ = try await route.adapter.write(path: route.relativePath, data: data, expectedEntityTag: entityTag)
+            return WorkspaceToolSupport.output("edited=\(path) bytes=\(data.count) sha256=\(WorkspaceFileService.sha256Hex(of: data)) network=true")
+        }
+        let original = try service.readFileForEditing(path, cancellation: context.cancellation).text
+        let digest = WorkspaceFileService.sha256Hex(of: Data(original.utf8))
+        try check(expectedSHA256, actual: digest)
+        let updated = try transform(original)
+        let outcome = try service.writeFile(path, content: updated, expectedSHA256: digest, cancellation: context.cancellation)
+        let artifact = try WorkspaceToolSupport.changeArtifact(
+            diff: service.diff(original: original, modified: updated, label: path), runID: context.runID
+        )
+        return WorkspaceToolSupport.output(
+            "edited=\(path) bytes=\(outcome.bytesWritten) sha256=\(outcome.sha256) mtime=\(outcome.mtime)",
+            artifacts: artifact.map { [$0] } ?? []
+        )
+    }
+
     static func decode(_ data: Data) throws -> String {
         guard !data.contains(0), let text = String(data: data, encoding: .utf8) else {
             throw WorkspaceToolError.invalidArguments("Expected a UTF-8 text file; use a dedicated document or media tool for binary files")

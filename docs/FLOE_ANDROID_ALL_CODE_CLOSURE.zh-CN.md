@@ -244,3 +244,8 @@ The existing isolated PDF renderer now supplies source-bound page text to Notes.
 ### C01 terminal and managed-service source checkpoint
 
 Model interactive sessions now share the existing two interactive slots with explicit ownership and actual-release accounting. Long-running HTTP services use separate bounded service leases, the existing job lifecycle and owned-listener readiness before publishing a preview origin. Linux lifecycle tools use the real Android host. Main integrated eight central patches and corrected Android guidance to keep PDF transformations/OCR on the approved generic Linux route. This 33-file snapshot is source-only: no compilation, executed tests or device acceptance. MCP separated stdio, trusted environment/context wiring and guest workspace exchange remain explicit required code, not unsupported-platform exemptions.
+
+
+### Model workspace-file source checkpoint
+
+The original 13 workspace file tools now have real registry handlers over the existing task-root path guard and file service. The source preserves task path ceilings, temporary-chat refusal, binary-text refusal, bounded reads/search and revision-based atomic mutations. Nine feature/test-source files are selected here. Notes-resource launch/staging ownership and actual guest exchange remain distinct implementation work; neither API presence nor this source publication establishes a working PDF/OCR task pipeline. No compile, executed tests or device acceptance is claimed.

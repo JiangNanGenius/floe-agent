@@ -3327,6 +3327,20 @@
       "compiled": false,
       "testsRun": false,
       "deviceVerified": false
+    },
+    "c08-workspace-file-tools": {
+      "state": "source-integrated-unqualified",
+      "files": 9,
+      "toolCount": 13,
+      "coverage": "Original workspace file tools restored via original file service, path guard and actual runner registration; temporary/host/binary refusals and bounded CAS/atomic edits preserved",
+      "stillPending": [
+        "Notes resource user launch/owner lifecycle source package",
+        "Actual guest workspace exchange",
+        "Main unified compilation and behavioural qualification"
+      ],
+      "compiled": false,
+      "testsRun": false,
+      "deviceVerified": false
     }
   }
 }

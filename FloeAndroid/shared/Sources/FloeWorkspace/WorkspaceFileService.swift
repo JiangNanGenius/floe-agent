@@ -287,6 +287,16 @@ public struct WorkspaceFileService: Sendable {
         try guardResolver.assertReadableSize(url)
 
         let data = try Data(floeContentsOf: url)
+        // ANDROID C08 delta: an agent text read must never present invented
+        // text for binary bytes. A NUL-bearing (or otherwise non-text) file
+        // is a typed refusal; document/media/archive tools remain the
+        // supported surfaces for those bytes. Text reads keep the original
+        // 64 KiB window, truncation and total-line reporting unchanged.
+        guard Self.looksLikeText(data),
+              String(data: data, encoding: .utf8) != nil else {
+            throw WorkspaceToolError.unsupportedContent(
+                "binary file is not readable as text; use a document, media or archive tool")
+        }
         let clampedOffset = max(0, min(byteOffset, data.count))
         let end = min(clampedOffset + Self.readChunkBytes, data.count)
         let slice = data[clampedOffset..<end]
@@ -434,8 +444,8 @@ public struct WorkspaceFileService: Sendable {
             guard let size = (try? fileManager.attributesOfItem(atPath: file.path)[.size] as? NSNumber)?
                 .intValue, size <= guardResolver.maxReadBytes else { continue }
             guard let data = try? Data(contentsOf: file) else { continue }
-            guard Self.looksLikeText(data) else { continue }
-            let text = String(decoding: data, as: UTF8.self)
+            guard Self.looksLikeText(data),
+                  let text = String(data: data, encoding: .utf8) else { continue }
             let relative = Self.relativePath(of: file.path, under: basePath)
             var lineNumber = 0
             for line in text.components(separatedBy: .newlines) {
