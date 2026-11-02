@@ -121,10 +121,16 @@ nonisolated struct AssociativeDependencyGraph: Sendable {
          featureDependencies: [FeatureID: Set<FeatureID>] = [:]) {
         for node in graph.nodes {
             featureIDs.insert(node.id)
+            if case let .thread(_, spec) = node.kind {
+                versionsByReference[.feature(node.id)] = spec.sourceVersion
+            }
             edges[.feature(node.id)] = Set(node.referencedSketchIDs.map { .sketch($0) })
                 .union(node.referencedConstructionPlaneIDs.map { .plane($0) })
                 .union(node.referencedConstructionAxisIDs.map { .axis($0) })
                 .union((featureDependencies[node.id] ?? []).map { .feature($0) })
+            if case let .thread(_, spec) = node.kind {
+                edges[.feature(node.id), default: []].insert(.feature(spec.sourceVersion.writer))
+            }
         }
         for sketch in sketches {
             sketchIDs.insert(sketch.id)
@@ -424,6 +430,9 @@ nonisolated struct AssociativeGeometryResolver: Sendable {
             for reference in sketch.externalReferences ?? [] {
                 requested.insert(reference.sourceVersion)
             }
+        }
+        for node in graph.nodes {
+            if case let .thread(_, spec) = node.kind { requested.insert(spec.sourceVersion) }
         }
         self.requestedVersions = requested
     }
@@ -922,6 +931,20 @@ nonisolated struct AssociativeGeometryResolver: Sendable {
         where datumPoints[id]?.definition != nil {
             _ = try? point(id)
         }
+    }
+
+    mutating func threadCylinder(_ spec: ThreadSpec) throws -> OCCTKernel.ThreadCylinder {
+        let snapshot = try version(spec.sourceVersion)
+        guard let name = spec.source.elementName, name.isStableFaceIdentity,
+              let brep = snapshot.body.brep else {
+            throw CADThreadError.invalid("The original named cylinder is unavailable.")
+        }
+        let matches = snapshot.kernelNames.filter { $0.value == name }
+        guard matches.count == 1, let index = matches.first?.key,
+              let cylinder = OCCTKernel.threadCylinder(brep, faceIndex: index) else {
+            throw CADThreadError.invalid("The source is no longer one complete cylindrical face.")
+        }
+        return try cylinder.world(snapshot.body.transform)
     }
 
     private func version(_ ref: GeometryVersionRef) throws -> GeometryVersionSnapshot {

@@ -50,7 +50,12 @@ final class CADReadOnlyServiceTests: XCTestCase {
             refused(material.handle(action: action, args: [:]))
         }
         let parameters = CADParameterService(document: document)
-        for action in CADParameterService.actions where action != "list" { refused(parameters.handle(action: action, args: [:])) }
+        for action in CADParameterService.actions where action != "list" && !CADThreadService.reads.contains(action) {
+            refused(parameters.handle(action: action, args: [:]))
+        }
+        for action in CADThreadService.reads {
+            XCTAssertEqual(parameters.handle(action: action, args: [:])["ok"] as? Bool, true)
+        }
         let assembly = CADAssemblyService(document: document)
         for action in CADServiceOperations.mutatingAssemblyActions {
             refused(assembly.handle(action: action, args: [:]))

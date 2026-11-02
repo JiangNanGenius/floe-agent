@@ -438,6 +438,52 @@ nonisolated enum OCCTKernel {
             spine: spineData, helix: helixData, history: history).map(BRepHandle.init)
     }
 
+    nonisolated struct ThreadCylinder: Sendable {
+        var radius: Double
+        var origin: SIMD3<Double>
+        var axis: SIMD3<Double>
+        var radial: SIMD3<Double>
+        var lower: Double
+        var upper: Double
+        var isInternal: Bool
+        func world(_ transform: Transform3D) throws -> ThreadCylinder {
+            let q = transform.rotation.vector
+            guard transform.translation.x.isFinite, transform.translation.y.isFinite,
+                  transform.translation.z.isFinite, transform.scale.isFinite, transform.scale > 1e-9,
+                  q.x.isFinite, q.y.isFinite, q.z.isFinite, q.w.isFinite,
+                  abs(simd_length(q) - 1) < 1e-6 else {
+                throw CADThreadError.invalid("The thread source needs a finite positive similarity transform.")
+            }
+            let o = transform.applying(to: origin)
+            let along = transform.applying(to: origin + axis) - o
+            let across = transform.applying(to: origin + radial) - o
+            let scale = simd_length(along)
+            guard scale.isFinite, scale > 1e-9 else { throw CADThreadError.invalid("Invalid thread placement.") }
+            return ThreadCylinder(radius: radius * scale, origin: o, axis: along / scale,
+                radial: simd_normalize(across), lower: lower * scale, upper: upper * scale,
+                isInternal: isInternal)
+        }
+    }
+    static func threadCylinder(_ handle: BRepHandle, faceIndex: Int) -> ThreadCylinder? {
+        guard let data = OCCTBridge.threadCylinderExtent(of: handle.shape, faceIndex: faceIndex) else { return nil }
+        let v = data.withUnsafeBytes { Array($0.bindMemory(to: Double.self)) }
+        guard v.count == 13, v.allSatisfy(\.isFinite), v[0] > 0, v[11] > v[10] else { return nil }
+        return ThreadCylinder(radius: v[0], origin: SIMD3(v[1], v[2], v[3]),
+            axis: SIMD3(v[4], v[5], v[6]), radial: SIMD3(v[7], v[8], v[9]),
+            lower: v[10], upper: v[11], isInternal: v[12] == 1)
+    }
+    static func threadSweepSolid(outer: Profile, plane: SketchPlane, helix h: HelixSpec) -> BRepHandle? {
+        guard h.samplingError() == nil else { return nil }
+        let p = packedProfile(outer, holes: [])
+        let n = simd_normalize(h.axisDirection)
+        let x = simd_normalize(h.referenceDirection - simd_dot(h.referenceDirection, n) * n)
+        let v: [Double] = [h.axisPoint.x, h.axisPoint.y, h.axisPoint.z, n.x, n.y, n.z,
+            x.x, x.y, x.z, h.radius, h.pitch, h.turns, h.startAngle]
+        let data = v.withUnsafeBytes { Data($0) }
+        return OCCTBridge.threadSweep(outerLoop: p.loop, segments: p.segments,
+            basis: planeBasis(plane), helix: data).map(BRepHandle.init)
+    }
+
     /// Turn resolved profile holes into extrude boundaries, keeping the ones
     /// that are circles analytic. One place, because both the new-body and the
     /// boolean-into-target paths need it and they must not disagree.

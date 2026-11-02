@@ -657,6 +657,20 @@ static NSData *OS3DBoxFaceIndices(
     return [NSData dataWithBytes:packed length:sizeof(packed)];
 }
 
+@interface OCCTBridge (FloeThreadInternal)
++ (nullable OCCTShape *)sweptShapeWithOuterLoop:(NSData *)outerLoop
+                                     outerConic:(nullable NSData *)outerConic
+                                          holes:(NSArray<NSData *> *)holes
+                                     holeConics:(nullable NSData *)holeConics
+                                  outerSegments:(nullable NSData *)outerSegments
+                                   holeSegments:(nullable NSArray<NSData *> *)holeSegments
+                                          basis:(OCCTPlaneBasis *)basis
+                                          spine:(NSData *)spine
+                                          helix:(nullable NSData *)helix
+                                        history:(nullable OCCTShapeHistory *)history
+                                   axialSection:(BOOL)axialSection ;
+@end
+
 @implementation OCCTBridge
 
 + (NSString *)occtVersion {
@@ -1694,10 +1708,40 @@ static void OS3DFillLoftHistory(OCCTShapeHistory *history,
                                           spine:(NSData *)spine
                                           helix:(nullable NSData *)helix
                                         history:(nullable OCCTShapeHistory *)history {
+    return [self sweptShapeWithOuterLoop:outerLoop outerConic:outerConic
+        holes:holes holeConics:holeConics outerSegments:outerSegments holeSegments:holeSegments
+        basis:basis spine:spine helix:helix history:history axialSection:NO];
+}
+
++ (nullable OCCTShape *)threadSweepWithOuterLoop:(NSData *)outerLoop
+                                       segments:(nullable NSData *)segments
+                                          basis:(OCCTPlaneBasis *)basis
+                                          helix:(NSData *)helix {
+    // Exact helix supplies the actual start point/tangent; these two finite
+    // points only satisfy the shared legacy transport's bounded spine count.
+    const double seed[6] = {0, 0, 0, 0, 1, 0};
+    NSData *spine = [NSData dataWithBytes:seed length:sizeof(seed)];
+    return [self sweptShapeWithOuterLoop:outerLoop outerConic:nil holes:@[] holeConics:nil
+        outerSegments:segments holeSegments:nil basis:basis spine:spine helix:helix
+        history:nil axialSection:YES];
+}
+
++ (nullable OCCTShape *)sweptShapeWithOuterLoop:(NSData *)outerLoop
+                                     outerConic:(nullable NSData *)outerConic
+                                          holes:(NSArray<NSData *> *)holes
+                                     holeConics:(nullable NSData *)holeConics
+                                  outerSegments:(nullable NSData *)outerSegments
+                                   holeSegments:(nullable NSArray<NSData *> *)holeSegments
+                                          basis:(OCCTPlaneBasis *)basis
+                                          spine:(NSData *)spine
+                                          helix:(nullable NSData *)helix
+                                        history:(nullable OCCTShapeHistory *)history
+                                   axialSection:(BOOL)axialSection {
     const NSUInteger points = spine.length / (3 * sizeof(double));
     if (points < 2) return nil;
     const double *s = (const double *)spine.bytes;
     const bool exactHelix = (helix != nil && helix.length >= 13 * sizeof(double));
+    if (axialSection && !exactHelix) return nil;
     try {
         const TopoDS_Face face = OS3DProfileFace(outerLoop, outerConic, holes,
                                                  holeConics, outerSegments,
@@ -1737,7 +1781,10 @@ static void OS3DFillLoftHistory(OCCTShapeHistory *history,
         // the profile is already normal (every exec sweep is), nothing moves.
         TopoDS_Face sectionFace = TopoDS::Face(worldFace);
         TopTools_DataMapOfShapeShape placedToSection;
-        {
+        // M13 basic profiles are defined in the AXIAL plane. Rotating this
+        // section normal to the spine would change their specified flank
+        // angle and axial crest/root widths. Ordinary sweeps keep correction.
+        if (!axialSection) {
             const gp_Pnt start = startPoint;
             const gp_Vec along = startTangent;
             Handle(Geom_Plane) plane = Handle(Geom_Plane)::DownCast(BRep_Tool::Surface(sectionFace));
@@ -1762,6 +1809,7 @@ static void OS3DFillLoftHistory(OCCTShapeHistory *history,
         const TopoDS_Wire outerWire = BRepTools::OuterWire(sectionFace);
         if (outerWire.IsNull()) return nil;
         BRepOffsetAPI_MakePipeShell mk(spineWire);
+        if (axialSection) mk.SetTolerance(1e-7, 1e-7, 1e-6);
         TopoDS_Shape solid = OS3DPipeShellSolid(outerWire, mk, exactHelix);
         if (solid.IsNull()) return nil;
         const TopoDS_Shape firstCap = OS3DCapFace(solid, mk.FirstShape());
@@ -3261,6 +3309,36 @@ static double OS3DSpanExactArea(const TopoDS_Face &face) {
     } catch (...) {
         return nil;
     }
+}
+
++ (nullable NSData *)threadCylinderExtentOfShape:(OCCTShape *)shape faceIndex:(NSInteger)faceIndex {
+    if (shape == nil || shape->_shape.IsNull() || faceIndex < 1) return nil;
+    try {
+        TopTools_IndexedMapOfShape faces;
+        TopExp::MapShapes(shape->_shape, TopAbs_FACE, faces);
+        if (faceIndex > faces.Extent()) return nil;
+        TopoDS_Face face = TopoDS::Face(faces((Standard_Integer)faceIndex));
+        BRepAdaptor_Surface surface(face, Standard_True);
+        if (surface.GetType() != GeomAbs_Cylinder) return nil;
+        Standard_Real u0, u1, v0, v1;
+        BRepTools::UVBounds(face, u0, u1, v0, v1);
+        // This bounded product supports complete, finite cylindrical stock.
+        // Partial cylinders and trimmed non-rectangular bores are refused.
+        if (!std::isfinite(u0) || !std::isfinite(u1) || !std::isfinite(v0) || !std::isfinite(v1)
+            || std::fabs((u1-u0) - 2*M_PI) > 1e-7 || !(v1 > v0)) return nil;
+        const gp_Cylinder c = surface.Cylinder();
+        GProp_GProps areaProps;
+        BRepGProp::SurfaceProperties(face, areaProps);
+        const double expectedArea = 2*M_PI*c.Radius()*(v1-v0);
+        if (!(expectedArea > 0) || std::fabs(std::fabs(areaProps.Mass())-expectedArea)
+            > std::max(1e-7, expectedArea*1e-8)) return nil;
+        const gp_Pnt o = c.Location();
+        const gp_Dir n = c.Axis().Direction(), x = c.Position().XDirection();
+        const double values[13] = {c.Radius(), o.X(), o.Y(), o.Z(), n.X(), n.Y(), n.Z(),
+            x.X(), x.Y(), x.Z(), v0, v1, face.Orientation() == TopAbs_REVERSED ? 1.0 : 0.0};
+        for (double value : values) if (!std::isfinite(value)) return nil;
+        return [NSData dataWithBytes:values length:sizeof(values)];
+    } catch (...) { return nil; }
 }
 
 + (nullable NSData *)edgeMidpointsOfShape:(OCCTShape *)shape {

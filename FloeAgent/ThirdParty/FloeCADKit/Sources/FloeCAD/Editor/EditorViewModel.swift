@@ -5172,6 +5172,7 @@ final class EditorViewModel {
         case .pushPull, .moveFace, .scaleFace, .rotateFace: return "Edit Face"
         case .extrude, .draftExtrude, .revolve, .sweep: return "Edit Profile"
         case .hole: return FloeCADStrings.text("cad.hole.edit", "Edit Hole")
+        case .thread: return FloeCADStrings.text("cad.thread.edit", "Edit Thread")
         default: return nil
         }
     }
@@ -5189,6 +5190,9 @@ final class EditorViewModel {
         case .pushPull, .moveFace, .scaleFace, .rotateFace: return beginFeatureFaceEdit(id)
         case .extrude, .draftExtrude, .revolve, .sweep: return beginFeatureProfileEdit(id)
         case .hole: return beginHoleEdit(id)
+        case .thread:
+            beginThreadEditor(id)
+            return true
         default: return false
         }
     }
@@ -15135,6 +15139,14 @@ final class EditorViewModel {
         }
     }
 
+    var showThreadEditor = false
+    var threadEditingFeatureID: FeatureID?
+    func beginThreadEditor(_ id: FeatureID? = nil) {
+        cancelTransientPicks()
+        threadEditingFeatureID = id
+        showThreadEditor = true
+    }
+
     // MARK: - Project (plan §B8 → M05: linked external projection)
 
     /// Project-tool tap. Tapping a straight named crease of an analytic body
@@ -20376,6 +20388,11 @@ final class EditorViewModel {
                 type = FloeCADStrings.text("cad.hole.countersink", "Countersink")
             }
             return f("cad.feature.hole", "Hole · %@", type)
+        case let .thread(_, spec):
+            let mode = spec.representation == .geometry
+                ? FloeCADStrings.text("cad.thread.geometry", "Geometry")
+                : FloeCADStrings.text("cad.thread.schematic", "Schematic")
+            return spec.designation + " · " + mode
         case .sweep: return FloeCADStrings.text("cad.cmd.model.sweep", "Sweep")
         case .loft: return FloeCADStrings.text("cad.cmd.model.loft", "Loft")
         case .transform: return FloeCADStrings.text("cad.cmd.model.move", "Move / Rotate")

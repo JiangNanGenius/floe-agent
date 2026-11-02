@@ -465,7 +465,7 @@ public final class CADDrawingService {
             return boolean.resolvedTargets.contains { $0.bodyID == target }
         case let .boolean(_, body, tools):
             return body.bodyID == target || tools.contains { $0.bodyID == target }
-        case let .hole(body, _, _, _):
+        case let .hole(body, _, _, _), let .thread(body, _):
             return body.bodyID == target
         default:
             return false

@@ -174,6 +174,9 @@ struct ToolPaletteView: View {
                              viewModel.beginCreate(.hole)
                          }
                      }),
+            ToolItem(id: "Thread", label: FloeCADStrings.text("cad.thread.title", "Metric thread"),
+                     icon: "bolt.horizontal", enabled: !viewModel.session.document.bodies.isEmpty,
+                     accessibilityID: "CADThreadButton", run: { viewModel.beginThreadEditor() }),
             toggleItem("cad.ui.tool.chamfer", "Chamfer", "square.on.circle", "ChamferButton",
                        active: isMode { if case .pickingBlendEdges(.chamfer) = $0 { return true }; return false },
                        enabled: !viewModel.session.document.bodies.isEmpty, tint: .blue,

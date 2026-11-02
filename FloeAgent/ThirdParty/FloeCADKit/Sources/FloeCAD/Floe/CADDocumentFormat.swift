@@ -44,6 +44,7 @@ nonisolated enum CADDocumentFormat {
     static let supportedVersion = 7
     /// Root-coordinated unreleased floor; only actual normal-offset links raise it.
     static let sketchCurveEditVersion = 7
+    static let standardThreadVersion = 7
     /// Shared unreleased format-7 floor. A pre-contract writer ignores an
     /// edge's qualifier and would reinterpret it as an ordinal. Raise only
     /// packages that actually contain a qualified edge reference.
@@ -147,6 +148,9 @@ nonisolated enum CADDocumentFormat {
 
     static func requiredFormat(document: DesignDocument) -> Int {
         var required = legacyVersion
+        if document.features.nodes.contains(where: { if case .thread = $0.kind { return true }; return false }) {
+            required = max(required, standardThreadVersion)
+        }
         if document.bodies.contains(where: { $0.uvData != nil }) { required = max(required, uvAuthoringVersion) }
         if document.features.nodes.contains(where: {
             switch $0.kind {
@@ -252,6 +256,9 @@ nonisolated enum CADDocumentFormat {
         for node in document.features.nodes {
             let refs: [FaceRef]
             switch node.kind {
+            case let .thread(_, spec):
+                if let name = spec.source.elementName { names.append(name) }
+
             case let .pushPull(face, _, _), let .moveFace(face, _), let .scaleFace(face, _),
                  let .rotateFace(face, _, _), let .draftFace(face, _, _, _), let .replaceFace(face, _, _, _):
                 refs = [face]
@@ -679,6 +686,11 @@ nonisolated enum CADDocumentFormat {
         // before any commit. A non-encodable hole must FAIL the transaction,
         // never be silently dropped by a try?-encode row update.
         for node in document.features.nodes {
+            if case let .thread(_, spec) = node.kind {
+                try spec.validate()
+                _ = try encoder.encode(node.kind)
+            }
+
             if case let .sweep(_, _, _, _, helix, path) = node.kind, let path {
                 guard helix == nil else { throw CADDocumentFormatError.malformedAssociation("sweep-path") }
                 do { try path.validate(); _ = try encoder.encode(node.kind) }
@@ -909,6 +921,25 @@ nonisolated enum CADDocumentFormat {
             // for the M08 consumer identity BEFORE the hole contract below.
             guard let object = try? JSONSerialization.jsonObject(with: row.kind) as? [String: Any] else {
                 continue
+            }
+            if object.keys.contains("thread") {
+                result.requiredVersion = max(result.requiredVersion, standardThreadVersion)
+                guard let payload = object["thread"] as? [String: Any],
+                      let spec = payload["spec"] as? [String: Any],
+                      let number = spec["version"] as? NSNumber,
+                      CFGetTypeID(number) != CFBooleanGetTypeID(),
+                      let version = Int(exactly: number.doubleValue), version > 0 else {
+                    throw CADDocumentFormatError.malformedAssociation("thread")
+                }
+                if version > ThreadSpec.supportedVersion {
+                    result.opaqueFeatures.insert(row.featureID)
+                    continue
+                }
+                do {
+                    let decoded = try JSONDecoder().decode(FeatureKind.self, from: row.kind)
+                    guard case let .thread(_, value) = decoded else { throw CADThreadError.invalid("thread") }
+                    try value.validate()
+                } catch { throw CADDocumentFormatError.malformedAssociation("thread") }
             }
             let operationIdentity = try operationIdentityIntent(object)
             if let root = object["baseSolid"] as? [String: Any] {

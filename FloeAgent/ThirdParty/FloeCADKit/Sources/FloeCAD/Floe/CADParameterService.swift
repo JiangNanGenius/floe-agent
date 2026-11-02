@@ -39,7 +39,7 @@ public final class CADParameterService {
         "variable.create", "variable.update", "variable.delete",
         "feature.setExpression",
         "undo", "redo",
-    ] + CADDatumService.actions + CADSketchCurveService.actions
+    ] + CADDatumService.actions + CADSketchCurveService.actions + CADThreadService.actions
 
     /// Sketch-entity kinds with a real typed geometry edit. Polygon remains
     /// query-only until its side/rotation semantics are promoted with the same
@@ -65,6 +65,9 @@ public final class CADParameterService {
         if let failure = revisionPinFailure(args) { return failure }
         if CADSketchCurveService.actions.contains(action) {
             return CADSketchCurveService(document: document).handle(action: action, args: args)
+        }
+        if CADThreadService.actions.contains(action) {
+            return CADThreadService(document: document).handle(action: action, args: args)
         }
         if CADDatumService.actions.contains(action) {
             return CADDatumService(document: document).handle(action: action, args: args)
@@ -296,6 +299,10 @@ public final class CADParameterService {
         guard let changes = args["changes"] as? [String: Any], !changes.isEmpty else {
             return Self.fail("missing_changes",
                              "update needs changes: an object of parameter -> value (units per the feature descriptor).")
+        }
+        if case .thread = node.kind {
+            var fields = args; fields["feature_id"] = featureID.raw.uuidString
+            return CADThreadService(document: document).handle(action: "thread.update", args: fields)
         }
         // M08 R2: `axis_id` is a RELATIONSHIP, not a scalar. Take it out of the
         // numeric edit so the kind validation below sees only real parameters,
@@ -4482,7 +4489,7 @@ public final class CADParameterService {
             return [target.bodyID]
         case let .boolean(_, target, _):
             return [target.bodyID]
-        case let .hole(target, _, _, _):
+        case let .hole(target, _, _, _), let .thread(target, _):
             return [target.bodyID]
         case let .transform(body, _), let .chamfer(body, _, _),
              let .fillet(body, _, _), let .shell(body, _, _), let .deleteFace(body, _):
@@ -4995,6 +5002,16 @@ public final class CADParameterService {
                     note: "Set an axis id to make this revolve follow a construction axis.")
             }
             unit = "deg"
+        case let .thread(_, spec):
+            kindName = "thread"
+            add("diameter", "mm", spec.diameter)
+            add("pitch", "mm", spec.pitch.value)
+            add("effective_length", "mm", spec.effectiveLength.value)
+            add("hand", nil, spec.hand.rawValue)
+            add("ends", nil, spec.ends.rawValue)
+            add("representation", nil, spec.representation.rawValue)
+            add("standard", nil, "ISO 68-1:2023 basic profile", editable: false)
+            add("tolerance_fit", nil, "unspecified", editable: false)
         case let .hole(_, profileRef, _, spec):
             kindName = "hole"
             add("hole_type", "unitless", spec.kind.rawValue,
@@ -5222,7 +5239,7 @@ public final class CADParameterService {
         switch kind {
         case .primitive, .extrude, .draftExtrude, .revolve, .pattern,
              .pushPull, .scaleFace, .rotateFace, .draftFace, .chamfer,
-             .fillet, .shell, .hole, .sweep:
+             .fillet, .shell, .hole, .thread, .sweep:
             return true
         default:
             return false
@@ -5246,7 +5263,7 @@ public final class CADParameterService {
              let .sweep(_, _, _, boolean, _, _),
              let .loft(_, boolean):
             return boolean.resolvedTargets
-        case let .hole(target, _, _, _): return [target]
+        case let .hole(target, _, _, _), let .thread(target, _): return [target]
         case let .transform(body, _), let .mirror(body, _, _),
              let .pattern(body, _), let .chamfer(body, _, _),
              let .fillet(body, _, _), let .shell(body, _, _),
@@ -5260,6 +5277,7 @@ public final class CADParameterService {
 
     private static func faceReferences(in kind: FeatureKind) -> [FaceRef] {
         switch kind {
+        case let .thread(_, spec): return [spec.source]
         case let .extrude(_, _, _, _, _, _, termination): return termination?.nextFace.map { [$0] } ?? []
         case let .pushPull(face, _, _), let .moveFace(face, _),
              let .scaleFace(face, _), let .rotateFace(face, _, _),
@@ -5346,6 +5364,33 @@ public final class CADParameterService {
         }
 
         switch kind {
+        case let .thread(target, old):
+            let allowed = ["diameter", "pitch", "effective_length", "hand", "ends", "representation"]
+            guard !changes.keys.contains(where: { !allowed.contains($0) }) else { return unknown(allowed) }
+            var spec = old
+            for key in ["diameter", "pitch", "effective_length"] where changes[key] != nil {
+                guard let n = value(key) else { return fail(key, "A finite thread dimension is required.") }
+                switch key {
+                case "diameter": spec.diameter = n
+                case "pitch": spec.pitch = Expr(value: n)
+                default: spec.effectiveLength = Expr(value: n)
+                }
+            }
+            if let raw = changes["hand"] {
+                guard let text = raw as? String, let hand = ThreadSpec.Hand(rawValue: text) else { return fail("hand", "Use right or left.") }
+                spec.hand = hand
+            }
+            if let raw = changes["ends"] {
+                guard let text = raw as? String, let ends = ThreadSpec.Ends(rawValue: text) else { return fail("ends", "Use a supported end treatment.") }
+                spec.ends = ends
+            }
+            if let raw = changes["representation"] {
+                guard let text = raw as? String, let mode = ThreadSpec.Representation(rawValue: text) else { return fail("representation", "Use geometry or schematic.") }
+                spec.representation = mode
+            }
+            do { try spec.validate() } catch { return fail("thread", error.localizedDescription) }
+            if requireChange, spec == old { return fail("no_change", "Nothing changed.") }
+            return .success(.thread(target: target, spec: spec))
         case let .sweep(profile, plane, spine, boolean, helix, path):
             let allowed = ["spine_points", "path", "helix_radius", "helix_pitch", "helix_turns"]
             guard !changes.keys.contains(where: { !allowed.contains($0) }) else { return unknown(allowed) }

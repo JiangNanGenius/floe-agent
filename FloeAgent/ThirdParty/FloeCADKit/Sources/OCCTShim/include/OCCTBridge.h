@@ -296,6 +296,17 @@ typedef NS_ENUM(NSInteger, OCCTOpCode) {
                                           helix:(nullable NSData *)helix
                                         history:(nullable OCCTShapeHistory *)history;
 
+/// M13 only: retain the axial profile instead of normal-section correction.
++ (nullable OCCTShape *)threadSweepWithOuterLoop:(NSData *)outerLoop
+                                       segments:(nullable NSData *)segments
+                                          basis:(OCCTPlaneBasis *)basis
+                                          helix:(NSData *)helix
+    NS_SWIFT_NAME(threadSweep(outerLoop:segments:basis:helix:));
+/// Complete cylindrical face: radius, origin xyz, axis xyz, radial xyz,
+/// axial lower/upper bounds, inner-face flag. Nil for unsupported stock.
++ (nullable NSData *)threadCylinderExtentOfShape:(OCCTShape *)shape faceIndex:(NSInteger)faceIndex
+    NS_SWIFT_NAME(threadCylinderExtent(of:faceIndex:));
+
 /// Loft through ordered section profiles, each on its own plane.
 ///
 /// `sections` is one dictionary-free parallel set of arrays: every index i

@@ -1923,4 +1923,47 @@ final class CADNativeUVAndCopyMergeFlowUITests: XCTestCase {
         XCTAssertTrue(app.buttons["UndoButton"].waitForExistence(timeout: 15))
     }
 }
+
+@MainActor
+final class CADThreadOptionsNativeFlowUITests: XCTestCase {
+    override func setUpWithError() throws {
+        continueAfterFailure = false
+        XCUIDevice.shared.orientation = .landscapeLeft
+    }
+
+    func testNativeThreadOptionsAndCancel() { checkOptions(compact: false) }
+    func testCompactLargeTextThreadOptionsAndCancel() { checkOptions(compact: true) }
+
+    private func checkOptions(compact: Bool) {
+        let app = XCUIApplication()
+        app.launchArguments = ["-AppleLanguages", "(en)", "-AppleLocale", "en_US",
+            "-ui-testing", "--ui-test-cad-fixture", "--ui-test-cad-uninstanced"]
+        app.launchArguments += compact
+            ? ["--ui-test-cad-compact", "--ui-test-cad-large-text"] : ["-ui-testing-ipad"]
+        app.launch()
+        defer { app.terminate() }
+        XCTAssertTrue(app.buttons["UndoButton"].waitForExistence(timeout: 60))
+        let modify = app.buttons["ModifyGroup"]
+        XCTAssertTrue(modify.waitForExistence(timeout: 15) && modify.isHittable)
+        modify.tap()
+        let entry = app.buttons["CADThreadButton"]
+        XCTAssertTrue(entry.waitForExistence(timeout: 15) && entry.isHittable)
+        entry.tap()
+        let cancel = app.buttons["CADThreadCancel"]
+        XCTAssertTrue(cancel.waitForExistence(timeout: 20) && cancel.isHittable)
+        let length = app.textFields["CADThreadLength"]
+        CADSheetProbe.reveal(length, in: app, sheet: "Metric thread")
+        XCTAssertTrue(length.exists && length.isHittable)
+        let apply = app.buttons["CADThreadApply"]
+        XCTAssertTrue(apply.exists && apply.isHittable && apply.isEnabled,
+                      "The real bore must be available through the native source query")
+        let image = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
+        image.name = compact ? "M13 native thread options compact large text" : "M13 native metric thread options"
+        image.lifetime = .keepAlways
+        add(image)
+        cancel.tap()
+        XCTAssertFalse(app.buttons["CADThreadCancel"].waitForExistence(timeout: 2))
+        XCTAssertTrue(app.buttons["UndoButton"].waitForExistence(timeout: 15))
+    }
+}
 #endif

@@ -1206,7 +1206,8 @@ final class DocumentSession {
     }
 
     private static func hasAssociations(_ document: DesignDocument) -> Bool {
-        document.planes.contains { $0.definition != nil }
+        document.features.nodes.contains { if case .thread = $0.kind { return true }; return false }
+            || document.planes.contains { $0.definition != nil }
             || document.sketches.contains { $0.support != nil || !$0.curveOffsetLinks.isEmpty }
             // M08: an associative axis/point is a replay input exactly like an
             // associative plane, so the resolver path must be chosen for a
@@ -1429,6 +1430,9 @@ final class DocumentSession {
             return [FeatureExpressionSlot(name: "radius", unit: "mm", expr: radius)]
         case let .shell(_, _, thickness):
             return [FeatureExpressionSlot(name: "thickness", unit: "mm", expr: thickness)]
+        case let .thread(_, spec):
+            return [FeatureExpressionSlot(name: "pitch", unit: "mm", expr: spec.pitch),
+                    FeatureExpressionSlot(name: "effective_length", unit: "mm", expr: spec.effectiveLength)]
         case let .hole(_, _, _, spec):
             // Every STORED scalar participates in formula resolution, rename
             // rewrites and guarded fan-out — including recess values hidden by
@@ -1516,6 +1520,14 @@ final class DocumentSession {
         case let .shell(body, openFaces, thickness):
             guard name == "thickness" else { return nil }
             return .shell(body: body, openFaces: openFaces, thickness: expr)
+        case let .thread(target, spec):
+            var changed = spec
+            switch name {
+            case "pitch": changed.pitch = expr
+            case "effective_length": changed.effectiveLength = expr
+            default: return nil
+            }
+            return .thread(target: target, spec: changed)
         case let .hole(target, profile, plane, spec):
             var updated = spec
             switch name {

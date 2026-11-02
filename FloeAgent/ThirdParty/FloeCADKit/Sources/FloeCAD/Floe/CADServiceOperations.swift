@@ -117,7 +117,7 @@ public nonisolated enum CADServiceOperations {
         case "script": writesDocument = mutatingScriptActions.contains(action)
         case "mesh": writesDocument = mutatingMeshActions.contains(action)
         case "material": writesDocument = ["create", "update", "remove", "apply", "applyFaces", "reassignFaces", "mapping", "textures", "libraryImport", "environment.update", "undo", "redo"].contains(action) || CADUVService.mutations.contains(action)
-        case "parameter": writesDocument = CADParameterService.actions.contains(action) && action != "list"
+        case "parameter": writesDocument = CADParameterService.actions.contains(action) && action != "list" && !CADThreadService.reads.contains(action)
         case "scene": writesDocument = CADViewOverlayService.mutationActions.contains(action)
         default: writesDocument = false
         }

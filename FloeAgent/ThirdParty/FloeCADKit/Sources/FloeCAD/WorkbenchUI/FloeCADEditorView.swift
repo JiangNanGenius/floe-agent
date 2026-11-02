@@ -2825,6 +2825,10 @@ struct FloeCADEditorView: View {
             }
             .modifier(CADDatumEditorSheets(viewModel: viewModel))
             .sheet(isPresented: Binding(
+                get: { viewModel.showThreadEditor },
+                set: { viewModel.showThreadEditor = $0 }
+            )) { ThreadOptionsSheet(document: document, viewModel: viewModel) }
+            .sheet(isPresented: Binding(
                 get: { viewModel.showConstraintSettings },
                 set: { viewModel.showConstraintSettings = $0 }
             )) {

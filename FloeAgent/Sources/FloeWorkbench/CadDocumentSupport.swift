@@ -295,6 +295,7 @@ public enum CadNativeEditActions {
         "feature.suppress", "feature.delete", "feature.move",
         "variable.create", "variable.update", "variable.delete",
         "feature.setExpression",
+        "thread.catalog", "thread.sources", "thread.create", "thread.update",
         "datum.offsetPlane.create", "datum.offsetPlane.update", "datum.offsetPlane.delete",
         "datum.anglePlane.create", "datum.anglePlane.update", "datum.anglePlane.delete",
         "datum.threePointPlane.create", "datum.threePointPlane.update",

@@ -374,6 +374,7 @@ nonisolated enum FeatureKind: Codable, Sendable {
     /// The tool solid is the existing exact OCCT revolve of a small axial
     /// section, subtracted with the existing exact boolean. Never mesh.
     case hole(target: BodyRef, profile: ProfileRef, plane: PlaneRef, spec: HoleSpec)
+    case thread(target: BodyRef, spec: ThreadSpec)
     /// `helix`, when present, is the EXACT spine the B-rep follows; `spine`
     /// stays the sampled polyline the render mesh sweeps along (and is what
     /// documents written before helices carried — they decode with `helix`
@@ -493,7 +494,7 @@ nonisolated extension FeatureNode {
             for ref in sections { ids.insert(ref.sketchID) }
         case let .mirror(_, plane, _):
             addPlane(plane)
-        case .primitive, .baseSolid, .boolean, .transform, .pattern, .pushPull, .moveFace,
+        case .primitive, .baseSolid, .thread, .boolean, .transform, .pattern, .pushPull, .moveFace,
              .scaleFace, .rotateFace, .draftFace, .chamfer, .fillet, .shell,
              .deleteFace, .replaceFace:
             break
@@ -513,7 +514,7 @@ nonisolated extension FeatureNode {
              let .revolve(_, plane, _, _, _), let .sweep(_, plane, _, _, _, _),
              let .hole(_, _, plane, _), let .mirror(_, plane, _):
             add(plane)
-        case .primitive, .baseSolid, .loft, .boolean, .transform, .pattern, .pushPull, .moveFace,
+        case .primitive, .baseSolid, .thread, .loft, .boolean, .transform, .pattern, .pushPull, .moveFace,
              .scaleFace, .rotateFace, .draftFace, .chamfer, .fillet, .shell,
              .deleteFace, .replaceFace:
             break
@@ -559,7 +560,7 @@ nonisolated extension FeatureNode {
             return boolean.resolvedTargets.map(\.bodyID)
         case let .boolean(_, target, tools):
             return [target.bodyID] + tools.map(\.bodyID)
-        case let .hole(target, _, _, _):
+        case let .hole(target, _, _, _), let .thread(target, _):
             return [target.bodyID]
         case let .transform(body, _), let .mirror(body, _, _), let .pattern(body, _),
              let .chamfer(body, _, _), let .fillet(body, _, _), let .shell(body, _, _),
@@ -765,6 +766,7 @@ nonisolated extension FeatureGraph {
         // Replay only the active prefix: nodes at/after the rollback marker are not
         // evaluated (their bodies never enter the live set). `prefix` clamps to the
         // node count, so an out-of-range marker is safe. `nil` = all nodes active.
+        state.threadVariables = variables
         for node in nodes.prefix(rollbackIndex ?? nodes.count) where !node.suppressed {
             state.associative.begin(node)
             let prepared = state.associative.prepare(node)
@@ -772,7 +774,7 @@ nonisolated extension FeatureGraph {
                 of: node, sketchHash: sketchHash, planeHash: planeHash,
                 axisHash: axisHash, stamps: state.stamps,
                 resolvedSketchHash: prepared.sketches, resolvedPlaneHash: prepared.planes,
-                resolvedAxisHash: prepared.axes)
+                resolvedAxisHash: prepared.axes, variables: variables)
             let delta: EvalNodeDelta
             if let hit = cache.entries[node.id], hit.fingerprint == fingerprint {
                 state.apply(hit.delta, for: node.id)
@@ -842,7 +844,8 @@ nonisolated extension FeatureGraph {
         stamps: [BodyID: UInt64],
         resolvedSketchHash: [SketchID: UInt64],
         resolvedPlaneHash: [ConstructionPlaneID: UInt64],
-        resolvedAxisHash: [ConstructionAxisID: UInt64]
+        resolvedAxisHash: [ConstructionAxisID: UInt64],
+        variables: [String: Double]
     ) -> UInt64 {
         var f = EvalFingerprint()
         let semanticKind: FeatureKind
@@ -864,6 +867,11 @@ nonisolated extension FeatureGraph {
             // An unencodable kind (a non-finite parameter): salt so it never
             // falsely matches — it re-runs every replay, exactly as before.
             f.combine(UInt64.random(in: .min ... .max))
+        }
+        if case .thread = node.kind {
+            for key in variables.keys.sorted() {
+                f.combine(Data(key.utf8)); f.combine(EvalFingerprint.hash(variables[key]))
+            }
         }
         for sid in node.referencedSketchIDs.sorted(by: { $0.raw.uuidString < $1.raw.uuidString }) {
             f.combine(resolvedSketchHash[sid] ?? sketchHash[sid] ?? 0)
@@ -925,6 +933,8 @@ nonisolated extension FeatureGraph {
             evalHole(
                 node, targetRef: target, profileRef: profile, planeRef: plane,
                 spec: spec, into: &state, next: nextRevision)
+        case let .thread(target, spec):
+            evalThread(node, target: target, spec: spec, into: &state, next: nextRevision)
         case let .sweep(profile, plane, spine, boolean, helix, path):
             evalSweep(
                 node, profileRef: profile, planeRef: plane, spine: spine,
@@ -961,6 +971,42 @@ nonisolated extension FeatureGraph {
         case let .transform(body, delta):
             evalTransform(node, bodyRef: body, delta: delta, into: &state, next: nextRevision)
         }
+    }
+
+    private func evalThread(_ node: FeatureNode, target targetRef: BodyRef, spec authored: ThreadSpec,
+                            into state: inout EvalState, next: () -> UInt64) {
+        do {
+            let spec = try authored.resolved(variables: state.threadVariables)
+            guard targetRef.bodyID == spec.sourceVersion.bodyID,
+                  let target = state.bodies[targetRef.bodyID], let brep = target.brep,
+                  target.surfaceBRep == nil,
+                  let worldTarget = OCCTKernel.transformed(brep, by: target.transform) else {
+                throw CADThreadError.invalid("A thread needs its original exact solid source.")
+            }
+            let cylinder = try state.associative.threadCylinder(spec)
+            let result = try ThreadKit.apply(spec, cylinder: cylinder, target: worldTarget,
+                targetNames: state.kernelNames[target.id] ?? [:], operation: node.id)
+            if spec.representation == .schematic {
+                // An annotation must preserve authored UVs, material bindings,
+                // the exact handle, placement and render bytes verbatim.
+                let names = state.kernelNames[target.id] ?? [:]
+                let table = state.faceTables[target.id]
+                    ?? state.naming.faceTable(for: target, createdBy: targetRef.producer, scheme: .generic)
+                state.put(target, table: table)
+                if !names.isEmpty { state.kernelNames[target.id] = names }
+                return
+            }
+            var body = Body(id: target.id, name: target.name, transform: .identity,
+                primitive: nil, euclidMesh: Euclid.Mesh([]), revision: next())
+            guard body.adoptBRep(result.shape) else { throw CADThreadError.invalid("Thread geometry could not be read.") }
+            var table = state.naming.faceTable(for: body, createdBy: node.id, scheme: .generic)
+            if !result.names.isEmpty {
+                table = ElementNaming.attach(result.names, to: table,
+                    channel: OCCTKernel.renderMeshFaceChannel(from: result.shape), body: body)
+            }
+            state.put(body, table: table)
+            if !result.names.isEmpty { state.kernelNames[body.id] = result.names }
+        } catch { state.errors[node.id] = .kernelFailure("thread: \(error.localizedDescription)") }
     }
 
     // MARK: Transform
@@ -3344,6 +3390,7 @@ private nonisolated struct EvalState {
     let sketches: [Sketch]
     let planes: [ConstructionPlane]
     let naming: TopoNaming
+    var threadVariables: [String: Double] = [:]
     var associative: AssociativeGeometryResolver
 
     var bodies: [BodyID: Body] = [:]

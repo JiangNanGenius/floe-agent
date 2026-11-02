@@ -60,6 +60,10 @@ nonisolated enum ProjectMergeKit {
         guard !guest.sketches.contains(where: \.hasExternalReferences) else {
             throw MergeError.missingAssociativeReferences(["sketch-external-references"])
         }
+        // Thread source versions require an explicit remap before insertion.
+        guard !guest.features.nodes.contains(where: { if case .thread = $0.kind { return true }; return false }) else {
+            throw MergeError.missingAssociativeReferences(["thread-source-version"])
+        }
         let associative = guest.planes.contains { $0.definition != nil }
             || guest.sketches.contains { $0.support != nil }
             || guest.axes.contains { $0.definition != nil }
@@ -294,7 +298,7 @@ nonisolated enum ProjectMergeKit {
                          let .revolve(_, _, _, _, boolean), let .sweep(_, _, _, boolean, _, _), let .loft(_, boolean):
                         local.subtract(node.outputBodyIDs)
                         if boolean.op != .newBody, let target = boolean.resolvedTargets.first { local.remove(target.bodyID) }
-                    case let .hole(target, _, _, _): local.remove(target.bodyID)
+                    case let .hole(target, _, _, _), let .thread(target, _): local.remove(target.bodyID)
                     case let .boolean(_, target, tools):
                         local.remove(target.bodyID); local.subtract(tools.map(\.bodyID))
                     case .transform, .pushPull, .moveFace, .scaleFace, .rotateFace,
@@ -693,6 +697,9 @@ nonisolated enum ProjectMergeKit {
 
         func remap(_ kind: FeatureKind, translation t: SIMD3<Double>) -> FeatureKind {
             switch kind {
+            case .thread:
+                // Unreachable: insert rejects threaded guests before mapping.
+                return kind
             case let .baseSolid(source): return .baseSolid(source: source.translated(by: t))
             case let .primitive(spec, placement):
                 var moved = placement
