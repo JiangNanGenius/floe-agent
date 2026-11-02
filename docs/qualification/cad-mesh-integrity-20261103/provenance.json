@@ -1,0 +1,36 @@
+[
+  {
+    "file": "unresolved-defects.png",
+    "sha256": "c7ed7fdc21672fc1c9ac75d618b683ccd53336e65c48112eb3139ebe88af690f",
+    "sourceCommit": "f1f64c8e00cd77bfb7c74c5eadf29a7cbb89eb2c",
+    "sourceRun": "ui282-mesh-inspection-readable-details",
+    "syntheticFixture": true,
+    "actualCanonicalIPadSimulator": true,
+    "physicalDevice": false
+  },
+  {
+    "file": "simplification-details.png",
+    "sha256": "8504c02bf46ccab435c53cd11f188cd2cf0b67e57646a4fca2da2e10c22acc48",
+    "sourceCommit": "f1f64c8e00cd77bfb7c74c5eadf29a7cbb89eb2c",
+    "sourceRun": "ui282-mesh-inspection-readable-details",
+    "syntheticFixture": true,
+    "actualCanonicalIPadSimulator": true,
+    "physicalDevice": false
+  },
+  {
+    "file": "simplification-preview.png",
+    "sha256": "6069cceac4bba7c3d256a75fac1bdb39c18f1f042cc5e181fa702c14c1bd27c9",
+    "sourceCommit": "f1f64c8e00cd77bfb7c74c5eadf29a7cbb89eb2c",
+    "sourceRun": "ui282-mesh-inspection-readable-details",
+    "syntheticFixture": true,
+    "actualCanonicalIPadSimulator": true,
+    "physicalDevice": false
+  },
+  {
+    "file": "thin-perforated-inspection.json",
+    "sha256": "7f5f94cc8ebb6d0f5576575776ce253344325e1282d31555d37048f5b7e9a596",
+    "sourceCommit": "f1f64c8e00cd77bfb7c74c5eadf29a7cbb89eb2c",
+    "sourceRun": "native281-mesh-large-inspection-recovery-and-shared-geometry",
+    "syntheticFixture": true
+  }
+]

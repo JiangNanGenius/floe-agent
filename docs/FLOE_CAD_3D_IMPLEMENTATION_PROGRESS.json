@@ -6911,10 +6911,27 @@
       "package": "experience",
       "implementation": {
         "stage": "F",
-        "status": "planned",
-        "source_changes": [],
-        "verification": [],
-        "limitations": []
+        "status": "accepted_original_literal_actual_mesh_inspection",
+        "source_changes": [
+          "2595077082a38d6364ed91920a9ad95bc785abaf",
+          "975d9e6465df2a444fab47b36596a9c23bc74788",
+          "35d5e4e5",
+          "06ef438bbd54f320d2a7f6035f3a76822dd98d0a",
+          "f1f64c8e00cd77bfb7c74c5eadf29a7cbb89eb2c",
+          "6fa5ca80c0ee66cc13737d39afa31cee0e24244d"
+        ],
+        "verification": [
+          {
+            "record": "docs/qualification/cad-mesh-integrity-20261103/README.md",
+            "actual_native_passed": 35,
+            "actual_ui_passed": 2,
+            "original_failures_preserved": true,
+            "physical_device": false
+          }
+        ],
+        "limitations": [
+          "Automatic hole filling, self-intersection removal and generic topology/orientation healing are explicitly unsupported; actual inspection/refusal meets the original criterion. Open/multi-shell orientation stays ambiguous rather than guessed."
+        ]
       },
       "alignment_review": {
         "disposition": "partial",
@@ -6943,8 +6960,10 @@
         "acceptance_pending": "对开洞、自相交、反面、非流形分别检测、修复或明确拒绝，复测剩余缺陷。"
       },
       "current_acceptance": {
-        "original_criterion_accepted": false,
-        "source_changes": []
+        "original_criterion_accepted": true,
+        "evidence": "docs/qualification/cad-mesh-integrity-20261103/README.md",
+        "original_criterion_text_unchanged": true,
+        "whole106_complete": false
       },
       "verification_plan": {
         "priority": "P1",
@@ -6982,10 +7001,27 @@
       "package": "experience",
       "implementation": {
         "stage": "F",
-        "status": "planned",
-        "source_changes": [],
-        "verification": [],
-        "limitations": []
+        "status": "accepted_original_literal_actual_mesh_inspection",
+        "source_changes": [
+          "2595077082a38d6364ed91920a9ad95bc785abaf",
+          "975d9e6465df2a444fab47b36596a9c23bc74788",
+          "35d5e4e5",
+          "06ef438bbd54f320d2a7f6035f3a76822dd98d0a",
+          "f1f64c8e00cd77bfb7c74c5eadf29a7cbb89eb2c",
+          "6fa5ca80c0ee66cc13737d39afa31cee0e24244d"
+        ],
+        "verification": [
+          {
+            "record": "docs/qualification/cad-mesh-integrity-20261103/README.md",
+            "actual_native_passed": 35,
+            "actual_ui_passed": 2,
+            "original_failures_preserved": true,
+            "physical_device": false
+          }
+        ],
+        "limitations": [
+          "Distances are declared samples with a conservative bound covering unsampled triangles, not exact Hausdorff. Signed volume is not validated solid volume. Face-local material simplification is refused rather than silently reassigned."
+        ]
       },
       "alignment_review": {
         "disposition": "partial",
@@ -7014,8 +7050,10 @@
         "acceptance_pending": "薄壁带孔贴图模型简化后报告距离/体积/边界偏差，并校验材质接缝。"
       },
       "current_acceptance": {
-        "original_criterion_accepted": false,
-        "source_changes": []
+        "original_criterion_accepted": true,
+        "evidence": "docs/qualification/cad-mesh-integrity-20261103/README.md",
+        "original_criterion_text_unchanged": true,
+        "whole106_complete": false
       },
       "verification_plan": {
         "priority": "P1",
@@ -9748,7 +9786,7 @@
     "license_delta": "GLTFKit2 ownMIT/cgltfMIT do notclear precompiled libktx4.2.1 etcdec exception; prefer existing O3DV+same-r176 localGLTFLoader qualification"
   },
   "current_integration_verification": {
-    "source": "cc619af3c906a33b1d16b4b1461333f97d816140",
+    "source": "6fa5ca80c0ee66cc13737d39afa31cee0e24244d",
     "all_106_retained": true,
     "all_106_accepted": false,
     "release_ready": false,
@@ -9781,8 +9819,8 @@
       "actual_OBJ": "真实OBJ/MTL/PNG显示、缺失贴图及仅资源变化后的旧帧拒绝通过。",
       "scope": "本地实际渲染与资源来源；不冒充原生可编辑BRep，也不代替真实LLM视觉连续编辑。"
     },
-    "accepted_original_criteria": 73,
-    "pending_original_criteria": 33,
+    "accepted_original_criteria": 75,
+    "pending_original_criteria": 31,
     "device_acceptance": "iPad通过的功能复用验收，iPhone仅确认界面；不使用用户手机。",
     "latest_native_batch": {
       "source": "582810ed58f8d3d63e23967909b74898af502c60",
@@ -10081,6 +10119,18 @@
       "root_visual_review": true,
       "canonical_simulator_shutdown": true,
       "physical_phone_used": false
+    },
+    "latest_mesh_inspection_batch": {
+      "source": "f1f64c8e00cd77bfb7c74c5eadf29a7cbb89eb2c",
+      "final_copy_source": "6fa5ca80c0ee66cc13737d39afa31cee0e24244d",
+      "native_passed": 35,
+      "native_failed": 0,
+      "native_skipped": 0,
+      "ui_passed": 2,
+      "public_evidence": "docs/qualification/cad-mesh-integrity-20261103/README.md",
+      "near_limit_triangles": 480000,
+      "whole106_complete": false,
+      "unchanged_passed_paths_reused": true
     }
   },
   "verification_strategy": {
@@ -10164,6 +10214,16 @@
       "Light validation still needs real functionality/output; escalate on format, persistence or evaluator changes.",
       "Compile and run relevant checks after coherent implementation batches; no full regression per small fix.",
       "Use only canonical iPad; iPhone scope is compact layout."
-    ]
+    ],
+    "remaining_after_mesh_batch": {
+      "heavy": 24,
+      "light_or_reuse": 7,
+      "accepted_ids": [
+        "X05",
+        "X06"
+      ],
+      "original_33_classification_retained": true,
+      "upgrade_rules_unchanged": true
+    }
   }
 }
