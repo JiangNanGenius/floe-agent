@@ -141,6 +141,12 @@ public data class NotesMediaCapabilities(
     public val pdfRendering: Boolean = false,
     public val pdfThumbnails: Boolean = false,
     public val pdfTextSearch: Boolean = false,
+    /**
+     * Arbitrary page-text selection/copy is available from the device's
+     * observed isolated text backend. A false value is a device/runtime fact,
+     * not a promise that no future build can provide it.
+     */
+    public val pdfTextSelection: Boolean = false,
     public val pdfPasswordUnlock: Boolean = false,
     public val inkAuthoring: Boolean = false,
     public val inkEditablePersistence: Boolean = false,
@@ -189,6 +195,63 @@ public data class NotesPdfSearchHit(
 )
 
 /**
+ * One real page-text region from the isolated PDF text transaction. Bounds are
+ * normalized to the page (top-left origin) because the producer supplies
+ * region/line geometry, not per-glyph boxes; the viewport therefore selects
+ * whole regions while the platform text sheet provides character-level
+ * selection.
+ */
+public data class NotesPdfTextRegion(
+    public val startChar: Int,
+    public val endChar: Int,
+    public val rects: List<NotesNormalizedRect> = emptyList(),
+)
+
+public data class NotesPdfPageText(
+    public val sourceSha256: String,
+    public val sourceByteCount: Long,
+    public val pageIndex: Int,
+    public val pageCount: Int,
+    public val pageWidthPt: Float,
+    public val pageHeightPt: Float,
+    public val text: String,
+    public val regions: List<NotesPdfTextRegion> = emptyList(),
+    public val truncated: Boolean = false,
+    /**
+     * False when the producer's page box did not agree with the session's
+     * proven page box. The text remains usable in the full-text sheet; the
+     * viewport must not place selection boxes.
+     */
+    public val geometryMatches: Boolean = true,
+)
+
+public enum class NotesPdfTextUnavailableReason {
+    NATIVE_TEXT_UNSUPPORTED,
+    ENCRYPTED,
+    PASSWORD_REJECTED,
+    PASSWORD_UNSUPPORTED,
+    SOURCE_CHANGED,
+    CANCELLED,
+    BACKEND_FAILED,
+    PAGE_OUT_OF_RANGE,
+    GEOMETRY_MISMATCH,
+    SESSION_CLOSED,
+}
+
+public sealed interface NotesPdfPageTextOutcome {
+    public data class Ready(public val page: NotesPdfPageText) : NotesPdfPageTextOutcome
+    public data class NoText(
+        public val pageIndex: Int,
+        public val pageCount: Int,
+        public val truncated: Boolean = false,
+    ) : NotesPdfPageTextOutcome
+    public data class Unavailable(
+        public val reason: NotesPdfTextUnavailableReason,
+    ) : NotesPdfPageTextOutcome
+    public data object StaleSource : NotesPdfPageTextOutcome
+}
+
+/**
  * Mirrors the media layer's typed outcome. `NeedsOcr` means the platform text
  * transaction is unavailable on this API/engine and the UI must say so rather
  * than show a false empty result; no in-process parser is opened to fake it.
@@ -219,9 +282,27 @@ public interface NotesPdfHandle {
     public val documentID: String
     public val resourceID: String
     public val pageCount: Int
+
+    /**
+     * Exact verified snapshot identities. Hosts that provide real page text
+     * MUST override both; the empty/zero defaults only keep older fakes
+     * source-compatible and make selection refuse rather than trust a guess.
+     */
+    public val sourceSha256: String get() = ""
+    public val sourceByteCount: Long get() = 0L
+
     public fun pageSize(pageIndex: Int): NotesPdfPageSize?
     public suspend fun renderPage(pageIndex: Int, targetWidthPx: Int): ByteArray
     public suspend fun search(query: String, limit: Int, matchCase: Boolean): NotesPdfSearchOutcome
+
+    /**
+     * Extracts the actual source text of one page for user selection. The
+     * default is a typed refusal: a handle that cannot provide real page text
+     * must never return an empty successful page.
+     */
+    public suspend fun pageText(pageIndex: Int): NotesPdfPageTextOutcome =
+        NotesPdfPageTextOutcome.Unavailable(NotesPdfTextUnavailableReason.NATIVE_TEXT_UNSUPPORTED)
+
     public suspend fun close()
 }
 

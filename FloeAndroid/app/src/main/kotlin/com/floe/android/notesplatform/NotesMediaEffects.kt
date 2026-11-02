@@ -50,9 +50,11 @@ import com.floe.android.core.notesmedia.pdf.PdfPassword
 import com.floe.android.core.notesmedia.pdf.PdfPageBox
 import com.floe.android.core.notesmedia.pdf.PdfPageId
 import com.floe.android.core.notesmedia.pdf.PdfPageRenderResult
+import com.floe.android.core.notesmedia.pdf.PdfPageTextOutcome
 import com.floe.android.core.notesmedia.pdf.PdfRenderPlanner
 import com.floe.android.core.notesmedia.pdf.PdfSessionOptions
 import com.floe.android.core.notesmedia.pdf.PdfTextSearchOutcome
+import com.floe.android.core.notesmedia.pdf.PdfTextUnavailableReason
 import com.floe.android.core.notesmedia.source.MediaSnapshotVerifier
 import com.floe.android.core.notesmedia.source.SnapshotResult
 import com.floe.android.core.notesmedia.source.VerifiedMediaSnapshot
@@ -80,8 +82,12 @@ import com.floe.android.feature.notes.ui.api.NotesPdfHandle
 import com.floe.android.feature.notes.ui.api.NotesPdfOpenOutcome
 import com.floe.android.feature.notes.ui.api.NotesPdfOpenRequest
 import com.floe.android.feature.notes.ui.api.NotesPdfPageSize
+import com.floe.android.feature.notes.ui.api.NotesPdfPageText
+import com.floe.android.feature.notes.ui.api.NotesPdfPageTextOutcome
 import com.floe.android.feature.notes.ui.api.NotesPdfSearchHit
 import com.floe.android.feature.notes.ui.api.NotesPdfSearchOutcome
+import com.floe.android.feature.notes.ui.api.NotesPdfTextRegion
+import com.floe.android.feature.notes.ui.api.NotesPdfTextUnavailableReason
 import com.floe.android.feature.notes.ui.api.NotesPortFailure
 import com.floe.android.feature.notes.ui.api.NotesPreparedImage
 import com.floe.android.feature.notes.ui.api.NotesPrintOutcome
@@ -158,6 +164,7 @@ internal class NotesMediaEffects(
             pdfRendering = caps.pdfRendering,
             pdfThumbnails = caps.pdfThumbnails,
             pdfTextSearch = caps.pdfNativeTextSearch,
+            pdfTextSelection = caps.pdfNativeTextSearch,
             pdfPasswordUnlock = caps.pdfPasswordUnlock,
             inkAuthoring = caps.inkAuthoringView,
             inkEditablePersistence = caps.inkEditablePersistence,
@@ -1329,6 +1336,9 @@ internal class NotesMediaEffects(
 
         override val pageCount: Int get() = session.pageCount
 
+        override val sourceSha256: String get() = session.source.sha256
+        override val sourceByteCount: Long get() = session.source.byteCount
+
         override fun pageSize(pageIndex: Int): NotesPdfPageSize? {
             if (closed.get() || pageIndex !in 0 until session.pageCount) return null
             val box = session.pageBox(PdfPageId(pageIndex)) ?: return null
@@ -1355,6 +1365,80 @@ internal class NotesMediaEffects(
                 }
             } finally {
                 session.releaseBitmap(result)
+            }
+        }
+
+        override suspend fun pageText(pageIndex: Int): NotesPdfPageTextOutcome {
+            if (closed.get()) {
+                return NotesPdfPageTextOutcome.Unavailable(
+                    NotesPdfTextUnavailableReason.SESSION_CLOSED,
+                )
+            }
+            if (pageIndex !in 0 until session.pageCount) {
+                return NotesPdfPageTextOutcome.Unavailable(
+                    NotesPdfTextUnavailableReason.PAGE_OUT_OF_RANGE,
+                )
+            }
+            return try {
+                when (val outcome = session.pageTextAwait(PdfPageId(pageIndex))) {
+                    is PdfPageTextOutcome.Ready -> {
+                        val page = outcome.page
+                        val width = page.pageWidthPt
+                        val height = page.pageHeightPt
+                        if (!width.isFinite() || !height.isFinite() || width <= 0f || height <= 0f) {
+                            NotesPdfPageTextOutcome.Unavailable(
+                                NotesPdfTextUnavailableReason.BACKEND_FAILED,
+                            )
+                        } else {
+                            val regions = page.regions.mapNotNull { region ->
+                                if (region.startChar < 0 || region.endChar < region.startChar ||
+                                    region.endChar > page.text.length
+                                ) {
+                                    return@mapNotNull null
+                                }
+                                val rects = region.rects.mapNotNull { rect ->
+                                    normalizedPdfTextRect(rect.left, rect.top, rect.right, rect.bottom, width, height)
+                                }
+                                NotesPdfTextRegion(
+                                    startChar = region.startChar,
+                                    endChar = region.endChar,
+                                    rects = rects,
+                                )
+                            }
+                            NotesPdfPageTextOutcome.Ready(
+                                NotesPdfPageText(
+                                    sourceSha256 = session.source.sha256,
+                                    sourceByteCount = session.source.byteCount,
+                                    pageIndex = page.pageIndex,
+                                    pageCount = page.pageCount,
+                                    pageWidthPt = width,
+                                    pageHeightPt = height,
+                                    text = page.text,
+                                    regions = regions,
+                                    truncated = page.truncated,
+                                    geometryMatches = page.geometryMatches,
+                                ),
+                            )
+                        }
+                    }
+                    is PdfPageTextOutcome.NoText ->
+                        if (outcome.pageIndex != pageIndex || outcome.pageCount != session.pageCount) {
+                            NotesPdfPageTextOutcome.StaleSource
+                        } else {
+                            NotesPdfPageTextOutcome.NoText(
+                                pageIndex = outcome.pageIndex,
+                                pageCount = outcome.pageCount,
+                                truncated = outcome.truncated,
+                            )
+                        }
+                    is PdfPageTextOutcome.Unavailable ->
+                        NotesPdfPageTextOutcome.Unavailable(mapPageTextReason(outcome.reason))
+                    is PdfPageTextOutcome.StaleSource -> NotesPdfPageTextOutcome.StaleSource
+                }
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (_: Throwable) {
+                NotesPdfPageTextOutcome.Unavailable(NotesPdfTextUnavailableReason.BACKEND_FAILED)
             }
         }
 
@@ -1405,6 +1489,47 @@ internal class NotesMediaEffects(
             } catch (error: Throwable) {
                 NotesPdfSearchOutcome.Unavailable("searchFailed")
             }
+        }
+
+        private fun normalizedPdfTextRect(
+            left: Float,
+            top: Float,
+            right: Float,
+            bottom: Float,
+            widthPt: Float,
+            heightPt: Float,
+        ): NotesNormalizedRect? {
+            if (!left.isFinite() || !top.isFinite() || !right.isFinite() || !bottom.isFinite()) {
+                return null
+            }
+            val l = (left / widthPt).coerceIn(0f, 1f)
+            val t = (top / heightPt).coerceIn(0f, 1f)
+            val r = (right / widthPt).coerceIn(0f, 1f)
+            val b = (bottom / heightPt).coerceIn(0f, 1f)
+            if (r <= l || b <= t) return null
+            return NotesNormalizedRect(l, t, r, b)
+        }
+
+        private fun mapPageTextReason(
+            reason: PdfTextUnavailableReason,
+        ): NotesPdfTextUnavailableReason = when (reason) {
+            PdfTextUnavailableReason.NATIVE_TEXT_NOT_EXPOSED,
+            PdfTextUnavailableReason.IN_PROCESS_SEARCH_DISABLED,
+            PdfTextUnavailableReason.API_LEVEL_TOO_LOW,
+            PdfTextUnavailableReason.NATIVE_TEXT_UNSUPPORTED
+            -> NotesPdfTextUnavailableReason.NATIVE_TEXT_UNSUPPORTED
+            PdfTextUnavailableReason.ENCRYPTED -> NotesPdfTextUnavailableReason.ENCRYPTED
+            PdfTextUnavailableReason.PASSWORD_REJECTED -> NotesPdfTextUnavailableReason.PASSWORD_REJECTED
+            PdfTextUnavailableReason.PASSWORD_UNSUPPORTED -> NotesPdfTextUnavailableReason.PASSWORD_UNSUPPORTED
+            PdfTextUnavailableReason.SOURCE_CHANGED -> NotesPdfTextUnavailableReason.SOURCE_CHANGED
+            PdfTextUnavailableReason.CANCELLED -> NotesPdfTextUnavailableReason.CANCELLED
+            PdfTextUnavailableReason.PAGE_OUT_OF_RANGE -> NotesPdfTextUnavailableReason.PAGE_OUT_OF_RANGE
+            PdfTextUnavailableReason.GEOMETRY_MISMATCH -> NotesPdfTextUnavailableReason.GEOMETRY_MISMATCH
+            PdfTextUnavailableReason.SESSION_CLOSED -> NotesPdfTextUnavailableReason.SESSION_CLOSED
+            PdfTextUnavailableReason.NO_BACKEND,
+            PdfTextUnavailableReason.BACKEND_FAILED,
+            PdfTextUnavailableReason.NATIVE_TEXT_ASYNC_REQUIRED
+            -> NotesPdfTextUnavailableReason.BACKEND_FAILED
         }
 
         override suspend fun close() {

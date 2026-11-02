@@ -8,6 +8,8 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.horizontalScroll
@@ -45,6 +47,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.drawscope.Stroke
@@ -75,10 +78,12 @@ import com.floe.android.feature.notes.NoteRect
 import com.floe.android.feature.notes.ui.NotesIcons
 import com.floe.android.feature.notes.ui.R
 import com.floe.android.feature.notes.ui.api.NotesInkCreateRequest
+import com.floe.android.feature.notes.ui.api.NotesNormalizedRect
 import com.floe.android.feature.notes.ui.api.NotesInkSurface
 import com.floe.android.feature.notes.ui.api.NotesInkToolKind
 import com.floe.android.feature.notes.ui.presentation.NotesEditorTool
 import com.floe.android.feature.notes.ui.presentation.NotesElementGeometry
+import com.floe.android.feature.notes.ui.presentation.NotesPdfTextSelectionRules
 import com.floe.android.feature.notes.ui.presentation.NotesResizeCorner
 import com.floe.android.feature.notes.ui.presentation.markdownPlainText
 import com.floe.android.feature.notes.ui.presentation.resolveElementText
@@ -111,12 +116,18 @@ internal fun NotesNotebookEditor(
     onShowInkOptions: () -> Unit,
     onShowFind: () -> Unit,
     onShowInspector: () -> Unit,
+    onRequestOcr: (() -> Unit)? = null,
 ) {
     val document = session.document ?: return
     val page = session.currentPage
     val scope = rememberCoroutineScope()
     var shapesOpen by remember { mutableStateOf(false) }
     var showPageMenu by remember { mutableStateOf(false) }
+    var showPdfTextSheet by remember(session.documentID, page?.id) { mutableStateOf(false) }
+    LaunchedEffect(page?.id) { showPdfTextSheet = false }
+    LaunchedEffect(session.pdfTextMode) {
+        if (!session.pdfTextMode) showPdfTextSheet = false
+    }
 
     Column(Modifier.fillMaxSize()) {
         Row(
@@ -249,6 +260,20 @@ internal fun NotesNotebookEditor(
                 selected = false,
                 onClick = onShowFind,
             )
+            if (page?.pdfPageIndex != null) {
+                NotesToolButton(
+                    icon = NotesIcons.ScanText,
+                    label = stringResource(R.string.notes_pdf_select_text),
+                    selected = session.pdfTextMode,
+                    onClick = {
+                        if (session.pdfTextMode) {
+                            session.exitPdfTextMode()
+                        } else {
+                            scope.launch { session.beginPdfTextSelection() }
+                        }
+                    },
+                )
+            }
             NotesToolButton(
                 icon = FloeIcons.Ellipsis,
                 label = stringResource(R.string.notes_tool_insert),
@@ -342,6 +367,19 @@ internal fun NotesNotebookEditor(
                     onShowPageMenu = { showPageMenu = true },
                     modifier = Modifier.align(Alignment.BottomCenter),
                 )
+                if (session.pdfTextMode) {
+                    NotesPdfTextBar(
+                        session = session,
+                        onOpenFullText = {
+                            session.fencePdfTextIfStale()
+                            if (session.pdfTextPage != null) showPdfTextSheet = true
+                        },
+                        onRequestOcr = onRequestOcr,
+                        modifier = Modifier
+                            .align(Alignment.BottomCenter)
+                            .padding(bottom = PageFooterHeight + 6.dp),
+                    )
+                }
             }
         }
     }
@@ -353,6 +391,14 @@ internal fun NotesNotebookEditor(
             visible = true,
             onDismiss = { showPageMenu = false },
             onShowPages = onShowPages,
+        )
+    }
+    if (showPdfTextSheet && page != null) {
+        NotesPdfTextSheet(
+            session = session,
+            pdfPageNumber = (page.pdfPageIndex ?: 0) + 1,
+            visible = true,
+            onDismiss = { showPdfTextSheet = false },
         )
     }
 }
@@ -416,10 +462,15 @@ private fun PageSurface(
         inkReadOnly,
         inkReady,
         inkLoaded,
+        session.pdfTextMode,
     ) {
         inkSurface?.setTool(session.inkToolSpec())
         inkSurface?.setInteractionEnabled(
-            session.editorTool == NotesEditorTool.INK && !inkReadOnly && inkReady && inkLoaded,
+            session.editorTool == NotesEditorTool.INK &&
+                !session.pdfTextMode &&
+                !inkReadOnly &&
+                inkReady &&
+                inkLoaded,
         )
     }
     LaunchedEffect(inkSurface) {
@@ -467,6 +518,12 @@ private fun PageSurface(
         } else {
             PaperBackground(page)
         }
+        if (page.pdfPageIndex != null && session.pdfSearchHighlightPage == page.pdfPageIndex) {
+            PdfNormalizedRectsOverlay(
+                rects = session.pdfSearchRects,
+                color = Floe.colors.accent.copy(alpha = 0.28f),
+            )
+        }
         if (inkSurface != null) {
             key(inkSurface) {
                 AndroidView(
@@ -506,6 +563,7 @@ private fun PageSurface(
                 page = page,
                 selected = selected,
                 tool = session.editorTool,
+                selectionMode = session.pdfTextMode,
                 onTap = {
                     if (session.editorTool == NotesEditorTool.TEXT && element.kind == NoteElementKind.TEXT) {
                         session.setSelection(setOf(element.id))
@@ -594,6 +652,12 @@ private fun PageSurface(
                 },
             )
         }
+        if (session.pdfTextMode && page.pdfPageIndex != null) {
+            PdfNormalizedRectsOverlay(
+                rects = session.pdfTextSelection?.rects.orEmpty(),
+                color = Floe.colors.accent.copy(alpha = 0.26f),
+            )
+        }
         val pdfFailure = artifacts?.pdfFailure
         if (pdfFailure != null) {
             FloeText(
@@ -618,7 +682,7 @@ private fun PageSurface(
             )
         }
         val activeInkSurface = inkSurface
-        if (session.inkSelectionCount > 0 && activeInkSurface != null) {
+        if (session.inkSelectionCount > 0 && activeInkSurface != null && !session.pdfTextMode) {
             Box(
                 Modifier
                     .align(Alignment.BottomCenter)
@@ -647,7 +711,95 @@ private fun PageSurface(
                 modifier = Modifier.align(Alignment.TopCenter).padding(8.dp),
             )
         }
+        if (session.pdfTextMode &&
+            page.pdfPageIndex != null &&
+            session.pdfTextPage?.geometryMatchesPage == true
+        ) {
+            PdfTextSelectionGestureLayer(session = session, pageID = page.id)
+        }
     }
+}
+
+@Composable
+private fun PdfNormalizedRectsOverlay(
+    rects: List<NotesNormalizedRect>,
+    color: Color,
+) {
+    if (rects.isEmpty()) return
+    Canvas(Modifier.fillMaxSize()) {
+        rects.forEach { rect ->
+            drawRect(
+                color = color,
+                topLeft = Offset(rect.left * size.width, rect.top * size.height),
+                size = Size(
+                    ((rect.right - rect.left) * size.width).coerceAtLeast(1f),
+                    ((rect.bottom - rect.top) * size.height).coerceAtLeast(1f),
+                ),
+            )
+        }
+    }
+}
+
+@Composable
+private fun PdfTextSelectionGestureLayer(
+    session: NotesDocumentSession,
+    pageID: String,
+) {
+    val hint = stringResource(R.string.notes_pdf_text_mode_hint)
+    var anchorRegion by remember(pageID, session.pdfTextMode) { mutableStateOf<Int?>(null) }
+    Box(
+        Modifier
+            .fillMaxSize()
+            .semantics { contentDescription = hint }
+            .pointerInput(pageID, session.pdfTextMode) {
+                awaitEachGesture {
+                    val down = awaitFirstDown(requireUnconsumed = false)
+                    val width = size.width.toFloat()
+                    val height = size.height.toFloat()
+                    if (width <= 0f || height <= 0f) return@awaitEachGesture
+                    val downPoint = NotesPdfTextSelectionRules.normalizedPoint(
+                        down.position.x,
+                        down.position.y,
+                        width,
+                        height,
+                    ) ?: return@awaitEachGesture
+                    val hit = session.pdfTextRegionAt(downPoint.first, downPoint.second)
+                    if (hit == null) {
+                        // Empty margin: leave the gesture unconsumed so the
+                        // surrounding page scroll still works.
+                        anchorRegion = null
+                        session.clearPdfTextSelection()
+                        return@awaitEachGesture
+                    }
+                    anchorRegion = hit
+                    session.clearSelection()
+                    session.selectPdfTextRegions(hit, hit)
+                    down.consume()
+                    while (true) {
+                        val event = awaitPointerEvent()
+                        val change = event.changes.firstOrNull { it.id == down.id } ?: break
+                        if (!change.pressed) {
+                            change.consume()
+                            break
+                        }
+                        val movePoint = NotesPdfTextSelectionRules.normalizedPoint(
+                            change.position.x,
+                            change.position.y,
+                            width,
+                            height,
+                        ) ?: continue
+                        val region = session.pdfTextRegionAt(movePoint.first, movePoint.second)
+                        if (region != null) {
+                            session.selectPdfTextRegions(anchorRegion ?: hit, region)
+                        }
+                        // The gesture started on real text: keep the page from
+                        // scrolling under the selection even while the pointer
+                        // passes a gap between lines.
+                        change.consume()
+                    }
+                }
+            },
+    )
 }
 
 @Composable
@@ -692,6 +844,7 @@ private fun NoteElementView(
     page: NotePage,
     selected: Boolean,
     tool: NotesEditorTool,
+    selectionMode: Boolean,
     onTap: () -> Unit,
     onLongTap: () -> Unit,
     onDragStart: () -> Unit,
@@ -711,9 +864,9 @@ private fun NoteElementView(
             .offset(x, y)
             .size(width, height)
             .then(
-                if (tool != NotesEditorTool.INK) {
+                if (tool != NotesEditorTool.INK && !selectionMode) {
                     Modifier
-                        .pointerInput(element.id, tool) {
+                        .pointerInput(element.id, tool, selectionMode) {
                             detectDragGestures(
                                 onDragStart = { onDragStart() },
                                 onDrag = { change, amount ->
@@ -799,7 +952,7 @@ private fun NoteElementView(
                     .fillMaxSize()
                     .border(2.dp, Floe.colors.accent, RoundedCornerShape(3.dp)),
             )
-            if (tool != NotesEditorTool.INK) {
+            if (tool != NotesEditorTool.INK && !selectionMode) {
                 listOf(
                     NotesResizeCorner.TOP_LEFT to Alignment.TopStart,
                     NotesResizeCorner.TOP_RIGHT to Alignment.TopEnd,

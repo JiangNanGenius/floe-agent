@@ -233,6 +233,7 @@ internal fun NotesDocumentPane(
                             onShowInkOptions = { showInkOptions = true },
                             onShowFind = { showFind = true },
                             onShowInspector = { showInspector = true },
+                            onRequestOcr = { showOcr = true },
                         )
                         NoteDocumentKind.MIND_MAP -> NotesMindMapEditor(
                             controller = controller,

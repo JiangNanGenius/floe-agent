@@ -1506,6 +1506,13 @@
           "C01"
         ],
         "qualification": "source-only; no PDF annotation round trip executed"
+      },
+      "currentImplementation": {
+        "state": "source-integrated-unqualified",
+        "change": "Real isolated PDF page text, region selection and native character-selection sheet, exact owner/source/revision fences including native context menu at action; original annotation path retained",
+        "compiled": false,
+        "testsRun": false,
+        "deviceVerified": false
       }
     },
     {
@@ -3292,6 +3299,14 @@
         "Actual C01/MCP fresh runtime binding producers",
         "Full backup scope reconciliation including newly persistent Office recoverable documents"
       ],
+      "compiled": false,
+      "testsRun": false,
+      "deviceVerified": false
+    },
+    "c08-pdf-text-selection": {
+      "state": "source-integrated-unqualified",
+      "files": 19,
+      "mainCorrection": "Native context-menu copy/share revalidates current source and text at action time",
       "compiled": false,
       "testsRun": false,
       "deviceVerified": false

@@ -2,6 +2,7 @@
 package com.floe.android.core.notesmedia.pdf
 
 import com.floe.android.core.notesmedia.source.VerifiedMediaSnapshot
+import com.floe.android.core.officeengine.pdf.OfficePdfPageText
 
 /**
  * Text-search results for one verified PDF source.
@@ -84,6 +85,56 @@ enum class PdfTextUnavailableReason {
 
     /** The reply identified a different source length than the verified snapshot. */
     SOURCE_CHANGED,
+
+    /** This device's isolated platform renderer has no text-content API. */
+    NATIVE_TEXT_UNSUPPORTED,
+
+    /** The requested page does not exist in this document. */
+    PAGE_OUT_OF_RANGE,
+
+    /** Extracted text bounds do not agree with the page box; never misplace a selection. */
+    GEOMETRY_MISMATCH,
+
+    /** The session was closed before the page text could be read. */
+    SESSION_CLOSED,
+}
+
+/**
+ * One page's extracted source text, bound to the same verified snapshot and
+ * page identity as the rendering/text-search path.
+ *
+ * This is the selection/extraction counterpart of [PdfTextSearchOutcome]: it
+ * never falls back to an OCR index, never synthesizes text, and an empty page
+ * is reported as [NoText] rather than as an empty successful extraction.
+ */
+sealed class PdfPageTextOutcome {
+    /**
+     * Real platform text for exactly this page/source (possibly truncated).
+     * [geometryMatches] is false when the reply's page box did not agree with
+     * the session's proven page box; text read is still real, but a viewport
+     * must not place selection boxes until the consumer proves the geometry.
+     */
+    data class Ready(
+        val page: OfficePdfPageText,
+        val geometryMatches: Boolean = true,
+    ) : PdfPageTextOutcome()
+
+    /** The page was read successfully and has no text layer (typical for a scan). */
+    data class NoText(
+        val pageIndex: Int,
+        val pageCount: Int,
+        val truncated: Boolean = false,
+    ) : PdfPageTextOutcome()
+
+    data class Unavailable(
+        val reason: PdfTextUnavailableReason,
+        val backendId: String,
+    ) : PdfPageTextOutcome()
+
+    data class StaleSource(
+        val expectedSha256: String,
+        val actualSha256: String,
+    ) : PdfPageTextOutcome()
 }
 
 /** One match, with paper-space highlight boxes when the backend supplied them. */
@@ -338,6 +389,20 @@ interface PdfTextBackend {
         limit: Int,
         isCancelled: () -> Boolean,
     ): PdfTextSearchOutcome = search(source, pageCount, query, isCancelled)
+
+    /**
+     * Extracts the ACTUAL text layer of one page (not an OCR/index substitute)
+     * for arbitrary user selection. The default is a typed refusal so a
+     * backend that only implements search can never pretend to provide
+     * selectable source text.
+     */
+    suspend fun pageText(
+        source: VerifiedMediaSnapshot,
+        pageCount: Int,
+        page: PdfPageId,
+        isCancelled: () -> Boolean,
+    ): PdfPageTextOutcome =
+        PdfPageTextOutcome.Unavailable(PdfTextUnavailableReason.NATIVE_TEXT_NOT_EXPOSED, id)
 }
 
 /** Typed unavailability instance (never fabricates a text layer). */
@@ -353,4 +418,11 @@ class UnavailablePdfTextBackend(
         query: String,
         isCancelled: () -> Boolean,
     ): PdfTextSearchOutcome = PdfTextSearchOutcome.Unavailable(reason, backendId)
+
+    override suspend fun pageText(
+        source: VerifiedMediaSnapshot,
+        pageCount: Int,
+        page: PdfPageId,
+        isCancelled: () -> Boolean,
+    ): PdfPageTextOutcome = PdfPageTextOutcome.Unavailable(reason, backendId)
 }

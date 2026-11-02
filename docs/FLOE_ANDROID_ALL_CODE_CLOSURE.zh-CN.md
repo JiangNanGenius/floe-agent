@@ -234,3 +234,8 @@ MCP 原编辑器与配置服务已能保存 HTTP 和无运行绑定的 stdio 定
 文件流根与组件改为持有目录描述符逐级不跟随符号链接访问，仅规范化明确的受保护系统前缀；中间目录使用 mkdirat，不采用先解析整段根路径或绝对路径创建的回退。分享文档包已接回原数据交换检查／审阅服务；源 URI 引用通过幂等的真实 Job 完成回调释放，覆盖协程未启动即取消及清理抛错，不自动恢复文件包。
 
 41份实现／桥接／回归与主接线文件经摘要和合并核对；资源 XML 可解析，旧源码与失败证据保留。新增回归尚未运行，尚未编译、构建 APK、验收设备或调用真实服务。Main 独立负责这些验证，旧组件证据不作为本批 App 通过证明。
+
+
+### PDF text selection source checkpoint
+
+The existing isolated PDF renderer now supplies source-bound page text to Notes. Region selection and a native character-selection sheet support explicit copy, with document/root/page/source/revision fences. The native context menu also revalidates at the action boundary. Unsupported or scanned pages preserve preview and use the existing honest limitation/OCR entry. This checkpoint contains 19 implementation and regression-source files; Main has not compiled, run tests or accepted device behaviour. All C01-C08 closure and unified qualification remain required before the next Android prerelease.
