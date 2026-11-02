@@ -530,7 +530,8 @@ nonisolated enum AgentExec {
                 guard a["planeOrigin"] != nil, a["planeNormal"] != nil else {
                     throw AgentExecError(code: "bad_cutter", message: "Provide both planeOrigin and planeNormal.")
                 }
-                let origin = try vector3(a, "planeOrigin"), normal = try vector3(a, "planeNormal")
+                let origin = try vector3(a, "planeOrigin", default: .zero)
+                let normal = try vector3(a, "planeNormal", default: .zero)
                 guard simd_length(normal) > 1e-9 else {
                     throw AgentExecError(code: "degenerate_plane", message: "planeNormal must be nonzero.")
                 }
