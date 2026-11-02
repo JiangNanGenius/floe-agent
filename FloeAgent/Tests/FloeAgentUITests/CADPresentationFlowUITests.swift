@@ -932,7 +932,8 @@ enum CADSheetProbe {
     /// point (actual OBJ partial-coverage UI139). Check its visible frame first
     /// and move back toward it without dragging the sheet's grabber.
     static func reveal(_ element: XCUIElement, in app: XCUIApplication,
-                       sheet title: String, swipes: Int = 8) {
+                       sheet title: String, swipes: Int = 8,
+                       searchEarlierRowsFirst: Bool = false) {
         for _ in 0..<swipes {
             let form = sheetScrollView(title: title, in: app)
             let bar = app.navigationBars[title]
@@ -940,7 +941,9 @@ enum CADSheetProbe {
             let top = bar.exists ? max(frame.minY, bar.frame.maxY) : frame.minY
             let viewport = CGRect(x: frame.minX, y: top,
                                   width: frame.width, height: max(0, frame.maxY - top))
-            var towardEarlierRows = false
+            // A lazy Form can remove an earlier row from the AX tree. Its
+            // missing frame cannot tell us to scroll back toward that row.
+            var towardEarlierRows = searchEarlierRowsFirst
             if element.exists {
                 let target = element.frame
                 let center = CGPoint(x: target.midX, y: target.midY)
@@ -1765,8 +1768,10 @@ final class CADNativeUVAndCopyMergeFlowUITests: XCTestCase {
         return app
     }
 
-    private func reveal(_ element: XCUIElement, sheet: String, app: XCUIApplication) {
-        CADSheetProbe.reveal(element, in: app, sheet: sheet, swipes: 14)
+    private func reveal(_ element: XCUIElement, sheet: String, app: XCUIApplication,
+                        searchEarlierRowsFirst: Bool = false) {
+        CADSheetProbe.reveal(element, in: app, sheet: sheet, swipes: 14,
+                             searchEarlierRowsFirst: searchEarlierRowsFirst)
         XCTAssertTrue(element.exists && element.isHittable, "The native control must be visible: \(element)")
     }
 
@@ -1864,7 +1869,7 @@ final class CADNativeUVAndCopyMergeFlowUITests: XCTestCase {
             apply.tap()
             ready(app)
             let pack = app.buttons["Pack Islands"]
-            reveal(pack, sheet: "UV Editor", app: app)
+            reveal(pack, sheet: "UV Editor", app: app, searchEarlierRowsFirst: true)
             pack.tap()
             ready(app)
             let undo = app.buttons["CADUVUndo"]
@@ -1876,7 +1881,7 @@ final class CADNativeUVAndCopyMergeFlowUITests: XCTestCase {
             redo.tap()
             ready(app)
             let preview = app.buttons["Refresh 3D Preview"]
-            reveal(preview, sheet: "UV Editor", app: app)
+            reveal(preview, sheet: "UV Editor", app: app, searchEarlierRowsFirst: true)
             preview.tap()
             let image = app.descendants(matching: .any).matching(identifier: "CADUVActual3DPreview").firstMatch
             XCTAssertTrue(image.waitForExistence(timeout: 20))
