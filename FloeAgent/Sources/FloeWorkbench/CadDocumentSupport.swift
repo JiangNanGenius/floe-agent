@@ -352,7 +352,7 @@ public enum CadNativeOperationVocabulary: Sendable {
         "sketch.create", "sketch.addEntities", "sketch.addText",
         "feature.extrude", "feature.revolve", "feature.hole",
         "feature.pattern", "feature.mirror", "feature.transform",
-        "feature.boolean", "feature.fillet", "feature.chamfer",
+        "feature.boolean", "feature.split", "feature.fillet", "feature.chamfer",
         "feature.shell", "feature.sweep", "feature.loft",
         "feature.pushPull", "feature.moveFace",
         "feature.deleteFace", "feature.replaceFace", "feature.draftFace",
