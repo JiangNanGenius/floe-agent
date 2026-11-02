@@ -821,6 +821,25 @@ public struct C07ClosureConfig: Sendable {
     }
 }
 
+/// C08 retained Office recovery content: the bounded metadata entry plus the
+/// exact staged content entries named by its records.
+public struct C07ClosureOfficeDrafts: Sendable {
+    public var section: C07OwnedOfficeDraftSection
+    public var catalog: C07OfficeDraftCatalog
+    public var metadataURL: URL
+    public var contents: [String: URL]
+
+    public init(section: C07OwnedOfficeDraftSection,
+                catalog: C07OfficeDraftCatalog,
+                metadataURL: URL,
+                contents: [String: URL]) {
+        self.section = section
+        self.catalog = catalog
+        self.metadataURL = metadataURL
+        self.contents = contents
+    }
+}
+
 public struct C07OwnedDataClosureReport: Sendable, Equatable {
     public var conversations: Int
     public var runs: Int
@@ -831,13 +850,15 @@ public struct C07OwnedDataClosureReport: Sendable, Equatable {
     public var deduplicatedArtifacts: Int
     public var toolResults: Int
     public var configSections: Int
+    public var officeDrafts: Int
     public var omissions: Int
     public var completeness: C07DataCompleteness
 
     public init(conversations: Int = 0, runs: Int = 0, toolCalls: Int = 0,
                 attachments: Int = 0, canvases: Int = 0, artifacts: Int = 0,
                 deduplicatedArtifacts: Int = 0, toolResults: Int = 0,
-                configSections: Int = 0, omissions: Int = 0,
+                configSections: Int = 0, officeDrafts: Int = 0,
+                omissions: Int = 0,
                 completeness: C07DataCompleteness = .complete) {
         self.conversations = conversations
         self.runs = runs
@@ -848,6 +869,7 @@ public struct C07OwnedDataClosureReport: Sendable, Equatable {
         self.deduplicatedArtifacts = deduplicatedArtifacts
         self.toolResults = toolResults
         self.configSections = configSections
+        self.officeDrafts = officeDrafts
         self.omissions = omissions
         self.completeness = completeness
     }
@@ -863,6 +885,7 @@ public enum C07OwnedDataClosure {
         artifacts: [C07ClosureArtifact],
         toolResults: C07ClosureToolResults?,
         configs: [C07ClosureConfig],
+        officeDrafts: C07ClosureOfficeDrafts? = nil,
         omissions: [C07DataOmission]
     ) throws -> C07OwnedDataClosureReport {
         var report = C07OwnedDataClosureReport()
@@ -1156,6 +1179,10 @@ public enum C07OwnedDataClosure {
         }
 
         try validateConfigs(configs, report: &report)
+        if let officeDrafts {
+            try validateOfficeDrafts(officeDrafts)
+            report.officeDrafts = officeDrafts.section.count
+        }
         return report
     }
 
@@ -1163,6 +1190,54 @@ public enum C07OwnedDataClosure {
                                         subject: String) throws {
         guard omissions.contains("\(scope)|\(subject)") else {
             throw C07DataExchangeError.referenceMissing("\(scope):\(subject)")
+        }
+    }
+
+    private static func validateOfficeDrafts(
+        _ input: C07ClosureOfficeDrafts
+    ) throws {
+        let section = input.section
+        try section.validate()
+        let catalog = input.catalog
+        try catalog.validate()
+        guard catalog.records.count == section.count else {
+            throw C07DataExchangeError.invalidManifest("officeDraftCount")
+        }
+        let digest = try C07Digest.file(
+            input.metadataURL,
+            maximum: C07OwnedDataLimits.maximumOfficeDraftSectionBytes)
+        guard digest.byteCount == section.byteCount,
+              digest.sha256 == section.sha256 else {
+            throw C07DataExchangeError.hashMismatch(section.entry)
+        }
+        let data: Data
+        do { data = try Data(contentsOf: input.metadataURL) }
+        catch { throw C07DataExchangeError.storageUnavailable("officeDraftRead") }
+        let decoded: C07OfficeDraftCatalog
+        do {
+            let decoder = JSONDecoder()
+            decoder.dateDecodingStrategy = .iso8601
+            decoded = try decoder.decode(C07OfficeDraftCatalog.self, from: data)
+        } catch {
+            throw C07DataExchangeError.invalidManifest("officeDraftDecode")
+        }
+        guard decoded == catalog else {
+            throw C07DataExchangeError.invalidManifest("officeDraftMetadata")
+        }
+        let declared = Set(catalog.records.map(\.entry))
+        guard Set(input.contents.keys) == declared else {
+            throw C07DataExchangeError.invalidManifest("officeDraftEntries")
+        }
+        for record in catalog.records {
+            guard let url = input.contents[record.entry] else {
+                throw C07DataExchangeError.invalidManifest("officeDraftEntry")
+            }
+            let content = try C07Digest.file(
+                url, maximum: C07OwnedDataLimits.maximumOfficeDraftBytes)
+            guard content.byteCount == record.byteCount,
+                  content.sha256 == record.sha256 else {
+                throw C07DataExchangeError.hashMismatch(record.entry)
+            }
         }
     }
 

@@ -1265,6 +1265,68 @@ internal class OfficeSaveCopyHost(
     }
 
     /**
+     * Stage the live provider original into an App-owned immutable review
+     * directory using the EXISTING provider operations and live grant. This
+     * performs a READ only: no write, no rename, no grant persistence and no
+     * original overwrite. The caller supplies a directory it already owns
+     * and is responsible for deleting it after the review.
+     */
+    fun captureOriginal(
+        uriString: String,
+        directory: File,
+        timeoutMillis: Long = 30_000L,
+    ): com.floe.android.host.officereview.OfficeOriginalCapture {
+        val source = runCatching { SafDocumentRef(null, null, null, SafUriRef(uriString)) }.getOrNull()
+            ?: return com.floe.android.host.officereview.OfficeOriginalCapture.Failed("invalidIdentity")
+        val root = runCatching { directory.canonicalFile }.getOrNull()
+            ?: return com.floe.android.host.officereview.OfficeOriginalCapture.Failed("reviewStorageUnavailable")
+        if (!root.isDirectory) return com.floe.android.host.officereview.OfficeOriginalCapture.Failed("reviewStorageUnavailable")
+        val operation = runCatching {
+            gatewayService.submit { cancel ->
+                gatewayService.operations.stageToWorkingCopy(
+                    source,
+                    root,
+                    OfficeSaveCopySource.MAX_BYTES,
+                    cancel,
+                )
+            }
+        }.getOrNull() ?: return com.floe.android.host.officereview.OfficeOriginalCapture.Failed("gatewayUnavailable")
+        return when (val outcome = operation.await(timeoutMillis)) {
+            is SafOutcome.Failure -> com.floe.android.host.officereview.OfficeOriginalCapture.Failed(
+                when (outcome.failure) {
+                    SafFailure.GrantMissing, SafFailure.Revoked ->
+                        "grantRequired"
+                    is SafFailure.RePickRequired -> "grantRequired"
+                    SafFailure.NotFound -> "originalMissing"
+                    is SafFailure.SizeLimitExceeded -> "originalTooLarge"
+                    is SafFailure.Unsupported -> "originalUnsupported"
+                    else -> "originalUnavailable"
+                },
+            )
+            is SafOutcome.Success -> {
+                val copy = outcome.value
+                val file = copy.local.file
+                val verified = runCatching {
+                    file.isFile &&
+                        !Files.isSymbolicLink(file.toPath()) &&
+                        file.length() == copy.bytes &&
+                        file.setReadOnly()
+                }.getOrDefault(false)
+                if (!verified) {
+                    runCatching { file.delete() }
+                    com.floe.android.host.officereview.OfficeOriginalCapture.Failed("originalUnverified")
+                } else {
+                    com.floe.android.host.officereview.OfficeOriginalCapture.Captured(
+                        file = file,
+                        sha256 = copy.sha256,
+                        bytes = copy.bytes,
+                    )
+                }
+            }
+        }
+    }
+
+    /**
      * Probe whether the provider original still has the source fingerprint.
      * This is a read under the EXISTING live grant only; it never trusts the
      * persisted URI string and never re-takes access.

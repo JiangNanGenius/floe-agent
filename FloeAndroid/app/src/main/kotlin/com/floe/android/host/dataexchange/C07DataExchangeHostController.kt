@@ -15,8 +15,14 @@ import com.floe.android.feature.dataexchange.DataExchangeCapabilitiesUi
 import com.floe.android.feature.dataexchange.DataExchangePhase
 import com.floe.android.feature.dataexchange.DataExchangePlanUi
 import com.floe.android.feature.dataexchange.DataExchangeReceiptUi
+import com.floe.android.feature.dataexchange.DataExchangeRestoredDocumentUi
 import com.floe.android.feature.dataexchange.DataExchangeScopeRow
 import com.floe.android.feature.dataexchange.DataExchangeUiState
+import com.floe.android.host.officerecovery.OfficeDraftCaptureSource
+import com.floe.android.host.officerecovery.OfficeRecoveryDraftRegistry
+import com.floe.android.host.officerecovery.OfficeRestoredDocument
+import com.floe.android.host.officerecovery.OfficeRestoredDocumentStore
+import com.floe.android.host.officerecovery.OfficeRestoredOpenResult
 import java.io.File
 import java.io.FileOutputStream
 import java.io.InputStream
@@ -37,6 +43,8 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import org.json.JSONArray
+import org.json.JSONObject
 
 internal class C07DataExchangeHostController(
     private val context: Context,
@@ -44,7 +52,11 @@ internal class C07DataExchangeHostController(
     private val currentNativeEpoch: () -> Long?,
     private val ioDispatcher: CoroutineDispatcher = Dispatchers.IO,
     private val client: C07DataExchangeClient = C07DataExchangeClient(),
+    private val draftSource: OfficeDraftCaptureSource = OfficeRecoveryDraftRegistry,
+    restoredDocuments: OfficeRestoredDocumentStore? = null,
 ) {
+    private val restoredStore =
+        restoredDocuments ?: OfficeRestoredDocumentStore.forContext(context)
     private val resolver: ContentResolver get() = context.contentResolver
     private val ownerToken = UUID.randomUUID().toString()
     private val _state = MutableStateFlow(DataExchangeUiState())
@@ -80,7 +92,8 @@ internal class C07DataExchangeHostController(
                 val result = withContext(ioDispatcher) {
                     val capabilities = client.capabilities(owner)
                     val pending = client.pending(owner)
-                    capabilities to pending
+                    val restored = loadRestoredDocuments()
+                    Triple(capabilities, pending, restored)
                 }
                 _state.update {
                     it.copy(
@@ -88,6 +101,7 @@ internal class C07DataExchangeHostController(
                         coreReady = true,
                         capabilities = result.first.toUi(),
                         pendingRecoveries = result.second,
+                        restoredDocuments = result.third,
                         phase = DataExchangePhase.IDLE,
                         errorCode = null,
                     )
@@ -122,8 +136,31 @@ internal class C07DataExchangeHostController(
                         backupWarnings = emptyList(), resultWarnings = emptyList(),
                         receipt = null)
                 }
+                val officeDrafts = withContext(ioDispatcher) {
+                    try {
+                        draftSource.capture()?.toJson()
+                    } catch (_: Throwable) {
+                        // A failed enumeration must not silently look like
+                        // "no retained documents": declare one bounded,
+                        // counted omission in the package instead.
+                        JSONObject().apply {
+                            put("format", "floe.office-drafts/1")
+                            put("records", JSONArray())
+                            put("omissions", JSONArray().put(JSONObject().apply {
+                                put("reason", "unreadable")
+                            }))
+                            put("deduplicated", 0)
+                        }
+                    }
+                }
+                kotlinx.coroutines.currentCoroutineContext().ensureActive()
+                if (cancelRequested) throw CancellationException("cancelled")
                 val createdJob = withContext(ioDispatcher) {
-                    client.backupBegin(owner, includeRetainedProjects = true)
+                    client.backupBegin(
+                        owner,
+                        includeRetainedProjects = true,
+                        officeDrafts = officeDrafts,
+                    )
                 }
                 jobID = createdJob
                 activeJobID = createdJob
@@ -464,6 +501,9 @@ internal class C07DataExchangeHostController(
                     withContext(ioDispatcher) { client.close(owner, jobID) }
                 }
                 activeJobID = null
+                val restored = withContext(ioDispatcher) {
+                    loadRestoredDocuments()
+                }
                 _state.update {
                     it.copy(
                         phase = DataExchangePhase.COMPLETE,
@@ -477,6 +517,7 @@ internal class C07DataExchangeHostController(
                             else -> "restored"
                         },
                         pendingRecoveries = 0,
+                        restoredDocuments = restored,
                     )
                 }
             } catch (cancelled: CancellationException) {
@@ -537,9 +578,83 @@ internal class C07DataExchangeHostController(
         }
         _state.update {
             it.copy(phase = DataExchangePhase.IDLE, plan = null, errorCode = null,
-                noticeCode = "cancelled", progressDone = 0, progressTotal = 0)
+                noticeCode = "cancelled", progressDone = 0, progressTotal = 0,
+                restoredBusyId = null)
         }
     }
+
+    /**
+     * Opens ONE freshly restored App-owned Office document through the
+     * existing read-only preview. The file is re-verified immediately before
+     * the launch; nothing is executed, restored, overwritten or retried.
+     */
+    fun openRestored(documentID: String) {
+        if (state.value.busy || state.value.restoredBusyId != null) return
+        _state.update {
+            it.copy(restoredBusyId = documentID, errorCode = null,
+                noticeCode = null)
+        }
+        activeWork = scope.launch {
+            try {
+                val document = withContext(ioDispatcher) {
+                    restoredStore.resolve(documentID)
+                }
+                if (document == null) {
+                    _state.update { it.copy(restoredBusyId = null) }
+                    fail(C07ClientFailure("officeDocumentMissing", "notFound"))
+                    return@launch
+                }
+                val path = withContext(ioDispatcher) {
+                    restoredStore.verifiedFile(document)
+                }
+                if (path == null) {
+                    _state.update { it.copy(restoredBusyId = null) }
+                    fail(C07ClientFailure("officeDocumentMissing", "verification"))
+                    return@launch
+                }
+                val port = OfficeRecoveryDraftRegistry.openPort()
+                    ?: throw C07ClientFailure(
+                        "officePreviewUnavailable", "notInstalled")
+                when (val result = withContext(ioDispatcher) {
+                    port.open(document, path, document.sha256, document.byteCount)
+                }) {
+                    is OfficeRestoredOpenResult.Accepted -> _state.update {
+                        it.copy(restoredBusyId = null,
+                            noticeCode = "officeDocumentOpened")
+                    }
+                    is OfficeRestoredOpenResult.Refused -> {
+                        _state.update { it.copy(restoredBusyId = null) }
+                        fail(C07ClientFailure(result.code, "preview"))
+                    }
+                }
+            } catch (cancelled: CancellationException) {
+                _state.update { it.copy(restoredBusyId = null) }
+                throw cancelled
+            } catch (failure: C07ClientFailure) {
+                _state.update { it.copy(restoredBusyId = null) }
+                fail(failure)
+            } catch (error: Throwable) {
+                _state.update { it.copy(restoredBusyId = null) }
+                fail(C07ClientFailure("unknown", error.javaClass.simpleName))
+            }
+        }
+    }
+
+    private fun loadRestoredDocuments(): List<DataExchangeRestoredDocumentUi> =
+        runCatching {
+            restoredStore.list().map {
+                DataExchangeRestoredDocumentUi(
+                    documentID = it.documentID,
+                    displayName = it.displayName,
+                    format = it.format,
+                    kind = when (it.kind) {
+                        OfficeRestoredDocument.Kind.WORKING_COPY -> "workingCopy"
+                        OfficeRestoredDocument.Kind.VERIFIED_OUTPUT -> "verifiedOutput"
+                    },
+                    byteCount = it.byteCount,
+                )
+            }
+        }.getOrDefault(emptyList())
 
     fun recover() {
         if (state.value.busy) return
@@ -879,6 +994,7 @@ internal class C07DataExchangeHostController(
                 noticeCode = notice,
                 plan = null,
                 resultWarnings = emptyList(),
+                restoredBusyId = null,
             )
         }
     }
@@ -934,6 +1050,8 @@ internal class C07DataExchangeHostController(
             skills = skills,
             modelPreferences = modelPreferences,
             runDependencies = runDependencies,
+            officeDrafts = officeDrafts,
+            officeDraftBytes = officeDraftBytes,
             omissions = omissions,
             partial = partial,
             warnings = warnings,
@@ -970,6 +1088,7 @@ internal class C07DataExchangeHostController(
             checklistRevisions = checklistRevisions,
             skills = skills,
             modelPreferences = modelPreferences,
+            officeDrafts = officeDrafts,
             partial = partial,
         )
 

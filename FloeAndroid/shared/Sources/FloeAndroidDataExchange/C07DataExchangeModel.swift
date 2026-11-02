@@ -303,6 +303,11 @@ public struct C07BackupScope: Codable, Sendable, Equatable {
         "calendarTodos", "toolResultRetention", "appArtifactFiles",
         "captureFiles", "safeRemoteConfiguration", "safeMailConfiguration",
         "voicePreferences", "canvasOpaqueCAD",
+        // C08: retained Office recovery working copies and verified exports
+        // are real persisted user documents, not disposable cache. Kept in
+        // the middle of the list so the earlier exact set remains a separate
+        // readable archive shape (see `userDataV2IncludedIDs`).
+        "officeRecoveryDocuments",
         // 2026-11-02 C07 coverage expansion: real persisted user data that
         // the earlier blanket exclusions dropped. Every entry is real table
         // content exported through the ONE logical-row snapshot.
@@ -321,6 +326,19 @@ public struct C07BackupScope: Codable, Sendable, Equatable {
         "taskChecklistRevisions", "skillDefinitions", "modelPreferences",
         "runDependencyEvidence",
     ]
+    /// The exact `included` set written by the 2026-11-02 user-data build,
+    /// before retained Office recovery documents were added. Accepted on
+    /// restore so an archive created by that build still validates.
+    public static let userDataV2IncludedIDs: Set<String> =
+        Set(legacyV2IncludedIDs + [
+            "calendarTodos", "toolResultRetention", "appArtifactFiles",
+            "captureFiles", "safeRemoteConfiguration", "safeMailConfiguration",
+            "voicePreferences", "canvasOpaqueCAD",
+            "personalizationMemory", "memoryCandidates",
+            "personalizationDocuments", "personalizationPreferences",
+            "taskChecklistRevisions", "skillDefinitions", "modelPreferences",
+            "runDependencyEvidence",
+        ])
 
     public var included: [String]
     public var excluded: [C07ExcludedScope]
@@ -702,6 +720,12 @@ public enum C07ScopePolicy {
         .init(id: "privilegedPacketCaptureBuffers", reason: "rootOwnerNotAppData"),
         .init(id: "rdpTrustPins", reason: "freshTrustRequired"),
         .init(id: "toolResultExecutionReplay", reason: "captureOnlyNeverReExecuted"),
+        // C08 carries only retained document CONTENT. The old recovery
+        // journal, live session/native identities, destination URIs/grants
+        // and pending save actions are never replayed; restore allocates
+        // fresh App-owned documents.
+        .init(id: "officeRecoveryExecutionState",
+              reason: "freshDocumentsOnlyNoJournalOrGrantReplay"),
         .init(id: "cadEditingKernel", reason: "opaqueReadOnlyPreservationOnly"),
         .init(id: "environmentImages", reason: "c01CheckpointPortRequired"),
         .init(id: "trash", reason: "declaredSeparately"),
@@ -729,7 +753,8 @@ public enum C07ScopePolicy {
         }
         let provided = Set(scope.included)
         let acceptedV2 = formatVersion == 2
-            && provided == Set(C07BackupScope.legacyV2IncludedIDs)
+            && (provided == Set(C07BackupScope.legacyV2IncludedIDs)
+                || provided == C07BackupScope.userDataV2IncludedIDs)
         guard scope.included.count == provided.count,
               (provided == Set(expected) && scope.included.count == expected.count)
                 || acceptedV2 else {

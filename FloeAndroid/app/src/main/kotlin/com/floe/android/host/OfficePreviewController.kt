@@ -4,6 +4,7 @@ package com.floe.android.host
 import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
+import android.os.Bundle
 import android.os.IBinder
 import com.floe.android.MainActivity
 import com.floe.android.core.officeengine.OfficeApprovalNotice
@@ -14,7 +15,21 @@ import com.floe.android.core.officeengine.OfficeEngine
 import com.floe.android.core.officeengine.OfficePermission
 import com.floe.android.core.officeengine.OfficePreviewActivity
 import com.floe.android.core.officeengine.OfficePreviewRequest
+import com.floe.android.core.officeengine.OfficeRequestPolicy
 import com.floe.android.core.officeengine.OfficeViewerOutcome
+import com.floe.android.core.officeengine.revisionreview.OfficeConflictPreviewNaming
+import com.floe.android.core.officeengine.revisionreview.OfficeConflictPreviewRole
+import com.floe.android.core.officeengine.revisionreview.OfficeConflictReviewChannel
+import com.floe.android.host.officereview.OfficeConflictArtifacts
+import com.floe.android.host.officereview.OfficeConflictPreviewBuild
+import com.floe.android.host.officereview.OfficeConflictPreviewRead
+import com.floe.android.host.officereview.OfficeConflictPreviewReader
+import com.floe.android.host.officereview.OfficeConflictReviewCoordinator
+import com.floe.android.host.officereview.OfficeConflictReviewHost
+import com.floe.android.host.officereview.OfficeConflictReviewIdentity
+import com.floe.android.host.officereview.OfficeConflictRoute
+import com.floe.android.host.officereview.OfficeConflictVersion
+import com.floe.android.host.officereview.OfficeOriginalCapture
 import com.floe.android.host.officerecovery.OfficeRecoveryArtifacts
 import com.floe.android.host.officerecovery.OfficeRecoveryCandidate
 import com.floe.android.host.officerecovery.OfficeRecoveryController
@@ -23,7 +38,9 @@ import com.floe.android.host.officerecovery.OfficeRecoveryOpenPort
 import com.floe.android.host.officerecovery.OfficeRecoveryOpenResult
 import com.floe.android.host.officerecovery.OfficeRecoveryOriginalState
 import com.floe.android.host.officerecovery.OfficeRecoveryPhase
-import com.floe.android.host.officerecovery.OfficeRecoveryRoute
+import com.floe.android.host.officerecovery.OfficeRestoredDocument
+import com.floe.android.host.officerecovery.OfficeRestoredDocumentOpenPort
+import com.floe.android.host.officerecovery.OfficeRestoredOpenResult
 import com.floe.android.host.output.NativeRunOutputChannel
 import com.floe.android.host.output.RunOutputOfficeSnapshotStager
 import com.floe.android.safgateway.SafOperation
@@ -31,6 +48,7 @@ import com.floe.android.safgateway.SafFailure
 import com.floe.android.safgateway.SafOutcome
 import com.floe.android.safgateway.SafUriRef
 import java.io.File
+import java.nio.file.Files
 import java.util.Locale
 import java.util.UUID
 import kotlinx.coroutines.CoroutineScope
@@ -71,6 +89,9 @@ internal class OfficePreviewController(context: Context, private val scope: Coro
     private val working = OfficeEditableCopyStager(workingRoot)
     /** Verified module outputs are written here by the Office engine module. */
     private val outputsRoot = File(this.context.noBackupFilesDir, "floe-office-outputs")
+    /** C08 fresh restored documents written by the C07 full restore. */
+    private val restoredDocumentsRoot = File(
+        this.context.applicationInfo.dataDir, "files/OfficeInputs/restored")
     /** Ownership/byte checks for recovery paths; never authority by itself. */
     private val recoveryArtifacts = OfficeRecoveryArtifacts(workingRoot, outputsRoot)
     private val recoveryJournal: OfficeRecoveryJournal
@@ -80,6 +101,68 @@ internal class OfficePreviewController(context: Context, private val scope: Coro
     private val saveCopy: OfficeSaveCopyHost
     /** Durable recovery review/action owner (C08 OFC-SAVE-REOPEN). */
     internal val recovery: OfficeRecoveryController
+    /** App-owned immutable snapshots used only while a conflict is reviewed. */
+    private val reviewRoot = File(
+        this.context.noBackupFilesDir,
+        OfficeConflictPreviewNaming.REVIEW_ROOT,
+    )
+    /** App-side implementation of the viewer's exact-token review channel. */
+    private val conflictReview: OfficeConflictReviewCoordinator =
+        OfficeConflictReviewCoordinator(reviewRoot, object : OfficeConflictReviewHost {
+            override fun liveIdentity(sessionToken: String, generation: Long): OfficeConflictReviewIdentity? =
+                conflictReviewIdentity(sessionToken, generation)
+
+            override fun captureMine(
+                identity: OfficeConflictReviewIdentity,
+                directory: File,
+            ): OfficeConflictVersion? = conflictMine(identity, directory)
+
+            override fun captureCurrent(
+                identity: OfficeConflictReviewIdentity,
+                directory: File,
+            ): OfficeConflictVersion? = conflictCurrent(identity, directory)
+
+            override fun buildPreview(
+                version: OfficeConflictVersion,
+                directory: File,
+                role: OfficeConflictPreviewRole,
+                fileName: String,
+                format: String,
+                maxChars: Int,
+            ): OfficeConflictPreviewBuild {
+                // Path escape, symlink swap, byte swap and package identity
+                // are re-proved against the retained record before a reader
+                // opens the file. The working copy and original are never read.
+                val owned = OfficeConflictArtifacts.ownedVersionFile(reviewRoot, directory, version)
+                    ?: return OfficeConflictPreviewBuild.Refused("snapshotChanged")
+                val read = OfficeConflictPreviewReader.read(
+                    version = version.copy(file = owned),
+                    format = format,
+                    maxChars = maxChars,
+                )
+                if (read is OfficeConflictPreviewRead.Refused) {
+                    return OfficeConflictPreviewBuild.Refused(read.code)
+                }
+                val ready = read as OfficeConflictPreviewRead.Ready
+                val written = OfficeConflictArtifacts.writePreviewText(
+                    root = reviewRoot,
+                    directory = directory,
+                    name = fileName,
+                    text = ready.text,
+                ) ?: return OfficeConflictPreviewBuild.Refused("previewStorageUnavailable")
+                return OfficeConflictPreviewBuild.Ready(
+                    sha256 = written.first,
+                    bytes = written.second,
+                    truncated = ready.truncated,
+                )
+            }
+
+            override fun deleteReviewDirectory(directory: File) =
+                OfficeConflictArtifacts.deleteReviewDirectory(reviewRoot, directory)
+        })
+    private val conflictReviewBinder: IBinder by lazy {
+        OfficeConflictReviewChannel.parentBinder(conflictReview)
+    }
 
     private val lock = Any()
     private var sequence = 0L
@@ -114,8 +197,29 @@ internal class OfficePreviewController(context: Context, private val scope: Coro
                 override fun probeOriginal(candidate: OfficeRecoveryCandidate): OfficeRecoveryOriginalState =
                     probeRecoveryOriginal(candidate)
             },
+            restoredOpenPort = object : OfficeRestoredDocumentOpenPort {
+                override fun open(
+                    document: OfficeRestoredDocument,
+                    path: File,
+                    observedSha256: String,
+                    observedBytes: Long,
+                ): OfficeRestoredOpenResult = openRestoredReadOnly(
+                    document, path, observedSha256, observedBytes)
+            },
         )
         saveCopy.setSessionQuiescentListener { token -> recovery.onSessionQuiescent(token) }
+        // Review snapshots are temporary, App-owned copies only. A previous
+        // process can leave them behind (a crash or a viewer that outlived
+        // the App process); no live review can exist before this controller
+        // is constructed. Delete only this dedicated root, never working or
+        // recovery bytes.
+        scope.launch(Dispatchers.IO) {
+            reviewRoot.listFiles()?.forEach { child ->
+                if (child.isDirectory && child.name.startsWith("review-")) {
+                    OfficeConflictArtifacts.deleteReviewDirectory(reviewRoot, child)
+                }
+            }
+        }
     }
 
     /**
@@ -602,6 +706,11 @@ internal class OfficePreviewController(context: Context, private val scope: Coro
         op.workingCopy = File(candidate.workingCopyPath)
         op.workingCopySha256 = observedSha256
         op.workingCopyBytes = observedBytes
+        // The recovery candidate preserves the ORIGINAL source identity,
+        // not the working-copy digest. Conflict review must compare the live
+        // original against this base, never against the mutable copy.
+        op.snapshotSha256 = candidate.sourceSha256
+        op.snapshotBytes = candidate.sourceBytes
         op.input = op.workingCopy
         op.editable = true
         op.saveOriginal = candidate.originalUri?.let { uri ->
@@ -645,6 +754,60 @@ internal class OfficePreviewController(context: Context, private val scope: Coro
         runCatching { recoveryJournal.touchSessionToken(candidate.id, request.sessionToken) }
             .onFailure { diagnosticFailure = it }
         return OfficeRecoveryOpenResult.Accepted(request.sessionToken)
+    }
+
+    /**
+     * C08 read-only preview for a fresh restored document. The file is
+     * re-validated against the ONE App-owned restored root and the digest
+     * supplied by the data-exchange controller before admission. No recovery
+     * journal record, save session, owner/task claim or provider/workspace
+     * write is created: this is a local read-only mount.
+     */
+    private fun openRestoredReadOnly(
+        document: OfficeRestoredDocument,
+        path: File,
+        observedSha256: String,
+        observedBytes: Long,
+    ): OfficeRestoredOpenResult {
+        val root = runCatching { restoredDocumentsRoot.canonicalFile }.getOrNull()
+            ?: return OfficeRestoredOpenResult.Refused("storage")
+        val canonical = runCatching { path.canonicalFile }.getOrNull()
+            ?: return OfficeRestoredOpenResult.Refused("storage")
+        if (!canonical.path.startsWith(root.path + File.separator) ||
+            Files.isSymbolicLink(canonical.toPath()) || !canonical.isFile ||
+            canonical.length() != observedBytes
+        ) {
+            return OfficeRestoredOpenResult.Refused("unsafe")
+        }
+        val op = admit(Phase.LAUNCH, owner = { true })
+            ?: return OfficeRestoredOpenResult.Refused("busy")
+        op.input = canonical
+        op.snapshotSha256 = observedSha256
+        op.snapshotBytes = observedBytes
+        op.editable = false
+        val request = OfficePreviewRequest.of(
+            sessionToken = UUID.randomUUID().toString(),
+            stagedFilePath = canonical.path,
+            sha256 = observedSha256,
+            lengthBytes = observedBytes,
+            displayName = document.displayName,
+            languageTag = languageTag(),
+            permission = OfficePermission.READ_ONLY,
+        ).getOrNull()
+        if (request == null) {
+            settle(op, "format")
+            return OfficeRestoredOpenResult.Refused("format")
+        }
+        op.sessionToken = request.sessionToken
+        synchronized(lock) {
+            if (!current(op)) {
+                settle(op, null)
+                return OfficeRestoredOpenResult.Refused("stale")
+            }
+            op.phase = Phase.LAUNCH
+            mutableState.value = State(viewer = ViewerLaunch(op.id, request))
+        }
+        return OfficeRestoredOpenResult.Accepted(request.sessionToken)
     }
 
     private fun activeRecoveryCandidateId(): String? = synchronized(lock) {
@@ -911,12 +1074,22 @@ internal class OfficePreviewController(context: Context, private val scope: Coro
         // launch Intent; the module can display the banner and raise the chat,
         // but the answer itself is always re-validated here per query.
         val ownedNotice = op.ownerTaskId != null && approvalNoticeLookup != null
-        OfficeEngine.viewerIntent(
+        val intent = OfficeEngine.viewerIntent(
             context, request, closeAckBinder, op.id,
             hostSaveChannel = if (op.editable) saveCopy.channel else null,
             approvalNotice = if (ownedNotice) approvalNoticeBinder else null,
             reviewComponent = if (ownedNotice) ComponentName(context, MainActivity::class.java) else null,
         )
+        // C08 revision/conflict review capability: a same-UID, non-exported
+        // binder on THIS non-exported launch Intent only. It answers observed
+        // version facts and admits deliberate decisions; it grants no file or
+        // provider write authority. A read-only mount never receives it.
+        if (op.editable) {
+            val capabilities = Bundle()
+            capabilities.putBinder(OfficeConflictReviewChannel.EXTRA_REVIEW_CHANNEL, conflictReviewBinder)
+            intent.putExtras(capabilities)
+        }
+        intent
     }
 
     /**
@@ -1135,6 +1308,172 @@ internal class OfficePreviewController(context: Context, private val scope: Coro
         )
     }
 
+    // ------------------------------------------------------------------
+    // C08 original-version conflict review (exact viewer channel)
+    // ------------------------------------------------------------------
+
+    /**
+     * Re-derives the exact live editing identity for the viewer's request.
+     * The engine generation is read from the SAME Save-Copy host binding the
+     * viewer already uses; a token-only match is never enough. No path or
+     * provider authority is granted by answering.
+     */
+    private fun conflictReviewIdentity(
+        sessionToken: String,
+        generation: Long,
+    ): OfficeConflictReviewIdentity? {
+        synchronized(lock) {
+            val op = active ?: return null
+            if (op.retired || op.viewEnded || op.phase != Phase.VIEWING || !op.editable ||
+                !op.ownerCurrent() || op.sessionToken != sessionToken
+            ) return null
+            val request = mutableState.value.viewer?.request ?: return null
+            if (request.sessionToken != sessionToken || request.permission != OfficePermission.EDIT) return null
+            op to request
+        }
+        // The command binding is established asynchronously when the edit
+        // session opens. A bounded wait avoids a false "session fenced"
+        // answer during the first frames, while never accepting a different
+        // generation.
+        var liveGeneration = 0L
+        for (attempt in 0 until 20) {
+            liveGeneration = runCatching { saveCopy.aiReadGeneration(sessionToken) }.getOrDefault(0L)
+            if (liveGeneration == generation) break
+            if (attempt < 19) runCatching { Thread.sleep(50L) }
+        }
+        if (liveGeneration != generation) return null
+        return synchronized(lock) {
+            val op = active ?: return null
+            if (op.retired || op.viewEnded || op.phase != Phase.VIEWING || !op.ownerCurrent() ||
+                op.sessionToken != sessionToken
+            ) return null
+            val request = mutableState.value.viewer?.request ?: return null
+            if (request.sessionToken != sessionToken) return null
+            val route = when {
+                op.saveOriginal != null -> OfficeConflictRoute.PROVIDER
+                op.ownerTaskId != null && op.ownerWorkspaceId != null &&
+                    op.ownerNativeEpoch?.toLongOrNull() != null &&
+                    request.hostGeneration?.toLongOrNull() != null &&
+                    request.sourceLogicalPath != null -> OfficeConflictRoute.WORKSPACE
+                else -> OfficeConflictRoute.NONE
+            }
+            OfficeConflictReviewIdentity(
+                sessionToken = sessionToken,
+                generation = generation,
+                route = route,
+                baseSha256 = op.snapshotSha256 ?: request.sha256,
+                baseRevision = request.sourceRevision,
+                originalUri = op.saveOriginal?.uri?.uriString,
+                ownerTaskId = op.ownerTaskId,
+                workspaceId = op.ownerWorkspaceId,
+                nativeEpoch = op.ownerNativeEpoch?.toLongOrNull(),
+                hostGeneration = request.hostGeneration?.toLongOrNull(),
+                sourceLogicalPath = request.sourceLogicalPath,
+                workingCopy = op.workingCopy ?: return null,
+                extension = request.format.fileExtension,
+            )
+        }
+    }
+
+    /** Immutable copy of the ACTUAL working copy, verified as a real package. */
+    private fun conflictMine(
+        identity: OfficeConflictReviewIdentity,
+        directory: File,
+    ): OfficeConflictVersion? = OfficeConflictArtifacts.copyVerified(
+        source = identity.workingCopy,
+        directory = directory,
+        name = "mine.${identity.extension}",
+        format = identity.extension,
+    )
+
+    /**
+     * Immutable copy of the live original through its EXISTING read lane.
+     * Provider: the shared gateway under the current live grant. Workspace:
+     * the native egress snapshot. Neither writes, renames or re-grants.
+     */
+    private fun conflictCurrent(
+        identity: OfficeConflictReviewIdentity,
+        directory: File,
+    ): OfficeConflictVersion? = when (identity.route) {
+        OfficeConflictRoute.PROVIDER -> {
+            val uri = identity.originalUri ?: return null
+            when (val capture = saveCopy.captureOriginal(uri, directory)) {
+                is OfficeOriginalCapture.Captured -> verifyExistingVersion(
+                    file = capture.file,
+                    expectedSha256 = capture.sha256,
+                    expectedBytes = capture.bytes,
+                    revision = null,
+                    format = identity.extension,
+                )
+                is OfficeOriginalCapture.Failed -> null
+            }
+        }
+        OfficeConflictRoute.WORKSPACE -> {
+            val taskID = identity.ownerTaskId ?: return null
+            val workspaceID = identity.workspaceId ?: return null
+            val epoch = identity.nativeEpoch ?: return null
+            val hostGeneration = identity.hostGeneration ?: return null
+            val path = identity.sourceLogicalPath ?: return null
+            val owner = try {
+                WorkspaceOfficeSnapshotStager.Owner(taskID, workspaceID, epoch, hostGeneration)
+            } catch (_: IllegalArgumentException) {
+                return null
+            }
+            val snapshot = try {
+                workspace.stage(owner, path) { conflictIdentityStillCurrent(identity) }
+            } catch (_: Exception) {
+                return null
+            } catch (_: LinkageError) {
+                return null
+            }
+            try {
+                val copied = OfficeConflictArtifacts.copyVerified(
+                    source = snapshot.file,
+                    directory = directory,
+                    name = "current.${identity.extension}",
+                    format = identity.extension,
+                    expectedSha256 = snapshot.sha256,
+                    expectedBytes = snapshot.bytes,
+                )
+                copied?.copy(revision = snapshot.sourceRevision)
+            } finally {
+                removeOwnUnreferencedInput(snapshot.file)
+            }
+        }
+        OfficeConflictRoute.RUN_OUTPUT,
+        OfficeConflictRoute.NONE -> null
+    }
+
+    /** Chunk-level liveness for the read-only workspace stage (never authority). */
+    private fun conflictIdentityStillCurrent(identity: OfficeConflictReviewIdentity): Boolean =
+        synchronized(lock) {
+            val op = active ?: return false
+            !op.retired && !op.viewEnded && op.phase == Phase.VIEWING && op.ownerCurrent() &&
+                op.sessionToken == identity.sessionToken
+        }
+
+    /** Verifies an already-staged immutable file without rewriting its bytes. */
+    private fun verifyExistingVersion(
+        file: File,
+        expectedSha256: String,
+        expectedBytes: Long,
+        revision: String?,
+        format: String,
+    ): OfficeConflictVersion? {
+        if (!file.isFile || file.length() != expectedBytes) return null
+        val digest = OfficeConflictArtifacts.digest(file) ?: return null
+        if (digest.second != expectedBytes || !digest.first.equals(expectedSha256, ignoreCase = true)) return null
+        val verified = OfficeRequestPolicy.verifyStagedOutput(file, format)
+        if (!verified.verified) return null
+        if (!file.setReadOnly()) return null
+        return OfficeConflictVersion(digest.first, digest.second, revision, file)
+    }
+
+    /** Drop temporary review snapshots for an exact session (never input). */
+    private fun releaseConflictReview(sessionToken: String) {
+        runCatching { conflictReview.releaseSession(sessionToken) }
+    }
+
     /** Narrow READ-ONLY capability join for the G05-R2 Office AI host lane
      * (Main host20): hands out the ONE application-owned Save-Copy host
      * instance so the RuntimeHost pump can read the engine generation/state
@@ -1207,6 +1546,7 @@ internal class OfficePreviewController(context: Context, private val scope: Coro
     }
 
     private fun settle(op: Operation, error: String?, removeInput: Boolean = true): Boolean {
+        var releasedReviewToken: String? = null
         val settled = synchronized(lock) {
             if (active !== op) {
                 false
@@ -1233,11 +1573,13 @@ internal class OfficePreviewController(context: Context, private val scope: Coro
                         scope.launch(Dispatchers.IO) { removeOwnUnreferencedInput(file) }
                     }
                 }
+                releasedReviewToken = op.sessionToken
                 active = null
                 mutableState.value = State(error = error)
                 true
             }
         }
+        if (settled) releasedReviewToken?.let { releaseConflictReview(it) }
         return settled
     }
 

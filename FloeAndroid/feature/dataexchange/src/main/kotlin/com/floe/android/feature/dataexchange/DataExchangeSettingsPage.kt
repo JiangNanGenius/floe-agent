@@ -45,6 +45,7 @@ public fun DataExchangeSettingsPage(
     onRecover: () -> Unit,
     onRefresh: () -> Unit,
     onDismissStatus: () -> Unit,
+    onOpenRestoredDocument: (String) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     var confirm by remember(state.plan) { mutableStateOf(false) }
@@ -105,6 +106,7 @@ public fun DataExchangeSettingsPage(
                     Bullet(stringResource(R.string.dataexchange_included_tasks))
                     Bullet(stringResource(R.string.dataexchange_included_canvas))
                     Bullet(stringResource(R.string.dataexchange_included_files))
+                    Bullet(stringResource(R.string.dataexchange_included_office))
                     Bullet(stringResource(R.string.dataexchange_included_config))
                     Bullet(stringResource(R.string.dataexchange_included_schedules))
                     Bullet(stringResource(R.string.dataexchange_included_receipts))
@@ -422,6 +424,13 @@ public fun DataExchangeSettingsPage(
                                 color = Floe.colors.secondaryLabel,
                             )
                         }
+                        if (receipt.officeDrafts > 0) {
+                            FloeText(
+                                stringResource(R.string.dataexchange_result_office,
+                                    receipt.officeDrafts),
+                                style = Floe.typography.metadata,
+                            )
+                        }
                         if (receipt.memoryEntries > 0 || receipt.memoryCandidates > 0 ||
                             receipt.personalizationDocuments > 0
                         ) {
@@ -466,6 +475,60 @@ public fun DataExchangeSettingsPage(
                                 style = Floe.typography.evidence,
                                 color = Floe.colors.secondaryLabel,
                             )
+                        }
+                    }
+                })
+            }
+        }
+
+        if (state.restoredDocuments.isNotEmpty()) {
+            FloeSettingsSectionCard(
+                title = stringResource(R.string.dataexchange_office_restored_title),
+            ) {
+                SectionItem(title = {
+                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        FloeText(
+                            stringResource(R.string.dataexchange_office_restored_body),
+                            style = Floe.typography.metadata,
+                            color = Floe.colors.secondaryLabel,
+                        )
+                        state.restoredDocuments.forEach { document ->
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                            ) {
+                                Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                                    FloeText(
+                                        document.displayName,
+                                        style = Floe.typography.bodyEmphasized,
+                                    )
+                                    FloeText(
+                                        stringResource(
+                                            R.string.dataexchange_office_kind_line,
+                                            document.format.uppercase(),
+                                            stringResource(
+                                                if (document.kind == "verifiedOutput") {
+                                                    R.string.dataexchange_office_kind_verified
+                                                } else {
+                                                    R.string.dataexchange_office_kind_working
+                                                },
+                                            ),
+                                        ),
+                                        style = Floe.typography.metadata,
+                                        color = Floe.colors.secondaryLabel,
+                                    )
+                                }
+                                FloeCapsuleAction(
+                                    label = stringResource(
+                                        R.string.dataexchange_office_open),
+                                    onClick = {
+                                        onOpenRestoredDocument(document.documentID)
+                                    },
+                                    enabled = !state.busy &&
+                                        state.restoredBusyId == null,
+                                )
+                            }
                         }
                     }
                 })
@@ -674,6 +737,14 @@ private fun PlanReview(plan: DataExchangePlanUi, importMode: Boolean) {
                     color = Floe.colors.secondaryLabel,
                 )
             }
+            if (plan.officeDrafts > 0) {
+                FloeText(
+                    stringResource(R.string.dataexchange_plan_office,
+                        plan.officeDrafts),
+                    style = Floe.typography.metadata,
+                    color = Floe.colors.secondaryLabel,
+                )
+            }
             if (plan.memoryEntries > 0 || plan.memoryCandidates > 0 ||
                 plan.personalizationDocuments > 0
             ) {
@@ -835,6 +906,8 @@ private fun excludedCopy(id: String): String = when (id) {
         stringResource(R.string.dataexchange_excluded_recent_files)
     "runDependencies" ->
         stringResource(R.string.dataexchange_excluded_run_dependencies)
+    "officeRecoveryExecutionState" ->
+        stringResource(R.string.dataexchange_excluded_office_state)
     "taskContinuityExecutionControl" ->
         stringResource(R.string.dataexchange_excluded_continuity)
     "environmentsAndCaches" -> stringResource(R.string.dataexchange_excluded_environments)
@@ -862,6 +935,8 @@ private fun errorCopy(code: String): String = when (code) {
     "bridgeUnavailable" -> stringResource(R.string.dataexchange_error_storage)
     "cancelled" -> stringResource(R.string.dataexchange_error_cancelled)
     "restoreIncomplete", "rollbackFailed" -> stringResource(R.string.dataexchange_error_recovery)
+    "officeDocumentMissing" -> stringResource(R.string.dataexchange_error_office_missing)
+    "officePreviewUnavailable" -> stringResource(R.string.dataexchange_error_office_unavailable)
     "storageUnavailable" -> stringResource(R.string.dataexchange_error_storage)
     "timedOut" -> stringResource(R.string.dataexchange_error_timeout)
     else -> stringResource(R.string.dataexchange_error_unknown)
@@ -875,6 +950,8 @@ private fun noticeCopy(code: String): String = when (code) {
     "documentImported" -> stringResource(R.string.dataexchange_notice_document_imported)
     "restored" -> stringResource(R.string.dataexchange_notice_restored)
     "imported" -> stringResource(R.string.dataexchange_notice_imported)
+    "officeDocumentOpened" ->
+        stringResource(R.string.dataexchange_notice_office_opened)
     "recovered" -> stringResource(R.string.dataexchange_notice_recovered)
     "cancelled" -> stringResource(R.string.dataexchange_notice_cancelled)
     "partialFile" -> stringResource(R.string.dataexchange_notice_partial)

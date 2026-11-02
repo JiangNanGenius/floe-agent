@@ -318,6 +318,9 @@ public struct C07RestoreReceipt: Sendable, Equatable {
     public var captureFilesRestored: Int
     public var cadPreservedRestored: Int
     public var configSectionsRestored: Int
+    /// Fresh App-owned Office documents restored from retained recovery
+    /// content. Optional in practice: an older archive restores zero.
+    public var officeDraftsRestored: Int = 0
     // 2026-11-02 user-data expansion receipts.
     public var memoryEntriesRestored: Int = 0
     public var memoryCandidatesRestored: Int = 0
@@ -517,6 +520,7 @@ public enum C07RestoreEngine {
                 captureFilesRestored: artifactReceipt?.captureFiles ?? 0,
                 cadPreservedRestored: artifactReceipt?.cadPreservedFiles ?? 0,
                 configSectionsRestored: artifactReceipt?.configSections ?? 0,
+                officeDraftsRestored: artifactReceipt?.officeDrafts ?? 0,
                 memoryEntriesRestored: ownedReceipt?.memoryEntries ?? 0,
                 memoryCandidatesRestored: ownedReceipt?.memoryCandidates ?? 0,
                 personalizationDocumentsRestored:

@@ -16,6 +16,7 @@
     <string name="dataexchange_included_tasks">Chats, tasks, messages, runs, action receipts, todos, retained tool results, memory, checklist revisions, skills and model preferences</string>
     <string name="dataexchange_included_canvas">Canvas and media documents with their resource files</string>
     <string name="dataexchange_included_files">Generated images, canvas/remote captures, run outputs, job downloads and user capture files</string>
+    <string name="dataexchange_included_office">Retained Office recovery working copies, verified exports and previously restored copies (restored as new documents; no live recovery state)</string>
     <string name="dataexchange_included_config">Sanitized provider/model entries and non-secret remote, mail and voice settings (restored disabled or read-only; no credential)</string>
     <string name="dataexchange_included_schedules">Saved schedules (restored disabled; no alarm is armed)</string>
     <string name="dataexchange_included_receipts">Read-only action and mail receipts</string>
@@ -96,6 +97,8 @@
     <string name="dataexchange_error_notes">The Notes document package is invalid or its resources do not match. Nothing was imported.</string>
     <string name="dataexchange_error_cancelled">Cancelled. The original data is unchanged.</string>
     <string name="dataexchange_error_recovery">The operation did not finish and its recovery is still pending. Use Recover; original data is kept.</string>
+    <string name="dataexchange_error_office_missing">The restored Office document is missing, unreadable or no longer matches its verified digest. Nothing was opened or changed.</string>
+    <string name="dataexchange_error_office_unavailable">Office preview is not available right now. The restored document is unchanged; try again from this screen later.</string>
     <string name="dataexchange_error_storage">The file provider or App storage refused the operation. Nothing is claimed as saved.</string>
     <string name="dataexchange_error_timeout">The operation took too long and was stopped. Check the destination and retry.</string>
     <string name="dataexchange_error_unknown">The data exchange operation could not finish. Original data is preserved; retry or open Details.</string>
@@ -103,6 +106,7 @@
     <string name="dataexchange_notice_backup_saved">Backup verified and saved.</string>
     <string name="dataexchange_notice_restored">Restore finished. New copies are available.</string>
     <string name="dataexchange_notice_imported">Note imported as a new document.</string>
+    <string name="dataexchange_notice_office_opened">Document opened in the read-only Office preview.</string>
     <string name="dataexchange_notice_recovered">Recovery finished. Unfinished new items were removed; existing data is kept.</string>
     <string name="dataexchange_notice_cancelled">Cancelled. No original data was changed.</string>
     <string name="dataexchange_notice_partial">The destination may contain a partial file because this provider cannot delete it. Your in-App backup remains available for retry.</string>
@@ -122,6 +126,7 @@
     <string name="dataexchange_plan_artifacts">App files %1$d · Capture files %2$d</string>
     <string name="dataexchange_plan_config">Non-secret configuration records: %1$d</string>
     <string name="dataexchange_plan_mcp">MCP server definitions: %1$d</string>
+    <string name="dataexchange_plan_office">Retained Office documents: %1$d</string>
     <string name="dataexchange_plan_memory">Memory %1$d · Memory candidates %2$d · Personalization documents %3$d</string>
     <string name="dataexchange_plan_userdata">Checklist revisions %1$d · Skill definitions %2$d · Model preference records %3$d</string>
     <string name="dataexchange_plan_partial">This backup is partial: %1$d declared omission(s). Restore will not have the omitted bytes.</string>
@@ -132,6 +137,7 @@
     <string name="dataexchange_result_artifacts">App files %1$d · Capture files %2$d</string>
     <string name="dataexchange_result_config">Configuration records: %1$d (re-authenticate; fresh trust required)</string>
     <string name="dataexchange_result_mcp">MCP server definitions restored: %1$d</string>
+    <string name="dataexchange_result_office">Office recovery documents restored: %1$d</string>
     <string name="dataexchange_mcp_restored_notice">Restored MCP definitions are disabled and unbound. Review each server in MCP settings, then enter credentials and select a current project environment.</string>
     <string name="dataexchange_result_memory">Memory restored: %1$d · Memory candidates: %2$d · Personalization documents: %3$d</string>
     <string name="dataexchange_result_userdata">Checklist revisions: %1$d · Skill definitions: %2$d (disabled until re-reviewed) · Model preferences: %3$d</string>
@@ -168,4 +174,12 @@
     <string name="dataexchange_excluded_recent_files">Recent-file lists are UI history and are not copied.</string>
     <string name="dataexchange_excluded_run_dependencies">Run dependency graph is not resumed.</string>
     <string name="dataexchange_excluded_continuity">Task pause markers, root fingerprints and resume claims are execution-control state and are not copied or restored.</string>
+
+    <string name="dataexchange_office_restored_title">Recovered Office documents</string>
+    <string name="dataexchange_office_restored_body">These new App-owned copies came from retained Office recovery content in the backup. Opening uses the read-only preview; nothing is overwritten or executed.</string>
+    <string name="dataexchange_office_kind_line">%1$s · %2$s</string>
+    <string name="dataexchange_office_kind_working">recovered working copy</string>
+    <string name="dataexchange_office_kind_verified">verified save</string>
+    <string name="dataexchange_office_open">Open</string>
+    <string name="dataexchange_excluded_office_state">Old Office recovery journals, live sessions, destination links/grants and pending save actions (only document content is restored)</string>
 </resources>

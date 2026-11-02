@@ -1986,6 +1986,13 @@
         ],
         "dependencies": [],
         "qualification": "source-only"
+      },
+      "currentImplementation": {
+        "state": "source-integrated-unqualified",
+        "change": "Actual version text preview and observed Writer revision commands; text-only/truncation scope explicit, not full layout comparison",
+        "compiled": false,
+        "testsRun": false,
+        "deviceVerified": false
       }
     },
     {
@@ -3337,6 +3344,18 @@
         "Notes resource user launch/owner lifecycle source package",
         "Actual guest workspace exchange",
         "Main unified compilation and behavioural qualification"
+      ],
+      "compiled": false,
+      "testsRun": false,
+      "deviceVerified": false
+    },
+    "c08-office-review-drafts": {
+      "state": "source-integrated-unqualified",
+      "coverage": [
+        "Observed Writer tracked-change actions, exact saved-version text preview and retained reader lifecycle",
+        "Revision-preserving PDF source proof via original export; visual tracked markup not yet device checked",
+        "Persistent Office working/export content backup and fresh read-only restore documents, counted omissions",
+        "Held-directory-fd creation/write and exact-inode failure cleanup added by Main after review"
       ],
       "compiled": false,
       "testsRun": false,

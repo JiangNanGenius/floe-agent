@@ -65,6 +65,63 @@ final class C07RootedFileIOTests: XCTestCase {
         + Data([0x00, 0xFF, 0x10])
         + Data(" 和 emoji 🚀".utf8)
 
+    func testExclusiveDirectoryCommitsAndRetiresItsHandle() throws {
+        let roots = try Roots()
+        let target = roots.destination.appendingPathComponent("restored/new")
+        var retained: C07RootedFileIO.CreatedDirectory?
+        try C07RootedFileIO.withExclusiveDirectory(at: target) { directory in
+            retained = directory
+            _ = try C07RootedFileIO.writeFile(payload, destinationRoot: target,
+                destinationRelativePath: "document.bin", destinationDirectory: directory)
+        }
+        XCTAssertEqual(try Data(contentsOf: target.appendingPathComponent("document.bin")), payload)
+        XCTAssertThrowsError(try C07RootedFileIO.writeFile(payload, destinationRoot: target,
+            destinationRelativePath: "late.bin", destinationDirectory: try XCTUnwrap(retained)))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: target.appendingPathComponent("late.bin").path))
+    }
+
+    func testExclusiveDirectoryCollisionAndSymlinkDoNotModifyExistingData() throws {
+        let roots = try Roots()
+        let existing = roots.destination.appendingPathComponent("existing")
+        try FileManager.default.createDirectory(at: existing, withIntermediateDirectories: false)
+        try roots.file(existing, "keep.bin", payload)
+        XCTAssertThrowsError(try C07RootedFileIO.withExclusiveDirectory(at: existing) { _ in () })
+        XCTAssertEqual(try Data(contentsOf: existing.appendingPathComponent("keep.bin")), payload)
+        let alias = roots.destination.appendingPathComponent("alias")
+        try FileManager.default.createSymbolicLink(at: alias, withDestinationURL: roots.outside)
+        XCTAssertThrowsError(try C07RootedFileIO.withExclusiveDirectory(
+            at: alias.appendingPathComponent("new")) { _ in () })
+        XCTAssertFalse(FileManager.default.fileExists(atPath: roots.outside.appendingPathComponent("new").path))
+    }
+
+    func testExclusiveDirectoryFailureRemovesOnlyItsActualFiles() throws {
+        let roots = try Roots()
+        let target = roots.destination.appendingPathComponent("new")
+        XCTAssertThrowsError(try C07RootedFileIO.withExclusiveDirectory(at: target) { directory -> Void in
+            _ = try C07RootedFileIO.writeFile(payload, destinationRoot: target,
+                destinationRelativePath: "document.bin", destinationDirectory: directory)
+            throw CocoaError(.fileReadCorruptFile)
+        })
+        XCTAssertFalse(FileManager.default.fileExists(atPath: target.path))
+    }
+
+    func testExclusiveDirectoryFailurePreservesReplacementDirectory() throws {
+        let roots = try Roots()
+        let target = roots.destination.appendingPathComponent("new")
+        let moved = roots.destination.appendingPathComponent("moved")
+        let other = Data("unrelated replacement".utf8)
+        XCTAssertThrowsError(try C07RootedFileIO.withExclusiveDirectory(at: target) { directory -> Void in
+            _ = try C07RootedFileIO.writeFile(payload, destinationRoot: target,
+                destinationRelativePath: "document.bin", destinationDirectory: directory)
+            try FileManager.default.moveItem(at: target, to: moved)
+            try FileManager.default.createDirectory(at: target, withIntermediateDirectories: false)
+            try other.write(to: target.appendingPathComponent("document.bin"))
+            throw CocoaError(.fileReadCorruptFile)
+        })
+        XCTAssertEqual(try Data(contentsOf: target.appendingPathComponent("document.bin")), other)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: moved.appendingPathComponent("document.bin").path))
+    }
+
     func testVerifiedCopyRoundTripsExactBytes() throws {
         let roots = try Roots()
         let data = payload

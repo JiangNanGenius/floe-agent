@@ -126,9 +126,13 @@ public enum C07DataExchangeBridge {
                     try await domain.makeContext(owner: owner)
                 }.get()
                 let includeRetained = c07Bool(object["includeRetainedProjects"]) ?? true
+                let officeDrafts = try C08OfficeDraftCaptureRequest.parse(
+                    object["officeDrafts"])
                 let job = block(seconds: 10) {
                     await domain.startBackup(
-                        context: context, includeRetainedProjects: includeRetained)
+                        context: context,
+                        includeRetainedProjects: includeRetained,
+                        officeDrafts: officeDrafts)
                 }
                 return reply(["jobID": try job.get().uuidString])
 
@@ -468,6 +472,12 @@ public enum C07DataExchangeBridge {
         if let count = status.runDependencyCount {
             plan["runDependencies"] = count
         }
+        if let count = status.officeDraftCount {
+            plan["officeDrafts"] = count
+        }
+        if let bytes = status.officeDraftBytes {
+            plan["officeDraftBytes"] = bytes
+        }
         if let partial = status.partial { plan["partial"] = partial }
         if let count = status.omissionCount { plan["omissions"] = count }
         if !plan.isEmpty { value["plan"] = plan }
@@ -530,6 +540,9 @@ public enum C07DataExchangeBridge {
         if let count = status.restoredSkills { receipt["skills"] = count }
         if let count = status.restoredModelPreferences {
             receipt["modelPreferences"] = count
+        }
+        if let count = status.restoredOfficeDrafts {
+            receipt["officeDrafts"] = count
         }
         if let partial = status.partial { receipt["partial"] = partial }
         if !receipt.isEmpty { value["receipt"] = receipt }

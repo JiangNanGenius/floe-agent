@@ -42,6 +42,10 @@ internal class OfficeRecoveryController(
     private val artifacts: OfficeRecoveryArtifacts,
     private val exportPort: OfficeRecoveryExportPort,
     private val openPort: OfficeRecoveryOpenPort,
+    /** C08 read-only preview of fresh restored documents (never a journal
+     * candidate). Main wiring supplies the adapter; null keeps the existing
+     * recovery behavior and honestly reports the preview unavailable. */
+    private val restoredOpenPort: OfficeRestoredDocumentOpenPort? = null,
     private val ioDispatcher: CoroutineDispatcher = Dispatchers.IO,
     private val now: () -> Long = { System.currentTimeMillis() },
 ) {
@@ -74,6 +78,16 @@ internal class OfficeRecoveryController(
     private val pendingDiscards = ConcurrentHashMap<String, String>() // sessionToken -> candidateId
 
     init {
+        // The ONE live journal/artifact authority is handed to the C07 backup
+        // adapter. It is read-only there: no second journal, no mutation.
+        OfficeRecoveryDraftRegistry.install(
+            catalog = OfficeRecoveryDraftCatalog(
+                journal, artifacts,
+                restoredRoot = artifacts.workingRootDirectory.parentFile
+                    ?.let { File(it, "restored") },
+            ),
+            restoredOpenPort = restoredOpenPort,
+        )
         scope.launch(ioDispatcher) { refreshInternal(initial = true, surfaceNew = false) }
     }
 

@@ -23,6 +23,14 @@ public data class DataExchangeCanvasUi(
     val name: String,
 )
 
+public data class DataExchangeRestoredDocumentUi(
+    val documentID: String,
+    val displayName: String,
+    val format: String,
+    val kind: String,
+    val byteCount: Long,
+)
+
 public data class DataExchangeCapabilitiesUi(
     val formatVersion: Int,
     val backupExtension: String,
@@ -72,6 +80,8 @@ public data class DataExchangePlanUi(
     val skills: Int = 0,
     val modelPreferences: Int = 0,
     val runDependencies: Int = 0,
+    val officeDrafts: Int = 0,
+    val officeDraftBytes: Long = 0,
     val omissions: Int = 0,
     val partial: Boolean = false,
     val warnings: List<String>,
@@ -107,6 +117,7 @@ public data class DataExchangeReceiptUi(
     val checklistRevisions: Int = 0,
     val skills: Int = 0,
     val modelPreferences: Int = 0,
+    val officeDrafts: Int = 0,
     val partial: Boolean = false,
 ) {
     val isEmpty: Boolean
@@ -116,7 +127,7 @@ public data class DataExchangeReceiptUi(
             toolResults == 0 && appArtifacts == 0 && captureFiles == 0 &&
             configSections == 0 && mcpDefinitions == 0 && memoryEntries == 0 &&
             memoryCandidates == 0 && personalizationDocuments == 0 &&
-            checklistRevisions == 0 && skills == 0
+            checklistRevisions == 0 && skills == 0 && officeDrafts == 0
 }
 
 public data class DataExchangeUiState(
@@ -131,6 +142,8 @@ public data class DataExchangeUiState(
     val importMode: Boolean = false,
     val documentKind: String = "backup",
     val canvases: List<DataExchangeCanvasUi> = emptyList(),
+    val restoredDocuments: List<DataExchangeRestoredDocumentUi> = emptyList(),
+    val restoredBusyId: String? = null,
     val backupBytes: Long? = null,
     val backupSha256: String? = null,
     val backupWarnings: List<String> = emptyList(),

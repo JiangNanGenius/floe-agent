@@ -85,6 +85,8 @@ internal data class C07Plan(
     val skills: Int = 0,
     val modelPreferences: Int = 0,
     val runDependencies: Int = 0,
+    val officeDrafts: Int = 0,
+    val officeDraftBytes: Long = 0,
     val omissions: Int = 0,
     val partial: Boolean = false,
     val warnings: List<String>,
@@ -120,6 +122,7 @@ internal data class C07Receipt(
     val checklistRevisions: Int = 0,
     val skills: Int = 0,
     val modelPreferences: Int = 0,
+    val officeDrafts: Int = 0,
     val partial: Boolean = false,
 )
 
@@ -189,9 +192,14 @@ internal class C07DataExchangeClient(
         )
     }
 
-    fun backupBegin(owner: C07ExchangeOwner, includeRetainedProjects: Boolean): String =
+    fun backupBegin(
+        owner: C07ExchangeOwner,
+        includeRetainedProjects: Boolean,
+        officeDrafts: JSONObject? = null,
+    ): String =
         exchange("c07.backup.begin", owner) {
             put("includeRetainedProjects", includeRetainedProjects)
+            officeDrafts?.let { put("officeDrafts", it) }
         }.getString("jobID")
 
     fun noteExportBegin(owner: C07ExchangeOwner, documentID: String, revision: Int): String =
@@ -254,6 +262,8 @@ internal class C07DataExchangeClient(
                     skills = it.optInt("skills", 0),
                     modelPreferences = it.optInt("modelPreferences", 0),
                     runDependencies = it.optInt("runDependencies", 0),
+                    officeDrafts = it.optInt("officeDrafts", 0),
+                    officeDraftBytes = it.optLong("officeDraftBytes", 0L),
                     omissions = it.optInt("omissions", 0),
                     partial = it.optBoolean("partial", false),
                     warnings = strings(response.optJSONArray("warnings")),
@@ -290,6 +300,7 @@ internal class C07DataExchangeClient(
                     checklistRevisions = it.optInt("checklistRevisions", 0),
                     skills = it.optInt("skills", 0),
                     modelPreferences = it.optInt("modelPreferences", 0),
+                    officeDrafts = it.optInt("officeDrafts", 0),
                     partial = it.optBoolean("partial", false),
                 )
             },

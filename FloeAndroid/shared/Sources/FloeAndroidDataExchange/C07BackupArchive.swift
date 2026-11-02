@@ -234,6 +234,10 @@ public enum C07BackupBuilder {
             if let toolResults = owned.toolResults {
                 totalEstimate += toolResults.section.byteCount
             }
+            if let officeDrafts = owned.officeDrafts {
+                totalEstimate += officeDrafts.section.byteCount
+                totalEstimate += officeDrafts.catalog.contentBytes
+            }
             totalEstimate += 1_048_576
         }
         let estimatedTotal = totalEstimate
@@ -398,6 +402,13 @@ public enum C07BackupBuilder {
                 },
                 configs: owned.configs.map {
                     C07ClosureConfig(section: $0.section, url: $0.url)
+                },
+                officeDrafts: owned.officeDrafts.map {
+                    C07ClosureOfficeDrafts(
+                        section: $0.section,
+                        catalog: $0.catalog,
+                        metadataURL: $0.metadataURL,
+                        contents: $0.contents)
                 },
                 omissions: owned.omissions)
             var tableRecords: [C07OwnedTableRecord] = []
@@ -611,6 +622,81 @@ public enum C07BackupBuilder {
                 progress?(done, estimatedTotal)
             }
 
+            // C08 retained Office recovery document content. Each record is
+            // copied through the C07 descriptor-relative stream from the
+            // App-host verified staging file; the section index is verified by
+            // the closure pass BEFORE it can reach the manifest.
+            var officeDraftRef: C07OwnedOfficeDraftSection?
+            if let sourceDrafts = owned.officeDrafts {
+                let section = sourceDrafts.section
+                let catalog = sourceDrafts.catalog
+                try section.validate()
+                try catalog.validate()
+                guard catalog.records.count == section.count else {
+                    throw C07DataExchangeError.invalidManifest("officeDraftCount")
+                }
+                for record in catalog.records {
+                    guard archivePaths.insert(
+                        C07Path.collisionKey(record.entry)).inserted else {
+                        throw C07DataExchangeError.caseCollision(record.entry)
+                    }
+                    totalFileCount += 1
+                    guard totalFileCount <= C07DataExchangeLimits.maximumEntries else {
+                        throw C07DataExchangeError.tooManyEntries
+                    }
+                    guard let sourceURL = sourceDrafts.contents[record.entry] else {
+                        throw C07DataExchangeError.invalidManifest("officeDraftEntry")
+                    }
+                    let stagedURL = staging.appendingPathComponent(record.entry)
+                    try C07FileSystem.ensureDirectory(
+                        stagedURL.deletingLastPathComponent())
+                    let copied = try C07FileSystem.copyVerifiedStaged(
+                        source: sourceURL,
+                        destinationRoot: staging,
+                        destinationRelativePath: record.entry,
+                        expectedSize: record.byteCount,
+                        maximum: C07OwnedDataLimits.maximumOfficeDraftBytes)
+                    guard copied.byteCount == record.byteCount,
+                          copied.sha256 == record.sha256 else {
+                        throw C07DataExchangeError.hashMismatch(record.entry)
+                    }
+                    totalCopyBytes += copied.byteCount
+                    guard totalCopyBytes <= C07DataExchangeLimits.maximumTotalBytes else {
+                        throw C07DataExchangeError.totalTooLarge
+                    }
+                    done += copied.byteCount
+                    progress?(done, estimatedTotal)
+                }
+                guard archivePaths.insert(
+                    C07Path.collisionKey(section.entry)).inserted else {
+                    throw C07DataExchangeError.caseCollision(section.entry)
+                }
+                totalFileCount += 1
+                guard totalFileCount <= C07DataExchangeLimits.maximumEntries else {
+                    throw C07DataExchangeError.tooManyEntries
+                }
+                let stagedURL = staging.appendingPathComponent(section.entry)
+                try C07FileSystem.ensureDirectory(
+                    stagedURL.deletingLastPathComponent())
+                let copied = try C07FileSystem.copyVerifiedStaged(
+                    source: sourceDrafts.metadataURL,
+                    destinationRoot: staging,
+                    destinationRelativePath: section.entry,
+                    expectedSize: section.byteCount,
+                    maximum: C07OwnedDataLimits.maximumOfficeDraftSectionBytes)
+                guard copied.byteCount == section.byteCount,
+                      copied.sha256 == section.sha256 else {
+                    throw C07DataExchangeError.hashMismatch(section.entry)
+                }
+                totalCopyBytes += copied.byteCount
+                guard totalCopyBytes <= C07DataExchangeLimits.maximumTotalBytes else {
+                    throw C07DataExchangeError.totalTooLarge
+                }
+                officeDraftRef = section
+                done += copied.byteCount
+                progress?(done, estimatedTotal)
+            }
+
             let catalog = C07ArtifactCatalog(records: countedArtifacts)
             try catalog.validate()
             let catalogData = try catalog.encoded()
@@ -634,6 +720,9 @@ public enum C07BackupBuilder {
             counts.artifactBytes = countedArtifacts.reduce(0) { $0 + $1.byteCount }
             counts.toolResults = toolResultRef?.count
             counts.configSections = configRecords.count
+            counts.officeDrafts = officeDraftRef?.count
+            counts.officeDraftBytes = officeDraftRef == nil
+                ? nil : owned.officeDrafts?.catalog.contentBytes
             counts.omissions = owned.omissions.count
             let dataManifest = C07OwnedDataManifest(
                 createdAt: source.createdAt,
@@ -651,7 +740,8 @@ public enum C07BackupBuilder {
                 omissions: owned.omissions,
                 toolResults: toolResultRef,
                 configSections: configRecords.isEmpty ? nil : configRecords,
-                deduplicatedArtifacts: closure.deduplicatedArtifacts)
+                deduplicatedArtifacts: closure.deduplicatedArtifacts,
+                officeDrafts: officeDraftRef)
             try dataManifest.validate()
             let dataManifestData = try dataManifest.encoded()
             guard archivePaths.insert(
@@ -984,6 +1074,16 @@ public enum C07BackupBuilder {
             for config in dataManifest.configSections ?? [] {
                 paths.insert(config.entry)
             }
+            if let officeDrafts = dataManifest.officeDrafts {
+                paths.insert(officeDrafts.entry)
+                let data = try Data(contentsOf: staging.appendingPathComponent(officeDrafts.entry))
+                let catalog = try C07OfficeDraftCatalog.decode(data)
+                try catalog.validate()
+                guard catalog.records.count == officeDrafts.count else {
+                    throw C07DataExchangeError.invalidManifest("officeDraftCount")
+                }
+                for record in catalog.records { paths.insert(record.entry) }
+            }
         } else if manifest.formatVersion >= 2 {
             throw C07DataExchangeError.invalidManifest("dataManifestMissing")
         }
@@ -1033,6 +1133,16 @@ public enum C07BackupBuilder {
                 }
                 for config in dataManifest.configSections ?? [] {
                     result[config.entry] = config.sha256
+                }
+                if let officeDrafts = dataManifest.officeDrafts {
+                    result[officeDrafts.entry] = officeDrafts.sha256
+                    if let data = try? Data(
+                        contentsOf: staging.appendingPathComponent(officeDrafts.entry)),
+                       let catalog = try? C07OfficeDraftCatalog.decode(data) {
+                        for record in catalog.records {
+                            result[record.entry] = record.sha256
+                        }
+                    }
                 }
             }
         }
@@ -1506,6 +1616,45 @@ public enum C07BackupReader {
                 ownedBytes += section.byteCount
                 expectedPaths.insert(section.entry)
             }
+            var stagedOfficeDrafts: C07StagedOfficeDraftSection?
+            if let section = dataManifest.officeDrafts {
+                try section.validate()
+                guard let metadataURL = staged[section.entry],
+                      sizes[section.entry] == section.byteCount,
+                      hashes[section.entry] == section.sha256 else {
+                    throw C07DataExchangeError.invalidManifest("officeDraftEntry")
+                }
+                let catalog: C07OfficeDraftCatalog
+                do {
+                    let data = try Data(contentsOf: metadataURL)
+                    catalog = try C07OfficeDraftCatalog.decode(data)
+                } catch let error as C07DataExchangeError {
+                    throw error
+                } catch {
+                    throw C07DataExchangeError.invalidManifest("officeDraftDecode")
+                }
+                try catalog.validate()
+                guard catalog.records.count == section.count else {
+                    throw C07DataExchangeError.invalidManifest("officeDraftCount")
+                }
+                var contents: [String: URL] = [:]
+                for record in catalog.records {
+                    guard let url = staged[record.entry],
+                          sizes[record.entry] == record.byteCount,
+                          hashes[record.entry] == record.sha256 else {
+                        throw C07DataExchangeError.invalidManifest(
+                            "officeDraftContent:\(record.entry)")
+                    }
+                    contents[record.entry] = url
+                    ownedBytes += record.byteCount
+                    expectedPaths.insert(record.entry)
+                }
+                ownedBytes += section.byteCount
+                expectedPaths.insert(section.entry)
+                stagedOfficeDrafts = C07StagedOfficeDraftSection(
+                    section: section, catalog: catalog,
+                    metadataURL: metadataURL, contents: contents)
+            }
             expectedPaths.insert(dataManifest.workspacesEntry)
             expectedPaths.insert(dataRef.entry)
             expectedPaths.insert(catalogRef.entry)
@@ -1524,6 +1673,11 @@ public enum C07BackupReader {
                 },
                 configs: stagedConfigs.map {
                     C07ClosureConfig(section: $0.section, url: $0.url)
+                },
+                officeDrafts: stagedOfficeDrafts.map {
+                    C07ClosureOfficeDrafts(
+                        section: $0.section, catalog: $0.catalog,
+                        metadataURL: $0.metadataURL, contents: $0.contents)
                 },
                 omissions: dataManifest.omissions ?? [])
             if let declared = dataManifest.deduplicatedArtifacts,
@@ -1545,6 +1699,7 @@ public enum C07BackupReader {
                 artifacts: stagedArtifacts,
                 toolResults: stagedToolResults,
                 configs: stagedConfigs,
+                officeDrafts: stagedOfficeDrafts,
                 totalBytes: ownedBytes)
         } else {
             guard manifest.dataManifest == nil,

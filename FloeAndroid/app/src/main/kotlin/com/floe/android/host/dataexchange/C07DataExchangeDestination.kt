@@ -37,6 +37,7 @@ internal fun C07DataExchangeSettingsDestination(
             onPickDocumentImport = {}, onExportCanvas = { _ -> },
             onConfirmRestore = {}, onCancelRestore = {},
             onRecover = {}, onRefresh = {}, onDismissStatus = {},
+            onOpenRestoredDocument = {},
             modifier = modifier.fillMaxWidth(),
         )
         return
@@ -134,6 +135,7 @@ internal fun C07DataExchangeSettingsDestination(
         onRecover = controller::recover,
         onRefresh = controller::refresh,
         onDismissStatus = controller::dismissStatus,
+        onOpenRestoredDocument = controller::openRestored,
         modifier = modifier.fillMaxWidth(),
     )
 }

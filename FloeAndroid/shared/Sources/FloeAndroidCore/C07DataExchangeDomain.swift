@@ -91,6 +91,15 @@ struct C07DataExchangeContext: Sendable {
     let workRoot: URL
     let journalRoot: URL
     let notesRoot: URL
+    /// C08 App-owned Office recovery roots derived from the accepted runtime
+    /// root. The host half (OfficeRecoveryArtifacts) is the authority for
+    /// enumeration; this context only gives the rooted stream fixed roots:
+    ///   <files>/OfficeInputs/working
+    ///   <no_backup>/floe-office-outputs
+    ///   <files>/OfficeInputs/restored
+    let officeWorkingRoot: URL
+    let officeOutputsRoot: URL
+    let officeRestoredRoot: URL
     let database: DatabaseManager
     let workspaceStore: SQLiteWorkspaceStore
     let settingsStore: SQLiteSettingsStore
@@ -124,6 +133,14 @@ struct C07DataExchangeContext: Sendable {
         }
         let artifact = root.artifactStoreURL
         let data = artifact.appendingPathComponent("DataExchange", isDirectory: true)
+        // runtime root = <dataDir>/files/floe-runtime; the App-private data
+        // directory is its grandparent. These names match the Kotlin
+        // OfficePreviewController/OfficeRecoveryArtifacts roots exactly.
+        let dataDirectory = URL(fileURLWithPath: root.path, isDirectory: true)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let officeInputs = dataDirectory.appendingPathComponent(
+            "files/OfficeInputs", isDirectory: true)
         return C07DataExchangeContext(
             epoch: owner.nativeEpoch,
             rootPath: root.path,
@@ -135,6 +152,12 @@ struct C07DataExchangeContext: Sendable {
             workRoot: data.appendingPathComponent("Work", isDirectory: true),
             journalRoot: data.appendingPathComponent("RestoreJournal", isDirectory: true),
             notesRoot: artifact.appendingPathComponent("Notes", isDirectory: true),
+            officeWorkingRoot: officeInputs.appendingPathComponent(
+                "working", isDirectory: true),
+            officeOutputsRoot: dataDirectory.appendingPathComponent(
+                "no_backup/floe-office-outputs", isDirectory: true),
+            officeRestoredRoot: officeInputs.appendingPathComponent(
+                "restored", isDirectory: true),
             database: composition.cluster.database,
             workspaceStore: composition.cluster.workspaceStore,
             settingsStore: composition.cluster.settingsStore,
@@ -150,6 +173,7 @@ struct C07LiveSourceBuilder: Sendable {
     let workRoot: URL
 
     func makeSource(includeRetainedProjects: Bool,
+                    officeDrafts: C08OfficeDraftCaptureRequest? = nil,
                     progress: (@Sendable (Int64, Int64) -> Void)? = nil) async throws
         -> C07BackupSource
     {
@@ -323,7 +347,8 @@ struct C07LiveSourceBuilder: Sendable {
         let ownedData = try await C07OwnedDataSource.capture(
             context: context,
             workRoot: workRoot.appendingPathComponent("owned-data", isDirectory: true),
-            includeRetainedProjects: includeRetainedProjects)
+            includeRetainedProjects: includeRetainedProjects,
+            officeDrafts: officeDrafts)
         warnings.append(contentsOf: ownedData.warnings)
         return C07BackupSource(
             appSchemaVersion: appSchema,
@@ -833,6 +858,8 @@ public struct C07JobStatus: Sendable, Equatable {
     public var skillCount: Int? = nil
     public var modelPreferenceCount: Int? = nil
     public var runDependencyCount: Int? = nil
+    public var officeDraftCount: Int? = nil
+    public var officeDraftBytes: Int64? = nil
     public var restoredMemoryEntries: Int? = nil
     public var restoredMemoryCandidates: Int? = nil
     public var restoredPersonalizationDocuments: Int? = nil
@@ -840,6 +867,7 @@ public struct C07JobStatus: Sendable, Equatable {
     public var restoredChecklistRevisions: Int? = nil
     public var restoredSkills: Int? = nil
     public var restoredModelPreferences: Int? = nil
+    public var restoredOfficeDrafts: Int? = nil
     public var canCommit: Bool
 }
 
@@ -928,7 +956,8 @@ public actor C07DataExchangeDomain {
     // MARK: Backup / note export
 
     func startBackup(context: C07DataExchangeContext,
-                     includeRetainedProjects: Bool) -> UUID {
+                     includeRetainedProjects: Bool,
+                     officeDrafts: C08OfficeDraftCaptureRequest? = nil) -> UUID {
         let id = UUID()
         let work = context.workRoot.appendingPathComponent(id.uuidString, isDirectory: true)
         let destination = context.exportsRoot.appendingPathComponent(
@@ -940,8 +969,10 @@ public actor C07DataExchangeDomain {
                 try C07FileSystem.ensureDirectory(work)
                 let source = try await C07LiveSourceBuilder(
                     context: context, workRoot: work)
-                    .makeSource(includeRetainedProjects: includeRetainedProjects) {
-                        done, total in
+                    .makeSource(
+                        includeRetainedProjects: includeRetainedProjects,
+                        officeDrafts: officeDrafts
+                    ) { done, total in
                         Task { await self.updateProgress(id, done: done, total: total) }
                     }
                 let built = try await C07BackupBuilder.build(
@@ -1294,6 +1325,8 @@ public actor C07DataExchangeDomain {
             skillCount: job.plan?.ownedDataCounts.skills,
             modelPreferenceCount: job.plan?.ownedDataCounts.modelPreferences,
             runDependencyCount: job.plan?.ownedDataCounts.runDependencies,
+            officeDraftCount: job.plan?.ownedDataCounts.officeDrafts,
+            officeDraftBytes: job.plan?.ownedDataCounts.officeDraftBytes,
             restoredMemoryEntries: job.receipt?.memoryEntriesRestored,
             restoredMemoryCandidates: job.receipt?.memoryCandidatesRestored,
             restoredPersonalizationDocuments:
@@ -1303,6 +1336,7 @@ public actor C07DataExchangeDomain {
             restoredChecklistRevisions: job.receipt?.checklistRevisionsRestored,
             restoredSkills: job.receipt?.skillsRestored,
             restoredModelPreferences: job.receipt?.modelPreferencesRestored,
+            restoredOfficeDrafts: job.receipt?.officeDraftsRestored,
             canCommit: ((job.kind == "restore" || job.kind == "noteImport")
                 && job.phase == .ready && job.plan != nil))
     }
@@ -1459,7 +1493,8 @@ struct C07OwnedDataSource {
 
     static func capture(context: C07DataExchangeContext,
                         workRoot: URL,
-                        includeRetainedProjects: Bool) async throws
+                        includeRetainedProjects: Bool,
+                        officeDrafts: C08OfficeDraftCaptureRequest? = nil) async throws
         -> C07SourceOwnedData
     {
         _ = includeRetainedProjects
@@ -1519,6 +1554,21 @@ struct C07OwnedDataSource {
         let toolResults = try await captureToolResults(
             context: context, captured: captured, workRoot: workRoot,
             omissions: &omissions, counts: &counts, warnings: &warnings)
+
+        // C08 persisted Office recovery content. The App host enumerated and
+        // byte-verified owned recovery artifacts; this side re-validates the
+        // fixed root shape, streams the exact bytes through the rooted C07
+        // copy, and folds in explicit omissions for anything unreadable or
+        // changed during capture.
+        let officeDraftSection = try C08OfficeDraftExchange.capture(
+            request: officeDrafts,
+            workingRoot: context.officeWorkingRoot,
+            outputsRoot: context.officeOutputsRoot,
+            restoredRoot: context.officeRestoredRoot,
+            workRoot: workRoot,
+            omissions: &omissions,
+            counts: &counts,
+            warnings: &warnings)
 
         var checkpointPort = "unavailable"
         var checkpointReason: String? = "c01CheckpointPortNotInstalled"
@@ -1605,6 +1655,7 @@ struct C07OwnedDataSource {
             artifacts: collector.artifacts,
             toolResults: toolResults,
             configs: configs,
+            officeDrafts: officeDraftSection,
             omissions: omissions.items,
             deduplicatedArtifacts: collector.deduplicated,
             counts: counts,
@@ -1627,6 +1678,11 @@ struct C07OwnedDataSource {
             },
             configs: source.configs.map {
                 C07ClosureConfig(section: $0.section, url: $0.url)
+            },
+            officeDrafts: source.officeDrafts.map {
+                C07ClosureOfficeDrafts(
+                    section: $0.section, catalog: $0.catalog,
+                    metadataURL: $0.metadataURL, contents: $0.contents)
             },
             omissions: source.omissions)
         return source
@@ -3032,7 +3088,7 @@ private struct C07ArtifactDuplicate: Error {}
 
 /// Exact, de-duplicated omission receipts. A repeated scope/subject is one
 /// receipt, never an inflated count.
-private struct C07OmissionCollector {
+struct C07OmissionCollector {
     private(set) var items: [C07DataOmission] = []
     private var keys = Set<String>()
     var warnings: [String] {
@@ -3040,11 +3096,14 @@ private struct C07OmissionCollector {
     }
 
     mutating func add(_ scope: String, _ subject: String, _ reason: String) {
-        let key = "\(scope)|\(subject)"
+        add(C07DataOmission(scope: scope, subject: subject, reason: reason))
+    }
+
+    mutating func add(_ omission: C07DataOmission) {
+        let key = "\(omission.scope)|\(omission.subject)"
         guard keys.insert(key).inserted else { return }
         guard items.count < C07OwnedDataLimits.maximumOmissions else { return }
-        items.append(C07DataOmission(
-            scope: scope, subject: subject, reason: reason))
+        items.append(omission)
     }
 }
 
@@ -3712,6 +3771,39 @@ extension C07LiveRestoreSink {
             }
         }
 
+        // C08 fresh restored Office document identities. The plan names every
+        // new document and the ONE new App-owned restore directory BEFORE any
+        // file is written; rollback removes only that exact directory.
+        var officeDraftPlan: [C07OfficeDraftPlanEntry] = []
+        if let drafts = staged.officeDrafts {
+            try drafts.section.validate()
+            try drafts.catalog.validate()
+            guard drafts.catalog.records.count == drafts.section.count else {
+                throw C07DataExchangeError.invalidManifest("officeDraftCount")
+            }
+            let restoreRoot = context.officeRestoredRoot.appendingPathComponent(
+                restoreID.uuidString, isDirectory: true)
+            if FileManager.default.fileExists(atPath: restoreRoot.path) {
+                throw C07DataExchangeError.artifactCollision("officeDraftRoot")
+            }
+            var documented = Set<UUID>()
+            for record in drafts.catalog.records {
+                let documentID = UUID()
+                guard documented.insert(documentID).inserted else {
+                    throw C07DataExchangeError.duplicateIdentity("officeDraft")
+                }
+                officeDraftPlan.append(C07OfficeDraftPlanEntry(
+                    documentID: documentID,
+                    sourceEntry: record.entry,
+                    displayName: record.displayName,
+                    format: record.format,
+                    kind: record.kind,
+                    byteCount: record.byteCount,
+                    sha256: record.sha256))
+            }
+            recordRoot(restoreRoot)
+        }
+
         // Exact live-id collision check for every root identity.
         try await verifyNoRootCollisions(mapping: mapping)
 
@@ -3781,6 +3873,7 @@ extension C07LiveRestoreSink {
             previousModelPreferences: previousPreferences,
             personalizationCursorKeys: cursorKeysToInsert.isEmpty
                 ? nil : Array(Set(cursorKeysToInsert)).sorted(),
+            officeDrafts: officeDraftPlan.isEmpty ? nil : officeDraftPlan,
             counts: counts,
             warnings: warnings)
         let written = try C07DurablePlan.write(plan, root: journalRoot)
@@ -4409,6 +4502,19 @@ extension C07LiveRestoreSink {
                 exports, stagedFiles: stagedFiles, identityMap: identityMap)
         }
 
+        // C08 retained Office recovery content: fresh App-owned files and a
+        // fresh manifest below the ONE restore directory already named by the
+        // durable plan. Nothing old (journal/session/grant/URI) is restored.
+        let officeDrafts = try C08OfficeDraftExchange.commitRestoredDocuments(
+            entries: plan.officeDrafts ?? [],
+            staged: staged.officeDrafts,
+            restoreRoot: context.officeRestoredRoot.appendingPathComponent(
+                plan.restoreID.uuidString, isDirectory: true),
+            restoreID: plan.restoreID)
+        if !officeDrafts.roots.isEmpty {
+            for root in officeDrafts.roots { noteCreated(root) }
+        }
+
         return C07ArtifactCommitReceipt(
             createdRoots: createdRoots,
             attachmentPaths: plan.attachmentPaths,
@@ -4423,6 +4529,7 @@ extension C07LiveRestoreSink {
             cadPreservedFiles: cadPreservedFiles,
             toolResults: toolResults,
             configSections: configSections,
+            officeDrafts: officeDrafts.count,
             warnings: warnings)
     }
 
@@ -4830,6 +4937,12 @@ extension C07LiveRestoreSink {
         if receipt.partial {
             receipt.warnings.append("restorePartialPackage")
         }
+        if let entries = plan.officeDrafts, !entries.isEmpty {
+            try C08OfficeDraftExchange.markRestoreCommitted(
+                restoreRoot: context.officeRestoredRoot.appendingPathComponent(
+                    plan.restoreID.uuidString, isDirectory: true),
+                restoreID: plan.restoreID)
+        }
         return receipt
     }
 
@@ -5059,6 +5172,7 @@ extension C07LiveRestoreSink {
             context.restoredConfigRoot.path,
             context.restoredArtifactRoot.path,
             context.cadPreservedRoot.path,
+            context.officeRestoredRoot.path,
         ]
         for namespace in C07OwnedDataSource.appArtifactNamespaces {
             allowed.append(context.artifactRoot.appendingPathComponent(

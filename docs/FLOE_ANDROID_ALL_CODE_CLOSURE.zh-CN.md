@@ -249,3 +249,8 @@ Model interactive sessions now share the existing two interactive slots with exp
 ### Model workspace-file source checkpoint
 
 The original 13 workspace file tools now have real registry handlers over the existing task-root path guard and file service. The source preserves task path ceilings, temporary-chat refusal, binary-text refusal, bounded reads/search and revision-based atomic mutations. Nine feature/test-source files are selected here. Notes-resource launch/staging ownership and actual guest exchange remain distinct implementation work; neither API presence nor this source publication establishes a working PDF/OCR task pipeline. No compile, executed tests or device acceptance is claimed.
+
+
+### Office review and retained-document backup source checkpoint
+
+Writer revision actions now use observed engine state. Version review shows text read from each retained snapshot, explicitly limited to text and bounded content; it preserves the active editor. Persistent Office working/export copies participate in typed backup, with fresh restored documents reachable through the existing read-only viewer. Missing or changed sources produce counted omissions. Main replaced the restore directory creation/rollback path with held-directory-descriptor writes and exact-inode cleanup, and authored focused race/collision regressions. Source only: no compilation, executed tests, archive round-trip or device acceptance is claimed. PDF export preserves the original revision-bearing source; PDF visual markup remains to be checked.

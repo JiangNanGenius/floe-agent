@@ -118,7 +118,7 @@ public enum C07RootedFileIO {
         return parts
     }
 
-    private final class RootHandle {
+    fileprivate final class RootHandle {
         let fd: Int32
         let device: dev_t
         let canonicalPath: String
@@ -138,13 +138,24 @@ public enum C07RootedFileIO {
                 ? "/"
                 : "/" + path.joined(separator: "/")
         }
+        init(adopting opened: Int32, canonicalPath: String) throws {
+            var info = stat()
+            guard fstat(opened, &info) == 0,
+                  (info.st_mode & mode_t(S_IFMT)) == mode_t(S_IFDIR) else {
+                close(opened)
+                throw C07DataExchangeError.storageUnavailable("rootNotDirectory")
+            }
+            fd = opened
+            device = info.st_dev
+            self.canonicalPath = canonicalPath
+        }
         deinit { close(fd) }
 
         /// Opens the already-validated components one at a time from "/".
         /// Every open is O_NOFOLLOW and every descent uses the descriptor of
         /// the directory just verified, so an ancestor rename or replacement
         /// after admission cannot redirect the held root.
-        private static func openAdmitted(_ path: [String]) throws -> Int32 {
+        fileprivate static func openAdmitted(_ path: [String], create: Bool = false) throws -> Int32 {
             let flags = O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC
             var current = "/".withCString { open($0, flags) }
             guard current >= 0 else {
@@ -152,8 +163,17 @@ public enum C07RootedFileIO {
                     "rootOpen:\(errno)")
             }
             for component in path {
-                let next = component.withCString {
+                var next = component.withCString {
                     openat(current, $0, flags)
+                }
+                if next < 0, create, errno == ENOENT {
+                    let result = component.withCString { mkdirat(current, $0, mode_t(0o700)) }
+                    if result != 0 && errno != EEXIST {
+                        let code = errno
+                        close(current)
+                        throw C07DataExchangeError.storageUnavailable("directoryCreate:\(code)")
+                    }
+                    next = component.withCString { openat(current, $0, flags) }
                 }
                 guard next >= 0 else {
                     let code = errno
@@ -186,6 +206,114 @@ public enum C07RootedFileIO {
                 current = next
             }
             return current
+        }
+    }
+
+    /// A synchronous creation transaction over one held directory. Only flat
+    /// files created by this transaction may be removed on failure. This
+    /// object deliberately cannot be constructed from a model-supplied token.
+    public final class CreatedDirectory {
+        fileprivate let root: RootHandle
+        fileprivate let parentFd: Int32
+        fileprivate let leaf: String
+        fileprivate let identity: stat
+        private var created: [(String, stat)] = []
+        fileprivate var finished = false
+
+        fileprivate init(root: RootHandle, parentFd: Int32, leaf: String) throws {
+            self.root = root
+            self.parentFd = parentFd
+            self.leaf = leaf
+            var value = stat()
+            guard fstat(root.fd, &value) == 0 else {
+                close(parentFd)
+                throw C07DataExchangeError.storageUnavailable("directoryStat")
+            }
+            identity = value
+        }
+        deinit { close(parentFd) }
+
+        fileprivate func admit(_ path: [String], rootURL: URL) throws {
+            let namedRoot = "/" + (try C07RootedFileIO.rootComponents(rootURL)).joined(separator: "/")
+            guard !finished, path.count == 1, created.count < 4096,
+                  namedRoot == root.canonicalPath else {
+                throw C07DataExchangeError.storageUnavailable("directoryTransactionClosedOrFull")
+            }
+        }
+        fileprivate func record(_ leaf: String, _ info: stat) { created.append((leaf, info)) }
+
+        fileprivate func stillAttached() -> Bool {
+            var current = stat()
+            return leaf.withCString { fstatat(parentFd, $0, &current, AT_SYMLINK_NOFOLLOW) } == 0
+                && current.st_dev == identity.st_dev && current.st_ino == identity.st_ino
+                && (current.st_mode & mode_t(S_IFMT)) == mode_t(S_IFDIR)
+        }
+
+        fileprivate func rollback() {
+            // Operate on the held directory even if its original pathname was
+            // replaced. Never recurse into unrecorded or substituted entries.
+            for (name, expected) in created.reversed() {
+                var current = stat()
+                if name.withCString({ fstatat(root.fd, $0, &current, AT_SYMLINK_NOFOLLOW) }) == 0,
+                   current.st_dev == expected.st_dev, current.st_ino == expected.st_ino,
+                   (current.st_mode & mode_t(S_IFMT)) == mode_t(S_IFREG) {
+                    _ = name.withCString { unlinkat(root.fd, $0, 0) }
+                }
+            }
+            if stillAttached() {
+                _ = leaf.withCString { unlinkat(parentFd, $0, AT_REMOVEDIR) }
+            }
+        }
+    }
+
+    /// Creates the final directory exclusively through its held parent.
+    /// Parent creation walks from / with the same no-follow alias policy as
+    /// ordinary roots. No absolute mkdir or recursive pathname cleanup runs.
+    public static func withExclusiveDirectory<T>(
+        at url: URL, _ body: (CreatedDirectory) throws -> T
+    ) throws -> T {
+        let path = try rootComponents(url)
+        guard let leaf = path.last else { throw C07DataExchangeError.unsafePath(url.path) }
+        let parentFd = try RootHandle.openAdmitted(Array(path.dropLast()), create: true)
+        guard leaf.withCString({ mkdirat(parentFd, $0, mode_t(0o700)) }) == 0 else {
+            let code = errno
+            close(parentFd)
+            if code == EEXIST { throw C07DataExchangeError.artifactCollision("directoryExists") }
+            throw C07DataExchangeError.storageUnavailable("directoryCreate:\(code)")
+        }
+        var createdIdentity = stat()
+        guard leaf.withCString({ fstatat(parentFd, $0, &createdIdentity, AT_SYMLINK_NOFOLLOW) }) == 0,
+              (createdIdentity.st_mode & mode_t(S_IFMT)) == mode_t(S_IFDIR) else {
+            close(parentFd)
+            throw C07DataExchangeError.storageUnavailable("directoryIdentity")
+        }
+        let opened = leaf.withCString {
+            openat(parentFd, $0, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+        }
+        guard opened >= 0 else {
+            close(parentFd)
+            throw C07DataExchangeError.storageUnavailable("directoryOpen")
+        }
+        let root: RootHandle
+        do { root = try RootHandle(adopting: opened, canonicalPath: "/" + path.joined(separator: "/")) }
+        catch { close(parentFd); throw error }
+        let directory = try CreatedDirectory(root: root, parentFd: parentFd, leaf: leaf)
+        defer { directory.finished = true }
+        guard directory.identity.st_dev == createdIdentity.st_dev,
+              directory.identity.st_ino == createdIdentity.st_ino else {
+            // The opened replacement is not our created directory. Do not
+            // enter rollback, even if the replacement happens to be empty.
+            throw C07DataExchangeError.storageUnavailable("directoryReplaced")
+        }
+        do {
+            let result = try body(directory)
+            guard directory.stillAttached(), fsync(root.fd) == 0, fsync(parentFd) == 0 else {
+                throw C07DataExchangeError.storageUnavailable("directoryReplacedOrUnsynced")
+            }
+            return result
+        } catch {
+            directory.rollback()
+            throw error
         }
     }
 
@@ -313,13 +441,15 @@ public enum C07RootedFileIO {
         maximum: Int64 = C07DataExchangeLimits.maximumEntryBytes,
         mode: Int = 0o600,
         createDestinationParents: Bool = true,
+        destinationDirectory: CreatedDirectory? = nil,
         shouldCancel: @Sendable () -> Bool = { Task.isCancelled }
     ) throws -> (sha256: String, byteCount: Int64) {
         guard maximum >= 0 else { throw C07DataExchangeError.totalTooLarge }
         let sourcePath = try components(sourceRelativePath)
         let destinationPath = try components(destinationRelativePath)
         let source = try RootHandle(url: sourceRoot)
-        let destination = try RootHandle(url: destinationRoot)
+        try destinationDirectory?.admit(destinationPath, rootURL: destinationRoot)
+        let destination = try destinationDirectory?.root ?? RootHandle(url: destinationRoot)
 
         // Source: no-follow leaf open + fstat regular-file/identity gate.
         let sourceParent = try openParent(
@@ -380,6 +510,7 @@ public enum C07RootedFileIO {
             close(destinationFd)
             throw C07DataExchangeError.storageUnavailable("destinationStat")
         }
+        destinationDirectory?.record(destinationParent.leaf, opened)
         if fchmod(destinationFd, mode_t(mode & 0o777)) != 0 {
             let code = errno
             close(destinationFd)
@@ -514,7 +645,8 @@ public enum C07RootedFileIO {
         destinationRelativePath: String,
         mode: Int = 0o600,
         expectedSHA256: String? = nil,
-        createDestinationParents: Bool = true
+        createDestinationParents: Bool = true,
+        destinationDirectory: CreatedDirectory? = nil
     ) throws -> (sha256: String, byteCount: Int64) {
         let digest = SHA256.hash(data: data)
             .map { String(format: "%02x", $0) }.joined()
@@ -522,7 +654,8 @@ public enum C07RootedFileIO {
             throw C07DataExchangeError.hashMismatch(destinationRelativePath)
         }
         let destinationPath = try components(destinationRelativePath)
-        let destination = try RootHandle(url: destinationRoot)
+        try destinationDirectory?.admit(destinationPath, rootURL: destinationRoot)
+        let destination = try destinationDirectory?.root ?? RootHandle(url: destinationRoot)
         let destinationParent = try openParent(
             root: destination, path: destinationPath,
             create: createDestinationParents)
@@ -546,6 +679,7 @@ public enum C07RootedFileIO {
             close(destinationFd)
             throw C07DataExchangeError.storageUnavailable("destinationStat")
         }
+        destinationDirectory?.record(destinationParent.leaf, opened)
         if fchmod(destinationFd, mode_t(mode & 0o777)) != 0 {
             let code = errno
             close(destinationFd)

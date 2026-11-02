@@ -36,6 +36,10 @@ internal class OfficeRecoveryArtifacts(
     private val workingRoot: File = runCatching { workingRoot.canonicalFile }.getOrNull() ?: workingRoot
     private val outputsRoot: File = runCatching { outputsRoot.canonicalFile }.getOrNull() ?: outputsRoot
 
+    /** Exact owned roots (already canonicalized) for the C08 backup adapter. */
+    internal val workingRootDirectory: File get() = workingRoot
+    internal val outputsRootDirectory: File get() = outputsRoot
+
     private companion object {
         val OP_ID = Regex("^[A-Za-z0-9_-]{1,64}$")
         val SHA256_HEX = Regex("^[0-9a-f]{64}$")

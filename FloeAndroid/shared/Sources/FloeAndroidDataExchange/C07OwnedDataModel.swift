@@ -28,6 +28,17 @@ public enum C07OwnedDataLimits {
     public static let workspacesEntry = "data/workspaces.json"
     public static let tableDirectory = "data/tables"
     public static let artifactDirectory = "artifacts"
+    /// C08: retained Office recovery working copies and verified exports are
+    /// user documents, not disposable cache. The section index is bounded
+    /// descriptive metadata; every content entry is a separate exact-byte
+    /// artifact below `artifacts/office-drafts/`.
+    public static let officeDraftsEntry = "data/office-drafts.json"
+    public static let officeDraftDirectory = "artifacts/office-drafts"
+    public static let maximumOfficeDrafts = 64
+    public static let maximumOfficeDraftBytes: Int64 = 256 * 1_024 * 1_024
+    public static let maximumOfficeDraftTotalBytes: Int64 = 2 * 1_024 * 1_024 * 1_024
+    public static let maximumOfficeDraftSectionBytes: Int64 = 512 * 1_024
+    public static let maximumOfficeDraftDisplayNameBytes = 240
 
     public static let maximumTables = 48
     public static let maximumRowsPerTable = 5_000_000
@@ -1244,6 +1255,257 @@ public struct C07WorkspaceDescriptor: Codable, Sendable, Equatable {
     }
 }
 
+// MARK: - Office recovery documents (C08)
+
+/// Which persisted Office recovery artifact the content came from. This is a
+/// descriptive provenance marker, never an instruction or a live recovery
+/// state: restore always writes a fresh App-owned document with a fresh
+/// identity.
+public enum C07OfficeDraftKind: String, Codable, Sendable, CaseIterable {
+    /// The mutable `files/OfficeInputs/working/<session>/document.<ext>`
+    /// copy an editable Office session was writing. It is a real user
+    /// document even when no save completed.
+    case workingCopy
+    /// A module-verified `no_backup/floe-office-outputs/...` export whose
+    /// exact bytes were verified by the Office engine.
+    case verifiedOutput
+}
+
+/// One retained Office recovery content record. Only bounded, non-secret
+/// descriptive metadata is carried. The old session/task/workspace/run/root/
+/// native-generation/operation identities, destination URIs, grants and
+/// credential references are deliberately absent.
+public struct C07OwnedOfficeDraftRecord: Codable, Sendable, Equatable {
+    /// Exact package-relative content entry.
+    public var entry: String
+    public var kind: C07OfficeDraftKind
+    /// Bounded user-facing name (no local path).
+    public var displayName: String
+    /// `docx` / `xlsx` / `pptx` / `pdf`.
+    public var format: String
+    public var byteCount: Int64
+    public var sha256: String
+    public var createdAt: Date
+    public var updatedAt: Date
+    /// Stable proof that the capture accepted the source only from the
+    /// App-owned Office recovery roots. It is not an archive-controlled
+    /// permission.
+    public var ownership: String
+
+    public static let ownershipMarker = "appOwnedOfficeRecovery"
+    public static let allowedFormats: Set<String> = ["docx", "xlsx", "pptx", "pdf"]
+
+    public init(entry: String, kind: C07OfficeDraftKind,
+                displayName: String, format: String,
+                byteCount: Int64, sha256: String,
+                createdAt: Date, updatedAt: Date,
+                ownership: String = C07OwnedOfficeDraftRecord.ownershipMarker) {
+        self.entry = entry
+        self.kind = kind
+        self.displayName = C07OwnedOfficeDraftRecord.boundedName(displayName)
+        self.format = format.lowercased()
+        self.byteCount = byteCount
+        self.sha256 = sha256
+        // ISO-8601 metadata serialization is second-granular. Normalize here
+        // so the writer's in-memory catalog and the reader's decoded catalog
+        // compare equal (never a spurious hash/metadata failure).
+        self.createdAt = Date(
+            timeIntervalSince1970: createdAt.timeIntervalSince1970.rounded(.towardZero))
+        self.updatedAt = Date(
+            timeIntervalSince1970: updatedAt.timeIntervalSince1970.rounded(.towardZero))
+        self.ownership = ownership
+    }
+
+    /// Truncates at a Unicode scalar boundary so a long CJK name can never
+    /// exceed the byte bound after initialization.
+    public static func boundedName(_ raw: String) -> String {
+        var result = ""
+        for character in raw {
+            let candidate = result + String(character)
+            if candidate.utf8.count > C07OwnedDataLimits.maximumOfficeDraftDisplayNameBytes {
+                break
+            }
+            result = candidate
+        }
+        return result
+    }
+
+    public func validate() throws {
+        let relative = try C07Path.validateRelative(entry)
+        guard relative.hasPrefix(C07OwnedDataLimits.officeDraftDirectory + "/") else {
+            throw C07DataExchangeError.invalidManifest("officeDraftEntry")
+        }
+        let leaf = (relative as NSString).lastPathComponent
+        let split = leaf.split(separator: ".", maxSplits: 1,
+                               omittingEmptySubsequences: false)
+        guard split.count == 2,
+              let identifier = UUID(uuidString: String(split[0])),
+              identifier.uuidString.lowercased() == String(split[0]).lowercased(),
+              String(split[1]) == format,
+              Self.allowedFormats.contains(format) else {
+            throw C07DataExchangeError.invalidManifest("officeDraftName")
+        }
+        guard !displayName.isEmpty,
+              displayName.utf8.count <= C07OwnedDataLimits.maximumOfficeDraftDisplayNameBytes,
+              !displayName.contains("/"), !displayName.contains("\\"),
+              displayName.unicodeScalars.allSatisfy({
+                  $0.value >= 0x20 && $0.value != 0x7F
+                      && !CharacterSet.controlCharacters.contains($0)
+              }),
+              !displayName.hasPrefix(".") else {
+            throw C07DataExchangeError.invalidManifest("officeDraftDisplayName")
+        }
+        guard byteCount >= 1,
+              byteCount <= C07OwnedDataLimits.maximumOfficeDraftBytes,
+              C07SHA256Hex.isSHA256(sha256),
+              ownership == Self.ownershipMarker else {
+            throw C07DataExchangeError.invalidManifest("officeDraftBytes")
+        }
+    }
+}
+
+/// `data/office-drafts.json`: the bounded metadata index for retained Office
+/// recovery content. This is the archive ENTRY body; `C07OwnedOfficeDraftSection`
+/// in the owned-data manifest carries only the entry digest/size contract, the
+/// same split used for tool-result retention records.
+public struct C07OfficeDraftCatalog: Codable, Sendable, Equatable {
+    public var records: [C07OwnedOfficeDraftRecord]
+
+    public init(records: [C07OwnedOfficeDraftRecord]) {
+        self.records = records
+    }
+
+    public var contentBytes: Int64 {
+        records.reduce(0) { $0 + $1.byteCount }
+    }
+
+    public func validate() throws {
+        guard records.count <= C07OwnedDataLimits.maximumOfficeDrafts,
+              contentBytes <= C07OwnedDataLimits.maximumOfficeDraftTotalBytes else {
+            throw C07DataExchangeError.tooManyEntries
+        }
+        var entries = Set<String>()
+        var contents = Set<String>()
+        for record in records {
+            try record.validate()
+            guard entries.insert(C07Path.collisionKey(record.entry)).inserted else {
+                throw C07DataExchangeError.duplicateEntry(record.entry)
+            }
+            guard contents.insert("\(record.sha256)|\(record.byteCount)").inserted else {
+                throw C07DataExchangeError.invalidManifest("officeDraftDuplicate")
+            }
+        }
+    }
+
+    public func encoded() throws -> Data {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        encoder.dateEncodingStrategy = .iso8601
+        let data = try encoder.encode(self)
+        guard Int64(data.count) <= C07OwnedDataLimits.maximumOfficeDraftSectionBytes else {
+            throw C07DataExchangeError.entryTooLarge(
+                C07OwnedDataLimits.officeDraftsEntry)
+        }
+        return data
+    }
+
+    public static func decode(_ data: Data) throws -> C07OfficeDraftCatalog {
+        guard Int64(data.count) <= C07OwnedDataLimits.maximumOfficeDraftSectionBytes else {
+            throw C07DataExchangeError.entryTooLarge(
+                C07OwnedDataLimits.officeDraftsEntry)
+        }
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        do { return try decoder.decode(C07OfficeDraftCatalog.self, from: data) }
+        catch { throw C07DataExchangeError.invalidManifest("officeDraftDecode") }
+    }
+}
+
+/// Manifest half of the retained Office recovery section: the metadata entry
+/// and its exact count/size/digest contract.
+public struct C07OwnedOfficeDraftSection: Codable, Sendable, Equatable {
+    public var entry: String
+    public var count: Int
+    public var byteCount: Int64
+    public var sha256: String
+    /// Content records dropped because an identical digest+size was already
+    /// carried (a working copy identical to its verified export, or two
+    /// recovery records holding the same bytes).
+    public var deduplicated: Int?
+
+    public init(entry: String = C07OwnedDataLimits.officeDraftsEntry,
+                count: Int, byteCount: Int64, sha256: String,
+                deduplicated: Int? = nil) {
+        self.entry = entry
+        self.count = count
+        self.byteCount = byteCount
+        self.sha256 = sha256
+        self.deduplicated = deduplicated
+    }
+
+    public func validate() throws {
+        guard entry == C07OwnedDataLimits.officeDraftsEntry,
+              count >= 0,
+              count <= C07OwnedDataLimits.maximumOfficeDrafts,
+              byteCount >= 0,
+              byteCount <= C07OwnedDataLimits.maximumOfficeDraftSectionBytes,
+              C07SHA256Hex.isSHA256(sha256) else {
+            throw C07DataExchangeError.invalidManifest("officeDraftSection")
+        }
+        if let deduplicated {
+            guard deduplicated >= 0,
+                  deduplicated <= C07OwnedDataLimits.maximumOfficeDrafts * 2 else {
+                throw C07DataExchangeError.invalidManifest("officeDraftDedupe")
+            }
+        }
+    }
+}
+
+/// One staged content file for a validated office-draft record.
+public struct C07SourceOfficeDraft: Sendable, Equatable {
+    public var record: C07OwnedOfficeDraftRecord
+    public var url: URL
+
+    public init(record: C07OwnedOfficeDraftRecord, url: URL) {
+        self.record = record
+        self.url = url
+    }
+}
+
+public struct C07SourceOfficeDraftSection: Sendable, Equatable {
+    public var section: C07OwnedOfficeDraftSection
+    public var catalog: C07OfficeDraftCatalog
+    public var metadataURL: URL
+    public var contents: [String: URL]
+
+    public init(section: C07OwnedOfficeDraftSection,
+                catalog: C07OfficeDraftCatalog,
+                metadataURL: URL,
+                contents: [String: URL]) {
+        self.section = section
+        self.catalog = catalog
+        self.metadataURL = metadataURL
+        self.contents = contents
+    }
+}
+
+public struct C07StagedOfficeDraftSection: Sendable, Equatable {
+    public var section: C07OwnedOfficeDraftSection
+    public var catalog: C07OfficeDraftCatalog
+    public var metadataURL: URL
+    public var contents: [String: URL]
+
+    public init(section: C07OwnedOfficeDraftSection,
+                catalog: C07OfficeDraftCatalog,
+                metadataURL: URL,
+                contents: [String: URL]) {
+        self.section = section
+        self.catalog = catalog
+        self.metadataURL = metadataURL
+        self.contents = contents
+    }
+}
+
 // MARK: - Artifacts
 
 public enum C07ArtifactRole: String, Codable, Sendable, CaseIterable {
@@ -1432,6 +1694,9 @@ public struct C07OwnedDataCounts: Codable, Sendable, Equatable {
     public var skills: Int?
     public var modelPreferences: Int?
     public var runDependencies: Int?
+    /// Retained Office recovery document content carried by this package.
+    public var officeDrafts: Int?
+    public var officeDraftBytes: Int64?
 
     public init(conversations: Int = 0, messages: Int = 0,
                 messageParts: Int = 0, runs: Int = 0, toolCalls: Int = 0,
@@ -1454,7 +1719,8 @@ public struct C07OwnedDataCounts: Codable, Sendable, Equatable {
                 personalizationDocuments: Int? = nil,
                 personalizationCursors: Int? = nil,
                 checklistRevisions: Int? = nil, skills: Int? = nil,
-                modelPreferences: Int? = nil, runDependencies: Int? = nil) {
+                modelPreferences: Int? = nil, runDependencies: Int? = nil,
+                officeDrafts: Int? = nil, officeDraftBytes: Int64? = nil) {
         self.conversations = conversations
         self.messages = messages
         self.messageParts = messageParts
@@ -1493,6 +1759,8 @@ public struct C07OwnedDataCounts: Codable, Sendable, Equatable {
         self.skills = skills
         self.modelPreferences = modelPreferences
         self.runDependencies = runDependencies
+        self.officeDrafts = officeDrafts
+        self.officeDraftBytes = officeDraftBytes
     }
 }
 
@@ -1535,6 +1803,9 @@ public struct C07OwnedDataManifest: Codable, Sendable, Equatable {
     public var toolResults: C07OwnedToolResultSection?
     public var configSections: [C07OwnedConfigSection]?
     public var deduplicatedArtifacts: Int?
+    /// C08 retained Office recovery content. Optional so archives written by
+    /// earlier builds still decode.
+    public var officeDrafts: C07OwnedOfficeDraftSection?
 
     public init(format: String = C07OwnedDataLimits.format,
                 formatVersion: Int = C07OwnedDataLimits.formatVersion,
@@ -1554,7 +1825,8 @@ public struct C07OwnedDataManifest: Codable, Sendable, Equatable {
                 omissions: [C07DataOmission]? = nil,
                 toolResults: C07OwnedToolResultSection? = nil,
                 configSections: [C07OwnedConfigSection]? = nil,
-                deduplicatedArtifacts: Int? = nil) {
+                deduplicatedArtifacts: Int? = nil,
+                officeDrafts: C07OwnedOfficeDraftSection? = nil) {
         self.format = format
         self.formatVersion = formatVersion
         self.createdAt = createdAt
@@ -1574,6 +1846,7 @@ public struct C07OwnedDataManifest: Codable, Sendable, Equatable {
         self.toolResults = toolResults
         self.configSections = configSections
         self.deduplicatedArtifacts = deduplicatedArtifacts
+        self.officeDrafts = officeDrafts
     }
 
     public func encoded() throws -> Data {
@@ -1695,6 +1968,17 @@ public struct C07OwnedDataManifest: Codable, Sendable, Equatable {
                 throw C07DataExchangeError.invalidManifest("deduplicatedArtifacts")
             }
         }
+        if let officeDrafts {
+            try officeDrafts.validate()
+            guard (counts.officeDrafts ?? officeDrafts.count) == officeDrafts.count else {
+                throw C07DataExchangeError.invalidManifest("officeDraftCountField")
+            }
+            // The bytes total is verified against the decoded catalog by the
+            // archive reader/writer; the manifest only names the metadata
+            // entry, so it cannot self-reference its own digest.
+        } else if (counts.officeDrafts ?? 0) != 0 {
+            throw C07DataExchangeError.invalidManifest("officeDraftMissingSection")
+        }
         if let toolResults {
             guard (counts.toolResults ?? toolResults.count) == toolResults.count else {
                 throw C07DataExchangeError.invalidManifest("toolResultCountField")
@@ -1779,6 +2063,7 @@ public struct C07SourceOwnedData: Sendable {
     public var artifacts: [C07SourceArtifact]
     public var toolResults: C07SourceToolResultSection?
     public var configs: [C07SourceConfigSection]
+    public var officeDrafts: C07SourceOfficeDraftSection?
     public var omissions: [C07DataOmission]
     public var deduplicatedArtifacts: Int
     public var counts: C07OwnedDataCounts
@@ -1792,6 +2077,7 @@ public struct C07SourceOwnedData: Sendable {
                 artifacts: [C07SourceArtifact],
                 toolResults: C07SourceToolResultSection? = nil,
                 configs: [C07SourceConfigSection] = [],
+                officeDrafts: C07SourceOfficeDraftSection? = nil,
                 omissions: [C07DataOmission] = [],
                 deduplicatedArtifacts: Int = 0,
                 counts: C07OwnedDataCounts,
@@ -1804,6 +2090,7 @@ public struct C07SourceOwnedData: Sendable {
         self.artifacts = artifacts
         self.toolResults = toolResults
         self.configs = configs
+        self.officeDrafts = officeDrafts
         self.omissions = omissions
         self.deduplicatedArtifacts = deduplicatedArtifacts
         self.counts = counts
@@ -1862,6 +2149,7 @@ public struct C07StagedOwnedData: Sendable {
     public var artifacts: [C07StagedArtifact]
     public var toolResults: C07StagedToolResultSection?
     public var configs: [C07StagedConfigSection]
+    public var officeDrafts: C07StagedOfficeDraftSection?
     public var totalBytes: Int64
 
     public init(manifest: C07OwnedDataManifest,
@@ -1871,6 +2159,7 @@ public struct C07StagedOwnedData: Sendable {
                 artifacts: [C07StagedArtifact],
                 toolResults: C07StagedToolResultSection? = nil,
                 configs: [C07StagedConfigSection] = [],
+                officeDrafts: C07StagedOfficeDraftSection? = nil,
                 totalBytes: Int64) {
         self.manifest = manifest
         self.manifestSHA256 = manifestSHA256
@@ -1879,6 +2168,7 @@ public struct C07StagedOwnedData: Sendable {
         self.artifacts = artifacts
         self.toolResults = toolResults
         self.configs = configs
+        self.officeDrafts = officeDrafts
         self.totalBytes = totalBytes
     }
 }
@@ -1925,6 +2215,46 @@ public struct C07ToolResultPlanEntry: Codable, Sendable, Equatable {
     }
 }
 
+/// One fresh App-owned Office document this restore will create from retained
+/// recovery content. `documentID` is a NEW identity allocated at prepare
+/// time; no old recovery candidate/session identity is carried.
+public struct C07OfficeDraftPlanEntry: Codable, Sendable, Equatable {
+    public var documentID: UUID
+    public var sourceEntry: String
+    public var displayName: String
+    public var format: String
+    public var kind: C07OfficeDraftKind
+    public var byteCount: Int64
+    public var sha256: String
+
+    public init(documentID: UUID, sourceEntry: String,
+                displayName: String, format: String,
+                kind: C07OfficeDraftKind, byteCount: Int64,
+                sha256: String) {
+        self.documentID = documentID
+        self.sourceEntry = sourceEntry
+        self.displayName = displayName
+        self.format = format
+        self.kind = kind
+        self.byteCount = byteCount
+        self.sha256 = sha256
+    }
+
+    public func validate() throws {
+        guard !sourceEntry.isEmpty,
+              sourceEntry.utf8.count <= C07DataExchangeLimits.maximumPathBytes,
+              !displayName.isEmpty,
+              displayName.utf8.count <= C07OwnedDataLimits.maximumOfficeDraftDisplayNameBytes,
+              !displayName.contains("/"), !displayName.contains("\\"),
+              C07OwnedOfficeDraftRecord.allowedFormats.contains(format),
+              byteCount >= 1,
+              byteCount <= C07OwnedDataLimits.maximumOfficeDraftBytes,
+              C07SHA256Hex.isSHA256(sha256) else {
+            throw C07DataExchangeError.invalidManifest("officeDraftPlan")
+        }
+    }
+}
+
 public struct C07OwnedDataRestorePlanFile: Codable, Sendable, Equatable {
     public var restoreID: UUID
     public var planVersion: Int
@@ -1955,6 +2285,9 @@ public struct C07OwnedDataRestorePlanFile: Codable, Sendable, Equatable {
     /// will INSERT (target had no cursor for them at prepare time), so a
     /// rollback removes precisely those rows and nothing else.
     public var personalizationCursorKeys: [String]?
+    /// Fresh restored Office document identities/content this plan creates.
+    /// Optional so a plan written before C08 still decodes.
+    public var officeDrafts: [C07OfficeDraftPlanEntry]?
     public var counts: C07OwnedDataCounts
     public var warnings: [String]
 
@@ -1974,6 +2307,7 @@ public struct C07OwnedDataRestorePlanFile: Codable, Sendable, Equatable {
                 mcpServersRowExisted: Bool? = nil,
                 previousModelPreferences: C07DBRow? = nil,
                 personalizationCursorKeys: [String]? = nil,
+                officeDrafts: [C07OfficeDraftPlanEntry]? = nil,
                 counts: C07OwnedDataCounts,
                 warnings: [String]) {
         self.restoreID = restoreID
@@ -1993,6 +2327,7 @@ public struct C07OwnedDataRestorePlanFile: Codable, Sendable, Equatable {
         self.mcpServersRowExisted = mcpServersRowExisted
         self.previousModelPreferences = previousModelPreferences
         self.personalizationCursorKeys = personalizationCursorKeys
+        self.officeDrafts = officeDrafts
         self.counts = counts
         self.warnings = warnings
     }
@@ -2214,6 +2549,7 @@ public struct C07ArtifactCommitReceipt: Sendable, Equatable {
     public var cadPreservedFiles: Int
     public var toolResults: Int
     public var configSections: Int
+    public var officeDrafts: Int
     public var warnings: [String]
 
     public init(createdRoots: [String],
@@ -2223,7 +2559,7 @@ public struct C07ArtifactCommitReceipt: Sendable, Equatable {
                 evidenceRows: Int = 0,
                 appArtifacts: Int = 0, captureFiles: Int = 0,
                 cadPreservedFiles: Int = 0, toolResults: Int = 0,
-                configSections: Int = 0,
+                configSections: Int = 0, officeDrafts: Int = 0,
                 warnings: [String] = []) {
         self.createdRoots = createdRoots
         self.attachmentPaths = attachmentPaths
@@ -2238,6 +2574,7 @@ public struct C07ArtifactCommitReceipt: Sendable, Equatable {
         self.cadPreservedFiles = cadPreservedFiles
         self.toolResults = toolResults
         self.configSections = configSections
+        self.officeDrafts = officeDrafts
         self.warnings = warnings
     }
 }
