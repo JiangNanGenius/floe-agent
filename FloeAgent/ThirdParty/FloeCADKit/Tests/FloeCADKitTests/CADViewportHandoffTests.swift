@@ -104,15 +104,23 @@ final class CADViewportHandoffTests: XCTestCase {
         renderer.camera.target = SIMD3(1, 2, 3)
         let camera = renderer.camera
         let originalGestureCount = sizing.gestureRecognizers?.count
-        // UIPencilInteraction can add its own UIKit recognizer. Verify our
+        // UIPencilInteraction adds a second UIHoverGestureRecognizer on this
+        // SDK. Its public class is the same as ours. Verify our named
         // seven concrete recognizers, then compare the full before/after
         // count to catch duplication without counting Apple's private input.
+        let originalOwned = sizing.gestureRecognizers?.filter {
+            $0.name?.hasPrefix("FloeCAD.viewport.") == true
+        } ?? []
+        XCTAssertEqual(originalOwned.count, 7)
+        XCTAssertEqual(Set(originalOwned.compactMap(\.name)), Set(
+            ["orbit", "pan", "pinch", "doubleTap", "tap", "longPress", "hover"]
+                .map { "FloeCAD.viewport." + $0 }))
         let expected: [(UIGestureRecognizer.Type, Int)] = [
             (UIPanGestureRecognizer.self, 2), (UIPinchGestureRecognizer.self, 1),
             (UITapGestureRecognizer.self, 2), (UILongPressGestureRecognizer.self, 1),
             (UIHoverGestureRecognizer.self, 1)]
         for (kind, count) in expected {
-            XCTAssertEqual(sizing.gestureRecognizers?.filter {
+            XCTAssertEqual(originalOwned.filter {
                 ObjectIdentifier(type(of: $0)) == ObjectIdentifier(kind)
             }.count, count, String(describing: kind))
         }
@@ -134,6 +142,9 @@ final class CADViewportHandoffTests: XCTestCase {
         ViewportView.dismantleUIView(sizing, coordinator: coordinator)
         XCTAssertTrue(model.cameraControl === coordinator)
         XCTAssertEqual(replacement.gestureRecognizers?.count, originalGestureCount)
+        XCTAssertEqual(replacement.gestureRecognizers?.filter {
+            $0.name?.hasPrefix("FloeCAD.viewport.") == true
+        }.count, 7)
         XCTAssertEqual(replacement.interactions.filter { $0 is UIPencilInteraction }.count, 1)
         XCTAssertEqual(renderer.camera, camera)
 

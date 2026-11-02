@@ -134,6 +134,10 @@ final class ViewportGestureController: NSObject {
         pencil.delegate = self
         view.addInteraction(pencil)
         ownedRecognizers = [orbit, twoFingerPan, pinch, doubleTap, tap, longPress, hover]
+        for (recognizer, name) in zip(ownedRecognizers,
+                ["orbit", "pan", "pinch", "doubleTap", "tap", "longPress", "hover"]) {
+            recognizer.name = "FloeCAD.viewport." + name
+        }
         pencilInteraction = pencil
     }
 

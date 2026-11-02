@@ -832,6 +832,7 @@ struct FloeCADEditorView: View {
             .padding(.top, 8)
         }
         .padding(.horizontal, 12)
+        .accessibilityElement(children: .contain)
         .accessibilityIdentifier("SketchStatusPill")
     }
 
