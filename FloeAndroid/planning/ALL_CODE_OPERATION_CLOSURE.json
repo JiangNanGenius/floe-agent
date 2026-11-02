@@ -2360,8 +2360,11 @@
       "originalOperation": "Controlled WebView navigation and page observation",
       "originalStatus": "planned",
       "required": true,
-      "codeReview": "pending per-operation UI/service/runtime-storage/failure reconciliation",
-      "qualification": "not newly verified this round"
+      "codeReview": "present-source-connected at 66d3b8b2f9e1c89a790ca7a37d3fb216f06a871a; fixed iOS semantics and original ownership path inspected",
+      "qualification": "Unchanged component compilation/tests reusable where exact source matches. Browser navigation/actions/download/handoff/preview not newly device exercised this round; source wiring is not end-to-end App acceptance.",
+      "previousCodeReviews": [
+        "pending per-operation UI/service/runtime-storage/failure reconciliation"
+      ]
     },
     {
       "id": "BRW-ACT-DOWNLOAD",
@@ -2370,8 +2373,11 @@
       "originalOperation": "Interact with page elements; downloads land in the workspace",
       "originalStatus": "planned",
       "required": true,
-      "codeReview": "pending per-operation UI/service/runtime-storage/failure reconciliation",
-      "qualification": "not newly verified this round"
+      "codeReview": "present-source-connected at 66d3b8b2f9e1c89a790ca7a37d3fb216f06a871a; fixed iOS semantics and original ownership path inspected",
+      "qualification": "Unchanged component compilation/tests reusable where exact source matches. Browser navigation/actions/download/handoff/preview not newly device exercised this round; source wiring is not end-to-end App acceptance.",
+      "previousCodeReviews": [
+        "pending per-operation UI/service/runtime-storage/failure reconciliation"
+      ]
     },
     {
       "id": "BRW-HANDOFF",
@@ -2380,8 +2386,11 @@
       "originalOperation": "Manual takeover with continue-handoff back to the agent",
       "originalStatus": "planned",
       "required": true,
-      "codeReview": "pending per-operation UI/service/runtime-storage/failure reconciliation",
-      "qualification": "not newly verified this round"
+      "codeReview": "present-source-connected at 66d3b8b2f9e1c89a790ca7a37d3fb216f06a871a; fixed iOS semantics and original ownership path inspected",
+      "qualification": "Unchanged component compilation/tests reusable where exact source matches. Browser navigation/actions/download/handoff/preview not newly device exercised this round; source wiring is not end-to-end App acceptance.",
+      "previousCodeReviews": [
+        "pending per-operation UI/service/runtime-storage/failure reconciliation"
+      ]
     },
     {
       "id": "BRW-LOGIN-POLICY",
@@ -2390,8 +2399,11 @@
       "originalOperation": "Login-state handling under URL/destination policy",
       "originalStatus": "planned",
       "required": true,
-      "codeReview": "pending per-operation UI/service/runtime-storage/failure reconciliation",
-      "qualification": "not newly verified this round"
+      "codeReview": "present-source-connected at 66d3b8b2f9e1c89a790ca7a37d3fb216f06a871a; fixed iOS semantics and original ownership path inspected",
+      "qualification": "Unchanged component compilation/tests reusable where exact source matches. Browser navigation/actions/download/handoff/preview not newly device exercised this round; source wiring is not end-to-end App acceptance.",
+      "previousCodeReviews": [
+        "pending per-operation UI/service/runtime-storage/failure reconciliation"
+      ]
     },
     {
       "id": "BRW-LOCAL-PREVIEW",
@@ -2400,9 +2412,12 @@
       "originalOperation": "Local static/preview servers for generated web results",
       "originalStatus": "planned",
       "required": true,
-      "codeReview": "pending per-operation UI/service/runtime-storage/failure reconciliation",
-      "qualification": "not newly verified this round",
-      "implementationOwner": "job-dcfe69f82e5b4cc1; actual Linux/interface completion pending"
+      "codeReview": "present-source-connected at 66d3b8b2f9e1c89a790ca7a37d3fb216f06a871a; fixed iOS semantics and original ownership path inspected",
+      "qualification": "Unchanged component compilation/tests reusable where exact source matches. Browser navigation/actions/download/handoff/preview not newly device exercised this round; source wiring is not end-to-end App acceptance.",
+      "implementationOwner": "job-dcfe69f82e5b4cc1; actual Linux/interface completion pending",
+      "previousCodeReviews": [
+        "pending per-operation UI/service/runtime-storage/failure reconciliation"
+      ]
     },
     {
       "id": "SSH-AUTH-HOSTKEY",
@@ -3263,8 +3278,12 @@
       "originalOperation": "Settings separate cache vs installed/environment storage with accurate metering",
       "originalStatus": "planned",
       "required": true,
-      "codeReview": "pending per-operation UI/service/runtime-storage/failure reconciliation",
-      "qualification": "not newly verified this round"
+      "codeReview": "implementation-gap-confirmed at 66d3b8b2f9e1c89a790ca7a37d3fb216f06a871a; current Settings UI/source inspection",
+      "qualification": "Not newly device verified; do not close from engine/source presence alone.",
+      "previousCodeReviews": [
+        "pending per-operation UI/service/runtime-storage/failure reconciliation"
+      ],
+      "remainingImplementation": "Current General/Diagnostics/System pages have no measured cache-versus-installed/environment storage inventory. Existing Linux installer cleanup is not a user settings metering surface."
     },
     {
       "id": "SET-SAFE-CLEANUP",
@@ -3273,8 +3292,12 @@
       "originalOperation": "Safe cleanup with retention rules; running/needed artifacts deferred with stated purpose",
       "originalStatus": "planned",
       "required": true,
-      "codeReview": "pending per-operation UI/service/runtime-storage/failure reconciliation",
-      "qualification": "not newly verified this round"
+      "codeReview": "implementation-gap-confirmed at 66d3b8b2f9e1c89a790ca7a37d3fb216f06a871a; current Settings UI/source inspection",
+      "qualification": "Not newly device verified; do not close from engine/source presence alone.",
+      "previousCodeReviews": [
+        "pending per-operation UI/service/runtime-storage/failure reconciliation"
+      ],
+      "remainingImplementation": "Existing Linux runtime cleanup owner and private build cleanup do not implement required in-App safe user cache cleanup with active/retained ownership display."
     },
     {
       "id": "SET-FONT-DIAG",
@@ -3283,8 +3306,12 @@
       "originalOperation": "Font management plus diagnostic export",
       "originalStatus": "planned",
       "required": true,
-      "codeReview": "pending per-operation UI/service/runtime-storage/failure reconciliation",
-      "qualification": "not newly verified this round"
+      "codeReview": "implementation-gap-confirmed at 66d3b8b2f9e1c89a790ca7a37d3fb216f06a871a; current Settings UI/source inspection",
+      "qualification": "Not newly device verified; do not close from engine/source presence alone.",
+      "previousCodeReviews": [
+        "pending per-operation UI/service/runtime-storage/failure reconciliation"
+      ],
+      "remainingImplementation": "Diagnostics export backend is present at C07DiagnosticsExport, but no user font-management/import/list/remove surface found in current Android Settings or feature modules; inspect donor and reuse existing font consumers before claiming done."
     },
     {
       "id": "SET-CAPABILITY-STATUS",
@@ -3303,8 +3330,11 @@
       "originalOperation": "Typed global agent defaults: read and atomically save the three whitelisted app settings with canonical revision CAS; absent keys return typed defaults and corrupt rows fail closed",
       "originalStatus": "planned",
       "required": true,
-      "codeReview": "pending per-operation UI/service/runtime-storage/failure reconciliation",
-      "qualification": "not newly verified this round"
+      "codeReview": "present-source-connected at 66d3b8b2f9e1c89a790ca7a37d3fb216f06a871a; existing owned Settings routes and original storage inspected",
+      "qualification": "Source-connected; unchanged native component compilation and current Full/Play source checks reusable. These exact Settings actions not newly device verified; destructive privacy actions and cloud generation not executed by audit.",
+      "previousCodeReviews": [
+        "pending per-operation UI/service/runtime-storage/failure reconciliation"
+      ]
     },
     {
       "id": "SET-MEMORY-INVENTORY",
@@ -3313,8 +3343,11 @@
       "originalOperation": "Memory inventory over the original store: bounded list/get and revision-CAS add/update/delete plus an atomic bulk-delete ledger",
       "originalStatus": "planned",
       "required": true,
-      "codeReview": "pending per-operation UI/service/runtime-storage/failure reconciliation",
-      "qualification": "not newly verified this round"
+      "codeReview": "present-source-connected at 66d3b8b2f9e1c89a790ca7a37d3fb216f06a871a; existing owned Settings routes and original storage inspected",
+      "qualification": "Source-connected; unchanged native component compilation and current Full/Play source checks reusable. These exact Settings actions not newly device verified; destructive privacy actions and cloud generation not executed by audit.",
+      "previousCodeReviews": [
+        "pending per-operation UI/service/runtime-storage/failure reconciliation"
+      ]
     },
     {
       "id": "SET-MEMORY-SEARCH",
@@ -3323,8 +3356,11 @@
       "originalOperation": "Bounded lexical memory search over the original hybridRecall path with fresh current-row projections and explicit mutating-read side effects",
       "originalStatus": "planned",
       "required": true,
-      "codeReview": "pending per-operation UI/service/runtime-storage/failure reconciliation",
-      "qualification": "not newly verified this round"
+      "codeReview": "present-source-connected at 66d3b8b2f9e1c89a790ca7a37d3fb216f06a871a; existing owned Settings routes and original storage inspected",
+      "qualification": "Source-connected; unchanged native component compilation and current Full/Play source checks reusable. These exact Settings actions not newly device verified; destructive privacy actions and cloud generation not executed by audit.",
+      "previousCodeReviews": [
+        "pending per-operation UI/service/runtime-storage/failure reconciliation"
+      ]
     },
     {
       "id": "SET-MEMORY-CANDIDATE-REVIEW",
@@ -3333,8 +3369,11 @@
       "originalOperation": "Pending memory-candidate review with bounded paging, disclosed expiry sweep and single-transaction accept/reject CAS",
       "originalStatus": "planned",
       "required": true,
-      "codeReview": "pending per-operation UI/service/runtime-storage/failure reconciliation",
-      "qualification": "not newly verified this round"
+      "codeReview": "present-source-connected at 66d3b8b2f9e1c89a790ca7a37d3fb216f06a871a; existing owned Settings routes and original storage inspected",
+      "qualification": "Source-connected; unchanged native component compilation and current Full/Play source checks reusable. These exact Settings actions not newly device verified; destructive privacy actions and cloud generation not executed by audit.",
+      "previousCodeReviews": [
+        "pending per-operation UI/service/runtime-storage/failure reconciliation"
+      ]
     },
     {
       "id": "SET-MEMORY-ORGANIZE",
@@ -3343,8 +3382,11 @@
       "originalOperation": "Memory organization proposal and apply over the original deterministic/organizer policy, with same-snapshot full-row digest freshness and batch idempotency",
       "originalStatus": "planned",
       "required": true,
-      "codeReview": "pending per-operation UI/service/runtime-storage/failure reconciliation",
-      "qualification": "not newly verified this round"
+      "codeReview": "present-source-connected at 66d3b8b2f9e1c89a790ca7a37d3fb216f06a871a; existing owned Settings routes and original storage inspected",
+      "qualification": "Source-connected; unchanged native component compilation and current Full/Play source checks reusable. These exact Settings actions not newly device verified; destructive privacy actions and cloud generation not executed by audit.",
+      "previousCodeReviews": [
+        "pending per-operation UI/service/runtime-storage/failure reconciliation"
+      ]
     },
     {
       "id": "SET-PERSONALIZATION-DOCUMENTS",
@@ -3353,8 +3395,11 @@
       "originalOperation": "Personalization document/profile/SOUL read, bounded revision history, active-slot save/rollback, automatic-update cursor CAS and owned content chunks",
       "originalStatus": "planned",
       "required": true,
-      "codeReview": "pending per-operation UI/service/runtime-storage/failure reconciliation",
-      "qualification": "not newly verified this round"
+      "codeReview": "present-source-connected at 66d3b8b2f9e1c89a790ca7a37d3fb216f06a871a; existing owned Settings routes and original storage inspected",
+      "qualification": "Source-connected; unchanged native component compilation and current Full/Play source checks reusable. These exact Settings actions not newly device verified; destructive privacy actions and cloud generation not executed by audit.",
+      "previousCodeReviews": [
+        "pending per-operation UI/service/runtime-storage/failure reconciliation"
+      ]
     },
     {
       "id": "SET-PERSONALIZATION-GENERATE",
@@ -3363,8 +3408,11 @@
       "originalOperation": "Cloud personalization generation with pre-await snapshot, one CAS/draft commit, explicit active-versus-draft outcome and honest route/transport failures",
       "originalStatus": "planned",
       "required": true,
-      "codeReview": "pending per-operation UI/service/runtime-storage/failure reconciliation",
-      "qualification": "not newly verified this round"
+      "codeReview": "present-source-connected at 66d3b8b2f9e1c89a790ca7a37d3fb216f06a871a; existing owned Settings routes and original storage inspected",
+      "qualification": "Source-connected; unchanged native component compilation and current Full/Play source checks reusable. These exact Settings actions not newly device verified; destructive privacy actions and cloud generation not executed by audit.",
+      "previousCodeReviews": [
+        "pending per-operation UI/service/runtime-storage/failure reconciliation"
+      ]
     },
     {
       "id": "SET-USAGE-AGGREGATE",
@@ -3373,8 +3421,11 @@
       "originalOperation": "Bounded usage statistics over the original run store with totals, 30-day series and paged conversation/model/provider breakdowns",
       "originalStatus": "planned",
       "required": true,
-      "codeReview": "pending per-operation UI/service/runtime-storage/failure reconciliation",
-      "qualification": "not newly verified this round"
+      "codeReview": "present-source-connected at 66d3b8b2f9e1c89a790ca7a37d3fb216f06a871a; existing owned Settings routes and original storage inspected",
+      "qualification": "Source-connected; unchanged native component compilation and current Full/Play source checks reusable. These exact Settings actions not newly device verified; destructive privacy actions and cloud generation not executed by audit.",
+      "previousCodeReviews": [
+        "pending per-operation UI/service/runtime-storage/failure reconciliation"
+      ]
     },
     {
       "id": "SET-HISTORY-CLEAR",
@@ -3383,8 +3434,11 @@
       "originalOperation": "Privacy history summary and confirmed clear over exact identity/state streams with fence-before-snapshot, grant bracket and truthful remaining counts",
       "originalStatus": "planned",
       "required": true,
-      "codeReview": "pending per-operation UI/service/runtime-storage/failure reconciliation",
-      "qualification": "not newly verified this round"
+      "codeReview": "present-source-connected at 66d3b8b2f9e1c89a790ca7a37d3fb216f06a871a; existing owned Settings routes and original storage inspected",
+      "qualification": "Source-connected; unchanged native component compilation and current Full/Play source checks reusable. These exact Settings actions not newly device verified; destructive privacy actions and cloud generation not executed by audit.",
+      "previousCodeReviews": [
+        "pending per-operation UI/service/runtime-storage/failure reconciliation"
+      ]
     },
     {
       "id": "SET-MODELCFG-CLEAR",
@@ -3393,8 +3447,11 @@
       "originalOperation": "Confirmed model-configuration clear with exact provider/model/secret-reference digest, gateway-ordered deletion and monotonic preferences reset",
       "originalStatus": "planned",
       "required": true,
-      "codeReview": "pending per-operation UI/service/runtime-storage/failure reconciliation",
-      "qualification": "not newly verified this round"
+      "codeReview": "present-source-connected at 66d3b8b2f9e1c89a790ca7a37d3fb216f06a871a; existing owned Settings routes and original storage inspected",
+      "qualification": "Source-connected; unchanged native component compilation and current Full/Play source checks reusable. These exact Settings actions not newly device verified; destructive privacy actions and cloud generation not executed by audit.",
+      "previousCodeReviews": [
+        "pending per-operation UI/service/runtime-storage/failure reconciliation"
+      ]
     }
   ],
   "sourceReviews": {
@@ -4288,6 +4345,303 @@
           "device": "Existing credential component checks reused; no new real-account Git push authorized/performed by this review."
         }
       ]
+    },
+    "settings10-20261103": {
+      "androidCommit": "66d3b8b2f9e1c89a790ca7a37d3fb216f06a871a",
+      "iosReference": "36f63bf400dfaa3a127259eac006b38d72516390",
+      "operations": [
+        {
+          "id": "SET-DEFAULTS-TYPED",
+          "entry": "General -> agent defaults",
+          "chain": "Whitelist typed read/default/corrupt failure and raw-row revision CAS in one original writer transaction; reply built from actual after-write rows.",
+          "evidence": [
+            "app/src/main/kotlin/com/floe/android/SettingsSheet.kt",
+            "app/src/main/kotlin/com/floe/android/host/SettingsHostPages.kt",
+            "app/src/main/kotlin/com/floe/android/host/SettingsHostController.kt",
+            "shared/Sources/FloeAndroidCore/G02HandlerRegistration.swift",
+            "shared/Sources/FloeAndroidCore/RuntimeFacadeSettingsDefaults.swift"
+          ],
+          "evidenceSha256": {
+            "app/src/main/kotlin/com/floe/android/SettingsSheet.kt": "ffe55ce9e222eefa9002ced0ec7786d6103645c548792390aadd807be2ff73d7",
+            "app/src/main/kotlin/com/floe/android/host/SettingsHostPages.kt": "acf25a2d343120ae4299f47abbb2132aa929873ca234f356742580ebea051a4f",
+            "app/src/main/kotlin/com/floe/android/host/SettingsHostController.kt": "a551da6efd294ab0c231e6d822b181eecbb232104693f4205c6719b904849e3e",
+            "shared/Sources/FloeAndroidCore/G02HandlerRegistration.swift": "c43e0db09f03de05746ad12a1058a6beb1b00d2afb3716aec3e53b7717eb3f9d",
+            "shared/Sources/FloeAndroidCore/RuntimeFacadeSettingsDefaults.swift": "387171ed6ba0da3915c3e3a2214293c2e32373b965926c6baecdbf37f228b60b"
+          },
+          "qualification": "Source-connected; unchanged native component compilation and current Full/Play source checks reusable. These exact Settings actions not newly device verified; destructive privacy actions and cloud generation not executed by audit."
+        },
+        {
+          "id": "SET-MEMORY-INVENTORY",
+          "entry": "Memory -> list/add/edit/delete",
+          "chain": "Original memory_entries bounded pages, raw-row revision CAS mutations and atomic bulk-delete ledger; no parallel store.",
+          "evidence": [
+            "app/src/main/kotlin/com/floe/android/SettingsSheet.kt",
+            "app/src/main/kotlin/com/floe/android/host/SettingsHostPages.kt",
+            "app/src/main/kotlin/com/floe/android/host/SettingsHostController.kt",
+            "shared/Sources/FloeAndroidCore/G02HandlerRegistration.swift",
+            "shared/Sources/FloeAndroidCore/RuntimeFacadeMemory.swift"
+          ],
+          "evidenceSha256": {
+            "app/src/main/kotlin/com/floe/android/SettingsSheet.kt": "ffe55ce9e222eefa9002ced0ec7786d6103645c548792390aadd807be2ff73d7",
+            "app/src/main/kotlin/com/floe/android/host/SettingsHostPages.kt": "acf25a2d343120ae4299f47abbb2132aa929873ca234f356742580ebea051a4f",
+            "app/src/main/kotlin/com/floe/android/host/SettingsHostController.kt": "a551da6efd294ab0c231e6d822b181eecbb232104693f4205c6719b904849e3e",
+            "shared/Sources/FloeAndroidCore/G02HandlerRegistration.swift": "c43e0db09f03de05746ad12a1058a6beb1b00d2afb3716aec3e53b7717eb3f9d",
+            "shared/Sources/FloeAndroidCore/RuntimeFacadeMemory.swift": "65e11f522e33c94a6c6c7f5ce1f6d4c3ad04e1cbda406f7338107cb471395bad"
+          },
+          "qualification": "Source-connected; unchanged native component compilation and current Full/Play source checks reusable. These exact Settings actions not newly device verified; destructive privacy actions and cloud generation not executed by audit."
+        },
+        {
+          "id": "SET-MEMORY-SEARCH",
+          "entry": "Memory -> search -> load more",
+          "chain": "Original hybrid recall and bounded current-row projections; mutating-read effects remain in native adapter, UI handles paging and failures.",
+          "evidence": [
+            "app/src/main/kotlin/com/floe/android/SettingsSheet.kt",
+            "app/src/main/kotlin/com/floe/android/host/SettingsHostPages.kt",
+            "app/src/main/kotlin/com/floe/android/host/SettingsHostController.kt",
+            "shared/Sources/FloeAndroidCore/G02HandlerRegistration.swift",
+            "shared/Sources/FloeAndroidCore/RuntimeFacadeMemory.swift"
+          ],
+          "evidenceSha256": {
+            "app/src/main/kotlin/com/floe/android/SettingsSheet.kt": "ffe55ce9e222eefa9002ced0ec7786d6103645c548792390aadd807be2ff73d7",
+            "app/src/main/kotlin/com/floe/android/host/SettingsHostPages.kt": "acf25a2d343120ae4299f47abbb2132aa929873ca234f356742580ebea051a4f",
+            "app/src/main/kotlin/com/floe/android/host/SettingsHostController.kt": "a551da6efd294ab0c231e6d822b181eecbb232104693f4205c6719b904849e3e",
+            "shared/Sources/FloeAndroidCore/G02HandlerRegistration.swift": "c43e0db09f03de05746ad12a1058a6beb1b00d2afb3716aec3e53b7717eb3f9d",
+            "shared/Sources/FloeAndroidCore/RuntimeFacadeMemory.swift": "65e11f522e33c94a6c6c7f5ce1f6d4c3ad04e1cbda406f7338107cb471395bad"
+          },
+          "qualification": "Source-connected; unchanged native component compilation and current Full/Play source checks reusable. These exact Settings actions not newly device verified; destructive privacy actions and cloud generation not executed by audit."
+        },
+        {
+          "id": "SET-MEMORY-CANDIDATE-REVIEW",
+          "entry": "Memory -> candidates -> accept/reject",
+          "chain": "Original memory_candidates expiry sweep, pending check and exact digest-CAS acceptance/rejection inside one writer transaction.",
+          "evidence": [
+            "app/src/main/kotlin/com/floe/android/SettingsSheet.kt",
+            "app/src/main/kotlin/com/floe/android/host/SettingsHostPages.kt",
+            "app/src/main/kotlin/com/floe/android/host/SettingsHostController.kt",
+            "shared/Sources/FloeAndroidCore/G02HandlerRegistration.swift",
+            "shared/Sources/FloeAndroidCore/RuntimeFacadeMemory.swift"
+          ],
+          "evidenceSha256": {
+            "app/src/main/kotlin/com/floe/android/SettingsSheet.kt": "ffe55ce9e222eefa9002ced0ec7786d6103645c548792390aadd807be2ff73d7",
+            "app/src/main/kotlin/com/floe/android/host/SettingsHostPages.kt": "acf25a2d343120ae4299f47abbb2132aa929873ca234f356742580ebea051a4f",
+            "app/src/main/kotlin/com/floe/android/host/SettingsHostController.kt": "a551da6efd294ab0c231e6d822b181eecbb232104693f4205c6719b904849e3e",
+            "shared/Sources/FloeAndroidCore/G02HandlerRegistration.swift": "c43e0db09f03de05746ad12a1058a6beb1b00d2afb3716aec3e53b7717eb3f9d",
+            "shared/Sources/FloeAndroidCore/RuntimeFacadeMemory.swift": "65e11f522e33c94a6c6c7f5ce1f6d4c3ad04e1cbda406f7338107cb471395bad"
+          },
+          "qualification": "Source-connected; unchanged native component compilation and current Full/Play source checks reusable. These exact Settings actions not newly device verified; destructive privacy actions and cloud generation not executed by audit."
+        },
+        {
+          "id": "SET-MEMORY-ORGANIZE",
+          "entry": "Memory -> organize -> proposal -> apply/cancel",
+          "chain": "Native deterministic proposal snapshot, whole-row digest freshness checks, batch idempotency ledger and real physical cancellation; no optimistic UI success.",
+          "evidence": [
+            "app/src/main/kotlin/com/floe/android/SettingsSheet.kt",
+            "app/src/main/kotlin/com/floe/android/host/SettingsHostPages.kt",
+            "app/src/main/kotlin/com/floe/android/host/SettingsHostController.kt",
+            "shared/Sources/FloeAndroidCore/G02HandlerRegistration.swift",
+            "shared/Sources/FloeAndroidCore/RuntimeFacadeMemory.swift"
+          ],
+          "evidenceSha256": {
+            "app/src/main/kotlin/com/floe/android/SettingsSheet.kt": "ffe55ce9e222eefa9002ced0ec7786d6103645c548792390aadd807be2ff73d7",
+            "app/src/main/kotlin/com/floe/android/host/SettingsHostPages.kt": "acf25a2d343120ae4299f47abbb2132aa929873ca234f356742580ebea051a4f",
+            "app/src/main/kotlin/com/floe/android/host/SettingsHostController.kt": "a551da6efd294ab0c231e6d822b181eecbb232104693f4205c6719b904849e3e",
+            "shared/Sources/FloeAndroidCore/G02HandlerRegistration.swift": "c43e0db09f03de05746ad12a1058a6beb1b00d2afb3716aec3e53b7717eb3f9d",
+            "shared/Sources/FloeAndroidCore/RuntimeFacadeMemory.swift": "65e11f522e33c94a6c6c7f5ce1f6d4c3ad04e1cbda406f7338107cb471395bad"
+          },
+          "qualification": "Source-connected; unchanged native component compilation and current Full/Play source checks reusable. These exact Settings actions not newly device verified; destructive privacy actions and cloud generation not executed by audit."
+        },
+        {
+          "id": "SET-PERSONALIZATION-DOCUMENTS",
+          "entry": "Memory -> personalization documents/history",
+          "chain": "Original active slot/revision rows, content paging, active token CAS save/rollback, separate automatic cursor token and bounded content.",
+          "evidence": [
+            "app/src/main/kotlin/com/floe/android/SettingsSheet.kt",
+            "app/src/main/kotlin/com/floe/android/host/SettingsHostPages.kt",
+            "app/src/main/kotlin/com/floe/android/host/SettingsHostController.kt",
+            "shared/Sources/FloeAndroidCore/G02HandlerRegistration.swift",
+            "shared/Sources/FloeAndroidCore/RuntimeFacadePersonalization.swift"
+          ],
+          "evidenceSha256": {
+            "app/src/main/kotlin/com/floe/android/SettingsSheet.kt": "ffe55ce9e222eefa9002ced0ec7786d6103645c548792390aadd807be2ff73d7",
+            "app/src/main/kotlin/com/floe/android/host/SettingsHostPages.kt": "acf25a2d343120ae4299f47abbb2132aa929873ca234f356742580ebea051a4f",
+            "app/src/main/kotlin/com/floe/android/host/SettingsHostController.kt": "a551da6efd294ab0c231e6d822b181eecbb232104693f4205c6719b904849e3e",
+            "shared/Sources/FloeAndroidCore/G02HandlerRegistration.swift": "c43e0db09f03de05746ad12a1058a6beb1b00d2afb3716aec3e53b7717eb3f9d",
+            "shared/Sources/FloeAndroidCore/RuntimeFacadePersonalization.swift": "90a7b6bc3c92225f25a6634ef2d24843ecef3dcee59c3924c354e2f301dfc8d2"
+          },
+          "qualification": "Source-connected; unchanged native component compilation and current Full/Play source checks reusable. These exact Settings actions not newly device verified; destructive privacy actions and cloud generation not executed by audit."
+        },
+        {
+          "id": "SET-PERSONALIZATION-GENERATE",
+          "entry": "Memory -> personalization -> generate/cancel",
+          "chain": "Pre-await original source snapshot; one CAS-or-inactive-draft commit; post-await cancellation and root/UI ownership fencing; actual provider configuration/errors preserved.",
+          "evidence": [
+            "app/src/main/kotlin/com/floe/android/SettingsSheet.kt",
+            "app/src/main/kotlin/com/floe/android/host/SettingsHostPages.kt",
+            "app/src/main/kotlin/com/floe/android/host/SettingsHostController.kt",
+            "shared/Sources/FloeAndroidCore/G02HandlerRegistration.swift",
+            "shared/Sources/FloeAndroidCore/RuntimeFacadePersonalizationGenerate.swift"
+          ],
+          "evidenceSha256": {
+            "app/src/main/kotlin/com/floe/android/SettingsSheet.kt": "ffe55ce9e222eefa9002ced0ec7786d6103645c548792390aadd807be2ff73d7",
+            "app/src/main/kotlin/com/floe/android/host/SettingsHostPages.kt": "acf25a2d343120ae4299f47abbb2132aa929873ca234f356742580ebea051a4f",
+            "app/src/main/kotlin/com/floe/android/host/SettingsHostController.kt": "a551da6efd294ab0c231e6d822b181eecbb232104693f4205c6719b904849e3e",
+            "shared/Sources/FloeAndroidCore/G02HandlerRegistration.swift": "c43e0db09f03de05746ad12a1058a6beb1b00d2afb3716aec3e53b7717eb3f9d",
+            "shared/Sources/FloeAndroidCore/RuntimeFacadePersonalizationGenerate.swift": "709ab3c9f0b4eff8aa2383f358b4f724ec78b1a2f4ba42535563faf8bcdc2a16"
+          },
+          "qualification": "Source-connected; unchanged native component compilation and current Full/Play source checks reusable. These exact Settings actions not newly device verified; destructive privacy actions and cloud generation not executed by audit."
+        },
+        {
+          "id": "SET-USAGE-AGGREGATE",
+          "entry": "Usage -> totals and breakdown paging",
+          "chain": "Original durable run store query, validated bounded request, totals/days and dimension pages under reader transaction with encoded reply cap.",
+          "evidence": [
+            "app/src/main/kotlin/com/floe/android/SettingsSheet.kt",
+            "app/src/main/kotlin/com/floe/android/host/SettingsHostPages.kt",
+            "app/src/main/kotlin/com/floe/android/host/SettingsHostController.kt",
+            "shared/Sources/FloeAndroidCore/G02HandlerRegistration.swift",
+            "shared/Sources/FloeAndroidCore/RuntimeFacadeUsage.swift"
+          ],
+          "evidenceSha256": {
+            "app/src/main/kotlin/com/floe/android/SettingsSheet.kt": "ffe55ce9e222eefa9002ced0ec7786d6103645c548792390aadd807be2ff73d7",
+            "app/src/main/kotlin/com/floe/android/host/SettingsHostPages.kt": "acf25a2d343120ae4299f47abbb2132aa929873ca234f356742580ebea051a4f",
+            "app/src/main/kotlin/com/floe/android/host/SettingsHostController.kt": "a551da6efd294ab0c231e6d822b181eecbb232104693f4205c6719b904849e3e",
+            "shared/Sources/FloeAndroidCore/G02HandlerRegistration.swift": "c43e0db09f03de05746ad12a1058a6beb1b00d2afb3716aec3e53b7717eb3f9d",
+            "shared/Sources/FloeAndroidCore/RuntimeFacadeUsage.swift": "ecf6ca37e1718fbd58d22f33d364c768afe443261ae563cb594aad5a1fb2671d"
+          },
+          "qualification": "Source-connected; unchanged native component compilation and current Full/Play source checks reusable. These exact Settings actions not newly device verified; destructive privacy actions and cloud generation not executed by audit."
+        },
+        {
+          "id": "SET-HISTORY-CLEAR",
+          "entry": "Privacy -> exact history summary -> confirm clear",
+          "chain": "Original domain revision, duplicate-inflight barrier, admission fence before snapshot and durable deletion reports; unfinished owned physical work is not discarded or declared deleted.",
+          "evidence": [
+            "app/src/main/kotlin/com/floe/android/SettingsSheet.kt",
+            "app/src/main/kotlin/com/floe/android/host/SettingsHostPages.kt",
+            "app/src/main/kotlin/com/floe/android/host/SettingsHostController.kt",
+            "shared/Sources/FloeAndroidCore/G02HandlerRegistration.swift",
+            "shared/Sources/FloeAndroidCore/RuntimeFacadePrivacy.swift"
+          ],
+          "evidenceSha256": {
+            "app/src/main/kotlin/com/floe/android/SettingsSheet.kt": "ffe55ce9e222eefa9002ced0ec7786d6103645c548792390aadd807be2ff73d7",
+            "app/src/main/kotlin/com/floe/android/host/SettingsHostPages.kt": "acf25a2d343120ae4299f47abbb2132aa929873ca234f356742580ebea051a4f",
+            "app/src/main/kotlin/com/floe/android/host/SettingsHostController.kt": "a551da6efd294ab0c231e6d822b181eecbb232104693f4205c6719b904849e3e",
+            "shared/Sources/FloeAndroidCore/G02HandlerRegistration.swift": "c43e0db09f03de05746ad12a1058a6beb1b00d2afb3716aec3e53b7717eb3f9d",
+            "shared/Sources/FloeAndroidCore/RuntimeFacadePrivacy.swift": "99b5f89b4cd8a2c73fda17a858731056756f1bd667bdb0ff9bfd575d45894526"
+          },
+          "qualification": "Source-connected; unchanged native component compilation and current Full/Play source checks reusable. These exact Settings actions not newly device verified; destructive privacy actions and cloud generation not executed by audit."
+        },
+        {
+          "id": "SET-MODELCFG-CLEAR",
+          "entry": "Privacy -> model configuration summary -> confirm clear",
+          "chain": "Exact snapshot digest and revision shape, gateway-ordered secret deletion, one original configuration domain, monotonic reset and truthful remaining/error report.",
+          "evidence": [
+            "app/src/main/kotlin/com/floe/android/SettingsSheet.kt",
+            "app/src/main/kotlin/com/floe/android/host/SettingsHostPages.kt",
+            "app/src/main/kotlin/com/floe/android/host/SettingsHostController.kt",
+            "shared/Sources/FloeAndroidCore/G02HandlerRegistration.swift",
+            "shared/Sources/FloeAndroidCore/RuntimeFacadePrivacy.swift"
+          ],
+          "evidenceSha256": {
+            "app/src/main/kotlin/com/floe/android/SettingsSheet.kt": "ffe55ce9e222eefa9002ced0ec7786d6103645c548792390aadd807be2ff73d7",
+            "app/src/main/kotlin/com/floe/android/host/SettingsHostPages.kt": "acf25a2d343120ae4299f47abbb2132aa929873ca234f356742580ebea051a4f",
+            "app/src/main/kotlin/com/floe/android/host/SettingsHostController.kt": "a551da6efd294ab0c231e6d822b181eecbb232104693f4205c6719b904849e3e",
+            "shared/Sources/FloeAndroidCore/G02HandlerRegistration.swift": "c43e0db09f03de05746ad12a1058a6beb1b00d2afb3716aec3e53b7717eb3f9d",
+            "shared/Sources/FloeAndroidCore/RuntimeFacadePrivacy.swift": "99b5f89b4cd8a2c73fda17a858731056756f1bd667bdb0ff9bfd575d45894526"
+          },
+          "qualification": "Source-connected; unchanged native component compilation and current Full/Play source checks reusable. These exact Settings actions not newly device verified; destructive privacy actions and cloud generation not executed by audit."
+        }
+      ]
+    },
+    "browser5-20261103": {
+      "androidCommit": "66d3b8b2f9e1c89a790ca7a37d3fb216f06a871a",
+      "iosReference": "36f63bf400dfaa3a127259eac006b38d72516390",
+      "iosSharedLoginEvidence": [
+        "FloeAgent/FloeApp/Browser/BrowserSettings.swift:112",
+        "FloeAgent/FloeApp/Browser/BrowserSettings.swift:142",
+        "FloeAgent/FloeApp/Browser/BrowserSessionCenter.swift:125"
+      ],
+      "operations": [
+        {
+          "id": "BRW-NAV-OBSERVE",
+          "entry": "Task browser / registered browser.navigate, observe tools",
+          "chain": "Trusted runtime caller -> G04BrowserToolRouting -> original BrowserToolSurface/URL policy -> epoch/task-owned BrowserHostController renderer on actual main looper; stale/temporary owner refused.",
+          "evidence": [
+            "shared/Sources/FloeAndroidCore/G04BrowserToolBindings.swift",
+            "shared/Sources/FloeBrowser/BrowserToolSurface.swift",
+            "app/src/main/kotlin/com/floe/android/host/BrowserHostController.kt",
+            "feature/browser/src/main/kotlin/com/floe/android/feature/browser/render/BrowserWebViewRenderer.kt"
+          ],
+          "evidenceSha256": {
+            "shared/Sources/FloeAndroidCore/G04BrowserToolBindings.swift": "b5eda212637aa4a618e9d8c8ece5fa85979129b2d07b4e0a339b47bca7d52128",
+            "shared/Sources/FloeBrowser/BrowserToolSurface.swift": "a159fccaafa5fb5906d21e8ff57e58836adb202f5aa71e663d6db91279cb4ef7",
+            "app/src/main/kotlin/com/floe/android/host/BrowserHostController.kt": "a615c7eaaa749399e7bdb46c2cd56dcbe96184a10697ab34ba25d4e2e5dd7b9f",
+            "feature/browser/src/main/kotlin/com/floe/android/feature/browser/render/BrowserWebViewRenderer.kt": "47559b4cb9f8353033502f15463bbcea2a2034a572e38105a68b1b951794e075"
+          },
+          "qualification": "Unchanged component compilation/tests reusable where exact source matches. Browser navigation/actions/download/handoff/preview not newly device exercised this round; source wiring is not end-to-end App acceptance."
+        },
+        {
+          "id": "BRW-ACT-DOWNLOAD",
+          "entry": "Task browser actions and page download",
+          "chain": "Original tool action grammar and renderer observation identity; BrowserDownloads applies URL and exact owner policy, capped stream and staged hash-verified workspace sink; Kotlin does not pick arbitrary output path.",
+          "evidence": [
+            "shared/Sources/FloeBrowser/BrowserDownloads.swift",
+            "shared/Sources/FloeBrowser/BrowserToolSurface.swift",
+            "app/src/main/kotlin/com/floe/android/host/BrowserHostController.kt"
+          ],
+          "evidenceSha256": {
+            "shared/Sources/FloeBrowser/BrowserDownloads.swift": "976e516d6cbc9af9bd81d17640c017a47037655fe62c229bff01a67cc72cca2b",
+            "shared/Sources/FloeBrowser/BrowserToolSurface.swift": "a159fccaafa5fb5906d21e8ff57e58836adb202f5aa71e663d6db91279cb4ef7",
+            "app/src/main/kotlin/com/floe/android/host/BrowserHostController.kt": "a615c7eaaa749399e7bdb46c2cd56dcbe96184a10697ab34ba25d4e2e5dd7b9f"
+          },
+          "qualification": "Unchanged component compilation/tests reusable where exact source matches. Browser navigation/actions/download/handoff/preview not newly device exercised this round; source wiring is not end-to-end App acceptance."
+        },
+        {
+          "id": "BRW-HANDOFF",
+          "entry": "Browser manual takeover -> explicit continue handoff",
+          "chain": "G04BrowserHandoff validates original conversation/workspace/root, uses original run/checkpoint and durable RunningInputStore -> steer/retry with receipt; absent run stays explicit continue-required, no fabricated task promotion.",
+          "evidence": [
+            "shared/Sources/FloeAndroidCore/G04BrowserHandoff.swift",
+            "app/src/main/kotlin/com/floe/android/host/BrowserHostController.kt"
+          ],
+          "evidenceSha256": {
+            "shared/Sources/FloeAndroidCore/G04BrowserHandoff.swift": "a231d8c0ba2790d9ccbb90a5347eb1fed321fc403eff2b0665466603c67f3795",
+            "app/src/main/kotlin/com/floe/android/host/BrowserHostController.kt": "a615c7eaaa749399e7bdb46c2cd56dcbe96184a10697ab34ba25d4e2e5dd7b9f"
+          },
+          "qualification": "Unchanged component compilation/tests reusable where exact source matches. Browser navigation/actions/download/handoff/preview not newly device exercised this round; source wiring is not end-to-end App acceptance."
+        },
+        {
+          "id": "BRW-LOGIN-POLICY",
+          "entry": "Task browser login and URL policy",
+          "chain": "Existing real WebView cookies persist with domain URL policy. Fixed iOS intentionally shares WKWebsiteDataStore.default too; task action/ownership isolation does not require independent cookie profiles. AndroidX optional multi-profile is not an extra closure requirement.",
+          "evidence": [
+            "shared/Sources/FloeBrowser/BrowserURLPolicy.swift",
+            "feature/browser/src/main/kotlin/com/floe/android/feature/browser/render/BrowserWebViewRenderer.kt",
+            "feature/browser/src/main/kotlin/com/floe/android/feature/browser/api/BrowserWebViewGateway.kt"
+          ],
+          "evidenceSha256": {
+            "shared/Sources/FloeBrowser/BrowserURLPolicy.swift": "ba6d429f24ce1c722a099b6807aa29f31e495d9c2a759e624200fab6a8cc8f34",
+            "feature/browser/src/main/kotlin/com/floe/android/feature/browser/render/BrowserWebViewRenderer.kt": "47559b4cb9f8353033502f15463bbcea2a2034a572e38105a68b1b951794e075",
+            "feature/browser/src/main/kotlin/com/floe/android/feature/browser/api/BrowserWebViewGateway.kt": "f30250646552d0b853a75e405eb5fce6af4336e7d93c4ad268994eaef19a2ea7"
+          },
+          "qualification": "Unchanged component compilation/tests reusable where exact source matches. Browser navigation/actions/download/handoff/preview not newly device exercised this round; source wiring is not end-to-end App acceptance."
+        },
+        {
+          "id": "BRW-LOCAL-PREVIEW",
+          "entry": "Saved web document -> preview; browser/preview tools",
+          "chain": "Original BrowserHostController.requestWorkspacePreview validates exact task/workspace/generation and native preview routing, then token-bound loopback transport; C01 service readiness remains actual service boundary, no arbitrary URL/root grants.",
+          "evidence": [
+            "app/src/main/kotlin/com/floe/android/host/BrowserHostController.kt",
+            "shared/Sources/FloeAndroidCore/G04BrowserToolBindings.swift",
+            "shared/Sources/FloeBrowser/BrowserURLPolicy.swift"
+          ],
+          "evidenceSha256": {
+            "app/src/main/kotlin/com/floe/android/host/BrowserHostController.kt": "a615c7eaaa749399e7bdb46c2cd56dcbe96184a10697ab34ba25d4e2e5dd7b9f",
+            "shared/Sources/FloeAndroidCore/G04BrowserToolBindings.swift": "b5eda212637aa4a618e9d8c8ece5fa85979129b2d07b4e0a339b47bca7d52128",
+            "shared/Sources/FloeBrowser/BrowserURLPolicy.swift": "ba6d429f24ce1c722a099b6807aa29f31e495d9c2a759e624200fab6a8cc8f34"
+          },
+          "qualification": "Unchanged component compilation/tests reusable where exact source matches. Browser navigation/actions/download/handoff/preview not newly device exercised this round; source wiring is not end-to-end App acceptance."
+        }
+      ]
     }
   },
   "implementationBatches": {
@@ -4370,6 +4724,21 @@
       "stillPending": [
         "Unified compilation and authored regression execution",
         "Live reused project workspace new-input handoff remains separate C01 integration concern"
+      ],
+      "compiled": false,
+      "testsRun": false,
+      "deviceVerified": false
+    },
+    "c08-archive-runner-20261103": {
+      "state": "source-integrated-awaiting-batch-qualification",
+      "coverage": [
+        "Original workspace.archive canonical tool registered in existing C08 trusted task environment; no new engine or execution alias",
+        "Regression source covers actual ZIP extracted bytes and non-overwrite destination"
+      ],
+      "stillPending": [
+        "Swift6 ARM64 object/native build and focused regression execution with integrated batch",
+        "Actual App archive list/extract destination and lifecycle integration; active bounded package",
+        "Same-APK actual App flow verification"
       ],
       "compiled": false,
       "testsRun": false,

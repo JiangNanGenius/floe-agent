@@ -7,7 +7,7 @@
 // `WorkspaceToolEnvironment`/`WorkspaceToolSupport`; the original model-facing
 // file tools (listDirectory/readFile/searchFiles/inspectFileMetadata/
 // writeFile/applyPatch/createFile/moveFile/deleteFile/copyFile/appendFile/
-// replaceText/createDirectory) were never reachable from a run. This file is
+// replaceText/createDirectory/archive) were never reachable from a run. This file is
 // the registration seam that binds those ORIGINAL tools (restored by the
 // bounded Main patch beside this package) to the EXISTING
 // `WorkspaceFileService`/`WorkspacePathGuard` authority:
@@ -23,7 +23,8 @@
 //     still applies the task's declared path ceiling first.
 //   * the existing write path still holds `WorkspaceMutationLocks`, uses
 //     digest/mtime CAS, leaves failed patches untouched and runs the design
-//     freeze mutation gate.
+//     freeze mutation gate. Archive operations retain the original bounded,
+//     verified staging and non-overwrite commit instead of replacing originals.
 //   * `scope` arguments may only be `"local"` and a host/hostPath ToolScope is
 //     refused exactly as the ORIGINAL tool bodies require. App-authorized
 //     imported/document workspace data is therefore never presented as an
@@ -83,6 +84,7 @@ public enum C08WorkspaceFileTools {
         "workspace.deleteFile",
         "workspace.createDirectory",
         "workspace.copyFile",
+        "workspace.archive",
     ]
 
     /// Registers the original catalog descriptors and REAL runners.
@@ -120,6 +122,7 @@ public enum C08WorkspaceFileTools {
         ToolCatalog.register(WorkspaceDeleteFileTool.self)
         ToolCatalog.register(WorkspaceCreateDirectoryTool.self)
         ToolCatalog.register(WorkspaceCopyFileTool.self)
+        ToolCatalog.register(WorkspaceArchiveTool.self)
 
         register(WorkspaceListDirectoryTool(environment: environment),
                  isAvailable: isAvailable, into: registry)
@@ -146,6 +149,8 @@ public enum C08WorkspaceFileTools {
         register(WorkspaceCreateDirectoryTool(environment: environment),
                  isAvailable: isAvailable, into: registry)
         register(WorkspaceCopyFileTool(environment: environment),
+                 isAvailable: isAvailable, into: registry)
+        register(WorkspaceArchiveTool(environment: environment),
                  isAvailable: isAvailable, into: registry)
 
         return environment

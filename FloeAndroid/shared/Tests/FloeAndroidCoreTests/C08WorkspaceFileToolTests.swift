@@ -111,6 +111,24 @@ final class C08WorkspaceFileToolTests: XCTestCase {
 
     // MARK: - Real reachability
 
+    func testArchiveRunnerExtractsActualBytesWithoutOverwriting() async throws {
+        let root = try makeRoot()
+        try write("archive receipt\n", to: "input.txt", in: root)
+        let registry = install()
+        let ctx = context(root: root)
+        _ = try await run("workspace.archive", ["action": "create", "source": "input.txt", "destinationFile": "sample.zip"], context: ctx, registry: registry)
+        _ = try await run("workspace.archive", ["action": "extract", "source": "sample.zip", "destinationDir": "unpacked"], context: ctx, registry: registry)
+        let output = root.appendingPathComponent("unpacked/input.txt")
+        XCTAssertEqual(try String(contentsOf: output, encoding: .utf8), "archive receipt\n")
+        do {
+            _ = try await run("workspace.archive", ["action": "extract", "source": "sample.zip", "destinationDir": "unpacked"], context: ctx, registry: registry)
+            XCTFail("Existing extraction destination must not be overwritten")
+        } catch {
+            XCTAssertEqual(try String(contentsOf: output, encoding: .utf8), "archive receipt\n")
+        }
+    }
+
+
     func testInstalledSurfaceReachesRealOriginalHandlers() async throws {
         let root = try makeRoot()
         try write("hello\n", to: "notes/a.txt", in: root)
@@ -122,7 +140,7 @@ final class C08WorkspaceFileToolTests: XCTestCase {
             "workspace.inspectFileMetadata", "workspace.createFile",
             "workspace.appendFile", "workspace.replaceText", "workspace.writeFile",
             "workspace.applyPatch", "workspace.moveFile", "workspace.deleteFile",
-            "workspace.createDirectory", "workspace.copyFile",
+            "workspace.createDirectory", "workspace.copyFile", "workspace.archive",
         ]
         XCTAssertEqual(Set(C08WorkspaceFileTools.toolNames), expected)
         for name in expected {

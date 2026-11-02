@@ -1,6 +1,6 @@
 # 安卓全应用代码收口
 
-2026-11-03 当前状态：同源 Alpha23/code26 私有候选已覆盖三星和平板，原件文件读取及终端正常退出已有三星实际回执；手记全窗口、PDF 缓存重开和窗口明暗状态已修复并保留原始故障。一次 Ark 真实任务发现的终端回传失败已修复基础运行时链路，修复后的模型成果附件完整通路尚未复测，不把手动终端成功算作模型交付成功。公开 APK 尚未发布。原183项编号和历史状态保留，尚待源码逐项对账126项；此数量不是缺功能数量。新确认压缩包安全引擎缺 Android 可达入口，需补实现；手动 Office 原件保存与 Git 远端拒绝回执正在独立代码包推进。
+2026-11-03 当前状态：同源 Alpha23/code26 私有候选已覆盖三星和平板，原件文件读取及终端正常退出已有三星实际回执；手记全窗口、PDF 缓存重开和窗口明暗状态已修复并保留原始故障。一次 Ark 真实任务发现的终端回传失败已修复基础运行时链路，修复后的模型成果附件完整通路尚未复测，不把手动终端成功算作模型交付成功。公开 APK 尚未发布。原183项编号和历史状态保留，尚待源码逐项对账108项；此数量不是缺功能数量。新确认压缩包安全引擎缺 Android 可达入口，需补实现；手动 Office 原件保存与 Git 远端拒绝回执正在独立代码包推进。
 
 2026-11-03 设备验收增量：顶栏执行位置遮挡已修复，源码 `481da898` 已推送读回；同源 Alpha23/code25 候选03正式签名整包检查通过，并覆盖安装到三星与复用的 API37／16 KiB 平板模拟器。三星通过 App 内组件安装流程更新至 code25，两个手动终端分别返回真实输出，关闭其中一个不影响另一个，结束后两者均已关闭。平板确认设置左右两列及本地组件安装路径。仅做了一次 Ark Agent Plan／ark-code-latest 激活：交互终端实际输出 A23_ARK_TERMINAL_OK、exit0，但原 exec.shell 因执行目标解析失败未被提供，故不能计为该工具验收通过，也不自动重复云端测试。
 
@@ -416,3 +416,11 @@ On Samsung, the same original task's terminal read FLOE_ANDROID_CLOSURE_OK from 
 The five original LNX operations now have current per-operation source chains in the original ledger, preserving original statuses and previous reviews. The actual device coverage and untested cancellation/service/recovery cases are stated individually.133 original operations still require source reconciliation; this is not133 measured missing implementations. The earlier editor33 audit is being reused by comparing its exact evidence files against current source, rather than rerunning the old audit or tests indiscriminately. Manual original Office save-back, remaining UI families, and the real online delta/full-download/install path stay open.
 
 The closing incremental iOS check observed5af731b2 against the fixed36f63bf4 reference: only one localization file changed, adding CAD modeling/editor labels. Android's approved CAD read-only scope is unaffected; the fixed reference and original delta identities remain. Superseded candidate05/09/10 APKs, extracted runtime-install staging and finished checkpoint indexes were removed, reclaiming899985408 allocated bytes; current candidate12, immediate rollback11, producer proofs, necessary recovery and useful next-batch caches remain. The task-owned tablet emulator was shut down without deleting data, and Samsung's display timeout was restored and the device locked. No new public Release exists.
+
+## 2026-11-03 文件、设置和浏览器增量对账
+
+保留全部183项原编号和原状态，补记 IDE8、文件／凭据7、设置10与浏览器5的固定源码链路；已审查不等于设备通过，剩余108项仍待源码逐项核对。文件授权保留真实 SAF 持久／会话权限和撤销区别，导出只有经过目标文件实际回读才返回成功。隐私清理未为对账而执行，云端个性化生成也未调用。
+
+新确认的实现缺口包括：压缩包 App 浏览／解压入口，设置内缓存与环境占用计量、安全清理，以及可用字体管理；已有 Linux 安装清理和诊断导出不能替代这些入口。压缩包模型工具已按原名称补回现有任务工具注册，沿用原安全引擎；新回归源码验证真实解压字节及拒绝覆盖，尚未执行。App 压缩包、Office 原件保存、Git 服务器拒绝回执按独立写域实施，后续统一集成验证。
+
+固定 iOS 浏览器使用共享网站数据存储，Android 共享登录状态符合该基线；任务、操作、下载及成果归属继续严格隔离。不把可选多账号配置扩展为本轮新增收口条件。当前仅推送源码检查点，未发布新的公开安装包。
