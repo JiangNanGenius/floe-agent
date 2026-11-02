@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """pipeline_contract.py — shared parsers for the runner-update pipeline.
 
-One place for the three contracts the preflight, the guest check and the
+One place for the contracts the preflight, the guest check and the
 packager all need:
 
   * the runner's own constants (`floe_exec.c`: FLOE_RUNNER_VERSION,
@@ -14,12 +14,69 @@ packager all need:
     an unknown role does not decode, so the manifest must stay inside it);
   * the cross-toolchain package record (`toolchain_package <name> <version>`)
     used to decide whether the base release's toolchain-source asset still
-    covers a new static link.
+    covers a new static link;
+  * the App's catalog-trusted import budget, kept separate from the smaller
+    unknown-archive limit and its required image-ID/archive-digest pin.
 
 Pure parsing, no I/O beyond reading the file the caller points at.
 """
 import os
 import re
+
+
+def catalog_archive_budget(store_source, manifest, members, archive_bytes):
+    """Check a catalog producer against the CURRENT App's import ceilings.
+
+    This does not authorize an unknown archive. The App separately requires
+    its compiled-in image ID and complete archive digest before using the
+    declared-artifact budget. Ordinary user imports retain their smaller cap.
+    Sizes are metadata here; the packager verifies every member's actual bytes
+    and digest before calling this function.
+    """
+    def constant(pattern, name):
+        match = re.search(pattern, store_source)
+        if not match or not re.fullmatch(r"[0-9_]+(?:\s*\*\s*[0-9_]+)*", match.group(1).strip()):
+            raise ValueError("cannot determine the App's %s contract" % name)
+        value = 1
+        for factor in match.group(1).split("*"):
+            value *= int(factor.strip().replace("_", ""))
+        if not 0 < value <= 2 ** 63 - 1:
+            raise ValueError("invalid App %s contract" % name)
+        return value
+
+    archive_limit = constant(r"maxArchiveBytes:\s*Int64\s*=\s*([^,\n]+)", "archive limit")
+    unknown_limit = constant(r"maxExtractedBytes:\s*Int64\s*=\s*([^,\n]+)", "unknown-archive limit")
+    entry_limit = constant(r"maxEntries:\s*Int\s*=\s*([^,\n]+)", "entry limit")
+    trusted_limit = constant(r"static let maxDeclaredExtractedBytes:\s*Int64\s*=\s*([^\n]+)", "catalog ceiling")
+    headroom = constant(r"static let extractionHeadroomBytes:\s*Int64\s*=\s*([^\n]+)", "extraction headroom")
+    artifacts = manifest.get("artifacts")
+    if manifest.get("qualified") is not True or not artifacts:
+        raise ValueError("catalog image must declare qualified, bound artifacts")
+    by_path = {member["name"]: member for member in members}
+    if len(by_path) != len(members) or len(members) > entry_limit:
+        raise ValueError("duplicate or excessive archive members")
+    if type(archive_bytes) is not int or not 0 < archive_bytes <= archive_limit:
+        raise ValueError("archive exceeds the App's compressed size limit")
+    declared = 0
+    for artifact in artifacts:
+        size = artifact.get("bytes")
+        member = by_path.get(artifact.get("path"))
+        if type(size) is not int or size <= 0 or member is None or member.get("bytes") != size \
+                or member.get("sha512") != artifact.get("sha512"):
+            raise ValueError("declared artifact differs from the verified archive member")
+        declared += size
+    if any(type(member.get("bytes")) is not int or member["bytes"] <= 0 for member in members):
+        raise ValueError("invalid archive member size")
+    budget = declared + headroom
+    extracted = sum(member["bytes"] for member in members)
+    if budget > trusted_limit or extracted > budget:
+        raise ValueError("archive exceeds the App's catalog-trusted extraction budget")
+    return {"requiresCatalogIDAndArchiveDigestPin": True,
+            "compressedBytes": archive_bytes, "maxArchiveBytes": archive_limit,
+            "extractedBytes": extracted, "declaredArtifactBytes": declared,
+            "extractionBudget": budget, "maxDeclaredExtractedBytes": trusted_limit,
+            "maxEntries": entry_limit, "standardUnknownArchiveBytes": unknown_limit,
+            "exceedsUnknownArchiveBudget": extracted > unknown_limit}
 
 CAPS_PATTERN = re.compile(
     r"^runner=(?P<runner>\S+) protocol=(?P<protocol>\d+) "

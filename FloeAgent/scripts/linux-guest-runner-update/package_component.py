@@ -46,6 +46,11 @@ Required env:
   REUSED_ASSETS   space-separated asset names taken from the base release
                   verbatim (source bundles whose content is unchanged)
 Optional env:
+  BASE_RELINK_ASSET       actual pinned relink asset of the base release;
+                        inferred only when BASE_ASSET_DIGESTS_JSON names one.
+  QUALIFICATION_KIND    github-actions (default) or local; local records do
+                        not pretend to be a GitHub Actions execution.
+  QUALIFICATION_ID      local execution identity; required for local runs.
   RUNNER_ARTIFACT_ROLE  explicit JSON role for runnerArtifact; default: derived
                         from the engine's LinuxGuestImageArtifact.Role enum
                         (`runner` when present, else the recorded `disk` compat
@@ -122,6 +127,20 @@ def main():
     image_zip_name = "floe-linux-guest-%s.zip" % image_id
     reused_assets = env["REUSED_ASSETS"].split()
     base_digests = json.loads(env["BASE_ASSET_DIGESTS_JSON"])
+    qualification_kind = env.get("QUALIFICATION_KIND", "github-actions")
+    if qualification_kind not in ("github-actions", "local"):
+        parser.error("QUALIFICATION_KIND must be github-actions or local")
+    qualification_id = env.get("QUALIFICATION_ID") if qualification_kind == "local" else env["GITHUB_RUN_ID"]
+    if not qualification_id:
+        parser.error("local qualification requires QUALIFICATION_ID")
+    relink_candidates = [name for name in base_digests
+                         if name.startswith("linux-guest-runner-relink-") and name.endswith(".tar")]
+    base_relink_asset = env.get("BASE_RELINK_ASSET")
+    if not base_relink_asset and len(relink_candidates) == 1:
+        base_relink_asset = relink_candidates[0]
+    if any("toolchain-source" in name for name in reused_assets) \
+            and base_relink_asset not in relink_candidates:
+        parser.error("toolchain reuse requires the actual pinned base runner-relink asset")
 
     os.makedirs(args.out, exist_ok=True)
     image_out = os.path.join(args.out, "image")
@@ -406,13 +425,20 @@ def main():
     require(any(m["name"] == RUNNER_MEMBER and m["sha512"] == runner_sha512 and m["bytes"] == runner_bytes
                 for m in zip_members),
             "archive carries the standalone runner at runnerArtifact.path with the declared digest")
-    # The app imports archives with LinuxGuestImageImportLimits.standard:
-    # <=128 entries and <=4 GiB of extracted bytes. Fail here rather than at
-    # import time on a user's device.
-    require(len(zip_members) <= 128, "archive entries stay within the app import limit (128)")
-    extracted = sum(member["bytes"] for member in zip_members)
-    require(extracted < 4 * 1024 ** 3,
-            "extracted archive bytes stay within the app import limit (4 GiB): %d" % extracted)
+    # Catalog downloads use the App's declared-artifact budget only after its
+    # compiled-in image ID AND complete archive digest match. The standard
+    # unknown-archive cap does not describe this signed/pinned delivery path.
+    import_budget = None
+    store_path = os.path.join(args.repo, "FloeAgent/Sources/FloeExecution/Linux/LinuxGuestImageStore.swift")
+    try:
+        with open(store_path, "r", encoding="utf-8") as handle:
+            import_budget = pipeline_contract.catalog_archive_budget(
+                handle.read(), manifest, zip_members, zip_bytes)
+        ok("archive fits the current App's catalog-trusted import budget; ID/digest pin required")
+    except (OSError, ValueError) as error:
+        fail("App catalog import contract: %s" % error)
+    if failures:
+        return 1
 
     # --- relink tarball (new runner LGPL-2.1 §6 material) --------------------
     relink_name = "linux-guest-runner-relink-%s.tar" % tag
@@ -532,14 +558,20 @@ def main():
             base_toolchain_packages = pipeline_contract.toolchain_packages(base_toolchain_text)
             gaps = pipeline_contract.toolchain_record_gaps(base_toolchain_text, new_versions_text)
             gaps += pipeline_contract.toolchain_gaps(base_toolchain_text, new_toolchain_text)
-            require(len(base_packages) + len(base_toolchain_packages) > 0,
-                    "base toolchain record names the packages it covers")
+            new_packages = pipeline_contract.binary_packages(new_versions_text)
+            gaps += ["%s: new owning package has no base corresponding-source record" % name
+                     for name in sorted(set(new_packages) - set(base_packages))]
+            require(bool(base_packages) and bool(new_packages),
+                    "base and new toolchain records name actual binary owning packages")
             require(not gaps,
                     "every base cross-toolchain package keeps its exact version in this run (%d binary, %d metapackage)"
                     % (len(base_packages), len(base_toolchain_packages)))
             toolchain_comparison = {
-                "baseRecord": {"url": "%s/%s/releases/download/%s/linux-guest-runner-relink-35503144437.tar"
-                                      % (env["SERVER"], repo, base_tag),
+                "baseRecord": {"url": "%s/%s/releases/download/%s/%s"
+                                      % (env["SERVER"], repo, base_tag, base_relink_asset),
+                               "archive": base_relink_asset,
+                               "archiveBytes": base_digests[base_relink_asset]["bytes"],
+                               "archiveSHA256": base_digests[base_relink_asset]["sha256"],
                                "file": os.path.basename(args.base_toolchain_file),
                                "sha256": sha(args.base_toolchain_file, "sha256")},
                 "binaryPackages": base_packages, "packages": base_toolchain_packages, "gaps": gaps,
@@ -602,12 +634,15 @@ def main():
     with open(manifest_path, "rb") as src, open(os.path.join(args.out, "manifest.json"), "wb") as dst:
         dst.write(src.read())
 
+    producer = ("`.github/workflows/linux-guest-runner-update.yml` (run %s)" % qualification_id
+                if qualification_kind == "github-actions" else
+                "the repository runner-update producer (local qualification `%s`)" % qualification_id)
     notes = ("<!-- floe-linux-guest-runner-update:v1 -->\n"
              "# Floe Linux guest runner update %s (component release)\n\n"
              "Draft component release for the Floe Linux RISC-V guest image `%s` (**not published**).\n"
-             "Created by `.github/workflows/linux-guest-runner-update.yml` (run %s).\n\n"
-             "This is a **runner-only update** of the published base component `%s`: the whole-disk ext4,\n"
-             "bbl and kernel are byte-identical to the base; only `/usr/local/bin/floe-exec` was replaced\n"
+             "Created by %s.\n\n"
+             "This is a **runner-only update** of the published base component `%s`: the base userland,\n"
+             "bbl and kernel are retained; the ext4 runner and its filesystem metadata were updated\n"
              "with the protocol-3 runner built from `%s`.\n\n"
              "## Image\n\n- archive: `%s` (%d bytes)\n- archive sha512: `%s`\n- archive sha256: `%s`\n"
              "- standalone runner in the archive: `%s` (%d bytes, sha512 `%s`)\n"
@@ -625,7 +660,7 @@ def main():
              "SPAWN/PID plus honest END 3 for unknown ALIVE/KILL pids; detached service logging to the 9p\n"
              "share (%d ticks). Verdict JSON: `failures=0` over %d checks.\n\n"
              "Release state: **draft** (`draft: true`, `latest: false`, tag does not start with `v`).\n"
-             % (image_id, image_id, env["GITHUB_RUN_ID"], base_tag, target, image_zip_name, zip_bytes,
+             % (image_id, image_id, producer, base_tag, target, image_zip_name, zip_bytes,
                 zip_sha512, zip_sha256, RUNNER_MEMBER, runner_bytes, runner_sha512, caps_payload, role,
                 origin_contract["field"], predecessor["imageID"], predecessor["sha512"],
                 predecessor["bytes"], verdict.get("serviceTicks", 0),
@@ -667,7 +702,9 @@ def main():
         "repository": repo,
         "componentTag": tag,
         "targetCommit": target,
-        "workflowRun": env["GITHUB_RUN_ID"],
+        "workflowRun": qualification_id if qualification_kind == "github-actions" else None,
+        "qualificationKind": qualification_kind,
+        "qualificationID": qualification_id,
         "runUrl": env["RUN_URL"],
         "base": {"tag": base_tag, "zip": env["BASE_ZIP"], "zipBytes": int(env["BASE_ZIP_BYTES"]),
                  "zipSha512": env["BASE_ZIP_SHA512"], "zipSha256": env["BASE_ZIP_SHA256"],
@@ -690,6 +727,7 @@ def main():
                               "keys": origin_contract["keys"],
                               "entry": origin_entry},
         "runnerConstants": constants,
+        "appImportContract": import_budget,
         "protocolCheck": {"failures": verdict.get("failures"), "checks": len(verdict.get("checks", [])),
                           "serviceTicks": verdict.get("serviceTicks"),
                           "capsPayload": caps_payload},

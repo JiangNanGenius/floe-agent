@@ -507,6 +507,11 @@ def make_fixture(root, writer_path=None, engine_source=None, toolchain_version="
           "    var artifactSHA512: String\n"
           "    var artifactBytes: Int64\n"
           "}\n")
+    # Use the actual App limits, not a second fixture copy of the constants.
+    store_path = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(_MANIFEST_WRITER))),
+                              "Sources/FloeExecution/Linux/LinuxGuestImageStore.swift")
+    shutil.copyfile(store_path, write(os.path.join(repo,
+        "FloeAgent/Sources/FloeExecution/Linux/LinuxGuestImageStore.swift"), ""))
     for name, payload in source_fixture.items():
         write(os.path.join(repo, "FloeAgent/LinuxGuest/runner", name), payload)
     paths["repo"] = repo
@@ -542,6 +547,7 @@ def package_env(paths, base_toolchain, caps=CAPS_WITH_NET):
         "BASE_RELEASE_URL": "https://github.com/example/floe-agent/releases/tag/floe-linux-guest-base",
         "BASE_SOURCE_OFFER_URL": "https://github.com/example/floe-agent/releases/download/floe-linux-guest-base/SOURCE-OFFER.md",
         "BASE_ASSET_DIGESTS_JSON": json.dumps({
+            "linux-guest-runner-relink-selfcheck-42.tar": {"bytes": 61, "sha256": "f" * 64},
             "linux-guest-toolchain-source-fake.tar": {"bytes": 47, "sha256": "d" * 64},
             "linux-guest-sources-upstream-fake.tar": {"bytes": 11, "sha256": "e" * 64}}),
         "REUSED_ASSETS": "linux-guest-toolchain-source-fake.tar linux-guest-sources-upstream-fake.tar",
@@ -609,6 +615,11 @@ def check_package(out):
            "distribution records the CAPS payload")
     expect(distribution["toolchainComparison"] and not distribution["toolchainComparison"]["gaps"],
            "distribution records the toolchain comparison")
+    expect(distribution["toolchainComparison"]["baseRecord"]["url"].endswith(
+        "/linux-guest-runner-relink-selfcheck-42.tar"),
+        "toolchain provenance names the actual base relink asset rather than a historical run")
+    expect(distribution["appImportContract"]["requiresCatalogIDAndArchiveDigestPin"] is True,
+           "component records the catalog trust prerequisite without loosening unknown imports")
 
     sums = {}
     for line in open(os.path.join(paths["out"], "SHA256SUMS")):
@@ -651,6 +662,16 @@ def check_package(out):
     expect("REUSED-SOURCES.json" in ref_names and "toolchain-comparison.txt" in ref_names,
            "reused-source archive records the toolchain comparison")
 
+    local_paths = make_fixture(os.path.join(out, "local"))
+    args, env = package_env(local_paths, base_toolchain)
+    env.update(QUALIFICATION_KIND="local", QUALIFICATION_ID="local-selfcheck")
+    env.pop("GITHUB_RUN_ID")
+    expect(run_package(args, env).returncode == 0, "local producer packages without an invented Actions run")
+    local_distribution = json.load(open(os.path.join(local_paths["out"], "distribution.json")))
+    expect(local_distribution["workflowRun"] is None
+           and local_distribution["qualificationID"] == "local-selfcheck",
+           "local provenance is distinct from a workflow run")
+
     # --- fail-closed cases --------------------------------------------------
     bad_paths = make_fixture(os.path.join(out, "mismatch"))
     args, env = package_env(bad_paths, base_toolchain,
@@ -685,6 +706,17 @@ def check_package(out):
     drift_paths = make_fixture(os.path.join(out, "drift"))
     args, env = package_env(drift_paths, drifted)
     expect(run_package(args, env).returncode != 0, "cross-toolchain drift fails closed")
+
+    meta_only = write(os.path.join(out, "base-toolchain-meta-only.txt"),
+                      "toolchain_package gcc-riscv64-linux-gnu 4:13.2.0-7ubuntu1\n")
+    meta_paths = make_fixture(os.path.join(out, "meta-only"))
+    args, env = package_env(meta_paths, meta_only)
+    expect(run_package(args, env).returncode != 0,
+           "metapackage-only records cannot prove compiler and static-library corresponding source")
+    unpinned_paths = make_fixture(os.path.join(out, "unpinned-relink"))
+    args, env = package_env(unpinned_paths, base_toolchain)
+    env["BASE_RELINK_ASSET"] = "linux-guest-runner-relink-missing.tar"
+    expect(run_package(args, env).returncode != 0, "an unpinned base relink asset fails closed")
 
     no_contract = make_fixture(os.path.join(out, "nocontract"),
                                engine_source=ENGINE_SOURCE_NO_CONTRACT)
