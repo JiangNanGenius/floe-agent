@@ -727,22 +727,6 @@ nonisolated enum CADDocumentFormat {
         for row in axes {
             guard let object = try? JSONSerialization.jsonObject(with: row.data) as? [String: Any] else { continue }
             let operationIdentity = try operationIdentityIntent(object)
-            if let extrude = object["extrude"] as? [String: Any],
-               let raw = extrude["termination"], !(raw is NSNull) {
-                result.requiredVersion = max(result.requiredVersion, associativeExtrudeVersion)
-                guard let definition = raw as? [String: Any],
-                      let version = definition["version"] as? Int, version > 0 else {
-                    throw CADDocumentFormatError.malformedAssociation("extrude-end")
-                }
-                if version > ExtrudeEndDefinition.supportedVersion {
-                    result.opaqueFeatures.insert(row.featureID)
-                } else {
-                    do {
-                        let data = try JSONSerialization.data(withJSONObject: definition)
-                        _ = try JSONDecoder().decode(ExtrudeEndDefinition.self, from: data)
-                    } catch { throw CADDocumentFormatError.malformedAssociation("extrude-end") }
-                }
-            }
 
             if operationIdentity.present { result.requiredVersion = max(result.requiredVersion, operationFaceIdentityVersion) }
             if operationIdentity.opaque { result.opaqueAxes.insert(row.blobID) }
@@ -820,6 +804,23 @@ nonisolated enum CADDocumentFormat {
                 continue
             }
             let operationIdentity = try operationIdentityIntent(object)
+            if let extrude = object["extrude"] as? [String: Any],
+               let raw = extrude["termination"], !(raw is NSNull) {
+                result.requiredVersion = max(result.requiredVersion, associativeExtrudeVersion)
+                guard let definition = raw as? [String: Any],
+                      let version = definition["version"] as? Int, version > 0 else {
+                    throw CADDocumentFormatError.malformedAssociation("extrude-end")
+                }
+                if version > ExtrudeEndDefinition.supportedVersion {
+                    result.opaqueFeatures.insert(row.featureID)
+                } else {
+                    do {
+                        let data = try JSONSerialization.data(withJSONObject: definition)
+                        _ = try JSONDecoder().decode(ExtrudeEndDefinition.self, from: data)
+                    } catch { throw CADDocumentFormatError.malformedAssociation("extrude-end") }
+                }
+            }
+
             if let sweep = object["sweep"] as? [String: Any],
                let helix = sweep["helix"] as? [String: Any],
                let raw = helix["profileAnchor"], !(raw is NSNull) {
