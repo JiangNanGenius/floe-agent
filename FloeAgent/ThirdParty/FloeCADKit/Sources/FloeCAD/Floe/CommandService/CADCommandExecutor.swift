@@ -346,19 +346,23 @@ final class CADCommandExecutor {
             // the boolean's targets (or every body when there are none),
             // along the plane normal in the requested sign's direction.
             var distance = requested
+            var termination: ExtrudeEndDefinition?
             if let end {
                 let candidates = targets.isEmpty
                     ? session.document.bodies
                     : session.document.bodies.filter { targets.contains($0.id) }
-                let direction = requested >= 0 ? sketch.plane.normal : -sketch.plane.normal
-                guard let resolved = ExtrudeEndKit.resolve(end, plane: sketch.plane, seed: seed,
-                                                           direction: direction, symmetric: symmetric,
-                                                           bodies: candidates) else {
+                do {
+                    let inputs = ExtrudeEndDefinition.inputs(bodies: candidates, graph: session.document.features,
+                        tables: session.lastFaceTables)
+                    let bound = try ExtrudeEndDefinition.bind(end, plane: sketch.plane, seed: seed,
+                        reversed: requested < 0, inputs: inputs)
+                    distance = try bound.resolvedDistance(plane: sketch.plane, seed: seed,
+                        symmetric: symmetric, inputs: inputs, naming: SignatureNaming())
+                    termination = bound
+                } catch {
                     return .failure(422, "Unprocessable Entity", error: "no_end_found",
-                                    message: "\"end\": \(end.rawValue) found no face ahead of the profile "
-                                           + "along the plane normal — give a \"distance\" instead.")
+                                    message: error.localizedDescription)
                 }
-                distance = requested >= 0 ? resolved : -resolved
             }
             let profile = execProfileRef(sketchID: sketchID, seed: seed, in: session)
             let plane = PlaneRef(source: .sketch(sketchID))
@@ -380,7 +384,7 @@ final class CADCommandExecutor {
                     distance: Expr(value: distance),
                     symmetric: symmetric,
                     boolean: intent,
-                    extraProfiles: []),
+                    extraProfiles: [], termination: termination),
                 outputBodyIDs: [BodyID()]), on: viewModel)
 
         case let .revolve(sketchID, seed, axis, angleDegrees, booleanOp, targets):

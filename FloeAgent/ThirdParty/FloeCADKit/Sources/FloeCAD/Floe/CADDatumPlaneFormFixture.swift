@@ -505,7 +505,7 @@ public enum CADDatumPlaneFormFixture {
             return "none"
         }
         let bodyID = state.features.nodes.compactMap { node -> BodyID? in
-            guard case let .extrude(profile, _, _, _, _, _) = node.kind,
+            guard case let .extrude(profile, _, _, _, _, _, _) = node.kind,
                   profile.sketchID == child.id else { return nil }
             return node.outputBodyIDs.first
         }.first

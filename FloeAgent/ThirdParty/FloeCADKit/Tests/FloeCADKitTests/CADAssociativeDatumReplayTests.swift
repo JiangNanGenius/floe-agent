@@ -106,7 +106,7 @@ final class CADAssociativeDatumReplayTests: XCTestCase {
 
     private func changingThickness(_ fixture: Fixture, to thickness: Double) -> Fixture {
         var result = fixture
-        guard case let .extrude(profile, plane, _, symmetric, boolean, extras) = fixture.source.kind,
+        guard case let .extrude(profile, plane, _, symmetric, boolean, extras, _) = fixture.source.kind,
               let index = result.graph.index(of: fixture.source.id) else {
             XCTFail("missing plate feature")
             return fixture

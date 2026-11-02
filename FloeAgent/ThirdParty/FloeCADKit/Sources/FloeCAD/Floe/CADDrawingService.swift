@@ -454,7 +454,7 @@ public final class CADDrawingService {
     private static func featureNode(_ node: FeatureNode, writesBody target: BodyID) -> Bool {
         if node.outputBodyIDs.contains(target) { return true }
         switch node.kind {
-        case let .extrude(_, _, _, _, boolean, _),
+        case let .extrude(_, _, _, _, boolean, _, _),
              let .draftExtrude(_, _, _, _, _, boolean):
             return boolean.resolvedTargets.contains { $0.bodyID == target }
         case let .revolve(_, _, _, _, boolean):

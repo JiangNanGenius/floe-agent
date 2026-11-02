@@ -636,11 +636,16 @@ nonisolated enum ProjectMergeKit {
                 var moved = placement
                 moved.translation += t
                 return .primitive(spec: spec, placement: moved)
-            case let .extrude(profile, plane, distance, symmetric, boolean, extra):
+            case let .extrude(profile, plane, distance, symmetric, boolean, extra, termination):
                 return .extrude(
                     profile: remap(profile), plane: remap(plane, translation: t),
                     distance: distance, symmetric: symmetric, boolean: remap(boolean),
-                    extraProfiles: extra.map(remap))
+                    extraProfiles: extra.map(remap), termination: termination.map { definition in
+                        var moved = definition
+                        moved.targets = definition.targets.map(remap)
+                        moved.nextFace = definition.nextFace.map { remap($0, translation: t) }
+                        return moved
+                    })
             case let .draftExtrude(profile, plane, distance, taperAngle, symmetric, boolean):
                 return .draftExtrude(
                     profile: remap(profile), plane: remap(plane, translation: t),

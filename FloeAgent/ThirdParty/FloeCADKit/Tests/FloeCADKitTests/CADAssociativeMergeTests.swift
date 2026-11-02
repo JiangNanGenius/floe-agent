@@ -314,7 +314,7 @@ final class CADAssociativeMergeTests: XCTestCase {
         let insertion = try ProjectMergeKit.insert(fixture.document, into: DesignDocument(),
                                                    translation: shift)
         guard case let .fillet(body, edges, _) = insertion.document.features.nodes[2].kind,
-              case let .extrude(_, plane, _, _, intent, _) = insertion.document.features.nodes[3].kind,
+              case let .extrude(_, plane, _, _, intent, _, _) = insertion.document.features.nodes[3].kind,
               case let .explicit(ground) = plane.source else {
             return XCTFail("Inserted feature type lost")
         }

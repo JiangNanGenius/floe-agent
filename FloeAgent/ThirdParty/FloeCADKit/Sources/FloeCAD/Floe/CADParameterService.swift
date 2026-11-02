@@ -290,6 +290,17 @@ public final class CADParameterService {
         // Hole edits validate the pilot relation before mutation; other kinds
         // pay no sketch-resolution cost here (the helper short-circuits).
         var edited: FeatureKind = node.kind
+        var endChanges: [String: Any] = [:]
+        if case let .extrude(profile, plane, distance, symmetric, boolean, extras, _) = edited {
+            for key in ["end", "end_targets", "reversed"] {
+                if let value = scalarChanges.removeValue(forKey: key) { endChanges[key] = value }
+            }
+            // Returning to Distance and setting its value is one atomic edit.
+            if endChanges["end"] as? String == ExtrudeEnd.blind.rawValue {
+                edited = .extrude(profile: profile, plane: plane, distance: distance,
+                    symmetric: symmetric, boolean: boolean, extraProfiles: extras)
+            }
+        }
         if !scalarChanges.isEmpty {
             var currentSweepSpine: [PointWrapper]?
             var sweepProfileAnchor: SIMD3<Double>?
@@ -316,7 +327,7 @@ public final class CADParameterService {
                     document.session.document.sketches.first(where: { $0.id == id })
                 }.map(PointWrapper.init)
             }
-            switch Self.updated(node.kind, changes: scalarChanges,
+            switch Self.updated(edited, changes: scalarChanges,
                                 pilotDiameter: Self.placementPilotDiameter(
                                     node, document: document.session.document),
                                 currentSweepSpine: currentSweepSpine,
@@ -326,6 +337,10 @@ public final class CADParameterService {
             case .success(let kind):
                 edited = kind
             }
+        }
+        if !endChanges.isEmpty {
+            do { edited = try applyingExtrudeEnd(endChanges, to: edited, feature: node.id) }
+            catch { return Self.fail("bad_extrude_end", error.localizedDescription) }
         }
         if let axisChange {
             switch applyAxisAssociation(axisChange, to: edited) {
@@ -455,6 +470,85 @@ public final class CADParameterService {
     ///   kept and a later source edit no longer moves it. A broken source
     ///   refuses (there is no valid current line to freeze) rather than falling
     ///   back to the creation-time cache.
+    /// Resolve only the graph prefix that feeds this feature. The final scene
+    /// may already contain its CUT result under the same BodyID; using that
+    /// result to choose an end would introduce a self-reference.
+    private func applyingExtrudeEnd(_ changes: [String: Any], to kind: FeatureKind,
+                                   feature: FeatureID) throws -> FeatureKind {
+        func fail(_ message: String) -> ExtrudeEndDefinition.Failure { .init(message: message) }
+        guard case let .extrude(profile, planeRef, distance, symmetric, boolean, extras, original) = kind else {
+            throw fail("Only a straight extrusion has an end condition.")
+        }
+        let mode: ExtrudeEnd
+        if let value = changes["end"] {
+            guard let text = value as? String, let parsed = ExtrudeEnd(rawValue: text) else {
+                throw fail("end must be blind, throughAll or upToNext.")
+            }
+            mode = parsed
+        } else { mode = original?.mode ?? .blind }
+        let reversed: Bool
+        if let value = changes["reversed"] {
+            guard let flag = CADMaterialService.bool(value) else { throw fail("reversed must be a boolean.") }
+            reversed = flag
+        } else { reversed = original?.reversed ?? (distance.value < 0) }
+        if mode == .blind {
+            guard changes["end_targets"] == nil else { throw fail("A distance end does not use end_targets.") }
+            let signed = reversed ? -abs(distance.value) : abs(distance.value)
+            return .extrude(profile: profile, plane: planeRef,
+                distance: Expr(value: signed, formula: signed == distance.value ? distance.formula : nil),
+                symmetric: symmetric, boolean: boolean, extraProfiles: extras)
+        }
+        let model = document.session.document
+        guard let index = model.features.nodes.firstIndex(where: { $0.id == feature }),
+              index < (model.features.rollbackIndex ?? model.features.nodes.count),
+              let seed = profile.seedPoint else {
+            throw fail("The extrusion must have an active source profile before changing its end.")
+        }
+        var prefix = model.features
+        prefix.rollbackIndex = index
+        var revision: UInt64 = 0
+        let result = prefix.evaluate(sketches: model.sketches, planes: model.planes,
+            naming: SignatureNaming(), variables: VariableTable.resolve(model.variables).values,
+            axes: model.axes, datumPoints: model.datumPoints, nextRevision: { revision += 1; return revision })
+        guard result.errors.isEmpty, result.referenceErrors.isEmpty else {
+            throw fail("Repair the extrusion's upstream features before changing its end.")
+        }
+        var resolvedModel = model
+        for (id, plane) in result.resolvedPlaneUpdates {
+            if let index = resolvedModel.planes.firstIndex(where: { $0.id == id }) { resolvedModel.planes[index].plane = plane }
+        }
+        for (id, plane) in result.resolvedSketchSupportUpdates {
+            if let index = resolvedModel.sketches.firstIndex(where: { $0.id == id }) { resolvedModel.sketches[index].plane = plane }
+        }
+        guard let plane = resolvedModel.currentPlane(planeRef) else { throw fail("The source sketch plane is missing.") }
+        let candidates = ExtrudeEndDefinition.inputs(bodies: result.bodies,
+            graph: FeatureGraph(nodes: Array(prefix.nodes.prefix(index))), tables: result.faceTables)
+        let ids: [BodyID]
+        if let raw = changes["end_targets"] {
+            guard let list = raw as? [String], !list.isEmpty, list.count <= 128,
+                  list.allSatisfy({ UUID(uuidString: $0) != nil }) else {
+                throw fail("end_targets must list existing upstream body UUIDs.")
+            }
+            ids = list.compactMap { UUID(uuidString: $0).map { BodyID(raw: $0) } }
+            guard Set(ids).count == ids.count else { throw fail("An end source cannot be repeated.") }
+        } else if let original { ids = original.targets.map(\.bodyID) }
+        else { ids = boolean.resolvedTargets.isEmpty ? candidates.map { $0.body.id } : boolean.resolvedTargets.map(\.bodyID) }
+        let inputs = candidates.filter { ids.contains($0.body.id) }
+        guard inputs.count == ids.count else { throw fail("The selected end source is not upstream of this extrusion.") }
+        var definition: ExtrudeEndDefinition
+        if var kept = original, kept.mode == mode, changes["end_targets"] == nil {
+            kept.reversed = reversed
+            definition = kept
+        } else {
+            definition = try ExtrudeEndDefinition.bind(mode, plane: plane, seed: seed,
+                reversed: reversed, inputs: inputs)
+        }
+        let value = try definition.resolvedDistance(plane: plane, seed: seed, symmetric: symmetric,
+            inputs: inputs, naming: SignatureNaming())
+        return .extrude(profile: profile, plane: planeRef, distance: Expr(value: value),
+            symmetric: symmetric, boolean: boolean, extraProfiles: extras, termination: definition)
+    }
+
     private func applyAxisAssociation(
         _ raw: Any, to kind: FeatureKind
     ) -> Result<FeatureKind, AxisAssociationFailure> {
@@ -3978,7 +4072,7 @@ public final class CADParameterService {
     /// pattern/mirror sources as written: those operations emit separate ids.
     private static func overwrittenBodyIDs(in kind: FeatureKind) -> [BodyID] {
         switch kind {
-        case let .extrude(_, _, _, _, boolean, _),
+        case let .extrude(_, _, _, _, boolean, _, _),
              let .draftExtrude(_, _, _, _, _, boolean),
              let .revolve(_, _, _, _, boolean), let .sweep(_, _, _, boolean, _, _),
              let .loft(_, boolean):
@@ -4448,10 +4542,16 @@ public final class CADParameterService {
             vector("placement_translation", placement.translation, "mm")
             add("placement_scale", "unitless", placement.scale, minimum: 1e-6, editable: false)
             unit = "mm"
-        case let .extrude(_, _, distance, symmetric, _, _):
+        case let .extrude(_, _, distance, symmetric, _, _, termination):
             kindName = "extrude"
-            add("distance", "mm", distance.value)
+            add("distance", "mm", distance.value, editable: termination == nil,
+                note: termination == nil ? nil : "Derived from the selected end. Set end=blind before editing distance.")
             add("symmetric", "unitless", symmetric)
+            add("end", "unitless", (termination?.mode ?? .blind).rawValue,
+                note: "blind, throughAll or upToNext; a bound end follows its original upstream sources.")
+            add("reversed", "unitless", termination?.reversed ?? (distance.value < 0))
+            add("end_targets", "unitless", termination?.targets.map { $0.bodyID.raw.uuidString } ?? [],
+                note: "Existing upstream body UUIDs. An explicit replacement binds a new source; missing faces never retarget automatically.")
             if let formula = distance.formula { add("distance_formula", "unitless", formula, editable: false) }
             unit = "mm"
         case let .draftExtrude(_, _, distance, taperAngle, symmetric, _):
@@ -4709,19 +4809,15 @@ public final class CADParameterService {
 
     private static func bodyReferences(in kind: FeatureKind) -> [BodyRef] {
         switch kind {
-        case let .extrude(_, _, _, _, boolean, _),
-             let .draftExtrude(_, _, _, _, _, boolean),
-             let .revolve(_, _, _, _, boolean), let .sweep(_, _, _, boolean, _, _),
-             let .loft(_, boolean):
-            return boolean.resolvedTargets
+        case let .extrude(_, _, _, _, boolean, _, termination):
+            return Array(Set(boolean.resolvedTargets + (termination?.targets ?? [])))
         case let .boolean(_, target, tools): return [target] + tools
         // Profile features consume the bodies their boolean intent names
         // (union/subtract/intersect), e.g. an extruded hole cut. Omitting them
         // hid real edges in the dependency graph, so deleting/ moving the
         // producer slipped through to the rebuild and failed there instead of
         // being refused as `has_dependents` / `dependency_order`.
-        case let .extrude(_, _, _, _, boolean, _),
-             let .draftExtrude(_, _, _, _, _, boolean),
+        case let .draftExtrude(_, _, _, _, _, boolean),
              let .revolve(_, _, _, _, boolean),
              let .sweep(_, _, _, boolean, _, _),
              let .loft(_, boolean):
@@ -4740,6 +4836,7 @@ public final class CADParameterService {
 
     private static func faceReferences(in kind: FeatureKind) -> [FaceRef] {
         switch kind {
+        case let .extrude(_, _, _, _, _, _, termination): return termination?.nextFace.map { [$0] } ?? []
         case let .pushPull(face, _, _), let .moveFace(face, _),
              let .scaleFace(face, _), let .rotateFace(face, _, _),
              let .draftFace(face, _, _, _), let .replaceFace(face, _, _, _):
@@ -4922,7 +5019,7 @@ public final class CADParameterService {
                 return didChange ? .success(.primitive(spec: .sphere(radius: r), placement: placement))
                     : unknown(["radius"])
             }
-        case let .extrude(profile, plane, distance, symmetric, boolean, extras):
+        case let .extrude(profile, plane, distance, symmetric, boolean, extras, termination):
             let d = value("distance")
             let s = boolValue("symmetric")
             guard !changes.keys.contains(where: { !["distance", "symmetric"].contains($0) }) else {
@@ -4930,13 +5027,19 @@ public final class CADParameterService {
             }
             didChange = d != nil || s != nil
             guard didChange else { return unknown(["distance", "symmetric"]) }
+            guard d == nil || termination == nil else {
+                return fail("distance", "Set end=blind to replace an associated end with a distance.")
+            }
+            guard !(s ?? symmetric) || termination?.mode != .upToNext else {
+                return fail("symmetric", "Up to next face is a one-sided end condition.")
+            }
             let newDistance = d.map { Expr(value: $0, formula: nil) } ?? distance
             guard newDistance.value.isFinite, abs(newDistance.value) > 1e-6 else {
                 return fail("distance", "distance must be a non-zero finite mm value.")
             }
             return .success(.extrude(profile: profile, plane: plane, distance: newDistance,
                                      symmetric: s ?? symmetric, boolean: boolean,
-                                     extraProfiles: extras))
+                                     extraProfiles: extras, termination: termination))
         case let .draftExtrude(profile, plane, distance, taperAngle, symmetric, boolean):
             let d = value("distance")
             let t = value("taper_angle")

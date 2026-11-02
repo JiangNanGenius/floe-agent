@@ -128,7 +128,7 @@ final class CADAssociativeSessionTests: XCTestCase {
         // Replace the sketch entity, keeping the feature/body/sketch ids and
         // all geometric dimensions. The old wall identity was deleted; an
         // identical-looking replacement is not proof that it is the same face.
-        guard case let .extrude(profile, plane, distance, symmetric, boolean, extras) = f.source.kind else {
+        guard case let .extrude(profile, plane, distance, symmetric, boolean, extras, _) = f.source.kind else {
             return XCTFail("Expected the production extrusion fixture")
         }
         let oldSketch = try XCTUnwrap(session.document.sketches.first { $0.id == profile.sketchID })
@@ -182,7 +182,7 @@ final class CADAssociativeSessionTests: XCTestCase {
         let f = try await fixture()
         let session = f.document.session
         try assertPlacement(f, y: 15)
-        guard case let .extrude(profile, plane, _, symmetric, boolean, extras) = f.source.kind else { return XCTFail() }
+        guard case let .extrude(profile, plane, _, symmetric, boolean, extras, _) = f.source.kind else { return XCTFail() }
         let after = FeatureKind.extrude(profile: profile, plane: plane, distance: Expr(value: 20),
             symmetric: symmetric, boolean: boolean, extraProfiles: extras)
         session.rebuildFrom(f.source.id, edit: EditFeatureCommand(featureID: f.source.id, before: f.source.kind, after: after))

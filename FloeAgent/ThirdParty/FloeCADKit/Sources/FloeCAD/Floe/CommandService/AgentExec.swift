@@ -77,8 +77,8 @@ nonisolated enum AgentExecOp: Sendable, Equatable {
     /// offset copy, walls sloped by the angle — cast/mould release); 0 is a
     /// plain straight prism. Positive contracts the section along the extrude.
     /// `end` (Through All / Up To Next) replaces `distance`: the bridge
-    /// resolves it against the document's bodies at record time, so the
-    /// node still carries a plain distance (see `ExtrudeEndKit`).
+    /// binds the actual upstream bodies/face, then re-resolves that source
+    /// on rebuild (see `ExtrudeEndDefinition`).
     case extrude(sketch: SketchID, seed: SIMD2<Double>, distance: Double,
                  symmetric: Bool, taperDegrees: Double,
                  boolean: BooleanIntent.Op, targets: [BodyID], end: ExtrudeEnd?)

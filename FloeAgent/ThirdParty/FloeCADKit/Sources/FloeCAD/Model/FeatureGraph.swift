@@ -353,7 +353,8 @@ nonisolated enum FeatureKind: Codable, Sendable {
         distance: Expr,
         symmetric: Bool,
         boolean: BooleanIntent,
-        extraProfiles: [ProfileRef]
+        extraProfiles: [ProfileRef],
+        termination: ExtrudeEndDefinition? = nil
     )
     /// Draft/taper extrude (playbook M1): the profile is lofted to an OFFSET
     /// copy of itself `distance` away, offset = tan(`taperAngle`)·distance, so
@@ -466,7 +467,7 @@ nonisolated extension FeatureNode {
             if case let .sketchLine(sid, _) = ref.source { ids.insert(sid) }
         }
         switch kind {
-        case let .extrude(profile, plane, _, _, _, extraProfiles):
+        case let .extrude(profile, plane, _, _, _, extraProfiles, _):
             ids.insert(profile.sketchID)
             for extra in extraProfiles { ids.insert(extra.sketchID) }
             addPlane(plane)
@@ -504,7 +505,7 @@ nonisolated extension FeatureNode {
             if case let .construction(cid) = ref.source { ids.insert(cid) }
         }
         switch kind {
-        case let .extrude(_, plane, _, _, _, _), let .draftExtrude(_, plane, _, _, _, _),
+        case let .extrude(_, plane, _, _, _, _, _), let .draftExtrude(_, plane, _, _, _, _),
              let .revolve(_, plane, _, _, _), let .sweep(_, plane, _, _, _, _),
              let .hole(_, _, plane, _), let .mirror(_, plane, _):
             add(plane)
@@ -546,7 +547,9 @@ nonisolated extension FeatureNode {
         switch kind {
         case .primitive:
             return []
-        case let .extrude(_, _, _, _, boolean, _), let .draftExtrude(_, _, _, _, _, boolean),
+        case let .extrude(_, _, _, _, boolean, _, termination):
+            return Array(Set(boolean.resolvedTargets.map(\.bodyID) + (termination?.targets.map(\.bodyID) ?? [])))
+        case let .draftExtrude(_, _, _, _, _, boolean),
              let .revolve(_, _, _, _, boolean), let .sweep(_, _, _, boolean, _, _),
              let .loft(_, boolean):
             return boolean.resolvedTargets.map(\.bodyID)
@@ -629,6 +632,9 @@ nonisolated struct EvalResult: Sendable {
     var lastBodyWriters: [BodyID: FeatureID]
     /// Only requested historical versions (including every datum source).
     var geometryVersions: [GeometryVersionRef: GeometryVersionSnapshot]
+    /// Derived cache proposals; only the owning rebuild transaction writes
+    /// these values, alongside its geometry and the original semantic edit.
+    var resolvedExtrudeDistances: [FeatureID: Double]
 
     init(
         bodies: [Body] = [],
@@ -642,7 +648,8 @@ nonisolated struct EvalResult: Sendable {
         resolvedDatumPointUpdates: [DatumPointID: ResolvedDatumPointGeometry] = [:],
         referenceErrors: [AssociativeReferenceKey: AssociativeReferenceError] = [:],
         lastBodyWriters: [BodyID: FeatureID] = [:],
-        geometryVersions: [GeometryVersionRef: GeometryVersionSnapshot] = [:]
+        geometryVersions: [GeometryVersionRef: GeometryVersionSnapshot] = [:],
+        resolvedExtrudeDistances: [FeatureID: Double] = [:]
     ) {
         self.bodies = bodies
         self.faceTables = faceTables
@@ -656,6 +663,7 @@ nonisolated struct EvalResult: Sendable {
         self.referenceErrors = referenceErrors
         self.lastBodyWriters = lastBodyWriters
         self.geometryVersions = geometryVersions
+        self.resolvedExtrudeDistances = resolvedExtrudeDistances
     }
 }
 
@@ -810,7 +818,8 @@ nonisolated extension FeatureGraph {
             resolvedDatumPointUpdates: state.associative.resolvedDatumPointUpdates,
             referenceErrors: state.associative.referenceErrors,
             lastBodyWriters: state.associative.lastBodyWriters,
-            geometryVersions: state.associative.snapshots
+            geometryVersions: state.associative.snapshots,
+            resolvedExtrudeDistances: state.resolvedExtrudeDistances
         )
     }
 
@@ -826,7 +835,12 @@ nonisolated extension FeatureGraph {
         resolvedAxisHash: [ConstructionAxisID: UInt64]
     ) -> UInt64 {
         var f = EvalFingerprint()
-        if let kind = EvalFingerprint.json(node.kind) {
+        let semanticKind: FeatureKind
+        if case let .extrude(profile, plane, _, symmetric, boolean, extras, termination?) = node.kind {
+            semanticKind = .extrude(profile: profile, plane: plane, distance: Expr(value: 0),
+                symmetric: symmetric, boolean: boolean, extraProfiles: extras, termination: termination)
+        } else { semanticKind = node.kind }
+        if let kind = EvalFingerprint.json(semanticKind) {
             f.combine(kind)
         } else {
             // An unencodable kind (a non-finite parameter): salt so it never
@@ -858,10 +872,10 @@ nonisolated extension FeatureGraph {
         switch node.kind {
         case let .primitive(spec, placement):
             evalPrimitive(node, spec: spec, placement: placement, into: &state, next: nextRevision)
-        case let .extrude(profile, plane, distance, symmetric, boolean, extraProfiles):
+        case let .extrude(profile, plane, distance, symmetric, boolean, extraProfiles, termination):
             evalExtrude(
                 node, profileRef: profile, planeRef: plane, distance: distance,
-                symmetric: symmetric, boolean: boolean, extraProfileRefs: extraProfiles,
+                symmetric: symmetric, boolean: boolean, extraProfileRefs: extraProfiles, termination: termination,
                 into: &state, next: nextRevision)
         case let .draftExtrude(profile, plane, distance, taperAngle, symmetric, boolean):
             evalDraftExtrude(
@@ -1111,6 +1125,7 @@ nonisolated extension FeatureGraph {
         symmetric: Bool,
         boolean: BooleanIntent,
         extraProfileRefs: [ProfileRef],
+        termination: ExtrudeEndDefinition? = nil,
         into state: inout EvalState,
         next nextRevision: () -> UInt64
     ) {
@@ -1122,6 +1137,23 @@ nonisolated extension FeatureGraph {
             state.errors[node.id] = .brokenRef("extrude profile unresolved")
             return
         }
+        let resolvedDistance: Expr
+        if let termination {
+            let inputs = termination.targets.compactMap { ref -> ExtrudeEndDefinition.Input? in
+                guard let body = state.bodies[ref.bodyID] else { return nil }
+                return .init(body: body, reference: ref, table: state.faceTables[body.id])
+            }
+            do {
+                let value = try termination.resolvedDistance(plane: plane,
+                    seed: profileRef.seedPoint ?? outer.interiorPoint, symmetric: symmetric,
+                    inputs: inputs, naming: state.naming)
+                resolvedDistance = Expr(value: value)
+                state.resolvedExtrudeDistances[node.id] = value
+            } catch {
+                state.errors[node.id] = .brokenRef("extrusion end: \(error.localizedDescription)")
+                return
+            }
+        } else { resolvedDistance = distance }
 
         // Resolve extra profiles once; both the new-body and the cut paths use them.
         var extras: [(profile: Profile, holes: [Profile])] = []
@@ -1151,7 +1183,7 @@ nonisolated extension FeatureGraph {
             var channel: [UInt32] = []
             var adopted: Body? = nil
             if OCCTKernel.useOCCTAsSourceOfTruth {
-                let z = OCCTKernel.extrudeZRange(distance: distance.value, symmetric: symmetric)
+                let z = OCCTKernel.extrudeZRange(distance: resolvedDistance.value, symmetric: symmetric)
                 let history: OCCTShapeHistory? = extras.isEmpty ? OCCTShapeHistory() : nil
                 if let handle = OCCTKernel.extrudeSolid(
                     outer: outer, holes: holes, extras: extras,
@@ -1180,13 +1212,17 @@ nonisolated extension FeatureGraph {
             if let adopted {
                 body = adopted
             } else {
+                if termination != nil, OCCTKernel.useOCCTAsSourceOfTruth {
+                    state.errors[node.id] = .kernelFailure("The associated extrusion could not build an exact solid.")
+                    return
+                }
                 // Fallback: FLUSH prisms unioned — exact as-drawn geometry.
                 var solid = KernelOps.extrude(
-                    profile: outer, holes: holes, in: plane, distance: distance.value, symmetric: symmetric)
+                    profile: outer, holes: holes, in: plane, distance: resolvedDistance.value, symmetric: symmetric)
                 for extra in extras {
                     solid = solid.union(KernelOps.extrude(
                         profile: extra.profile, holes: extra.holes, in: plane,
-                        distance: distance.value, symmetric: symmetric))
+                        distance: resolvedDistance.value, symmetric: symmetric))
                 }
                 guard !solid.polygons.isEmpty else {
                     state.errors[node.id] = .emptyGeometry
@@ -1248,7 +1284,7 @@ nonisolated extension FeatureGraph {
         if OCCTKernel.useOCCTAsSourceOfTruth,
            let targetBrep = target.brep,
            let a = OCCTKernel.transformed(targetBrep, by: target.transform) {
-            let z = OCCTKernel.extrudeZRange(distance: distance.value, symmetric: symmetric)
+            let z = OCCTKernel.extrudeZRange(distance: resolvedDistance.value, symmetric: symmetric)
             let history: OCCTShapeHistory? = extras.isEmpty ? OCCTShapeHistory() : nil
             if let toolBrep = OCCTKernel.extrudeSolid(
                    outer: outer, holes: holes, extras: extras,
@@ -1292,6 +1328,10 @@ nonisolated extension FeatureGraph {
             }
         }
         if !occtOwned {
+            if termination != nil, target.brep != nil {
+                state.errors[node.id] = .kernelFailure("The associated extrusion could not retain the target's exact geometry.")
+                return
+            }
             // Either the target is mesh-only or OCCT declined the tool
             // (multi-profile with a failed piece, holed loft…). Euclid
             // legitimately owns the result. Use the OVERLAPPED (padded) tool
@@ -1300,7 +1340,7 @@ nonisolated extension FeatureGraph {
             // wrapped identity so KernelOps.boolean bakes no extra transform.
             let toolMesh = KernelOps.overlapExtrudeTool(
                 profile: outer, holes: holes, extraProfiles: extras,
-                in: plane, distance: distance.value, symmetric: symmetric)
+                in: plane, distance: resolvedDistance.value, symmetric: symmetric)
             guard !toolMesh.polygons.isEmpty else {
                 state.errors[node.id] = .emptyGeometry
                 return
@@ -3255,6 +3295,7 @@ private nonisolated struct EvalState {
     /// load/undo error replay, which must never mutate the document.
     var proposedUpgrades: [FeatureID: FeatureKind] = [:]
     var errors: [FeatureID: FeatureError] = [:]
+    var resolvedExtrudeDistances: [FeatureID: Double] = [:]
 
     // MARK: Memo instrumentation (docs/INCREMENTAL_EVAL_DESIGN.md)
 

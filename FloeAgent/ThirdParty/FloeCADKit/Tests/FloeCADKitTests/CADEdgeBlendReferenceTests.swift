@@ -497,7 +497,7 @@ final class CADEdgeBlendReferenceTests: XCTestCase {
         let node = blend(f, refs: [reference], fillet: true)
         document.session.recordAndRebuild([node], title: "Round")
         XCTAssertTrue(document.session.lastEvalErrors.isEmpty, "\(document.session.lastEvalErrors)")
-        guard case let .extrude(profile, plane, _, symmetric, boolean, extras) = f.source.kind else {
+        guard case let .extrude(profile, plane, _, symmetric, boolean, extras, _) = f.source.kind else {
             return XCTFail("Missing source")
         }
         document.session.editFeature(f.source.id, to: .extrude(profile: profile, plane: plane,

@@ -680,7 +680,7 @@ final class CADAssociativePlaneKindsServiceTests: XCTestCase {
               case let .profileWall(entity, _) = parents[0].source else {
             return XCTFail("the angle datum must bind an entity-scoped profile wall")
         }
-        guard case let .extrude(profile, planeRef, distance, symmetric, boolean, extras) =
+        guard case let .extrude(profile, planeRef, distance, symmetric, boolean, extras, _) =
                 f.source.kind else { return XCTFail("expected extrude") }
         let oldSketch = try XCTUnwrap(f.document.session.document.sketches
             .first { $0.id == profile.sketchID })

@@ -184,10 +184,10 @@ final class PlateHoleFixtureTests: XCTestCase {
         //    bounding box grows only in Z.
         let session = reopened.session
         let plateNode = try XCTUnwrap(session.document.features.nodes.first { node in
-            guard case let .extrude(_, _, distance, symmetric, _, _) = node.kind else { return false }
+            guard case let .extrude(_, _, distance, symmetric, _, _, _) = node.kind else { return false }
             return !symmetric && abs(distance.value - 10) < 1e-9
         })
-        guard case let .extrude(profile, plane, _, symmetric, boolean, extra) = plateNode.kind else {
+        guard case let .extrude(profile, plane, _, symmetric, boolean, extra, _) = plateNode.kind else {
             return XCTFail("plate node changed kind")
         }
         let edited = FeatureKind.extrude(profile: profile, plane: plane,

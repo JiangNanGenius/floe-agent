@@ -96,7 +96,7 @@ final class CADVariablePanelTests: XCTestCase {
         XCTAssertEqual(try variable(document, named: "w2").value, 3)
         XCTAssertEqual(try variable(document, named: "width").value, 2)
         let node = try XCTUnwrap(document.session.document.features.node(feature))
-        guard case let .extrude(_, _, distance, _, _, _) = node.kind else { return XCTFail("expected extrude") }
+        guard case let .extrude(_, _, distance, _, _, _, _) = node.kind else { return XCTFail("expected extrude") }
         XCTAssertEqual(distance.formula, "thickness + w2 + width")
         XCTAssertEqual(try volume(document), 12_000, accuracy: 1e-3)
         model.undo()

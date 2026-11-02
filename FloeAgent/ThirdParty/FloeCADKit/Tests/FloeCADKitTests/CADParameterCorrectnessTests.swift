@@ -411,6 +411,244 @@ final class CADParameterCorrectnessTests: XCTestCase {
         XCTAssertTrue(document.session.lastEvalErrors.isEmpty)
     }
 
+    private func endOf(_ document: FloeCADDocument, _ id: FeatureID) throws -> ExtrudeEndDefinition {
+        let node = try XCTUnwrap(document.session.document.features.node(id))
+        guard case let .extrude(_, _, _, _, _, _, end?) = node.kind else {
+            throw NSError(domain: "MissingAssociatedExtrusion", code: 1)
+        }
+        return end
+    }
+
+    private func endBody(_ document: FloeCADDocument, _ id: BodyID) throws -> Body {
+        try XCTUnwrap(document.session.document.body(with: id))
+    }
+
+    private func endDistance(_ document: FloeCADDocument, _ id: FeatureID) throws -> Double {
+        let node = try XCTUnwrap(document.session.document.features.node(id))
+        guard case let .extrude(_, _, distance, _, _, _, _) = node.kind else {
+            throw NSError(domain: "MissingExtrusion", code: 1)
+        }
+        return distance.value
+    }
+
+    private func makeNextFaceExtrusion(_ document: FloeCADDocument) throws -> (FeatureNode, FeatureNode, BodyID) {
+        let source = try makeBox(document)
+        let sourceBody = try body(document).id
+        let profile = try run(document, "sketch.create", [
+            "origin": [0, 20, 0], "xAxis": [1, 0, 0], "yAxis": [0, 0, -1]])
+        let sketch = try XCTUnwrap(profile["sketchID"] as? String)
+        try run(document, "sketch.addEntities", ["sketchID": sketch,
+            "entities": [["kind": "circle", "center": [5, 5], "radius": 1]]])
+        try run(document, "feature.extrude", ["sketchID": sketch, "seedPoint": [5, 5],
+            "distance": -1, "end": "upToNext", "booleanTargets": [sourceBody.raw.uuidString]])
+        let child = try XCTUnwrap(document.session.document.features.nodes.last)
+        return (source, child, sourceBody)
+    }
+
+    func testThroughAllCutFollowsPlateThicknessInOneUndoAndReopens() async throws {
+        let document = try await makeDocument(); defer { document.close() }
+        let source = try makeBox(document)
+        let sourceBody = try body(document).id
+        let sketch = try run(document, "sketch.create", [
+            "origin": [0, 0, 0], "xAxis": [1, 0, 0], "yAxis": [0, 0, -1]])
+        let raw = try XCTUnwrap(sketch["sketchID"] as? String)
+        try run(document, "sketch.addEntities", ["sketchID": raw,
+            "entities": [["kind": "circle", "center": [20, 10], "radius": 2]]])
+        try run(document, "feature.extrude", ["sketchID": raw, "seedPoint": [20, 10],
+            "end": "throughAll", "boolean": "subtract", "booleanTargets": [sourceBody.raw.uuidString]])
+        let cut = try XCTUnwrap(document.session.document.features.nodes.last)
+        let originalEnd = try endOf(document, cut.id)
+        XCTAssertEqual(originalEnd.targets.map(\.bodyID), [sourceBody])
+        XCTAssertEqual(try volume(document), (800 - 4 * .pi) * 10, accuracy: 1e-3)
+        let service = CADParameterService(document: document)
+        let reply = service.handle(action: "update", args: ["feature_id": source.id.raw.uuidString,
+            "changes": ["distance": 20]])
+        XCTAssertEqual(reply["ok"] as? Bool, true, "\(reply)")
+        XCTAssertEqual(try volume(document), (800 - 4 * .pi) * 20, accuracy: 1e-3,
+            "A fixed-depth hole would leave material in the newly thickened plate")
+        XCTAssertEqual(try body(document).id, sourceBody)
+        XCTAssertNotNil(try body(document).brep)
+        XCTAssertEqual(try endDistance(document, cut.id), 21, accuracy: 1e-6)
+        XCTAssertEqual(try endOf(document, cut.id), originalEnd)
+        document.session.undo()
+        XCTAssertEqual(try volume(document), (800 - 4 * .pi) * 10, accuracy: 1e-3)
+        XCTAssertEqual(try endDistance(document, cut.id), 11, accuracy: 1e-6)
+        document.session.redo()
+        XCTAssertEqual(try volume(document), (800 - 4 * .pi) * 20, accuracy: 1e-3)
+        let saved = await document.save(); XCTAssertTrue(saved.succeeded, saved.error ?? "")
+        let url = document.url; document.close()
+        let reopened = try await FloeCADDocument.open(at: url); defer { reopened.close() }
+        XCTAssertEqual(try volume(reopened), (800 - 4 * .pi) * 20, accuracy: 1e-3)
+        XCTAssertEqual(try endDistance(reopened, cut.id), 21, accuracy: 1e-6)
+        XCTAssertEqual(try endOf(reopened, cut.id), originalEnd)
+    }
+
+    func testNativeExtrusionCommitRetainsTheEndAndAnUnchangedFieldDoesNotDetachIt() async throws {
+        let document = try await makeDocument(); defer { document.close() }
+        let source = try makeBox(document)
+        let created = try run(document, "sketch.create", [
+            "origin": [0, 0, 0], "xAxis": [1, 0, 0], "yAxis": [0, 0, -1]])
+        let raw = try XCTUnwrap(created["sketchID"] as? String)
+        try run(document, "sketch.addEntities", ["sketchID": raw,
+            "entities": [["kind": "circle", "center": [20, 10], "radius": 1]]])
+        let sketch = try XCTUnwrap(document.session.document.sketches.first { $0.id.raw.uuidString == raw })
+        let profile = try XCTUnwrap(ProfileDetector.detectProfiles(in: sketch).first)
+        let viewModel = document.viewModel()
+        viewModel.toolContext = .init(profile: profile, holes: [], plane: sketch.plane,
+            sketchID: sketch.id, kind: .extrude(distance: 1))
+        viewModel.mode = .extruding
+        viewModel.setBooleanOverride(.subtract)
+        XCTAssertEqual(try XCTUnwrap(viewModel.resolveExtrudeEnd(.throughAll)), 11, accuracy: 1e-6)
+        viewModel.setExtrudeDistance(11)
+        XCTAssertEqual(viewModel.toolContext?.extrudeTermination?.mode, .throughAll)
+        viewModel.commitTool()
+        let cut = try XCTUnwrap(document.session.document.features.nodes.last)
+        XCTAssertNotEqual(cut.id, source.id)
+        XCTAssertEqual(try endOf(document, cut.id).mode, .throughAll)
+        XCTAssertEqual(try volume(document), (800 - .pi) * 10, accuracy: 1e-3)
+        let reply = CADParameterService(document: document).handle(action: "update", args: [
+            "feature_id": source.id.raw.uuidString, "changes": ["distance": 20]])
+        XCTAssertEqual(reply["ok"] as? Bool, true, "\(reply)")
+        XCTAssertEqual(try volume(document), (800 - .pi) * 20, accuracy: 1e-3)
+    }
+
+    func testUpToNextFollowsTheOriginalNamedMovingFaceAndReopens() async throws {
+        let document = try await makeDocument(); defer { document.close() }
+        let (source, child, _) = try makeNextFaceExtrusion(document)
+        let childBody = try XCTUnwrap(child.outputBodyIDs.first)
+        let original = try endOf(document, child.id)
+        XCTAssertNotNil(original.nextFace?.elementName)
+        XCTAssertEqual(OCCTKernel.volume(try XCTUnwrap(try endBody(document, childBody).brep)), 10 * .pi, accuracy: 1e-4)
+        let reply = CADParameterService(document: document).handle(action: "update", args: [
+            "feature_id": source.id.raw.uuidString, "changes": ["distance": 15]])
+        XCTAssertEqual(reply["ok"] as? Bool, true, "\(reply)")
+        let changed = try endBody(document, childBody)
+        XCTAssertEqual(OCCTKernel.volume(try XCTUnwrap(changed.brep)), 5 * .pi, accuracy: 1e-4)
+        XCTAssertEqual(try endDistance(document, child.id), -5, accuracy: 1e-6)
+        XCTAssertEqual(try endOf(document, child.id), original, "Follow the same face rather than binding a nearer substitute")
+        let points = changed.render.positions.map { changed.transform.applying(to: SIMD3<Double>($0)).y }
+        XCTAssertEqual(try XCTUnwrap(points.min()), 15, accuracy: 1e-4)
+        XCTAssertEqual(try XCTUnwrap(points.max()), 20, accuracy: 1e-4)
+        document.session.undo()
+        XCTAssertEqual(try endDistance(document, child.id), -10, accuracy: 1e-6)
+        document.session.redo()
+        let saved = await document.save(); XCTAssertTrue(saved.succeeded, saved.error ?? "")
+        let url = document.url; document.close()
+        let reopened = try await FloeCADDocument.open(at: url); defer { reopened.close() }
+        XCTAssertEqual(try endOf(reopened, child.id), original)
+        XCTAssertEqual(OCCTKernel.volume(try XCTUnwrap(try endBody(reopened, childBody).brep)), 5 * .pi, accuracy: 1e-4)
+    }
+
+    func testExtrusionHistoryUsesTheSameEndBindingAndExplicitDistanceDetach() async throws {
+        let document = try await makeDocument(); defer { document.close() }
+        let (source, child, _) = try makeNextFaceExtrusion(document)
+        let service = CADParameterService(document: document)
+        let unchangedCount = document.session.changeCount
+        let unchanged = service.handle(action: "update", args: ["feature_id": child.id.raw.uuidString,
+            "changes": ["end": "upToNext"]])
+        XCTAssertEqual(unchanged["error"] as? String, "no_change")
+        XCTAssertEqual(document.session.changeCount, unchangedCount)
+        XCTAssertEqual(try parameter(document, feature: child.id, name: "distance")["editable"] as? Bool, false)
+        let viewModel = document.viewModel()
+        viewModel.setFeatureOption(child.id, key: .extrudeEnd, choice: ExtrudeEnd.blind.title)
+        XCTAssertNil(viewModel.errorMessage)
+        XCTAssertEqual(try endDistance(document, child.id), -10, accuracy: 1e-6)
+        guard case let .extrude(_, _, _, _, _, _, detached) = document.session.document.features.node(child.id)?.kind else {
+            return XCTFail("History lost the original extrusion")
+        }
+        XCTAssertNil(detached)
+        viewModel.setFeatureOption(child.id, key: .extrudeEnd, choice: ExtrudeEnd.upToNext.title)
+        XCTAssertNil(viewModel.errorMessage)
+        XCTAssertNotNil(try endOf(document, child.id).nextFace)
+        let detach = service.handle(action: "update", args: ["feature_id": child.id.raw.uuidString,
+            "changes": ["end": "blind", "distance": -3]])
+        XCTAssertEqual(detach["ok"] as? Bool, true, "\(detach)")
+        let move = service.handle(action: "update", args: ["feature_id": source.id.raw.uuidString,
+            "changes": ["distance": 12]])
+        XCTAssertEqual(move["ok"] as? Bool, true, "\(move)")
+        XCTAssertEqual(try endDistance(document, child.id), -3, accuracy: 1e-6)
+    }
+
+    func testInvalidEndEditsAndMissingSourcesPreserveGeometryAndUndo() async throws {
+        let document = try await makeDocument(); defer { document.close() }
+        let (source, child, _) = try makeNextFaceExtrusion(document)
+        let childBody = try XCTUnwrap(child.outputBodyIDs.first)
+        let service = CADParameterService(document: document)
+        let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys]
+        let before = try encoder.encode(document.session.document.features)
+        let oldVolume = OCCTKernel.volume(try XCTUnwrap(try endBody(document, childBody).brep))
+        let count = document.session.changeCount
+        let undo = document.session.undoStack.undoCommands.count
+        let invalidChanges: [[String: Any]] = [
+            ["distance": -3], ["symmetric": true], ["reversed": false],
+            ["end_targets": [childBody.raw.uuidString]], ["end_targets": [UUID().uuidString]],
+        ]
+        for changes in invalidChanges {
+            let reply = service.handle(action: "update", args: ["feature_id": child.id.raw.uuidString, "changes": changes])
+            XCTAssertEqual(reply["ok"] as? Bool, false, "\(reply)")
+            XCTAssertEqual(try encoder.encode(document.session.document.features), before)
+            XCTAssertEqual(OCCTKernel.volume(try XCTUnwrap(try endBody(document, childBody).brep)), oldVolume, accuracy: 1e-6)
+            XCTAssertEqual(document.session.changeCount, count)
+            XCTAssertEqual(document.session.undoStack.undoCommands.count, undo)
+        }
+        let deletion = service.handle(action: "feature.delete", args: ["feature_id": source.id.raw.uuidString])
+        XCTAssertEqual(deletion["error"] as? String, "has_dependents")
+        XCTAssertEqual(document.session.changeCount, count)
+        // A source that disappears during replay cannot be replaced by another
+        // body's coincident/nearby face. The session rejects the entire edit.
+        let suppressed = service.handle(action: "feature.suppress", args: [
+            "feature_id": source.id.raw.uuidString, "suppressed": true])
+        XCTAssertEqual(suppressed["ok"] as? Bool, false, "\(suppressed)")
+        XCTAssertEqual(try encoder.encode(document.session.document.features), before)
+        XCTAssertEqual(document.session.undoStack.undoCommands.count, undo)
+    }
+
+    func testAssociatedExtrusionFormatRejectsMalformedAndPreservesFutureAndLegacy() async throws {
+        let document = try await makeDocument(); defer { document.close() }
+        let (_, child, _) = try makeNextFaceExtrusion(document)
+        XCTAssertEqual(CADDocumentFormat.requiredFormat(document: document.session.document), 7)
+        let encoded = try JSONEncoder().encode(child.kind)
+        var object = try XCTUnwrap(JSONSerialization.jsonObject(with: encoded) as? [String: Any])
+        var extrude = try XCTUnwrap(object["extrude"] as? [String: Any])
+        var end = try XCTUnwrap(extrude["termination"] as? [String: Any])
+        func assessment(_ value: [String: Any]) throws -> CADDocumentFormat.Assessment {
+            let row = CADFeatureRecord(featureID: child.id.raw, orderIndex: 1, name: child.name,
+                suppressed: false, kind: try JSONSerialization.data(withJSONObject: value),
+                outputBodyIDs: try JSONEncoder().encode(child.outputBodyIDs))
+            return try CADDocumentFormat.assess(planes: [], sketches: [], features: [row])
+        }
+        end["version"] = 999; extrude["termination"] = end; object["extrude"] = extrude
+        XCTAssertTrue(try assessment(object).opaqueFeatures.contains(child.id.raw))
+        XCTAssertThrowsError(try JSONDecoder().decode(FeatureKind.self, from: JSONSerialization.data(withJSONObject: object)))
+        end["version"] = 1; end["nextFace"] = NSNull(); extrude["termination"] = end; object["extrude"] = extrude
+        XCTAssertThrowsError(try assessment(object))
+        extrude.removeValue(forKey: "termination"); object["extrude"] = extrude
+        let legacy = try JSONDecoder().decode(FeatureKind.self, from: JSONSerialization.data(withJSONObject: object))
+        guard case let .extrude(_, _, distance, _, _, _, legacyEnd) = legacy else { return XCTFail("Legacy extrusion lost") }
+        XCTAssertNil(legacyEnd); XCTAssertEqual(distance.value, -10)
+    }
+
+    func testMergedExtrusionRemapsItsExactEndAndRebuildsAtNewPlacement() async throws {
+        let document = try await makeDocument(); defer { document.close() }
+        let (source, child, _) = try makeNextFaceExtrusion(document)
+        let insertion = try ProjectMergeKit.insert(document.session.document, into: DesignDocument(),
+            translation: SIMD3(100, 50, -20))
+        let newSource = try XCTUnwrap(insertion.document.features.nodes.first)
+        let newChild = try XCTUnwrap(insertion.document.features.nodes.last)
+        guard case let .extrude(_, _, _, _, _, _, end?) = newChild.kind else { return XCTFail("Merge lost the end") }
+        XCTAssertNotEqual(newChild.id, child.id); XCTAssertNotEqual(newSource.id, source.id)
+        XCTAssertEqual(end.targets.first?.producer, newSource.id)
+        XCTAssertEqual(end.nextFace?.body, end.targets.first)
+        XCTAssertEqual(end.nextFace?.elementName?.creator, newSource.id)
+        var revision: UInt64 = 0
+        let result = insertion.document.features.evaluate(sketches: insertion.document.sketches,
+            planes: insertion.document.planes, naming: SignatureNaming(), nextRevision: { revision += 1; return revision })
+        XCTAssertTrue(result.errors.isEmpty, "\(result.errors)")
+        XCTAssertEqual(result.resolvedExtrudeDistances[newChild.id] ?? 0, -10, accuracy: 1e-6)
+        let actual = try XCTUnwrap(result.bodies.first { newChild.outputBodyIDs.contains($0.id) })
+        XCTAssertEqual(OCCTKernel.volume(try XCTUnwrap(actual.brep)), 10 * .pi, accuracy: 1e-4)
+    }
+
     private func parameter(_ document: FloeCADDocument, feature: FeatureID,
                            name: String) throws -> [String: Any] {
         let featureRow = try XCTUnwrap(try rows(document, "features").first {

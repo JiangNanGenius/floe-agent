@@ -1281,7 +1281,8 @@ final class DocumentSession {
         let radiansToDegrees = 180 / Double.pi
         let degreesToRadians = Double.pi / 180
         switch kind {
-        case let .extrude(_, _, distance, _, _, _):
+        case let .extrude(_, _, distance, _, _, _, termination):
+            guard termination == nil else { return [] }
             return [FeatureExpressionSlot(name: "distance", unit: "mm", expr: distance)]
         case let .draftExtrude(_, _, distance, taperAngle, _, _):
             return [FeatureExpressionSlot(name: "distance", unit: "mm", expr: distance),
@@ -1352,11 +1353,11 @@ final class DocumentSession {
     static func replacingExpression(in kind: FeatureKind, named name: String,
                                     with expr: Expr) -> FeatureKind? {
         switch kind {
-        case let .extrude(profile, plane, distance, symmetric, boolean, extras):
-            guard name == "distance" else { return nil }
+        case let .extrude(profile, plane, distance, symmetric, boolean, extras, termination):
+            guard name == "distance", termination == nil else { return nil }
             return .extrude(profile: profile, plane: plane, distance: expr,
                             symmetric: symmetric, boolean: boolean,
-                            extraProfiles: extras)
+                            extraProfiles: extras, termination: termination)
         case let .draftExtrude(profile, plane, distance, taperAngle, symmetric, boolean):
             switch name {
             case "distance":

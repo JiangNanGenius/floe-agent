@@ -57,6 +57,7 @@ nonisolated enum CADDocumentFormat {
     /// semantic references. Share the coordinated unreleased floor; an old
     /// writer must not drop them and reinterpret the stored fallback geometry.
     static let associativeSweepVersion = 7
+    static let associativeExtrudeVersion = 7
     /// Coordinated package floor for a document that actually stores
     /// user-named versions. Ordinary documents keep their existing schema
     /// floor; only a package that gains a checkpoint is raised to this floor.
@@ -136,6 +137,10 @@ nonisolated enum CADDocumentFormat {
 
     static func requiredFormat(document: DesignDocument) -> Int {
         var required = legacyVersion
+        if document.features.nodes.contains(where: {
+            if case let .extrude(_, _, _, _, _, _, termination) = $0.kind { return termination != nil }
+            return false
+        }) { required = max(required, associativeExtrudeVersion) }
         if document.features.nodes.contains(where: {
             if case let .sweep(_, _, _, _, helix, path) = $0.kind {
                 return path != nil || helix?.profileAnchor != nil
@@ -722,6 +727,22 @@ nonisolated enum CADDocumentFormat {
         for row in axes {
             guard let object = try? JSONSerialization.jsonObject(with: row.data) as? [String: Any] else { continue }
             let operationIdentity = try operationIdentityIntent(object)
+            if let extrude = object["extrude"] as? [String: Any],
+               let raw = extrude["termination"], !(raw is NSNull) {
+                result.requiredVersion = max(result.requiredVersion, associativeExtrudeVersion)
+                guard let definition = raw as? [String: Any],
+                      let version = definition["version"] as? Int, version > 0 else {
+                    throw CADDocumentFormatError.malformedAssociation("extrude-end")
+                }
+                if version > ExtrudeEndDefinition.supportedVersion {
+                    result.opaqueFeatures.insert(row.featureID)
+                } else {
+                    do {
+                        let data = try JSONSerialization.data(withJSONObject: definition)
+                        _ = try JSONDecoder().decode(ExtrudeEndDefinition.self, from: data)
+                    } catch { throw CADDocumentFormatError.malformedAssociation("extrude-end") }
+                }
+            }
 
             if operationIdentity.present { result.requiredVersion = max(result.requiredVersion, operationFaceIdentityVersion) }
             if operationIdentity.opaque { result.opaqueAxes.insert(row.blobID) }

@@ -48,6 +48,8 @@ struct NumericInputBar: View {
     /// Returns false when the text is not a number, leaving the tool alone.
     @discardableResult
     private func applyExtrudeDistanceText() -> Bool {
+        if let context = viewModel.toolContext, context.extrudeTermination != nil,
+           extrudeDistanceText == extrudeDistanceDisplay(context.distance) { return true }
         guard let typed = ExpressionEvaluator.evaluate(extrudeDistanceText) else { return false }
         viewModel.setExtrudeDistance(CADPreferences.shared.unit.mm(fromDisplay: typed))
         return true
@@ -618,13 +620,11 @@ struct NumericInputBar: View {
                 )
             }
 
-            // End condition: Through All / Up To Next resolve to a distance
-            // from the bodies in the document and land in the field, where
-            // the person can still change it (spec: SOLIDWORKS end conditions).
+            // Ends retain their source through rebuild. Typing a distance
+            // explicitly returns to the ordinary distance condition.
             Menu {
                 ForEach(ExtrudeEnd.allCases, id: \.self) { end in
                     Button(end.title) {
-                        if end == .blind { return }
                         // Text typed but not yet submitted still decides the
                         // direction (its sign), so apply it first.
                         if extrudeDistanceText != extrudeDistanceDisplay(context.distance) {

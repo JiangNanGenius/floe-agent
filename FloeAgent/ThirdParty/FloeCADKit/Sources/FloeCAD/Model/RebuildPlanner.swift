@@ -195,6 +195,18 @@ enum RebuildPlanner {
                 featureID: featureID, before: node.kind, after: kind))
         }
 
+        for (featureID, value) in result.resolvedExtrudeDistances
+            .sorted(by: { $0.key.raw.uuidString < $1.key.raw.uuidString }) {
+            guard result.errors[featureID] == nil,
+                  let node = editedGraph.node(featureID) else { continue }
+            let current = result.proposedUpgrades[featureID] ?? node.kind
+            guard case let .extrude(profile, plane, distance, symmetric, boolean, extras, termination?) = current,
+                  distance.value != value || distance.formula != nil else { continue }
+            commands.append(EditFeatureCommand(featureID: featureID, before: current,
+                after: .extrude(profile: profile, plane: plane, distance: Expr(value: value),
+                    symmetric: symmetric, boolean: boolean, extraProfiles: extras, termination: termination)))
+        }
+
         return RebuildPlan(
             commands: commands,
             errors: result.errors,

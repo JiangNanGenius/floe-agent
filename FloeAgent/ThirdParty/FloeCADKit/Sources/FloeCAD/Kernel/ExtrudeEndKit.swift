@@ -5,11 +5,8 @@
 //  Extrude END CONDITIONS beyond a typed distance — SOLIDWORKS' "Through
 //  All" and "Up To Next", which every rib and most through-cuts are drawn
 //  with. The app's extrude node stays a distance; this kit turns an end
-//  condition into that distance at commit time from the bodies in the
-//  document, so the History row keeps a plain editable number and nothing
-//  downstream changes. (A live, re-evaluating end condition is a later
-//  step; this closes the gap where a person had to measure the part by
-//  hand and type the answer.)
+//  condition into a distance from identity-bound sources on each rebuild.
+//  The numeric value is a derived cache, never a replacement for that source.
 //
 //  Geometry is read from the bodies' RENDER meshes in world space: planar
 //  faces are exact there, curved faces carry the tessellation's chord
@@ -27,9 +24,9 @@ nonisolated enum ExtrudeEnd: String, Codable, CaseIterable, Sendable, Hashable {
 
     var title: String {
         switch self {
-        case .blind: "Blind"
-        case .throughAll: "Through All"
-        case .upToNext: "Up To Next"
+        case .blind: FloeCADStrings.text("cad.extrude.blind", "Distance")
+        case .throughAll: FloeCADStrings.text("cad.extrude.throughAll", "Through all")
+        case .upToNext: FloeCADStrings.text("cad.extrude.upToNext", "Up to next face")
         }
     }
 }
@@ -45,6 +42,24 @@ nonisolated struct ExtrudeEndDefinition: Codable, Hashable, Sendable {
     var nextFace: FaceRef?
     var reversed: Bool
 
+    init(mode: ExtrudeEnd, targets: [BodyRef], nextFace: FaceRef? = nil, reversed: Bool) {
+        self.mode = mode; self.targets = targets; self.nextFace = nextFace; self.reversed = reversed
+    }
+
+    private enum CodingKeys: String, CodingKey { case version, mode, targets, nextFace, reversed }
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        version = try c.decode(Int.self, forKey: .version)
+        guard version == Self.supportedVersion else {
+            throw Failure(message: "Unsupported extrusion end version \(version).")
+        }
+        mode = try c.decode(ExtrudeEnd.self, forKey: .mode)
+        targets = try c.decode([BodyRef].self, forKey: .targets)
+        nextFace = try c.decodeIfPresent(FaceRef.self, forKey: .nextFace)
+        reversed = try c.decode(Bool.self, forKey: .reversed)
+        try validate()
+    }
+
     nonisolated struct Input: Sendable {
         var body: Body
         var reference: BodyRef
@@ -53,6 +68,16 @@ nonisolated struct ExtrudeEndDefinition: Codable, Hashable, Sendable {
     nonisolated struct Failure: Error, LocalizedError {
         var message: String
         var errorDescription: String? { message }
+    }
+
+    static func inputs(bodies: [Body], graph: FeatureGraph,
+                       tables: [BodyID: FaceTable]) -> [Input] {
+        bodies.map { body in
+            let writer = graph.nodes.last(where: { $0.outputBodyIDs.contains(body.id) })?.id
+                ?? FeatureID(raw: body.id.raw)
+            return Input(body: body, reference: BodyRef(producer: writer, bodyID: body.id),
+                table: tables[body.id] ?? SignatureNaming.currentFaceTable(for: body))
+        }
     }
 
     func validate() throws {
@@ -108,7 +133,7 @@ nonisolated struct ExtrudeEndDefinition: Codable, Hashable, Sendable {
                 throw Failure(message: "This extrusion end needs a planar face.")
             }
             definition.targets = [input.reference]
-            definition.nextFace = FaceRef(body: input.reference, creator: input.reference.producer,
+            definition.nextFace = FaceRef(body: input.reference, creator: name?.creator ?? input.reference.producer,
                 role: entry.role, signature: signature, elementName: name)
         }
         try definition.validate()

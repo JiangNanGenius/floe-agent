@@ -8522,11 +8522,11 @@ final class EditorViewModel {
         let plane = PlaneRef(source: .sketch(hit.sketchID))
         let after: FeatureKind
         switch node.kind {
-        case let .extrude(profile, _, distance, symmetric, boolean, _):
+        case let .extrude(profile, _, distance, symmetric, boolean, _, termination):
             guard !Self.sameProfile(profile, ref) else { cancelFeatureProfilePick(); return }
             // Extra profiles belonged to the old sketch region; the re-pick is one profile.
             after = .extrude(profile: ref, plane: plane, distance: distance,
-                             symmetric: symmetric, boolean: boolean, extraProfiles: [])
+                             symmetric: symmetric, boolean: boolean, extraProfiles: [], termination: termination)
         case let .draftExtrude(profile, _, distance, taperAngle, symmetric, boolean):
             guard !Self.sameProfile(profile, ref) else { cancelFeatureProfilePick(); return }
             after = .draftExtrude(profile: ref, plane: plane, distance: distance,
@@ -8873,6 +8873,7 @@ final class EditorViewModel {
         var booleanOverride: BooleanOverride = .auto
         /// Symmetric sides: solid centered on the plane, total depth 2×.
         var symmetric = false
+        var extrudeTermination: ExtrudeEndDefinition?
         /// False when committing now would fail (arrow renders red).
         var isPendingValid = true
         /// True while the preview should REPLACE the source body in the scene
@@ -9527,6 +9528,7 @@ final class EditorViewModel {
         // distance. Skip the (expensive) CSG rebuild when nothing moved so the
         // drag stays responsive instead of backing up behind redundant rebuilds.
         guard abs(distance - current) > 1e-6 else { return }
+        context.extrudeTermination = nil
         context.kind = .extrude(distance: distance)
         rebuildToolPreview(&context)
         toolContext = context
@@ -9607,27 +9609,53 @@ final class EditorViewModel {
     /// the caller tells the person and leaves the distance alone.
     @discardableResult
     func resolveExtrudeEnd(_ end: ExtrudeEnd) -> Double? {
-        guard let context = toolContext, case .extrude(let current) = context.kind else { return nil }
-        let sign: Double = current < 0 ? -1 : 1
-        let direction = sign * context.plane.normal
-        guard let mm = ExtrudeEndKit.resolve(end, plane: context.plane, seed: context.profile.centroid,
-                                             direction: direction, symmetric: context.symmetric,
-                                             bodies: session.document.bodies) else {
-            errorMessage = "\(end.title): nothing ahead of the sketch along the extrude direction."
+        guard var context = toolContext, case .extrude(let current) = context.kind,
+              context.sketchID != nil, !context.isFaceOperation else { return nil }
+        if end == .blind {
+            context.extrudeTermination = nil
+            toolContext = context
+            errorMessage = nil
+            return current
+        }
+        do {
+            let inputs = ExtrudeEndDefinition.inputs(bodies: session.document.bodies,
+                graph: session.document.features, tables: session.lastFaceTables)
+            let bound = try ExtrudeEndDefinition.bind(end, plane: context.plane,
+                seed: context.profile.interiorPoint, reversed: current < 0, inputs: inputs)
+            let value = try bound.resolvedDistance(plane: context.plane,
+                seed: context.profile.interiorPoint, symmetric: context.symmetric,
+                inputs: inputs, naming: SignatureNaming())
+            context.kind = .extrude(distance: value)
+            context.extrudeTermination = bound
+            rebuildToolPreview(&context)
+            toolContext = context
+            errorMessage = nil
+            return value
+        } catch {
+            errorMessage = FloeCADStrings.text("cad.extrude.endUnavailable",
+                "Couldn't use this end condition. Check the direction and source face.")
             return nil
         }
-        // With Symmetric on the field is per side; Through All resolved the
-        // farther reach already, so it is the per-side value as it stands.
-        let signed = sign * mm
-        setExtrudeDistance(signed)
-        return signed
     }
 
     func setExtrudeSymmetric(_ symmetric: Bool) {
         guard var context = toolContext, case .extrude = context.kind,
               context.symmetric != symmetric
         else { return }
+        if symmetric, context.extrudeTermination?.mode == .upToNext {
+            errorMessage = FloeCADStrings.text("cad.extrude.oneSidedEnd",
+                "Up to next face uses one direction. Turn off Symmetric first.")
+            return
+        }
         context.symmetric = symmetric
+        if let end = context.extrudeTermination {
+            let inputs = ExtrudeEndDefinition.inputs(bodies: session.document.bodies,
+                graph: session.document.features, tables: session.lastFaceTables)
+            guard let distance = try? end.resolvedDistance(plane: context.plane,
+                seed: context.profile.interiorPoint, symmetric: symmetric,
+                inputs: inputs, naming: SignatureNaming()) else { return }
+            context.kind = .extrude(distance: distance)
+        }
         rebuildToolPreview(&context)
         toolContext = context
     }
@@ -18786,7 +18814,8 @@ final class EditorViewModel {
                 distance: Expr(value: distance),
                 symmetric: context.symmetric,
                 boolean: boolean,
-                extraProfiles: extras
+                extraProfiles: extras,
+                termination: context.extrudeTermination
             ),
             outputBodyIDs: outputBodyIDs
         )
@@ -19095,6 +19124,7 @@ final class EditorViewModel {
         case symmetric
         case keepOriginal
         case booleanKind
+        case extrudeEnd, extrudeReversed
     }
 
     /// Computed (not a stored `static let`) so an in-session language change
@@ -19109,7 +19139,19 @@ final class EditorViewModel {
     /// The editable options of a feature kind, in display order.
     static func options(of kind: FeatureKind) -> [FeatureOption] {
         switch kind {
-        case let .extrude(_, _, _, symmetric, _, _), let .draftExtrude(_, _, _, _, symmetric, _):
+        case let .extrude(_, _, distance, symmetric, _, _, termination):
+            return [
+                FeatureOption(key: .extrudeEnd,
+                    label: FloeCADStrings.text("cad.ui.extrude.end", "End"),
+                    value: .choice(selected: (termination?.mode ?? .blind).title,
+                                   choices: ExtrudeEnd.allCases.map(\.title))),
+                FeatureOption(key: .symmetric,
+                    label: FloeCADStrings.text("cad.feature.symmetric", "Symmetric"), value: .toggle(symmetric)),
+                FeatureOption(key: .extrudeReversed,
+                    label: FloeCADStrings.text("cad.extrude.reverse", "Reverse direction"),
+                    value: .toggle(termination?.reversed ?? (distance.value < 0))),
+            ]
+        case let .draftExtrude(_, _, _, _, symmetric, _):
             return [FeatureOption(key: .symmetric,
                                     label: FloeCADStrings.text("cad.feature.symmetric", "Symmetric"),
                                     value: .toggle(symmetric))]
@@ -19140,7 +19182,8 @@ final class EditorViewModel {
                 FeatureScalar(key: .helixTurns, label: FloeCADStrings.text("cad.feature.turns", "Turns"),
                               unit: "", value: helix.turns),
             ]
-        case let .extrude(_, _, distance, _, _, _):
+        case let .extrude(_, _, distance, _, _, _, termination):
+            guard termination == nil else { return [] }
             return [FeatureScalar(key: .primary,
                                     label: FloeCADStrings.text("cad.feature.distance", "Distance"),
                                     unit: "mm", value: distance.value)]
@@ -19743,12 +19786,13 @@ final class EditorViewModel {
     /// kind does not have, or a value it already has, changes nothing.
     func setFeatureOption(_ id: FeatureID, key: FeatureOptionKey, toggle on: Bool) {
         guard let node = session.document.features.node(id) else { return }
+        if case .extrude = node.kind, key == .symmetric || key == .extrudeReversed {
+            if let reply = performFeatureUpdate(id, changes: [key == .symmetric ? "symmetric" : "reversed": on]),
+               reply["mutated"] as? Bool == true { session.save() }
+            return
+        }
         let after: FeatureKind
         switch (key, node.kind) {
-        case let (.symmetric, .extrude(profile, plane, distance, symmetric, boolean, extras)):
-            guard symmetric != on else { return }
-            after = .extrude(profile: profile, plane: plane, distance: distance,
-                             symmetric: on, boolean: boolean, extraProfiles: extras)
         case let (.symmetric, .draftExtrude(profile, plane, distance, taperAngle, symmetric, boolean)):
             guard symmetric != on else { return }
             after = .draftExtrude(profile: profile, plane: plane, distance: distance,
@@ -19767,6 +19811,12 @@ final class EditorViewModel {
     /// Pick one of a feature's choice options by its label (History row
     /// menus). Today that is a boolean node's type; its operands are kept.
     func setFeatureOption(_ id: FeatureID, key: FeatureOptionKey, choice: String) {
+        if key == .extrudeEnd {
+            guard let selected = ExtrudeEnd.allCases.first(where: { $0.title == choice }) else { return }
+            if let reply = performFeatureUpdate(id, changes: ["end": selected.rawValue]),
+               reply["mutated"] as? Bool == true { session.save() }
+            return
+        }
         guard key == .booleanKind,
               let node = session.document.features.node(id),
               case let .boolean(current, target, tools) = node.kind,
@@ -19789,7 +19839,8 @@ final class EditorViewModel {
     /// distance/angle carry a formula that re-evaluates when variables change.
     private static func kind(_ kind: FeatureKind, replacingExpr expr: Expr) -> FeatureKind? {
         switch kind {
-        case let .extrude(profile, plane, _, symmetric, boolean, extras):
+        case let .extrude(profile, plane, _, symmetric, boolean, extras, termination):
+            guard termination == nil else { return nil }
             return .extrude(
                 profile: profile, plane: plane, distance: expr,
                 symmetric: symmetric, boolean: boolean, extraProfiles: extras)
@@ -19978,7 +20029,7 @@ final class EditorViewModel {
         switch kind {
         case let .primitive(spec, _):
             return spec.displayName
-        case let .extrude(_, _, distance, _, boolean, _):
+        case let .extrude(_, _, distance, _, boolean, _, _):
             let value = fmt(distance.value)
             switch boolean.op {
             case .subtract: return f("cad.feature.cut", "Cut %@ mm", value)
