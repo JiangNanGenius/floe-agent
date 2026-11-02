@@ -1423,10 +1423,26 @@
       "package": "mechanical",
       "implementation": {
         "stage": "B",
-        "status": "planned",
-        "source_changes": [],
-        "verification": [],
-        "limitations": []
+        "status": "accepted_original_criterion_App_native",
+        "source_changes": [
+          "eb2bade8",
+          "9adceef8",
+          "582810ed"
+        ],
+        "verification": [
+          {
+            "kind": "actual_App_object_and_native",
+            "source": "582810ed58f8d3d63e23967909b74898af502c60",
+            "passed": 74,
+            "failed": 0,
+            "skipped": 0,
+            "evidence": "docs/qualification/cad-extrusion-ends-20261102/README.md"
+          }
+        ],
+        "limitations": [
+          "Up To Next binds planar faces and is one-sided; unsupported/removed sources refuse",
+          "Full interactive gestures, physical performance and real LLM chain remain separate original gates"
+        ]
       },
       "alignment_review": {
         "disposition": "planned",
@@ -8559,7 +8575,7 @@
     "license_delta": "GLTFKit2 ownMIT/cgltfMIT do notclear precompiled libktx4.2.1 etcdec exception; prefer existing O3DV+same-r176 localGLTFLoader qualification"
   },
   "current_integration_verification": {
-    "source": "d8b975b17316fed79fd3486be8ef6aac313f9c96",
+    "source": "582810ed58f8d3d63e23967909b74898af502c60",
     "all_106_retained": true,
     "all_106_accepted": false,
     "release_ready": false,
@@ -8592,20 +8608,22 @@
       "actual_OBJ": "真实OBJ/MTL/PNG显示、缺失贴图及仅资源变化后的旧帧拒绝通过。",
       "scope": "本地实际渲染与资源来源；不冒充原生可编辑BRep，也不代替真实LLM视觉连续编辑。"
     },
-    "accepted_original_criteria": 57,
-    "pending_original_criteria": 49,
+    "accepted_original_criteria": 59,
+    "pending_original_criteria": 47,
     "device_acceptance": "iPad通过的功能复用验收，iPhone仅确认界面；不使用用户手机。",
     "latest_native_batch": {
-      "source": "d8b975b17316fed79fd3486be8ef6aac313f9c96",
+      "source": "582810ed58f8d3d63e23967909b74898af502c60",
       "actual_App_build_passed": true,
-      "actual_App_build_seconds": 110.633,
+      "actual_App_build_seconds": 320.394,
       "native": {
-        "passed": 37,
+        "total": 74,
+        "passed": 74,
         "failed": 0,
         "skipped": 0,
-        "seconds": 33.547
+        "seconds": 73.738,
+        "shutdownExitCode": 0
       },
-      "scope": "X32 current owner fence; reuse prior 149 native and 1 actual UI cases without double counting."
+      "scope": "M14 seven new cases plus prior parameter/sweep/session/merge/format/expression regressions;74 actual tests, not74newfeatures"
     },
     "real_model_editing": {
       "source": "a587571a755989b001e78c16a4fcfd64e23ba8d5",
@@ -8812,6 +8830,11 @@
       "original_criterion_text_unchanged": true,
       "evidence": "docs/qualification/cad-sweep-association-20261102/README.md",
       "whole106_complete": false
+    },
+    "extrusion_end": {
+      "original_M14_accepted": true,
+      "source": "582810ed58f8d3d63e23967909b74898af502c60",
+      "evidence": "docs/qualification/cad-extrusion-ends-20261102/README.md"
     }
   }
 }

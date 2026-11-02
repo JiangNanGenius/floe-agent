@@ -1,0 +1,37 @@
+{
+  "criterion": "M14",
+  "acceptedOriginalAcceptance": true,
+  "productSource": "582810ed58f8d3d63e23967909b74898af502c60",
+  "build": {
+    "passed": true,
+    "seconds": 320.394,
+    "sourceDrift": false
+  },
+  "native": {
+    "total": 74,
+    "passed": 74,
+    "failed": 0,
+    "skipped": 0,
+    "seconds": 73.738,
+    "shutdownExitCode": 0
+  },
+  "covers": [
+    "Through All exact cut remains through after plate thickness10->20mm, same target body; independent OCCT volume confirms removed material",
+    "Up To Next follows original named cap10->15mm; child actual solid ends15..20mm with same face reference",
+    "Derived distance updates share the geometry transaction; one undo/redo restores both",
+    "Native pending creation commits the end; unchanged numeric field does not detach it",
+    "Native History shares parameter service; explicit blind+distance detaches; source selection evaluates pre-feature geometry",
+    "Invalid distance/symmetric/reversed/source edits retain geometry, generation and undo; delete/suppress never retargets",
+    "Version7 only with real end; legacy nil readable, malformed known refused, future schema opaque/read-only",
+    "Merge remaps body/feature/face and translated live replay retains exact geometry"
+  ],
+  "limits": [
+    "Up To Next binds planar faces and is one-sided; unsupported/removed sources refuse",
+    "Full interactive gestures, physical performance and real LLM chain remain separate original gates"
+  ],
+  "fullInteractiveUITapVerified": false,
+  "physicalPerformanceVerified": false,
+  "paidLLMInvoked": false,
+  "whole106Accepted": false,
+  "published": false
+}
