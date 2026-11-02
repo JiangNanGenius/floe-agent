@@ -362,8 +362,8 @@ public actor TinyEMULinuxGuestRegistry {
     /// tears its own handle down instead of registering a session.
     private var pendingStops: Set<String> = []
     /// Environments whose teardown is in flight. The actor is reentrant across
-    /// the close awaits, so a concurrent start must not see a removed session
-    /// and boot a second VM on the same environment disk.
+    /// the close awaits. The session remains registered until writeback and
+    /// disk capture finish; this marker fences new work throughout that time.
     private var teardownsInFlight: Set<String> = []
     /// In-flight guest commands per environment (one-shot runs and service
     /// SPAWN/OPEN exchanges). A guest with an active command is never a
@@ -475,7 +475,10 @@ public actor TinyEMULinuxGuestRegistry {
             quarantined: quarantinedEnvironments.contains(environmentID),
             instanceRegistered: hasSession,
             engineRunning: running,
-            operationActive: startingEnvironments.contains(environmentID),
+            operationActive: startingEnvironments.contains(environmentID)
+                || teardownsInFlight.contains(environmentID)
+                || isLifecycleTransactionInFlight(environmentID: environmentID)
+                || isShapeChangeInFlight(environmentID: environmentID),
             probeConsistent: true
         )
     }
@@ -599,14 +602,13 @@ public actor TinyEMULinuxGuestRegistry {
         hostRequestHandlerRegistry.install(factory)
     }
 
-    /// True only when the owned guest is actually running.
+    /// True only when the owned guest is running and accepts new work.
     public func supports(environmentID: String) async -> Bool {
         guard await environments.linuxGuestEnvironment(id: environmentID) != nil else {
             await stop(environmentID: environmentID)
             return false
         }
-        guard let session = sessions[environmentID] else { return false }
-        return await session.handle.isRunning()
+        return (try? await runningSessionForNewWork(environmentID: environmentID)) != nil
     }
 
     public func status(environmentID: String) async -> LinuxGuestStatus {
@@ -871,6 +873,29 @@ public actor TinyEMULinuxGuestRegistry {
     /// point refuses while this holds.
     private func isLifecycleTransactionInFlight(environmentID: String) -> Bool {
         lifecycleTransactions[environmentID] != nil
+    }
+
+    /// Liveness is observable while stopping, but does not admit new work.
+    /// Recheck both ownership and the fence after isRunning suspends so a
+    /// caller cannot attach to a session that began stopping during the probe.
+    private func runningSessionForNewWork(environmentID: String) async throws -> Session {
+        try requireGuestWorkAdmission(environmentID: environmentID)
+        guard let session = sessions[environmentID], await session.handle.isRunning() else {
+            throw LinuxGuestError.notRunning(environmentID: environmentID)
+        }
+        try requireGuestWorkAdmission(environmentID: environmentID)
+        guard sessions[environmentID]?.generation == session.generation else {
+            throw LinuxGuestError.notRunning(environmentID: environmentID)
+        }
+        return session
+    }
+
+    private func requireGuestWorkAdmission(environmentID: String) throws {
+        guard !teardownsInFlight.contains(environmentID),
+              !isLifecycleTransactionInFlight(environmentID: environmentID),
+              !isShapeChangeInFlight(environmentID: environmentID) else {
+            throw LinuxGuestError.guestBusy(environmentID: environmentID)
+        }
     }
 
     /// FIFO acquire of the environment's lifecycle lock. The token identifies
@@ -2392,16 +2417,7 @@ public actor TinyEMULinuxGuestRegistry {
         maxOutputBytes: Int,
         cancellation: CancellationToken?
     ) async throws -> LinuxCommandResult {
-        if isLifecycleTransactionInFlight(environmentID: environmentID)
-            || isShapeChangeInFlight(environmentID: environmentID) {
-            // A hard restart owns the environment across its stop → start
-            // window: a command must not attach to the outgoing or incoming
-            // instance.
-            throw LinuxGuestError.guestBusy(environmentID: environmentID)
-        }
-        guard let session = sessions[environmentID], await session.handle.isRunning() else {
-            throw LinuxGuestError.notRunning(environmentID: environmentID)
-        }
+        let session = try await runningSessionForNewWork(environmentID: environmentID)
         // The command is real activity on this guest: a scoped transient
         // release must wait for it instead of tearing the guest down under it.
         beginActiveCommand(environmentID: environmentID)
@@ -2526,8 +2542,8 @@ public actor TinyEMULinuxGuestRegistry {
             HeavyRuntimeArbiter.shared.cancelLinuxStart(environmentID: environmentID)
         }
         // One teardown per environment: a second stop call while the first is
-        // awaiting close must not race it, and a start must not slip past the
-        // removed session (see start's teardownsInFlight guard).
+        // awaiting close must not race it, and a start must not reuse its disk
+        // (see start's teardownsInFlight guard).
         guard teardownsInFlight.insert(environmentID).inserted else {
             lastImpacts[environmentID] = "\(action): a stop is already in progress for \(environmentID); no second teardown was started"
             return
@@ -2552,7 +2568,7 @@ public actor TinyEMULinuxGuestRegistry {
             terminalSessions.removeValue(forKey: sessionID)
             await terminal.handle.close()
         }
-        guard let session = sessions.removeValue(forKey: environmentID) else {
+        guard let session = sessions[environmentID] else {
             // No session: still release a reservation left by an in-flight
             // start that will not register one.
             if !startingEnvironments.contains(environmentID) {
@@ -2568,8 +2584,9 @@ public actor TinyEMULinuxGuestRegistry {
     /// The destructive teardown body shared by `teardown` (user stop/reset)
     /// and `releaseTransientGuest` (scoped own-transient release). The caller
     /// owns the lifecycle lock and the `teardownsInFlight` marker and has
-    /// already removed the session from `sessions`. Returns true when the VM
-    /// survived the stop and is now quarantined.
+    /// kept the session registered. Returns true when the VM survived the stop
+    /// and is now quarantined. Actual liveness and ownership remain observable
+    /// until writeback, engine close and disk capture have all finished.
     @discardableResult
     private func performTeardownBody(
         environmentID: String,
@@ -2577,6 +2594,14 @@ public actor TinyEMULinuxGuestRegistry {
         session: Session
     ) async -> Bool {
         var session = session
+        let stoppingGeneration = session.generation
+        defer {
+            // A failed stop below registers a fresh quarantine generation.
+            // Never remove that survivor or a replacement from a stale close.
+            if sessions[environmentID]?.generation == stoppingGeneration {
+                sessions[environmentID] = nil
+            }
+        }
         let guestSynchronized = await synchronizeGuestFilesystemBeforeStop(
             environmentID: environmentID, session: session)
         await session.channel.close()
@@ -2827,9 +2852,8 @@ public actor TinyEMULinuxGuestRegistry {
         guard await current.handle.isRunning() else {
             return .refused(reason: "the guest is no longer running")
         }
-        // Revalidate after the last await. From here through the session
-        // removal the actor runs synchronously, so nothing can start a
-        // command or service in between and then find its console closed.
+        // Revalidate after the last await. The teardown marker fences new
+        // work while the still-registered session writes back and closes.
         guard LinuxGuestActivityDetail.runIDsMatch(current.taskID, expectedOwnerRunID) else {
             return .refused(reason: "the guest is not owned by this logical run")
         }
@@ -2848,7 +2872,6 @@ public actor TinyEMULinuxGuestRegistry {
         guard !quarantinedEnvironments.contains(environmentID) else {
             return .refused(reason: "the guest is quarantined after a failed stop")
         }
-        sessions[environmentID] = nil
         FloeLogger(category: .tools).info(
             "Linux guest transientRelease environment=\(environmentID) owner=\(expectedOwnerRunID)"
         )
@@ -3180,7 +3203,7 @@ public actor TinyEMULinuxGuestRegistry {
 
     /// Destructive teardown of an environment whose lifecycle lock the CALLER
     /// already owns (an explicit transaction): no lock acquisition, no
-    /// deadlock, but the same marker, terminal close, session removal and
+    /// deadlock, but the same marker, terminal close, retained ownership and
     /// truthful quarantine semantics as `teardown`. A start that slipped in
     /// before the transaction's own admission check is signalled and waited
     /// for, bounded, so no second VM can be booting while the replacement is
@@ -3211,7 +3234,7 @@ public actor TinyEMULinuxGuestRegistry {
             terminalSessions.removeValue(forKey: sessionID)
             await terminal.handle.close()
         }
-        guard let session = sessions.removeValue(forKey: environmentID) else {
+        guard let session = sessions[environmentID] else {
             if !startingEnvironments.contains(environmentID) {
                 guestReservations[environmentID] = nil
                 clearReservation(environmentID: environmentID)
@@ -3478,16 +3501,7 @@ public actor TinyEMULinuxGuestRegistry {
         columns: Int,
         rows: Int
     ) async throws {
-        if isLifecycleTransactionInFlight(environmentID: environmentID)
-            || isShapeChangeInFlight(environmentID: environmentID) {
-            // A hard restart owns the environment across its stop → start
-            // window: a new interactive session must not attach to the
-            // outgoing or incoming instance.
-            throw LinuxGuestError.guestBusy(environmentID: environmentID)
-        }
-        guard let session = sessions[environmentID], await session.handle.isRunning() else {
-            throw LinuxGuestError.notRunning(environmentID: environmentID)
-        }
+        let session = try await runningSessionForNewWork(environmentID: environmentID)
         guard terminalSessions[sessionID] == nil else {
             throw LinuxGuestError.invalidConfiguration("session \(sessionID) already exists")
         }
@@ -3568,9 +3582,7 @@ public actor TinyEMULinuxGuestRegistry {
     }
 
     public func addForward(environmentID: String, forward: LinuxGuestServiceForward) async throws {
-        guard let session = sessions[environmentID], await session.handle.isRunning() else {
-            throw LinuxGuestError.notRunning(environmentID: environmentID)
-        }
+        let session = try await runningSessionForNewWork(environmentID: environmentID)
         guard session.forwards.count < limits.maxServiceForwards else {
             throw LinuxGuestError.invalidConfiguration(
                 "at most \(limits.maxServiceForwards) host forwards are supported per guest"
@@ -3705,15 +3717,7 @@ public actor TinyEMULinuxGuestRegistry {
         timeout: TimeInterval,
         cancellation: CancellationToken?
     ) async throws -> Int32 {
-        if isLifecycleTransactionInFlight(environmentID: environmentID) {
-            // A hard restart owns the environment across its stop → start
-            // window: a managed service must not be spawned into an instance
-            // that is being replaced.
-            throw LinuxGuestError.guestBusy(environmentID: environmentID)
-        }
-        guard let session = sessions[environmentID], await session.handle.isRunning() else {
-            throw LinuxGuestError.notRunning(environmentID: environmentID)
-        }
+        let session = try await runningSessionForNewWork(environmentID: environmentID)
         // An in-flight spawn is activity: a scoped transient release must wait
         // for it instead of closing the console under the SPAWN exchange.
         beginActiveCommand(environmentID: environmentID)
@@ -3740,16 +3744,12 @@ public actor TinyEMULinuxGuestRegistry {
     }
 
     public func guestServiceAlive(environmentID: String, pid: Int32, timeout: TimeInterval) async throws -> Bool {
-        guard let session = sessions[environmentID], await session.handle.isRunning() else {
-            throw LinuxGuestError.notRunning(environmentID: environmentID)
-        }
+        let session = try await runningSessionForNewWork(environmentID: environmentID)
         return try await session.channel.serviceAlive(pid: pid, timeout: timeout)
     }
 
     public func guestKillService(environmentID: String, pid: Int32, timeout: TimeInterval) async throws -> Bool {
-        guard let session = sessions[environmentID], await session.handle.isRunning() else {
-            throw LinuxGuestError.notRunning(environmentID: environmentID)
-        }
+        let session = try await runningSessionForNewWork(environmentID: environmentID)
         let killed = try await session.channel.killService(pid: pid, timeout: timeout)
         if killed {
             spawnedServices[environmentID]?.remove(pid)

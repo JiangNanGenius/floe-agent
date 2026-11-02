@@ -814,6 +814,7 @@ final class LinuxGuestRegistryTests: XCTestCase {
         let registry = makeRegistry(descriptors: ["env-1": makeDescriptor(id: "env-1")],
                                     images: ["test-image": makeImage()], factory: factory)
         _ = try await registry.start(environmentID: "env-1", taskID: nil)
+        let originalIdentity = await registry.runtimeIdentity(environmentID: "env-1")
         let console = try XCTUnwrap(ledger.console(for: "env-1"))
         let before = TestLinuxGuestConsole.tokens(in: console.written, name: "EXEC").count
         console.setHandler { token in token.hasPrefix("hello-") ? caps(token) : [] }
@@ -827,6 +828,54 @@ final class LinuxGuestRegistryTests: XCTestCase {
         guard tokens.count == before + 1, let pending = tokens.last else {
             await stop.value
             return XCTFail("The stop never reached guest filesystem writeback")
+        }
+        // A live engine waiting for writeback must stay visible to lifecycle,
+        // resource and boot-asset owners, without accepting another command.
+        let stopping = await registry.status(environmentID: "env-1")
+        let registered = await registry.registeredEnvironmentIDs
+        let identity = await registry.runtimeIdentity(environmentID: "env-1")
+        let states = await registry.runtimeStates()
+        let reconciliation = await registry.bootAssetReconciliation(environmentID: "env-1")
+        let acceptsWork = await registry.supports(environmentID: "env-1")
+        let reconnects = await registry.beginReconnect(
+            images: FakeImageResolver(images: ["test-image": makeImage()]), runtimeV2: nil)
+        XCTAssertTrue(stopping.running)
+        XCTAssertGreaterThan(stopping.reservedGuestRAMMB ?? 0, 0)
+        XCTAssertEqual(registered, ["env-1"])
+        XCTAssertEqual(identity.launchGeneration, originalIdentity.launchGeneration)
+        XCTAssertEqual(states.map(\.environmentID), ["env-1"])
+        XCTAssertEqual(states.first?.running, true)
+        XCTAssertTrue(reconciliation.instanceRegistered)
+        XCTAssertTrue(reconciliation.engineRunning)
+        XCTAssertTrue(reconciliation.operationActive)
+        XCTAssertFalse(acceptsWork)
+        XCTAssertFalse(reconnects)
+        for operation in ["exec", "terminal", "service", "forward", "probe", "kill"] {
+            do {
+                switch operation {
+                case "exec":
+                    _ = try await registry.run(environmentID: "env-1", argv: ["/bin/true"],
+                        workingDirectory: nil, standardInput: nil, timeout: 1,
+                        maxOutputBytes: 4096, cancellation: nil)
+                case "terminal":
+                    try await registry.openSession(environmentID: "env-1", sessionID: "late",
+                        argv: ["/bin/sh"], workingDirectory: nil, columns: 80, rows: 24)
+                case "service":
+                    _ = try await registry.guestSpawn(environmentID: "env-1", argv: ["/bin/true"],
+                        workingDirectory: nil, logPath: "/tmp/late.log", timeout: 1, cancellation: nil)
+                case "forward":
+                    try await registry.addForward(environmentID: "env-1",
+                        forward: LinuxGuestServiceForward(hostPort: 8080, guestPort: 8080))
+                case "probe":
+                    _ = try await registry.guestServiceAlive(environmentID: "env-1", pid: 42, timeout: 1)
+                default:
+                    _ = try await registry.guestKillService(environmentID: "env-1", pid: 42, timeout: 1)
+                }
+                XCTFail("\(operation) must not enter the guest while its filesystem is being saved")
+            } catch let error as LinuxGuestError {
+                if case .guestBusy(let id) = error { XCTAssertEqual(id, "env-1") }
+                else { XCTFail("Unexpected \(operation) refusal: \(error)") }
+            } catch { XCTFail("Unexpected \(operation) refusal: \(error)") }
         }
         do {
             _ = try await registry.start(environmentID: "env-1", taskID: nil)
@@ -842,7 +891,9 @@ final class LinuxGuestRegistryTests: XCTestCase {
         console.push(reply(pending, stdout: "", stderr: "", exit: 0))
         await stop.value
         let state = await registry.status(environmentID: "env-1")
+        let remaining = await registry.registeredEnvironmentIDs
         XCTAssertFalse(state.running)
+        XCTAssertTrue(remaining.isEmpty)
         XCTAssertEqual(ledger.sessionCount(for: "env-1"), 1)
     }
 
