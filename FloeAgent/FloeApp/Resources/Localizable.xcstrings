@@ -17459,6 +17459,18 @@
         }
       }
     },
+    "cad.blend.mode": {
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Type" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "方式" } }
+      }
+    },
+    "cad.pattern.source": {
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Source" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "源对象" } }
+      }
+    },
     "cad.ui.common.parameters": {
       "localizations": {
         "en": { "stringUnit": { "state": "translated", "value": "Parameters" } },

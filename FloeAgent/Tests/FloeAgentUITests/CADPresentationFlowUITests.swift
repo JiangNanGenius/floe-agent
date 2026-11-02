@@ -2112,6 +2112,44 @@ final class CADExternalProjectionNativeFlowUITests: XCTestCase {
 }
 
 @MainActor
+private enum CADParameterFormProbe {
+    static func form(_ app: XCUIApplication) -> XCUIElement {
+        app.descendants(matching: .any).matching(identifier: "CADToolParametersForm").firstMatch
+    }
+    static func viewport(_ app: XCUIApplication) -> CGRect {
+        let bounds = form(app).frame
+        let navigation = app.navigationBars["Parameters"].frame
+        let actions = app.descendants(matching: .any).matching(identifier: "CADToolParametersActions").firstMatch
+        let top = max(bounds.minY, navigation.maxY)
+        let bottom = actions.exists ? min(bounds.maxY, actions.frame.minY) : bounds.maxY
+        return CGRect(x: bounds.minX, y: top, width: bounds.width, height: max(0, bottom - top))
+    }
+    static func whole(_ control: XCUIElement, in app: XCUIApplication) -> Bool {
+        control.exists && control.isHittable && !control.frame.isEmpty
+            && viewport(app).insetBy(dx: -1, dy: -1).contains(control.frame)
+    }
+    static func reveal(_ control: XCUIElement, in app: XCUIApplication, preferDown: Bool = false) {
+        XCTAssertTrue(form(app).exists)
+        for _ in 0..<12 where !whole(control, in: app) {
+            let rect = control.frame, visible = viewport(app)
+            if (rect.isEmpty && preferDown) || (!rect.isEmpty && rect.minY < visible.minY) {
+                form(app).swipeDown()
+            } else {
+                form(app).swipeUp()
+            }
+        }
+    }
+    static func assertWhole(_ control: XCUIElement, in app: XCUIApplication) {
+        XCTAssertTrue(control.exists && control.isHittable)
+        let visible = viewport(app)
+        XCTAssertGreaterThanOrEqual(control.frame.minX, visible.minX - 1)
+        XCTAssertLessThanOrEqual(control.frame.maxX, visible.maxX + 1)
+        XCTAssertGreaterThanOrEqual(control.frame.minY, visible.minY - 1)
+        XCTAssertLessThanOrEqual(control.frame.maxY, visible.maxY + 1)
+    }
+}
+
+@MainActor
 final class CADAdvancedPatternNativeFlowUITests: XCTestCase {
     func testNativePatternSourceAndPathMenusApplyFeature() { check(compact: false) }
     func testCompactPatternSourceAndPathMenusCancel() { check(compact: true) }
@@ -2138,13 +2176,13 @@ final class CADAdvancedPatternNativeFlowUITests: XCTestCase {
         let pattern = app.buttons["PatternButton"]
         XCTAssertTrue(pattern.waitForExistence(timeout: 15) && pattern.isEnabled)
         pattern.tap()
-        let seed = app.buttons["PatternSeedMenu"]
+        let seed = app.descendants(matching: .any).matching(identifier: "PatternSeedMenu").firstMatch
         XCTAssertTrue(seed.waitForExistence(timeout: 15)); reveal(seed, in: app)
         XCTAssertTrue(seed.isHittable)
         seed.tap()
         let feature = app.buttons["Extrude"].firstMatch
         XCTAssertTrue(feature.waitForExistence(timeout: 10) && feature.isHittable); feature.tap()
-        let path = app.buttons["PatternPathMenu"]
+        let path = app.descendants(matching: .any).matching(identifier: "PatternPathMenu").firstMatch
         reveal(path, in: app)
         XCTAssertTrue(path.exists && path.isHittable); path.tap()
         let circle = app.buttons["Hole · Circle 1"].firstMatch
@@ -2182,19 +2220,10 @@ final class CADAdvancedPatternNativeFlowUITests: XCTestCase {
     }
 
     private func reveal(_ control: XCUIElement, in app: XCUIApplication) {
-        guard app.buttons["CADToolParametersClose"].exists else { return }
-        let form = app.descendants(matching: .any).matching(identifier: "CADToolParametersForm").firstMatch
-        XCTAssertTrue(form.exists)
-        for _ in 0..<6 where !control.isHittable { form.swipeUp() }
-        if !control.isHittable {
-            for _ in 0..<6 where !control.isHittable { form.swipeDown() }
-        }
+        if app.buttons["CADToolParametersClose"].exists { CADParameterFormProbe.reveal(control, in: app) }
     }
     private func assertWholeControl(_ control: XCUIElement, in app: XCUIApplication) {
-        let form = app.descendants(matching: .any).matching(identifier: "CADToolParametersForm").firstMatch
-        XCTAssertTrue(control.exists && control.isHittable)
-        XCTAssertGreaterThanOrEqual(control.frame.minX, form.frame.minX - 1)
-        XCTAssertLessThanOrEqual(control.frame.maxX, form.frame.maxX + 1)
+        CADParameterFormProbe.assertWhole(control, in: app)
     }
     private func toggleItems(_ app: XCUIApplication) {
         if app.buttons["ItemsButton"].exists { app.buttons["ItemsButton"].tap() }
@@ -2236,7 +2265,7 @@ final class CADAdvancedBlendNativeFlowUITests: XCTestCase {
         }
         modify.tap()
         app.buttons["ChamferButton"].tap()
-        let menu = app.buttons["BlendModeMenu"]
+        let menu = app.descendants(matching: .any).matching(identifier: "BlendModeMenu").firstMatch
         XCTAssertTrue(menu.waitForExistence(timeout: 15))
         reveal(menu, in: app, left: false)
         XCTAssertTrue(menu.isHittable)
@@ -2284,11 +2313,7 @@ final class CADAdvancedBlendNativeFlowUITests: XCTestCase {
     }
     private func reveal(_ control: XCUIElement, in app: XCUIApplication, left: Bool = true) {
         if app.buttons["CADToolParametersClose"].exists {
-            let form = app.descendants(matching: .any).matching(identifier: "CADToolParametersForm").firstMatch
-            XCTAssertTrue(form.exists)
-            for _ in 0..<8 where !control.isHittable {
-                if left { form.swipeUp() } else { form.swipeDown() }
-            }
+            CADParameterFormProbe.reveal(control, in: app, preferDown: !left)
         } else {
             for _ in 0..<6 where !control.isHittable {
                 let bar = app.scrollViews.containing(.textField, identifier: "BlendValueField").firstMatch
@@ -2298,10 +2323,7 @@ final class CADAdvancedBlendNativeFlowUITests: XCTestCase {
         }
     }
     private func assertWholeControl(_ control: XCUIElement, in app: XCUIApplication) {
-        let form = app.descendants(matching: .any).matching(identifier: "CADToolParametersForm").firstMatch
-        XCTAssertTrue(control.exists && control.isHittable)
-        XCTAssertGreaterThanOrEqual(control.frame.minX, form.frame.minX - 1)
-        XCTAssertLessThanOrEqual(control.frame.maxX, form.frame.maxX + 1)
+        CADParameterFormProbe.assertWhole(control, in: app)
     }
     private func capture(_ name: String) {
         let attachment = XCTAttachment(screenshot: XCUIScreen.main.screenshot())

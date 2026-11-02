@@ -198,6 +198,8 @@ struct AdaptiveBar<Controls: View, Actions: View, Footer: View>: View {
                         .frame(maxWidth: .infinity, alignment: .trailing)
                         .padding()
                         .background(.bar)
+                        .accessibilityElement(children: .contain)
+                        .accessibilityIdentifier("CADToolParametersActions")
                 }
             }
             .toolbar {

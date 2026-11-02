@@ -962,25 +962,44 @@ struct FloeCADEditorView: View {
         }
     }
 
+    @ViewBuilder
     private func blendModeMenu(_ kind: BlendKind, _ viewModel: EditorViewModel) -> some View {
-        Menu {
-            Button(FloeCADStrings.text("cad.blend.uniform", "Uniform")) { viewModel.setBlendAdvancedMode(nil) }
-            if kind == .fillet {
-                Button(FloeCADStrings.text("cad.blend.variableFillet", "Variable Fillet")) { viewModel.setBlendAdvancedMode(.variableFillet) }
-            } else {
-                Button(FloeCADStrings.text("cad.blend.twoDistances", "Two-Distance Chamfer")) { viewModel.setBlendAdvancedMode(.twoDistanceChamfer) }
-                Button(FloeCADStrings.text("cad.blend.distanceAngle", "Distance-Angle Chamfer")) { viewModel.setBlendAdvancedMode(.distanceAngleChamfer) }
+        if horizontalSizeClass == .compact {
+            Picker(FloeCADStrings.text("cad.blend.mode", "Type"), selection: Binding(
+                get: { viewModel.blendAdvancedMode }, set: { viewModel.setBlendAdvancedMode($0) })) {
+                Text(FloeCADStrings.text("cad.blend.uniform", "Uniform")).tag(Optional<AdvancedBlendDefinition.Mode>.none)
+                if kind == .fillet {
+                    Text(FloeCADStrings.text("cad.blend.variableFillet", "Variable Fillet"))
+                        .tag(Optional(AdvancedBlendDefinition.Mode.variableFillet))
+                } else {
+                    Text(FloeCADStrings.text("cad.blend.twoDistances", "Two-Distance Chamfer"))
+                        .tag(Optional(AdvancedBlendDefinition.Mode.twoDistanceChamfer))
+                    Text(FloeCADStrings.text("cad.blend.distanceAngle", "Distance-Angle Chamfer"))
+                        .tag(Optional(AdvancedBlendDefinition.Mode.distanceAngleChamfer))
+                }
             }
-        } label: {
-            let label: String = switch viewModel.blendAdvancedMode {
-            case .variableFillet: FloeCADStrings.text("cad.blend.variableFillet", "Variable Fillet")
-            case .twoDistanceChamfer: FloeCADStrings.text("cad.blend.twoDistances", "Two-Distance Chamfer")
-            case .distanceAngleChamfer: FloeCADStrings.text("cad.blend.distanceAngle", "Distance-Angle Chamfer")
-            case nil: FloeCADStrings.text("cad.blend.uniform", "Uniform")
+            .pickerStyle(.menu).lineLimit(nil).fixedSize(horizontal: false, vertical: true)
+            .accessibilityIdentifier("BlendModeMenu")
+        } else {
+            Menu {
+                Button(FloeCADStrings.text("cad.blend.uniform", "Uniform")) { viewModel.setBlendAdvancedMode(nil) }
+                if kind == .fillet {
+                    Button(FloeCADStrings.text("cad.blend.variableFillet", "Variable Fillet")) { viewModel.setBlendAdvancedMode(.variableFillet) }
+                } else {
+                    Button(FloeCADStrings.text("cad.blend.twoDistances", "Two-Distance Chamfer")) { viewModel.setBlendAdvancedMode(.twoDistanceChamfer) }
+                    Button(FloeCADStrings.text("cad.blend.distanceAngle", "Distance-Angle Chamfer")) { viewModel.setBlendAdvancedMode(.distanceAngleChamfer) }
+                }
+            } label: {
+                let label: String = switch viewModel.blendAdvancedMode {
+                case .variableFillet: FloeCADStrings.text("cad.blend.variableFillet", "Variable Fillet")
+                case .twoDistanceChamfer: FloeCADStrings.text("cad.blend.twoDistances", "Two-Distance Chamfer")
+                case .distanceAngleChamfer: FloeCADStrings.text("cad.blend.distanceAngle", "Distance-Angle Chamfer")
+                case nil: FloeCADStrings.text("cad.blend.uniform", "Uniform")
+                }
+                Label(label, systemImage: "slider.horizontal.3")
             }
-            Label(label, systemImage: "slider.horizontal.3")
+            .controlSize(.small).accessibilityIdentifier("BlendModeMenu")
         }
-        .controlSize(.small).accessibilityIdentifier("BlendModeMenu")
     }
 
     /// Shell bar (Phase E, spec §4.4): pick prompt, wall-thickness field,

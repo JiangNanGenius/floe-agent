@@ -351,38 +351,61 @@ struct NumericInputBar: View {
     @ViewBuilder
     private func patternPickers(_ axisChoices: [EditorViewModel.PatternState.Axis]) -> some View {
         if viewModel.patternState?.isSketchPattern == false {
-            Menu {
-                Button(FloeCADStrings.label("cad.pattern.bodies", "Bodies")) {
-                    viewModel.patternState?.featureSeed = nil
+            if isCompact {
+                Picker(FloeCADStrings.text("cad.pattern.source", "Source"), selection: Binding(
+                    get: { viewModel.patternState?.featureSeed?.featureID },
+                    set: { viewModel.patternState?.featureSeed = $0.map { PatternFeatureSeed(featureID: $0) } })) {
+                    Text(FloeCADStrings.text("cad.pattern.bodies", "Bodies")).tag(Optional<FeatureID>.none)
+                    ForEach(viewModel.patternSeedChoices) { seed in Text(seed.name).tag(Optional(seed.id)) }
                 }
-                ForEach(viewModel.patternSeedChoices) { seed in
-                    Button(seed.name) {
-                        viewModel.patternState?.featureSeed = PatternFeatureSeed(featureID: seed.id)
-                    }
+                .pickerStyle(.menu).lineLimit(nil).fixedSize(horizontal: false, vertical: true)
+                .accessibilityIdentifier("PatternSeedMenu")
+                Picker(FloeCADStrings.text("cad.pattern.path", "Along path"), selection: Binding(
+                    get: { viewModel.patternState?.curvePath }, set: { viewModel.selectPatternPath($0) })) {
+                    Text(FloeCADStrings.text("cad.pattern.noPath", "No path")).tag(Optional<CurvePatternPathDefinition>.none)
+                    ForEach(viewModel.patternPathChoices) { path in Text(path.name).tag(Optional(path.path)) }
                 }
-            } label: {
-                Label(viewModel.patternSeedChoices.first { $0.id == viewModel.patternState?.featureSeed?.featureID }?.name
-                    ?? FloeCADStrings.text("cad.pattern.bodies", "Bodies"), systemImage: "square.on.square")
-                    .lineLimit(isCompact ? nil : 1)
-            }
-            .accessibilityIdentifier("PatternSeedMenu")
-            Menu {
-                Button(FloeCADStrings.label("cad.pattern.noPath", "No path")) { viewModel.selectPatternPath(nil) }
-                ForEach(viewModel.patternPathChoices) { path in
-                    Button(path.name) { viewModel.selectPatternPath(path.path) }
-                }
+                .pickerStyle(.menu).lineLimit(nil).fixedSize(horizontal: false, vertical: true)
+                .accessibilityIdentifier("PatternPathMenu")
                 if viewModel.patternState?.curvePath != nil {
                     Toggle(FloeCADStrings.label("cad.pattern.followPath", "Follow path"), isOn: Binding(
                         get: { viewModel.patternState?.rotateInstances ?? true },
-                        set: { viewModel.patternState?.rotateInstances = $0 }
-                    ))
+                        set: { viewModel.patternState?.rotateInstances = $0 }))
                 }
-            } label: {
-                Label(viewModel.patternPathChoices.first { $0.path == viewModel.patternState?.curvePath }?.name
-                    ?? FloeCADStrings.text("cad.pattern.path", "Along path"), systemImage: "point.topleft.down.to.point.bottomright.curvepath")
-                    .lineLimit(isCompact ? nil : 1)
+            } else {
+                Menu {
+                    Button(FloeCADStrings.label("cad.pattern.bodies", "Bodies")) {
+                        viewModel.patternState?.featureSeed = nil
+                    }
+                    ForEach(viewModel.patternSeedChoices) { seed in
+                        Button(seed.name) {
+                            viewModel.patternState?.featureSeed = PatternFeatureSeed(featureID: seed.id)
+                        }
+                    }
+                } label: {
+                    Label(viewModel.patternSeedChoices.first { $0.id == viewModel.patternState?.featureSeed?.featureID }?.name
+                        ?? FloeCADStrings.text("cad.pattern.bodies", "Bodies"), systemImage: "square.on.square")
+                        .lineLimit(isCompact ? nil : 1)
+                }
+                .accessibilityIdentifier("PatternSeedMenu")
+                Menu {
+                    Button(FloeCADStrings.label("cad.pattern.noPath", "No path")) { viewModel.selectPatternPath(nil) }
+                    ForEach(viewModel.patternPathChoices) { path in
+                        Button(path.name) { viewModel.selectPatternPath(path.path) }
+                    }
+                    if viewModel.patternState?.curvePath != nil {
+                        Toggle(FloeCADStrings.label("cad.pattern.followPath", "Follow path"), isOn: Binding(
+                            get: { viewModel.patternState?.rotateInstances ?? true },
+                            set: { viewModel.patternState?.rotateInstances = $0 }
+                        ))
+                    }
+                } label: {
+                    Label(viewModel.patternPathChoices.first { $0.path == viewModel.patternState?.curvePath }?.name
+                        ?? FloeCADStrings.text("cad.pattern.path", "Along path"), systemImage: "point.topleft.down.to.point.bottomright.curvepath")
+                        .lineLimit(isCompact ? nil : 1)
+                }
+                .accessibilityIdentifier("PatternPathMenu")
             }
-            .accessibilityIdentifier("PatternPathMenu")
         }
         if viewModel.patternState?.curvePath == nil {
         Picker(FloeCADStrings.text("cad.pattern.type", "Pattern type"), selection: Binding(
@@ -404,21 +427,30 @@ struct NumericInputBar: View {
             // three-way, and a segmented control carrying named axes would blow
             // the row's width apart at compact size (gotcha 11). A menu stays
             // one control wide however many axes exist.
-            Menu {
+            if isCompact {
                 Picker("Axis", selection: axisSelection) {
-                    ForEach(axisChoices, id: \.self) { axis in
-                        Text(axis.rawValue).tag(PatternAxisChoice.world(axis))
-                    }
-                    ForEach(constructionAxes) { axis in
-                        Text(axis.name).tag(PatternAxisChoice.construction(axis.id))
-                    }
+                    ForEach(axisChoices, id: \.self) { axis in Text(axis.rawValue).tag(PatternAxisChoice.world(axis)) }
+                    ForEach(constructionAxes) { axis in Text(axis.name).tag(PatternAxisChoice.construction(axis.id)) }
                 }
-            } label: {
-                Label(currentAxisLabel(), systemImage: "line.diagonal.arrow")
-                    .font(.caption)
-                    .fixedSize(horizontal: !isCompact, vertical: true)
+                .pickerStyle(.menu).lineLimit(nil).fixedSize(horizontal: false, vertical: true)
+                .accessibilityIdentifier("PatternAxisMenu")
+            } else {
+                Menu {
+                    Picker("Axis", selection: axisSelection) {
+                        ForEach(axisChoices, id: \.self) { axis in
+                            Text(axis.rawValue).tag(PatternAxisChoice.world(axis))
+                        }
+                        ForEach(constructionAxes) { axis in
+                            Text(axis.name).tag(PatternAxisChoice.construction(axis.id))
+                        }
+                    }
+                } label: {
+                    Label(currentAxisLabel(), systemImage: "line.diagonal.arrow")
+                        .font(.caption)
+                        .fixedSize(horizontal: !isCompact, vertical: true)
+                }
+                .accessibilityIdentifier("PatternAxisMenu")
             }
-            .accessibilityIdentifier("PatternAxisMenu")
         } else if !axisChoices.isEmpty {
             Picker("Axis", selection: Binding(
                 get: { viewModel.patternState?.axis ?? .x },
@@ -670,24 +702,34 @@ struct NumericInputBar: View {
 
             // Ends retain their source through rebuild. Typing a distance
             // explicitly returns to the ordinary distance condition.
-            Menu {
-                ForEach(ExtrudeEnd.allCases, id: \.self) { end in
-                    Button(end.title) {
-                        // Text typed but not yet submitted still decides the
-                        // direction (its sign), so apply it first.
-                        if extrudeDistanceText != extrudeDistanceDisplay(context.distance) {
-                            _ = applyExtrudeDistanceText()
-                        }
-                        if let mm = viewModel.resolveExtrudeEnd(end) {
-                            extrudeDistanceText = extrudeDistanceDisplay(mm)
+            if isCompact {
+                Picker(FloeCADStrings.text("cad.ui.extrude.end", "End"), selection: Binding(
+                    get: { viewModel.toolContext?.extrudeTermination?.mode ?? .blind },
+                    set: { selectExtrudeEnd($0, context: context) })) {
+                    ForEach(ExtrudeEnd.allCases, id: \.self) { end in Text(end.title).tag(end) }
+                }
+                .pickerStyle(.menu).lineLimit(nil).fixedSize(horizontal: false, vertical: true)
+                .accessibilityIdentifier("ExtrudeEndMenu")
+            } else {
+                Menu {
+                    ForEach(ExtrudeEnd.allCases, id: \.self) { end in
+                        Button(end.title) {
+                            // Text typed but not yet submitted still decides the
+                            // direction (its sign), so apply it first.
+                            if extrudeDistanceText != extrudeDistanceDisplay(context.distance) {
+                                _ = applyExtrudeDistanceText()
+                            }
+                            if let mm = viewModel.resolveExtrudeEnd(end) {
+                                extrudeDistanceText = extrudeDistanceDisplay(mm)
+                            }
                         }
                     }
+                } label: {
+                    Label(FloeCADStrings.label("cad.ui.extrude.end", "End"), systemImage: "arrow.down.to.line")
+                        .labelStyle(.titleOnly)
                 }
-            } label: {
-                Label(FloeCADStrings.label("cad.ui.extrude.end", "End"), systemImage: "arrow.down.to.line")
-                    .labelStyle(.titleOnly)
+                .accessibilityIdentifier("ExtrudeEndMenu")
             }
-            .accessibilityIdentifier("ExtrudeEndMenu")
 
             // Symmetric sides: distance is per-side, total depth 2×.
             Button(FloeCADStrings.label("cad.ui.extrude.symmetric", "Symmetric")) {
@@ -748,6 +790,11 @@ struct NumericInputBar: View {
             }
         }
 
+    }
+
+    private func selectExtrudeEnd(_ end: ExtrudeEnd, context: EditorViewModel.ToolContext) {
+        if extrudeDistanceText != extrudeDistanceDisplay(context.distance) { _ = applyExtrudeDistanceText() }
+        if let mm = viewModel.resolveExtrudeEnd(end) { extrudeDistanceText = extrudeDistanceDisplay(mm) }
     }
 
     @ViewBuilder
