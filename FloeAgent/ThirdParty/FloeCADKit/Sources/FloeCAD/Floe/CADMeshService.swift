@@ -1534,6 +1534,7 @@ public final class CADMeshService {
         case .cancelled: return "cancelled"
         case .timedOut: return "limit_time"
         case .refused(let code, _): return "refused:\(code)"
+        case .repairUnavailable: return "refused:unsupported_mesh_repair"
         case .combine: return "combine"
         case .boolean: return "boolean"
         case .replacements: return "replacements"
