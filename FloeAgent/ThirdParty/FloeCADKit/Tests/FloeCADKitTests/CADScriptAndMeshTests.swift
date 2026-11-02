@@ -787,6 +787,23 @@ final class CADScriptAndMeshTests: XCTestCase {
         XCTAssertEqual(document.session.document.body(with:body.id)?.render,cube)
     }
 
+    @MainActor
+    func testSimplificationSparseSamplesStillBoundUnsampledGeometry() throws {
+        let first = RenderMesh(positions:[[0,0,0],[1,0,0],[0,1,0],[100,0,0],[101,0,0],[100,1,0]],
+            normals:Array(repeating:[0,0,1],count:6),indices:[0,1,2,3,4,5])
+        var moved = first
+        for i in 3..<6 { moved.positions[i].z = 10 }
+        let protection = try XCTUnwrap(CADMeshSimplificationQuality.protection(first,shouldStop:{ false }))
+        let report = try XCTUnwrap(CADMeshSimplificationQuality.inspect(before:first,after:moved,
+            protection:protection,sampleTriangleBudget:1,shouldStop:{ false }))
+        XCTAssertEqual(report.sampledTriangles,2)
+        XCTAssertEqual(report.totalTriangles,4)
+        XCTAssertEqual(report.sampledDistanceMM,0,accuracy:1e-8)
+        XCTAssertGreaterThanOrEqual(report.distanceUpperBoundMM,10,
+            "Unsampled triangles are included in the conservative bound, never silently omitted")
+        XCTAssertEqual(try XCTUnwrap(report.boundaryDistanceMM),10,accuracy:1e-8)
+    }
+
     // MARK: 9. Combine / transform / material / image / text
 
     @MainActor

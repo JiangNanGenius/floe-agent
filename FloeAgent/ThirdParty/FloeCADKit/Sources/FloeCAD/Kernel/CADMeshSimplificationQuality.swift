@@ -24,6 +24,7 @@ nonisolated enum CADMeshSimplificationQuality {
     struct Report: Sendable {
         let sampledDistanceMM: Double
         let distanceUpperBoundMM: Double
+        let sampledTriangles, totalTriangles: Int
         let boundaryDistanceMM: Double?
         let signedVolumeBeforeMM3: Double
         let signedVolumeAfterMM3: Double
@@ -38,9 +39,11 @@ nonisolated enum CADMeshSimplificationQuality {
             var p: [String: Any] = [
                 "surfaceSampledMaxDistanceMM": sampledDistanceMM,
                 "surfaceDistanceUpperBoundMM": distanceUpperBoundMM,
-                "distanceMethod": "bidirectional_triangle_vertices_edge_midpoints_and_centroids",
+                "distanceMethod": "bidirectional_deterministic_triangle_samples_vertices_edge_midpoints_centroids",
+                "sampledTriangleCount": sampledTriangles,
+                "totalTriangleCount": totalTriangles,
                 "distanceIsExactHausdorff": false,
-                "upperBoundMethod": "centroid_distance_plus_triangle_cover_radius",
+                "upperBoundMethod": "sample_centroid_distance_plus_complete_triangle_block_cover_radius",
                 "signedVolumeBeforeMM3": signedVolumeBeforeMM3,
                 "signedVolumeAfterMM3": signedVolumeAfterMM3,
                 "signedVolumeDeltaMM3": signedVolumeAfterMM3 - signedVolumeBeforeMM3,
@@ -102,12 +105,13 @@ nonisolated enum CADMeshSimplificationQuality {
     }
 
     static func inspect(before: RenderMesh, after: RenderMesh, protection: Protection, scale: Double = 1,
+                        sampleTriangleBudget: Int = 4096,
                         shouldStop: () -> Bool) -> Report? {
         let a = CADInterferenceMeshGeometry.build(positions: before.positions, indices: before.indices)
         let b = CADInterferenceMeshGeometry.build(positions: after.positions, indices: after.indices)
-        guard scale.isFinite, scale > 0, a.isValid, b.isValid, !shouldStop(),
-              let ab = directed(a, b, shouldStop: shouldStop),
-              let ba = directed(b, a, shouldStop: shouldStop),
+        guard scale.isFinite, scale > 0, sampleTriangleBudget > 0, a.isValid, b.isValid, !shouldStop(),
+              let ab = directed(a, b, sampleBudget:sampleTriangleBudget, shouldStop: shouldStop),
+              let ba = directed(b, a, sampleBudget:sampleTriangleBudget, shouldStop: shouldStop),
               let afterProtection = self.protection(after, shouldStop: shouldStop) else { return nil }
         let topologyPreserved = sameTopology(a.topology, b.topology)
             && protection.eulerCharacteristic == afterProtection.eulerCharacteristic
@@ -142,6 +146,7 @@ nonisolated enum CADMeshSimplificationQuality {
         }
         guard let va = signedVolume(a, shouldStop), let vb = signedVolume(b, shouldStop) else { return nil }
         return Report(sampledDistanceMM: max(ab.sample, ba.sample) * scale, distanceUpperBoundMM: max(ab.bound, ba.bound) * scale,
+                      sampledTriangles: ab.samples + ba.samples, totalTriangles: a.triangleCount + b.triangleCount,
                       boundaryDistanceMM: boundary.map { $0 * scale }, signedVolumeBeforeMM3: va * pow(scale,3), signedVolumeAfterMM3: vb * pow(scale,3),
                       closedOrientedVolumes: a.topology.isWatertight && b.topology.isWatertight,
                       topologyPreserved: topologyPreserved, boundaryEdgesBefore: a.topology.boundaryEdgeCount,
@@ -166,7 +171,12 @@ nonisolated enum CADMeshSimplificationQuality {
             let node = geometry.bvh.nodes[nodeIndex]
             if node.bounds.distanceSquared(to: box) > best { continue }
             if node.count == 0 {
-                stack.append(Int(node.left)); stack.append(Int(node.right))
+                // Visit the closest child first so the exact point query's
+                // bound prunes distant leaves instead of scanning the mesh.
+                let left = Int(node.left), right = Int(node.right)
+                if geometry.bvh.nodes[left].bounds.distanceSquared(to:box) < geometry.bvh.nodes[right].bounds.distanceSquared(to:box) {
+                    stack.append(right); stack.append(left)
+                } else { stack.append(left); stack.append(right) }
             } else {
                 for offset in Int(node.start)..<Int(node.start + node.count) {
                     if stop() { return nil }
@@ -179,20 +189,33 @@ nonisolated enum CADMeshSimplificationQuality {
         return best.isFinite ? sqrt(max(0,best)) : nil
     }
     private static func directed(_ source: CADInterferenceMeshGeometry, _ target: CADInterferenceMeshGeometry,
-                                 shouldStop: () -> Bool) -> (sample: Double, bound: Double)? {
+                                 sampleBudget:Int, shouldStop: () -> Bool) -> (sample: Double, bound: Double, samples:Int)? {
         var maximum = 0.0, upper = 0.0
-        for i in 0..<source.triangleCount {
+        let stride = max(1,(source.triangleCount + sampleBudget - 1)/sampleBudget)
+        var i = 0, samples = 0
+        while i < source.triangleCount {
             if shouldStop() { return nil }
             let (a,b,c) = source.triangle(i), center = (a+b+c)/3
             guard let distance = nearest(center, target, shouldStop) else { return nil }
             maximum = max(maximum, distance)
-            upper = max(upper, distance + max(simd_length(a-center), max(simd_length(b-center),simd_length(c-center))))
+            // Every triangle, including unsampled ones, contributes to its
+            // block's cover radius. Distance-to-surface is 1-Lipschitz, so
+            // d(center,target)+radius bounds every point in this whole block.
+            var radius = 0.0
+            let end = min(source.triangleCount,i+stride)
+            for triangle in i..<end {
+                if shouldStop() { return nil }
+                let t = source.triangle(triangle)
+                radius = max(radius,max(simd_length(t.0-center),max(simd_length(t.1-center),simd_length(t.2-center))))
+            }
+            upper = max(upper,distance+radius)
             for point in [a,b,c,(a+b)/2,(b+c)/2,(c+a)/2] {
                 guard let value = nearest(point, target, shouldStop) else { return nil }
                 maximum = max(maximum, value)
             }
+            i = end; samples += 1
         }
-        return (maximum, upper)
+        return (maximum, upper, samples)
     }
     private static func signedVolume(_ geometry: CADInterferenceMeshGeometry, _ stop: () -> Bool) -> Double? {
         let origin = geometry.bounds.min
