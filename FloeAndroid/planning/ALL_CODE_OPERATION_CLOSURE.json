@@ -379,8 +379,50 @@
       "originalOperation": "File tree plus multi-tab code editing in one workbench",
       "originalStatus": "planned",
       "required": true,
-      "codeReview": "pending per-operation UI/service/runtime-storage/failure reconciliation",
-      "qualification": "not newly verified this round"
+      "codeReview": "present-source-connected at immutable 4437d379ec34a3d846ea5a634675ec763ec789ae; static source only, not acceptance",
+      "qualification": "not newly verified this round",
+      "sourceReview": {
+        "androidCommit": "4437d379ec34a3d846ea5a634675ec763ec789ae",
+        "iosDonorCommit": "a59b4d4005f616c611df67fab7620e9853c525b9",
+        "state": "present-source-connected",
+        "chain": {
+          "ui": "WorkspaceFilesPane tree + FloeIdeWorkspace tabs/editor; full-window document on phone",
+          "host": "G04IdeHostAdapter (open/list/tabs/edit) over G04WorkspaceBridgeClient",
+          "serviceRuntime": "Swift G04WorkspaceDocumentSession owns text/tabs/revisions; WorkspaceFileService bounds reads/writes",
+          "storage": "task workspace files",
+          "resultFailure": "typed staleRevision/conflict/unsupportedContent; drafts retained"
+        },
+        "evidence": [
+          {
+            "path": "FloeAndroid/feature/ide/src/main/kotlin/com/floe/android/feature/ide/FloeIdeWorkspace.kt",
+            "line": 69,
+            "note": "phone list-first policy + tabs"
+          },
+          {
+            "path": "FloeAndroid/app/src/main/kotlin/com/floe/android/host/G04IdeHostAdapter.kt",
+            "line": 192,
+            "note": "open/reopen/save/undo/redo/close/tree/list commands"
+          },
+          {
+            "path": "FloeAndroid/shared/Sources/FloeAndroidCore/G04WorkspaceDocumentSession.swift",
+            "line": 409,
+            "note": "open reads the complete file through the workspace service"
+          },
+          {
+            "path": "FloeAndroid/shared/Sources/FloeAndroidCore/G04WorkspaceDocumentSession.swift",
+            "line": 307,
+            "note": "move keeps tab ids/drafts"
+          },
+          {
+            "path": "FloeAndroid/app/src/main/kotlin/com/floe/android/WorkspaceFilesPane.kt",
+            "line": 190,
+            "note": "full-window document presentation on phone; tree behind folder control"
+          }
+        ],
+        "gaps": [],
+        "dependencies": [],
+        "qualification": "source-only; unicode byte-exactness not device-tested"
+      }
     },
     {
       "id": "IDE-SEARCH-REPLACE",
@@ -389,8 +431,50 @@
       "originalOperation": "Workspace search and replace with hit preview",
       "originalStatus": "planned",
       "required": true,
-      "codeReview": "pending per-operation UI/service/runtime-storage/failure reconciliation",
-      "qualification": "not newly verified this round"
+      "codeReview": "present-source-connected at immutable 4437d379ec34a3d846ea5a634675ec763ec789ae; static source only, not acceptance",
+      "qualification": "not newly verified this round",
+      "sourceReview": {
+        "androidCommit": "4437d379ec34a3d846ea5a634675ec763ec789ae",
+        "iosDonorCommit": "a59b4d4005f616c611df67fab7620e9853c525b9",
+        "state": "present-source-connected",
+        "chain": {
+          "ui": "find/replace bar (case/whole-word) + workspace search results panel",
+          "host": "IdePresenter.find/replace/requestWorkspaceSearch -> G04IdeHostAdapter",
+          "serviceRuntime": "G04WorkspaceDocumentSession find/replace (NSString ranges); WorkspaceFileService.search over text files",
+          "storage": "workspace files/documents",
+          "resultFailure": "staleRevision/unsupportedContent typed; no silent partial replacement"
+        },
+        "evidence": [
+          {
+            "path": "FloeAndroid/feature/ide/src/main/kotlin/com/floe/android/feature/ide/IdePresenter.kt",
+            "line": 1095,
+            "note": "find request with case/whole-word"
+          },
+          {
+            "path": "FloeAndroid/feature/ide/src/main/kotlin/com/floe/android/feature/ide/IdePresenter.kt",
+            "line": 591,
+            "note": "workspace search request"
+          },
+          {
+            "path": "FloeAndroid/feature/ide/src/main/kotlin/com/floe/android/feature/ide/ui/IdeEditorArea.kt",
+            "line": 498,
+            "note": "match-case/whole-word UI"
+          },
+          {
+            "path": "FloeAndroid/shared/Sources/FloeAndroidCore/G04WorkspaceDocumentSession.swift",
+            "line": 533,
+            "note": "case-sensitive/insensitive match, whole-word check"
+          },
+          {
+            "path": "FloeAndroid/shared/Sources/FloeWorkspace/WorkspaceFileService.swift",
+            "line": 404,
+            "note": "bounded line search with context; skips secret/large files"
+          }
+        ],
+        "gaps": [],
+        "dependencies": [],
+        "qualification": "source-only; CJK/case behavior not device-tested"
+      }
     },
     {
       "id": "IDE-UNDO-DRAFT",
@@ -399,8 +483,45 @@
       "originalOperation": "Per-editor undo; drafts survive tab switch",
       "originalStatus": "planned",
       "required": true,
-      "codeReview": "pending per-operation UI/service/runtime-storage/failure reconciliation",
-      "qualification": "not newly verified this round"
+      "codeReview": "present-source-connected at immutable 4437d379ec34a3d846ea5a634675ec763ec789ae; static source only, not acceptance",
+      "qualification": "not newly verified this round",
+      "sourceReview": {
+        "androidCommit": "4437d379ec34a3d846ea5a634675ec763ec789ae",
+        "iosDonorCommit": "a59b4d4005f616c611df67fab7620e9853c525b9",
+        "state": "present-source-connected",
+        "chain": {
+          "ui": "undo/redo controls; tabs; recovery panel",
+          "host": "IdePresenter undo/redo; G04IdeHostAdapter; Application-owned G04WorkspaceEditorController bindings",
+          "serviceRuntime": "G04WorkspaceDocumentSession undo/redo history + RAM drafts; close/save CAS",
+          "storage": "native RAM drafts + workspace recovery files",
+          "resultFailure": "historyUnavailable/staleRevision/conflict; draft preserved"
+        },
+        "evidence": [
+          {
+            "path": "FloeAndroid/shared/Sources/FloeAndroidCore/G04WorkspaceDocumentSession.swift",
+            "line": 113,
+            "note": "Root-owned RAM drafts survive view/tab reconstruction"
+          },
+          {
+            "path": "FloeAndroid/shared/Sources/FloeAndroidCore/G04WorkspaceDocumentSession.swift",
+            "line": 662,
+            "note": "undo/redo history with revision checks"
+          },
+          {
+            "path": "FloeAndroid/app/src/main/kotlin/com/floe/android/host/G04WorkspaceEditorController.kt",
+            "line": 24,
+            "note": "Application-owned projections; view disappearance does not discard unsent typing"
+          },
+          {
+            "path": "FloeAndroid/app/src/main/kotlin/com/floe/android/WorkspaceFilesPane.kt",
+            "line": 287,
+            "note": "presenter keeps tabs/dirty buffers/undo lineage/recovery rows"
+          }
+        ],
+        "gaps": [],
+        "dependencies": [],
+        "qualification": "source-only; rotation/draft behavior not executed"
+      }
     },
     {
       "id": "IDE-ENCODING-LINES",
@@ -409,8 +530,45 @@
       "originalOperation": "Preserve CRLF, UTF-8 BOM and long lines across open→edit→save→reopen",
       "originalStatus": "planned",
       "required": true,
-      "codeReview": "pending per-operation UI/service/runtime-storage/failure reconciliation",
-      "qualification": "not newly verified this round"
+      "codeReview": "present-source-connected at immutable 4437d379ec34a3d846ea5a634675ec763ec789ae; static source only, not acceptance",
+      "qualification": "not newly verified this round",
+      "sourceReview": {
+        "androidCommit": "4437d379ec34a3d846ea5a634675ec763ec789ae",
+        "iosDonorCommit": "a59b4d4005f616c611df67fab7620e9853c525b9",
+        "state": "present-source-connected",
+        "chain": {
+          "ui": "Sora editor with long-line/scroll handling",
+          "host": "G04IdeHostAdapter open/save",
+          "serviceRuntime": "WorkspaceTextEdit.decode re-attaches BOM; WorkspaceFileService writes UTF-8 preserving the in-memory CRLF; G04WorkspaceDocumentSession CAS save",
+          "storage": "workspace file",
+          "resultFailure": "staleRevision/conflict; draft retained"
+        },
+        "evidence": [
+          {
+            "path": "FloeAndroid/shared/Sources/FloeWorkspace/Tools/TextEditTools.swift",
+            "line": 34,
+            "note": "strict UTF-8 decode + BOM re-attach for byte-exact round trip; names the original host test"
+          },
+          {
+            "path": "FloeAndroid/shared/Sources/FloeWorkspace/WorkspaceFileService.swift",
+            "line": 307,
+            "note": "readFileForEditing loads the complete text"
+          },
+          {
+            "path": "FloeAndroid/shared/Sources/FloeWorkspace/WorkspaceFileService.swift",
+            "line": 1177,
+            "note": "performWrite writes Data(content.utf8) atomically (BOM is kept as U+FEFF in the string)"
+          },
+          {
+            "path": "FloeAndroid/shared/Sources/FloeAndroidCore/G04WorkspaceDocumentSession.swift",
+            "line": 689,
+            "note": "save with expectedMtime/SHA CAS"
+          }
+        ],
+        "gaps": [],
+        "dependencies": [],
+        "qualification": "source-only; host test referenced but not run; device rendering of 4096-char line not verified"
+      }
     },
     {
       "id": "IDE-DIFF",
@@ -419,8 +577,47 @@
       "originalOperation": "Diff view of pending edits/changes",
       "originalStatus": "planned",
       "required": true,
-      "codeReview": "pending per-operation UI/service/runtime-storage/failure reconciliation",
-      "qualification": "not newly verified this round"
+      "codeReview": "present-source-connected at immutable 4437d379ec34a3d846ea5a634675ec763ec789ae; static source only, not acceptance",
+      "qualification": "not newly verified this round",
+      "sourceReview": {
+        "androidCommit": "4437d379ec34a3d846ea5a634675ec763ec789ae",
+        "iosDonorCommit": "a59b4d4005f616c611df67fab7620e9853c525b9",
+        "state": "present-source-connected",
+        "chain": {
+          "ui": "diff overlay with additions/removals/stats",
+          "host": "IdePresenter.requestLoadDiff -> G04IdeHostAdapter.LoadDiff -> content part `diff`",
+          "serviceRuntime": "G04WorkspaceDocumentSession.diffText (baseline vs draft; bounded LCS)",
+          "storage": "native draft/baseline",
+          "resultFailure": "typed diff error; stale revision refused"
+        },
+        "evidence": [
+          {
+            "path": "FloeAndroid/feature/ide/src/main/kotlin/com/floe/android/feature/ide/IdePresenter.kt",
+            "line": 980,
+            "note": "requestLoadDiff"
+          },
+          {
+            "path": "FloeAndroid/app/src/main/kotlin/com/floe/android/host/G04IdeHostAdapter.kt",
+            "line": 300,
+            "note": "LoadDiff reads the `diff` content part"
+          },
+          {
+            "path": "FloeAndroid/shared/Sources/FloeAndroidCore/G04WorkspaceDocumentSession.swift",
+            "line": 812,
+            "note": "diffText baseline vs draft; large inputs use one whole-change hunk"
+          },
+          {
+            "path": "FloeAndroid/feature/ide/src/main/kotlin/com/floe/android/feature/ide/ui/IdeEditorArea.kt",
+            "line": 710,
+            "note": "unified diff overlay"
+          }
+        ],
+        "gaps": [
+          "The diff is produced by the workspace diff routine, not by libgit2; byte-identity with the Git view of the same change is not proven here."
+        ],
+        "dependencies": [],
+        "qualification": "source-only"
+      }
     },
     {
       "id": "IDE-RUN-LOG-PREVIEW",
@@ -429,9 +626,55 @@
       "originalOperation": "Run code through the resolved Linux environment with log capture and web preview",
       "originalStatus": "planned",
       "required": true,
-      "codeReview": "pending per-operation UI/service/runtime-storage/failure reconciliation",
+      "codeReview": "gated-c01 at immutable 4437d379ec34a3d846ea5a634675ec763ec789ae; static source only, not acceptance",
       "qualification": "not newly verified this round",
-      "implementationOwner": "job-dcfe69f82e5b4cc1; actual Linux/interface completion pending"
+      "implementationOwner": "job-dcfe69f82e5b4cc1; actual Linux/interface completion pending",
+      "sourceReview": {
+        "androidCommit": "4437d379ec34a3d846ea5a634675ec763ec789ae",
+        "iosDonorCommit": "a59b4d4005f616c611df67fab7620e9853c525b9",
+        "state": "gated-c01",
+        "chain": {
+          "ui": "IDE Run + preview actions; terminal shows run output",
+          "host": "G04IdeHostAdapter.Run (saves draft first) -> G04TerminalHostController.runDraft; OpenPreview -> BrowserHostController",
+          "serviceRuntime": "G04TerminalDomain.runDraft uses G04LanguageRunPolicy + the Linux backend; requires isCapabilityQualified; opens a real terminal session",
+          "storage": "workspace file + terminal output",
+          "resultFailure": "unsavedDraft/engineUnqualified/engineSlotBusy/backendUnavailable typed; no fallback"
+        },
+        "evidence": [
+          {
+            "path": "FloeAndroid/app/src/main/kotlin/com/floe/android/host/G04IdeHostAdapter.kt",
+            "line": 306,
+            "note": "Run saves the draft then dispatches runDraft"
+          },
+          {
+            "path": "FloeAndroid/shared/Sources/FloeAndroidCore/G04TerminalDomain.swift",
+            "line": 330,
+            "note": "runDraft through the original exec.session/shell path"
+          },
+          {
+            "path": "FloeAndroid/shared/Sources/FloeAndroidCore/G04TerminalDomain.swift",
+            "line": 373,
+            "note": "hard gate: RuntimeFacadeLinuxBindings.isCapabilityQualified"
+          },
+          {
+            "path": "FloeAndroid/app/src/main/kotlin/com/floe/android/host/G04WorkspaceEditorController.kt",
+            "line": 127,
+            "note": "web preview through browser requestWorkspacePreview"
+          },
+          {
+            "path": "FloeAndroid/app/src/main/kotlin/com/floe/android/host/BrowserHostController.kt",
+            "line": 301,
+            "note": "real previewFile host call"
+          }
+        ],
+        "gaps": [
+          "Live execution requires the pending C01 qualified Linux runtime/session; the IDE run/log/preview wiring itself is present."
+        ],
+        "dependencies": [
+          "C01"
+        ],
+        "qualification": "source-only; no run executed"
+      }
     },
     {
       "id": "IDE-TERMINAL-EMBED",
@@ -440,9 +683,55 @@
       "originalOperation": "Terminal panel inside the IDE shares the workspace session",
       "originalStatus": "planned",
       "required": true,
-      "codeReview": "pending per-operation UI/service/runtime-storage/failure reconciliation",
+      "codeReview": "gated-c01 at immutable 4437d379ec34a3d846ea5a634675ec763ec789ae; static source only, not acceptance",
       "qualification": "not newly verified this round",
-      "implementationOwner": "job-dcfe69f82e5b4cc1; actual Linux/interface completion pending"
+      "implementationOwner": "job-dcfe69f82e5b4cc1; actual Linux/interface completion pending",
+      "sourceReview": {
+        "androidCommit": "4437d379ec34a3d846ea5a634675ec763ec789ae",
+        "iosDonorCommit": "a59b4d4005f616c611df67fab7620e9853c525b9",
+        "state": "gated-c01",
+        "chain": {
+          "ui": "IDE bottom accessory terminal + terminal tabs; editor IME/CJK handling in Sora",
+          "host": "WorkspaceTerminalPane + Application-owned G04TerminalHostController/attachOrOpen",
+          "serviceRuntime": "real terminal engine + PTY session in the Linux backend; ordered writes + true resize",
+          "storage": "task workspace/session",
+          "resultFailure": "typed refused/timeout/stopped; session survives view dismissal"
+        },
+        "evidence": [
+          {
+            "path": "FloeAndroid/app/src/main/kotlin/com/floe/android/WorkspaceFilesPane.kt",
+            "line": 397,
+            "note": "one attached terminal accessory for the IDE surface"
+          },
+          {
+            "path": "FloeAndroid/app/src/main/kotlin/com/floe/android/WorkspaceFilesPane.kt",
+            "line": 466,
+            "note": "same owned terminal as the inspector; view dismissal never closes it"
+          },
+          {
+            "path": "FloeAndroid/feature/terminal/src/main/kotlin/com/floe/android/feature/terminal/TerminalInputEncoder.kt",
+            "line": 14,
+            "note": "Ctrl-C ETX, IME/control-byte input"
+          },
+          {
+            "path": "FloeAndroid/feature/terminal/src/main/kotlin/com/floe/android/feature/terminal/G04TerminalEngine.kt",
+            "line": 136,
+            "note": "real resize to backend bounds"
+          },
+          {
+            "path": "FloeAndroid/app/src/main/kotlin/com/floe/android/host/G04TerminalHostController.kt",
+            "line": 1267,
+            "note": "attachOrOpen with workspaceID"
+          }
+        ],
+        "gaps": [
+          "A live PTY/session needs the pending C01 qualified Linux runtime; no separate IDE terminal engine exists."
+        ],
+        "dependencies": [
+          "C01"
+        ],
+        "qualification": "source-only; no terminal session opened"
+      }
     },
     {
       "id": "IDE-LANG-SUPPORT",
@@ -451,8 +740,45 @@
       "originalOperation": "Language-aware handling for representative source types",
       "originalStatus": "planned",
       "required": true,
-      "codeReview": "pending per-operation UI/service/runtime-storage/failure reconciliation",
-      "qualification": "not newly verified this round"
+      "codeReview": "present-source-connected at immutable 4437d379ec34a3d846ea5a634675ec763ec789ae; static source only, not acceptance",
+      "qualification": "not newly verified this round",
+      "sourceReview": {
+        "androidCommit": "4437d379ec34a3d846ea5a634675ec763ec789ae",
+        "iosDonorCommit": "a59b4d4005f616c611df67fab7620e9853c525b9",
+        "state": "present-source-connected",
+        "chain": {
+          "ui": "Sora editor keyword highlighting + completion surface",
+          "host": "G04IdeLanguageBinding (diagnostics/completion) + G04TerminalHostController LSP bridge",
+          "serviceRuntime": "FloeKeywordLanguage per document; G04LanguageServer; unknown -> PLAIN",
+          "storage": "workspace documents",
+          "resultFailure": "languageServerUnavailable refused; plain-text fallback"
+        },
+        "evidence": [
+          {
+            "path": "FloeAndroid/feature/ide/src/main/kotlin/com/floe/android/feature/ide/sora/FloeIdeLanguage.kt",
+            "line": 349,
+            "note": "PLAIN definition"
+          },
+          {
+            "path": "FloeAndroid/feature/ide/src/main/kotlin/com/floe/android/feature/ide/sora/FloeIdeLanguage.kt",
+            "line": 454,
+            "note": "unknown language/extension -> PLAIN"
+          },
+          {
+            "path": "FloeAndroid/app/src/main/kotlin/com/floe/android/host/G04IdeLanguageBinding.kt",
+            "line": 15,
+            "note": "real completion/diagnostics binding"
+          },
+          {
+            "path": "FloeAndroid/shared/Sources/FloeAndroidCore/G04LanguageServer.swift",
+            "line": 326,
+            "note": "LSP document sync over the workspace read/write channel"
+          }
+        ],
+        "gaps": [],
+        "dependencies": [],
+        "qualification": "source-only; language features not device-tested"
+      }
     },
     {
       "id": "LNX-GUEST-LIFECYCLE",
@@ -610,8 +936,55 @@
       "originalOperation": "Notes is a primary workspace whose storage is independent from chat; deleting a chat task never removes notes",
       "originalStatus": "planned",
       "required": true,
-      "codeReview": "pending per-operation UI/service/runtime-storage/failure reconciliation",
-      "qualification": "not newly verified this round"
+      "codeReview": "present-source-connected at immutable 4437d379ec34a3d846ea5a634675ec763ec789ae; static source only, not acceptance",
+      "qualification": "not newly verified this round",
+      "sourceReview": {
+        "androidCommit": "4437d379ec34a3d846ea5a634675ec763ec789ae",
+        "iosDonorCommit": "a59b4d4005f616c611df67fab7620e9853c525b9",
+        "state": "present-source-connected",
+        "chain": {
+          "ui": "NotesDestination -> FloeNotesWorkspace; sidebar Notes row (above Creative)",
+          "host": "NotesHostService over floe.notes/4; NotesPlatformHost with assistant/indexing ports",
+          "serviceRuntime": "NotesDomainService -> NotesEngine (one store per accepted generation); no chat DB writes",
+          "storage": "<runtimeRoot>/artifactStore/Notes (independent of conversation DB); resources/exports under the same Notes root",
+          "resultFailure": "typed notes errors; a deleted chat cannot address the Notes store"
+        },
+        "evidence": [
+          {
+            "path": "FloeAndroid/shared/Sources/FloeAndroidCore/NotesDomainService.swift",
+            "line": 5,
+            "note": "dedicated Notes action channel; root derived by runtime owner, never wire-supplied"
+          },
+          {
+            "path": "FloeAndroid/shared/Sources/FloeAndroidCore/NotesDomainService.swift",
+            "line": 282,
+            "note": "bind root = artifactStoreURL/Notes"
+          },
+          {
+            "path": "FloeAndroid/shared/Sources/FloeAndroidCore/NotesEngine.swift",
+            "line": 5,
+            "note": "'store root ... never from a request'; 'deleting a chat cannot address this DB'"
+          },
+          {
+            "path": "FloeAndroid/shared/Sources/FloeAndroidCore/RuntimeFacadeBootstrap.swift",
+            "line": 1281,
+            "note": "notesBinding returns the accepted generation root only"
+          },
+          {
+            "path": "FloeAndroid/shared/Sources/FloeAndroidCore/RuntimeFacadeConversations.swift",
+            "line": 4080,
+            "note": "chat deletion removes conversation rows + exactly owned RunOutputs; 'Notes/Canvas state is outside every touched path'"
+          },
+          {
+            "path": "FloeAndroid/app/src/main/kotlin/com/floe/android/FloeSidebar.kt",
+            "line": 129,
+            "note": "Notes is a primary sidebar workspace above Creative"
+          }
+        ],
+        "gaps": [],
+        "dependencies": [],
+        "qualification": "source-only; delete/reopen behavior not exercised"
+      }
     },
     {
       "id": "NOT-EDIT-UNDO",
@@ -620,8 +993,50 @@
       "originalOperation": "Element editing with per-note undo and revision rebasing",
       "originalStatus": "planned",
       "required": true,
-      "codeReview": "pending per-operation UI/service/runtime-storage/failure reconciliation",
-      "qualification": "not newly verified this round"
+      "codeReview": "present-source-connected at immutable 4437d379ec34a3d846ea5a634675ec763ec789ae; static source only, not acceptance",
+      "qualification": "not newly verified this round",
+      "sourceReview": {
+        "androidCommit": "4437d379ec34a3d846ea5a634675ec763ec789ae",
+        "iosDonorCommit": "a59b4d4005f616c611df67fab7620e9853c525b9",
+        "state": "present-source-connected",
+        "chain": {
+          "ui": "NotesDocumentPane undo/redo controls; per-note edit controls",
+          "host": "NotesDocumentSession.requestEdits/flush -> NotesHostService",
+          "serviceRuntime": "document.apply/applyAtomically/document.undo with expectedRevision; NoteEditRebase",
+          "storage": "NotesStore document revisions",
+          "resultFailure": "conflict/staleGeneration/recovery retained; UI exposes retry/recovery"
+        },
+        "evidence": [
+          {
+            "path": "FloeAndroid/feature/notes/src/main/kotlin/com/floe/android/feature/notes/ui/state/NotesDocumentSession.kt",
+            "line": 626,
+            "note": "undo(redo) -> service.undo(expectedRevision)"
+          },
+          {
+            "path": "FloeAndroid/feature/notes/src/main/kotlin/com/floe/android/feature/notes/ui/ui/NotesDocumentPane.kt",
+            "line": 120,
+            "note": "undo/redo UI wiring"
+          },
+          {
+            "path": "FloeAndroid/app/src/main/kotlin/com/floe/android/host/notes/NotesHostService.kt",
+            "line": 369,
+            "note": "document.undo over floe.notes/4"
+          },
+          {
+            "path": "FloeAndroid/shared/Sources/FloeAndroidCore/NotesEngine.swift",
+            "line": 627,
+            "note": "applyEditBatch: expectedRevision, title, rebase path"
+          },
+          {
+            "path": "FloeAndroid/shared/Sources/FloeAndroidCore/NotesEngine.swift",
+            "line": 681,
+            "note": "undo requires expectedRevision"
+          }
+        ],
+        "gaps": [],
+        "dependencies": [],
+        "qualification": "source-only; conflict/rebase behavior not device-tested"
+      }
     },
     {
       "id": "NOT-INK-PENCIL",
@@ -630,8 +1045,45 @@
       "originalOperation": "Pen/ink handwriting layer",
       "originalStatus": "planned",
       "required": true,
-      "codeReview": "pending per-operation UI/service/runtime-storage/failure reconciliation",
-      "qualification": "not newly verified this round"
+      "codeReview": "present-source-connected at immutable 4437d379ec34a3d846ea5a634675ec763ec789ae; static source only, not acceptance",
+      "qualification": "not newly verified this round",
+      "sourceReview": {
+        "androidCommit": "4437d379ec34a3d846ea5a634675ec763ec789ae",
+        "iosDonorCommit": "a59b4d4005f616c611df67fab7620e9853c525b9",
+        "state": "present-source-connected",
+        "chain": {
+          "ui": "Notes notebook editor ink canvas; pen/eraser tools and finger/pen-only preference",
+          "host": "NotesMediaEffects ink authoring/export/save",
+          "serviceRuntime": "androidx.ink InkCanvasView + InkDocumentCodec/InkNativeBridge; pressure only when the platform supplies it",
+          "storage": "FLOEINK1 drawing resource in the Notes store",
+          "resultFailure": "typed ink decode/save failures; recovery retained"
+        },
+        "evidence": [
+          {
+            "path": "FloeAndroid/core/notesmedia/src/main/java/com/floe/android/core/notesmedia/ink/InkCanvasView.kt",
+            "line": 39,
+            "note": "view does not synthesize pressure/tilt; eraser is a gesture"
+          },
+          {
+            "path": "FloeAndroid/core/notesmedia/src/main/java/com/floe/android/core/notesmedia/ink/InkPointerPolicy.kt",
+            "line": 21,
+            "note": "tool type/pressure are platform values; pen-only config"
+          },
+          {
+            "path": "FloeAndroid/app/src/main/kotlin/com/floe/android/notesplatform/NotesMediaEffects.kt",
+            "line": 499,
+            "note": "ink authoring/export integration"
+          },
+          {
+            "path": "FloeAndroid/feature/notes/src/main/kotlin/com/floe/android/feature/notes/ui/ui/NotesEditorSheets.kt",
+            "line": 828,
+            "note": "finger drawing / pen-only UI"
+          }
+        ],
+        "gaps": [],
+        "dependencies": [],
+        "qualification": "source-only; physical-stylus pressure acceptance remains user-owned/device"
+      }
     },
     {
       "id": "NOT-IMPORT",
@@ -640,8 +1092,40 @@
       "originalOperation": "Import documents (incl. Office) into notes",
       "originalStatus": "planned",
       "required": true,
-      "codeReview": "pending per-operation UI/service/runtime-storage/failure reconciliation",
-      "qualification": "not newly verified this round"
+      "codeReview": "present-source-connected at immutable 4437d379ec34a3d846ea5a634675ec763ec789ae; static source only, not acceptance",
+      "qualification": "not newly verified this round",
+      "sourceReview": {
+        "androidCommit": "4437d379ec34a3d846ea5a634675ec763ec789ae",
+        "iosDonorCommit": "a59b4d4005f616c611df67fab7620e9853c525b9",
+        "state": "present-source-connected",
+        "chain": {
+          "ui": "Notes import menu/workspace picker",
+          "host": "NotesLibraryController.importAny/importKind/importWorkspaceFile",
+          "serviceRuntime": "NotesService.beginArchiveImport/beginTextWrite/beginResourceImport; strict UTF-8; Office resource create",
+          "storage": "Notes resource/store, staged then committed",
+          "resultFailure": "typed notes failure; aborted stages cleaned; originals untouched"
+        },
+        "evidence": [
+          {
+            "path": "FloeAndroid/feature/notes/src/main/kotlin/com/floe/android/feature/notes/ui/state/NotesLibraryController.kt",
+            "line": 540,
+            "note": "PDF/IMAGE/TEXT/OFFICE/ENGINEERING/ARCHIVE/FILE import"
+          },
+          {
+            "path": "FloeAndroid/feature/notes/src/main/kotlin/com/floe/android/feature/notes/ui/state/NotesLibraryController.kt",
+            "line": 916,
+            "note": "decodeUtf8Strict for text import"
+          },
+          {
+            "path": "FloeAndroid/shared/Sources/FloeAndroidCore/NotesEngineText.swift",
+            "line": 1,
+            "note": "staged exact UTF-8 bytes, exact byte-count commit, one undoable transaction"
+          }
+        ],
+        "gaps": [],
+        "dependencies": [],
+        "qualification": "source-only; unicode round trip not device-tested"
+      }
     },
     {
       "id": "NOT-SEARCH",
@@ -650,8 +1134,40 @@
       "originalOperation": "Note text search",
       "originalStatus": "planned",
       "required": true,
-      "codeReview": "pending per-operation UI/service/runtime-storage/failure reconciliation",
-      "qualification": "not newly verified this round"
+      "codeReview": "present-source-connected at immutable 4437d379ec34a3d846ea5a634675ec763ec789ae; static source only, not acceptance",
+      "qualification": "not newly verified this round",
+      "sourceReview": {
+        "androidCommit": "4437d379ec34a3d846ea5a634675ec763ec789ae",
+        "iosDonorCommit": "a59b4d4005f616c611df67fab7620e9853c525b9",
+        "state": "present-source-connected",
+        "chain": {
+          "ui": "notes library search field",
+          "host": "NotesLibraryController.search -> NotesHostService",
+          "serviceRuntime": "search.query -> NotesStore SQL LIKE over title/body",
+          "storage": "Notes database search projection",
+          "resultFailure": "typed notes failure; empty results are honest"
+        },
+        "evidence": [
+          {
+            "path": "FloeAndroid/feature/notes/src/main/kotlin/com/floe/android/feature/notes/ui/state/NotesLibraryController.kt",
+            "line": 209,
+            "note": "service.search(value, limit=100)"
+          },
+          {
+            "path": "FloeAndroid/app/src/main/kotlin/com/floe/android/host/notes/NotesHostService.kt",
+            "line": 471,
+            "note": "search over floe.notes/4"
+          },
+          {
+            "path": "FloeAndroid/shared/Sources/FloeNotes/NotesStore.swift",
+            "line": 833,
+            "note": "LIKE substring over title/body (CJK substring works; Latin case-insensitive by default)"
+          }
+        ],
+        "gaps": [],
+        "dependencies": [],
+        "qualification": "source-only; CJK hit behavior not device-tested"
+      }
     },
     {
       "id": "NOT-AI-ASSISTANT",
@@ -660,8 +1176,50 @@
       "originalOperation": "Notes assistant proposals flow through the shared ownership/approval path",
       "originalStatus": "planned",
       "required": true,
-      "codeReview": "pending per-operation UI/service/runtime-storage/failure reconciliation",
-      "qualification": "not newly verified this round"
+      "codeReview": "present-source-connected at immutable 4437d379ec34a3d846ea5a634675ec763ec789ae; static source only, not acceptance",
+      "qualification": "not newly verified this round",
+      "sourceReview": {
+        "androidCommit": "4437d379ec34a3d846ea5a634675ec763ec789ae",
+        "iosDonorCommit": "a59b4d4005f616c611df67fab7620e9853c525b9",
+        "state": "present-source-connected",
+        "chain": {
+          "ui": "NotesAssistantPanel with durable proposals accept/reject",
+          "host": "NotesAssistantController + app NotesAssistantHost",
+          "serviceRuntime": "NotesAssistantDomain with closed 3 tools; NotesAssistantApprovalPolicy; proposals/grants in the Notes DB",
+          "storage": "document-owned assistant thread/proposal store",
+          "resultFailure": "typed refusals; stale/revoked grants deny; no model self-approval"
+        },
+        "evidence": [
+          {
+            "path": "FloeAndroid/app/src/main/kotlin/com/floe/android/FloeApplication.kt",
+            "line": 147,
+            "note": "real assistant + OCR ports constructed; hostPorts requires assistant"
+          },
+          {
+            "path": "FloeAndroid/app/src/main/kotlin/com/floe/android/host/notesruntime/NotesAssistantHost.kt",
+            "line": 64,
+            "note": "send/cancel/transcript/proposals/accept/reject/restart"
+          },
+          {
+            "path": "FloeAndroid/feature/notes/src/main/kotlin/com/floe/android/feature/notes/ui/state/NotesAssistantController.kt",
+            "line": 47,
+            "note": "document-owned conversation; never reads chat history"
+          },
+          {
+            "path": "FloeAndroid/shared/Sources/FloeAndroidCore/NotesRuntime/NotesAssistantApprovalPolicy.swift",
+            "line": 19,
+            "note": "closed tools, live grant checks, no model-review branch"
+          },
+          {
+            "path": "FloeAndroid/feature/notes/src/main/kotlin/com/floe/android/feature/notes/ui/ui/NotesAssistantPanel.kt",
+            "line": 201,
+            "note": "durable proposals rendered with accept/reject"
+          }
+        ],
+        "gaps": [],
+        "dependencies": [],
+        "qualification": "source-only; no provider call; assistant requires configured provider/model"
+      }
     },
     {
       "id": "NOT-COVER-READ",
@@ -670,8 +1228,65 @@
       "originalOperation": "Cover rendering (incl. engineering cover) and paginated reading view",
       "originalStatus": "planned",
       "required": true,
-      "codeReview": "pending per-operation UI/service/runtime-storage/failure reconciliation",
-      "qualification": "not newly verified this round"
+      "codeReview": "partial at immutable 4437d379ec34a3d846ea5a634675ec763ec789ae; static source only, not acceptance",
+      "qualification": "not newly verified this round",
+      "sourceReview": {
+        "androidCommit": "4437d379ec34a3d846ea5a634675ec763ec789ae",
+        "iosDonorCommit": "a59b4d4005f616c611df67fab7620e9853c525b9",
+        "state": "partial",
+        "chain": {
+          "ui": "library cover card (automatic text card or custom image); notebook page navigation; no dedicated reading-mode screen",
+          "host": "NotesDocumentSession.applyCover/cover; NotesWorkspaceController",
+          "serviceRuntime": "document.coverRead/coverApply with expectedCoverRevision; auto cover from summary revision",
+          "storage": "cover resource + coverRevision in the Notes store",
+          "resultFailure": "typed cover failure; stale cover revision refuses"
+        },
+        "evidence": [
+          {
+            "path": "FloeAndroid/feature/notes/src/main/kotlin/com/floe/android/feature/notes/ui/ui/NotesChrome.kt",
+            "line": 409,
+            "note": "automatic cover is a text/kind/preview card"
+          },
+          {
+            "path": "FloeAndroid/feature/notes/src/main/kotlin/com/floe/android/feature/notes/ui/state/NotesDocumentSession.kt",
+            "line": 721,
+            "note": "applyCover CAS on expectedCoverRevision"
+          },
+          {
+            "path": "FloeAndroid/shared/Sources/FloeAndroidCore/NotesEngine.swift",
+            "line": 277,
+            "note": "coverRead/coverApply actions"
+          },
+          {
+            "path": "FloeAndroid/feature/notes/src/main/kotlin/com/floe/android/feature/notes/ui/ui/NotesNotebookEditor.kt",
+            "line": 873,
+            "note": "page prev/next + page index (paginated editor display)"
+          },
+          {
+            "path": "FloeAndroid/feature/notes/src/main/res/values/strings.xml",
+            "line": 289,
+            "note": "engineering attachment is read-only/external-open"
+          },
+          {
+            "path": "FloeAgent/FloeApp/Notes/NotesEngineeringCoverRenderer.swift",
+            "line": 1,
+            "note": "iOS donor renders a bounded CAD cover; Android has no equivalent"
+          },
+          {
+            "path": "FloeAgent/FloeApp/Notes/NotesDocumentEditor.swift",
+            "line": 82,
+            "note": "iOS donor reader mode; Android has no dedicated reader"
+          }
+        ],
+        "gaps": [
+          "No engineering/CAD cover renderer (depends on the C04 read-only CAD source, outside this audit).",
+          "No dedicated paginated reading mode beyond page-by-page editor navigation."
+        ],
+        "dependencies": [
+          "C04"
+        ],
+        "qualification": "source-only"
+      }
     },
     {
       "id": "NOT-EXPORT",
@@ -680,8 +1295,53 @@
       "originalOperation": "Export selection to PDF/DOCX/Markdown and reopen results",
       "originalStatus": "planned",
       "required": true,
-      "codeReview": "pending per-operation UI/service/runtime-storage/failure reconciliation",
-      "qualification": "not newly verified this round"
+      "codeReview": "partial at immutable 4437d379ec34a3d846ea5a634675ec763ec789ae; static source only, not acceptance",
+      "qualification": "not newly verified this round",
+      "sourceReview": {
+        "androidCommit": "4437d379ec34a3d846ea5a634675ec763ec789ae",
+        "iosDonorCommit": "a59b4d4005f616c611df67fab7620e9853c525b9",
+        "state": "partial",
+        "chain": {
+          "ui": "NotesExportSheet: archive, PDF, page image, print, markdown outline (mind map) or plain text",
+          "host": "NotesWorkspaceController.exportArchive/exportPdf/exportCurrentPageImage/exportOutline/exportPlainText",
+          "serviceRuntime": "NotesExportEngine (rasterized PDF + readback), NotesService archive export, share stream",
+          "storage": "App cache share file / Notes archive",
+          "resultFailure": "typed failed/cancelled; original untouched; temp aborted"
+        },
+        "evidence": [
+          {
+            "path": "FloeAndroid/feature/notes/src/main/kotlin/com/floe/android/feature/notes/ui/ui/NotesEditorSheets.kt",
+            "line": 881,
+            "note": "export options"
+          },
+          {
+            "path": "FloeAndroid/feature/notes/src/main/kotlin/com/floe/android/feature/notes/ui/state/NotesWorkspaceController.kt",
+            "line": 698,
+            "note": "buildPdfStream maps ALL document pages (no page subset)"
+          },
+          {
+            "path": "FloeAndroid/core/notesmedia/src/main/java/com/floe/android/core/notesmedia/export/NotesExportEngine.kt",
+            "line": 111,
+            "note": "rasterized PDF export + geometry readback"
+          },
+          {
+            "path": "FloeAgent/FloeApp/Documents/DocumentExportService.swift",
+            "line": 60,
+            "note": "iOS donor formats pdf/floenote/markdown/original with pageIDs/pages scope"
+          },
+          {
+            "path": "FloeAgent/FloeApp/Notes/NotesExport.swift",
+            "line": 20,
+            "note": "iOS donor exports a page subset (selectedPages)"
+          }
+        ],
+        "gaps": [
+          "PDF export is whole-document only; no page/selection subset (iOS donor supports selectedPages/pages).",
+          "Markdown is the mind-map outline; notebooks export plain text, not Markdown. DOCX exists only for Office notes via Save Copy."
+        ],
+        "dependencies": [],
+        "qualification": "source-only; exported files not opened/re-imported"
+      }
     },
     {
       "id": "NOT-MINDMAP",
@@ -690,8 +1350,45 @@
       "originalOperation": "Mind-map editing linked to notes",
       "originalStatus": "planned",
       "required": true,
-      "codeReview": "pending per-operation UI/service/runtime-storage/failure reconciliation",
-      "qualification": "not newly verified this round"
+      "codeReview": "present-source-connected at immutable 4437d379ec34a3d846ea5a634675ec763ec789ae; static source only, not acceptance",
+      "qualification": "not newly verified this round",
+      "sourceReview": {
+        "androidCommit": "4437d379ec34a3d846ea5a634675ec763ec789ae",
+        "iosDonorCommit": "a59b4d4005f616c611df67fab7620e9853c525b9",
+        "state": "present-source-connected",
+        "chain": {
+          "ui": "NotesMindMapPane editor (add/edit/delete/connect/move/attachments) + linked maps sheet",
+          "host": "NotesDocumentSession mind-map edit helpers; NotesWorkspaceController linked map open/create",
+          "serviceRuntime": "document.createLinkedMindMap + ordinary NoteEdits; NotesStore",
+          "storage": "Notes document nodes/links",
+          "resultFailure": "typed edit conflicts; proposals/undo supported"
+        },
+        "evidence": [
+          {
+            "path": "FloeAndroid/feature/notes/src/main/kotlin/com/floe/android/feature/notes/ui/ui/NotesMindMapPane.kt",
+            "line": 87,
+            "note": "real node/connection/attachment editor"
+          },
+          {
+            "path": "FloeAndroid/feature/notes/src/main/kotlin/com/floe/android/feature/notes/ui/state/NotesWorkspaceController.kt",
+            "line": 851,
+            "note": "node image/attachment operations"
+          },
+          {
+            "path": "FloeAndroid/shared/Sources/FloeAndroidCore/NotesEngine.swift",
+            "line": 584,
+            "note": "createLinkedMindMap"
+          },
+          {
+            "path": "FloeAndroid/feature/notes/src/main/kotlin/com/floe/android/feature/notes/ui/state/NotesWorkspaceController.kt",
+            "line": 576,
+            "note": "outline export for mind maps"
+          }
+        ],
+        "gaps": [],
+        "dependencies": [],
+        "qualification": "source-only"
+      }
     },
     {
       "id": "PDF-READ-PAGES",
@@ -700,9 +1397,46 @@
       "originalOperation": "Render pages with page navigation; reject incomplete files",
       "originalStatus": "planned",
       "required": true,
-      "codeReview": "pending per-operation UI/service/runtime-storage/failure reconciliation",
+      "codeReview": "present-source-connected at immutable 4437d379ec34a3d846ea5a634675ec763ec789ae; static source only, not acceptance",
       "qualification": "not newly verified this round",
-      "scopeDecision": "Local preview and retained Notes; processing through authorized task Linux exec.shell/tools, no new native PDF editor alias"
+      "scopeDecision": "Local preview and retained Notes; processing through authorized task Linux exec.shell/tools, no new native PDF editor alias",
+      "sourceReview": {
+        "androidCommit": "4437d379ec34a3d846ea5a634675ec763ec789ae",
+        "iosDonorCommit": "a59b4d4005f616c611df67fab7620e9853c525b9",
+        "state": "present-source-connected",
+        "chain": {
+          "ui": "Notes PDF pages / run-output PDF preview",
+          "host": "NotesMediaEffects renderPage; RunOutputPdfPreviewController",
+          "serviceRuntime": "isolated OfficePdfRendererService (PdfRenderer) in :floe_pdf; OfficePdfRenderHost; page index bounded by real pageCount",
+          "storage": "verified snapshot; read-only fd to isolated process",
+          "resultFailure": "INVALID_PDF/PASSWORD/PAGE_OUT_OF_RANGE typed; no phantom page"
+        },
+        "evidence": [
+          {
+            "path": "FloeAndroid/core/officeengine/src/main/java/com/floe/android/core/officeengine/pdf/OfficePdfRendererService.kt",
+            "line": 337,
+            "note": "password/invalid mapping; pageCount from the real renderer"
+          },
+          {
+            "path": "FloeAndroid/core/officeengine/src/main/java/com/floe/android/core/officeengine/pdf/OfficePdfRendererService.kt",
+            "line": 387,
+            "note": "pageIndex must be < real pageCount; otherwise BAD_REQUEST"
+          },
+          {
+            "path": "FloeAndroid/core/notesmedia/src/main/java/com/floe/android/core/notesmedia/pdf/PdfDocumentSession.kt",
+            "line": 420,
+            "note": "open/info/geometry page-count agreement"
+          },
+          {
+            "path": "FloeAndroid/app/src/main/kotlin/com/floe/android/notesplatform/NotesMediaEffects.kt",
+            "line": 1018,
+            "note": "renderPage through the shared gateway"
+          }
+        ],
+        "gaps": [],
+        "dependencies": [],
+        "qualification": "source-only; truncated-file behavior not executed"
+      }
     },
     {
       "id": "PDF-SELECT-ANNOTATE",
@@ -711,9 +1445,56 @@
       "originalOperation": "Selection, annotation and journaled PDF operations",
       "originalStatus": "planned",
       "required": true,
-      "codeReview": "pending per-operation UI/service/runtime-storage/failure reconciliation",
+      "codeReview": "partial at immutable 4437d379ec34a3d846ea5a634675ec763ec789ae; static source only, not acceptance",
       "qualification": "not newly verified this round",
-      "scopeDecision": "Local preview and retained Notes; processing through authorized task Linux exec.shell/tools, no new native PDF editor alias"
+      "scopeDecision": "Local preview and retained Notes; processing through authorized task Linux exec.shell/tools, no new native PDF editor alias",
+      "sourceReview": {
+        "androidCommit": "4437d379ec34a3d846ea5a634675ec763ec789ae",
+        "iosDonorCommit": "a59b4d4005f616c611df67fab7620e9853c525b9",
+        "state": "partial",
+        "chain": {
+          "ui": "notes PDF page: search hit highlight; ink/shape/text overlays over the page; export flattens overlays",
+          "host": "NotesDocumentSession searchPdf/annotations; NotesExportEngine export",
+          "serviceRuntime": "isolated renderer for page pixels/text search; notes edit batches for overlay content",
+          "storage": "PDF resource immutable; overlays stored as note elements/ink; exports are new files",
+          "resultFailure": "search unavailable/needs OCR typed; export failure keeps the original and aborts the temp"
+        },
+        "evidence": [
+          {
+            "path": "FloeAndroid/feature/notes/src/main/kotlin/com/floe/android/feature/notes/ui/state/NotesDocumentSession.kt",
+            "line": 1249,
+            "note": "PDF search highlight rects"
+          },
+          {
+            "path": "FloeAndroid/feature/notes/src/main/kotlin/com/floe/android/feature/notes/ui/api/NotesHostPorts.kt",
+            "line": 177,
+            "note": "NotesPdfSearchOutcome; renderPage/search handle; no arbitrary text-selection API"
+          },
+          {
+            "path": "FloeAndroid/core/notesmedia/src/main/java/com/floe/android/core/notesmedia/pdf/PdfViewport.kt",
+            "line": 104,
+            "note": "ink/annotation overlays stored in paper coordinates"
+          },
+          {
+            "path": "FloeAndroid/core/notesmedia/src/main/java/com/floe/android/core/notesmedia/export/NotesExportEngine.kt",
+            "line": 289,
+            "note": "draws image/shape/text/ink overlays into the exported page"
+          },
+          {
+            "path": "FloeAndroid/feature/notes/src/main/kotlin/com/floe/android/feature/notes/ui/state/NotesDocumentSession.kt",
+            "line": 420,
+            "note": "atomic edit batch journal with retained recovery on failure"
+          }
+        ],
+        "gaps": [
+          "Arbitrary PDF text selection/copy is absent: selection is limited to search-hit highlighting (NotesPdfSearchOutcome rects).",
+          "No native PDF annotation journal: annotations are note overlays (ink/shape/text), journaled only as ordinary note edit batches; PDF-file annotation/split/merge/redaction is intentionally routed to task Linux exec.shell (C01) and is not implemented in-app."
+        ],
+        "dependencies": [
+          "C01"
+        ],
+        "qualification": "source-only; no PDF annotation round trip executed"
+      }
     },
     {
       "id": "PDF-PROTECTED-GATE",
@@ -722,9 +1503,53 @@
       "originalOperation": "Protected PDF operations only through the single gated path",
       "originalStatus": "planned",
       "required": true,
-      "codeReview": "pending per-operation UI/service/runtime-storage/failure reconciliation",
+      "codeReview": "present-source-connected at immutable 4437d379ec34a3d846ea5a634675ec763ec789ae; static source only, not acceptance",
       "qualification": "not newly verified this round",
-      "scopeDecision": "Local preview and retained Notes; processing through authorized task Linux exec.shell/tools, no new native PDF editor alias"
+      "scopeDecision": "Local preview and retained Notes; processing through authorized task Linux exec.shell/tools, no new native PDF editor alias",
+      "sourceReview": {
+        "androidCommit": "4437d379ec34a3d846ea5a634675ec763ec789ae",
+        "iosDonorCommit": "a59b4d4005f616c611df67fab7620e9853c525b9",
+        "state": "present-source-connected",
+        "chain": {
+          "ui": "Notes PDF password prompt; run-output PDF preview",
+          "host": "NotesPdfPasswordPromptBroker/NotesPdfPasswordDialog; PdfDocumentSession open",
+          "serviceRuntime": "ONE isolated :floe_pdf renderer for user PDFs; RAM-only CharArray password over binder; OfficePdfPreviewActivity re-proves bytes before render",
+          "storage": "verified snapshot; original never modified",
+          "resultFailure": "PASSWORD_REJECTED/PASSWORD_UNSUPPORTED typed; no fallback renderer"
+        },
+        "evidence": [
+          {
+            "path": "FloeAndroid/core/notesmedia/src/main/java/com/floe/android/core/notesmedia/pdf/PdfPasswordVault.kt",
+            "line": 26,
+            "note": "RAM-only password; zero-fill close; never a String"
+          },
+          {
+            "path": "FloeAndroid/app/src/main/kotlin/com/floe/android/notesplatform/NotesPdfPasswordPromptBroker.kt",
+            "line": 14,
+            "note": "single App-owned prompt; rejects late answers"
+          },
+          {
+            "path": "FloeAndroid/core/notesmedia/src/main/java/com/floe/android/core/notesmedia/pdf/PdfDocumentSession.kt",
+            "line": 420,
+            "note": "password passed to the isolated renderer; default text backend isolated"
+          },
+          {
+            "path": "FloeAndroid/core/officeengine/src/main/java/com/floe/android/core/officeengine/pdf/OfficePdfPreviewActivity.kt",
+            "line": 203,
+            "note": "re-proves magic/length/SHA off-main before renderer"
+          },
+          {
+            "path": "FloeAndroid/app/src/main/kotlin/com/floe/android/host/output/RunOutputPdfPreviewController.kt",
+            "line": 29,
+            "note": "run-output PDFs use the SAME isolated renderer, no second renderer"
+          }
+        ],
+        "gaps": [
+          "DesignArtifactAccess.kt:289 uses an in-process PdfRenderer for own design-export artifacts only; it is a design/creative path, not a user protected-document gate (outside this audit)."
+        ],
+        "dependencies": [],
+        "qualification": "source-only; password/protected rendering not device-tested"
+      }
     },
     {
       "id": "PDF-OCR",
@@ -733,9 +1558,56 @@
       "originalOperation": "Text recognition over pages/images with bounded resources",
       "originalStatus": "planned",
       "required": true,
-      "codeReview": "pending per-operation UI/service/runtime-storage/failure reconciliation",
+      "codeReview": "partial at immutable 4437d379ec34a3d846ea5a634675ec763ec789ae; static source only, not acceptance",
       "qualification": "not newly verified this round",
-      "scopeDecision": "Local preview and retained Notes; processing through authorized task Linux exec.shell/tools, no new native PDF editor alias"
+      "scopeDecision": "Local preview and retained Notes; processing through authorized task Linux exec.shell/tools, no new native PDF editor alias",
+      "sourceReview": {
+        "androidCommit": "4437d379ec34a3d846ea5a634675ec763ec789ae",
+        "iosDonorCommit": "a59b4d4005f616c611df67fab7620e9853c525b9",
+        "state": "partial",
+        "chain": {
+          "ui": "Notes page OCR/index action",
+          "host": "NotesOcrHost/NotesService.pageOCRState/cachePageOCR",
+          "serviceRuntime": "NotesOCRDomain cloud auxiliary-vision request with bounded staging; no on-device ML Kit",
+          "storage": "Notes OCR staging/cache keyed by page revision",
+          "resultFailure": "notConfigured/unsupported/needsProvider typed; bounded caps"
+        },
+        "evidence": [
+          {
+            "path": "FloeAndroid/shared/Sources/FloeAndroidCore/NotesOCR/NotesOCRComposition.swift",
+            "line": 3,
+            "note": "cloud vision OCR through the installed provider composition"
+          },
+          {
+            "path": "FloeAndroid/shared/Sources/FloeAndroidCore/NotesOCR/NotesOCRDomain.swift",
+            "line": 126,
+            "note": "availability/notConfigured/unsupported and bounded NotesOCRPolicy"
+          },
+          {
+            "path": "FloeAndroid/feature/notes/src/main/kotlin/com/floe/android/feature/notes/ui/state/NotesDocumentSession.kt",
+            "line": 1288,
+            "note": "recognizeCurrentPage after a proven saved page"
+          },
+          {
+            "path": "FloeAndroid/app/src/main/kotlin/com/floe/android/notesplatform/NotesWorkspaceImportHost.kt",
+            "line": 44,
+            "note": "workspace import is workspace -> Notes only; no Notes -> workspace staging producer for exec.shell"
+          },
+          {
+            "path": "FloeAndroid/shared/Sources/FloeAndroidCore/G04TerminalDomain.swift",
+            "line": 373,
+            "note": "Linux execution remains gated by isCapabilityQualified (C01)"
+          }
+        ],
+        "gaps": [
+          "Required PDF staging -> task Linux exec.shell -> generic OCR tools -> validate -> App preview route is not present: no Notes-to-workspace staging producer, and the Linux runtime is the pending C01 port.",
+          "Cloud page-image OCR exists (requires configured vision provider) but is not PDF OCR and does not satisfy the exec.shell workflow."
+        ],
+        "dependencies": [
+          "C01"
+        ],
+        "qualification": "source-only; no OCR call made"
+      }
     },
     {
       "id": "PDF-EXPORT-REOPEN",
@@ -744,9 +1616,48 @@
       "originalOperation": "Export/convert to PDF and reopen the result",
       "originalStatus": "planned",
       "required": true,
-      "codeReview": "pending per-operation UI/service/runtime-storage/failure reconciliation",
+      "codeReview": "present-source-connected at immutable 4437d379ec34a3d846ea5a634675ec763ec789ae; static source only, not acceptance",
       "qualification": "not newly verified this round",
-      "scopeDecision": "Local preview and retained Notes; processing through authorized task Linux exec.shell/tools, no new native PDF editor alias"
+      "scopeDecision": "Local preview and retained Notes; processing through authorized task Linux exec.shell/tools, no new native PDF editor alias",
+      "sourceReview": {
+        "androidCommit": "4437d379ec34a3d846ea5a634675ec763ec789ae",
+        "iosDonorCommit": "a59b4d4005f616c611df67fab7620e9853c525b9",
+        "state": "present-source-connected",
+        "chain": {
+          "ui": "Notes export PDF / image; Office viewer PDF export; run-output PDF preview",
+          "host": "NotesWorkspaceController.exportPdf/shareStream; OfficePreviewActivity PDF export",
+          "serviceRuntime": "NotesExportEngine rasterized copy + PdfPageBoxReader readback; Office PDF receipt proof",
+          "storage": "new PDF file; original preserved",
+          "resultFailure": "READBACK_MISMATCH/DESTINATION_EXISTS/typed failures; temp aborted"
+        },
+        "evidence": [
+          {
+            "path": "FloeAndroid/core/notesmedia/src/main/java/com/floe/android/core/notesmedia/export/NotesExportEngine.kt",
+            "line": 111,
+            "note": "exportPdf writes a new PdfDocument and reads back geometry"
+          },
+          {
+            "path": "FloeAndroid/core/notesmedia/src/main/java/com/floe/android/core/notesmedia/export/NotesExportEngine.kt",
+            "line": 161,
+            "note": "post-write PdfPageBoxReader readback; refusal -> READBACK_MISMATCH"
+          },
+          {
+            "path": "FloeAndroid/core/notesmedia/src/main/java/com/floe/android/core/notesmedia/export/NotesExportFidelity.kt",
+            "line": 10,
+            "note": "explicit RASTERIZED_COPY; text/vector not preserved; original preserved"
+          },
+          {
+            "path": "FloeAndroid/core/officeengine/src/main/java/com/floe/android/core/officeengine/pdf/OfficePdfReceiptPolicy.kt",
+            "line": 155,
+            "note": "whole-file proof for Office PDF outputs"
+          }
+        ],
+        "gaps": [
+          "Notes PDF export is a rasterized copy (honest fidelity), not a text/vector-preserving conversion; the original file is preserved."
+        ],
+        "dependencies": [],
+        "qualification": "source-only; exported PDFs not reopened on device"
+      }
     },
     {
       "id": "OFC-PREVIEW-DOCX",
@@ -755,8 +1666,55 @@
       "originalOperation": "Offline in-app DOCX preview without Linux/external app/network",
       "originalStatus": "planned",
       "required": true,
-      "codeReview": "pending per-operation UI/service/runtime-storage/failure reconciliation",
-      "qualification": "not newly verified this round"
+      "codeReview": "present-source-connected at immutable 4437d379ec34a3d846ea5a634675ec763ec789ae; static source only, not acceptance",
+      "qualification": "not newly verified this round",
+      "sourceReview": {
+        "androidCommit": "4437d379ec34a3d846ea5a634675ec763ec789ae",
+        "iosDonorCommit": "a59b4d4005f616c611df67fab7620e9853c525b9",
+        "state": "present-source-connected",
+        "chain": {
+          "ui": "FloeSidebar office_open_document button -> FloeShell requestProviderPick; workspace open via WorkspaceFilesPane.openOffice; Notes office note open",
+          "host": "OfficePreviewEffect (picker/viewer launchers) -> OfficePreviewController.requestProviderPick/openWorkspace (stage snapshot, owned operation)",
+          "serviceRuntime": "OfficePreviewActivity + OfficeEngineService in :floe_office process; bundled pinned Collabora engine 26.04.4.2/code937; OfficeRequestPolicy validates canonical staged path/digest/extension",
+          "storage": "App-owned staged snapshot under files/OfficeInputs/*; immutable for READ_ONLY, separately owned mutable working copy for EDIT",
+          "resultFailure": "editor notices + staging/error sheet; engine process isolation prevents a document crash from killing the App"
+        },
+        "evidence": [
+          {
+            "path": "FloeAndroid/app/src/main/kotlin/com/floe/android/OfficePreviewEffect.kt",
+            "line": 35,
+            "note": "mounted once; picker and per-incarnation viewer launchers"
+          },
+          {
+            "path": "FloeAndroid/app/src/main/kotlin/com/floe/android/host/OfficePreviewController.kt",
+            "line": 919,
+            "note": "supports()/MIME_TYPES limited to docx/xlsx/pptx"
+          },
+          {
+            "path": "FloeAndroid/core/officeengine/src/main/AndroidManifest.xml",
+            "line": 31,
+            "note": "OfficePreviewActivity/OfficeEngineService run in :floe_office"
+          },
+          {
+            "path": "FloeAndroid/core/officeengine/src/main/java/com/floe/android/core/officeengine/OfficePreviewRequest.kt",
+            "line": 20,
+            "note": "exactly the three OOXML formats; READ_ONLY default"
+          },
+          {
+            "path": "FloeAndroid/core/officeengine/src/main/java/org/libreoffice/androidlib/COWebViewClient.kt",
+            "line": 18,
+            "note": "http(s)/content/other requests answered 403; offline-only viewer"
+          },
+          {
+            "path": "FloeAndroid/core/officeengine/build.gradle.kts",
+            "line": 1,
+            "note": "payload is a pinned external build input (prepare_office_payload), not committed source"
+          }
+        ],
+        "gaps": [],
+        "dependencies": [],
+        "qualification": "source-only; engine payload bytes and device rendering not verified here"
+      }
     },
     {
       "id": "OFC-PREVIEW-XLSX",
@@ -765,8 +1723,40 @@
       "originalOperation": "Offline in-app XLSX preview including formula display",
       "originalStatus": "planned",
       "required": true,
-      "codeReview": "pending per-operation UI/service/runtime-storage/failure reconciliation",
-      "qualification": "not newly verified this round"
+      "codeReview": "present-source-connected at immutable 4437d379ec34a3d846ea5a634675ec763ec789ae; static source only, not acceptance",
+      "qualification": "not newly verified this round",
+      "sourceReview": {
+        "androidCommit": "4437d379ec34a3d846ea5a634675ec763ec789ae",
+        "iosDonorCommit": "a59b4d4005f616c611df67fab7620e9853c525b9",
+        "state": "present-source-connected",
+        "chain": {
+          "ui": "same picker/workspace/Notes office entry",
+          "host": "OfficePreviewController (EDIT working copy; READ_ONLY snapshot)",
+          "serviceRuntime": "pinned Collabora engine renders workbook/formula display locally",
+          "storage": "App-owned staged snapshot / working copy",
+          "resultFailure": "same notice/error sheet; engine refusal surfaced, no crash of main process"
+        },
+        "evidence": [
+          {
+            "path": "FloeAndroid/core/officeengine/src/main/java/com/floe/android/core/officeengine/OfficePreviewRequest.kt",
+            "line": 21,
+            "note": "XLSX token and MIME"
+          },
+          {
+            "path": "FloeAndroid/app/src/main/kotlin/com/floe/android/host/OfficePreviewController.kt",
+            "line": 919,
+            "note": "xlsx accepted; any other spreadsheet extension is refused"
+          },
+          {
+            "path": "FloeAndroid/core/officeengine/src/main/java/org/libreoffice/androidlib/COWebViewClient.kt",
+            "line": 18,
+            "note": "offline lock (no network on preview)"
+          }
+        ],
+        "gaps": [],
+        "dependencies": [],
+        "qualification": "source-only; formula display is engine-payload behavior, not verified here"
+      }
     },
     {
       "id": "OFC-PREVIEW-PPTX",
@@ -775,8 +1765,40 @@
       "originalOperation": "Offline in-app PPTX slide preview",
       "originalStatus": "planned",
       "required": true,
-      "codeReview": "pending per-operation UI/service/runtime-storage/failure reconciliation",
-      "qualification": "not newly verified this round"
+      "codeReview": "present-source-connected at immutable 4437d379ec34a3d846ea5a634675ec763ec789ae; static source only, not acceptance",
+      "qualification": "not newly verified this round",
+      "sourceReview": {
+        "androidCommit": "4437d379ec34a3d846ea5a634675ec763ec789ae",
+        "iosDonorCommit": "a59b4d4005f616c611df67fab7620e9853c525b9",
+        "state": "present-source-connected",
+        "chain": {
+          "ui": "same three UI entries",
+          "host": "OfficePreviewController",
+          "serviceRuntime": "pinned Collabora engine renders slides locally",
+          "storage": "App-owned staged snapshot / working copy",
+          "resultFailure": "notice/error sheet; separate process isolation"
+        },
+        "evidence": [
+          {
+            "path": "FloeAndroid/core/officeengine/src/main/java/com/floe/android/core/officeengine/OfficePreviewRequest.kt",
+            "line": 22,
+            "note": "PPTX token and MIME"
+          },
+          {
+            "path": "FloeAndroid/core/officeengine/src/main/AndroidManifest.xml",
+            "line": 30,
+            "note": "engine process segregation"
+          },
+          {
+            "path": "FloeAndroid/core/officeengine/src/main/java/org/libreoffice/androidlib/COWebViewClient.kt",
+            "line": 18,
+            "note": "no network on preview"
+          }
+        ],
+        "gaps": [],
+        "dependencies": [],
+        "qualification": "source-only; slide rendering not verified here"
+      }
     },
     {
       "id": "OFC-EDIT-PARAGRAPH",
@@ -785,8 +1807,52 @@
       "originalOperation": "AI/manual paragraph edit then save",
       "originalStatus": "planned",
       "required": true,
-      "codeReview": "pending per-operation UI/service/runtime-storage/failure reconciliation",
-      "qualification": "not newly verified this round"
+      "codeReview": "present-source-connected at immutable 4437d379ec34a3d846ea5a634675ec763ec789ae; static source only, not acceptance",
+      "qualification": "not newly verified this round",
+      "sourceReview": {
+        "androidCommit": "4437d379ec34a3d846ea5a634675ec763ec789ae",
+        "iosDonorCommit": "a59b4d4005f616c611df67fab7620e9853c525b9",
+        "state": "present-source-connected",
+        "chain": {
+          "ui": "OfficePreviewActivity edit toggle + text editing in the engine WebView; Save Copy; Notes editor Save-and-close; AI document.office.edit",
+          "host": "OfficePreviewController EDIT working copy; OfficeAiHostService (owned operation/capture/precision/save); NotesOfficeEffects imports the saved copy back into the note",
+          "serviceRuntime": "OfficeEditModePreparation real handshake; OfficePrecisionClient typed commands; OfficeAiOoxmlVerifier verifies actual saved OOXML text",
+          "storage": "owned working copy; verified export; optional CAS saveOriginal over the workspace original",
+          "resultFailure": "dirty-close sheet (Save Copy and close / discard); typed NATIVE_COMPLETED/REJECTED/UNKNOWN/Failed; no success from acknowledgement"
+        },
+        "evidence": [
+          {
+            "path": "FloeAndroid/core/officeengine/src/main/java/com/floe/android/core/officeengine/OfficePreviewActivity.kt",
+            "line": 605,
+            "note": "toggleEditMode + real edit preparation"
+          },
+          {
+            "path": "FloeAndroid/core/officeengine/src/main/java/com/floe/android/core/officeengine/OfficePreviewActivity.kt",
+            "line": 625,
+            "note": "startSaveCopy / dirty-close path"
+          },
+          {
+            "path": "FloeAndroid/app/src/main/kotlin/com/floe/android/notesplatform/NotesOfficeEffects.kt",
+            "line": 197,
+            "note": "Notes EDIT session with save channel; Saved/ClosedWithoutChanges outcomes"
+          },
+          {
+            "path": "FloeAndroid/shared/Sources/FloeAndroidJobTools/OfficeAI/OfficeDocumentEditTool.swift",
+            "line": 44,
+            "note": "applyText/setCellContent are content effects"
+          },
+          {
+            "path": "FloeAndroid/app/src/main/kotlin/com/floe/android/host/officeai/OfficeAiOoxmlVerifier.kt",
+            "line": 75,
+            "note": "actual saved package verification; applyText for docx/pptx, setCellContent for xlsx"
+          }
+        ],
+        "gaps": [
+          "Manual editing of a workspace Office document saves a copy via SAF; only the AI saveOriginal path commits over the workspace original (Notes documents save back into the note)."
+        ],
+        "dependencies": [],
+        "qualification": "source-only; engine/device typing and save not verified"
+      }
     },
     {
       "id": "OFC-CELL-FORMULA-RECALC",
@@ -795,8 +1861,47 @@
       "originalOperation": "Edit cells, recalculate formulas, verify computed values",
       "originalStatus": "planned",
       "required": true,
-      "codeReview": "pending per-operation UI/service/runtime-storage/failure reconciliation",
-      "qualification": "not newly verified this round"
+      "codeReview": "partial at immutable 4437d379ec34a3d846ea5a634675ec763ec789ae; static source only, not acceptance",
+      "qualification": "not newly verified this round",
+      "sourceReview": {
+        "androidCommit": "4437d379ec34a3d846ea5a634675ec763ec789ae",
+        "iosDonorCommit": "a59b4d4005f616c611df67fab7620e9853c525b9",
+        "state": "partial",
+        "chain": {
+          "ui": "AI document.office.edit setCellContent (literal/number/formula); manual cell editing in the engine",
+          "host": "OfficeAiHostService + OfficePrecisionClient; OfficeAiOoxmlVerifier/CellIntentEvaluator",
+          "serviceRuntime": "engine recalculates natively; precision plan intentionally dispatches no formula readback",
+          "storage": "verified saved export file / optional CAS original",
+          "resultFailure": "formula-source mismatch or refusal; UNKNOWN retained"
+        },
+        "evidence": [
+          {
+            "path": "FloeAndroid/app/src/main/kotlin/com/floe/android/host/officeai/verification/XlsxCells.kt",
+            "line": 272,
+            "note": "assessFormula compares the SAVED <f> source; cached display value is not proof"
+          },
+          {
+            "path": "FloeAndroid/core/officeengine/src/main/java/com/floe/android/core/officeengine/precision/OfficePrecisionContract.kt",
+            "line": 96,
+            "note": "FORMULA_NOT_COMPARABLE: no byte-equality readback for formula intent"
+          },
+          {
+            "path": "FloeAndroid/core/officeengine/src/main/java/com/floe/android/core/officeengine/precision/OfficePrecisionPlan.kt",
+            "line": 471,
+            "note": "formula write ends NATIVE_COMPLETED with no readback stage"
+          },
+          {
+            "path": "FloeAgent/Sources/FloeDocuments/OfficeFormulaVerification.swift",
+            "line": 1,
+            "note": "iOS donor recomputes bounded persisted results and fails missing/stale cache; no Android equivalent"
+          }
+        ],
+        "gaps": [
+          "No persisted formula-RESULT verifier on Android: the saved <f> source is checked, but computed cached values are not recomputed or semantically validated. Shared formulas without a target-cell source and array/dataTable formulas without source are refused as unverifiable."
+        ],
+        "dependencies": [],
+        "qualification": "source-only; no formula execution/verification run"
+      }
     },
     {
       "id": "OFC-REVISION-TRACKING",
@@ -805,8 +1910,53 @@
       "originalOperation": "Track/keep revisions with conflict review; keep-revisions-then-export-PDF is its own case",
       "originalStatus": "planned",
       "required": true,
-      "codeReview": "pending per-operation UI/service/runtime-storage/failure reconciliation",
-      "qualification": "not newly verified this round"
+      "codeReview": "partial at immutable 4437d379ec34a3d846ea5a634675ec763ec789ae; static source only, not acceptance",
+      "qualification": "not newly verified this round",
+      "sourceReview": {
+        "androidCommit": "4437d379ec34a3d846ea5a634675ec763ec789ae",
+        "iosDonorCommit": "a59b4d4005f616c611df67fab7620e9853c525b9",
+        "state": "partial",
+        "chain": {
+          "ui": "dirty-close sheet only (Save Copy and close / discard); no revision/conflict review screen",
+          "host": "OfficeSaveCopyHost/CAS conflict retention; no revision-keep orchestration",
+          "serviceRuntime": "engine Track Changes menu availability not provable from committed source (payload external)",
+          "storage": "working copy retained; recoverable copies on conflicts",
+          "resultFailure": "typed save conflict; user-visible recovery/review explicitly pending"
+        },
+        "evidence": [
+          {
+            "path": "FloeAndroid/core/officeengine/overlays/dist/cool.html",
+            "line": 674,
+            "note": "Track Changes HELP text only; the real Collabora dist payload is not committed"
+          },
+          {
+            "path": "FloeAndroid/core/officeengine/payload-pins.json",
+            "line": 1,
+            "note": "payload pinned externally; menu/command availability unprovable in source"
+          },
+          {
+            "path": "FloeAndroid/core/officeengine/src/main/java/com/floe/android/core/officeengine/OfficePreviewActivity.kt",
+            "line": 507,
+            "note": "only dirty-close workflow"
+          },
+          {
+            "path": "FloeAgent/FloeApp/Workspace/OfficeConflictReviewView.swift",
+            "line": 14,
+            "note": "iOS donor conflict-review screen (mine/current), absent on Android"
+          },
+          {
+            "path": "FloeAgent/FloeApp/Workspace/OfficeEditIntentQueue.swift",
+            "line": 1,
+            "note": "iOS donor per-session edit intent serialization, absent on Android"
+          }
+        ],
+        "gaps": [
+          "No app-level tracked-change/keep-revisions/conflict-review workflow and no keep-revisions-then-export-PDF route.",
+          "Engine Track Changes UI presence is unknown; only help text ships in the overlay."
+        ],
+        "dependencies": [],
+        "qualification": "source-only"
+      }
     },
     {
       "id": "OFC-SLIDES-EDIT",
@@ -815,8 +1965,40 @@
       "originalOperation": "Edit slide text/structure through LOK",
       "originalStatus": "planned",
       "required": true,
-      "codeReview": "pending per-operation UI/service/runtime-storage/failure reconciliation",
-      "qualification": "not newly verified this round"
+      "codeReview": "present-source-connected at immutable 4437d379ec34a3d846ea5a634675ec763ec789ae; static source only, not acceptance",
+      "qualification": "not newly verified this round",
+      "sourceReview": {
+        "androidCommit": "4437d379ec34a3d846ea5a634675ec763ec789ae",
+        "iosDonorCommit": "a59b4d4005f616c611df67fab7620e9853c525b9",
+        "state": "present-source-connected",
+        "chain": {
+          "ui": "manual PPTX editing in the engine viewer; AI selectSlide/applyText",
+          "host": "OfficePreviewController EDIT; OfficeAiHostService with editContext revalidation",
+          "serviceRuntime": "precision selectSlide + applyText; saved PPTX slide part verified by PptxText",
+          "storage": "verified saved package; run output publication; optional CAS original",
+          "resultFailure": "typed refusal/UNKNOWN; unsupported shape/geometry refused"
+        },
+        "evidence": [
+          {
+            "path": "FloeAndroid/shared/Sources/FloeAndroidJobTools/OfficeAI/OfficeEditContract.swift",
+            "line": 69,
+            "note": "selectSlide/applyText; content effect requires verified saved snapshot"
+          },
+          {
+            "path": "FloeAndroid/app/src/main/kotlin/com/floe/android/host/officeai/OfficeAiOoxmlVerifier.kt",
+            "line": 20,
+            "note": "PptxText imported and used for the resolved slide part"
+          },
+          {
+            "path": "FloeAndroid/core/officeengine/src/main/java/com/floe/android/core/officeengine/OfficePreviewActivity.kt",
+            "line": 605,
+            "note": "manual edit mode"
+          }
+        ],
+        "gaps": [],
+        "dependencies": [],
+        "qualification": "source-only; deck edit/layout not device-verified"
+      }
     },
     {
       "id": "OFC-CREATE-NEW",
@@ -825,8 +2007,56 @@
       "originalOperation": "AI creates new DOCX/XLSX/PPTX from scratch",
       "originalStatus": "planned",
       "required": true,
-      "codeReview": "pending per-operation UI/service/runtime-storage/failure reconciliation",
-      "qualification": "not newly verified this round"
+      "codeReview": "partial at immutable 4437d379ec34a3d846ea5a634675ec763ec789ae; static source only, not acceptance",
+      "qualification": "not newly verified this round",
+      "sourceReview": {
+        "androidCommit": "4437d379ec34a3d846ea5a634675ec763ec789ae",
+        "iosDonorCommit": "a59b4d4005f616c611df67fab7620e9853c525b9",
+        "state": "partial",
+        "chain": {
+          "ui": "Notes New-document flow creates a blank valid OOXML document",
+          "host": "NotesLibraryController.createOfficeBlank -> NotesOfficeEffects -> NotesOoxmlTemplates",
+          "serviceRuntime": "template builder + structural validator (ZIP/parts/XML)",
+          "storage": "Notes resource/store",
+          "resultFailure": "validation refusal / typed notes failure"
+        },
+        "evidence": [
+          {
+            "path": "FloeAndroid/feature/notes/src/main/kotlin/com/floe/android/feature/notes/ui/state/NotesLibraryController.kt",
+            "line": 266,
+            "note": "createOfficeBlank"
+          },
+          {
+            "path": "FloeAndroid/app/src/main/kotlin/com/floe/android/notesplatform/NotesOfficeEffects.kt",
+            "line": 160,
+            "note": "create(kind,title) + validate before commit"
+          },
+          {
+            "path": "FloeAndroid/feature/notes/src/main/kotlin/com/floe/android/feature/notes/ui/ui/NotesLibraryPane.kt",
+            "line": 107,
+            "note": "UI create path"
+          },
+          {
+            "path": "FloeAndroid/shared/Sources/FloeWorkspace/Tools/WorkspacePublishOutputTool.swift",
+            "line": 62,
+            "note": "generic consumer: publishes an existing workspace file (created by exec.shell at /workspace) as run output"
+          },
+          {
+            "path": "FloeAndroid/shared/Sources/FloeWorkspace/Tools/FileReadTools.swift",
+            "line": 1,
+            "note": "Android mirror: files-domain model tools (writeFile/applyPatch/createFile) are a pending B0 relink"
+          }
+        ],
+        "gaps": [
+          "No native model-facing create/validate/deliver path: document.office.edit requires an existing owned document.",
+          "Generic task-Linux creation is possible only after the pending C01 /workspace runtime-file exchange (and, for model-side workspace file I/O, the pending B0 relink); the publishOutput consumer exists but has no visible producer until then."
+        ],
+        "dependencies": [
+          "C01",
+          "B0-files-domain"
+        ],
+        "qualification": "source-only; no model creation run"
+      }
     },
     {
       "id": "OFC-SAVE-REOPEN",
@@ -835,8 +2065,48 @@
       "originalOperation": "Save admission validation and reopen round trip, including after a crash",
       "originalStatus": "planned",
       "required": true,
-      "codeReview": "pending per-operation UI/service/runtime-storage/failure reconciliation",
-      "qualification": "not newly verified this round"
+      "codeReview": "partial at immutable 4437d379ec34a3d846ea5a634675ec763ec789ae; static source only, not acceptance",
+      "qualification": "not newly verified this round",
+      "sourceReview": {
+        "androidCommit": "4437d379ec34a3d846ea5a634675ec763ec789ae",
+        "iosDonorCommit": "a59b4d4005f616c611df67fab7620e9853c525b9",
+        "state": "partial",
+        "chain": {
+          "ui": "dirty-close Save Copy; AI saveOriginal; Notes save-and-close import-back",
+          "host": "OfficeSaveCopyHost/Controller, OfficeSaveCoordinator, OfficeAiHostService CAS journal",
+          "serviceRuntime": "STAGED_EXPORT with real magic/length/SHA verification; workspace CAS replace + provider journal",
+          "storage": "retained working copy / verified export / recoverable original",
+          "resultFailure": "typed rejected/cancelled/stale; uncertain destinations retained"
+        },
+        "evidence": [
+          {
+            "path": "FloeAndroid/app/src/main/kotlin/com/floe/android/host/OfficeSaveCopyHost.kt",
+            "line": 90,
+            "note": "explicit: 'a user-visible recovery flow is explicitly PENDING, not claimed'"
+          },
+          {
+            "path": "FloeAndroid/core/officeengine/src/main/java/com/floe/android/core/officeengine/OfficeSaveCoordinator.kt",
+            "line": 209,
+            "note": "real flush/export/ack state machine"
+          },
+          {
+            "path": "FloeAndroid/app/src/main/kotlin/com/floe/android/host/officeai/host/OfficeAiHostService.kt",
+            "line": 1157,
+            "note": "pushOriginal uses existing journal ladder; local CAS reported separately"
+          },
+          {
+            "path": "FloeAndroid/core/officeengine/src/main/java/com/floe/android/core/officeengine/OfficePreviewActivity.kt",
+            "line": 673,
+            "note": "verified export op path"
+          }
+        ],
+        "gaps": [
+          "No user-visible crash-save recovery/reopen surface; only retained bytes + documented pending status.",
+          "Manual workspace save is copy-out (SAF); in-place original commit exists only through AI saveOriginal/Notes import-back."
+        ],
+        "dependencies": [],
+        "qualification": "source-only; crash behavior not tested"
+      }
     },
     {
       "id": "OFC-PDF-EXPORT",
@@ -845,8 +2115,45 @@
       "originalOperation": "Export Office document to PDF with content verification",
       "originalStatus": "planned",
       "required": true,
-      "codeReview": "pending per-operation UI/service/runtime-storage/failure reconciliation",
-      "qualification": "not newly verified this round"
+      "codeReview": "present-source-connected at immutable 4437d379ec34a3d846ea5a634675ec763ec789ae; static source only, not acceptance",
+      "qualification": "not newly verified this round",
+      "sourceReview": {
+        "androidCommit": "4437d379ec34a3d846ea5a634675ec763ec789ae",
+        "iosDonorCommit": "a59b4d4005f616c611df67fab7620e9853c525b9",
+        "state": "present-source-connected",
+        "chain": {
+          "ui": "viewer Save as PDF / PDF preview / Print",
+          "host": "OfficePreviewActivity startExportOp; OfficeSaveCopyHost for SAF copy",
+          "serviceRuntime": "STAGED_EXPORT pdf + OfficePdfReceiptPolicy byte proof; OfficePdfPreviewActivity re-proves and renders through the isolated :floe_pdf renderer",
+          "storage": "module-owned verified PDF output; optional SAF destination",
+          "resultFailure": "typed pdfFailed/saveFailed; print unavailable; no completion claim from a command ack"
+        },
+        "evidence": [
+          {
+            "path": "FloeAndroid/core/officeengine/src/main/java/com/floe/android/core/officeengine/OfficePreviewActivity.kt",
+            "line": 673,
+            "note": "one bounded PDF export op"
+          },
+          {
+            "path": "FloeAndroid/core/officeengine/src/main/java/com/floe/android/core/officeengine/pdf/OfficePdfReceiptPolicy.kt",
+            "line": 82,
+            "note": "receipt fence + containment + %PDF- magic + length + whole-file SHA"
+          },
+          {
+            "path": "FloeAndroid/core/officeengine/src/main/java/com/floe/android/core/officeengine/pdf/OfficePdfPreviewActivity.kt",
+            "line": 66,
+            "note": "bytes re-proved off-main before renderer"
+          },
+          {
+            "path": "FloeAndroid/core/officeengine/src/main/java/com/floe/android/core/officeengine/pdf/OfficePdfRenderHost.kt",
+            "line": 191,
+            "note": "real page count for print through the isolated renderer"
+          }
+        ],
+        "gaps": [],
+        "dependencies": [],
+        "qualification": "source-only; actual printed/PDF output not verified"
+      }
     },
     {
       "id": "OFC-CSV-SECURITY",
@@ -855,8 +2162,48 @@
       "originalOperation": "Formula-like text in CSV/XLSX stays inert display text; preview triggers no network",
       "originalStatus": "planned",
       "required": true,
-      "codeReview": "pending per-operation UI/service/runtime-storage/failure reconciliation",
-      "qualification": "not newly verified this round"
+      "codeReview": "present-source-connected at immutable 4437d379ec34a3d846ea5a634675ec763ec789ae; static source only, not acceptance",
+      "qualification": "not newly verified this round",
+      "sourceReview": {
+        "androidCommit": "4437d379ec34a3d846ea5a634675ec763ec789ae",
+        "iosDonorCommit": "a59b4d4005f616c611df67fab7620e9853c525b9",
+        "state": "present-source-connected",
+        "chain": {
+          "ui": "XLSX opens in the engine viewer; CSV opens as a text file in the workspace editor (no spreadsheet execution)",
+          "host": "OfficePreviewController for xlsx; workspace text editor for csv",
+          "serviceRuntime": "engine display only; WebView offline lock",
+          "storage": "staged snapshot / workspace file",
+          "resultFailure": "unsupported format notice; no network fallback"
+        },
+        "evidence": [
+          {
+            "path": "FloeAndroid/app/src/main/kotlin/com/floe/android/host/OfficePreviewController.kt",
+            "line": 919,
+            "note": "only docx/xlsx/pptx enter the Office viewer; csv is not a spreadsheet preview"
+          },
+          {
+            "path": "FloeAndroid/app/src/main/kotlin/com/floe/android/WorkspaceDocumentDestination.kt",
+            "line": 135,
+            "note": "csv is classified as text (matching iOS WorkspaceTextPolicy)"
+          },
+          {
+            "path": "FloeAndroid/core/officeengine/src/main/java/org/libreoffice/androidlib/COWebViewClient.kt",
+            "line": 70,
+            "note": "http(s)/content/other requests refused 403; local assets/data only"
+          },
+          {
+            "path": "FloeAndroid/core/officeengine/src/main/java/com/floe/android/core/officeengine/OfficeRequestPolicy.kt",
+            "line": 13,
+            "note": "source explicitly leaves kernel macro/external-update policy as an unresolved device-verification item"
+          }
+        ],
+        "gaps": [
+          "CSV has no spreadsheet/table preview; it is inert plain text (no formula/hyperlink execution).",
+          "Kernel-level macro/external-reference auto-update remains unclaimed in source even though the WebView network path is blocked."
+        ],
+        "dependencies": [],
+        "qualification": "source-only; no network/macro behavior test"
+      }
     },
     {
       "id": "PHC-OBSERVE",
@@ -1878,5 +3225,23 @@
       "codeReview": "pending per-operation UI/service/runtime-storage/failure reconciliation",
       "qualification": "not newly verified this round"
     }
-  ]
+  ],
+  "sourceReviews": {
+    "editor33": {
+      "androidCommit": "4437d379ec34a3d846ea5a634675ec763ec789ae",
+      "iosDonorCommit": "a59b4d4005f616c611df67fab7620e9853c525b9",
+      "matrixSHA256": "e11312ce43bcdfa3adac531957a2b3f51a6e30132b008dbed414bb3c91b4b606",
+      "summary": {
+        "total": 33,
+        "present-source-connected": 23,
+        "partial": 8,
+        "gated-c01": 2,
+        "missing": 0
+      },
+      "sourceOnly": true,
+      "compiled": false,
+      "deviceVerified": false,
+      "note": "Original183 identities/statuses and accepted product scope retained. Other150 source reviews remain pending or as individually recorded. Current working code must be reconciled at freeze; this is immutable4437 source evidence, not qualification."
+    }
+  }
 }
