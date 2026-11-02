@@ -700,7 +700,6 @@ final class CADExternalSketchProjectionTests: XCTestCase {
                        sketch.entities.first { $0.id == localID },
                        "the local partner is not moved by a satisfied measurement")
     }
-    }
 
     func testDeleteLinkedEntityRemovesReferenceAtomically() async throws {
         let plate = try await plate()
