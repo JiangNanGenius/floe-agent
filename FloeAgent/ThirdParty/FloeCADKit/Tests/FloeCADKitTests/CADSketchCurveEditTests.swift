@@ -48,7 +48,8 @@ final class CADSketchCurveEditTests: XCTestCase {
     func testVersionedDefinitionMaterializesGeneralBasesExactly() throws {
         for entity in [
             SketchEntity.ellipse(id: UUID(), center: SIMD2(2,3), radiusX: 7, radiusY: 3, rotation: 0.37),
-            .spline(id: UUID(), points: [SIMD2(-10,-10),SIMD2(-5,0),SIMD2(5,0),SIMD2(10,10)], closed: false),
+            .spline(id: UUID(), points: [SIMD2(-12,0), SIMD2(-8,0), SIMD2(-4,0),
+                SIMD2(0,2), SIMD2(4,4), SIMD2(8,4), SIMD2(12,4)], closed: false),
         ] {
             let definition = try SketchCurveDefinition(entity)
             let bytes = try JSONEncoder().encode(definition)

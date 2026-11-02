@@ -418,23 +418,24 @@ final class CADFaceRotationParameterUITests: XCTestCase {
 // SPDX-License-Identifier: MPL-2.0
 @MainActor
 final class CADExactCurveEditingUITests: XCTestCase {
-    private func launch(reopen: Bool = false) -> XCUIApplication {
+    private func launch(reopen: Bool = false) throws -> XCUIApplication {
         let app = XCUIApplication()
         app.launchArguments = ["-AppleLanguages", "(en)", "-AppleLocale", "en_US",
             "-ui-testing", "-ui-testing-ipad", "--ui-test-cad-fixture", "--ui-test-cad-exact-curves"]
         if reopen { app.launchArguments += ["--ui-test-cad-exact-curves-reopen"] }
         app.launch()
-        state(app, ["ready=true", "source=true"])
+        try state(app, ["ready=true", "source=true"])
         return app
     }
     private func any(_ app: XCUIApplication, _ id: String) -> XCUIElement {
         app.descendants(matching: .any).matching(identifier: id).firstMatch
     }
-    private func state(_ app: XCUIApplication, _ terms: [String]) {
+    private func state(_ app: XCUIApplication, _ terms: [String]) throws {
         let label = any(app, "CADExactCurveState")
         let predicate = NSPredicate { _, _ in label.exists && terms.allSatisfy { label.label.contains($0) } }
-        XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: predicate, object: label)], timeout: 30), .completed,
-                       label.exists ? label.label : app.debugDescription)
+        let result = XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: predicate, object: label)], timeout: 30)
+        XCTAssertEqual(result, .completed, label.exists ? label.label : app.debugDescription)
+        if result != .completed { throw NSError(domain: "CADExactCurveUIState", code: 1) }
     }
     private func palette(_ app: XCUIApplication, _ name: String) {
         let button = app.buttons[name]
@@ -462,15 +463,16 @@ final class CADExactCurveEditingUITests: XCTestCase {
         let choice = app.buttons[label]
         XCTAssertTrue(choice.waitForExistence(timeout: 10), app.debugDescription); choice.tap()
     }
-    private func interval(_ app: XCUIApplication, _ lower: Double, _ upper: Double) {
+    private func interval(_ app: XCUIApplication, _ lower: Double, _ upper: Double) throws {
         let text = any(app, "CADExactCurveInterval")
         let expected = NSPredicate { _, _ in
             guard text.exists else { return false }
             let values = text.label.split(separator: ",").compactMap { Double($0) }
             return values.count == 2 && abs(values[0] - lower) < 1e-6 && abs(values[1] - upper) < 1e-6
         }
-        XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: expected, object: text)], timeout: 15), .completed,
-                       text.exists ? text.label : "missing curve interval")
+        let result = XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: expected, object: text)], timeout: 15)
+        XCTAssertEqual(result, .completed, text.exists ? text.label : "missing curve interval")
+        if result != .completed { throw NSError(domain: "CADExactCurveUIInterval", code: 1) }
     }
     private func capture(_ name: String) {
         let attachment = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
@@ -482,40 +484,40 @@ final class CADExactCurveEditingUITests: XCTestCase {
         XCTAssertTrue(status.waitForExistence(timeout: 60)); XCTAssertEqual(status.label, "Saved")
     }
 
-    func testNativeBoundaryTrimExtendUndoAndReopenKeepExactEllipse() {
-        var app = launch(); defer { app.terminate() }
-        state(app, ["entities=3", "exact=0", "links=0"])
+    func testNativeBoundaryTrimExtendUndoAndReopenKeepExactEllipse() throws {
+        var app = try launch(); defer { app.terminate() }
+        try state(app, ["entities=3", "exact=0", "links=0"])
         palette(app, "Trim"); boundary(app, "Line 2")
         tapPoint(app, "CADExactCurvePick")
-        state(app, ["entities=3", "exact=1", "source=true"])
-        interval(app, .pi / 2, 3 * .pi / 2)
+        try state(app, ["entities=3", "exact=1", "source=true"])
+        try interval(app, .pi / 2, 3 * .pi / 2)
         capture("M03 native boundary exact ellipse trim")
         app.buttons["Extend"].tap(); boundary(app, "Line 3")
         tapPoint(app, "CADExactCurveEndPick")
         let end = 2 * Double.pi - acos(25.0 / 30)
-        interval(app, .pi / 2, end)
+        try interval(app, .pi / 2, end)
         app.buttons["SketchCurveDone"].tap()
-        app.buttons["UndoButton"].tap(); interval(app, .pi / 2, 3 * .pi / 2)
-        app.buttons["RedoButton"].tap(); interval(app, .pi / 2, end)
+        app.buttons["UndoButton"].tap(); try interval(app, .pi / 2, 3 * .pi / 2)
+        app.buttons["RedoButton"].tap(); try interval(app, .pi / 2, end)
         save(app); capture("M03 native exact ellipse extension saved")
-        app.terminate(); app = launch(reopen: true)
-        state(app, ["entities=3", "exact=1", "links=0", "source=true"])
-        interval(app, .pi / 2, end)
+        app.terminate(); app = try launch(reopen: true)
+        try state(app, ["entities=3", "exact=1", "links=0", "source=true"])
+        try interval(app, .pi / 2, end)
         capture("M03 native exact curve reopened")
     }
 
-    func testNativeEllipseOffsetPreviewCommitUndoAndReopenKeepRelation() {
-        var app = launch(); defer { app.terminate() }
+    func testNativeEllipseOffsetPreviewCommitUndoAndReopenKeepRelation() throws {
+        var app = try launch(); defer { app.terminate() }
         palette(app, "Offset"); tapPoint(app, "CADExactCurvePick")
         let apply = app.buttons["SketchOffsetApply"]
         XCTAssertTrue(apply.waitForExistence(timeout: 15)); XCTAssertTrue(apply.isEnabled)
         capture("M04 native exact ellipse linked offset preview")
         apply.tap()
-        state(app, ["entities=4", "exact=1", "links=1", "source=true"])
-        app.buttons["UndoButton"].tap(); state(app, ["entities=3", "exact=0", "links=0"])
-        app.buttons["RedoButton"].tap(); state(app, ["entities=4", "exact=1", "links=1"])
-        save(app); app.terminate(); app = launch(reopen: true)
-        state(app, ["entities=4", "exact=1", "links=1", "source=true"])
+        try state(app, ["entities=4", "exact=1", "links=1", "source=true"])
+        app.buttons["UndoButton"].tap(); try state(app, ["entities=3", "exact=0", "links=0"])
+        app.buttons["RedoButton"].tap(); try state(app, ["entities=4", "exact=1", "links=1"])
+        save(app); app.terminate(); app = try launch(reopen: true)
+        try state(app, ["entities=4", "exact=1", "links=1", "source=true"])
         capture("M04 native exact ellipse offset reopened")
     }
 }

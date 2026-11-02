@@ -128,6 +128,10 @@
 #include <gp_Elips.hxx>
 #include <GC_MakeArcOfCircle.hxx>
 #include <Geom_BSplineCurve.hxx>
+#include <Geom_BezierCurve.hxx>
+#include <GeomConvert_BSplineCurveToBezierCurve.hxx>
+#include <Standard_ConstructionError.hxx>
+#include <cstring>
 #include <GeomConvert.hxx>
 #include <TColGeom_HArray1OfBSplineCurve.hxx>
 #include <Geom_Plane.hxx>
@@ -907,6 +911,74 @@ static bool OS3DSplineEdge(const double *xy, NSUInteger count, bool closed,
     return true;
 }
 
+// Exact polynomial continuation of the existing fitted Bezier-chain basis.
+// Geom_BSplineCurve::Segment in pinned OCCT7.8.1 calls InsertKnots, which
+// refuses knots beyond its current domain. Do not refit/extrapolate samples.
+static Handle(Geom_BSplineCurve) OS3DExactSplineDomain(
+    const Handle(Geom_BSplineCurve)& basis, double requestedFirst, double requestedLast) {
+    const double first = std::min(basis->FirstParameter(), requestedFirst);
+    const double last = std::max(basis->LastParameter(), requestedLast);
+    if (first == basis->FirstParameter() && last == basis->LastParameter()) return basis;
+    if (basis->IsPeriodic() || basis->IsRational() || basis->Degree() != 3
+        || !std::isfinite(first) || !std::isfinite(last) || last <= first) {
+        throw Standard_ConstructionError("Unsupported exact spline continuation");
+    }
+    // Exact knot insertion, not approximation. The source materializer can
+    // have removed some C1 join knots; recover their Bezier spans exactly.
+    GeomConvert_BSplineCurveToBezierCurve split(basis);
+    const int spans = split.NbArcs();
+    if (spans < 1 || spans > 512) throw Standard_ConstructionError("Spline span limit");
+    TColStd_Array1OfReal knots(1, spans + 1);
+    split.Knots(knots);
+    TColStd_Array1OfInteger multiplicities(1, spans + 1);
+    TColgp_Array1OfPnt poles(1, 3 * spans + 1);
+    for (int span = 1; span <= spans; ++span) {
+        Handle(Geom_BezierCurve) arc = split.Arc(span);
+        if (arc.IsNull() || arc->IsRational() || arc->Degree() != 3) {
+            throw Standard_ConstructionError("Unsupported fitted spline span");
+        }
+        const double width = knots(span + 1) - knots(span);
+        if (!(width > 0)) throw Standard_ConstructionError("Empty fitted spline span");
+        const double a = span == 1 ? (first - knots(span)) / width : 0;
+        const double b = span == spans ? (last - knots(span)) / width : 1;
+        // Blossoming on [a,b] preserves the exact polynomial, including a<0
+        // and b>1. Original parameter values and inner geometry are unchanged.
+        for (int j = 0; j <= 3; ++j) {
+            gp_XYZ work[4] = {arc->Pole(1).XYZ(), arc->Pole(2).XYZ(),
+                              arc->Pole(3).XYZ(), arc->Pole(4).XYZ()};
+            for (int level = 1; level <= 3; ++level) {
+                const double t = level <= 3 - j ? a : b;
+                for (int k = 0; k <= 3 - level; ++k) {
+                    work[k] = work[k] * (1 - t) + work[k + 1] * t;
+                }
+            }
+            if (!std::isfinite(work[0].X()) || !std::isfinite(work[0].Y())
+                || !std::isfinite(work[0].Z())
+                || std::max({std::abs(work[0].X()), std::abs(work[0].Y()),
+                             std::abs(work[0].Z())}) > 1e12) {
+                throw Standard_ConstructionError("Spline continuation is outside the supported range");
+            }
+            poles.SetValue(3 * (span - 1) + j + 1, gp_Pnt(work[0]));
+        }
+        multiplicities.SetValue(span, span == 1 ? 4 : 3);
+    }
+    multiplicities.SetValue(spans + 1, 4);
+    knots.SetValue(1, first); knots.SetValue(spans + 1, last);
+    Handle(Geom_BSplineCurve) result = new Geom_BSplineCurve(poles, knots, multiplicities, 3);
+    if (basis->NbKnots() != spans + 1) {
+        throw Standard_ConstructionError("Unexpected fitted spline knot layout");
+    }
+    // Restore only continuity the original basis actually possessed. Exact
+    // knot removal is not a fit; refusal never publishes a reshaped curve.
+    for (int k = spans; k >= 2; --k) {
+        const int originalMultiplicity = basis->Multiplicity(k);
+        if (originalMultiplicity < 3 && !result->RemoveKnot(k, originalMultiplicity, 1e-9)) {
+            throw Standard_ConstructionError("Exact spline continuation could not preserve a join");
+        }
+    }
+    return result;
+}
+
 /// Records are walked by KIND (see `packSegments`): line/arc and legacy spline
 /// bytes are unchanged; kind 4 carries one exact versioned curve record.
 // Versioned exact curve record shared with SketchCurveDefinition. Domain
@@ -988,7 +1060,9 @@ static Handle(Geom_Curve) OS3DSketchCurveDefinition(
         // OCCT explicitly supports Segment outside the original B-spline
         // bounds. This is exact polynomial extrapolation of the same basis,
         // not a refit through new points.
-        if (!closedBasis && (wantedFirst < begin || wantedLast > end)) bs->Segment(wantedFirst, wantedLast);
+        if (!closedBasis && (wantedFirst < begin || wantedLast > end)) {
+            bs = OS3DExactSplineDomain(bs, wantedFirst, wantedLast);
+        }
         if (extend || !applyInterval || ((((int)v[4]) & 1) != 0 && v[2] == 0 && v[3] == 1)) return bs;
         first = mapped(v[2]); last = mapped(v[3]);
         curve = bs;
@@ -3009,8 +3083,10 @@ static std::set<Standard_Integer> OS3DNearestFaces(
         OS3DSetStatus(status, OCCTOpCodeOK, @"validated exact normal offset");
         return [NSData dataWithBytes:diagnostics length:sizeof(diagnostics)];
     } catch (Standard_Failure &failure) {
-        OS3DSetStatus(status, OCCTOpCodeKernelRefused,
-                      OS3DCrashMessage("Sketch normal offset", failure.GetMessageString()));
+        const char *reason = failure.GetMessageString();
+        const bool undefinedNormal = reason && std::strstr(reason, "Offset on C0 curve");
+        OS3DSetStatus(status, undefinedNormal ? OCCTOpCodeCurveOffsetCusp : OCCTOpCodeKernelRefused,
+                      OS3DCrashMessage("Sketch normal offset", reason));
     } catch (...) { OS3DSetStatus(status, OCCTOpCodeKernelRefused, @"normal offset exception"); }
     return nil;
 }

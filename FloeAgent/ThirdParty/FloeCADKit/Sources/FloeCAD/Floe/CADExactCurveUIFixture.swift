@@ -54,7 +54,9 @@ public struct CADExactCurveReadbackPanel: View {
                 row("CADExactCurveState", stateText)
                 row("CADExactCurveInterval", intervalText)
                 row("CADExactCurvePick", screen(SIMD2(30,0)))
-                row("CADExactCurveEndPick", screen(SIMD2(0,-18)))
+                // Pick on the curve just before its end, clear of the
+                // coincident boundary line. This tests the real curve hit.
+                row("CADExactCurveEndPick", screen(SIMD2(30 * cos(4.6),18 * sin(4.6))))
                 row("CADExactCurveError", document.viewModel().errorMessage ?? "none")
             }
             .font(.system(size: 9, design: .monospaced)).lineLimit(1)

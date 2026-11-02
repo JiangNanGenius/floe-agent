@@ -165,6 +165,7 @@ final class CADExactCurveClosureTests: XCTestCase {
         let id = UUID()
         let points = [SIMD2(0.0,0), SIMD2(2.0,1), SIMD2(4.0,0), SIMD2(6.0,1)]
         let spline = SketchEntity.spline(id: id, points: points, closed: false)
+        let original = try SketchCurveDefinition(spline)
         for extendStart in [true, false] {
             let x = extendStart ? -2.0 : 8.0
             let boundary = SketchEntity.line(id: UUID(), a: SIMD2(x,-20), b: SIMD2(x,20))
@@ -183,6 +184,9 @@ final class CADExactCurveClosureTests: XCTestCase {
             // The original fit points and their native parameters remain anchored.
             near(try extended.point(at: 0), points[0])
             near(try extended.point(at: 1), points[points.count - 1])
+            for u in [0.12, 0.29, 0.51, 0.78, 0.93] {
+                near(try extended.point(at: u), original.point(at: u), accuracy: 1e-7)
+            }
         }
     }
 
@@ -212,7 +216,8 @@ final class CADExactCurveClosureTests: XCTestCase {
 
     func testSplineNormalDistanceUsesIndependentNativeProjectionReference() throws {
         let source = try SketchCurveDefinition(.spline(id: UUID(), points: [
-            SIMD2(-6.0,0), SIMD2(-2.0,2), SIMD2(2.0,2), SIMD2(6.0,0)], closed: false))
+            SIMD2(-12.0,0), SIMD2(-8.0,0), SIMD2(-4.0,0), SIMD2(0.0,2),
+            SIMD2(4.0,4), SIMD2(8.0,4), SIMD2(12.0,4)], closed: false))
         let distance = 0.5
         let offset = try source.normalOffset(by: distance)
         let diagnostics = try OCCTKernel.validateSketchNormalOffset(offset)
@@ -278,7 +283,8 @@ final class CADExactCurveClosureTests: XCTestCase {
         XCTAssertEqual(try current(ellipseDocument, ellipseSketch).curveOffsetLinks.first?.id.uuidString, ellipseLink)
 
         let splineID = UUID()
-        let points = [SIMD2(-6.0,0), SIMD2(-2.0,2), SIMD2(2.0,2), SIMD2(6.0,0)]
+        let points = [SIMD2(-12.0,0), SIMD2(-8.0,0), SIMD2(-4.0,0), SIMD2(0.0,2),
+                      SIMD2(4.0,4), SIMD2(8.0,4), SIMD2(12.0,4)]
         let (splineDocument, splineSketch) = try await make([.spline(id: splineID, points: points, closed: false)])
         defer { splineDocument.close() }
         let splineReply = curve("offsetSketchCurve", document: splineDocument,
@@ -287,12 +293,12 @@ final class CADExactCurveClosureTests: XCTestCase {
         let splineTarget = try XCTUnwrap((splineReply["created_entity_ids"] as? [String])?.first.flatMap(UUID.init(uuidString:)))
         update = CADParameterService(document: splineDocument).handle(action: "updateSketchEntity", args: [
             "sketch_id": splineSketch.id.raw.uuidString, "entity_id": splineID.uuidString,
-            "point_index": 2, "point": [2.0, 3.0]])
+            "point_index": 3, "point": [0.0, 3.0]])
         XCTAssertEqual(update["ok"] as? Bool, true, "\(update)")
         let changedSpline = try definition(splineTarget, in: splineDocument, sketch: splineSketch)
         guard case let .normalOffset(splineBase, splineDistance, _) = changedSpline.support,
               case let .fitSpline(updatedPoints, _) = splineBase.support else { return XCTFail("missing spline basis") }
-        XCTAssertEqual(updatedPoints[2], SIMD2(2,3)); XCTAssertEqual(splineDistance, 0.5)
+        XCTAssertEqual(updatedPoints[3], SIMD2(0,3)); XCTAssertEqual(splineDistance, 0.5)
         splineDocument.session.undo()
         let restored = try definition(splineTarget, in: splineDocument, sketch: splineSketch)
         guard case let .normalOffset(restoredBase, _, _) = restored.support,
@@ -329,16 +335,41 @@ final class CADExactCurveClosureTests: XCTestCase {
 
     func testExactSelfIntersectionRefusalDoesNotMutateSketch() async throws {
         let sourceID = UUID()
-        let points = [SIMD2(-4.0,-20), SIMD2(-4.0,0), SIMD2(0.0,20),
-                      SIMD2(4.0,0), SIMD2(4.0,-20)]
+        // Smooth crossed source: a small offset still intersects without
+        // depending on an unrelated end-span tangent corner for refusal.
+        let points = [SIMD2(-8.0,-8), SIMD2(-6.0,-6), SIMD2(-4.0,-4), SIMD2(4.0,4),
+                      SIMD2(-4.0,4), SIMD2(4.0,-4), SIMD2(6.0,-6), SIMD2(8.0,-8)]
         let (document, sketch) = try await make([.spline(id: sourceID, points: points, closed: false)])
         defer { document.close() }
         let before = try current(document, sketch)
         let reply = curve("offsetSketchCurve", document: document, sketch: sketch,
-                          id: sourceID, distance: -4)
+                          id: sourceID, distance: 0.05)
         XCTAssertEqual(reply["ok"] as? Bool, false, "\(reply)")
         XCTAssertEqual(reply["error"] as? String, "curve_offset_self_intersection")
         XCTAssertEqual(try current(document, sketch), before)
+    }
+
+    func testOriginalCorneredSplineRefusesUndefinedNormalWithoutMutation() async throws {
+        // Retain the original failing four-point source as an explicit
+        // physical boundary. Its straight end spans meet at real corners.
+        let id = UUID()
+        let points = [SIMD2(-6.0,0), SIMD2(-2.0,2), SIMD2(2.0,2), SIMD2(6.0,0)]
+        let spline = SketchEntity.spline(id: id, points: points, closed: false)
+        let basis = try SketchCurveDefinition(spline)
+        let parameter = try basis.parameter(of: points[1])
+        let left = try points[1] - basis.point(at: parameter - 1e-6)
+        let right = try basis.point(at: parameter + 1e-6) - points[1]
+        XCTAssertLessThan(simd_dot(simd_normalize(left), simd_normalize(right)), 0.999,
+                          "The retained original source must have distinct one-sided normals.")
+        let (document, sketch) = try await make([spline])
+        defer { document.close() }
+        let before = try current(document, sketch)
+        let undo = document.session.undoStack.undoCommands.count
+        let reply = curve("offsetSketchCurve", document: document, sketch: sketch, id: id, distance: 0.5)
+        XCTAssertEqual(reply["ok"] as? Bool, false)
+        XCTAssertEqual(reply["error"] as? String, "curve_offset_cusp")
+        XCTAssertEqual(try current(document, sketch), before)
+        XCTAssertEqual(document.session.undoStack.undoCommands.count, undo)
     }
 
     func testGeneralConstraintRefusalNamesConstraintAndKeepsBytes() async throws {
