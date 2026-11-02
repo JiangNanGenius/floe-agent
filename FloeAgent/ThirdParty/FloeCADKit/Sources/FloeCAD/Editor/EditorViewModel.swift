@@ -6332,6 +6332,9 @@ final class EditorViewModel {
     /// comparing a plane from one local space against a face in another is the
     /// kind of mistake that only shows up once two bodies are far apart.
     var replaceTargetPlane: (origin: SIMD3<Double>, normal: SIMD3<Double>)?
+    private var replaceSourceKernelFaceIndex: Int?
+    private var replaceTargetSelection: AgentExecPlaneSelection?
+    private var replacePickChangeCount: Int?
     /// Flip Alignment (§4.12): extend to the other side when both readings are
     /// geometrically valid.
     var replaceFaceFlip = false {
@@ -6355,6 +6358,9 @@ final class EditorViewModel {
         }
         replaceSourceFace = nil
         replaceTargetPlane = nil
+        replaceSourceKernelFaceIndex = nil
+        replaceTargetSelection = nil
+        replacePickChangeCount = nil
         replaceFaceFlip = false
         replaceFacePreview = nil
         replaceFaceRefusal = nil
@@ -6379,6 +6385,9 @@ final class EditorViewModel {
         replaceFaceBodyID = nil
         replaceSourceFace = nil
         replaceTargetPlane = nil
+        replaceSourceKernelFaceIndex = nil
+        replaceTargetSelection = nil
+        replacePickChangeCount = nil
         replaceFacePreview = nil
         replaceFaceRefusal = nil
         if case .pickingReplaceFace = mode { mode = .idle }
@@ -6403,6 +6412,18 @@ final class EditorViewModel {
         return FaceTopology.planarFace(in: body.render, seedTriangle: hit.triangleIndex)
     }
 
+    /// Current hit selection through the read-only native face witness. Its
+    /// channel comes from actual OCCT copy ancestry; render-triangle ordinals
+    /// are never assumed to be kernel-face indices or persistent identity.
+    private func replaceKernelFaceIndex(ray: Ray, body: Body) -> Int? {
+        guard let solid = body.brep, let snapshot = OCCTKernel.faceMeshSnapshot(from: solid) else { return nil }
+        let scene = ViewportScene(bodies: [BodyDrawable(id: body.id, renderMesh: snapshot.render,
+            edges: body.edges, meshRevision: body.meshRevision, modelMatrix: body.transform.matrixFloat,
+            baseColor: SIMD4(0.72, 0.74, 0.78, 1), selectionState: SelectionStateNone.rawValue)])
+        guard let hit = HitTester.pickBody(ray: ray, in: scene), snapshot.channel.indices.contains(hit.triangleIndex) else { return nil }
+        return Int(snapshot.channel[hit.triangleIndex])
+    }
+
     /// Move a plane from `from`'s local space into `into`'s. Identity for the
     /// usual case of two feature bodies, but not for a body the user moved.
     private static func convertPlane(
@@ -6423,6 +6444,11 @@ final class EditorViewModel {
     }
 
     private func handleReplaceFaceTap(ray: Ray) {
+        if let generation = replacePickChangeCount, generation != session.changeCount {
+            resetReplaceFaceState()
+            showNotice(Self.faceIdentityUnavailableMessage)
+            return
+        }
         guard let hit = HitTester.pickBody(ray: ray, in: scene),
               let body = session.document.body(with: hit.bodyID) else { return }
 
@@ -6444,7 +6470,15 @@ final class EditorViewModel {
             }
             replaceFaceBodyID = body.id
             replaceSourceFace = face
+            replaceSourceKernelFaceIndex = replaceKernelFaceIndex(ray: ray, body: body)
+            if body.brep != nil, replaceSourceKernelFaceIndex == nil {
+                resetReplaceFaceState()
+                showNotice(Self.faceIdentityUnavailableMessage)
+                return
+            }
+            replacePickChangeCount = session.changeCount
             replaceTargetPlane = nil
+            replaceTargetSelection = nil
             replaceFacePreview = nil
             replaceFaceRefusal = nil
             return
@@ -6461,6 +6495,13 @@ final class EditorViewModel {
         }
         let targetNormal = SIMD3<Double>(
             Double(target.normal.x), Double(target.normal.y), Double(target.normal.z))
+        if sourceBody.brep != nil {
+            guard let index = replaceKernelFaceIndex(ray: ray, body: body) else {
+                showNotice(Self.faceIdentityUnavailableMessage)
+                return
+            }
+            replaceTargetSelection = .face(body.id, index)
+        }
         replaceTargetPlane = Self.convertPlane(
             origin: target.origin, normal: targetNormal,
             from: body.transform, into: sourceBody.transform)
@@ -6535,6 +6576,27 @@ final class EditorViewModel {
         else { return }
         guard !refuseExactSurface(source, operation: "Replace Face") else {
             resetReplaceFaceState()
+            return
+        }
+
+        if let sourceIndex = replaceSourceKernelFaceIndex, let targetSelection = replaceTargetSelection {
+            guard replacePickChangeCount == session.changeCount else {
+                resetReplaceFaceState()
+                showNotice(Self.faceIdentityUnavailableMessage)
+                return
+            }
+            let response = CADCommandExecutor(viewModel: self).run(.replaceFace(body: bodyID,
+                face: sourceIndex, targetOrigin: .zero, targetNormal: SIMD3(0, 1, 0),
+                flip: replaceFaceFlip, referencePlane: targetSelection))
+            guard response.status == 200 else {
+                let payload = (try? JSONSerialization.jsonObject(with: response.body)) as? [String: Any]
+                errorMessage = payload?["message"] as? String ?? Self.faceIdentityUnavailableMessage
+                return
+            }
+            resetReplaceFaceState()
+            mode = .selected(source.id)
+            selection = [source.id]
+            session.save()
             return
         }
 
@@ -20442,7 +20504,7 @@ final class EditorViewModel {
             return f("cad.feature.scaleFace", "Scale Face ×%@", fmt(factor.value))
         case let .rotateFace(_, angle, _):
             return f("cad.feature.rotateFace", "Rotate Face %@°", fmt(angle.value * 180 / .pi))
-        case let .draftFace(_, _, _, angle):
+        case let .draftFace(_, _, _, angle, _):
             return f("cad.feature.draftFace", "Draft Face %@°", fmt(angle.value))
         case let .revolve(_, _, _, angle, _):
             return f("cad.feature.revolve", "Revolve %@°", fmt(angle.value))
@@ -20486,7 +20548,7 @@ final class EditorViewModel {
                      count(openFaces.count, "1 face", "%d faces"))
         case let .deleteFace(_, faces):
             return f("cad.feature.deleteFace", "Delete Face (%@)", count(faces.count, "1 face", "%d faces"))
-        case let .replaceFace(_, _, _, flip):
+        case let .replaceFace(_, _, _, flip, _):
             return flip ? FloeCADStrings.text("cad.feature.replaceFaceFlipped", "Replace Face (flipped)")
                         : FloeCADStrings.text("cad.feature.replaceFace", "Replace Face")
         }

@@ -4495,8 +4495,8 @@ public final class CADParameterService {
              let .fillet(body, _, _), let .shell(body, _, _), let .deleteFace(body, _):
             return [body.bodyID]
         case let .pushPull(face, _, _), let .moveFace(face, _), let .scaleFace(face, _),
-             let .rotateFace(face, _, _), let .draftFace(face, _, _, _),
-             let .replaceFace(face, _, _, _):
+             let .rotateFace(face, _, _), let .draftFace(face, _, _, _, _),
+             let .replaceFace(face, _, _, _, _):
             return [face.body.bodyID]
         case .primitive, .baseSolid, .mirror, .pattern:
             return []
@@ -5121,7 +5121,7 @@ public final class CADParameterService {
             kindName = "rotateFace"
             add("angle", "deg", angle.value * (180 / .pi))
             unit = "deg"
-        case let .draftFace(_, _, _, angle):
+        case let .draftFace(_, _, _, angle, _):
             kindName = "draftFace"
             add("angle", "deg", angle.value, minimum: -89, maximum: 89)
             unit = "deg"
@@ -5143,9 +5143,16 @@ public final class CADParameterService {
         case let .deleteFace(_, faces):
             kindName = "deleteFace"
             add("face_count", "unitless", faces.count, editable: false)
-        case let .replaceFace(_, _, _, flip):
+        case let .replaceFace(_, _, _, flip, _):
             kindName = "replaceFace"
-            add("flip", "unitless", flip, editable: false)
+            add("flip", "unitless", flip)
+        }
+
+        if let reference = node.kind.operationPlaneReference,
+           let data = try? JSONEncoder().encode(reference),
+           let value = try? JSONSerialization.jsonObject(with: data) {
+            add("reference_plane", "unitless", value, editable: false,
+                note: "Frozen face/datum/sketch identity. Source changes rebuild this same feature; broken references refuse instead of using cached coordinates.")
         }
 
         // Formula contract for every expression-capable scalar. `formula` is
@@ -5281,7 +5288,7 @@ public final class CADParameterService {
         case let .extrude(_, _, _, _, _, _, termination): return termination?.nextFace.map { [$0] } ?? []
         case let .pushPull(face, _, _), let .moveFace(face, _),
              let .scaleFace(face, _), let .rotateFace(face, _, _),
-             let .draftFace(face, _, _, _), let .replaceFace(face, _, _, _):
+             let .draftFace(face, _, _, _, _), let .replaceFace(face, _, _, _, _):
             return [face]
         case let .shell(_, openFaces, _): return openFaces
         case let .deleteFace(_, faces): return faces
@@ -5575,13 +5582,20 @@ public final class CADParameterService {
             // public parameter is degrees, the persisted Expr is radians.
             return .success(.rotateFace(face: face,
                                         angle: Expr(value: a * (.pi / 180), formula: nil), axis: axis))
-        case let .draftFace(face, origin, normal, angle):
+        case let .draftFace(face, origin, normal, angle, support):
             guard changes.keys.allSatisfy({ $0 == "angle" }) else { return unknown(["angle"]) }
             guard let a = value("angle"), abs(a) < 89, a != 0 else {
                 return fail("angle", "angle must be non-zero with |angle| < 89 degrees.")
             }
             return .success(.draftFace(face: face, neutralOrigin: origin,
-                                       neutralNormal: normal, angle: Expr(value: a, formula: nil)))
+                                       neutralNormal: normal, angle: Expr(value: a, formula: nil),
+                                       planeReference: support))
+        case let .replaceFace(face, origin, normal, oldFlip, support):
+            guard changes.keys.allSatisfy({ $0 == "flip" }) else { return unknown(["flip"]) }
+            guard let flip = boolValue("flip") else { return fail("flip", "flip must be true or false.") }
+            guard !requireChange || flip != oldFlip else { return fail("flip", "Nothing changed.") }
+            return .success(.replaceFace(face: face, targetOrigin: origin,
+                                        targetNormal: normal, flip: flip, planeReference: support))
         case let .chamfer(body, edges, setback):
             guard changes.keys.allSatisfy({ $0 == "setback" }) else { return unknown(["setback"]) }
             guard let s = value("setback"), s > 1e-6 else { return fail("setback", "setback must be > 0 mm.") }

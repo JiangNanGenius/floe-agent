@@ -1442,7 +1442,7 @@ final class DocumentSession {
                                           storedUnit: "rad", expr: angle,
                                           publicScale: radiansToDegrees,
                                           storedScale: degreesToRadians)]
-        case let .draftFace(_, _, _, angle):
+        case let .draftFace(_, _, _, angle, _):
             return [FeatureExpressionSlot(name: "angle", unit: "deg",
                                           storedUnit: "deg", expr: angle)]
         case let .chamfer(_, _, setback):
@@ -1528,10 +1528,10 @@ final class DocumentSession {
         case let .rotateFace(face, angle, axis):
             guard name == "angle" else { return nil }
             return .rotateFace(face: face, angle: expr, axis: axis)
-        case let .draftFace(face, origin, normal, angle):
+        case let .draftFace(face, origin, normal, angle, support):
             guard name == "angle" else { return nil }
             return .draftFace(face: face, neutralOrigin: origin,
-                              neutralNormal: normal, angle: expr)
+                              neutralNormal: normal, angle: expr, planeReference: support)
         case let .chamfer(body, edges, setback):
             guard name == "setback" else { return nil }
             return .chamfer(body: body, edges: edges, setback: expr)

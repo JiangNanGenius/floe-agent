@@ -53,6 +53,25 @@ nonisolated enum CADStaleReferenceGuard {
                                                    hasStableSignature: !signatures.isEmpty)
             try validateFaces(faces, op: op, body: body, signatures: signatures,
                               requireEverySignature: !tokenValid)
+            if ["feature.draftFace", "feature.replaceFace"].contains(op),
+               var reference = args["referencePlane"] as? [String: Any],
+               let rawTarget = reference["bodyID"] as? String,
+               let targetUUID = UUID(uuidString: rawTarget) {
+                guard let target = document.session.document.bodies.first(where: { $0.id.raw == targetUUID }) else {
+                    throw CADDocumentError(code: "missing_reference_body", message: "The target body is unavailable. Query the current bodies and faces.")
+                }
+                // One current face query describes every face on the SAME
+                // body. A different target needs its own generation proof.
+                if target.id == body.id, reference["query_token"] == nil,
+                   reference["query_generation_token"] == nil {
+                    reference["query_token"] = args["query_token"] ?? args["query_generation_token"]
+                }
+                let targetSignatures = faceSignatures(args: reference)
+                let targetTokenValid = try requireGeneration(reference, scope: "faces", body: target,
+                    document: document, hasStableSignature: !targetSignatures.isEmpty)
+                try validateFaces(ints(reference["face"]), op: op + ".referencePlane", body: target,
+                    signatures: targetSignatures, requireEverySignature: !targetTokenValid)
+            }
         } else if multiFaceOps.contains(op) {
             let key = op == "feature.shell" ? "openFaces" : "faces"
             let faces = ints(args[key])

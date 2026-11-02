@@ -131,6 +131,10 @@ nonisolated struct AssociativeDependencyGraph: Sendable {
             if case let .thread(_, spec) = node.kind {
                 edges[.feature(node.id), default: []].insert(.feature(spec.sourceVersion.writer))
             }
+            if let version = node.kind.operationPlaneReference?.writerVersion {
+                versionsByReference[.feature(node.id)] = version
+                edges[.feature(node.id), default: []].insert(.feature(version.writer))
+            }
         }
         for sketch in sketches {
             sketchIDs.insert(sketch.id)
@@ -433,6 +437,7 @@ nonisolated struct AssociativeGeometryResolver: Sendable {
         }
         for node in graph.nodes {
             if case let .thread(_, spec) = node.kind { requested.insert(spec.sourceVersion) }
+            if let version = node.kind.operationPlaneReference?.writerVersion { requested.insert(version) }
         }
         self.requestedVersions = requested
     }
@@ -476,12 +481,15 @@ nonisolated struct AssociativeGeometryResolver: Sendable {
     mutating func prepare(_ node: FeatureNode) -> (
         sketches: [SketchID: UInt64], planes: [ConstructionPlaneID: UInt64],
         axes: [ConstructionAxisID: UInt64],
+        operationPlane: ResolvedAssociativePlane?, operationPlaneStamp: UInt64?,
         error: AssociativeReferenceError?
     ) {
         var sketchHashes: [SketchID: UInt64] = [:]
         var planeHashes: [ConstructionPlaneID: UInt64] = [:]
         var axisHashes: [ConstructionAxisID: UInt64] = [:]
         var firstError: AssociativeReferenceError?
+        var operationPlane: ResolvedAssociativePlane?
+        var operationPlaneStamp: UInt64?
         for id in node.referencedSketchIDs.sorted(by: { $0.raw.uuidString < $1.raw.uuidString }) {
             // M05: linked sketches hash through resolution exactly like
             // supported ones, so a source edit re-runs the consumer.
@@ -514,8 +522,49 @@ nonisolated struct AssociativeGeometryResolver: Sendable {
                 if firstError == nil { firstError = error }
             }
         }
+        if let reference = node.kind.operationPlaneReference {
+            do {
+                operationPlane = try featurePlane(reference)
+                operationPlaneStamp = operationPlane?.stamp
+            } catch {
+                let error = typed(error)
+                operationPlaneStamp = failureStamp(key: .feature(node.id), error: error)
+                if firstError == nil { firstError = error }
+            }
+        }
         if let firstError { remember(firstError, at: .feature(node.id)) }
-        return (sketchHashes, planeHashes, axisHashes, firstError)
+        return (sketchHashes, planeHashes, axisHashes, operationPlane, operationPlaneStamp, firstError)
+    }
+
+    mutating func featurePlane(_ reference: FeaturePlaneReference) throws -> ResolvedAssociativePlane {
+        try reference.validate()
+        let resolved: ResolvedAssociativePlane
+        switch reference.source {
+        case let .plane(ref): resolved = try plane(ref)
+        case let .face(definition): resolved = try offsetPlane(definition)
+        }
+        try FeaturePlaneReference.validate(resolved.plane)
+        return resolved
+    }
+
+    private mutating func offsetPlane(_ payload: OffsetPlaneDefinition) throws -> ResolvedAssociativePlane {
+        try payload.validate()
+        let snapshot = try version(payload.sourceVersion)
+        let face = try Self.exactFace(source: payload.source,
+                                      version: payload.sourceVersion, snapshot: snapshot)
+        var edited = payload
+        if let formula = payload.distance.formula {
+            guard let value = ExpressionEvaluator.evaluate(formula, variables: variables), value.isFinite else {
+                throw AssociativeReferenceError.invalidFormula(formula)
+            }
+            edited.distance.value = value
+        }
+        let resolved = try edited.resolvedPlane(face: face, bodyTransform: snapshot.body.transform)
+        var stamp = EvalFingerprint()
+        stamp.combine(EvalFingerprint.hash(payload))
+        stamp.combine(snapshot.stamp)
+        stamp.combine(EvalFingerprint.hash(resolved))
+        return ResolvedAssociativePlane(plane: resolved, stamp: stamp.value)
     }
 
     mutating func plane(_ ref: PlaneRef) throws -> ResolvedAssociativePlane {
@@ -539,21 +588,7 @@ nonisolated struct AssociativeGeometryResolver: Sendable {
                 let resolved: SketchPlane
                 switch definition {
                 case let .offset(payload):
-                    try payload.validate()
-                    let snapshot = try version(payload.sourceVersion)
-                    let face = try Self.exactFace(source: payload.source,
-                                                  version: payload.sourceVersion,
-                                                  snapshot: snapshot)
-                    var edited = payload
-                    if let formula = payload.distance.formula {
-                        guard let value = ExpressionEvaluator.evaluate(formula, variables: variables),
-                              value.isFinite else {
-                            throw AssociativeReferenceError.invalidFormula(formula)
-                        }
-                        edited.distance.value = value
-                    }
-                    resolved = try edited.resolvedPlane(face: face,
-                                                        bodyTransform: snapshot.body.transform)
+                    resolved = try offsetPlane(payload).plane
                 case let .angle(payload):
                     try payload.validate()
                     let snapshot = try version(payload.sourceVersion)

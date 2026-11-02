@@ -407,7 +407,8 @@ nonisolated enum FeatureKind: Codable, Sendable {
     /// cast part. Positive narrows the body away from the neutral plane.
     /// Distinct from `draftExtrude`, which tapers as it CREATES the prism.
     case draftFace(face: FaceRef, neutralOrigin: PointWrapper,
-                   neutralNormal: PointWrapper, angle: Expr)
+                   neutralNormal: PointWrapper, angle: Expr,
+                   planeReference: FeaturePlaneReference? = nil)
     /// Phase E: bevel the referenced convex edges of `body` by a flat `setback`.
     case chamfer(body: BodyRef, edges: [EdgeRef], setback: Expr)
     /// Phase E: round the referenced convex edges of `body` to `radius`.
@@ -424,14 +425,22 @@ nonisolated enum FeatureKind: Codable, Sendable {
     /// plane given by `targetOrigin`/`targetNormal`, `flip` choosing which
     /// side when both readings are valid.
     ///
-    /// The target is stored as a PLANE, not a `FaceRef`. That is the v1
-    /// limitation to know about: the replace is associative to the face it
-    /// MOVES (which rebuilds with its body) but not to the face it moves TO —
-    /// if that one later shifts, this does not follow it. `sweep` stores its
-    /// spine the same way, for the same reason: a ref needs an owning body,
-    /// and the target is routinely on a different one.
+    /// Nil reference preserves the legacy absolute plane. A present reference
+    /// follows its datum/sketch/named face and cannot fall back to these cached
+    /// world coordinates after deletion, suppression or an invalid rebuild.
     case replaceFace(
-        face: FaceRef, targetOrigin: PointWrapper, targetNormal: PointWrapper, flip: Bool)
+        face: FaceRef, targetOrigin: PointWrapper, targetNormal: PointWrapper, flip: Bool,
+        planeReference: FeaturePlaneReference? = nil)
+}
+
+nonisolated extension FeatureKind {
+    var operationPlaneReference: FeaturePlaneReference? {
+        switch self {
+        case let .draftFace(_, _, _, _, reference), let .replaceFace(_, _, _, _, reference):
+            return reference
+        default: return nil
+        }
+    }
 }
 
 /// A node in the feature graph: stable identity, display name, its operation, a
@@ -499,6 +508,7 @@ nonisolated extension FeatureNode {
              .deleteFace, .replaceFace:
             break
         }
+        if case let .plane(ref)? = kind.operationPlaneReference?.source { addPlane(ref) }
         return ids
     }
 
@@ -519,6 +529,7 @@ nonisolated extension FeatureNode {
              .deleteFace, .replaceFace:
             break
         }
+        if case let .plane(ref)? = kind.operationPlaneReference?.source { add(ref) }
         return ids
     }
 
@@ -567,8 +578,8 @@ nonisolated extension FeatureNode {
              let .deleteFace(body, _):
             return [body.bodyID]
         case let .pushPull(face, _, _), let .moveFace(face, _), let .scaleFace(face, _),
-             let .rotateFace(face, _, _), let .draftFace(face, _, _, _),
-             let .replaceFace(face, _, _, _):
+             let .rotateFace(face, _, _), let .draftFace(face, _, _, _, _),
+             let .replaceFace(face, _, _, _, _):
             return [face.body.bodyID]
         }
     }
@@ -774,7 +785,8 @@ nonisolated extension FeatureGraph {
                 of: node, sketchHash: sketchHash, planeHash: planeHash,
                 axisHash: axisHash, stamps: state.stamps,
                 resolvedSketchHash: prepared.sketches, resolvedPlaneHash: prepared.planes,
-                resolvedAxisHash: prepared.axes, variables: variables)
+                resolvedAxisHash: prepared.axes, operationPlaneStamp: prepared.operationPlaneStamp,
+                variables: variables)
             let delta: EvalNodeDelta
             if let hit = cache.entries[node.id], hit.fingerprint == fingerprint {
                 state.apply(hit.delta, for: node.id)
@@ -786,7 +798,8 @@ nonisolated extension FeatureGraph {
                 if let error = prepared.error {
                     state.errors[node.id] = .brokenRef(error.message)
                 } else {
-                    evaluate(node, into: &state, nextRevision: nextRevision)
+                    evaluate(node, operationPlane: prepared.operationPlane?.plane,
+                             into: &state, nextRevision: nextRevision)
                 }
                 state.currentNode = nil
                 var recorded = state.journal[node.id] ?? EvalNodeDelta()
@@ -845,6 +858,7 @@ nonisolated extension FeatureGraph {
         resolvedSketchHash: [SketchID: UInt64],
         resolvedPlaneHash: [ConstructionPlaneID: UInt64],
         resolvedAxisHash: [ConstructionAxisID: UInt64],
+        operationPlaneStamp: UInt64?,
         variables: [String: Double]
     ) -> UInt64 {
         var f = EvalFingerprint()
@@ -885,6 +899,7 @@ nonisolated extension FeatureGraph {
         for bid in node.consumedBodyIDs.sorted(by: { $0.raw.uuidString < $1.raw.uuidString }) {
             f.combine(stamps[bid] ?? 0)
         }
+        if let operationPlaneStamp { f.combine(operationPlaneStamp) }
         return f.value
     }
 
@@ -892,9 +907,23 @@ nonisolated extension FeatureGraph {
 
     private func evaluate(
         _ node: FeatureNode,
+        operationPlane: SketchPlane?,
         into state: inout EvalState,
         nextRevision: () -> UInt64
     ) {
+        let localOperationPlane: SketchPlane?
+        if let operationPlane {
+            guard let bodyID = node.consumedBodyIDs.first, let body = state.bodies[bodyID],
+                  body.transform.scale.isFinite, body.transform.scale > 1e-12 else {
+                state.errors[node.id] = .brokenRef("The edit body or its placement is unavailable.")
+                return
+            }
+            let inverseRotation = body.transform.rotation.inverse
+            localOperationPlane = SketchPlane(
+                origin: inverseRotation.act(operationPlane.origin - body.transform.translation) / body.transform.scale,
+                xAxis: inverseRotation.act(operationPlane.xAxis),
+                yAxis: inverseRotation.act(operationPlane.yAxis))
+        } else { localOperationPlane = nil }
         switch node.kind {
         case let .baseSolid(source):
             evalBaseSolid(node, source: source, into: &state, next: nextRevision)
@@ -921,9 +950,9 @@ nonisolated extension FeatureGraph {
         case let .rotateFace(face, angle, axis):
             evalRotateFace(node, face: face, angle: angle.value, axis: axis.point,
                            into: &state, next: nextRevision)
-        case let .draftFace(face, neutralOrigin, neutralNormal, angle):
-            evalDraftFace(node, face: face, neutralOrigin: neutralOrigin.point,
-                          neutralNormal: neutralNormal.point, degrees: angle.value,
+        case let .draftFace(face, neutralOrigin, neutralNormal, angle, _):
+            evalDraftFace(node, face: face, neutralOrigin: localOperationPlane?.origin ?? neutralOrigin.point,
+                          neutralNormal: localOperationPlane?.normal ?? neutralNormal.point, degrees: angle.value,
                           into: &state, next: nextRevision)
         case let .revolve(profile, plane, axis, angle, boolean):
             evalRevolve(
@@ -962,10 +991,10 @@ nonisolated extension FeatureGraph {
         case let .deleteFace(body, faces):
             evalDeleteFace(
                 node, bodyRef: body, faceRefs: faces, into: &state, next: nextRevision)
-        case let .replaceFace(face, targetOrigin, targetNormal, flip):
+        case let .replaceFace(face, targetOrigin, targetNormal, flip, _):
             evalReplaceFace(
-                node, faceRef: face, targetOrigin: targetOrigin.point,
-                targetNormal: targetNormal.point, flip: flip,
+                node, faceRef: face, targetOrigin: localOperationPlane?.origin ?? targetOrigin.point,
+                targetNormal: localOperationPlane?.normal ?? targetNormal.point, flip: flip,
                 into: &state, next: nextRevision)
 
         case let .transform(body, delta):
@@ -1600,12 +1629,12 @@ nonisolated extension FeatureGraph {
             return .scaleFace(face: upgraded, factor: factor)
         case let .rotateFace(face, angle, axis) where face == ref:
             return .rotateFace(face: upgraded, angle: angle, axis: axis)
-        case let .draftFace(face, origin, normal, angle) where face == ref:
+        case let .draftFace(face, origin, normal, angle, support) where face == ref:
             return .draftFace(face: upgraded, neutralOrigin: origin,
-                              neutralNormal: normal, angle: angle)
-        case let .replaceFace(face, origin, normal, flip) where face == ref:
+                              neutralNormal: normal, angle: angle, planeReference: support)
+        case let .replaceFace(face, origin, normal, flip, support) where face == ref:
             return .replaceFace(face: upgraded, targetOrigin: origin,
-                                targetNormal: normal, flip: flip)
+                                targetNormal: normal, flip: flip, planeReference: support)
         case let .shell(body, openFaces, thickness) where openFaces.contains(ref):
             return .shell(body: body,
                           openFaces: openFaces.map { $0 == ref ? upgraded : $0 },
@@ -1935,7 +1964,11 @@ nonisolated extension FeatureGraph {
         // bodies use the deformation fallback below.
         if OCCTKernel.useOCCTAsSourceOfTruth, let brep = body.brep,
            let point = Self.pointOnFace(resolved, mesh: body.render) {
-            let worldPoint = body.transform.applying(to: point)
+            // The exact shape is body-local. New reference-based edits also
+            // resolve their plane into that same frame; legacy absolute
+            // documents keep their original stored coordinate convention.
+            let worldPoint = node.kind.operationPlaneReference == nil
+                ? body.transform.applying(to: point) : point
             if case let .success(drafted) = OCCTKernel.draftResult(
                 brep, facesAt: [worldPoint], degrees: degrees,
                 neutralOrigin: neutralOrigin, neutralNormal: neutralNormal,

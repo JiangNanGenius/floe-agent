@@ -534,14 +534,15 @@ final class CADCommandExecutor {
         case let .deleteFace(bodyID, faces):
             return execDeleteFace(body: bodyID, faces: faces, on: viewModel)
 
-        case let .draftFace(bodyID, face, neutralOrigin, neutralNormal, angleDegrees):
+        case let .draftFace(bodyID, face, neutralOrigin, neutralNormal, angleDegrees, referencePlane):
             return execDraftFace(body: bodyID, face: face, neutralOrigin: neutralOrigin,
                                  neutralNormal: neutralNormal, degrees: angleDegrees,
+                                 referencePlane: referencePlane,
                                  on: viewModel)
-        case let .replaceFace(bodyID, face, origin, normal, flip):
+        case let .replaceFace(bodyID, face, origin, normal, flip, referencePlane):
             return execReplaceFace(body: bodyID, face: face,
                                    targetOrigin: origin, targetNormal: normal,
-                                   flip: flip, on: viewModel)
+                                   flip: flip, referencePlane: referencePlane, on: viewModel)
 
         case let .setMaterial(bodies, material):
             if let bad = missingBody(bodies, session) { return bad }
@@ -1341,69 +1342,120 @@ final class CADCommandExecutor {
             outputBodyIDs: [bodyID]), on: viewModel, prefix: prefix)
     }
 
-    /// feature.draftFace: taper an existing face about its intersection with a
-    /// world neutral plane (spec: SOLIDWORKS Draft). Recorded as a graph node,
-    /// so it replays and shows in History like every other feature.
-    private func execDraftFace(body bodyID: BodyID, face: Int,
-                               neutralOrigin: SIMD3<Double>,
-                               neutralNormal: SIMD3<Double>,
-                               degrees: Double,
-                               on viewModel: EditorViewModel) -> AgentResponse {
-        let session = viewModel.session
-        let context: (body: Body, brep: BRepHandle)
-        if let refusal = exactSurfaceRefusal([bodyID], operation: "Draft Face", session) {
-            return refusal
-        }
-        switch identityContext(bodyID, session) {
-        case let .ok(body, brep): context = (body, brep)
-        case let .reply(reply): return reply
-        }
-        var ref = bodyRef(bodyID, session)
-        let refs: [FaceRef]
+    /// Direct edits share trusted face minting, frozen target capture and the
+    /// same one-undo transaction used by every other feature command.
+    private struct PreparedPlaneEdit {
+        let face: FaceRef
+        let reference: FeaturePlaneReference?
+        let plane: SketchPlane?
         let prefix: [FeatureNode]
-        switch mintFaceRefs([face], context: context, bodyRef: ref, session) {
-        case let .ok(minted, owner, sources): refs = minted; ref = owner; prefix = sources
-        case let .reply(reply): return reply
-        }
-        return record(FeatureNode(
-            name: "Draft Face",
-            kind: .draftFace(face: refs[0],
-                             neutralOrigin: PointWrapper(neutralOrigin),
-                             neutralNormal: PointWrapper(neutralNormal),
-                             angle: Expr(value: degrees)),
-            outputBodyIDs: [bodyID]), on: viewModel, prefix: prefix)
+    }
+    private enum PlaneEditPreparation {
+        case ok(PreparedPlaneEdit)
+        case reply(AgentResponse)
     }
 
-    /// feature.replaceFace: extend/trim one face onto a world plane
-    /// (spec §4.12). The target is a plane, not a ref — the same v1
-    /// limitation the interactive tool has, for the same reason.
-    private func execReplaceFace(body bodyID: BodyID, face: Int,
-                                 targetOrigin: SIMD3<Double>,
-                                 targetNormal: SIMD3<Double>, flip: Bool,
-                                 on viewModel: EditorViewModel) -> AgentResponse {
-        let session = viewModel.session
+    private func preparePlaneEdit(body bodyID: BodyID, face: Int,
+                                  selection: AgentExecPlaneSelection?, operation: String,
+                                  session: DocumentSession) -> PlaneEditPreparation {
+        if let refusal = exactSurfaceRefusal([bodyID], operation: operation, session) { return .reply(refusal) }
         let context: (body: Body, brep: BRepHandle)
-        if let refusal = exactSurfaceRefusal([bodyID], operation: "Replace Face", session) {
-            return refusal
-        }
         switch identityContext(bodyID, session) {
         case let .ok(body, brep): context = (body, brep)
-        case let .reply(reply): return reply
+        case let .reply(reply): return .reply(reply)
         }
-        var ref = bodyRef(bodyID, session)
+        var indices = [face]
+        if case let .face(targetBody, targetIndex)? = selection, targetBody == bodyID { indices.append(targetIndex) }
         let refs: [FaceRef]
-        let prefix: [FeatureNode]
-        switch mintFaceRefs([face], context: context, bodyRef: ref, session) {
-        case let .ok(minted, owner, sources): refs = minted; ref = owner; prefix = sources
-        case let .reply(reply): return reply
+        var prefix: [FeatureNode]
+        switch mintFaceRefs(indices, context: context, bodyRef: bodyRef(bodyID, session), session) {
+        case let .ok(minted, _, sources): refs = minted; prefix = sources
+        case let .reply(reply): return .reply(reply)
         }
-        return record(FeatureNode(
-            name: "Replace Face",
-            kind: .replaceFace(face: refs[0],
-                               targetOrigin: PointWrapper(targetOrigin),
-                               targetNormal: PointWrapper(targetNormal),
-                               flip: flip),
-            outputBodyIDs: [bodyID]), on: viewModel, prefix: prefix)
+        guard let selection else {
+            return .ok(PreparedPlaneEdit(face: refs[0], reference: nil, plane: nil, prefix: prefix))
+        }
+        let reference: FeaturePlaneReference
+        let plane: SketchPlane
+        switch selection {
+        case let .plane(id):
+            guard let value = session.document.planes.first(where: { $0.id == id }) else {
+                return .reply(execMissing("plane", id.raw.uuidString))
+            }
+            reference = FeaturePlaneReference(source: .plane(PlaneRef(source: .construction(id))))
+            plane = value.plane
+        case let .sketch(id):
+            guard let value = session.document.sketches.first(where: { $0.id == id }) else {
+                return .reply(execMissing("sketch", id.raw.uuidString))
+            }
+            reference = FeaturePlaneReference(source: .plane(PlaneRef(source: .sketch(id))))
+            plane = value.plane
+        case let .face(targetBody, targetIndex):
+            let target: (body: Body, brep: BRepHandle)
+            let targetRef: FaceRef
+            if targetBody == bodyID {
+                target = context
+                targetRef = refs[1]
+            } else {
+                switch identityContext(targetBody, session) {
+                case let .ok(body, brep): target = (body, brep)
+                case let .reply(reply): return .reply(reply)
+                }
+                switch mintFaceRefs([targetIndex], context: target,
+                                     bodyRef: bodyRef(targetBody, session), session) {
+                case let .ok(minted, _, sources): targetRef = minted[0]; prefix += sources
+                case let .reply(reply): return .reply(reply)
+                }
+            }
+            guard let info = OCCTKernel.faceInfo(target.brep).first(where: { $0.index == targetIndex }),
+                  case .planar? = info.signature?.kind else {
+                return .reply(.failure(409, "Conflict", error: "planar_target_required",
+                    message: "Choose one named planar face for the target or neutral plane."))
+            }
+            do {
+                let axis = abs(info.normal.x) < 0.9 ? SIMD3<Double>(1, 0, 0) : SIMD3<Double>(0, 1, 0)
+                let frame = try PlaneAttachmentFrame.make(faceCentroid: info.centroid,
+                    faceNormal: info.normal, referenceXAxis: axis, anchorPoint: info.centroid)
+                let definition = OffsetPlaneDefinition(source: targetRef,
+                    sourceVersion: GeometryVersionRef(bodyID: targetBody, writer: targetRef.body.producer),
+                    distance: Expr(value: 0), attachment: frame)
+                plane = try definition.resolvedPlane(face: SourceFaceGeometry(bodyID: targetBody,
+                    centroid: info.centroid, normal: info.normal), bodyTransform: target.body.transform)
+                reference = FeaturePlaneReference(source: .face(definition))
+            } catch {
+                return .reply(.failure(422, "Unprocessable Entity", error: "invalid_reference_plane",
+                    message: error.localizedDescription))
+            }
+        }
+        return .ok(PreparedPlaneEdit(face: refs[0], reference: reference, plane: plane, prefix: prefix))
+    }
+
+    private func execDraftFace(body bodyID: BodyID, face: Int,
+                               neutralOrigin: SIMD3<Double>, neutralNormal: SIMD3<Double>, degrees: Double,
+                               referencePlane: AgentExecPlaneSelection?, on viewModel: EditorViewModel) -> AgentResponse {
+        switch preparePlaneEdit(body: bodyID, face: face, selection: referencePlane,
+                                operation: "Draft Face", session: viewModel.session) {
+        case let .reply(reply): return reply
+        case let .ok(value):
+            return record(FeatureNode(name: "Draft Face", kind: .draftFace(face: value.face,
+                neutralOrigin: PointWrapper(value.plane?.origin ?? neutralOrigin),
+                neutralNormal: PointWrapper(value.plane?.normal ?? neutralNormal), angle: Expr(value: degrees),
+                planeReference: value.reference), outputBodyIDs: [bodyID]), on: viewModel, prefix: value.prefix)
+        }
+    }
+
+    private func execReplaceFace(body bodyID: BodyID, face: Int,
+                                 targetOrigin: SIMD3<Double>, targetNormal: SIMD3<Double>, flip: Bool,
+                                 referencePlane: AgentExecPlaneSelection?, on viewModel: EditorViewModel) -> AgentResponse {
+        switch preparePlaneEdit(body: bodyID, face: face, selection: referencePlane,
+                                operation: "Replace Face", session: viewModel.session) {
+        case let .reply(reply): return reply
+        case let .ok(value):
+            return record(FeatureNode(name: "Replace Face", kind: .replaceFace(face: value.face,
+                targetOrigin: PointWrapper(value.plane?.origin ?? targetOrigin),
+                targetNormal: PointWrapper(value.plane?.normal ?? targetNormal), flip: flip,
+                planeReference: value.reference), outputBodyIDs: [bodyID]), on: viewModel, prefix: value.prefix)
+        }
     }
 
     /// Mint real FaceRefs (signature + name) for kernel face indices — the

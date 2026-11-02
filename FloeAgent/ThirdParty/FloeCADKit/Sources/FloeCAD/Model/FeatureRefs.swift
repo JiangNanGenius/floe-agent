@@ -63,6 +63,65 @@ nonisolated struct PlaneRef: Codable, Hashable, Sendable {
     var source: Source
 }
 
+/// A direct edit's neutral/target plane. Named faces retain the exact writer
+/// version and the existing face-local attachment; a replay never substitutes
+/// the last world-space display plane when that source no longer resolves.
+nonisolated struct FeaturePlaneReference: Codable, Equatable, Sendable {
+    static var supportedVersion: Int { 1 }
+    nonisolated enum Source: Codable, Equatable, Sendable {
+        case plane(PlaneRef)
+        case face(OffsetPlaneDefinition)
+    }
+    let version: Int
+    let source: Source
+
+    init(source: Source, version: Int = FeaturePlaneReference.supportedVersion) {
+        self.version = version
+        self.source = source
+    }
+
+    private enum CodingKeys: String, CodingKey { case version, source }
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        let version = try c.decode(Int.self, forKey: .version)
+        guard version == Self.supportedVersion else {
+            throw AssociativeGeometryError.unsupportedSemanticVersion(version)
+        }
+        self.version = version
+        source = try c.decode(Source.self, forKey: .source)
+    }
+
+    var writerVersion: GeometryVersionRef? {
+        if case let .face(value) = source { return value.sourceVersion }
+        return nil
+    }
+
+    func validate() throws {
+        guard version == Self.supportedVersion else {
+            throw AssociativeGeometryError.unsupportedSemanticVersion(version)
+        }
+        if case let .face(value) = source {
+            try value.validate()
+            guard value.distance.value == 0, value.distance.formula == nil else {
+                throw AssociativeGeometryError.degenerateFaceGeometry(
+                    "A face reference must use its actual plane; use an offset datum for a displaced plane.")
+            }
+        }
+        if case let .plane(ref) = source, case let .explicit(plane) = ref.source {
+            try Self.validate(plane)
+        }
+    }
+
+    static func validate(_ plane: SketchPlane) throws {
+        let values = [plane.origin.x, plane.origin.y, plane.origin.z,
+                      plane.xAxis.x, plane.xAxis.y, plane.xAxis.z,
+                      plane.yAxis.x, plane.yAxis.y, plane.yAxis.z]
+        guard values.allSatisfy(\.isFinite), simd_length(simd_cross(plane.xAxis, plane.yAxis)) > 1e-10 else {
+            throw AssociativeGeometryError.degenerateFaceGeometry("The target plane has no valid frame.")
+        }
+    }
+}
+
 /// The axis a revolve/mirror is taken about.
 nonisolated struct AxisRef: Codable, Hashable, Sendable {
     nonisolated enum Source: Codable, Hashable, Sendable {

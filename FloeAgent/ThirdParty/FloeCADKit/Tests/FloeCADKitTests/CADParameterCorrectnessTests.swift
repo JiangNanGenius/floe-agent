@@ -1595,3 +1595,361 @@ final class CADParameterCorrectnessTests: XCTestCase {
         XCTAssertEqual(radius, Expr(value: 0, formula: "size / 2"))
     }
 }
+
+/// M23: the actual command/editor -> one history transaction -> frozen target
+/// resolver -> OCCT path. Analytic plane/volume checks are independent of the
+/// saved fallback coordinates and of the renderer.
+@MainActor
+final class CADFeaturePlaneReferenceTests: XCTestCase {
+    private var directory: URL!
+    override func setUp() async throws {
+        directory = FileManager.default.temporaryDirectory.appendingPathComponent("CADReferencePlane-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    }
+    override func tearDown() async throws { try? FileManager.default.removeItem(at: directory) }
+    private func document() async throws -> FloeCADDocument {
+        try await FloeCADDocument.create(at: directory.appendingPathComponent("Part.floecad"), name: "Linked target")
+    }
+    @discardableResult
+    private func box(_ document: FloeCADDocument, x: Double, height: Double) -> FeatureNode {
+        let entity = UUID()
+        let sketch = Sketch(name: "Profile", plane: SketchPlane(origin: SIMD3(x, 0, 0),
+            xAxis: SIMD3(1, 0, 0), yAxis: SIMD3(0, 0, -1)),
+            entities: [.rect(id: entity, min: .zero, max: SIMD2(40, 20))])
+        let node = FeatureNode(name: "Box", kind: .extrude(
+            profile: ProfileRef(sketchID: sketch.id, entityIDs: [entity], holeEntityIDs: [], seedPoint: SIMD2(5, 5)),
+            plane: PlaneRef(source: .sketch(sketch.id)), distance: Expr(value: height), symmetric: false,
+            boolean: BooleanIntent(op: .newBody, resolvedTargets: []), extraProfiles: []), outputBodyIDs: [BodyID()])
+        document.session.recordAndRebuild([node], extra: [AddSketchCommand(sketch: sketch)], title: "Box")
+        XCTAssertTrue(document.session.lastEvalErrors.isEmpty)
+        return node
+    }
+    private func body(_ document: FloeCADDocument, _ node: FeatureNode) throws -> Body {
+        try XCTUnwrap(document.session.document.body(with: try XCTUnwrap(node.outputBodyIDs.first)))
+    }
+    private func top(_ body: Body) throws -> Int {
+        try XCTUnwrap(OCCTKernel.faceInfo(try XCTUnwrap(body.brep)).first { $0.normal.y > 0.99 }).index
+    }
+    private func volume(_ body: Body) throws -> Double { abs(OCCTKernel.volume(try XCTUnwrap(body.brep))) }
+    private func run(_ document: FloeCADDocument, _ op: String, _ args: [String: Any]) throws {
+        let value = document.executeJSON(try JSONSerialization.data(withJSONObject: ["op": op, "args": args]))
+        XCTAssertTrue(value.isOK, "\(value.errorCode ?? ""): \(value.message ?? "")")
+        XCTAssertTrue(document.session.lastEvalErrors.isEmpty, "\(document.session.lastEvalErrors)")
+        guard value.isOK else { throw CADDocumentError(code: value.errorCode ?? "failed", message: value.message ?? "failed") }
+    }
+    private func height(_ document: FloeCADDocument, _ node: FeatureNode, _ value: Double) throws {
+        let result = CADParameterService(document: document).handle(action: "update", args: [
+            "feature_id": node.id.raw.uuidString, "changes": ["distance": value]])
+        XCTAssertEqual(result["ok"] as? Bool, true, "\(result)")
+        guard result["ok"] as? Bool == true else { throw CADDocumentError(code: "height", message: "\(result)") }
+    }
+    private func linkedReplace(_ document: FloeCADDocument, source: FeatureNode, target: FeatureNode) throws -> FeatureNode {
+        let a = try body(document, source), b = try body(document, target)
+        try run(document, "feature.replaceFace", ["bodyID": a.id.raw.uuidString, "face": top(a),
+            "referencePlane": ["bodyID": b.id.raw.uuidString, "face": top(b)]])
+        return try XCTUnwrap(document.session.document.features.nodes.last)
+    }
+    private func rebuilt(_ document: DesignDocument, cache: inout EvalCache) -> EvalResult {
+        var revision: UInt64 = 0
+        return document.features.evaluate(sketches: document.sketches, planes: document.planes,
+            naming: SignatureNaming(), nextRevision: { revision += 1; return revision }, cache: &cache)
+    }
+
+    func testReplaceFollowsNamedTargetOnSameFeatureUndoRedoAndReopen() async throws {
+        let document = try await document(); defer { document.close() }
+        let source = box(document, x: 0, height: 10), target = box(document, x: 60, height: 20)
+        let undo = document.session.undoStack.undoCommands.count
+        let edit = try linkedReplace(document, source: source, target: target)
+        XCTAssertEqual(document.session.undoStack.undoCommands.count, undo + 1)
+        XCTAssertEqual(try volume(body(document, source)), 16_000, accuracy: 1e-3)
+        let reference = try XCTUnwrap(edit.kind.operationPlaneReference)
+        XCTAssertEqual(reference.writerVersion?.writer, target.id)
+        XCTAssertEqual(reference.writerVersion?.bodyID, target.outputBodyIDs.first)
+        try height(document, target, 25)
+        XCTAssertNotNil(document.session.document.features.node(edit.id))
+        XCTAssertEqual(document.session.document.features.node(edit.id)?.kind.operationPlaneReference, reference)
+        XCTAssertEqual(try volume(body(document, source)), 20_000, accuracy: 1e-3)
+        document.session.undo()
+        XCTAssertEqual(try volume(body(document, source)), 16_000, accuracy: 1e-3)
+        document.session.redo()
+        XCTAssertEqual(try volume(body(document, source)), 20_000, accuracy: 1e-3)
+        let saved = await document.save(); XCTAssertTrue(saved.succeeded, saved.error ?? "")
+        let url = document.url; document.close()
+        let opened = try await FloeCADDocument.open(at: url); defer { opened.close() }
+        XCTAssertEqual(opened.session.document.features.node(edit.id)?.kind.operationPlaneReference, reference)
+        XCTAssertEqual(try volume(body(opened, source)), 20_000, accuracy: 1e-3)
+        try height(opened, target, 22)
+        XCTAssertEqual(try volume(body(opened, source)), 17_600, accuracy: 1e-3)
+        let descriptor = CADParameterService.describe(try XCTUnwrap(opened.session.document.features.node(edit.id)),
+            document: opened.session.document)
+        XCTAssertTrue((descriptor["parameters"] as? [[String: Any]] ?? []).contains { $0["name"] as? String == "reference_plane" })
+    }
+
+    func testMissingSuppressedAndForwardTargetCannotReuseMemoOrCachedPlane() async throws {
+        let document = try await document(); defer { document.close() }
+        let source = box(document, x: 0, height: 10), target = box(document, x: 60, height: 20)
+        let edit = try linkedReplace(document, source: source, target: target)
+        let original = document.session.document
+        var cache = EvalCache()
+        XCTAssertTrue(rebuilt(original, cache: &cache).errors.isEmpty)
+        for mode in 0..<3 {
+            var invalid = original
+            switch mode {
+            case 0: invalid.features.nodes.removeAll { $0.id == target.id }
+            case 1:
+                let index = try XCTUnwrap(invalid.features.nodes.firstIndex { $0.id == target.id })
+                invalid.features.nodes[index].suppressed = true
+            default:
+                invalid.features.nodes.removeAll { $0.id == edit.id }
+                let index = try XCTUnwrap(invalid.features.nodes.firstIndex { $0.id == target.id })
+                invalid.features.nodes.insert(edit, at: index)
+            }
+            let result = rebuilt(invalid, cache: &cache)
+            XCTAssertNotNil(result.errors[edit.id], "\(mode): \(result.errors)")
+            XCTAssertNotNil(result.referenceErrors[.feature(edit.id)])
+            let untouched = try XCTUnwrap(result.bodies.first { $0.id == source.outputBodyIDs.first })
+            XCTAssertEqual(try volume(untouched), 8_000, accuracy: 1e-3,
+                "A failed target cannot splice in the old16,000mm3 replacement")
+        }
+        XCTAssertEqual(try volume(body(document, source)), 16_000, accuracy: 1e-3)
+    }
+
+    func testDraftTracksNeutralFaceAndAngleUpdatesKeepItsReference() async throws {
+        let document = try await document(); defer { document.close() }
+        let source = box(document, x: 0, height: 20), target = box(document, x: 60, height: 5)
+        let a = try body(document, source), b = try body(document, target)
+        let wall = try XCTUnwrap(OCCTKernel.faceInfo(try XCTUnwrap(a.brep)).first { $0.normal.x > 0.99 })
+        try run(document, "feature.draftFace", ["bodyID": a.id.raw.uuidString, "face": wall.index,
+            "angleDegrees": 5, "referencePlane": ["bodyID": b.id.raw.uuidString, "face": top(b)]])
+        let edit = try XCTUnwrap(document.session.document.features.nodes.last)
+        let reference = try XCTUnwrap(edit.kind.operationPlaneReference)
+        func xAtNeutral(_ y: Double) throws -> Double {
+            let solid = try XCTUnwrap(try body(document, source).brep)
+            let face = try XCTUnwrap(OCCTKernel.faceInfo(solid).first {
+                $0.normal.x > 0.8 && abs($0.normal.y) > 0.001 && abs($0.normal.z) < 1e-6 })
+            return face.centroid.x - face.normal.y / face.normal.x * (y - face.centroid.y)
+        }
+        XCTAssertEqual(try xAtNeutral(5), 40, accuracy: 1e-4)
+        let firstVolume = try volume(body(document, source))
+        try height(document, target, 8)
+        XCTAssertEqual(try xAtNeutral(8), 40, accuracy: 1e-4)
+        XCTAssertGreaterThan(abs(try volume(body(document, source)) - firstVolume), 1)
+        let changed = CADParameterService(document: document).handle(action: "update", args: [
+            "feature_id": edit.id.raw.uuidString, "changes": ["angle": 7]])
+        XCTAssertEqual(changed["ok"] as? Bool, true, "\(changed)")
+        let updated = try XCTUnwrap(document.session.document.features.node(edit.id))
+        XCTAssertEqual(updated.kind.operationPlaneReference, reference)
+        XCTAssertEqual(try xAtNeutral(8), 40, accuracy: 1e-4)
+        let withFormula = try XCTUnwrap(DocumentSession.reevaluatedKind(updated.kind, with: [:]))
+        XCTAssertEqual(withFormula.operationPlaneReference, reference)
+    }
+
+    func testDatumPlaneAndTransformedTargetUseWorldFrameOnce() async throws {
+        let document = try await document(); defer { document.close() }
+        let source = box(document, x: 0, height: 10), target = box(document, x: 60, height: 20)
+        let a = try body(document, source), b = try body(document, target)
+        var placement = Transform3D.identity; placement.translation = SIMD3(0, 3, 0); placement.scale = 1.5
+        let transform = FeatureNode(name: "Target placement", kind: .transform(
+            body: BodyRef(producer: target.id, bodyID: b.id), delta: placement), outputBodyIDs: [b.id])
+        document.session.recordAndRebuild([transform], title: "Target placement")
+        let moved = try body(document, target)
+        try run(document, "feature.replaceFace", ["bodyID": a.id.raw.uuidString, "face": top(a),
+            "referencePlane": ["bodyID": moved.id.raw.uuidString, "face": top(moved)]])
+        XCTAssertEqual(try volume(body(document, source)), 800 * 33, accuracy: 1e-3)
+        let edit = try XCTUnwrap(document.session.document.features.nodes.last)
+        XCTAssertEqual(edit.kind.operationPlaneReference?.writerVersion?.writer, transform.id)
+        var shifted = placement; shifted.translation.y = 6
+        document.session.rebuildFrom(transform.id, edit: EditFeatureCommand(featureID: transform.id,
+            before: transform.kind,
+            after: .transform(body: BodyRef(producer: target.id, bodyID: b.id), delta: shifted)))
+        XCTAssertTrue(document.session.lastEvalErrors.isEmpty, "\(document.session.lastEvalErrors)")
+        XCTAssertEqual(try volume(body(document, source)), 800 * 36, accuracy: 1e-3)
+        XCTAssertEqual(document.session.document.features.node(edit.id)?.kind.operationPlaneReference,
+            edit.kind.operationPlaneReference)
+        document.session.undo()
+        XCTAssertEqual(try volume(body(document, source)), 800 * 33, accuracy: 1e-3)
+        document.session.redo()
+        XCTAssertEqual(try volume(body(document, source)), 800 * 36, accuracy: 1e-3)
+        document.session.undo()
+
+        // A separate explicit datum is a stable record identity too; a new
+        // operation must consume that record instead of baking its position.
+        document.session.undo()
+        let plane = ConstructionPlane(plane: .readable(origin: SIMD3(0, 18, 0), normal: SIMD3(0, 1, 0)), size: 100)
+        document.session.perform(AddConstructionPlaneCommand(plane: plane))
+        try run(document, "feature.replaceFace", ["bodyID": a.id.raw.uuidString, "face": top(try body(document, source)),
+            "referencePlane": ["planeID": plane.id.raw.uuidString]])
+        XCTAssertEqual(try volume(body(document, source)), 14_400, accuracy: 1e-3)
+        let latest = try XCTUnwrap(document.session.document.features.nodes.last)
+        XCTAssertEqual(latest.referencedConstructionPlaneIDs, [plane.id])
+        var cache = EvalCache()
+        XCTAssertTrue(rebuilt(document.session.document, cache: &cache).errors.isEmpty)
+        var movedDatum = document.session.document
+        let datumIndex = try XCTUnwrap(movedDatum.planes.firstIndex { $0.id == plane.id })
+        movedDatum.planes[datumIndex].plane = .readable(origin: SIMD3(0, 24, 0), normal: SIMD3(0, 1, 0))
+        let rebuiltDatum = rebuilt(movedDatum, cache: &cache)
+        XCTAssertTrue(rebuiltDatum.errors.isEmpty, "\(rebuiltDatum.errors)")
+        let editedBody = try XCTUnwrap(rebuiltDatum.bodies.first { $0.id == source.outputBodyIDs.first })
+        XCTAssertEqual(try volume(editedBody), 19_200, accuracy: 1e-3)
+    }
+
+    func testActualReplacePickerCreatesLinkedHistoryAndRejectsChangedSelectionEpoch() async throws {
+        let document = try await document(); defer { document.close() }
+        let source = box(document, x: 0, height: 10), target = box(document, x: 60, height: 20)
+        let model = document.viewModel(), undo = document.session.undoStack.undoCommands.count
+        model.beginReplaceFace()
+        model.handle(.tap(ray: Ray(origin: SIMD3(20, 100, -10), direction: SIMD3(0, -1, 0))))
+        XCTAssertEqual(model.replaceFaceStage, 2)
+        model.handle(.tap(ray: Ray(origin: SIMD3(80, 100, -10), direction: SIMD3(0, -1, 0))))
+        XCTAssertTrue(model.canCommitReplaceFace, model.replaceFaceRefusal ?? "")
+        model.commitReplaceFace()
+        XCTAssertEqual(document.session.undoStack.undoCommands.count, undo + 1)
+        XCTAssertEqual(try volume(body(document, source)), 16_000, accuracy: 1e-3)
+        let edit = try XCTUnwrap(document.session.document.features.nodes.last)
+        XCTAssertEqual(edit.kind.operationPlaneReference?.writerVersion?.writer, target.id)
+        document.session.undo()
+        XCTAssertEqual(try volume(body(document, source)), 8_000, accuracy: 1e-3)
+        model.beginReplaceFace()
+        model.handle(.tap(ray: Ray(origin: SIMD3(20, 100, -10), direction: SIMD3(0, -1, 0))))
+        document.session.perform(AddSketchCommand(sketch: Sketch(name: "Concurrent edit", plane: .ground)))
+        model.handle(.tap(ray: Ray(origin: SIMD3(80, 100, -10), direction: SIMD3(0, -1, 0))))
+        XCTAssertEqual(document.session.document.features.nodes.count, 2)
+        XCTAssertFalse(model.canCommitReplaceFace)
+        XCTAssertEqual(try volume(body(document, source)), 8_000, accuracy: 1e-3)
+    }
+
+    func testImportedSameBodyDraftCapturesOneSourceAndUndoKeepsOriginalBytes() async throws {
+        let document = try await document(); defer { document.close() }
+        let native = try XCTUnwrap(OCCTKernel.primitiveShape(.box(width: 40, depth: 20, height: 10), placement: .identity))
+        var original = Body(id: BodyID(), name: "Imported", transform: .identity, primitive: nil,
+            render: RenderMesh(positions: [], normals: [], indices: []), revision: 0)
+        XCTAssertTrue(original.adoptBRep(native))
+        document.session.perform(AddBodyCommand(body: original))
+        let bytes = try XCTUnwrap(OCCTKernel.serialize(native))
+        let faces = OCCTKernel.faceInfo(native)
+        let wall = try XCTUnwrap(faces.first { $0.normal.x > 0.99 })
+        let bottom = try XCTUnwrap(faces.first { $0.normal.y < -0.99 })
+        let undo = document.session.undoStack.undoCommands.count
+        try run(document, "feature.draftFace", ["bodyID": original.id.raw.uuidString, "face": wall.index,
+            "angleDegrees": 4, "referencePlane": ["bodyID": original.id.raw.uuidString, "face": bottom.index]])
+        let nodes = document.session.document.features.nodes
+        XCTAssertEqual(nodes.count, 2)
+        XCTAssertEqual(document.session.undoStack.undoCommands.count, undo + 1)
+        guard case let .baseSolid(snapshot) = nodes[0].kind,
+              case let .draftFace(source, _, _, _, support) = nodes[1].kind else { return XCTFail("Expected one preserved source plus draft") }
+        XCTAssertEqual(source.body.producer, nodes[0].id)
+        XCTAssertEqual(support?.writerVersion?.writer, nodes[0].id)
+        if case let .face(reference)? = support?.source {
+            XCTAssertEqual(reference.source.body.producer, nodes[0].id)
+        } else { XCTFail("Missing actual same-body reference") }
+        let captured = try snapshot.restoredBody(id: original.id, revision: 1)
+        XCTAssertEqual(OCCTKernel.serialize(try XCTUnwrap(captured.brep)), bytes)
+        document.session.undo()
+        XCTAssertTrue(document.session.document.features.nodes.isEmpty)
+        let restored = try XCTUnwrap(document.session.document.body(with: original.id))
+        XCTAssertEqual(OCCTKernel.serialize(try XCTUnwrap(restored.brep)), bytes)
+        document.session.redo()
+        XCTAssertEqual(document.session.document.features.nodes.map(\.id), nodes.map(\.id))
+    }
+
+    func testLegacyPlaneRemainsAbsoluteAndFutureReferenceIsOpaque() async throws {
+        let document = try await document(); defer { document.close() }
+        let source = box(document, x: 0, height: 10), target = box(document, x: 60, height: 20)
+        let edit = try linkedReplace(document, source: source, target: target)
+        guard case let .replaceFace(face, origin, normal, flip, _) = edit.kind else { return XCTFail("Expected replace") }
+        let legacy = FeatureKind.replaceFace(face: face, targetOrigin: origin, targetNormal: normal, flip: flip)
+        let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys]
+        let oldData = try encoder.encode(legacy)
+        XCTAssertFalse(String(decoding: oldData, as: UTF8.self).contains("planeReference"))
+        XCTAssertNil(try JSONDecoder().decode(FeatureKind.self, from: oldData).operationPlaneReference)
+        let data = try encoder.encode(edit.kind)
+        var object = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        var payload = try XCTUnwrap(object["replaceFace"] as? [String: Any])
+        var reference = try XCTUnwrap(payload["planeReference"] as? [String: Any])
+        reference["version"] = 2; payload["planeReference"] = reference; object["replaceFace"] = payload
+        let future = try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])
+        let row = CADFeatureRecord(featureID: edit.id.raw, orderIndex: 2, name: "Replace", suppressed: false,
+            kind: future, outputBodyIDs: try encoder.encode(edit.outputBodyIDs.map(\.raw)))
+        let assessment = try CADDocumentFormat.assess(planes: [], sketches: [], features: [row])
+        XCTAssertEqual(assessment.requiredVersion, CADDocumentFormat.operationPlaneReferenceVersion)
+        XCTAssertTrue(assessment.opaqueFeatures.contains(edit.id.raw))
+        XCTAssertEqual(row.kind, future)
+        reference["version"] = 1
+        reference["source"] = ["futureSurface": [:]]
+        payload["planeReference"] = reference; object["replaceFace"] = payload
+        var unknownRow = row
+        unknownRow.kind = try JSONSerialization.data(withJSONObject: object)
+        XCTAssertTrue(try CADDocumentFormat.assess(planes: [], sketches: [], features: [unknownRow])
+            .opaqueFeatures.contains(edit.id.raw))
+        reference["version"] = true
+        payload["planeReference"] = reference; object["replaceFace"] = payload
+        unknownRow.kind = try JSONSerialization.data(withJSONObject: object)
+        XCTAssertThrowsError(try CADDocumentFormat.assess(planes: [], sketches: [], features: [unknownRow])) {
+            XCTAssertEqual($0 as? CADDocumentFormatError, .malformedAssociation("feature-plane"))
+        }
+        XCTAssertEqual(CADDocumentFormat.requiredFormat(document: document.session.document), 7)
+        try height(document, target, 25)
+        var copy = document.session.document
+        let index = try XCTUnwrap(copy.features.nodes.firstIndex { $0.id == edit.id })
+        copy.features.nodes[index].kind = legacy
+        var cache = EvalCache(); let result = rebuilt(copy, cache: &cache)
+        XCTAssertTrue(result.errors.isEmpty)
+        XCTAssertEqual(try volume(XCTUnwrap(result.bodies.first { $0.id == source.outputBodyIDs.first })), 16_000, accuracy: 1e-3)
+    }
+
+    func testMergedPlaneReferencesRemapEveryIdentityAndTranslateOnlyOnce() async throws {
+        let document = try await document(); defer { document.close() }
+        let source = box(document, x: 0, height: 10), target = box(document, x: 60, height: 20)
+        let edit = try linkedReplace(document, source: source, target: target)
+        let insertion = try ProjectMergeKit.insert(document.session.document, into: DesignDocument(), translation: SIMD3(200, 30, -40))
+        let mapped = try XCTUnwrap(insertion.document.features.nodes.last)
+        XCTAssertNotEqual(mapped.id, edit.id)
+        XCTAssertNotEqual(mapped.kind.operationPlaneReference?.writerVersion?.writer, target.id)
+        XCTAssertNotEqual(mapped.kind.operationPlaneReference?.writerVersion?.bodyID, target.outputBodyIDs.first)
+        var cache = EvalCache(); let result = rebuilt(insertion.document, cache: &cache)
+        XCTAssertTrue(result.errors.isEmpty, "\(result.errors)")
+        let output = try XCTUnwrap(result.bodies.first { $0.id == mapped.outputBodyIDs.first })
+        XCTAssertEqual(try volume(output), 16_000, accuracy: 1e-3)
+        let worldTop = OCCTKernel.faceInfo(try XCTUnwrap(output.brep)).filter { $0.normal.y > 0.99 }
+            .map { output.transform.applying(to: $0.centroid).y }.max()
+        XCTAssertEqual(try XCTUnwrap(worldTop), 50, accuracy: 1e-4)
+    }
+
+    func testTargetFaceRequiresItsOwnFreshQueryGenerationAndParserKeepsThatChoice() async throws {
+        let document = try await document(); defer { document.close() }
+        let source = box(document, x: 0, height: 10), target = box(document, x: 60, height: 20)
+        let a = try body(document, source), b = try body(document, target)
+        func token(_ id: BodyID) throws -> String {
+            let query = document.nativeQueryJSON(["scope": "faces"])
+            XCTAssertTrue(query.isOK)
+            let payload = try XCTUnwrap(JSONSerialization.jsonObject(with: query.payload) as? [String: Any])
+            let row = try XCTUnwrap((payload["rows"] as? [[String: Any]])?.first { $0["bodyID"] as? String == id.raw.uuidString })
+            return try XCTUnwrap(row["query_token"] as? String)
+        }
+        func input(_ targetToken: String?) throws -> String {
+            var reference: [String: Any] = ["bodyID": b.id.raw.uuidString, "face": try top(body(document, target))]
+            if let targetToken { reference["query_token"] = targetToken }
+            let args: [String: Any] = ["bodyID": a.id.raw.uuidString, "face": try top(body(document, source)),
+                "query_token": try token(a.id), "referencePlane": reference]
+            if targetToken != nil {
+                guard case let .success(.replaceFace(_, _, _, _, _, selection)) = AgentExec.parse(["op": "feature.replaceFace", "args": args]) else {
+                    throw CADDocumentError(code: "parse", message: "The typed parser must accept current target proof fields")
+                }
+                XCTAssertEqual(selection, .face(b.id, try top(body(document, target))))
+            }
+            return String(decoding: try JSONSerialization.data(withJSONObject: ["op": "feature.replaceFace", "args": args]), as: UTF8.self)
+        }
+        let targetToken = try token(b.id)
+        XCTAssertNoThrow(try CADStaleReferenceGuard.validate(operationJSON: input(targetToken), document: document))
+        XCTAssertThrowsError(try CADStaleReferenceGuard.validate(operationJSON: input(nil), document: document)) {
+            XCTAssertEqual(($0 as? CADDocumentError)?.code, "requery_required")
+        }
+        try height(document, target, 25)
+        XCTAssertThrowsError(try CADStaleReferenceGuard.validate(operationJSON: input(targetToken), document: document)) {
+            XCTAssertEqual(($0 as? CADDocumentError)?.code, "requery_required")
+        }
+        XCTAssertNoThrow(try CADStaleReferenceGuard.validate(operationJSON: input(token(b.id)), document: document))
+        XCTAssertEqual(try volume(body(document, source)), 8_000, accuracy: 1e-3)
+        XCTAssertEqual(document.session.document.features.nodes.count, 2)
+    }
+}

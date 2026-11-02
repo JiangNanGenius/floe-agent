@@ -68,6 +68,7 @@ nonisolated enum CADDocumentFormat {
     /// floor. Only actual reference intent raises a package; support-only
     /// sketches retain their existing association floor.
     static let externalSketchProjectionVersion = 7
+    static let operationPlaneReferenceVersion = 7
     /// Coordinated package floor for a document that actually stores
     /// user-named versions. Ordinary documents keep their existing schema
     /// floor; only a package that gains a checkpoint is raised to this floor.
@@ -148,6 +149,9 @@ nonisolated enum CADDocumentFormat {
 
     static func requiredFormat(document: DesignDocument) -> Int {
         var required = legacyVersion
+        if document.features.nodes.contains(where: { $0.kind.operationPlaneReference != nil }) {
+            required = max(required, operationPlaneReferenceVersion)
+        }
         if document.features.nodes.contains(where: { if case .thread = $0.kind { return true }; return false }) {
             required = max(required, standardThreadVersion)
         }
@@ -259,12 +263,14 @@ nonisolated enum CADDocumentFormat {
             case let .thread(_, spec):
                 refs = [spec.source]
             case let .pushPull(face, _, _), let .moveFace(face, _), let .scaleFace(face, _),
-                 let .rotateFace(face, _, _), let .draftFace(face, _, _, _), let .replaceFace(face, _, _, _):
+                 let .rotateFace(face, _, _), let .draftFace(face, _, _, _, _), let .replaceFace(face, _, _, _, _):
                 refs = [face]
             case let .shell(_, faces, _), let .deleteFace(_, faces): refs = faces
             default: refs = []
             }
             names += refs.compactMap(\.elementName)
+            if case let .face(reference)? = node.kind.operationPlaneReference?.source,
+               let name = reference.source.elementName { names.append(name) }
         }
         for plane in document.planes {
             switch plane.definition {
@@ -685,6 +691,10 @@ nonisolated enum CADDocumentFormat {
         // before any commit. A non-encodable hole must FAIL the transaction,
         // never be silently dropped by a try?-encode row update.
         for node in document.features.nodes {
+            if let reference = node.kind.operationPlaneReference {
+                try reference.validate()
+                _ = try encoder.encode(node.kind)
+            }
             if case let .thread(_, spec) = node.kind {
                 try spec.validate()
                 _ = try encoder.encode(node.kind)
@@ -920,6 +930,37 @@ nonisolated enum CADDocumentFormat {
             // for the M08 consumer identity BEFORE the hole contract below.
             guard let object = try? JSONSerialization.jsonObject(with: row.kind) as? [String: Any] else {
                 continue
+            }
+            for kind in ["draftFace", "replaceFace"] {
+                guard let payload = object[kind] as? [String: Any],
+                      let raw = payload["planeReference"], !(raw is NSNull) else { continue }
+                result.requiredVersion = max(result.requiredVersion, operationPlaneReferenceVersion)
+                guard let reference = raw as? [String: Any],
+                      let number = reference["version"] as? NSNumber,
+                      CFGetTypeID(number) != CFBooleanGetTypeID(),
+                      let version = Int(exactly: number.doubleValue), version > 0 else {
+                    throw CADDocumentFormatError.malformedAssociation("feature-plane")
+                }
+                if version > FeaturePlaneReference.supportedVersion {
+                    result.opaqueFeatures.insert(row.featureID)
+                } else {
+                    guard let source = reference["source"] as? [String: Any], source.count == 1 else {
+                        throw CADDocumentFormatError.malformedAssociation("feature-plane")
+                    }
+                    if !Set(source.keys).isSubset(of: ["plane", "face"]) {
+                        result.opaqueFeatures.insert(row.featureID)
+                        continue
+                    }
+                    do {
+                        let data = try JSONSerialization.data(withJSONObject: reference)
+                        let value = try JSONDecoder().decode(FeaturePlaneReference.self, from: data)
+                        try value.validate()
+                    } catch AssociativeGeometryError.unsupportedSemanticVersion(_) {
+                        result.opaqueFeatures.insert(row.featureID)
+                    } catch {
+                        throw CADDocumentFormatError.malformedAssociation("feature-plane")
+                    }
+                }
             }
             if object.keys.contains("thread") {
                 result.requiredVersion = max(result.requiredVersion, standardThreadVersion)

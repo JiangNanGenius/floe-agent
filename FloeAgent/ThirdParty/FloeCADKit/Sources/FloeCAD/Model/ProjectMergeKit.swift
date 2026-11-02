@@ -68,12 +68,18 @@ nonisolated enum ProjectMergeKit {
             || guest.sketches.contains { $0.support != nil }
             || guest.axes.contains { $0.definition != nil }
             || guest.datumPoints.contains { $0.definition != nil }
-            || guest.features.nodes.contains { if case .baseSolid = $0.kind { return true }; return false }
+            || guest.features.nodes.contains {
+                if $0.kind.operationPlaneReference != nil { return true }
+                if case .baseSolid = $0.kind { return true }; return false
+            }
         let hostAssociative = host.planes.contains { $0.definition != nil }
             || host.sketches.contains { $0.support != nil || $0.hasExternalReferences }
             || host.axes.contains { $0.definition != nil }
             || host.datumPoints.contains { $0.definition != nil }
-            || host.features.nodes.contains { if case .baseSolid = $0.kind { return true }; return false }
+            || host.features.nodes.contains {
+                if $0.kind.operationPlaneReference != nil { return true }
+                if case .baseSolid = $0.kind { return true }; return false
+            }
         // One ordered rollback prefix cannot represent two independently
         // active histories. In particular, adding the guest count to a host
         // marker would activate the host's formerly rolled-back suffix.
@@ -91,6 +97,7 @@ nonisolated enum ProjectMergeKit {
             guard collisions.isEmpty else {
                 throw MergeError.associativeVariableCollision(collisions.sorted())
             }
+            for node in guest.features.nodes { try node.kind.operationPlaneReference?.validate() }
             for plane in guest.planes {
                 guard let definition = plane.definition else { continue }
                 switch definition {
@@ -657,16 +664,7 @@ nonisolated enum ProjectMergeKit {
                    translation: SIMD3<Double>) -> ConstructionPlaneDefinition {
             switch definition {
             case let .offset(offset):
-                return .offset(OffsetPlaneDefinition(
-                    version: offset.version,
-                    source: remap(offset.source, translation: translation, coordinateWriter: offset.sourceVersion.writer),
-                    sourceVersion: GeometryVersionRef(
-                        bodyID: newBody(offset.sourceVersion.bodyID),
-                        writer: newFeature(offset.sourceVersion.writer)),
-                    distance: offset.distance,
-                    // This frame is centroid-relative and body-local. Source
-                    // geometry and placement already account for translation.
-                    attachment: offset.attachment))
+                return .offset(remap(offset, translation: translation))
             case let .angle(angle):
                 return .angle(AnglePlaneDefinition(
                     version: angle.version,
@@ -688,6 +686,24 @@ nonisolated enum ProjectMergeKit {
                                         entityID: newEntity($0.entityID),
                                         role: $0.role)
                     }))
+            }
+        }
+
+        func remap(_ offset: OffsetPlaneDefinition, translation: SIMD3<Double>) -> OffsetPlaneDefinition {
+            OffsetPlaneDefinition(version: offset.version,
+                source: remap(offset.source, translation: translation, coordinateWriter: offset.sourceVersion.writer),
+                sourceVersion: GeometryVersionRef(bodyID: newBody(offset.sourceVersion.bodyID),
+                    writer: newFeature(offset.sourceVersion.writer)),
+                distance: offset.distance, attachment: offset.attachment)
+        }
+
+        func remap(_ reference: FeaturePlaneReference?, translation: SIMD3<Double>) -> FeaturePlaneReference? {
+            guard let reference else { return nil }
+            switch reference.source {
+            case let .plane(plane):
+                return FeaturePlaneReference(source: .plane(remap(plane, translation: translation)), version: reference.version)
+            case let .face(face):
+                return FeaturePlaneReference(source: .face(remap(face, translation: translation)), version: reference.version)
             }
         }
 
@@ -778,13 +794,14 @@ nonisolated enum ProjectMergeKit {
                 // Angle + axis are intrinsic to the face's basis, so a translation
                 // only remaps the face reference.
                 return .rotateFace(face: remap(face, translation: t), angle: angle, axis: axis)
-            case let .draftFace(face, origin, normal, angle):
+            case let .draftFace(face, origin, normal, angle, support):
                 // The neutral plane is a WORLD plane, so its origin travels with
                 // the merge while its normal (a direction) does not.
                 return .draftFace(
                     face: remap(face, translation: t),
                     neutralOrigin: PointWrapper(origin.point + t),
-                    neutralNormal: normal, angle: angle)
+                    neutralNormal: normal, angle: angle,
+                    planeReference: remap(support, translation: t))
             case let .chamfer(body, edges, setback):
                 return .chamfer(body: remap(body),
                                 edges: edges.map { remap($0, translation: t) },
@@ -800,14 +817,14 @@ nonisolated enum ProjectMergeKit {
             case let .deleteFace(body, faces):
                 return .deleteFace(body: remap(body),
                                    faces: faces.map { remap($0, translation: t) })
-            case let .replaceFace(face, targetOrigin, targetNormal, flip):
+            case let .replaceFace(face, targetOrigin, targetNormal, flip, support):
                 // The target ORIGIN is a point and moves with the merge; the
                 // NORMAL is a direction and must not.
                 return .replaceFace(
                     face: remap(face, translation: t),
                     targetOrigin: PointWrapper(targetOrigin.point + t),
                     targetNormal: targetNormal,
-                    flip: flip)
+                    flip: flip, planeReference: remap(support, translation: t))
             }
         }
 

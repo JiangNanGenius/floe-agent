@@ -51,6 +51,14 @@ nonisolated struct AgentExecError: Error, Sendable, Equatable {
 
 // MARK: - What was asked for
 
+/// Current document selection only; the executor mints the durable reference
+/// from trusted geometry. JSON cannot provide its own names or writer proof.
+nonisolated enum AgentExecPlaneSelection: Equatable, Sendable {
+    case plane(ConstructionPlaneID)
+    case sketch(SketchID)
+    case face(BodyID, Int)
+}
+
 /// One ordered section of a loft: which sketch, and a seed point inside the
 /// closed region on it. A struct (not a tuple) so `AgentExecOp` stays `Equatable`.
 nonisolated struct LoftSection: Sendable, Equatable {
@@ -144,12 +152,14 @@ nonisolated enum AgentExecOp: Sendable, Equatable {
     /// plane (SOLIDWORKS Draft). Positive narrows the body away from that
     /// plane; the face keeps its neighbours' planes, unlike `rotateFace`.
     case draftFace(body: BodyID, face: Int, neutralOrigin: SIMD3<Double>,
-                   neutralNormal: SIMD3<Double>, angleDegrees: Double)
+                   neutralNormal: SIMD3<Double>, angleDegrees: Double,
+                   referencePlane: AgentExecPlaneSelection? = nil)
     /// Extend/trim one face until it lies on the given world plane
     /// (spec §4.12). The target is a PLANE, not a face ref — same v1
     /// limitation as the interactive tool, for the same reason.
     case replaceFace(body: BodyID, face: Int, targetOrigin: SIMD3<Double>,
-                     targetNormal: SIMD3<Double>, flip: Bool)
+                     targetNormal: SIMD3<Double>, flip: Bool,
+                     referencePlane: AgentExecPlaneSelection? = nil)
     /// The Material sheet's Apply: one appearance over a set of bodies, one
     /// undo step. Not a feature — appearance lives on the body, not in the
     /// graph — so it goes through `SetMaterialCommand` like the sheet does.
@@ -827,6 +837,10 @@ nonisolated enum AgentExec {
             }
             // The neutral plane is a WORLD plane: where the draft pivots and
             // what nothing moves on. Defaults to the ground (y = 0, +Y up).
+            let reference = try referencePlane(a)
+            guard reference == nil || (a["neutralOrigin"] == nil && a["neutralNormal"] == nil) else {
+                return .failure(.init(code: "conflicting_plane", message: "Use referencePlane or an absolute neutral plane, not both."))
+            }
             let origin = try vector3(a, "neutralOrigin", default: .zero)
             let normal = try vector3(a, "neutralNormal", default: SIMD3(0, 1, 0))
             guard simd_length(normal) > 1e-9 else {
@@ -834,7 +848,8 @@ nonisolated enum AgentExec {
                                       message: "\"neutralNormal\" must be non-zero."))
             }
             return .success(.draftFace(body: body, face: face, neutralOrigin: origin,
-                                       neutralNormal: normal, angleDegrees: angle))
+                                       neutralNormal: normal, angleDegrees: angle,
+                                       referencePlane: reference))
         } catch let e as AgentExecError { return .failure(e) } catch { return .failure(unexpected) }
     }
 
@@ -876,12 +891,16 @@ nonisolated enum AgentExec {
                 return .failure(.init(code: "bad_face",
                                       message: "args.face must be exactly ONE kernel face index."))
             }
+            let reference = try referencePlane(a)
+            guard reference == nil || (a["targetOrigin"] == nil && a["targetNormal"] == nil) else {
+                return .failure(.init(code: "conflicting_plane", message: "Use referencePlane or an absolute target plane, not both."))
+            }
             let origin = try vector3(a, "targetOrigin", default: .zero)
-            guard a["targetOrigin"] != nil else {
+            guard reference != nil || a["targetOrigin"] != nil else {
                 return .failure(.init(code: "missing_targetOrigin",
                                       message: "args.targetOrigin must be a world [x, y, z] on the target plane."))
             }
-            let normal = try vector3(a, "targetNormal", default: .zero)
+            let normal = try vector3(a, "targetNormal", default: reference == nil ? .zero : SIMD3(0, 1, 0))
             guard simd_length(normal) > 1e-9 else {
                 return .failure(.init(code: "missing_targetNormal",
                                       message: "args.targetNormal must be a non-zero world [x, y, z]."))
@@ -889,8 +908,28 @@ nonisolated enum AgentExec {
             return .success(.replaceFace(body: body, face: faces[0],
                                          targetOrigin: origin,
                                          targetNormal: simd_normalize(normal),
-                                         flip: a["flip"] as? Bool ?? false))
+                                         flip: a["flip"] as? Bool ?? false,
+                                         referencePlane: reference))
         } catch let e as AgentExecError { return .failure(e) } catch { return .failure(unexpected) }
+    }
+
+    private static func referencePlane(_ args: [String: Any]) throws -> AgentExecPlaneSelection? {
+        guard let raw = args["referencePlane"] else { return nil }
+        guard let value = raw as? [String: Any] else {
+            throw AgentExecError(code: "bad_reference_plane", message: "referencePlane must name one planeID, sketchID, or bodyID and face.")
+        }
+        if Set(value.keys) == ["planeID"] {
+            return .plane(ConstructionPlaneID(raw: try uuid(value, "planeID")))
+        }
+        if Set(value.keys) == ["sketchID"] {
+            return .sketch(SketchID(raw: try uuid(value, "sketchID")))
+        }
+        let faceKeys: Set<String> = ["bodyID", "face", "query_token", "query_generation_token", "face_signature", "face_signatures"]
+        if value["bodyID"] != nil, value["face"] != nil, Set(value.keys).isSubset(of: faceKeys) {
+            let (body, face) = try oneFace(value)
+            return .face(body, face)
+        }
+        throw AgentExecError(code: "bad_reference_plane", message: "referencePlane must name exactly one planeID, sketchID, or bodyID and face.")
     }
 
     /// 1-based kernel sub-shape indices (the numbering /v1/edges and
