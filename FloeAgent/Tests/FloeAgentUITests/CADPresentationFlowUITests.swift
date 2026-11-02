@@ -122,14 +122,23 @@ final class CADPresentationFlowUITests: XCTestCase {
             let form = app.collectionViews["CADEnvironmentForm"]
             XCTAssertTrue(form.waitForExistence(timeout: 10))
             for _ in 0..<7 {
-                if element.exists && element.isHittable { return }
+                if element.exists && element.isHittable,
+                   form.frame.intersection(app.frame).insetBy(dx: 0, dy: 8).contains(element.frame) {
+                    // A medium sheet expands before the Form scrolls. Wait
+                    // for that gesture to settle, so a tap does not merely
+                    // stop deceleration at a partly clipped row.
+                    RunLoop.current.run(until: Date().addingTimeInterval(0.4))
+                    return
+                }
                 form.swipeUp()
             }
-            XCTAssertTrue(element.exists && element.isHittable)
+            XCTAssertTrue(element.exists && element.isHittable
+                          && form.frame.intersection(app.frame).contains(element.frame))
         }
         let add = app.buttons["CADSceneLightAdd"]
         reveal(add); add.tap()
-        app.buttons["Point"].tap()
+        let point = app.descendants(matching: .any)["Point"]
+        XCTAssertTrue(point.waitForExistence(timeout: 5)); point.tap()
         let row = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "CADSceneLight-")).firstMatch
         reveal(row); row.tap()
         let name = app.textFields["CADSceneLightName"]
@@ -142,7 +151,9 @@ final class CADPresentationFlowUITests: XCTestCase {
         environment.tap()
         reveal(add)
         XCTAssertFalse(row.exists, "Cancel must discard the draft light")
-        add.tap(); app.buttons["Spot"].tap()
+        add.tap()
+        let spot = app.descendants(matching: .any)["Spot"]
+        XCTAssertTrue(spot.waitForExistence(timeout: 5)); spot.tap()
         reveal(row); row.tap()
         let spotName = app.textFields["CADSceneLightName"]
         XCTAssertTrue(spotName.waitForExistence(timeout: 10)); spotName.tap()
