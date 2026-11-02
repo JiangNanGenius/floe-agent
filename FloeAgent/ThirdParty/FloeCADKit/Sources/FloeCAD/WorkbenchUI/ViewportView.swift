@@ -128,6 +128,14 @@ final class ViewportCoordinator: NSObject, ViewportGestureDelegate, ViewportCame
     /// the user has moved the camera). Read by tests.
     var pendingOpeningFit: TurntableCamera? { openingFit }
 
+    #if DEBUG
+    var projectionQualificationState: String {
+        let size = view?.bounds.size ?? .zero
+        let camera = renderer?.camera
+        return "view=\(Int(size.width))x\(Int(size.height)) window=\(view?.window != nil) renderer=\(renderer != nil) distance=\(camera?.distance ?? -1) target=\(String(describing: camera?.target))"
+    }
+    #endif
+
     /// The live viewport's view moves onto the screen: the newest appearance
     /// owns the shared bindings, and it CONTINUES from the camera the previous
     /// visible viewport showed instead of re-fitting its own. Called from

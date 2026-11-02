@@ -1290,6 +1290,9 @@ targets:
       # X22-R2: section/measurement display-export tests. Explicit App-test
       # membership (this target lists each file); regenerate the Xcode project
       # after applying the packet.
+      - path: ThirdParty/FloeCADKit/Tests/FloeCADKitTests/CADViewportHandoffTests.swift
+      - path: ThirdParty/FloeCADKit/Tests/FloeCADKitTests/CADThumbnailIsolationTests.swift
+      - path: ThirdParty/FloeCADKit/Tests/FloeCADKitTests/ViewportRenderTests.swift
       - path: ThirdParty/FloeCADKit/Tests/FloeCADKitTests/CADViewOverlayTests.swift
       - path: ThirdParty/FloeCADKit/Tests/FloeCADKitTests/CADMaterialCoreTests.swift
       - path: ThirdParty/FloeCADKit/Tests/FloeCADKitTests/CADMaterialUVConsistencyTests.swift

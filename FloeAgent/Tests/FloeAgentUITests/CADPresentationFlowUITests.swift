@@ -1980,8 +1980,13 @@ final class CADExternalProjectionNativeFlowUITests: XCTestCase {
         XCUIDevice.shared.orientation = .landscapeLeft
     }
 
+    override func tearDownWithError() throws {
+        XCUIApplication().terminate()
+    }
+
     private func launch(broken: Bool, compact: Bool = false) -> XCUIApplication {
         let app = XCUIApplication()
+        app.terminate()
         app.launchArguments = ["-AppleLanguages", "(en)", "-AppleLocale", "en_US", "-ui-testing",
             "--ui-test-cad-fixture", "--ui-test-cad-projection"]
         if broken { app.launchArguments += ["--ui-test-cad-projection-broken"] }
@@ -2003,8 +2008,16 @@ final class CADExternalProjectionNativeFlowUITests: XCTestCase {
     private func waitState(_ app: XCUIApplication, _ terms: [String], timeout: TimeInterval = 30) {
         let state = element(app, "CADProjectionState")
         let predicate = NSPredicate { _, _ in state.exists && terms.allSatisfy { state.label.contains($0) } }
-        expectation(for: predicate, evaluatedWith: state)
-        waitForExpectations(timeout: timeout)
+        let expected = XCTNSPredicateExpectation(predicate: predicate, object: state)
+        let result = XCTWaiter.wait(for: [expected], timeout: timeout)
+        if result != .completed {
+            capture("M05 live state failure")
+            let details = "state=\(state.exists ? state.label : "missing") camera=\(element(app, "CADProjectionCamera").label) edge=\(element(app, "CADProjectionEdgeScreen").label) line=\(element(app, "CADProjectionLineScreen").label)"
+            let attachment = XCTAttachment(string: details + "\n" + app.debugDescription)
+            attachment.name = "M05 actual camera and native hierarchy"
+            attachment.lifetime = .keepAlways; add(attachment)
+        }
+        XCTAssertEqual(result, .completed, "Expected \(terms); actual \(state.exists ? state.label : "missing")")
     }
 
     private func reveal(_ button: XCUIElement, in app: XCUIApplication) {

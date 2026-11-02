@@ -85,6 +85,7 @@ public struct CADExternalProjectionReadbackPanel: View {
                 row("CADProjectionEdgeScreen", screen(model.cameraControl?.worldToScreenPoint(SIMD3(50, 10, -60))))
                 row("CADProjectionLineScreen", screen(model.cameraControl?.worldToScreenPoint(SIMD3(50, -5, -60))))
                 row("CADProjectionError", model.errorMessage ?? "none")
+                row("CADProjectionCamera", (model.cameraControl as? ViewportCoordinator)?.projectionQualificationState ?? "camera=none")
             }
             .font(.system(size: 9, design: .monospaced))
             .padding(5)
@@ -92,7 +93,7 @@ public struct CADExternalProjectionReadbackPanel: View {
             .allowsHitTesting(false)
         }
         .task {
-            for _ in 0..<100 {
+            for _ in 0..<600 {
                 if let camera = document.viewModel().cameraControl,
                    let sketch = document.viewModel().activeSketch,
                    camera.worldToScreenPoint(sketch.plane.origin) != nil {
