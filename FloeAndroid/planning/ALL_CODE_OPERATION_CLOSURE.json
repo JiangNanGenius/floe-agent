@@ -315,7 +315,7 @@
       "id": "WSF-WRITE-LAYER",
       "family": "WSF",
       "originalGoal": "G04",
-      "originalOperation": "Resolve session\u2192project\u2192shared\u2192base with an explicit write layer; never silently choose a temp dir or the first project",
+      "originalOperation": "Resolve session→project→shared→base with an explicit write layer; never silently choose a temp dir or the first project",
       "originalStatus": "planned",
       "required": true,
       "codeReview": "pending per-operation UI/service/runtime-storage/failure reconciliation",
@@ -527,7 +527,7 @@
       "id": "IDE-ENCODING-LINES",
       "family": "IDE",
       "originalGoal": "G04",
-      "originalOperation": "Preserve CRLF, UTF-8 BOM and long lines across open\u2192edit\u2192save\u2192reopen",
+      "originalOperation": "Preserve CRLF, UTF-8 BOM and long lines across open→edit→save→reopen",
       "originalStatus": "planned",
       "required": true,
       "codeReview": "present-source-connected at immutable 4437d379ec34a3d846ea5a634675ec763ec789ae; static source only, not acceptance",
@@ -787,9 +787,12 @@
       "originalOperation": "Install/start/stop the ARM64 Linux guest (PRoot candidate) with accurate state",
       "originalStatus": "planned",
       "required": true,
-      "codeReview": "pending per-operation UI/service/runtime-storage/failure reconciliation",
-      "qualification": "not newly verified this round",
-      "implementationOwner": "job-dcfe69f82e5b4cc1; actual Linux/interface completion pending"
+      "codeReview": "present-source-connected at 66d3b8b2f9e1c89a790ca7a37d3fb216f06a871a; per-operation source recheck, not blanket device acceptance",
+      "qualification": "existing installed guest and exact code26 App/runtime pair used; fresh install and every permission/stop failure not newly exercised",
+      "implementationOwner": "job-dcfe69f82e5b4cc1; actual Linux/interface completion pending",
+      "previousCodeReviews": [
+        "pending per-operation UI/service/runtime-storage/failure reconciliation"
+      ]
     },
     {
       "id": "LNX-PTY-EXEC",
@@ -798,9 +801,12 @@
       "originalOperation": "exec.shell through PTY with stdin/stdout/stderr and exit codes",
       "originalStatus": "planned",
       "required": true,
-      "codeReview": "pending per-operation UI/service/runtime-storage/failure reconciliation",
-      "qualification": "not newly verified this round",
-      "implementationOwner": "job-dcfe69f82e5b4cc1; actual Linux/interface completion pending"
+      "codeReview": "present-source-connected at 66d3b8b2f9e1c89a790ca7a37d3fb216f06a871a; per-operation source recheck, not blanket device acceptance",
+      "qualification": "Samsung candidate12 manual reads original Ark-created file and terminal exits0; pre-repair real-model failure retained; post-repair model-to-attachment not verified",
+      "implementationOwner": "job-dcfe69f82e5b4cc1; actual Linux/interface completion pending",
+      "previousCodeReviews": [
+        "pending per-operation UI/service/runtime-storage/failure reconciliation"
+      ]
     },
     {
       "id": "LNX-TIMEOUT-CANCEL",
@@ -809,9 +815,12 @@
       "originalOperation": "Timeout, cancel and signals never kill another session",
       "originalStatus": "planned",
       "required": true,
-      "codeReview": "pending per-operation UI/service/runtime-storage/failure reconciliation",
-      "qualification": "not newly verified this round",
-      "implementationOwner": "job-dcfe69f82e5b4cc1; actual Linux/interface completion pending"
+      "codeReview": "present-source-connected at 66d3b8b2f9e1c89a790ca7a37d3fb216f06a871a; per-operation source recheck, not blanket device acceptance",
+      "qualification": "positive exit source qualified; cross-session timeout/cancel qualification reuses earlier exact unchanged-component evidence only, not a new device pass",
+      "implementationOwner": "job-dcfe69f82e5b4cc1; actual Linux/interface completion pending",
+      "previousCodeReviews": [
+        "pending per-operation UI/service/runtime-storage/failure reconciliation"
+      ]
     },
     {
       "id": "LNX-SERVICES-PORTS",
@@ -820,9 +829,12 @@
       "originalOperation": "Background services with port registration and resource lifecycle",
       "originalStatus": "planned",
       "required": true,
-      "codeReview": "pending per-operation UI/service/runtime-storage/failure reconciliation",
-      "qualification": "not newly verified this round",
-      "implementationOwner": "job-dcfe69f82e5b4cc1; actual Linux/interface completion pending"
+      "codeReview": "present-source-connected at 66d3b8b2f9e1c89a790ca7a37d3fb216f06a871a; per-operation source recheck, not blanket device acceptance",
+      "qualification": "source connected; positive service/port/browser scenario not newly device-verified",
+      "implementationOwner": "job-dcfe69f82e5b4cc1; actual Linux/interface completion pending",
+      "previousCodeReviews": [
+        "pending per-operation UI/service/runtime-storage/failure reconciliation"
+      ]
     },
     {
       "id": "LNX-RECOVERY-UNKNOWN",
@@ -831,9 +843,12 @@
       "originalOperation": "Reconcile unknown outcomes after crash/disconnect without double execution",
       "originalStatus": "planned",
       "required": true,
-      "codeReview": "pending per-operation UI/service/runtime-storage/failure reconciliation",
-      "qualification": "not newly verified this round",
-      "implementationOwner": "job-dcfe69f82e5b4cc1; actual Linux/interface completion pending"
+      "codeReview": "present-source-connected at 66d3b8b2f9e1c89a790ca7a37d3fb216f06a871a; per-operation source recheck, not blanket device acceptance",
+      "qualification": "task and generated file survived App/runtime25->26 update; deliberate process-kill uncertain-dispatch scenario not newly verified",
+      "implementationOwner": "job-dcfe69f82e5b4cc1; actual Linux/interface completion pending",
+      "previousCodeReviews": [
+        "pending per-operation UI/service/runtime-storage/failure reconciliation"
+      ]
     },
     {
       "id": "PY-INSTALL",
@@ -2681,7 +2696,7 @@
       "id": "NTF-DISMISSED-SEPARATION",
       "family": "NTF",
       "originalGoal": "G03",
-      "originalOperation": "Notification removal \u2260 task stop; background/inactive/lock preserves current session and route",
+      "originalOperation": "Notification removal ≠ task stop; background/inactive/lock preserves current session and route",
       "originalStatus": "planned",
       "required": true,
       "codeReview": "pending per-operation UI/service/runtime-storage/failure reconciliation",
@@ -3352,6 +3367,105 @@
       "compiled": false,
       "deviceVerified": false,
       "note": "Original183 identities/statuses and accepted product scope retained. Other150 source reviews remain pending or as individually recorded. Current working code must be reconciled at freeze; this is immutable4437 source evidence, not qualification."
+    },
+    "linux5-20261103": {
+      "androidCommit": "66d3b8b2f9e1c89a790ca7a37d3fb216f06a871a",
+      "iosReference": "36f63bf400dfaa3a127259eac006b38d72516390",
+      "operations": [
+        {
+          "id": "LNX-GUEST-LIFECYCLE",
+          "entry": "Settings Execution environment -> LocalRuntimeSettingsCard; model environment.linuxStatus/linuxStart/linuxStop",
+          "chain": "FloeApplication attaches C01LinuxEnvironmentOwner -> original LocalRuntimeSetupHost.prepare/refresh -> authenticated RuntimeConnection install/status -> truthful phase; component/permission wait not fake ready",
+          "evidence": [
+            "app/src/main/kotlin/com/floe/android/FloeApplication.kt",
+            "app/src/main/kotlin/com/floe/android/host/linux/C01LinuxEnvironmentOwner.kt",
+            "app/src/main/kotlin/com/floe/android/host/linux/LocalRuntimeSetupHost.kt",
+            "shared/Sources/FloeAndroidCore/C01LinuxEnvironmentTools.swift"
+          ],
+          "device": "existing installed guest and exact code26 App/runtime pair used; fresh install and every permission/stop failure not newly exercised",
+          "evidenceSha256": {
+            "app/src/main/kotlin/com/floe/android/FloeApplication.kt": "369d085765847cfd5fe9d6fd89dd331d516d9a7e2c104397080af3438f9196be",
+            "app/src/main/kotlin/com/floe/android/host/linux/C01LinuxEnvironmentOwner.kt": "25a08cb74abfa2734d7ed1e967b0799615ede839688a7dce536f9ff8167ad28f",
+            "app/src/main/kotlin/com/floe/android/host/linux/LocalRuntimeSetupHost.kt": "053862fa15533e294635a076ded626d0f9c551aa061fd24990dceec1c5a69138",
+            "shared/Sources/FloeAndroidCore/C01LinuxEnvironmentTools.swift": "0dce3d914cbe77669160f6951d40346547ec46a96f998981a4e4f88557ce530b"
+          }
+        },
+        {
+          "id": "LNX-PTY-EXEC",
+          "entry": "Task options Terminal / IDE terminal; registered exec.shell",
+          "chain": "LocalShellTool -> AndroidLinuxShellBackend -> original LinuxShellNative mailbox -> LinuxShellPump -> RuntimeKernel -> LinuxRuntimeOperations -> real PRoot/PTY; same task/project grant; output and terminal receipt returned through real poll",
+          "evidence": [
+            "shared/Sources/FloeAndroidShellTools/LocalShellTool.swift",
+            "shared/Sources/FloeAndroidShellTools/AndroidLinuxShellBackend.swift",
+            "app/src/main/kotlin/com/floe/android/host/linux/LinuxShellPump.kt",
+            "runtimeapp/src/main/java/com/floe/android/runtime/LinuxRuntimeOperations.kt",
+            "runtimeapp/src/main/java/com/floe/android/runtime/RuntimeSessionReadIndex.kt"
+          ],
+          "device": "Samsung candidate12 manual reads original Ark-created file and terminal exits0; pre-repair real-model failure retained; post-repair model-to-attachment not verified",
+          "evidenceSha256": {
+            "shared/Sources/FloeAndroidShellTools/LocalShellTool.swift": "1e5c19ac97287f8849c6611a8512d6bc1d1bdd74dc0aa07b9af71444785d3591",
+            "shared/Sources/FloeAndroidShellTools/AndroidLinuxShellBackend.swift": "9fbae7cf6911e6db82a5263fea6b041de5c50f032083304510f740f0c9ab2734",
+            "app/src/main/kotlin/com/floe/android/host/linux/LinuxShellPump.kt": "85d2cc3410fc57306096218a10315cadb91233b2a053a4451e30913930f1a79d",
+            "runtimeapp/src/main/java/com/floe/android/runtime/LinuxRuntimeOperations.kt": "28b46defed214b15e7eda0c9dd2f5916df2e2ad1d3be6f09268df1d8b670552d",
+            "runtimeapp/src/main/java/com/floe/android/runtime/RuntimeSessionReadIndex.kt": "fe0aea677622e58aaa0db48230a696b1163ce2ef64f7025a7f4802f397c0c949"
+          }
+        },
+        {
+          "id": "LNX-TIMEOUT-CANCEL",
+          "entry": "Terminal Ctrl-C/close and task Stop/cancel; exec.shell timeout",
+          "chain": "same engine session identity and scoped cancel; requested command budget begins at actual execution admission; original work/foreground lease retained through drain/export; no host interpreter or global-stop fallback",
+          "evidence": [
+            "shared/Sources/FloeAndroidShellTools/AndroidLinuxShellBackend.swift",
+            "app/src/main/kotlin/com/floe/android/host/linux/LinuxShellPump.kt",
+            "runtimeapp/src/main/java/com/floe/android/runtime/RuntimeKernel.kt",
+            "runtimeapp/src/main/java/com/floe/android/runtime/LinuxRuntimeOperations.kt"
+          ],
+          "device": "positive exit source qualified; cross-session timeout/cancel qualification reuses earlier exact unchanged-component evidence only, not a new device pass",
+          "evidenceSha256": {
+            "shared/Sources/FloeAndroidShellTools/AndroidLinuxShellBackend.swift": "9fbae7cf6911e6db82a5263fea6b041de5c50f032083304510f740f0c9ab2734",
+            "app/src/main/kotlin/com/floe/android/host/linux/LinuxShellPump.kt": "85d2cc3410fc57306096218a10315cadb91233b2a053a4451e30913930f1a79d",
+            "runtimeapp/src/main/java/com/floe/android/runtime/RuntimeKernel.kt": "a725962892b6d8f870a6f5549582a17084d7bde4a67b5bdf07652d334129d457",
+            "runtimeapp/src/main/java/com/floe/android/runtime/LinuxRuntimeOperations.kt": "28b46defed214b15e7eda0c9dd2f5916df2e2ad1d3be6f09268df1d8b670552d"
+          }
+        },
+        {
+          "id": "LNX-SERVICES-PORTS",
+          "entry": "C01 managed-service tools/jobs and owned web-preview route",
+          "chain": "C01ManagedServiceDomain -> original jobs lifecycle -> separated stdio/service role -> authenticated service.readiness inspecting owned process socket -> existing browser preview; stop drains real owner and does not infer readiness from log text",
+          "evidence": [
+            "shared/Sources/FloeAndroidCore/C01ManagedServiceDomain.swift",
+            "app/src/main/kotlin/com/floe/android/host/linux/LinuxShellPump.kt",
+            "runtimeapp/src/main/java/com/floe/android/runtime/LinuxRuntimeOperations.kt"
+          ],
+          "device": "source connected; positive service/port/browser scenario not newly device-verified",
+          "evidenceSha256": {
+            "shared/Sources/FloeAndroidCore/C01ManagedServiceDomain.swift": "c58a12189855447f8432289502cb6c2badb5b284daf1f1234df858274faac1dd",
+            "app/src/main/kotlin/com/floe/android/host/linux/LinuxShellPump.kt": "85d2cc3410fc57306096218a10315cadb91233b2a053a4451e30913930f1a79d",
+            "runtimeapp/src/main/java/com/floe/android/runtime/LinuxRuntimeOperations.kt": "28b46defed214b15e7eda0c9dd2f5916df2e2ad1d3be6f09268df1d8b670552d"
+          }
+        },
+        {
+          "id": "LNX-RECOVERY-UNKNOWN",
+          "entry": "reopen task/terminal and existing root start/stop reconciliation",
+          "chain": "AndroidLinuxShellBackend retained session/settlement -> pump host.shellSettlement actual terminal proof -> RuntimeKernel persisted request receipts and supervisor recovery; uncertain dispatch is observed, not rerun under a new request ID",
+          "evidence": [
+            "shared/Sources/FloeAndroidShellTools/AndroidLinuxShellBackend.swift",
+            "app/src/main/kotlin/com/floe/android/host/linux/LinuxShellPump.kt",
+            "runtimeapp/src/main/java/com/floe/android/runtime/RuntimeKernel.kt",
+            "runtimeapp/src/main/java/com/floe/android/runtime/LinuxRuntimeOperations.kt"
+          ],
+          "device": "task and generated file survived App/runtime25->26 update; deliberate process-kill uncertain-dispatch scenario not newly verified",
+          "evidenceSha256": {
+            "shared/Sources/FloeAndroidShellTools/AndroidLinuxShellBackend.swift": "9fbae7cf6911e6db82a5263fea6b041de5c50f032083304510f740f0c9ab2734",
+            "app/src/main/kotlin/com/floe/android/host/linux/LinuxShellPump.kt": "85d2cc3410fc57306096218a10315cadb91233b2a053a4451e30913930f1a79d",
+            "runtimeapp/src/main/java/com/floe/android/runtime/RuntimeKernel.kt": "a725962892b6d8f870a6f5549582a17084d7bde4a67b5bdf07652d334129d457",
+            "runtimeapp/src/main/java/com/floe/android/runtime/LinuxRuntimeOperations.kt": "28b46defed214b15e7eda0c9dd2f5916df2e2ad1d3be6f09268df1d8b670552d"
+          }
+        }
+      ],
+      "tests": "3 host poll concurrency +4 original fast-exit +3 runtime export-gap tests passed; compiler/package/native-byte evidence separate",
+      "sourceOnly": false,
+      "deviceCoverage": "only explicitly stated actual scenarios; not all five complete device acceptance"
     }
   },
   "implementationBatches": {

@@ -1324,5 +1324,16 @@
   "operationLedger": "planning/ALL_CODE_OPERATION_CLOSURE.json",
   "operationCount": 183,
   "newIndependentIosFeatures": "record next-round delta; preserve approved Android scope",
-  "verification": "source, compile, device and publication separate"
+  "verification": "source, compile, device and publication separate",
+  "incrementalChecks": [
+    {
+      "reference": "36f63bf400dfaa3a127259eac006b38d72516390",
+      "observedActiveIos": "5af731b2d46c6416c0991529bda5f06995b3d1b1",
+      "changedFiles": [
+        "FloeAgent/FloeApp/Resources/Localizable.xcstrings"
+      ],
+      "classification": "CAD modeling/editor labels only; Android approved read-only preview unchanged; no new current-round requirement",
+      "androidCodeCheckpoint": "66d3b8b2f9e1c89a790ca7a37d3fb216f06a871a"
+    }
+  ]
 }
