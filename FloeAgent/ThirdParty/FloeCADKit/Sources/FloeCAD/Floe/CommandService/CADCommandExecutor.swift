@@ -520,15 +520,20 @@ final class CADCommandExecutor {
 
         case let .moveFace(bodyID, face, delta):
             return execSingleFace(body: bodyID, face: face, name: "Move Face",
-                                  on: viewModel) { .moveFace(face: $0, delta: PointWrapper(delta)) }
+                                  on: viewModel, unsupported: abs(delta.x) > 1e-7 || abs(delta.y) > 1e-7
+                                    ? .unsupported("Tangential face movement") : nil) {
+                .moveFace(face: $0, delta: PointWrapper(delta))
+            }
 
         case let .scaleFace(bodyID, face, factor):
             return execSingleFace(body: bodyID, face: face, name: "Scale Face",
-                                  on: viewModel) { .scaleFace(face: $0, factor: Expr(value: factor)) }
+                                  on: viewModel, unsupported: .unsupported("Face scaling")) {
+                .scaleFace(face: $0, factor: Expr(value: factor))
+            }
 
         case let .rotateFace(bodyID, face, angleDegrees, axis):
             return execSingleFace(body: bodyID, face: face, name: "Rotate Face",
-                                  on: viewModel) { ref in
+                                  on: viewModel, unsupported: .unsupported("Face rotation")) { ref in
                 // FeatureKind.rotateFace's Expr is RADIANS; the wire is degrees.
                 .rotateFace(face: ref, angle: Expr(value: angleDegrees * .pi / 180),
                             axis: PointWrapper(axis))
@@ -1325,6 +1330,7 @@ final class CADCommandExecutor {
 
     private func execSingleFace(body bodyID: BodyID, face: Int, name: String,
                                 on viewModel: EditorViewModel,
+                                unsupported: KernelOps.ExactEditError? = nil,
                                 _ kind: (FaceRef) -> FeatureKind) -> AgentResponse {
         let session = viewModel.session
         let context: (body: Body, brep: BRepHandle)
@@ -1335,6 +1341,12 @@ final class CADCommandExecutor {
         case let .ok(body, brep): context = (body, brep)
         case let .reply(reply): return reply
         }
+        // A guaranteed unsupported operation cannot become executable after
+        // a better face query. Refuse it before minting/preserving identities.
+        if let unsupported {
+            return .failure(422, "Unprocessable Entity", error: "exact_edit_unsupported",
+                message: unsupported.message)
+        }
         var ref = bodyRef(bodyID, session)
         let refs: [FaceRef]
         let prefix: [FeatureNode]
@@ -1343,20 +1355,6 @@ final class CADCommandExecutor {
         case let .reply(reply): return reply
         }
         let feature = kind(refs[0])
-        // Refuse the known unsupported exact edits before a speculative
-        // rebuild, preserving clean/undo/redo state as well as the B-rep.
-        let refusal: KernelOps.ExactEditError?
-        switch feature {
-        case .scaleFace: refusal = .unsupported("Face scaling")
-        case .rotateFace: refusal = .unsupported("Face rotation")
-        case .pushPull(_, _, .cylinderRadial): refusal = .unsupported("Radial face movement")
-        case let .moveFace(_, delta) where abs(delta.point.x) > 1e-7 || abs(delta.point.y) > 1e-7:
-            refusal = .unsupported("Tangential face movement")
-        default: refusal = nil
-        }
-        if let refusal {
-            return .failure(422, "Unprocessable Entity", error: "exact_edit_unsupported", message: refusal.message)
-        }
         return record(FeatureNode(name: name, kind: feature,
                                   outputBodyIDs: [bodyID]), on: viewModel, prefix: prefix)
     }
