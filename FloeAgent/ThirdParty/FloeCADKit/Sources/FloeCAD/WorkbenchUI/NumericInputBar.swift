@@ -61,6 +61,11 @@ struct NumericInputBar: View {
     /// width and move them to the bar's own row instead.
     private var isCompact: Bool { horizontalSizeClass == .compact }
 
+    private var fieldLayout: AnyLayout {
+        isCompact ? AnyLayout(VStackLayout(alignment: .leading, spacing: 4))
+                  : AnyLayout(HStackLayout(spacing: 6))
+    }
+
     var body: some View {
         // (Exact-distance moves are typed in the pill riding the gizmo arrow —
         // `MoveDistanceOverlay` — not down here, so the field sits where the
@@ -108,7 +113,7 @@ struct NumericInputBar: View {
                     .fixedSize(horizontal: !isCompact, vertical: true)
 
                 ForEach(Array(fieldLabels(for: spec).enumerated()), id: \.offset) { index, label in
-                    HStack(spacing: 6) {
+                    fieldLayout {
                         Text(label)
                             .font(.caption)
                             .foregroundStyle(.barLabel)
@@ -158,7 +163,7 @@ struct NumericInputBar: View {
                 .fixedSize(horizontal: !isCompact, vertical: true)
             BarHint("Uniform, about the body pivot")
 
-            HStack(spacing: 6) {
+            fieldLayout {
                 Text(FloeCADStrings.label("cad.ui.scale.factor", "Factor"))
                     .font(.caption)
                     .foregroundStyle(.barLabel)
@@ -208,7 +213,7 @@ struct NumericInputBar: View {
                 .fixedSize(horizontal: !isCompact, vertical: true)
             BarHint("Drag to rotate (5° steps), or type an angle")
 
-            HStack(spacing: 6) {
+            fieldLayout {
                 Text(FloeCADStrings.label("cad.ui.common.angle", "Angle"))
                     .font(.caption)
                     .foregroundStyle(.barLabel)
@@ -252,14 +257,14 @@ struct NumericInputBar: View {
         // they pushed Count and Spacing off the right edge, so the bar opened
         // with neither of its numbers visible. Compact width gives them their
         // own row instead; regular width keeps the original single row.
-        return AdaptiveBar(showsFooter: isCompact) {
+        return AdaptiveBar(showsFooter: isCompact, collapsibleFooter: isCompact) {
             Text(FloeCADStrings.label("cad.ui.tool.pattern", "Pattern"))
                 .font(isCompact ? .subheadline.weight(.semibold) : .headline)
                 .fixedSize(horizontal: !isCompact, vertical: true)
 
             if !isCompact { patternPickers(axisChoices) }
 
-            HStack(spacing: 6) {
+            fieldLayout {
                 Text(FloeCADStrings.label("cad.ui.common.count", "Count"))
                     .font(.caption)
                     .foregroundStyle(.barLabel)
@@ -281,7 +286,7 @@ struct NumericInputBar: View {
             }
 
             if state.kind == .linear || state.curvePath != nil {
-                HStack(spacing: 6) {
+                fieldLayout {
                     Text(FloeCADStrings.label("cad.ui.common.spacing", "Spacing"))
                         .font(.caption)
                         .foregroundStyle(.barLabel)
@@ -310,7 +315,7 @@ struct NumericInputBar: View {
                     .disabled(state.curvePath != nil && state.spacing == 0)
                 }
             } else {
-                HStack(spacing: 6) {
+                fieldLayout {
                     Text(FloeCADStrings.label("cad.ui.common.angle", "Angle"))
                         .font(.caption)
                         .foregroundStyle(.barLabel)
@@ -351,61 +356,38 @@ struct NumericInputBar: View {
     @ViewBuilder
     private func patternPickers(_ axisChoices: [EditorViewModel.PatternState.Axis]) -> some View {
         if viewModel.patternState?.isSketchPattern == false {
-            if isCompact {
-                Picker(FloeCADStrings.text("cad.pattern.source", "Source"), selection: Binding(
-                    get: { viewModel.patternState?.featureSeed?.featureID },
-                    set: { viewModel.patternState?.featureSeed = $0.map { PatternFeatureSeed(featureID: $0) } })) {
-                    Text(FloeCADStrings.text("cad.pattern.bodies", "Bodies")).tag(Optional<FeatureID>.none)
-                    ForEach(viewModel.patternSeedChoices) { seed in Text(seed.name).tag(Optional(seed.id)) }
+            Menu {
+                Button(FloeCADStrings.label("cad.pattern.bodies", "Bodies")) {
+                    viewModel.patternState?.featureSeed = nil
                 }
-                .pickerStyle(.menu).lineLimit(nil).fixedSize(horizontal: false, vertical: true)
-                .accessibilityIdentifier("PatternSeedMenu")
-                Picker(FloeCADStrings.text("cad.pattern.path", "Along path"), selection: Binding(
-                    get: { viewModel.patternState?.curvePath }, set: { viewModel.selectPatternPath($0) })) {
-                    Text(FloeCADStrings.text("cad.pattern.noPath", "No path")).tag(Optional<CurvePatternPathDefinition>.none)
-                    ForEach(viewModel.patternPathChoices) { path in Text(path.name).tag(Optional(path.path)) }
+                ForEach(viewModel.patternSeedChoices) { seed in
+                    Button(seed.name) {
+                        viewModel.patternState?.featureSeed = PatternFeatureSeed(featureID: seed.id)
+                    }
                 }
-                .pickerStyle(.menu).lineLimit(nil).fixedSize(horizontal: false, vertical: true)
-                .accessibilityIdentifier("PatternPathMenu")
+            } label: {
+                Label(viewModel.patternSeedChoices.first { $0.id == viewModel.patternState?.featureSeed?.featureID }?.name
+                    ?? FloeCADStrings.text("cad.pattern.bodies", "Bodies"), systemImage: "square.on.square")
+                    .lineLimit(isCompact ? nil : 1)
+            }
+            .accessibilityIdentifier("PatternSeedMenu")
+            Menu {
+                Button(FloeCADStrings.label("cad.pattern.noPath", "No path")) { viewModel.selectPatternPath(nil) }
+                ForEach(viewModel.patternPathChoices) { path in
+                    Button(path.name) { viewModel.selectPatternPath(path.path) }
+                }
                 if viewModel.patternState?.curvePath != nil {
                     Toggle(FloeCADStrings.label("cad.pattern.followPath", "Follow path"), isOn: Binding(
                         get: { viewModel.patternState?.rotateInstances ?? true },
-                        set: { viewModel.patternState?.rotateInstances = $0 }))
+                        set: { viewModel.patternState?.rotateInstances = $0 }
+                    ))
                 }
-            } else {
-                Menu {
-                    Button(FloeCADStrings.label("cad.pattern.bodies", "Bodies")) {
-                        viewModel.patternState?.featureSeed = nil
-                    }
-                    ForEach(viewModel.patternSeedChoices) { seed in
-                        Button(seed.name) {
-                            viewModel.patternState?.featureSeed = PatternFeatureSeed(featureID: seed.id)
-                        }
-                    }
-                } label: {
-                    Label(viewModel.patternSeedChoices.first { $0.id == viewModel.patternState?.featureSeed?.featureID }?.name
-                        ?? FloeCADStrings.text("cad.pattern.bodies", "Bodies"), systemImage: "square.on.square")
-                        .lineLimit(isCompact ? nil : 1)
-                }
-                .accessibilityIdentifier("PatternSeedMenu")
-                Menu {
-                    Button(FloeCADStrings.label("cad.pattern.noPath", "No path")) { viewModel.selectPatternPath(nil) }
-                    ForEach(viewModel.patternPathChoices) { path in
-                        Button(path.name) { viewModel.selectPatternPath(path.path) }
-                    }
-                    if viewModel.patternState?.curvePath != nil {
-                        Toggle(FloeCADStrings.label("cad.pattern.followPath", "Follow path"), isOn: Binding(
-                            get: { viewModel.patternState?.rotateInstances ?? true },
-                            set: { viewModel.patternState?.rotateInstances = $0 }
-                        ))
-                    }
-                } label: {
-                    Label(viewModel.patternPathChoices.first { $0.path == viewModel.patternState?.curvePath }?.name
-                        ?? FloeCADStrings.text("cad.pattern.path", "Along path"), systemImage: "point.topleft.down.to.point.bottomright.curvepath")
-                        .lineLimit(isCompact ? nil : 1)
-                }
-                .accessibilityIdentifier("PatternPathMenu")
+            } label: {
+                Label(viewModel.patternPathChoices.first { $0.path == viewModel.patternState?.curvePath }?.name
+                    ?? FloeCADStrings.text("cad.pattern.path", "Along path"), systemImage: "point.topleft.down.to.point.bottomright.curvepath")
+                    .lineLimit(isCompact ? nil : 1)
             }
+            .accessibilityIdentifier("PatternPathMenu")
         }
         if viewModel.patternState?.curvePath == nil {
         Picker(FloeCADStrings.text("cad.pattern.type", "Pattern type"), selection: Binding(
@@ -427,30 +409,21 @@ struct NumericInputBar: View {
             // three-way, and a segmented control carrying named axes would blow
             // the row's width apart at compact size (gotcha 11). A menu stays
             // one control wide however many axes exist.
-            if isCompact {
+            Menu {
                 Picker("Axis", selection: axisSelection) {
-                    ForEach(axisChoices, id: \.self) { axis in Text(axis.rawValue).tag(PatternAxisChoice.world(axis)) }
-                    ForEach(constructionAxes) { axis in Text(axis.name).tag(PatternAxisChoice.construction(axis.id)) }
-                }
-                .pickerStyle(.menu).lineLimit(nil).fixedSize(horizontal: false, vertical: true)
-                .accessibilityIdentifier("PatternAxisMenu")
-            } else {
-                Menu {
-                    Picker("Axis", selection: axisSelection) {
-                        ForEach(axisChoices, id: \.self) { axis in
-                            Text(axis.rawValue).tag(PatternAxisChoice.world(axis))
-                        }
-                        ForEach(constructionAxes) { axis in
-                            Text(axis.name).tag(PatternAxisChoice.construction(axis.id))
-                        }
+                    ForEach(axisChoices, id: \.self) { axis in
+                        Text(axis.rawValue).tag(PatternAxisChoice.world(axis))
                     }
-                } label: {
-                    Label(currentAxisLabel(), systemImage: "line.diagonal.arrow")
-                        .font(.caption)
-                        .fixedSize(horizontal: !isCompact, vertical: true)
+                    ForEach(constructionAxes) { axis in
+                        Text(axis.name).tag(PatternAxisChoice.construction(axis.id))
+                    }
                 }
-                .accessibilityIdentifier("PatternAxisMenu")
+            } label: {
+                Label(currentAxisLabel(), systemImage: "line.diagonal.arrow")
+                    .font(.caption)
+                    .fixedSize(horizontal: !isCompact, vertical: true)
             }
+            .accessibilityIdentifier("PatternAxisMenu")
         } else if !axisChoices.isEmpty {
             Picker("Axis", selection: Binding(
                 get: { viewModel.patternState?.axis ?? .x },
@@ -502,7 +475,7 @@ struct NumericInputBar: View {
 
     /// Opacity label + slider, sized for whichever row it lands on.
     private func opacityControl(_ image: InsertedImage, width: CGFloat) -> some View {
-        HStack(spacing: 6) {
+        fieldLayout {
             Text("Opacity")
                 .font(.caption)
                 .foregroundStyle(.barLabel)
@@ -521,7 +494,7 @@ struct NumericInputBar: View {
                     }
                 }
             )
-            .frame(width: width)
+            .frame(width: isCompact ? nil : width)
             .accessibilityIdentifier("ImageOpacitySlider")
         }
     }
@@ -539,7 +512,7 @@ struct NumericInputBar: View {
                 .lineLimit(1)
                 .fixedSize(horizontal: !isCompact, vertical: true)
 
-            HStack(spacing: 6) {
+            fieldLayout {
                 Text("Size")
                     .font(.caption)
                     .foregroundStyle(.barLabel)
@@ -585,7 +558,7 @@ struct NumericInputBar: View {
                 .fixedSize(horizontal: !isCompact, vertical: true)
             BarHint("Drag from center to a vertex")
 
-            HStack(spacing: 6) {
+            fieldLayout {
                 Text(FloeCADStrings.label("cad.ui.polygon.sides", "Sides"))
                     .font(.caption)
                     .foregroundStyle(.barLabel)
@@ -621,7 +594,7 @@ struct NumericInputBar: View {
             Text(FloeCADStrings.label("cad.ui.diameter.title", "Diameter"))
                 .font(isCompact ? .subheadline.weight(.semibold) : .headline)
                 .fixedSize(horizontal: !isCompact, vertical: true)
-            HStack(spacing: 6) {
+            fieldLayout {
                 Text("⌀")
                     .font(.caption)
                     .foregroundStyle(.barLabel)
@@ -655,12 +628,12 @@ struct NumericInputBar: View {
     }
 
     private func extrudeBarBody(_ context: EditorViewModel.ToolContext) -> some View {
-        AdaptiveBar {
+        AdaptiveBar(collapsibleFooter: isCompact) {
             Text(FloeCADStrings.label("cad.ui.tool.extrude", "Extrude"))
                 .font(isCompact ? .subheadline.weight(.semibold) : .headline)
                 .fixedSize(horizontal: !isCompact, vertical: true)
 
-            HStack(spacing: 6) {
+            fieldLayout {
                 Text(FloeCADStrings.label("cad.ui.common.distance", "Distance"))
                     .font(.caption)
                     .foregroundStyle(.barLabel)
@@ -702,34 +675,24 @@ struct NumericInputBar: View {
 
             // Ends retain their source through rebuild. Typing a distance
             // explicitly returns to the ordinary distance condition.
-            if isCompact {
-                Picker(FloeCADStrings.text("cad.ui.extrude.end", "End"), selection: Binding(
-                    get: { viewModel.toolContext?.extrudeTermination?.mode ?? .blind },
-                    set: { selectExtrudeEnd($0, context: context) })) {
-                    ForEach(ExtrudeEnd.allCases, id: \.self) { end in Text(end.title).tag(end) }
-                }
-                .pickerStyle(.menu).lineLimit(nil).fixedSize(horizontal: false, vertical: true)
-                .accessibilityIdentifier("ExtrudeEndMenu")
-            } else {
-                Menu {
-                    ForEach(ExtrudeEnd.allCases, id: \.self) { end in
-                        Button(end.title) {
-                            // Text typed but not yet submitted still decides the
-                            // direction (its sign), so apply it first.
-                            if extrudeDistanceText != extrudeDistanceDisplay(context.distance) {
-                                _ = applyExtrudeDistanceText()
-                            }
-                            if let mm = viewModel.resolveExtrudeEnd(end) {
-                                extrudeDistanceText = extrudeDistanceDisplay(mm)
-                            }
+            Menu {
+                ForEach(ExtrudeEnd.allCases, id: \.self) { end in
+                    Button(end.title) {
+                        // Text typed but not yet submitted still decides the
+                        // direction (its sign), so apply it first.
+                        if extrudeDistanceText != extrudeDistanceDisplay(context.distance) {
+                            _ = applyExtrudeDistanceText()
+                        }
+                        if let mm = viewModel.resolveExtrudeEnd(end) {
+                            extrudeDistanceText = extrudeDistanceDisplay(mm)
                         }
                     }
-                } label: {
-                    Label(FloeCADStrings.label("cad.ui.extrude.end", "End"), systemImage: "arrow.down.to.line")
-                        .labelStyle(.titleOnly)
                 }
-                .accessibilityIdentifier("ExtrudeEndMenu")
+            } label: {
+                Label(FloeCADStrings.label("cad.ui.extrude.end", "End"), systemImage: "arrow.down.to.line")
+                    .labelStyle(.titleOnly)
             }
+            .accessibilityIdentifier("ExtrudeEndMenu")
 
             // Symmetric sides: distance is per-side, total depth 2×.
             Button(FloeCADStrings.label("cad.ui.extrude.symmetric", "Symmetric")) {
@@ -746,11 +709,7 @@ struct NumericInputBar: View {
                     Label(FloeCADStrings.text("cad.ui.common.more", "More"), systemImage: "ellipsis")
                         .labelStyle(.iconOnly)
                 }
-                .sheet(isPresented: $viewModel.showHelixOptions) { helixOptions }
-            } else {
-                alternateExtrudeActions(context)
-                    .sheet(isPresented: $viewModel.showHelixOptions) { helixOptions }
-            }
+            } else { alternateExtrudeActions(context) }
             Button(FloeCADStrings.label("cad.ui.common.cancel", "Cancel")) {
                 viewModel.cancelTool()
             }
@@ -789,30 +748,36 @@ struct NumericInputBar: View {
                 .fixedSize(horizontal: !isCompact, vertical: true)
             }
         }
-
-    }
-
-    private func selectExtrudeEnd(_ end: ExtrudeEnd, context: EditorViewModel.ToolContext) {
-        if extrudeDistanceText != extrudeDistanceDisplay(context.distance) { _ = applyExtrudeDistanceText() }
-        if let mm = viewModel.resolveExtrudeEnd(end) { extrudeDistanceText = extrudeDistanceDisplay(mm) }
+        .sheet(isPresented: $viewModel.showHelixOptions) {
+            HelixOptionsSheet { radius, pitch, turns in
+                viewModel.commitHelixSweep(radius: radius, pitch: pitch, turns: turns)
+            }
+        }
     }
 
     @ViewBuilder
     private func alternateExtrudeActions(_ context: EditorViewModel.ToolContext) -> some View {
+        // Sketch profiles can revolve about one of their lines, sweep
+        // along a path, loft to more profiles, or coil into a helix.
         if context.sketchID != nil {
-            Button(FloeCADStrings.label("cad.ui.tool.revolve", "Revolve")) { viewModel.beginRevolveAxisPick() }
-            Button(FloeCADStrings.label("cad.ui.tool.sweep", "Sweep")) { viewModel.beginSweepPathPick() }
-            Button(FloeCADStrings.label("cad.ui.tool.loft", "Loft")) { viewModel.beginLoftProfilePick() }
-            Button(FloeCADStrings.label("cad.ui.tool.helix", "Helix")) { viewModel.showHelixOptions = true }
+            Button(FloeCADStrings.label("cad.ui.tool.revolve", "Revolve")) {
+                viewModel.beginRevolveAxisPick()
+            }
+            Button(FloeCADStrings.label("cad.ui.tool.sweep", "Sweep")) {
+                viewModel.beginSweepPathPick()
+            }
+            Button(FloeCADStrings.label("cad.ui.tool.loft", "Loft")) {
+                viewModel.beginLoftProfilePick()
+            }
+            Button(FloeCADStrings.label("cad.ui.tool.helix", "Helix")) {
+                viewModel.showHelixOptions = true
+            }
         }
+        // Face pulls can become an offset construction plane instead.
         if context.sourceBody != nil {
-            Button(FloeCADStrings.label("cad.ui.tool.offsetPlane", "Offset Plane")) { viewModel.beginOffsetPlane() }
-        }
-    }
-
-    private var helixOptions: some View {
-        HelixOptionsSheet { radius, pitch, turns in
-            viewModel.commitHelixSweep(radius: radius, pitch: pitch, turns: turns)
+            Button(FloeCADStrings.label("cad.ui.tool.offsetPlane", "Offset Plane")) {
+                viewModel.beginOffsetPlane()
+            }
         }
     }
 
@@ -879,7 +844,7 @@ struct NumericInputBar: View {
                 .fixedSize(horizontal: !isCompact, vertical: true)
             BarHint("Drag the arrow, or type a distance")
 
-            HStack(spacing: 6) {
+            fieldLayout {
                 Text(FloeCADStrings.label("cad.ui.common.distance", "Distance"))
                     .font(.caption)
                     .foregroundStyle(.barLabel)
@@ -909,8 +874,7 @@ struct NumericInputBar: View {
                 viewModel.beginAnglePlane()
             }
                 } label: {
-                    Label(FloeCADStrings.text("cad.ui.common.more", "More"), systemImage: "ellipsis")
-                        .labelStyle(.iconOnly)
+                    Label(FloeCADStrings.text("cad.ui.common.more", "More"), systemImage: "ellipsis").labelStyle(.iconOnly)
                 }
             } else {
                 Button(FloeCADStrings.label("cad.ui.tool.anglePlane", "Angle Plane")) {
@@ -935,7 +899,7 @@ struct NumericInputBar: View {
             BarHint(FloeCADStrings.text("cad.datum.angleBarHint",
                 "Type an angle; the plane turns about the hinge"))
 
-            HStack(spacing: 6) {
+            fieldLayout {
                 Text(FloeCADStrings.label("cad.ui.common.angle", "Angle"))
                     .font(.caption)
                     .foregroundStyle(.barLabel)
@@ -984,8 +948,7 @@ struct NumericInputBar: View {
                 viewModel.beginOffsetPlane()
             }
                 } label: {
-                    Label(FloeCADStrings.text("cad.ui.common.more", "More"), systemImage: "ellipsis")
-                        .labelStyle(.iconOnly)
+                    Label(FloeCADStrings.text("cad.ui.common.more", "More"), systemImage: "ellipsis").labelStyle(.iconOnly)
                 }
             } else {
                 Button(FloeCADStrings.label("cad.ui.tool.offsetPlane", "Offset Plane")) {
@@ -1007,7 +970,7 @@ struct NumericInputBar: View {
                 .fixedSize(horizontal: !isCompact, vertical: true)
             BarHint("Drag to sweep, or type an angle")
 
-            HStack(spacing: 6) {
+            fieldLayout {
                 Text(FloeCADStrings.label("cad.ui.common.angle", "Angle"))
                     .font(.caption)
                     .foregroundStyle(.barLabel)

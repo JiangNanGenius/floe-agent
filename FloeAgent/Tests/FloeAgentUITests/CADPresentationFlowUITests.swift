@@ -2112,40 +2112,22 @@ final class CADExternalProjectionNativeFlowUITests: XCTestCase {
 }
 
 @MainActor
-private enum CADParameterFormProbe {
-    static func form(_ app: XCUIApplication) -> XCUIElement {
-        app.descendants(matching: .any).matching(identifier: "CADToolParametersForm").firstMatch
-    }
-    static func viewport(_ app: XCUIApplication) -> CGRect {
-        let bounds = form(app).frame
-        let navigation = app.navigationBars["Parameters"].frame
-        let actions = app.descendants(matching: .any).matching(identifier: "CADToolParametersActions").firstMatch
-        let top = max(bounds.minY, navigation.maxY)
-        let bottom = actions.exists ? min(bounds.maxY, actions.frame.minY) : bounds.maxY
-        return CGRect(x: bounds.minX, y: top, width: bounds.width, height: max(0, bottom - top))
-    }
-    static func whole(_ control: XCUIElement, in app: XCUIApplication) -> Bool {
-        control.exists && control.isHittable && !control.frame.isEmpty
-            && viewport(app).insetBy(dx: -1, dy: -1).contains(control.frame)
-    }
-    static func reveal(_ control: XCUIElement, in app: XCUIApplication, preferDown: Bool = false) {
-        XCTAssertTrue(form(app).exists)
-        for _ in 0..<12 where !whole(control, in: app) {
-            let rect = control.frame, visible = viewport(app)
-            if (rect.isEmpty && preferDown) || (!rect.isEmpty && rect.minY < visible.minY) {
-                form(app).swipeDown()
-            } else {
-                form(app).swipeUp()
-            }
-        }
-    }
+private enum CADInlineBarProbe {
     static func assertWhole(_ control: XCUIElement, in app: XCUIApplication) {
-        XCTAssertTrue(control.exists && control.isHittable)
-        let visible = viewport(app)
-        XCTAssertGreaterThanOrEqual(control.frame.minX, visible.minX - 1)
-        XCTAssertLessThanOrEqual(control.frame.maxX, visible.maxX + 1)
-        XCTAssertGreaterThanOrEqual(control.frame.minY, visible.minY - 1)
-        XCTAssertLessThanOrEqual(control.frame.maxY, visible.maxY + 1)
+        let bar = app.descendants(matching: .any).matching(identifier: "CADInlineParameters").firstMatch
+        XCTAssertTrue(bar.exists && control.exists && control.isHittable)
+        XCTAssertGreaterThanOrEqual(control.frame.minX, bar.frame.minX - 1)
+        XCTAssertLessThanOrEqual(control.frame.maxX, bar.frame.maxX + 1)
+        XCTAssertGreaterThanOrEqual(control.frame.minY, bar.frame.minY - 1)
+        XCTAssertLessThanOrEqual(control.frame.maxY, bar.frame.maxY + 1)
+        let editor = app.otherElements["CADFixtureHarness"].firstMatch
+        if editor.exists {
+            XCTAssertGreaterThanOrEqual(bar.frame.minX, editor.frame.minX - 1)
+            XCTAssertLessThanOrEqual(bar.frame.maxX, editor.frame.maxX + 1)
+            XCTAssertGreaterThanOrEqual(bar.frame.minY, editor.frame.minY - 1)
+            XCTAssertLessThanOrEqual(bar.frame.maxY, editor.frame.maxY + 1)
+        }
+        XCTAssertFalse(app.buttons["CADToolParametersClose"].exists, "Small edits remain inline, without an automatic sheet")
     }
 }
 
@@ -2176,26 +2158,37 @@ final class CADAdvancedPatternNativeFlowUITests: XCTestCase {
         let pattern = app.buttons["PatternButton"]
         XCTAssertTrue(pattern.waitForExistence(timeout: 15) && pattern.isEnabled)
         pattern.tap()
-        let seed = app.descendants(matching: .any).matching(identifier: "PatternSeedMenu").firstMatch
-        XCTAssertTrue(seed.waitForExistence(timeout: 15)); reveal(seed, in: app)
-        XCTAssertTrue(seed.isHittable)
+        if compact {
+            CADInlineBarProbe.assertWhole(app.textFields["PatternCount"], in: app)
+            CADInlineBarProbe.assertWhole(app.textFields["PatternSpacing"], in: app)
+            let options = app.buttons["CADToolOptionsButton"]
+            XCTAssertTrue(options.exists && options.isHittable)
+            options.tap()
+        }
+        let seed = app.buttons["PatternSeedMenu"]
+        XCTAssertTrue(seed.waitForExistence(timeout: 15) && seed.isHittable)
         seed.tap()
         let feature = app.buttons["Extrude"].firstMatch
         XCTAssertTrue(feature.waitForExistence(timeout: 10) && feature.isHittable); feature.tap()
-        let path = app.descendants(matching: .any).matching(identifier: "PatternPathMenu").firstMatch
-        reveal(path, in: app)
+        let path = app.buttons["PatternPathMenu"]
         XCTAssertTrue(path.exists && path.isHittable); path.tap()
         let circle = app.buttons["Hole · Circle 1"].firstMatch
         XCTAssertTrue(circle.waitForExistence(timeout: 10) && circle.isHittable); circle.tap()
         let apply = app.buttons["PatternApply"]
         XCTAssertTrue(apply.exists && apply.isHittable)
         if compact {
-            for control in [app.textFields["PatternCount"], app.textFields["PatternSpacing"], seed, path] {
-                reveal(control, in: app)
-                assertWholeControl(control, in: app)
+            for control in [seed, path, app.textFields["PatternCount"], app.textFields["PatternSpacing"], apply] {
+                CADInlineBarProbe.assertWhole(control, in: app)
             }
+            app.buttons["CADToolOptionsButton"].tap()
+            XCTAssertFalse(seed.exists)
+            CADInlineBarProbe.assertWhole(app.textFields["PatternCount"], in: app)
+            capture(largeText ? "M25 large text inline values with options collapsed" : "M25 inline values with options collapsed")
+            app.buttons["CADToolOptionsButton"].tap()
+            XCTAssertTrue(seed.waitForExistence(timeout: 5) && seed.label.contains("Extrude"))
+            XCTAssertTrue(path.exists && path.label.contains("Circle 1"))
         }
-        capture(compact ? (largeText ? "M25 compact large text native feature and path controls" : "M25 compact default text native feature and path controls") : "M25 native feature and exact path controls")
+        capture(compact ? (largeText ? "M25 compact large text inline feature and path controls" : "M25 compact default text inline feature and path controls") : "M25 native feature and exact path controls")
         if compact {
             app.buttons["PatternCancel"].tap()
         } else {
@@ -2219,12 +2212,6 @@ final class CADAdvancedPatternNativeFlowUITests: XCTestCase {
         capture(compact ? "M25 compact native cancel returns to document" : "M25 native patterned feature applied")
     }
 
-    private func reveal(_ control: XCUIElement, in app: XCUIApplication) {
-        if app.buttons["CADToolParametersClose"].exists { CADParameterFormProbe.reveal(control, in: app) }
-    }
-    private func assertWholeControl(_ control: XCUIElement, in app: XCUIApplication) {
-        CADParameterFormProbe.assertWhole(control, in: app)
-    }
     private func toggleItems(_ app: XCUIApplication) {
         if app.buttons["ItemsButton"].exists { app.buttons["ItemsButton"].tap() }
         else {
@@ -2265,7 +2252,7 @@ final class CADAdvancedBlendNativeFlowUITests: XCTestCase {
         }
         modify.tap()
         app.buttons["ChamferButton"].tap()
-        let menu = app.descendants(matching: .any).matching(identifier: "BlendModeMenu").firstMatch
+        let menu = app.buttons["BlendModeMenu"]
         XCTAssertTrue(menu.waitForExistence(timeout: 15))
         reveal(menu, in: app, left: false)
         XCTAssertTrue(menu.isHittable)
@@ -2276,6 +2263,11 @@ final class CADAdvancedBlendNativeFlowUITests: XCTestCase {
         XCTAssertTrue(second.isHittable, app.debugDescription)
         let swap = app.switches["BlendSwapSides"]
         reveal(swap, in: app); XCTAssertTrue(swap.exists && swap.isHittable); swap.tap()
+        if compact {
+            for control in [menu, second, app.textFields["BlendValueField"], swap, app.buttons["BlendCancel"]] {
+                CADInlineBarProbe.assertWhole(control, in: app)
+            }
+        }
         capture(compact ? (largeText ? "M21 compact large text two-distance native controls" : "M21 compact default text two-distance native controls") : "M21 two-distance native controls")
         reveal(menu, in: app, left: false); menu.tap()
         app.buttons["Distance-Angle Chamfer"].firstMatch.tap()
@@ -2283,17 +2275,6 @@ final class CADAdvancedBlendNativeFlowUITests: XCTestCase {
         reveal(second, in: app)
         XCTAssertEqual(Double(second.value as? String ?? ""), 45,
                        "Angles stay in degrees even when length fields use centimetres")
-        if compact {
-            assertWholeControl(second, in: app)
-            if !largeText {
-                app.buttons["CADToolParametersClose"].tap()
-                let reopen = app.buttons["CADToolParametersButton"]
-                XCTAssertTrue(reopen.waitForExistence(timeout: 10) && reopen.isHittable)
-                reopen.tap()
-                XCTAssertTrue(second.waitForExistence(timeout: 10)); reveal(second, in: app)
-                XCTAssertEqual(Double(second.value as? String ?? ""), 45)
-            }
-        }
         capture(compact ? "M21 compact native distance angle" : "M21 native distance angle")
         let cancel = app.buttons["BlendCancel"]
         XCTAssertTrue(cancel.exists && cancel.isHittable); cancel.tap()
@@ -2305,25 +2286,27 @@ final class CADAdvancedBlendNativeFlowUITests: XCTestCase {
         XCTAssertTrue(second.waitForExistence(timeout: 10)); reveal(second, in: app)
         XCTAssertTrue(second.isHittable)
         XCTAssertFalse(app.switches["BlendSwapSides"].exists)
-        if compact { assertWholeControl(second, in: app) }
+        if compact {
+            CADInlineBarProbe.assertWhole(second, in: app)
+            CADInlineBarProbe.assertWhole(app.textFields["BlendValueField"], in: app)
+        }
         capture(compact ? (largeText ? "M21 compact large text variable radius controls" : "M21 compact default text variable radius controls") : "M21 variable radius controls")
         app.buttons["BlendCancel"].tap()
         XCTAssertFalse(app.buttons["BlendApply"].exists)
         XCTAssertEqual(app.alerts.count, 0)
     }
     private func reveal(_ control: XCUIElement, in app: XCUIApplication, left: Bool = true) {
-        if app.buttons["CADToolParametersClose"].exists {
-            CADParameterFormProbe.reveal(control, in: app, preferDown: !left)
-        } else {
-            for _ in 0..<6 where !control.isHittable {
-                let bar = app.scrollViews.containing(.textField, identifier: "BlendValueField").firstMatch
-                XCTAssertTrue(bar.exists, app.debugDescription)
-                if left { bar.swipeLeft() } else { bar.swipeRight() }
-            }
+        if app.descendants(matching: .any).matching(identifier: "CADInlineParameters").firstMatch.exists {
+            CADInlineBarProbe.assertWhole(control, in: app)
+            return
         }
-    }
-    private func assertWholeControl(_ control: XCUIElement, in app: XCUIApplication) {
-        CADParameterFormProbe.assertWhole(control, in: app)
+        for _ in 0..<6 where !control.isHittable {
+            // Scroll only within the observed field/bar row, leaving fixed
+            // Apply/Cancel actions untouched. No viewport coordinate picking.
+            let bar = app.scrollViews.containing(.textField, identifier: "BlendValueField").firstMatch
+            XCTAssertTrue(bar.exists, app.debugDescription)
+            if left { bar.swipeLeft() } else { bar.swipeRight() }
+        }
     }
     private func capture(_ name: String) {
         let attachment = XCTAttachment(screenshot: XCUIScreen.main.screenshot())

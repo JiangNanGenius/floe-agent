@@ -17459,22 +17459,40 @@
         }
       }
     },
-    "cad.blend.mode": {
+    "cad.blend.pickEdges": {
       "localizations": {
-        "en": { "stringUnit": { "state": "translated", "value": "Type" } },
-        "zh-Hans": { "stringUnit": { "state": "translated", "value": "方式" } }
+        "en": { "stringUnit": { "state": "translated", "value": "Tap edges" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "选择边" } }
       }
     },
-    "cad.pattern.source": {
+    "cad.blend.edgeCount": {
       "localizations": {
-        "en": { "stringUnit": { "state": "translated", "value": "Source" } },
-        "zh-Hans": { "stringUnit": { "state": "translated", "value": "源对象" } }
+        "en": { "stringUnit": { "state": "translated", "value": "%ld selected" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "已选 %ld 条边" } }
       }
     },
-    "cad.ui.common.parameters": {
+    "cad.blend.short.variable": {
       "localizations": {
-        "en": { "stringUnit": { "state": "translated", "value": "Parameters" } },
-        "zh-Hans": { "stringUnit": { "state": "translated", "value": "参数" } }
+        "en": { "stringUnit": { "state": "translated", "value": "Variable" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "变半径" } }
+      }
+    },
+    "cad.blend.short.twoDistances": {
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Two distances" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "两距离" } }
+      }
+    },
+    "cad.blend.short.distanceAngle": {
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Distance + angle" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "距离与角度" } }
+      }
+    },
+    "cad.ui.common.options": {
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Options" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "选项" } }
       }
     },
     "cad.ui.common.close": {

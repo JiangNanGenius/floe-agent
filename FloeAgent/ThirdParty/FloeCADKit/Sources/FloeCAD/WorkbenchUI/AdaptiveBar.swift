@@ -2,11 +2,9 @@
 //  AdaptiveBar.swift
 //  openshape3d
 //
-//  Shared contextual controls. Regular width keeps the inline toolbar;
-//  compact width uses a native parameter sheet with complete form rows.
-//  The sheet can be collapsed while selecting geometry, and reopened without
-//  resetting the active tool. Secondary sheets belong to their trigger inside
-//  these rows so their presentation context stays inside the inspector.
+//  Shared contextual controls. iPad keeps its inline toolbar. Compact width
+//  wraps complete parameter groups in place, with secondary options expanded
+//  on demand. Small edits never automatically cover the model with a sheet.
 //
 
 import SwiftUI
@@ -121,11 +119,12 @@ enum AdaptiveBarStyle {
 
 struct AdaptiveBar<Controls: View, Actions: View, Footer: View>: View {
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
-    @State private var compactInspectorPresented = true
+    @State private var compactOptionsExpanded = false
 
     private let style: AdaptiveBarStyle
     private let spacing: CGFloat
     private let showsFooter: Bool
+    private let collapsibleFooter: Bool
     private let controls: Controls
     private let actions: Actions
     private let footer: Footer
@@ -137,12 +136,14 @@ struct AdaptiveBar<Controls: View, Actions: View, Footer: View>: View {
     init(style: AdaptiveBarStyle = .panel,
          spacing: CGFloat = 16,
          showsFooter: Bool = true,
+         collapsibleFooter: Bool = false,
          @ViewBuilder controls: () -> Controls,
          @ViewBuilder actions: () -> Actions,
          @ViewBuilder footer: () -> Footer) {
         self.style = style
         self.spacing = spacing
         self.showsFooter = showsFooter
+        self.collapsibleFooter = collapsibleFooter
         self.controls = controls()
         self.actions = actions()
         self.footer = footer()
@@ -150,76 +151,54 @@ struct AdaptiveBar<Controls: View, Actions: View, Footer: View>: View {
 
     private var isCompact: Bool { horizontalSizeClass == .compact }
 
-    /// A tool without actions must not reserve an empty bottom toolbar.
+    /// A bar with no buttons (the polygon bar) must not reserve an empty
+    /// actions row in the compact layout.
     private var hasActions: Bool { Actions.self != EmptyView.self }
     private var hasFooter: Bool { Footer.self != EmptyView.self && showsFooter }
 
-    @ViewBuilder
     var body: some View {
-        if isCompact {
-            Button {
-                compactInspectorPresented = true
-            } label: {
-                Label(FloeCADStrings.text("cad.ui.common.parameters", "Parameters"), systemImage: "slider.horizontal.3")
-            }
-            .buttonStyle(.bordered)
-            .accessibilityIdentifier("CADToolParametersButton")
-            .sheet(isPresented: $compactInspectorPresented) { compactInspector }
-        } else {
-            regularContent
-                .padding(.horizontal, style.horizontalPadding)
-                .padding(.vertical, style.verticalPadding)
-                .background(.regularMaterial, in: background)
-                .shadow(color: .black.opacity(0.15),
-                        radius: style.shadowRadius, y: style.shadowY)
-        }
-    }
-
-    private var compactInspector: some View {
-        NavigationStack {
-            Form {
-                Section { controls }
-                if hasFooter { Section { footer } }
-            }
-            .formStyle(.grouped)
-            .font(.subheadline)
-            .controlSize(.regular)
-            .accessibilityElement(children: .contain)
-            .accessibilityIdentifier("CADToolParametersForm")
-            .navigationTitle(FloeCADStrings.text("cad.ui.common.parameters", "Parameters"))
-            .navigationBarTitleDisplayMode(.inline)
-            .safeAreaInset(edge: .bottom, spacing: 0) {
-                if hasActions {
-                    ViewThatFits(in: .horizontal) {
-                        HStack(spacing: 16) { actions }
-                            .fixedSize(horizontal: true, vertical: false)
-                        VStack(alignment: .trailing, spacing: 8) { actions }
-                    }
-                        .frame(maxWidth: .infinity, alignment: .trailing)
-                        .padding()
-                        .background(.bar)
-                        .accessibilityElement(children: .contain)
-                        .accessibilityIdentifier("CADToolParametersActions")
-                }
-            }
-            .toolbar {
-                ToolbarItem(placement: .topBarTrailing) {
-                    Button(FloeCADStrings.label("cad.ui.common.close", "Close"), systemImage: "chevron.down") {
-                        compactInspectorPresented = false
-                    }
-                    .accessibilityIdentifier("CADToolParametersClose")
-                }
-            }
-        }
-        .presentationDetents([.medium, .large])
-        .presentationDragIndicator(.visible)
-        .presentationBackgroundInteraction(.enabled(upThrough: .medium))
-        .presentationContentInteraction(.scrolls)
+        content
+            .transformEnvironment(\.font) { if isCompact { $0 = .subheadline } }
+            .transformEnvironment(\.controlSize) { if isCompact { $0 = .small } }
+            .padding(.horizontal, isCompact ? 12 : style.horizontalPadding)
+            .padding(.vertical, isCompact ? 8 : style.verticalPadding)
+            .background(.regularMaterial, in: background)
+            .shadow(color: .black.opacity(0.15),
+                    radius: style.shadowRadius, y: style.shadowY)
     }
 
     @ViewBuilder
-    private var regularContent: some View {
-        if hasFooter {
+    private var content: some View {
+        if isCompact {
+            VStack(alignment: .leading, spacing: 8) {
+                compactFlow { controls }
+                if hasFooter && (!collapsibleFooter || compactOptionsExpanded) {
+                    compactFlow { footer }
+                }
+                if hasActions || (hasFooter && collapsibleFooter) {
+                    HStack(spacing: 12) {
+                        if hasFooter && collapsibleFooter {
+                            Button {
+                                compactOptionsExpanded.toggle()
+                            } label: {
+                                Label(FloeCADStrings.text("cad.ui.common.options", "Options"), systemImage: "slider.horizontal.3")
+                                    .labelStyle(.iconOnly)
+                            }
+                            .buttonStyle(.bordered)
+                            .accessibilityIdentifier("CADToolOptionsButton")
+                            .accessibilityAddTraits(compactOptionsExpanded ? .isSelected : [])
+                        }
+                        Spacer(minLength: 0)
+                        ViewThatFits(in: .horizontal) {
+                            HStack(spacing: 12) { actionButtons }.fixedSize(horizontal: true, vertical: false)
+                            VStack(alignment: .trailing, spacing: 6) { actionButtons }
+                        }
+                    }
+                }
+            }
+            .accessibilityElement(children: .contain)
+            .accessibilityIdentifier("CADInlineParameters")
+        } else if hasFooter {
             VStack(alignment: .leading, spacing: 10) {
                 regularRow
                 footer
@@ -230,8 +209,8 @@ struct AdaptiveBar<Controls: View, Actions: View, Footer: View>: View {
     }
 
     /// The regular-width row: the natural fixed HStack when everything fits
-    /// (Spacers keep the actions pushed to the trailing edge), and the same
-    /// scrolling row as compact when it doesn't. Without the fallback, a bar
+    /// (Spacers keep the actions pushed to the trailing edge), with a
+    /// horizontal fallback when the regular-width toolbar cannot fit. Without the fallback, a bar
     /// squeezed by a narrow-but-regular width (iPad Split View / Stage
     /// Manager) compresses its last labels to per-character wrapping — the
     /// commit button rendered as "Ex-trude" on two lines, the exact failure
@@ -241,14 +220,18 @@ struct AdaptiveBar<Controls: View, Actions: View, Footer: View>: View {
         ViewThatFits(in: .horizontal) {
             HStack(spacing: spacing) {
                 controls
-                actions
+                actionButtons
             }
             .lineLimit(1)
             scrollRow {
                 controls
-                actions
+                actionButtons
             }
         }
+    }
+
+    private var actionButtons: some View {
+        actions.buttonStyle(.bordered).controlSize(.small)
     }
 
     private var background: AnyShape {
@@ -257,6 +240,11 @@ struct AdaptiveBar<Controls: View, Actions: View, Footer: View>: View {
         } else {
             AnyShape(Capsule())
         }
+    }
+
+    private func compactFlow<Content: View>(@ViewBuilder _ content: () -> Content) -> some View {
+        CADParameterFlow(spacing: 10) { content() }
+            .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     /// Regular-width overflow fallback. `fixedSize(horizontal:)` is the actual fix for the
@@ -275,6 +263,45 @@ struct AdaptiveBar<Controls: View, Actions: View, Footer: View>: View {
         }
         .scrollBounceBehavior(.basedOnSize, axes: .horizontal)
         .frame(maxWidth: .infinity, alignment: .leading)
+    }
+}
+
+/// Wraps whole label/value groups. Each child gets a bounded width so text
+/// can grow vertically; a field is never clipped at a horizontal scroll edge.
+private struct CADParameterFlow: Layout {
+    var spacing: CGFloat
+
+    private func arrange(_ subviews: Subviews, width: CGFloat) -> (CGSize, [(CGPoint, CGSize)]) {
+        var x: CGFloat = 0, y: CGFloat = 0, rowHeight: CGFloat = 0
+        var entries: [(CGPoint, CGSize)] = []
+        for subview in subviews {
+            let ideal = subview.sizeThatFits(.unspecified)
+            let itemWidth = min(width, ideal.width.isFinite ? max(0, ideal.width) : width)
+            let size = subview.sizeThatFits(ProposedViewSize(width: itemWidth, height: nil))
+            if x > 0 && x + itemWidth > width {
+                x = 0; y += rowHeight + spacing; rowHeight = 0
+            }
+            entries.append((CGPoint(x: x, y: y), CGSize(width: itemWidth, height: size.height)))
+            if itemWidth > 0 || size.height > 0 {
+                x += itemWidth + spacing
+                rowHeight = max(rowHeight, size.height)
+            }
+        }
+        return (CGSize(width: width, height: y + rowHeight), entries)
+    }
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        let idealWidth = subviews.reduce(CGFloat.zero) { $0 + $1.sizeThatFits(.unspecified).width + spacing }
+        let width = max(1, proposal.width.flatMap { $0.isFinite ? $0 : nil } ?? idealWidth)
+        return arrange(subviews, width: width).0
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        let (_, entries) = arrange(subviews, width: max(1, bounds.width))
+        for (subview, entry) in zip(subviews, entries) {
+            subview.place(at: CGPoint(x: bounds.minX + entry.0.x, y: bounds.minY + entry.0.y),
+                          anchor: .topLeading, proposal: ProposedViewSize(entry.1))
+        }
     }
 }
 

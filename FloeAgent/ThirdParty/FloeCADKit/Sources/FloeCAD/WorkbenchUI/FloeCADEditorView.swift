@@ -885,58 +885,113 @@ struct FloeCADEditorView: View {
 
     /// Chamfer/Fillet bar (Phase E, spec §4.3): shows the pick prompt, the
     /// size field (setback/radius), and Apply/Cancel.
+    @ViewBuilder
     private func blendBar(_ kind: BlendKind, _ viewModel: EditorViewModel) -> some View {
+        if horizontalSizeClass == .compact { compactBlendBar(kind, viewModel) }
+        else { regularBlendBar(kind, viewModel) }
+    }
+
+    private func compactBlendBar(_ kind: BlendKind, _ viewModel: EditorViewModel) -> some View {
+        AdaptiveBar(style: .capsule, spacing: 10) {
+            blendModeMenu(kind, viewModel)
+            if let failure = viewModel.blendPreviewFailure, !viewModel.blendSelectedEdges.isEmpty {
+                Text(failure).font(.caption).foregroundStyle(.orange)
+                    .fixedSize(horizontal: false, vertical: true).accessibilityIdentifier("BlendFailureHint")
+            } else {
+                Label(viewModel.blendSelectedEdges.isEmpty
+                    ? FloeCADStrings.text("cad.blend.pickEdges", "Tap edges")
+                    : String(format: FloeCADStrings.text("cad.blend.edgeCount", "%ld edges"), viewModel.blendSelectedEdges.count),
+                    systemImage: kind == .chamfer ? "square.on.circle" : "circle.circle")
+                    .font(.caption).foregroundStyle(.barLabel)
+            }
+            compactBlendValue(viewModel.blendAdvancedMode == .variableFillet
+                ? FloeCADStrings.text("cad.blend.endRadius", "End radius") : kind.valueLabel,
+                value: Binding(get: { viewModel.blendValue }, set: { viewModel.blendValue = max(0, $0) }),
+                kind: .length, identifier: "BlendValueField")
+            if let advanced = viewModel.blendAdvancedMode {
+                compactBlendValue(advanced == .variableFillet
+                    ? FloeCADStrings.text("cad.blend.middleRadius", "Middle radius")
+                    : advanced == .distanceAngleChamfer ? FloeCADStrings.text("cad.feature.angle", "Angle")
+                    : FloeCADStrings.text("cad.blend.secondDistance", "Second distance"),
+                    value: Binding(get: { viewModel.blendSecondValue }, set: { viewModel.blendSecondValue = $0 }),
+                    kind: advanced == .distanceAngleChamfer ? .plain : .length,
+                    identifier: "BlendSecondValueField")
+                if !advanced.isFillet {
+                    Toggle(isOn: Binding(get: { viewModel.blendSwapSupport }, set: { viewModel.blendSwapSupport = $0 })) {
+                        Label(FloeCADStrings.text("cad.blend.swapSides", "Swap sides"), systemImage: "arrow.left.arrow.right")
+                    }
+                    .toggleStyle(.button).labelStyle(.iconOnly)
+                    .accessibilityLabel(FloeCADStrings.text("cad.blend.swapSides", "Swap sides"))
+                    .accessibilityIdentifier("BlendSwapSides")
+                }
+            }
+        } actions: {
+            Button("Cancel") { viewModel.cancelBlend() }
+                .keyboardShortcut(.cancelAction).accessibilityIdentifier("BlendCancel")
+            Button("Apply") { viewModel.commitBlend() }
+                .buttonStyle(.borderedProminent).disabled(!viewModel.canCommitBlend)
+                .accessibilityIdentifier("BlendApply")
+        }
+    }
+
+    private func compactBlendValue(_ label: String, value: Binding<Double>,
+                                   kind: ExpressionValueField.Kind, identifier: String) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(label).font(.caption).foregroundStyle(.barLabel)
+                .fixedSize(horizontal: false, vertical: true)
+            HStack(spacing: 6) {
+                ExpressionValueField(placeholder: kind == .plain ? "°" : settings.unit.symbol,
+                    value: value, kind: kind, clamp: nil, identifier: identifier)
+                Text(kind == .plain ? "°" : settings.unit.symbol).font(.caption).foregroundStyle(.barLabel)
+            }
+        }
+    }
+
+    private func regularBlendBar(_ kind: BlendKind, _ viewModel: EditorViewModel) -> some View {
         let value = Binding(
             get: { viewModel.blendValue },
             set: { viewModel.blendValue = max(0, $0) })
         return AdaptiveBar(style: .capsule, spacing: 12) {
             blendModeMenu(kind, viewModel)
-            HStack(spacing: 8) {
-                Image(systemName: kind == .chamfer ? "square.on.circle" : "circle.circle")
-                if let failure = viewModel.blendPreviewFailure,
-                   !viewModel.blendSelectedEdges.isEmpty {
-                    Text(failure)
-                        .font(.subheadline)
-                        .foregroundStyle(.orange)
-                        .accessibilityIdentifier("BlendFailureHint")
-                } else {
-                    Text(viewModel.blendSelectedEdges.isEmpty
-                         ? "Tap edges to \(kind.title.lowercased())"
-                         : "\(viewModel.blendSelectedEdges.count) edge\(viewModel.blendSelectedEdges.count == 1 ? "" : "s") selected")
-                        .font(.subheadline)
-                }
+            Image(systemName: kind == .chamfer ? "square.on.circle" : "circle.circle")
+            // When the kernel refused the current size/pick, say WHY — the
+            // typed diagnostic replaces the count until the preview is valid
+            // again. Concrete color, not hierarchical .secondary (gotcha 10).
+            if let failure = viewModel.blendPreviewFailure,
+               !viewModel.blendSelectedEdges.isEmpty {
+                Text(failure)
+                    .font(.subheadline)
+                    .foregroundStyle(.orange)
+                    .lineLimit(2)
+                    .accessibilityIdentifier("BlendFailureHint")
+            } else {
+                Text(viewModel.blendSelectedEdges.isEmpty
+                     ? "Tap edges to \(kind.title.lowercased())"
+                     : "\(viewModel.blendSelectedEdges.count) edge\(viewModel.blendSelectedEdges.count == 1 ? "" : "s") selected")
+                    .font(.subheadline)
+                    .fixedSize()
             }
-            HStack(spacing: 6) {
-                Text(viewModel.blendAdvancedMode == .variableFillet
-                     ? FloeCADStrings.text("cad.blend.endRadius", "End radius") : kind.valueLabel)
-                    .font(.caption).foregroundStyle(.barLabel)
-                    .fixedSize(horizontal: horizontalSizeClass != .compact, vertical: true)
-                if horizontalSizeClass == .compact { Spacer() }
-                ExpressionValueField(placeholder: settings.unit.symbol, value: value,
-                                     clamp: nil, identifier: "BlendValueField")
-                Text(settings.unit.symbol).font(.caption).foregroundStyle(.barLabel).fixedSize(horizontal: horizontalSizeClass != .compact, vertical: true)
-            }
+            Divider().frame(height: 20)
+            Text(viewModel.blendAdvancedMode == .variableFillet
+                 ? FloeCADStrings.text("cad.blend.endRadius", "End radius") : kind.valueLabel)
+                .font(.caption).foregroundStyle(.barLabel).fixedSize()
+            // Text, applied live, arithmetic allowed — see ExpressionValueField.
+            ExpressionValueField(placeholder: settings.unit.symbol, value: value,
+                                 clamp: nil, identifier: "BlendValueField")
+            Text(settings.unit.symbol).font(.caption).foregroundStyle(.barLabel).fixedSize()
             if let advanced = viewModel.blendAdvancedMode {
-                HStack(spacing: 6) {
-                    Text(advanced == .variableFillet ? FloeCADStrings.text("cad.blend.middleRadius", "Middle radius")
-                         : advanced == .distanceAngleChamfer ? FloeCADStrings.text("cad.feature.angle", "Angle")
-                         : FloeCADStrings.text("cad.blend.secondDistance", "Second distance"))
-                        .font(.caption).foregroundStyle(.barLabel)
-                        .fixedSize(horizontal: horizontalSizeClass != .compact, vertical: true)
-                    if horizontalSizeClass == .compact { Spacer() }
-                    ExpressionValueField(placeholder: advanced == .distanceAngleChamfer ? "°" : settings.unit.symbol,
-                        value: Binding(get: { viewModel.blendSecondValue }, set: { viewModel.blendSecondValue = $0 }),
-                        kind: advanced == .distanceAngleChamfer ? .plain : .length,
-                        clamp: nil, identifier: "BlendSecondValueField")
-                    Text(advanced == .distanceAngleChamfer ? "°" : settings.unit.symbol)
-                        .font(.caption).foregroundStyle(.barLabel).fixedSize(horizontal: horizontalSizeClass != .compact, vertical: true)
-                }
+                Text(advanced == .variableFillet ? FloeCADStrings.text("cad.blend.middleRadius", "Middle radius")
+                     : advanced == .distanceAngleChamfer ? FloeCADStrings.text("cad.feature.angle", "Angle")
+                     : FloeCADStrings.text("cad.blend.secondDistance", "Second distance"))
+                    .font(.caption).foregroundStyle(.barLabel).fixedSize()
+                ExpressionValueField(placeholder: advanced == .distanceAngleChamfer ? "°" : settings.unit.symbol,
+                    value: Binding(get: { viewModel.blendSecondValue }, set: { viewModel.blendSecondValue = $0 }),
+                    kind: advanced == .distanceAngleChamfer ? .plain : .length,
+                    clamp: nil, identifier: "BlendSecondValueField")
                 if !advanced.isFillet {
-                    let swap = Toggle(FloeCADStrings.text("cad.blend.swapSides", "Swap sides"), isOn: Binding(
+                    Toggle(FloeCADStrings.text("cad.blend.swapSides", "Swap sides"), isOn: Binding(
                         get: { viewModel.blendSwapSupport }, set: { viewModel.blendSwapSupport = $0 }))
-                        .accessibilityIdentifier("BlendSwapSides")
-                    if horizontalSizeClass == .compact { swap }
-                    else { swap.toggleStyle(.button).controlSize(.small) }
+                        .toggleStyle(.button).controlSize(.small).accessibilityIdentifier("BlendSwapSides")
                 }
             }
             // While dragging, show the kernel-derived ceiling the drag is
@@ -945,7 +1000,7 @@ struct FloeCADEditorView: View {
                 Text("max \(settings.unit.display(fromMM: cap), format: .number.precision(.fractionLength(0...1)))")
                     .font(.caption)
                     .foregroundStyle(.barLabel)
-                    .fixedSize(horizontal: horizontalSizeClass != .compact, vertical: true)
+                    .fixedSize()
                     .accessibilityIdentifier("BlendMaxHint")
             }
         } actions: {
@@ -962,44 +1017,32 @@ struct FloeCADEditorView: View {
         }
     }
 
-    @ViewBuilder
     private func blendModeMenu(_ kind: BlendKind, _ viewModel: EditorViewModel) -> some View {
-        if horizontalSizeClass == .compact {
-            Picker(FloeCADStrings.text("cad.blend.mode", "Type"), selection: Binding(
-                get: { viewModel.blendAdvancedMode }, set: { viewModel.setBlendAdvancedMode($0) })) {
-                Text(FloeCADStrings.text("cad.blend.uniform", "Uniform")).tag(Optional<AdvancedBlendDefinition.Mode>.none)
-                if kind == .fillet {
-                    Text(FloeCADStrings.text("cad.blend.variableFillet", "Variable Fillet"))
-                        .tag(Optional(AdvancedBlendDefinition.Mode.variableFillet))
-                } else {
-                    Text(FloeCADStrings.text("cad.blend.twoDistances", "Two-Distance Chamfer"))
-                        .tag(Optional(AdvancedBlendDefinition.Mode.twoDistanceChamfer))
-                    Text(FloeCADStrings.text("cad.blend.distanceAngle", "Distance-Angle Chamfer"))
-                        .tag(Optional(AdvancedBlendDefinition.Mode.distanceAngleChamfer))
-                }
+        Menu {
+            Button(FloeCADStrings.text("cad.blend.uniform", "Uniform")) { viewModel.setBlendAdvancedMode(nil) }
+            if kind == .fillet {
+                Button(FloeCADStrings.text("cad.blend.variableFillet", "Variable Fillet")) { viewModel.setBlendAdvancedMode(.variableFillet) }
+            } else {
+                Button(FloeCADStrings.text("cad.blend.twoDistances", "Two-Distance Chamfer")) { viewModel.setBlendAdvancedMode(.twoDistanceChamfer) }
+                Button(FloeCADStrings.text("cad.blend.distanceAngle", "Distance-Angle Chamfer")) { viewModel.setBlendAdvancedMode(.distanceAngleChamfer) }
             }
-            .pickerStyle(.menu).lineLimit(nil).fixedSize(horizontal: false, vertical: true)
-            .accessibilityIdentifier("BlendModeMenu")
-        } else {
-            Menu {
-                Button(FloeCADStrings.text("cad.blend.uniform", "Uniform")) { viewModel.setBlendAdvancedMode(nil) }
-                if kind == .fillet {
-                    Button(FloeCADStrings.text("cad.blend.variableFillet", "Variable Fillet")) { viewModel.setBlendAdvancedMode(.variableFillet) }
-                } else {
-                    Button(FloeCADStrings.text("cad.blend.twoDistances", "Two-Distance Chamfer")) { viewModel.setBlendAdvancedMode(.twoDistanceChamfer) }
-                    Button(FloeCADStrings.text("cad.blend.distanceAngle", "Distance-Angle Chamfer")) { viewModel.setBlendAdvancedMode(.distanceAngleChamfer) }
-                }
-            } label: {
-                let label: String = switch viewModel.blendAdvancedMode {
-                case .variableFillet: FloeCADStrings.text("cad.blend.variableFillet", "Variable Fillet")
-                case .twoDistanceChamfer: FloeCADStrings.text("cad.blend.twoDistances", "Two-Distance Chamfer")
-                case .distanceAngleChamfer: FloeCADStrings.text("cad.blend.distanceAngle", "Distance-Angle Chamfer")
-                case nil: FloeCADStrings.text("cad.blend.uniform", "Uniform")
-                }
-                Label(label, systemImage: "slider.horizontal.3")
+        } label: {
+            let label: String = switch viewModel.blendAdvancedMode {
+            case .variableFillet: FloeCADStrings.text("cad.blend.variableFillet", "Variable Fillet")
+            case .twoDistanceChamfer: FloeCADStrings.text("cad.blend.twoDistances", "Two-Distance Chamfer")
+            case .distanceAngleChamfer: FloeCADStrings.text("cad.blend.distanceAngle", "Distance-Angle Chamfer")
+            case nil: FloeCADStrings.text("cad.blend.uniform", "Uniform")
             }
-            .controlSize(.small).accessibilityIdentifier("BlendModeMenu")
+            let compactLabel: String = switch viewModel.blendAdvancedMode {
+            case .variableFillet: FloeCADStrings.text("cad.blend.short.variable", "Variable")
+            case .twoDistanceChamfer: FloeCADStrings.text("cad.blend.short.twoDistances", "Two distances")
+            case .distanceAngleChamfer: FloeCADStrings.text("cad.blend.short.distanceAngle", "Distance + angle")
+            case nil: label
+            }
+            Label(horizontalSizeClass == .compact ? compactLabel : label, systemImage: "slider.horizontal.3")
+                .fixedSize(horizontal: false, vertical: true)
         }
+        .controlSize(.small).accessibilityIdentifier("BlendModeMenu")
     }
 
     /// Shell bar (Phase E, spec §4.4): pick prompt, wall-thickness field,
@@ -1008,12 +1051,10 @@ struct FloeCADEditorView: View {
     /// say which stage you are in and — when the kit refuses — why.
     private func replaceFaceBar(_ viewModel: EditorViewModel) -> some View {
         AdaptiveBar(style: .capsule, spacing: 12) {
-            HStack(spacing: 8) {
-                Image(systemName: "arrow.up.and.down.square")
-                Text(replaceFaceHint(viewModel))
-                    .font(.subheadline)
-                    .fixedSize(horizontal: horizontalSizeClass != .compact, vertical: true)
-            }
+            Image(systemName: "arrow.up.and.down.square")
+            Text(replaceFaceHint(viewModel))
+                .font(.subheadline)
+                .fixedSize(horizontal: horizontalSizeClass != .compact, vertical: true)
             if viewModel.replaceSourceFace != nil {
                 if horizontalSizeClass != .compact { Divider().frame(height: 20) }
                 Toggle("Flip", isOn: Binding(
@@ -1053,12 +1094,10 @@ struct FloeCADEditorView: View {
     /// is "which faces", so the bar reports the pick and why Apply is off.
     private func deleteFaceBar(_ viewModel: EditorViewModel) -> some View {
         AdaptiveBar(style: .capsule, spacing: 12) {
-            HStack(spacing: 8) {
-                Image(systemName: "square.slash")
-                Text(deleteFaceHint(viewModel))
-                    .font(.subheadline)
-                    .fixedSize(horizontal: horizontalSizeClass != .compact, vertical: true)
-            }
+            Image(systemName: "square.slash")
+            Text(deleteFaceHint(viewModel))
+                .font(.subheadline)
+                .fixedSize(horizontal: horizontalSizeClass != .compact, vertical: true)
         } actions: {
             Button("Cancel") { viewModel.cancelDeleteFace() }
                 .buttonStyle(.bordered)
@@ -1091,20 +1130,17 @@ struct FloeCADEditorView: View {
             get: { viewModel.shellThickness },
             set: { viewModel.shellThickness = max(0, $0) })
         return AdaptiveBar(style: .capsule, spacing: 12) {
-            HStack(spacing: 8) {
-                Image(systemName: "cube.transparent")
-                Text(viewModel.shellBodyID == nil
-                     ? "Tap a body to shell"
-                     : viewModel.shellSelectedFaces.isEmpty
-                        ? "Tap faces to open (or Apply for a closed hollow)"
-                        : "\(viewModel.shellSelectedFaces.count) face\(viewModel.shellSelectedFaces.count == 1 ? "" : "s") open")
-                    .font(.subheadline)
-                    .fixedSize(horizontal: horizontalSizeClass != .compact, vertical: true)
-            }
+            Image(systemName: "cube.transparent")
+            Text(viewModel.shellBodyID == nil
+                 ? "Tap a body to shell"
+                 : viewModel.shellSelectedFaces.isEmpty
+                    ? "Tap faces to open (or Apply for a closed hollow)"
+                    : "\(viewModel.shellSelectedFaces.count) face\(viewModel.shellSelectedFaces.count == 1 ? "" : "s") open")
+                .font(.subheadline)
+                .fixedSize(horizontal: horizontalSizeClass != .compact, vertical: true)
             if horizontalSizeClass != .compact { Divider().frame(height: 20) }
             HStack(spacing: 6) {
                 Text("Thickness").font(.caption).foregroundStyle(.barLabel).fixedSize(horizontal: horizontalSizeClass != .compact, vertical: true)
-                if horizontalSizeClass == .compact { Spacer() }
                 ExpressionValueField(placeholder: settings.unit.symbol, value: value,
                                      clamp: nil, identifier: "ShellThicknessField")
                 Text(settings.unit.symbol).font(.caption).foregroundStyle(.barLabel).fixedSize(horizontal: horizontalSizeClass != .compact, vertical: true)
@@ -1132,16 +1168,13 @@ struct FloeCADEditorView: View {
             get: { viewModel.axisLength },
             set: { viewModel.axisLength = max(0.001, $0) }))
         return AdaptiveBar(style: .capsule, spacing: 12) {
-            HStack(spacing: 8) {
-                Image(systemName: "line.diagonal.arrow")
-                Text(viewModel.axisConstructionLabel)
-                    .font(.subheadline)
-                    .fixedSize(horizontal: horizontalSizeClass != .compact, vertical: true)
-            }
+            Image(systemName: "line.diagonal.arrow")
+            Text(viewModel.axisConstructionLabel)
+                .font(.subheadline)
+                .fixedSize(horizontal: horizontalSizeClass != .compact, vertical: true)
             if horizontalSizeClass != .compact { Divider().frame(height: 20) }
             HStack(spacing: 6) {
                 Text("Length").font(.caption).foregroundStyle(.barLabel).fixedSize(horizontal: horizontalSizeClass != .compact, vertical: true)
-                if horizontalSizeClass == .compact { Spacer() }
                 TextField(settings.unit.symbol, value: value,
                           format: .number.precision(.fractionLength(0...3)))
                     .textFieldStyle(.roundedBorder)
@@ -1195,16 +1228,12 @@ struct FloeCADEditorView: View {
             set: { viewModel.sketchOffsetDistance = $0 }))
         let picked = viewModel.sketchOffsetSourceEntities.count
         return AdaptiveBar(style: .capsule, spacing: 12) {
-            HStack(spacing: 8) {
-                HStack(spacing: 8) {
-                Image(systemName: "square.on.square.dashed")
-                    Text(picked == 0
-                         ? "Tap sketch geometry to offset"
-                         : "\(picked) selected")
-                        .font(.subheadline)
-                        .fixedSize(horizontal: horizontalSizeClass != .compact, vertical: true)
-            }
-            }
+            Image(systemName: "square.on.square.dashed")
+            Text(picked == 0
+                 ? "Tap sketch geometry to offset"
+                 : "\(picked) selected")
+                .font(.subheadline)
+                .fixedSize(horizontal: horizontalSizeClass != .compact, vertical: true)
             if viewModel.sketchOffsetUsesLinkedCurve {
                 Text(FloeCADStrings.text("cad.sketch.curve.linkedOffset", "Linked offset")).font(.caption)
             }
@@ -1222,7 +1251,6 @@ struct FloeCADEditorView: View {
             .accessibilityIdentifier("SketchOffsetType")
             HStack(spacing: 6) {
                 Text("Distance").font(.caption).foregroundStyle(.barLabel).fixedSize(horizontal: horizontalSizeClass != .compact, vertical: true)
-                if horizontalSizeClass == .compact { Spacer() }
                 TextField(settings.unit.symbol, value: value,
                           format: .number.precision(.fractionLength(0...3)))
                     .textFieldStyle(.roundedBorder)
