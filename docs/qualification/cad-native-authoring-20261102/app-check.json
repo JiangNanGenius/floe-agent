@@ -1,0 +1,76 @@
+{
+  "source": "413bbdafd2888116a8063fb12bcd238b1ed19c9c",
+  "toolchain": "Xcode27.1/27A9275; Swift6 strict App/test object build",
+  "buildPassed": true,
+  "buildSeconds": 140.727,
+  "sourceDrift": false,
+  "nativeTests": 55,
+  "passed": 55,
+  "failed": 0,
+  "skipped": 0,
+  "selectorCount": 23,
+  "missingSelectors": 0,
+  "runSeconds": 63.463,
+  "simulator": "Existing canonical iPad; iOS27.0",
+  "shutdownExitCode": 0,
+  "noCurrentCrashAttachment": true,
+  "criteria": {
+    "M20": {
+      "acceptedOriginalAcceptance": true,
+      "covers": [
+        "Real STEP-imported bore radius2 to3 to4 keeps the same body, immutable exact source, replayable feature, parameter edit, Undo/Redo and exact save/reopen volume.",
+        "One of two equal-radius bores, scaled native preview/commit, collapse/source/witness fences, UV-corner splits and translated/boolean merge checks pass."
+      ],
+      "limits": [
+        "Exact cylindrical faces only; generic/legacy identity gap M26 stays open.",
+        "Full gestures, physical performance and real LLM chain are separate gates."
+      ]
+    },
+    "E21": {
+      "acceptedOriginalAcceptance": true,
+      "covers": [
+        "Actual WKWebView, host, Worker and current WASM trim/offset an oblique closed bulge contour; original vertex IDs, plane/elevation, unrelated entity, undo/redo and same-format DXF reopen checked.",
+        "Reuse unchanged actual219 four WK cases, component40 and bundled58command/78ink/2OCS checks. Original failures stay failed."
+      ],
+      "limits": [
+        "App WK uses DXF; independent external CAD corpus/readback remains E23.",
+        "No general oblique area measurement or 3D sketch completion claimed."
+      ]
+    },
+    "E35": {
+      "acceptedOriginalAcceptance": true,
+      "covers": [
+        "Two real packages independently verify a common checkpoint, merge independent features and require explicit choices for same-feature conflicts.",
+        "All15 actual cases cover base mismatch, cancellation/staleness, real rebuild failure, save fault and owned rollback, Undo/Redo/reopen, material refusal and unchanged reopened BRep bytes."
+      ],
+      "limits": [
+        "Feature-history merge only. Incoming material/resource/UV-authoring changes explicitly refuse and preserve both copies.",
+        "No network collaboration server or interactive file-picker acceptance claimed."
+      ]
+    },
+    "X09": {
+      "acceptedOriginalAcceptance": true,
+      "covers": [
+        "Actual xatlas marks torus seams, unwraps, transforms and packs islands, manages sets and preserves ordered source geometry; exact-face material Undo/Redo/reopen pass.",
+        "The same torus via CADUVEditorModel produces five real viewport PNGs, absolute four-color landmarks and a changed-texture negative control; independent GLB image bytes/UV floats and native reopen agree."
+      ],
+      "limits": [
+        "Bounded50k triangles and8sets; unwrapping may add cuts.",
+        "Model/control and real renderer verified; actual gestures/compact UI remain X37."
+      ]
+    }
+  },
+  "reusedActualE21WKPassed": 4,
+  "reusedE21SourceAndAssetCount": 59,
+  "fullInteractiveUITapVerified": false,
+  "physicalPerformanceVerified": false,
+  "paidCalls": 0,
+  "publication": false,
+  "original219Retained": {
+    "total": 61,
+    "passed": 56,
+    "failed": 5,
+    "skipped": 0,
+    "missingSelectors": 5
+  }
+}

@@ -2026,10 +2026,26 @@
       "package": "mechanical",
       "implementation": {
         "stage": "C",
-        "status": "planned",
-        "source_changes": [],
-        "verification": [],
-        "limitations": []
+        "status": "accepted_original_criterion_App_native",
+        "source_changes": [
+          "f211285a",
+          "52453aa2",
+          "413bbdaf"
+        ],
+        "verification": [
+          {
+            "kind": "actual_App_object_and_native_with_unchanged_WK_reuse",
+            "source": "413bbdafd2888116a8063fb12bcd238b1ed19c9c",
+            "passed": 55,
+            "failed": 0,
+            "skipped": 0,
+            "evidence": "docs/qualification/cad-native-authoring-20261102/README.md"
+          }
+        ],
+        "limitations": [
+          "Exact cylindrical faces only; generic/legacy identity gap M26 stays open.",
+          "Full gestures, physical performance and real LLM chain are separate gates."
+        ]
       },
       "alignment_review": {
         "disposition": "planned",
@@ -4369,10 +4385,27 @@
       "package": "engineering",
       "implementation": {
         "stage": "E",
-        "status": "planned",
-        "source_changes": [],
-        "verification": [],
-        "limitations": []
+        "status": "accepted_original_criterion_App_native",
+        "source_changes": [
+          "327a31fe",
+          "dfb9c63f",
+          "6daaa634",
+          "413bbdaf"
+        ],
+        "verification": [
+          {
+            "kind": "actual_App_object_and_native_with_unchanged_WK_reuse",
+            "source": "413bbdafd2888116a8063fb12bcd238b1ed19c9c",
+            "passed": 55,
+            "failed": 0,
+            "skipped": 0,
+            "evidence": "docs/qualification/cad-native-authoring-20261102/README.md"
+          }
+        ],
+        "limitations": [
+          "App WK uses DXF; independent external CAD corpus/readback remains E23.",
+          "No general oblique area measurement or 3D sketch completion claimed."
+        ]
       },
       "alignment_review": {
         "disposition": "planned",
@@ -5450,10 +5483,27 @@
       "package": "engineering",
       "implementation": {
         "stage": "B",
-        "status": "planned",
-        "source_changes": [],
-        "verification": [],
-        "limitations": []
+        "status": "accepted_original_criterion_App_native",
+        "source_changes": [
+          "327a31fe",
+          "dfb9c63f",
+          "6daaa634",
+          "413bbdaf"
+        ],
+        "verification": [
+          {
+            "kind": "actual_App_object_and_native_with_unchanged_WK_reuse",
+            "source": "413bbdafd2888116a8063fb12bcd238b1ed19c9c",
+            "passed": 55,
+            "failed": 0,
+            "skipped": 0,
+            "evidence": "docs/qualification/cad-native-authoring-20261102/README.md"
+          }
+        ],
+        "limitations": [
+          "Feature-history merge only. Incoming material/resource/UV-authoring changes explicitly refuse and preserve both copies.",
+          "No network collaboration server or interactive file-picker acceptance claimed."
+        ]
       },
       "alignment_review": {
         "disposition": "planned",
@@ -6322,10 +6372,27 @@
       "package": "experience",
       "implementation": {
         "stage": "F",
-        "status": "planned",
-        "source_changes": [],
-        "verification": [],
-        "limitations": []
+        "status": "accepted_original_criterion_App_native",
+        "source_changes": [
+          "327a31fe",
+          "dfb9c63f",
+          "6daaa634",
+          "413bbdaf"
+        ],
+        "verification": [
+          {
+            "kind": "actual_App_object_and_native_with_unchanged_WK_reuse",
+            "source": "413bbdafd2888116a8063fb12bcd238b1ed19c9c",
+            "passed": 55,
+            "failed": 0,
+            "skipped": 0,
+            "evidence": "docs/qualification/cad-native-authoring-20261102/README.md"
+          }
+        ],
+        "limitations": [
+          "Bounded50k triangles and8sets; unwrapping may add cuts.",
+          "Model/control and real renderer verified; actual gestures/compact UI remain X37."
+        ]
       },
       "alignment_review": {
         "disposition": "planned",
