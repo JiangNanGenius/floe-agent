@@ -378,7 +378,7 @@ final class CADParameterCorrectnessTests: XCTestCase {
     func testHelixRadiusKeepsFullSectionOffsetAtANonzeroStartAngle() async throws {
         let document = try await makeDocument(); defer { document.close() }
         let profile = try run(document, "sketch.create", [
-            "origin": [0, -0.5, 3.5], "xAxis": [1, 0, 0], "yAxis": [0, 0, -1]])
+            "origin": [0, -0.5, -3.5], "xAxis": [1, 0, 0], "yAxis": [0, 0, -1]])
         let rawID = try XCTUnwrap(profile["sketchID"] as? String)
         try run(document, "sketch.addEntities", ["sketchID": rawID,
             "entities": [["kind": "circle", "center": [0, 0], "radius": 0.5]]])
