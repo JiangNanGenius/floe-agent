@@ -44,6 +44,7 @@ import java.util.UUID
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
 import kotlinx.coroutines.CoroutineDispatcher
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.cancelAndJoin
@@ -258,6 +259,7 @@ internal class C06SystemServicesHostController(
                 )
             }
         } catch (failure: Throwable) {
+            if (failure is CancellationException) throw failure
             _state.update {
                 it.copy(loading = false, coreReady = lane.isRunning,
                     notice = SystemServicesNotice.REFRESH_FAILED)
@@ -285,7 +287,8 @@ internal class C06SystemServicesHostController(
                 nfc = nfcUi(availability),
                 health = healthUi(availability),
                 healthMetrics = healthMetrics(availability),
-                notice = if (push == null) SystemServicesNotice.REFRESH_FAILED else current.notice,
+                notice = if (push == null) SystemServicesNotice.REFRESH_FAILED
+                    else current.notice?.takeUnless { it == SystemServicesNotice.REFRESH_FAILED },
                 diagnostics = diagnostics(availability, push, epoch),
             )
         }
