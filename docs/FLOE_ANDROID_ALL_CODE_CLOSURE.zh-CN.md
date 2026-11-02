@@ -239,3 +239,8 @@ MCP 原编辑器与配置服务已能保存 HTTP 和无运行绑定的 stdio 定
 ### PDF text selection source checkpoint
 
 The existing isolated PDF renderer now supplies source-bound page text to Notes. Region selection and a native character-selection sheet support explicit copy, with document/root/page/source/revision fences. The native context menu also revalidates at the action boundary. Unsupported or scanned pages preserve preview and use the existing honest limitation/OCR entry. This checkpoint contains 19 implementation and regression-source files; Main has not compiled, run tests or accepted device behaviour. All C01-C08 closure and unified qualification remain required before the next Android prerelease.
+
+
+### C01 terminal and managed-service source checkpoint
+
+Model interactive sessions now share the existing two interactive slots with explicit ownership and actual-release accounting. Long-running HTTP services use separate bounded service leases, the existing job lifecycle and owned-listener readiness before publishing a preview origin. Linux lifecycle tools use the real Android host. Main integrated eight central patches and corrected Android guidance to keep PDF transformations/OCR on the approved generic Linux route. This 33-file snapshot is source-only: no compilation, executed tests or device acceptance. MCP separated stdio, trusted environment/context wiring and guest workspace exchange remain explicit required code, not unsupported-platform exemptions.

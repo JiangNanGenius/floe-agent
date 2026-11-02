@@ -79,7 +79,7 @@ internal class LinuxRuntimeOperations(
     // G07.3A: one real PTY pump thread per admitted workload (max 3: two
     // interactive + one shared execution). A single thread would serialize two
     // live terminals and starve one session's output while the other blocks.
-    private val pumpExecutor = java.util.concurrent.ThreadPoolExecutor(3, 3, 30,
+    private val pumpExecutor = java.util.concurrent.ThreadPoolExecutor(5, 5, 30,
         java.util.concurrent.TimeUnit.SECONDS, java.util.concurrent.ArrayBlockingQueue(16)) {
             Thread(it, "floe-linux-pty")
         }.apply { allowCoreThreadTimeOut(true) }
@@ -255,6 +255,11 @@ internal class LinuxRuntimeOperations(
         "install.status" -> { fields(request.payload, emptySet()); JSONObject(progress.get().toString()) }
         "shell.poll" -> poll(request.payload)
         "workspace.exportStatus" -> exportStatus(request.payload)
+        // C01 service readiness: PROVES the declared loopback port is a LISTEN
+        // socket owned by the exact service session's process tree. It never
+        // starts a probe process, never trusts a log line and never claims a
+        // port from model text.
+        "service.readiness" -> serviceReadiness(request.payload)
         else -> null
     }
 
@@ -282,6 +287,11 @@ internal class LinuxRuntimeOperations(
         // the writable-export quiescence rules are untouched.
         "workspace.files.tree", "workspace.files.read" -> liveFiles(request)
         "workspace.exportStatus" -> exportStatus(request.payload)
+        // C01 service readiness: PROVES the declared loopback port is a LISTEN
+        // socket owned by the exact service session's process tree. It never
+        // starts a probe process, never trusts a log line and never claims a
+        // port from model text.
+        "service.readiness" -> serviceReadiness(request.payload)
         // G03-R3: the scoped runtime-UID workspace-copy wipe. The receiver
         // returns a TYPED cleared/refused result (never throws for a refusal
         // — an honest retention keeps the Core obligation retryable).
@@ -1011,6 +1021,101 @@ internal class LinuxRuntimeOperations(
         return running[id] ?: completed[id] ?: error("Unknown Linux session")
     }
 
+    /**
+     * C01 owned readiness proof. The service session's engine lease id is the
+     * key; its root process is the PRoot child launched for that workload.
+     * We inspect only the runtime UID's own /proc entries:
+     *   1. collect the session process tree (bounded),
+     *   2. collect SOCKET fds owned by those pids,
+     *   3. match a LISTEN socket in /proc/net/tcp{,6} for the declared port.
+     * A permission/read failure, a finished session or no owned LISTEN socket
+     * answers `starting`/`unknown`; it never answers ready. No connection is
+     * made and no process is started.
+     */
+    private fun serviceReadiness(payload: JSONObject): JSONObject {
+        fields(payload, setOf("sessionID", "port"))
+        val sessionID = payload.getString("sessionID")
+        val port = payload.getInt("port")
+        require(port in 1024..65535)
+        val owned = running[sessionID]
+        if (owned == null || owned.finished.get() || owned.role != WorkloadRole.SERVICE) {
+            return JSONObject().put("state", "starting").put("port", port)
+                .put("owned", false).put("detail", "sessionNotLive")
+        }
+        val pids = serviceProcessTree(owned.job.pid)
+        if (pids.isEmpty()) {
+            return JSONObject().put("state", "starting").put("port", port)
+                .put("owned", false).put("detail", "processTreeUnreadable")
+        }
+        val inodes = HashSet<String>()
+        for (pid in pids) {
+            val fdDir = java.io.File("/proc/$pid/fd")
+            val entries = fdDir.list() ?: continue
+            for (entry in entries) {
+                val target = runCatching {
+                    java.nio.file.Files.readSymbolicLink(java.io.File(fdDir, entry).toPath()).toString()
+                }.getOrNull() ?: continue
+                if (target.startsWith("socket:[") && target.endsWith("]")) {
+                    inodes.add(target.substring(8, target.length - 1))
+                }
+            }
+        }
+        if (inodes.isEmpty()) {
+            return JSONObject().put("state", "starting").put("port", port)
+                .put("owned", false).put("detail", "noOwnedSocket")
+        }
+        val listening = listeningInodes(port)
+        if (listening.isEmpty()) {
+            return JSONObject().put("state", "starting").put("port", port)
+                .put("owned", false).put("detail", "listenerNotListening")
+        }
+        val match = inodes.any { it in listening }
+        return JSONObject()
+            .put("state", if (match) "ready" else "starting")
+            .put("port", port)
+            .put("owned", match)
+            .put("detail", if (match) "ownedListener" else "listenerOwnedByAnotherProcess")
+    }
+
+    /** Bounded process-tree walk rooted at the engine session's root pid. */
+    private fun serviceProcessTree(rootPid: Int): Set<Int> {
+        if (rootPid <= 0) return emptySet()
+        val result = LinkedHashSet<Int>()
+        val queue = ArrayDeque<Int>()
+        queue.add(rootPid)
+        while (queue.isNotEmpty() && result.size < 128) {
+            val pid = queue.removeFirst()
+            if (!result.add(pid)) continue
+            val childrenFile = java.io.File("/proc/$pid/task/$pid/children")
+            val text = runCatching { childrenFile.readText() }.getOrNull() ?: continue
+            for (token in text.trim().split(' ')) {
+                val child = token.toIntOrNull() ?: continue
+                if (child > 0 && child !in result) queue.add(child)
+            }
+        }
+        return result
+    }
+
+    /** Socket inodes in LISTEN state for the exact loopback port. */
+    private fun listeningInodes(port: Int): Set<String> {
+        val found = HashSet<String>()
+        for (file in listOf("/proc/net/tcp", "/proc/net/tcp6")) {
+            val lines = runCatching { java.io.File(file).readLines() }.getOrNull() ?: continue
+            for (line in lines.drop(1)) {
+                val fields = line.trim().split(Regex("\\s+"))
+                if (fields.size < 10) continue
+                val local = fields[1]
+                val state = fields[3]
+                if (state != "0A") continue
+                val localPort = local.substringAfter(':', "").toIntOrNull(16) ?: continue
+                if (localPort != port) continue
+                val inode = fields[9].trim()
+                if (inode.isNotEmpty() && inode != "0") found.add(inode)
+            }
+        }
+        return found
+    }
+
     private fun poll(payload: JSONObject): JSONObject {
         fields(payload, setOf("sessionID", "cursor", "maxBytes"))
         val owned = matching(payload)
@@ -1359,7 +1464,7 @@ internal class LinuxRuntimeOperations(
 
     companion object {
         /** Hard ceiling: 2 interactive + ONE shared Agent/run execution slot. */
-        const val MAX_CONCURRENT_WORKLOADS = 3
+        const val MAX_CONCURRENT_WORKLOADS = 5
 
         /**
          * The ONE command-deadline anchor for an admitted workload.

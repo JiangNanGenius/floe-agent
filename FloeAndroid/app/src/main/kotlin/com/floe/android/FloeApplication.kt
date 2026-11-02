@@ -421,6 +421,16 @@ class FloeApplication : Application() {
         runOutputPdf = com.floe.android.host.output.RunOutputPdfPreviewController(this, hostScope)
         linuxSetup = com.floe.android.host.linux.LocalRuntimeSetupHost(this, hostScope)
         linuxShell = com.floe.android.host.linux.LinuxShellPump(this, hostScope)
+        // C01 environment lifecycle: the owner reports the REAL setup phase
+        // and runtime status. A stop request goes through the existing app
+        // root stop/drain only when the runtime reports no foreign owned work.
+        com.floe.android.host.linux.C01LinuxEnvironmentOwner.attach(
+            context = this,
+            setup = linuxSetup,
+            requestRootStop = {
+                hostScope.launch { runtimeHost?.stop() }
+            }
+        )
         workspaceSources = com.floe.android.host.WorkspaceSourcePump(this, hostScope) {
             runtimeHost?.nativeRootEpoch()
         }

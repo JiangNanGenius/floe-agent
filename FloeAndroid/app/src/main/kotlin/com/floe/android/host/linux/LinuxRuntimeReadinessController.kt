@@ -721,7 +721,10 @@ class LinuxRuntimeReadinessController(
     companion object {
         const val WORKLOAD_CONTRACT = "floe-single-workload-v1"
         const val MULTI_WORKLOAD_CONTRACT = "floe-multi-workload-v2"
-        val ACCEPTED_WORKLOAD_CONTRACTS = setOf(WORKLOAD_CONTRACT, MULTI_WORKLOAD_CONTRACT)
+        /** C01: 2 interactive + 1 execution + 2 managed-service roles. */
+        const val MANAGED_SERVICE_CONTRACT = "floe-multi-workload-v3"
+        val ACCEPTED_WORKLOAD_CONTRACTS = setOf(
+            WORKLOAD_CONTRACT, MULTI_WORKLOAD_CONTRACT, MANAGED_SERVICE_CONTRACT)
         /** Owned, BOUNDED re-ingress attempt set per invalidation burst
          *  (individual attempts are already bounded by the connection
          *  handshake; this caps the sequence itself). */

@@ -38,7 +38,7 @@ public struct ShellOpenTool: AgentTool {
 
     public static let name = "shell.open"
     public static let toolDescription =
-        "Open an interactive local shell session for programs that read input over time (an interactive sh prompt, a script that asks questions, a REPL-like tool). Defaults to the interactive sh. Continue with shell.exchange (feed input, read output), then shell.close. At most 4 sessions; sessions expire after 30 idle minutes. Use exec.shell for one-shot commands and jobs.submit for background work."
+        "Open an interactive local shell session for programs that read input over time (an interactive sh prompt, a script that asks questions, a REPL-like tool). Defaults to the interactive sh. Continue with shell.exchange (feed input, read output), then shell.close. The engine has two interactive PTY slots; at most three sessions are tracked per client and a session expires after 30 idle minutes. A model session never controls a manual terminal tab. Use exec.shell for one-shot commands, a managed service for a persistent server, and jobs.submit for background work."
     public static let parametersJSON = #"""
     {"type":"object","properties":{
       "command":{"type":"string","description":"Program to run interactively (default: interactive sh)"},
@@ -91,7 +91,12 @@ public struct ShellOpenTool: AgentTool {
             cancellation: context.cancellation,
             toolEnvironment: context.environment,
             clientSessionID: context.clientSessionID,
-            conversationID: context.conversationID   // S1 (see file header)
+            conversationID: context.conversationID,  // S1 (see file header)
+            // C01: the runtime-issued call identity is the only job/owner
+            // receipt a model session may carry; the full context activates
+            // the facade's owned-work ledger before the engine dispatch.
+            hostToolCallID: context.toolCallID,
+            ownershipContext: context
         )
         var text = "status=ok sessionID=\(result.sessionID) alive=\(result.alive)"
         if !result.initialOutput.isEmpty { text += "\noutput:\n\(result.initialOutput)" }

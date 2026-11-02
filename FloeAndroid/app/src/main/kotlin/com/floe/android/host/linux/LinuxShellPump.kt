@@ -4,6 +4,7 @@ package com.floe.android.host.linux
 import android.content.Context
 import com.floe.android.runtimeipc.RuntimeExecutionTrace
 import com.floe.android.runtimeipc.RuntimeExecutionTrace.Stage
+import com.floe.android.host.services.C01ManagedServiceOwner
 import com.floe.android.bridge.LinuxShellNative
 import com.floe.android.runlifecycle.ForegroundLease
 import com.floe.android.runlifecycle.OperationKind
@@ -328,6 +329,35 @@ class LinuxShellPump(context: Context, private val scope: CoroutineScope) {
             if (operation == "host.jobOwnership") {
                 complete(claim, 0, jobOwnership(claim, payload, acceptedEpoch)); return
             }
+            if (operation == "host.environmentControl") {
+                // C01 truthful environment lifecycle. The owner reports the
+                // REAL LocalRuntimeSetupHost phase and runtime status, and a
+                // stop only through Main's existing root stop/drain gate.
+                // No install/start/stop is invented here.
+                complete(claim, 0, C01LinuxEnvironmentOwner.handle(payload)); return
+            }
+            if (operation == "host.serviceCapability") {
+                // Capability probe of the ACTUAL peer generation. v3 is the
+                // only contract that adds the two service roles and the owned
+                // readiness operation; an older helper stays exec-compatible
+                // but services are honestly unavailable.
+                complete(claim, 0, serviceCapability()); return
+            }
+            if (operation == "host.servicePortProbe") {
+                complete(claim, 0, servicePortProbe(payload)); return
+            }
+            if (operation == "host.serviceReadiness") {
+                val sessionID = payload.optString("sessionID")
+                val port = payload.optInt("port", 0)
+                val owner = work.values.firstOrNull { it.sessionID == sessionID }
+                if (owner == null || port !in 1024..65535) {
+                    complete(claim, 0, JSONObject().put("state", "starting").put("port", port)
+                        .put("owned", false).put("detail", "sessionNotLive")); return
+                }
+                val reply = owner.exchange("service.readiness",
+                    JSONObject().put("sessionID", sessionID).put("port", port))
+                complete(claim, 0, reply); return
+            }
             if (operation == "host.shellSettlement") {
                 complete(claim, 0, settlement(payload, acceptedEpoch)); return
             }
@@ -464,6 +494,41 @@ class LinuxShellPump(context: Context, private val scope: CoroutineScope) {
             }
             complete(claim, 0, response)
         } catch (_: Exception) { complete(claim, 1, JSONObject().put("code", "runtime_unavailable")) }
+    }
+
+    /** C01 capability probe: exact live peer contract, never a cached host flag. */
+    private suspend fun serviceCapability(): JSONObject {
+        val current = epoch.get()
+        if (current <= 0) return JSONObject().put("contractVersion", "")
+            .put("serviceRoleAvailable", false).put("detail", "engineUnbound")
+        return try {
+            val client = RuntimeConnection(context)
+            try {
+                client.connect().get(10, TimeUnit.SECONDS)
+                val status = result(client.exchange("status"))
+                val contract = status.optString("workloadContractVersion")
+                val available = C01ManagedServiceOwner.contractSupportsServices(contract)
+                JSONObject()
+                    .put("contractVersion", contract.take(64))
+                    .put("serviceRoleAvailable", available)
+                    .put("detail", if (available) "v3 service roles advertised" else "service roles unavailable in this component")
+            } finally { client.close() }
+        } catch (_: Exception) {
+            JSONObject().put("contractVersion", "")
+                .put("serviceRoleAvailable", false).put("detail", "capabilityUnreachable")
+        }
+    }
+
+    /**
+     * Pre-start loopback probe. It does not prove ownership (the post-start
+     * `service.readiness` does); it only refuses a port that already answers
+     * or cannot be bound. Fail-closed on any exception.
+     */
+    private fun servicePortProbe(payload: JSONObject): JSONObject {
+        val port = payload.optInt("port", 0)
+        if (port !in 1024..65535) return JSONObject().put("inUse", true).put("detail", "invalidPort")
+        val (inUse, detail) = C01ManagedServiceOwner.probeLoopback(port)
+        return JSONObject().put("inUse", inUse).put("detail", detail)
     }
 
     private suspend fun startSession(claim: Long, payload: JSONObject, acceptedEpoch: Long) {
@@ -1309,6 +1374,7 @@ class LinuxShellPump(context: Context, private val scope: CoroutineScope) {
          *  `LinuxShellMailbox` when its task's workspace facts do not exist
          *  yet. Not a model route, not a new Core ABI entry, not a tool. */
         internal const val TERMINAL_PREFLIGHT_OPERATION = "host.terminalWorkspacePreflight"
+        internal const val MANAGED_SERVICE_CONTRACT = "floe-multi-workload-v3"
 
         /** G05-R3: the pure READ of this pump's own first-use ownership table,
          *  over the SAME original mailbox. It exists because a completed claim

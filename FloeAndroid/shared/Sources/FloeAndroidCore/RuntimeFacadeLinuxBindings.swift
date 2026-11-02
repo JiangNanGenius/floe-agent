@@ -176,6 +176,15 @@ public final class RuntimeFacadeLinuxBindings: @unchecked Sendable {
     /// shell/Core export callback is still running. Dispatch without the
     /// original conversation binding fails closed at admission (nil hook
     /// receipt ⇒ LocalShellService refuses).
+    private enum LedgerKind: Sendable {
+        /// A one-shot `exec.shell` dispatch.
+        case command
+        /// A live model `shell.open` session. `sessionToken` is the center's
+        /// exact token; `clientSessionID` is the trusted runtime client that
+        /// owns it. No model call may reach another client's UI tab.
+        case session(sessionToken: String, clientSessionID: String?)
+    }
+
     private struct LedgerEntry: Sendable {
         let runID: UUID
         let callID: String?
@@ -187,6 +196,7 @@ public final class RuntimeFacadeLinuxBindings: @unchecked Sendable {
         // dispatch settles. Only its original actors can prove release.
         let backend: AndroidLinuxShellBackend
         let coordinator: FacadeToolWorkCoordinator
+        let kind: LedgerKind
     }
     private var ledgerIndex: [String: LedgerEntry] = [:]
     /// Workers for which the conversation-deletion fence has already issued
@@ -255,7 +265,12 @@ public final class RuntimeFacadeLinuxBindings: @unchecked Sendable {
             trackingHook: hook,
             rootProvider: rootProvider
         )
-        let sessions = ShellSessionCenter(backend: backend)
+        let sessions = ShellSessionCenter(
+            backend: backend,
+            ownershipHook: LinuxShellSessionTrackingHook { [weak self] request in
+                guard let self else { return nil }
+                return await self.beginSessionLedgerWorker(for: request)
+            })
         let files = liveFiles ?? (transport as? LinuxLiveFilesTransport) ?? MailboxLinuxShellTransport()
         stateLock.lock()
         componentsStorage = LinuxShellComponents(backend: backend, service: service, sessions: sessions,
@@ -404,7 +419,8 @@ public final class RuntimeFacadeLinuxBindings: @unchecked Sendable {
         let (components, hasWorkers, hasFirstEntryOwnership) = withState {
             (componentsStorage, !ledgerIndex.isEmpty, !firstEntryOwnershipIDs.isEmpty)
         }
-        guard !hasWorkers, !hasFirstEntryOwnership, !mailbox.hasLiveTickets else { return false }
+        guard !hasWorkers, !hasFirstEntryOwnership, !mailbox.hasLiveTickets,
+              !C01ManagedServiceDomain.shared.hasLiveServices else { return false }
         guard let components else { return true }
         let owned = await components.backend.ownedSessions()
         let slotBusy = await components.backend.isEngineSlotBusy()
@@ -412,9 +428,35 @@ public final class RuntimeFacadeLinuxBindings: @unchecked Sendable {
     }
 
     public func drainLinuxShell(timeoutMillis: Int) async -> Bool {
+        // Trusted root/shutdown drain: request a real stop for every MODEL
+        // interactive session and keep its ledger receipt until the engine
+        // proves release. UI terminal tabs are drained by their own G04
+        // owner (a model drain never issues a manual-tab signal). The
+        // request is idempotent; a session already stopping is untouched.
         let deadline = DispatchTime.now().uptimeNanoseconds
             &+ UInt64(max(0, timeoutMillis)) &* 1_000_000
         while DispatchTime.now().uptimeNanoseconds < deadline {
+            if let sessions = withState({ componentsStorage?.sessions }) {
+                // Repeat the idempotent stop request so a session that only
+                // appeared after an in-flight open is also drained. Mark its
+                // ledger receipt settled ONLY once the center reports the
+                // exact live token; a pre-start entry stays unsettled.
+                let requested = await sessions.requestStopAllModelSessions()
+                if !requested.isEmpty {
+                    let tokens = Set(requested)
+                    withState {
+                        let snapshot = ledgerIndex
+                        for (workerID, entry) in snapshot {
+                            if case .session(let token, _) = entry.kind, tokens.contains(token) {
+                                ledgerIndex[workerID]?.dispatchSettled = true
+                            }
+                        }
+                    }
+                }
+            }
+            await C01ManagedServiceDomain.shared.requestStopAll(
+                epoch: withState({ boundEpoch }))
+            _ = await reconcileLedger()
             if await isDrained() { return true }
             try? await Task.sleep(nanoseconds: 25_000_000)
             if Task.isCancelled { return await isDrained() }
@@ -474,7 +516,7 @@ public final class RuntimeFacadeLinuxBindings: @unchecked Sendable {
         withState { ledgerIndex[workerID] = LedgerEntry(
             runID: runID, callID: callID, epoch: epoch, dispatchSettled: false,
             conversationID: conversationID, workToken: workToken,
-            backend: backend, coordinator: coordinator) }
+            backend: backend, coordinator: coordinator, kind: .command) }
         return { [coordinator, backend, workerID, runID, workToken] in
             Task { [weak self] in
                 guard let self else { return }
@@ -502,6 +544,89 @@ public final class RuntimeFacadeLinuxBindings: @unchecked Sendable {
                 }
                 if ended { RuntimeOwnedWorkRegistry.shared.detach(workToken) }
             }
+        }
+    }
+
+    /// C01 model interactive session admission. Called by the ORIGINAL
+    /// `ShellSessionCenter` via its trusted hook BEFORE `shell.start`.
+    ///
+    /// It is intentionally stricter than a bare PTY open: the exact ordinary
+    /// conversation must resolve to the SAME trusted workspace root that the
+    /// runtime froze for this run, the accepted generation must still be
+    /// bound/qualified, and a real engine interactive slot must be free. A
+    /// refusal returns nil and the center throws before any process exists.
+    /// The UI terminal lane never calls this (it has its own G04 operation
+    /// lease and passes no ownershipContext).
+    private func beginSessionLedgerWorker(
+        for request: LinuxShellSessionTrackingRequest
+    ) async -> LinuxShellSessionOwnership? {
+        let (coordinator, epoch, components) = withState {
+            (coordinatorStorage, boundEpoch, componentsStorage)
+        }
+        guard let coordinator, epoch != 0, let components else { return nil }
+        let context = request.context
+        guard context.conversationID != nil,
+              let rootURL = context.workspaceRootURL?.standardizedFileURL else { return nil }
+        if let environmentID = context.environmentID,
+           let environment = context.environment,
+           environment.id != environmentID { return nil }
+        let conversationID = context.conversationID!
+        // Exact resolved workspace, not a caller/model path. A missing
+        // binding or a different root is a hard refusal (no first-project,
+        // no temp fallback, no cross-task share).
+        guard let binding = await LinuxWorkspaceAuthority.resolveWorkspace(
+            conversationID: conversationID),
+              binding.rootURL.standardizedFileURL.path == rootURL.path else { return nil }
+        guard G02NativeRootEpoch.readback() == epoch,
+              isCapabilityQualified else { return nil }
+        guard await components.backend.hasCapacity(for: .interactive) else { return nil }
+        let runID = context.runID
+        let callID = context.toolCallID
+        let sessionToken = request.sessionID
+        let ownerID = "linux-session:" + conversationID.uuidString + ":" + runID.uuidString
+            + ":" + sessionToken
+        let registryOwner = ownerID
+        guard case let .attached(workToken) = RuntimeOwnedWorkRegistry.shared.attach(
+            epoch: epoch, kind: .tool, ownerID: registryOwner) else { return nil }
+        guard case let .success(worker) = await coordinator.begin(
+            ownerID: ownerID, runID: runID, callID: callID, epoch: epoch) else {
+            RuntimeOwnedWorkRegistry.shared.detach(workToken)
+            return nil
+        }
+        let workerID = worker.id
+        // The session's lifetime is the run's lifetime. Cancelling the run
+        // token is a STOP REQUEST for the pump/engine; the ledger remains
+        // attached until the real lease release is observed.
+        await coordinator.attachTaskCancel(workerID) {
+            context.cancellation.cancel()
+        }
+        let backend = components.backend
+        withState {
+            ledgerIndex[workerID] = LedgerEntry(
+                runID: runID, callID: callID, epoch: epoch, dispatchSettled: false,
+                conversationID: conversationID, workToken: workToken,
+                backend: backend, coordinator: coordinator,
+                kind: .session(sessionToken: sessionToken,
+                               clientSessionID: context.clientSessionID))
+        }
+        return LinuxShellSessionOwnership { [weak self] _ in
+            guard let self else { return }
+            // The center now proved the local session end (or start failure).
+            self.withState { self.ledgerIndex[workerID]?.dispatchSettled = true }
+            let leases = await backend.ownedSessions(runID: runID)
+            let tickets = LinuxShellMailbox.shared.hasLiveTickets(runID: runID)
+            guard leases.isEmpty, !tickets else {
+                self.scheduleReleaseReconcile(workerID: workerID)
+                return
+            }
+            await coordinator.end(workerID)
+            let ended = self.withState { () -> Bool in
+                guard self.ledgerIndex[workerID]?.workToken == workToken else { return false }
+                self.ledgerIndex.removeValue(forKey: workerID)
+                self.conversationStopRequested.remove(workerID)
+                return true
+            }
+            if ended { RuntimeOwnedWorkRegistry.shared.detach(workToken) }
         }
     }
 
@@ -599,6 +724,33 @@ public final class RuntimeFacadeLinuxBindings: @unchecked Sendable {
             ledgerIndex.filter { _, entry in entry.conversationID == conversationID && entry.epoch == epoch }
         }
         for (workerID, entry) in snapshot {
+            if case .session(let sessionToken, let clientSessionID) = entry.kind {
+                let alreadyRequested = withState { conversationStopRequested.contains(workerID) }
+                if !alreadyRequested, let sessions = withState({ componentsStorage?.sessions }) {
+                    let outcome = await sessions.requestStopForSettlement(
+                        sessionID: sessionToken, runID: entry.runID,
+                        clientSessionID: clientSessionID)
+                    // If the center had not published the session yet, retry
+                    // on the next tick; do not mark a stop the engine never
+                    // received.
+                    if outcome == .applied {
+                        withState { _ = conversationStopRequested.insert(workerID) }
+                    }
+                }
+                if !entry.dispatchSettled {
+                    // Wait until the start reply produces a real owned
+                    // session/claim; releasing against an empty pre-start
+                    // snapshot would detach ownership while the engine is
+                    // still preparing the PTY. The center's own settlement
+                    // (successful close/start failure) also flips this.
+                    let live = !(await entry.backend.ownedSessions(runID: entry.runID).isEmpty)
+                        || LinuxShellMailbox.shared.hasLiveTickets(runID: entry.runID)
+                    if live {
+                        withState { ledgerIndex[workerID]?.dispatchSettled = true }
+                    }
+                    continue
+                }
+            }
             if !entry.dispatchSettled {
                 let first = withState { conversationStopRequested.insert(workerID).inserted }
                 if first {
@@ -610,6 +762,14 @@ public final class RuntimeFacadeLinuxBindings: @unchecked Sendable {
             let pendingLease = !(await entry.backend.ownedSessions(runID: entry.runID).isEmpty)
                 || LinuxShellMailbox.shared.hasLiveTickets(runID: entry.runID)
             if pendingLease { continue }
+            if case .session(let sessionToken, let clientSessionID) = entry.kind,
+               let sessions = withState({ componentsStorage?.sessions }) {
+                // Remove the now-engine-released center record so a later
+                // exchange cannot address a stale token. Its settlement
+                // closure is idempotent with the ledger end below.
+                _ = await sessions.close(sessionID: sessionToken, runID: entry.runID,
+                                         clientSessionID: clientSessionID)
+            }
             await entry.coordinator.end(workerID)
             let removed = withState { () -> Bool in
                 guard ledgerIndex[workerID]?.workToken == entry.workToken else { return false }
@@ -643,6 +803,21 @@ public final class RuntimeFacadeLinuxBindings: @unchecked Sendable {
         }
         var accepted = false
         for (workerID, entry) in matching {
+            if case .session(let sessionToken, let clientSessionID) = entry.kind {
+                if let sessions = withState({ componentsStorage?.sessions }) {
+                    _ = await sessions.requestStopForSettlement(
+                        sessionID: sessionToken, runID: entry.runID,
+                        clientSessionID: clientSessionID)
+                    // The caller cancelled this run/session: remove the
+                    // center record too (its settlement closure keeps the
+                    // ledger receipt until the engine release is proven).
+                    _ = await sessions.close(sessionID: sessionToken,
+                                             runID: entry.runID,
+                                             clientSessionID: clientSessionID)
+                }
+                accepted = true
+                continue
+            }
             let match = await entry.coordinator.cancelOwnedToolMatches(runID: runID, callID: callID, epoch: epoch)
             if case .cancelled(let ids) = match, ids.contains(workerID) { accepted = true }
         }
@@ -661,6 +836,12 @@ public final class RuntimeFacadeLinuxBindings: @unchecked Sendable {
             "composed": composed,
             "epochBound": epoch != 0,
             "ledgerWorkers": withState { ledgerIndex.count },
+            "modelSessions": withState {
+                ledgerIndex.values.filter {
+                    if case .session = $0.kind { return true }
+                    return false
+                }.count
+            },
             "qualified": isCapabilityQualified,
             "fields": [
                 "runtimeUidBoundaryVerified": fields.runtimeUidBoundaryVerified,
@@ -680,21 +861,39 @@ public final class RuntimeFacadeLinuxBindings: @unchecked Sendable {
         return string
     }
 
+    /// Register the three truthful environment tools when Main has installed
+    /// the real host port. This is deliberately independent of full shell
+    /// qualification: a user/model must be able to READ `installRequired` /
+    /// `componentRequired` before the engine is ready. The tools answer
+    /// `hostNotWired`/typed status; no host fallback is invented.
+    @discardableResult
+    public func registerEnvironmentToolsIfAvailable(registry: ToolRunnerRegistry = .shared) -> Bool {
+        C01LinuxEnvironmentDomain.shared.register(registry: registry)
+    }
+
     /// Trusted host registration entry (Main composition only — model
-    /// dispatch cannot reach it). Registers exec.shell + shell.* into the
-    /// EXISTING shared ToolRunnerRegistry/ToolCatalog. Product discovery
-    /// waits for actual qualification. Interactive sessions remain withheld
-    /// until their original IDE/session ownership is integrated.
+    /// dispatch cannot reach it). Registers exec.shell + the model shell.*
+    /// family into the EXISTING shared ToolRunnerRegistry/ToolCatalog only
+    /// while the real capability answer is true. Registration grants no
+    /// session; every open still passes the owned-work admission above.
     @discardableResult
     public func registerIntoCurrentGeneration(registry: ToolRunnerRegistry = .shared) -> Bool {
         stateLock.lock()
         let components = componentsStorage
         stateLock.unlock()
+        // Environment status/start are useful BEFORE shell qualification; the
+        // shell family below stays gated by the real capability answer.
+        _ = registerEnvironmentToolsIfAvailable(registry: registry)
         guard let components, isCapabilityQualified else { return false }
-        // Interactive session lifetime/IDE ownership is a later goal. Keep
-        // its source reusable without advertising an unowned model session.
+        // C01: the model interactive family is registered only together with
+        // the owned-work hook installed at compose time. Each open still
+        // passes the exact conversation/workspace/epoch/capacity admission in
+        // `beginSessionLedgerWorker`; registration itself grants no session.
+        // UI tabs remain distinguished by their G04 operation lease and the
+        // center's (runID, clientSessionID) ownership check, so a model call
+        // can never exchange/signal/close a manual tab.
         return registerShellTools(registry: registry, shell: components.service, sessions: components.sessions,
-                                  includeInteractiveSessions: false)
+                                  includeInteractiveSessions: true)
     }
 }
 

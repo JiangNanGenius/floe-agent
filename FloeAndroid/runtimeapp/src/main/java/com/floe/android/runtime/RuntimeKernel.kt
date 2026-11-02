@@ -360,8 +360,13 @@ class RuntimeKernel(context: Context) {
          *  the exclusive-start admission above). Ingested as a FACT only
          *  while the engine additionally reports itself idle. */
         const val WORKLOAD_CONTRACT = "floe-single-workload-v1"
-        /** G07.3A real concurrent contract (2 interactive + 1 shared execution). */
-        const val MULTI_WORKLOAD_CONTRACT = "floe-multi-workload-v2"
+        /**
+         * C01 v3 real concurrent contract: 2 interactive + 1 shared Agent/run
+         * execution + 2 managed-service roles. The v2 string is still accepted
+         * by the host for ordinary exec compatibility; the service domain
+         * requires v3 before it will start a managed service.
+         */
+        const val MULTI_WORKLOAD_CONTRACT = "floe-multi-workload-v3"
 
         /**
          * G03-R3 failed-start receipt handoff (job-150dee8e1ed14ba1): the

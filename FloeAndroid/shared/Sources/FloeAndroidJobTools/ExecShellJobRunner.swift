@@ -163,6 +163,9 @@ public struct ExecShellJobRunner: Sendable {
     private let gate: JobShellSettlementGate
     private let index: JobLiveWorkIndex
     private let configuration: ExecShellJobRunnerConfiguration
+    /// C01: optional typed service owner. A service payload without this host
+    /// fails closed; normal exec.shell is unchanged when it is nil.
+    private let serviceHost: (any C01ManagedServiceJobHosting)?
 
     /// Wrap the ORIGINAL exec.shell runner. The returned AnyAgentTool keeps
     /// the inner descriptor, validation and submit-time preflight BYTE-EQUAL
@@ -176,7 +179,8 @@ public struct ExecShellJobRunner: Sendable {
         // @escaping (the typealias carries @Sendable, which does not imply it).
         gate: @escaping JobShellSettlementGate,
         index: JobLiveWorkIndex,
-        configuration: ExecShellJobRunnerConfiguration = ExecShellJobRunnerConfiguration()
+        configuration: ExecShellJobRunnerConfiguration = ExecShellJobRunnerConfiguration(),
+        serviceHost: (any C01ManagedServiceJobHosting)? = nil
     ) {
         precondition(inner.descriptor.name == Self.toolName,
                      "ExecShellJobRunner must wrap the original exec.shell runner")
@@ -186,6 +190,7 @@ public struct ExecShellJobRunner: Sendable {
         self.gate = gate
         self.index = index
         self.configuration = configuration
+        self.serviceHost = serviceHost
     }
 
     public func makeRunner() -> AnyAgentTool {
@@ -203,6 +208,21 @@ public struct ExecShellJobRunner: Sendable {
         let jobID = JobProcessorIdentity.jobID(fromToolCallID: context.toolCallID)
         if let jobID { try await index.begin(jobID: jobID, targetTool: Self.toolName) }
         do {
+            // C01 typed service mode: the durable job is still an exec.shell
+            // job, but the processor is the service owner (separate engine
+            // role, real readiness, service-owned lifetime). It never falls
+            // through to the one-shot LocalShellTool: a server must not be
+            // launched as a 600 s command.
+            if C01ManagedServiceDeclaration.isServicePayload(argumentsJSON) {
+                guard let serviceHost else {
+                    throw FloeError.invalidConfiguration(
+                        "Managed services are not composed in this build; nothing was started and no job was replayed")
+                }
+                let output = try await serviceHost.runServiceJob(
+                    payloadJSON: argumentsJSON, context: context)
+                if let jobID { await index.settle(jobID: jobID) }
+                return output
+            }
             let output = try await inner.run(argumentsJSON, context)
             // Task cancellation requests stop; it must not cancel the
             // transport queries/backoff needed to prove actual cleanup.

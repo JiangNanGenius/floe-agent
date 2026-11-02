@@ -3310,6 +3310,23 @@
       "compiled": false,
       "testsRun": false,
       "deviceVerified": false
+    },
+    "c01-sessions-services": {
+      "state": "source-integrated-unqualified",
+      "files": 33,
+      "coverage": [
+        "Original model shell session ownership and actual release ledger",
+        "Real Linux lifecycle tools via existing host",
+        "Managed long-lived jobs, separate service leases and owned listener preview proof"
+      ],
+      "stillPending": [
+        "Real no-PTY MCP three-pipe transport",
+        "Target admission and real setup environment/context binding",
+        "Actual guest workspace exchange"
+      ],
+      "compiled": false,
+      "testsRun": false,
+      "deviceVerified": false
     }
   }
 }

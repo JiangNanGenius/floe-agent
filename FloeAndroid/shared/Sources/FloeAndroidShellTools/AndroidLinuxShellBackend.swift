@@ -86,6 +86,11 @@ public actor AndroidLinuxShellBackend: LocalShellBackend {
         /// interactive lifetime is owned by the session center's 30-minute
         /// sliding expiry; the engine ceiling matches it.
         public var interactiveEngineDeadline: TimeInterval
+        /// C01 managed-service deadline. A service is a long-lived workload,
+        /// so the one-shot 600 s job ceiling must never silently kill it. The
+        /// engine's own wire bound is 24 h; this is the explicit per-job-kind
+        /// lifetime and it is still a hard ceiling (no auto-restart).
+        public var serviceEngineDeadline: TimeInterval
 
         public init(
             pollIntervalNanos: UInt64 = 50_000_000,
@@ -93,7 +98,8 @@ public actor AndroidLinuxShellBackend: LocalShellBackend {
             stdinWriteRetries: Int = 64,
             reconcileIntervalNanos: UInt64 = 500_000_000,
             reconcileObservation: TimeInterval = 30 * 60,
-            interactiveEngineDeadline: TimeInterval = 30 * 60
+            interactiveEngineDeadline: TimeInterval = 30 * 60,
+            serviceEngineDeadline: TimeInterval = 24 * 60 * 60
         ) {
             self.pollIntervalNanos = pollIntervalNanos
             self.releaseGrace = releaseGrace
@@ -101,6 +107,7 @@ public actor AndroidLinuxShellBackend: LocalShellBackend {
             self.reconcileIntervalNanos = reconcileIntervalNanos
             self.reconcileObservation = reconcileObservation
             self.interactiveEngineDeadline = interactiveEngineDeadline
+            self.serviceEngineDeadline = min(24 * 60 * 60, max(60, serviceEngineDeadline))
         }
     }
 
@@ -253,14 +260,18 @@ public actor AndroidLinuxShellBackend: LocalShellBackend {
     }
 
     public func hasCapacity(for role: LinuxShellLeaseRole) -> Bool {
-        // Approved default: 2 interactive + ONE execution slot shared by the
-        // Agent command and a language/run session. Total live sessions <= 3.
+        // C01 v3 pool: 2 interactive + ONE execution slot shared by the Agent
+        // command and a language/run session + TWO managed-service slots.
+        // Services are deliberately separate from the manual/exec pool so a
+        // live dev server never blocks ordinary exec.shell. Total <= 5.
         guard slotHolders.count < Self.maximumConcurrentSessions else { return false }
         switch role {
         case .interactive:
             return slotHolders.values.filter { $0 == .interactive }.count < 2
         case .agent, .run:
             return slotHolders.values.filter { $0 == .agent || $0 == .run }.count < 1
+        case .service:
+            return slotHolders.values.filter { $0 == .service }.count < 2
         }
     }
 
@@ -278,10 +289,12 @@ public actor AndroidLinuxShellBackend: LocalShellBackend {
             return .interactive
         case .agent, .run:
             // The execution pool is shared by exactly these two roles; the
-            // 3-slot total leaves no other way to make it inadmissible. The
+            // v3 total leaves no other way to make it inadmissible. The
             // fallback keeps an inconsistent snapshot from being read as a
             // phantom interactive owner.
             return slotHolders.values.first(where: { $0 == .agent || $0 == .run }) ?? role
+        case .service:
+            return .service
         }
     }
 
@@ -290,10 +303,11 @@ public actor AndroidLinuxShellBackend: LocalShellBackend {
         case .interactive: return 2
         case .agent: return 1
         case .run: return 1
+        case .service: return 2
         }
     }
 
-    static let maximumConcurrentSessions = 3
+    static let maximumConcurrentSessions = 5
 
     /// Owner-scoped reconciliation view for the trusted facade ledger.
     public func unreconciledSessions(runID: UUID) -> [EngineSession] {
@@ -382,7 +396,7 @@ public actor AndroidLinuxShellBackend: LocalShellBackend {
             projectID: LinuxShellProjectMapping.projectID(forCanonicalCoreWorkspaceRoot: request.rootURL),
             runID: runID,
             conversationID: request.conversationID,
-            environmentID: request.toolEnvironment?.id,
+            environmentID: request.environmentID ?? request.toolEnvironment?.id,
             command: request.command,
             cwd: request.cwd,
             environment: request.environment,
@@ -714,6 +728,8 @@ public actor AndroidLinuxShellBackend: LocalShellBackend {
                 message = "the language/run service slot is occupied; close the running session or wait for it to settle"
             case .agent:
                 message = "the Agent command slot is occupied; wait for the command to finish"
+            case .service:
+                message = "both managed-service slots are occupied; stop a service before starting another"
             }
             throw FloeError.validationFailed(message)
         }
@@ -721,7 +737,7 @@ public actor AndroidLinuxShellBackend: LocalShellBackend {
             projectID: LinuxShellProjectMapping.projectID(forCanonicalCoreWorkspaceRoot: request.rootURL),
             runID: runID,
             conversationID: request.conversationID,
-            environmentID: request.toolEnvironment?.id,
+            environmentID: request.environmentID ?? request.toolEnvironment?.id,
             // Empty selects the engine's interactive shell (the original
             // contract's `sh` default, engine-side reality).
             command: request.command.isEmpty ? "exec /bin/sh" : request.command,
@@ -729,11 +745,20 @@ public actor AndroidLinuxShellBackend: LocalShellBackend {
             environment: request.environment,
             rows: request.rows,
             columns: request.columns,
-            timeoutSeconds: configuration.interactiveEngineDeadline,
+            // A managed service is a long-lived workload; interactive tabs
+            // keep the session center's bounded sliding lifetime. The engine
+            // still enforces its own hard ceiling.
+            timeoutSeconds: role == .service
+                ? configuration.serviceEngineDeadline
+                : configuration.interactiveEngineDeadline,
             // G04-R2: the trusted UI operation lease identity (interactive
             // terminal / LSP opens mint their workspace grant against it).
             // nil for every other open — payload stays byte-for-byte.
             hostOperationID: request.workspaceOperationID?.uuidString,
+            // C01: the trusted runtime-issued call identity. Only the durable
+            // job shape (`jobs.<uuid>`) takes the job grant mint; ordinary
+            // model sessions keep the existing run grant route unchanged.
+            hostToolCallID: request.hostToolCallID,
             // stdinDelivery intentionally UNSET: an interactive session
             // rides the legacy PTY input path (engine default "pty"). The
             // wire key is omitted entirely (never null), so canonical

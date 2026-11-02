@@ -88,15 +88,22 @@ public enum LinuxShellStdinDelivery: String, Sendable, Equatable {
     case pipe
 }
 
-/// G07.3A — the closed workload-role vocabulary of the engine start wire.
+/// G07.3A / C01 — the closed workload-role vocabulary of the engine start wire.
 /// The trusted platform adapter selects it; it is never model/environment/
 /// command text. `interactive` admits a human terminal tab (two per engine),
 /// `agent` the single one-shot exec.shell command and `run` a language run/LSP
-/// service session. The engine enforces the same ceilings in its own authority.
+/// service session. `service` is the C01 managed-service role (two per engine
+/// in the v3 contract): a long-lived, service-owned workload that must NOT
+/// consume either interactive slot or the shared Agent/run execution slot, so
+/// ordinary exec keeps working while a service is alive. The engine enforces
+/// the same ceilings in its own authority; an older engine that does not know
+/// `service` refuses the start instead of silently treating it as `agent`.
 public enum LinuxShellLeaseRole: String, Sendable, Equatable, Hashable {
     case interactive
     case agent
     case run
+    /// C01 managed service. Only the trusted service domain selects it.
+    case service
 }
 
 /// A validated same-workspace participation hint. Only the trusted platform

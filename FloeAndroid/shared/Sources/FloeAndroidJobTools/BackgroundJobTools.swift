@@ -2,7 +2,7 @@
 // FloeAgent/Sources/FloeExecution/Tools/BackgroundJobTools.swift
 // (job-a16c9976985f40b2). Every statement is byte-equal to the original
 // except the deltas below, each also delivered to Main in
-// Local/Private/android-g03-20261022/r2/jobs-port/SOURCE_READY.json (Main
+// Local source handoff retained by the integration owner.
 // appends the shared PROVENANCE.md entry during assembly; this lane does not
 // edit that file):
 //
@@ -436,8 +436,15 @@ public struct JobsSubmitTool: AgentTool {
         /// SAME run with the completion evidence. `false` submits explicitly
         /// fire-and-forget work whose result is collected in a later turn.
         public var wait: Bool?
-        public init(tool: String, arguments: String, purpose: String? = nil, wait: Bool? = nil) {
-            self.tool = tool; self.arguments = arguments; self.purpose = purpose; self.wait = wait
+        /// C01 typed managed-service mode. Only valid with target
+        /// `exec.shell`; the job target stays exec.shell and this declaration
+        /// is submitted to the injected service owner. Static HTML must use
+        /// the existing `preview.start` path instead.
+        public var service: C01ManagedServiceDeclaration?
+        public init(tool: String, arguments: String, purpose: String? = nil,
+                    wait: Bool? = nil, service: C01ManagedServiceDeclaration? = nil) {
+            self.tool = tool; self.arguments = arguments; self.purpose = purpose
+            self.wait = wait; self.service = service
         }
     }
 
@@ -463,9 +470,14 @@ public struct JobsSubmitTool: AgentTool {
     process death an unfinished job is reconciled to an honest UNKNOWN interrupted state, never a fake success. By default \
     this task WAITS: the run stays open and continues in the same run with the job's result when the job finishes, so do not \
     end your reply with a promise to check later. Pass "wait": false only for explicitly detached work you will collect later. \
-    Never submit a duplicate payload for the same purpose — one job is enough.
+    Never submit a duplicate payload for the same purpose — one job is enough. \
+    For a persistent HTTP service, keep tool=exec.shell, pass an empty arguments object (or only a cwd matching \
+    service.cwd), and add the typed service declaration {runtime: shell|node|python, entry, arguments?, cwd?, port}. The service runs in its own managed-service \
+    role (separate from interactive tabs and the Agent execution slot), survives view closure, and reports a real previewURL only \
+    after the owned listener is proven. Static HTML must use preview.start instead. A missing component or host answers a typed \
+    refusal; there is no exec.localService alias.
     """
-    public static let parametersJSON = #"{"type":"object","properties":{"tool":{"type":"string","description":"Target tool name. Admitted: the targets actually registered in this build that the job policy admits (exec.shell; web.fetch when registered)."},"arguments":{"type":"string","maxLength":65536,"description":"JSON-encoded arguments object for the target tool."},"purpose":{"type":"string","maxLength":240,"description":"Short human-visible reason for this job"},"wait":{"type":"boolean","description":"Default true: keep this task open until the job finishes and continue in the same run with the result. false = explicitly detached fire-and-forget work."}},"required":["tool","arguments"],"additionalProperties":false}"#
+    public static let parametersJSON = #"{"type":"object","properties":{"tool":{"type":"string","description":"Target tool name. Admitted: the targets actually registered in this build that the job policy admits (exec.shell; web.fetch when registered)."},"arguments":{"type":"string","maxLength":65536,"description":"JSON-encoded arguments object for the target tool."},"purpose":{"type":"string","maxLength":240,"description":"Short human-visible reason for this job"},"wait":{"type":"boolean","description":"Default true: keep this task open until the job finishes and continue in the same run with the result. false = explicitly detached fire-and-forget work."},"service":{"type":"object","description":"Typed managed HTTP service mode; requires tool=exec.shell. The service uses a dedicated engine role, survives view closure, and is stopped only explicitly or by root/environment drain.","properties":{"runtime":{"type":"string","enum":["shell","node","python"]},"entry":{"type":"string","maxLength":2048},"arguments":{"type":"array","maxItems":32,"items":{"type":"string","maxLength":2048}},"cwd":{"type":"string","maxLength":2048},"port":{"type":"integer","minimum":1024,"maximum":65535}},"required":["runtime","entry","port"],"additionalProperties":false}},"required":["tool","arguments"],"additionalProperties":false}"#
     // The real risk profile belongs to the named target; the union keeps
     // approval policy conservative because labels are compile-time static.
     public static let riskLabels: Set<RiskLabel> = [.networkAccess, .executesLocalCode, .readsFiles, .writesFiles, .deletesFiles]
@@ -478,9 +490,14 @@ public struct JobsSubmitTool: AgentTool {
     /// `supportedTargets` remains the fallback for builds that do not
     /// inject an admission set.
     private let admittedTargets: Set<String>?
-    public init(service: BackgroundJobService, admittedTargets: Set<String>? = nil) {
+    /// C01: typed managed-service owner injected at composition. Nil keeps
+    /// the ordinary job surface and makes service mode a typed refusal.
+    private let serviceHost: (any C01ManagedServiceJobHosting)?
+    public init(service: BackgroundJobService, admittedTargets: Set<String>? = nil,
+                serviceHost: (any C01ManagedServiceJobHosting)? = nil) {
         self.service = service
         self.admittedTargets = admittedTargets
+        self.serviceHost = serviceHost
     }
 
     private var admittedForValidation: Set<String> {
@@ -494,6 +511,14 @@ public struct JobsSubmitTool: AgentTool {
         var object: [String: Any] = ["tool": args.tool, "arguments": args.arguments]
         if let purpose = args.purpose { object["purpose"] = purpose }
         if let wait = args.wait { object["wait"] = wait }
+        if let service = args.service {
+            var value: [String: Any] = ["runtime": service.runtime.rawValue,
+                                        "entry": service.entry,
+                                        "arguments": service.arguments ?? [],
+                                        "cwd": service.cwd ?? "."]
+            if let port = service.port { value["port"] = port }
+            object["service"] = value
+        }
         return try JSONSerialization.data(withJSONObject: object)
     }
 
@@ -529,11 +554,34 @@ public struct JobsSubmitTool: AgentTool {
         if let purpose = args.purpose {
             guard purpose.utf8.count <= 240 else { throw FloeError.validationFailed("purpose must be at most 240 bytes") }
         }
+        if let service = args.service {
+            guard args.tool == ExecShellJobRunner.toolName else {
+                throw FloeError.validationFailed(
+                    "service mode submits target exec.shell; select another target only for ordinary jobs")
+            }
+            guard !service.isStatic else {
+                throw FloeError.validationFailed(
+                    "Static HTML preview uses the existing preview.start path, not a managed service")
+            }
+            try service.validateForJobSubmit()
+            guard serviceHost != nil else {
+                throw FloeError.validationFailed(
+                    "Managed services are not composed in this build; nothing was submitted")
+            }
+        }
     }
 
     public func execute(_ args: Arguments, context: ToolContext) async throws -> ToolExecutionOutput {
         try context.cancellation.throwIfCancelled()
-        let payload = Data(args.arguments.utf8)
+        var payload = Data(args.arguments.utf8)
+        if let service = args.service {
+            guard let serviceHost else {
+                throw FloeError.validationFailed(
+                    "Managed services are not composed in this build; nothing was submitted")
+            }
+            payload = try serviceHost.makeExecShellPayload(
+                innerArguments: payload, declaration: service)
+        }
         // The runtime authority for THIS exact jobs.submit call is forwarded
         // to the service, which consumes it only for adapters that require a
         // prepared authorized operation and only for a NEW job (an idempotent
@@ -913,6 +961,8 @@ public func registerBackgroundJobTools(
     /// J3: registry the service uses to resolve a job's target runner.
     /// Nil uses `registry` exactly like the ORIGINAL.
     runnerLookup: ToolRunnerRegistry? = nil,
+    /// C01 typed managed-service owner; nil keeps the ordinary job surface.
+    serviceHost: (any C01ManagedServiceJobHosting)? = nil,
     advertise: Bool = true
 ) -> BackgroundJobService {
     let store = BackgroundJobStore(database: database)
@@ -958,7 +1008,8 @@ public func registerBackgroundJobTools(
         ToolCatalog.register(JobsStatusTool.self)
         ToolCatalog.register(JobsResultTool.self)
         ToolCatalog.register(JobsCancelTool.self)
-        registry.register(JobsSubmitTool(service: service, admittedTargets: admitted))
+        registry.register(JobsSubmitTool(service: service, admittedTargets: admitted,
+                                          serviceHost: serviceHost))
         registry.register(JobsStatusTool(service: service))
         registry.register(JobsResultTool(service: service, outputRoot: spoolRoot))
         registry.register(JobsCancelTool(service: service))

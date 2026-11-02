@@ -671,6 +671,55 @@ final class G04BrowserDomainExtension: G02DomainExtension, @unchecked Sendable {
     }
 }
 
+// MARK: - C01 managed-service preview bridge
+
+/// Connects an OWNED ready loopback service to the EXISTING browser session
+/// and policy. Static file preview stays on `preview.start`/`LocalPreviewCoordinator`
+/// and is never routed through here. The bridge never accepts a model URL and
+/// never starts a service: the caller supplies the exact job ID + URL that the
+/// service domain already proved.
+public enum G04ManagedServicePreview {
+    /// Authorize the exact loopback origin for this task only. Returns false
+    /// when the generation/browser is not live.
+    @discardableResult
+    public static func authorize(epoch: UInt64, owner: UUID,
+                                 conversationID: UUID, url: URL) -> Bool {
+        guard let services = G04BrowserHostRegistry.shared.services(epoch: epoch),
+              url.scheme == "http", url.host == "127.0.0.1",
+              let port = url.port, (1024...65535).contains(port) else { return false }
+        services.policy.authorizeService(url, owner: owner, conversationID: conversationID)
+        return true
+    }
+
+    public static func revoke(epoch: UInt64, owner: UUID) {
+        G04BrowserHostRegistry.shared.services(epoch: epoch)?.policy.revokeService(owner: owner)
+    }
+
+    /// Explicit "open preview" action for the App terminal/preview pane.
+    /// Navigates ONLY the owning task's browser to the authorized service URL.
+    @discardableResult
+    public static func open(epoch: UInt64, conversationID: UUID, owner: UUID,
+                            url: URL, cancellation: CancellationToken? = nil) async -> Bool {
+        guard let services = G04BrowserHostRegistry.shared.services(epoch: epoch),
+              (try? services.policy.validate(url.absoluteString,
+                                            conversationID: conversationID,
+                                            allowRegisteredServices: false)) != nil,
+              let binding = await LinuxWorkspaceAuthority.resolveWorkspace(
+                conversationID: conversationID) else { return false }
+        let browserOwner = BrowserOwnerID(taskID: conversationID,
+                                          workspaceID: binding.workspaceID,
+                                          rootEpoch: epoch)
+        guard let session = try? await services.center.taskSession(for: browserOwner) else {
+            return false
+        }
+        let result = await services.center.execute(
+            BrowserCommand(sessionID: session.sessionID,
+                           action: .navigate(url: url.absoluteString)),
+            in: browserOwner, cancellation: cancellation)
+        return result.status == .ok
+    }
+}
+
 // MARK: - Pre-bootstrap registration (Main's one-line mount)
 
 /// Trusted host hook called exactly once in the idle pre-bootstrap window

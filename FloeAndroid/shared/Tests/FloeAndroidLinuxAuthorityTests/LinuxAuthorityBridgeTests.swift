@@ -35,7 +35,7 @@ final class LinuxAuthorityBridgeTests: XCTestCase {
         let ok = try XCTUnwrap(outcome["ok"] as? [String: Any])
         let handshake = try XCTUnwrap(ok["handshake"] as? [String: Any])
         XCTAssertEqual(handshake["wireVersion"] as? Int, 1)
-        XCTAssertEqual(handshake["maxConcurrentRuntimeLeases"] as? Int, 3)
+        XCTAssertEqual(handshake["maxConcurrentRuntimeLeases"] as? Int, 5)
         XCTAssertEqual(handshake["maxInteractiveLeases"] as? Int, 2)
         XCTAssertEqual(handshake["maxExecutionLeases"] as? Int, 1)
         XCTAssertEqual(handshake["maxAgentLeases"] as? Int, 1)

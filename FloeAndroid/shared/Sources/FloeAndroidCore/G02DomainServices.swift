@@ -304,13 +304,24 @@ public final class G02InstalledComposition: @unchecked Sendable {
             coordinator: toolWork,
             rootProvider: { nil },
             readiness: LinuxShellLiveReadiness.makeInjected())
+        // C01 environment lifecycle: the production host reads the REAL
+        // Kotlin LocalRuntimeSetupHost/runtime status through the bounded
+        // mailbox operation. Registration is independent of full shell
+        // qualification so a model can read installRequired/componentRequired
+        // before the engine is ready. A nil host would register nothing.
+        C01LinuxEnvironmentDomain.shared.install(
+            C01LinuxEnvironmentMailboxHost(
+                epoch: { RuntimeFacadeLinuxBindings.shared.boundNativeEpoch }),
+            epoch: epoch)
+        _ = RuntimeFacadeLinuxBindings.shared.registerEnvironmentToolsIfAvailable()
         var backgroundJobs: BackgroundJobService?
         if let shell = RuntimeFacadeLinuxBindings.shared.components,
            let spool = BackgroundJobOutputSpoolRoot.url() {
             let owner = G03JobLifecycle(epoch: epoch)
             guard RuntimeFacadeJobBindings.shared.compose(database: database, shell: shell,
                 transport: MailboxLinuxShellTransport(), settlementGate: LinuxShellJobSettlement.gate,
-                outputRootURL: spool, onTerminal: { await owner.terminal($0) }, processorOwnership: owner),
+                outputRootURL: spool, onTerminal: { await owner.terminal($0) }, processorOwnership: owner,
+                serviceHost: C01ManagedServiceDomain.shared),
                 let jobs = RuntimeFacadeJobBindings.shared.register() else { return nil }
             owner.bind(jobs)
             G03JobLifecycle.install(owner)
