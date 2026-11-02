@@ -603,6 +603,16 @@ final class LinuxRunnerEnvironmentRealGuestTests: XCTestCase {
     /// DEBUG catalog fixture seam supplies the unpublished ID/digest pair;
     /// public download/catalog qualification stays separate until publication.
     func testImportedRunnerComponentAdoptsExistingDiskAcrossImageIdentityChange() async throws {
+        try await qualifyImportedRunnerComponent(useRuntimeV2: false)
+    }
+
+    /// Mirrors the default App wiring (verified image store, leases and
+    /// immutable-base deltas), independently of the legacy file-disk case.
+    func testImportedRunnerComponentRetainsRuntimeV2BaseAndPrivateDelta() async throws {
+        try await qualifyImportedRunnerComponent(useRuntimeV2: true)
+    }
+
+    private func qualifyImportedRunnerComponent(useRuntimeV2: Bool) async throws {
         let variables = ProcessInfo.processInfo.environment
         guard variables["FLOE_RUNNER21_COMPONENT_ADOPTION"] == "1" else {
             throw XCTSkip("Opt-in real component adoption is not enabled.")
@@ -638,9 +648,19 @@ final class LinuxRunnerEnvironmentRealGuestTests: XCTestCase {
             imageID: LinuxGuestImageDistributionCatalog.defaultImageID,
             ramMB: 256, vcpus: 1, networkEnabled: true)
         let provider = RunnerImportedDescriptor(descriptor: descriptor)
+        let layout = RuntimeV2Layout(root: owned.appendingPathComponent("runtime-v2"))
+        let store = RuntimeV2Store(layout: layout)
+        let integrator = RuntimeV2GuestIntegrator(store: store, legacyImagesRoot: installer.imagesDirectory)
+        let legacy = FileLinuxGuestImageResolver(root: installer.imagesDirectory)
+        let resolver: any LinuxGuestImageResolving
+        if useRuntimeV2 {
+            resolver = RuntimeV2CompositeImageResolver(expandedImagesRoot: layout.expandedImagesDirectory,
+                legacy: legacy, verifiedGate: { imageID in await integrator.isImageVerified(imageID: imageID) })
+        } else { resolver = legacy }
         let registry = TinyEMULinuxGuestRegistry(
-            environments: provider, images: FileLinuxGuestImageResolver(root: installer.imagesDirectory),
-            limits: LinuxGuestLimits(runnerProbeTimeout: 120), targetDiskCapacityBytes: 17_179_869_184)
+            environments: provider, images: resolver,
+            limits: LinuxGuestLimits(runnerProbeTimeout: 120), targetDiskCapacityBytes: 17_179_869_184,
+            runtimeV2: useRuntimeV2 ? integrator : nil)
         func run(_ command: String) async throws -> LinuxCommandResult {
             try await registry.run(environmentID: environmentID, argv: ["/bin/sh", "-c", command],
                 workingDirectory: "/workspace", standardInput: nil, timeout: 120,
@@ -656,6 +676,27 @@ final class LinuxRunnerEnvironmentRealGuestTests: XCTestCase {
                 throw RunnerQualificationFailure.liveFixtureRetained(owned.path)
             }
             try FileManager.default.removeItem(at: owned)
+        }
+        func assertV2Base(_ base: LinuxGuestImage, executionImageID: String, running: Bool) async throws {
+            let expected = try XCTUnwrap(base.artifacts?.first(where: { $0.role == .disk }))
+            let row = try await store.registry.environment(id: environmentID)
+            XCTAssertEqual(row?.baseImageID, base.id)
+            if running {
+                let identity = await registry.runtimeIdentity(environmentID: environmentID)
+                let runtimeID = try XCTUnwrap(identity.runtimeID)
+                let meta = try XCTUnwrap(RuntimeV2WorkingDirectory.readMeta(from:
+                    layout.runtimeVMDirectory(runtimeID: runtimeID)))
+                XCTAssertEqual(meta.baseImageID, base.id)
+                XCTAssertEqual(meta.executionImageID, executionImageID == base.id ? nil : executionImageID)
+                XCTAssertEqual(meta.bootBaseDiskDigest, expected.sha512)
+                let selected = try await store.templates.bootBase(matching: meta, expectedImageID: executionImageID)
+                XCTAssertEqual(selected.baseImageID, base.id)
+                XCTAssertEqual(selected.digest, expected.sha512)
+            } else {
+                let delta = try await store.deltas.loadDelta(environmentID: environmentID)
+                XCTAssertEqual(delta?.header.baseImageID, base.id)
+                XCTAssertEqual(delta?.header.baseRootfsSHA512, expected.sha512)
+            }
         }
         do {
             LinuxGuestImageDistributionCatalog.registerTestEntry(LinuxGuestTrustedImage(
@@ -690,8 +731,10 @@ final class LinuxRunnerEnvironmentRealGuestTests: XCTestCase {
             XCTAssertEqual(written.exitCode, 0, written.stderr)
             let originURL = LinuxGuestRuntimeImagePreparer.environmentDiskDirectory(
                 writableDirectory: writable, environmentID: environmentID).appendingPathComponent("origin.json")
-            let originalOrigin = try Data(contentsOf: originURL)
+            let originalOrigin = useRuntimeV2 ? nil : try Data(contentsOf: originURL)
+            if useRuntimeV2 { try await assertV2Base(base, executionImageID: base.id, running: true) }
             await registry.stop(environmentID: environmentID)
+            if useRuntimeV2 { try await assertV2Base(base, executionImageID: base.id, running: false) }
             phase("base.stopped")
 
             await provider.selectImage(component.id)
@@ -704,25 +747,32 @@ final class LinuxRunnerEnvironmentRealGuestTests: XCTestCase {
             let packages = try await run("dpkg-query -W -f='${Package} ${Version}\\n' python3 nodejs")
             XCTAssertEqual(packages.exitCode, 0, packages.stderr)
             XCTAssertEqual(packages.stdout, written.stdout)
-            XCTAssertEqual(try Data(contentsOf: originURL), originalOrigin)
+            if let originalOrigin { XCTAssertEqual(try Data(contentsOf: originURL), originalOrigin) }
+            if useRuntimeV2 { try await assertV2Base(base, executionImageID: component.id, running: true) }
             let current = await registry.status(environmentID: environmentID)
             XCTAssertEqual(current.imageID, component.id)
-            let measured = try XCTUnwrap(LinuxGuestRuntimeImagePreparer.recordedRunnerCapabilities(
-                writableDirectory: writable, environmentID: environmentID))
+            let recorded = useRuntimeV2
+                ? await integrator.recordedRunnerCapabilities(environmentID: environmentID)
+                : LinuxGuestRuntimeImagePreparer.recordedRunnerCapabilities(
+                    writableDirectory: writable, environmentID: environmentID)
+            let measured = try XCTUnwrap(recorded)
             XCTAssertTrue(measured.contains("runner=2.1.0"), measured)
             XCTAssertTrue(measured.split(separator: " ").contains("env=1"), measured)
             let isolated = try await Self.sensitiveRun(registry, environmentID, value: "synthetic-adoption")
             XCTAssertEqual(isolated.exitCode, 0, isolated.stderr)
             XCTAssertEqual(isolated.stdout, "synthetic-adoption")
             await registry.stop(environmentID: environmentID)
+            if useRuntimeV2 { try await assertV2Base(base, executionImageID: component.id, running: false) }
             _ = try await registry.start(environmentID: environmentID, taskID: descriptor.taskID)
             let reopened = try await run("cat /var/tmp/floe-component-owned")
             XCTAssertEqual(reopened.exitCode, 0, reopened.stderr)
             XCTAssertEqual(reopened.stdout, "preserved-across-image-id")
-            XCTAssertEqual(try Data(contentsOf: originURL), originalOrigin)
+            if let originalOrigin { XCTAssertEqual(try Data(contentsOf: originURL), originalOrigin) }
+            if useRuntimeV2 { try await assertV2Base(base, executionImageID: component.id, running: true) }
             let receipt = XCTAttachment(string: "base=\(base.id)\ncomponent=\(component.id)\n"
                 + "actualCAPS=\(measured)\nrunnerSHA512=\(runner.sha512)\n"
-                + "scope=actual ZIP import and old writable-disk adoption; DEBUG fixture ID/digest only; public download pending")
+                + "storage=\(useRuntimeV2 ? "RuntimeV2 immutable base and private delta" : "legacy owned writable disk")\n"
+                + "scope=actual ZIP import and existing disk adoption; DEBUG fixture ID/digest only; public download pending")
             receipt.name = "runner21-component-image-adoption"; receipt.lifetime = .keepAlways; add(receipt)
             try await cleanup()
             phase("owned.cleanup.complete")

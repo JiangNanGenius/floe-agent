@@ -1292,6 +1292,10 @@ public enum RuntimeV2WorkingDirectory {
         public var runtimeID: String
         public var environmentID: String
         public var baseImageID: String
+        /// Optional runner/firmware component used to execute this disk. The
+        /// delta always stays on baseImageID; a compatible component is NOT a
+        /// new disk base. Absent in v1 records and on ordinary same-image boots.
+        public var executionImageID: String?
         public var createdAt: Date
         /// The immutable template version the working disk booted (nil = the
         /// disk is a clone of the base image rootfs).
@@ -1305,12 +1309,14 @@ public enum RuntimeV2WorkingDirectory {
         public init(
             runtimeID: String, environmentID: String, baseImageID: String, createdAt: Date,
             templateID: String? = nil, templateVersion: Int? = nil,
-            templateDigest: String? = nil, bootBaseDiskDigest: String? = nil
+            templateDigest: String? = nil, bootBaseDiskDigest: String? = nil,
+            executionImageID: String? = nil
         ) {
-            self.version = 1
+            self.version = executionImageID == nil ? 1 : 2
             self.runtimeID = runtimeID
             self.environmentID = environmentID
             self.baseImageID = baseImageID
+            self.executionImageID = executionImageID
             self.createdAt = createdAt
             self.templateID = templateID
             self.templateVersion = templateVersion

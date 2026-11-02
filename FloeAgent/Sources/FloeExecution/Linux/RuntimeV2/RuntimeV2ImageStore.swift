@@ -159,6 +159,39 @@ public actor RuntimeV2ImageStore {
         return try manifest(imageID: imageID) != nil
     }
 
+    /// A runner-only component may boot an existing environment WITHOUT
+    /// rebasing its private delta onto the component's changed rootfs. Only
+    /// the verified component's exact predecessor tuple grants this relation;
+    /// matching names, recipes or package versions never do.
+    func verifyCompatibleDiskBase(
+        executionImageID: String, diskBaseImageID: String, environmentID: String
+    ) async throws {
+        guard executionImageID != diskBaseImageID else { return }
+        guard try await isImageVerified(imageID: executionImageID),
+              try await isImageVerified(imageID: diskBaseImageID),
+              let execution = try manifest(imageID: executionImageID),
+              let base = try manifest(imageID: diskBaseImageID),
+              let rootfs = base.artifacts["rootfs"] ?? base.artifacts["disk"],
+              let image = try? Self.decoder.decode(LinuxGuestImage.self, from: execution.legacyManifestData),
+              let runner = image.runnerArtifact,
+              let runnerRef = execution.artifacts["runner"],
+              runnerRef.sha512.lowercased()
+                  == runner.sha512.trimmingCharacters(in: .whitespacesAndNewlines).lowercased(),
+              runnerRef.bytes == runner.bytes,
+              image.compatibleOrigins?.contains(where: {
+                  $0.imageID == diskBaseImageID
+                      && $0.artifactSHA512.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+                          == rootfs.sha512.lowercased()
+                      && $0.artifactBytes == rootfs.bytes
+              }) == true else {
+            throw RuntimeV2Error.bootProvenanceMismatch(
+                environmentID: environmentID,
+                recorded: "disk base \(diskBaseImageID)",
+                current: "\(executionImageID) does not declare that exact verified runner-only predecessor"
+            )
+        }
+    }
+
     /// The image's declared capabilities, or nil when there is no manifest.
     public func capabilities(imageID: String) throws -> Manifest.Capabilities? {
         try manifest(imageID: imageID)?.capabilities

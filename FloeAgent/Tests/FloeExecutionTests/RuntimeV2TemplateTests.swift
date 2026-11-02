@@ -54,7 +54,8 @@ final class RuntimeV2TemplateTests: XCTestCase {
     @discardableResult
     private func makeVerifiedBaseImage(
         imageID: String, rootfsSeed: UInt8 = 17, rootfsBytes: Int = 3 << 20,
-        smpCapable: Bool? = nil
+        smpCapable: Bool? = nil,
+        compatibleWith origin: LinuxGuestCompatibleDiskOrigin? = nil
     ) async throws -> RuntimeV2ImageStore.Manifest {
         let legacyRoot = root.appendingPathComponent("legacy-\(imageID)", isDirectory: true)
         let directory = legacyRoot.appendingPathComponent(imageID, isDirectory: true)
@@ -65,7 +66,7 @@ final class RuntimeV2TemplateTests: XCTestCase {
         for index in rootfs.indices { rootfs[index] = UInt8((index &* Int(rootfsSeed)) % 253) }
         try bios.write(to: directory.appendingPathComponent("bios.bin"))
         try rootfs.write(to: directory.appendingPathComponent("rootfs.img"))
-        let image = LinuxGuestImage(
+        var image = LinuxGuestImage(
             id: imageID,
             biosPath: "bios.bin",
             diskPath: "rootfs.img",
@@ -82,6 +83,16 @@ final class RuntimeV2TemplateTests: XCTestCase {
                 )
             ]
         )
+        if let origin {
+            // Data-store fixture only; never passed to an emulator. The real
+            // RISC-V component/runner is exercised by the App guest suite.
+            let runner = Data("synthetic runner artifact \(imageID)".utf8)
+            try runner.write(to: directory.appendingPathComponent("runner.bin"))
+            image.runnerArtifact = .init(role: .runner, path: "runner.bin",
+                sha512: FloeDigest.sha512Hex(runner), bytes: Int64(runner.count))
+            image.runnerCapabilities = "runner=2.1.0 protocol=3 maxCommands=8 maxSessions=4 env=1 net=up"
+            image.compatibleOrigins = [origin]
+        }
         let encoder = JSONEncoder()
         encoder.dateEncodingStrategy = .iso8601
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
@@ -1331,6 +1342,197 @@ final class RuntimeV2TemplateTests: XCTestCase {
         )
         try writeBytes(work.diskURL, at: markerOffset, marker)
         return work
+    }
+
+    func testCompatibleRunnerPreservesOriginalBaseDeltaAndExactTemplatePin() async throws {
+        _ = try await store.prepareAndRecover(build: "runner-component-test")
+        let base = try await makeVerifiedBaseImage(imageID: baseImageID)
+        let ref = try rootfsRef(base)
+        let componentID = "runner-component"
+        _ = try await makeVerifiedBaseImage(imageID: componentID, rootfsSeed: 29,
+            compatibleWith: .init(imageID: baseImageID, artifactSHA512: ref.sha512, artifactBytes: ref.bytes))
+        let expanded = try await store.images.ensureExpanded(imageID: baseImageID)
+        let baseBlock = try readBytes(expanded.appendingPathComponent(ref.expandedPath), at: 0, count: 4096)
+        let template = try await buildTemplate(marker: 0x53, packages: [package("python3", "3.13")],
+            parent: baseParent(ref, imageID: baseImageID))
+        let integrator = RuntimeV2GuestIntegrator(store: store, build: "runner-component-test")
+        for pinned in [false, true] {
+            let id = pinned ? "runner-pinned" : "runner-base"
+            try await registerEnvironment(id, baseImageID: baseImageID, rootfsDigest: ref.sha512)
+            let pin: RuntimeV2TemplatePin?
+            if pinned {
+                pin = try await store.templates.pinEnvironment(environmentID: id, templateID: "basic", version: 1)
+            } else { pin = nil }
+            let original = try await integrator.prepareWorkingDisk(environmentID: id, runtimeID: id + "-old",
+                imageID: baseImageID, legacyWritableDirectory: nil, targetCapacityBytes: 4 << 20)
+            let marker = Data(repeating: 0x76, count: 4096)
+            try writeBytes(original.diskURL, at: 3 << 20, marker)
+            let stopped = await integrator.completeStopResult(environmentID: id, runtimeID: id + "-old",
+                imageID: baseImageID, clean: true)
+            guard case .captured = stopped else { return XCTFail("Original capture failed: \(stopped)") }
+
+            let upgraded = try await integrator.prepareWorkingDisk(environmentID: id, runtimeID: id + "-new",
+                imageID: componentID, legacyWritableDirectory: nil, targetCapacityBytes: 4 << 20)
+            XCTAssertEqual(try readBytes(upgraded.diskURL, at: 0, count: 4096), baseBlock,
+                "The component's different rootfs must never become the existing delta's base")
+            XCTAssertEqual(try readBytes(upgraded.diskURL, at: 3 << 20, count: marker.count), marker)
+            let directory = try layout.runtimeVMDirectory(runtimeID: id + "-new")
+            let meta = try XCTUnwrap(RuntimeV2WorkingDirectory.readMeta(from: directory))
+            XCTAssertEqual(meta.version, 2)
+            XCTAssertEqual(meta.baseImageID, baseImageID)
+            XCTAssertEqual(meta.executionImageID, componentID)
+            XCTAssertEqual(meta.bootBaseDiskDigest, pinned ? template.diskDigest : ref.sha512)
+            XCTAssertEqual(meta.templateDigest, pin?.digest)
+            let frozen = try await store.templates.bootBase(matching: meta, expectedImageID: componentID)
+            XCTAssertEqual(frozen.baseImageID, baseImageID)
+            XCTAssertEqual(frozen.templatePin, pin)
+            let updated = await integrator.completeStopResult(environmentID: id, runtimeID: id + "-new",
+                imageID: componentID, clean: true)
+            guard case .captured = updated else { return XCTFail("Component capture failed: \(updated)") }
+            let delta = try await store.deltas.loadDelta(environmentID: id)
+            XCTAssertEqual(delta?.header.baseImageID, baseImageID)
+            XCTAssertEqual(delta?.header.baseRootfsSHA512, pinned ? template.diskDigest : ref.sha512)
+            let row = try await store.registry.environment(id: id)
+            let retainedPin = try await store.templates.environmentPin(environmentID: id)
+            XCTAssertEqual(row?.baseImageID, baseImageID)
+            XCTAssertEqual(retainedPin, pin)
+            let reopened = try await integrator.prepareWorkingDisk(environmentID: id, runtimeID: id + "-reopen",
+                imageID: componentID, legacyWritableDirectory: nil, targetCapacityBytes: 4 << 20)
+            XCTAssertEqual(try readBytes(reopened.diskURL, at: 0, count: 4096), baseBlock)
+            XCTAssertEqual(try readBytes(reopened.diskURL, at: 3 << 20, count: marker.count), marker)
+            let final = await integrator.completeStopResult(environmentID: id, runtimeID: id + "-reopen",
+                imageID: componentID, clean: true)
+            guard case .captured = final else { return XCTFail("Reopened capture failed: \(final)") }
+        }
+    }
+
+    func testRunnerCompatibilityRequiresExactPredecessorTupleBeforeOwnership() async throws {
+        _ = try await store.prepareAndRecover(build: "runner-negative-test")
+        let base = try await makeVerifiedBaseImage(imageID: baseImageID)
+        let ref = try rootfsRef(base)
+        let id = "runner-negative"
+        try await registerEnvironment(id, baseImageID: baseImageID, rootfsDigest: ref.sha512)
+        let integrator = RuntimeV2GuestIntegrator(store: store, build: "runner-negative-test")
+        let origins = [
+            LinuxGuestCompatibleDiskOrigin(imageID: "another-base", artifactSHA512: ref.sha512, artifactBytes: ref.bytes),
+            .init(imageID: baseImageID, artifactSHA512: String(repeating: "e", count: 128), artifactBytes: ref.bytes),
+            .init(imageID: baseImageID, artifactSHA512: ref.sha512, artifactBytes: ref.bytes + 1),
+        ]
+        for (index, origin) in origins.enumerated() {
+            let component = "runner-negative-\(index)"
+            _ = try await makeVerifiedBaseImage(imageID: component, rootfsSeed: 31, compatibleWith: origin)
+            let runtimeID = "runner-negative-runtime-\(index)"
+            do {
+                _ = try await integrator.prepareWorkingDisk(environmentID: id, runtimeID: runtimeID,
+                    imageID: component, legacyWritableDirectory: nil, targetCapacityBytes: 4 << 20)
+                XCTFail("A mismatched predecessor must not materialize a disk")
+            } catch let error as RuntimeV2Error {
+                guard case .bootProvenanceMismatch = error else { return XCTFail("Wrong refusal: \(error)") }
+            }
+            XCTAssertFalse(FileManager.default.fileExists(atPath: try layout.runtimeVMDirectory(runtimeID: runtimeID).path))
+            let row = try await store.registry.environment(id: id)
+            let delta = try await store.deltas.loadDelta(environmentID: id)
+            XCTAssertEqual(row?.baseImageID, baseImageID)
+            XCTAssertNil(delta)
+        }
+    }
+
+    func testFirstLegacyMigrationWithNewRunnerKeepsTheVerifiedOriginalBase() async throws {
+        _ = try await store.prepareAndRecover(build: "runner-legacy-test")
+        let base = try await makeVerifiedBaseImage(imageID: baseImageID)
+        let ref = try rootfsRef(base)
+        _ = try await makeVerifiedBaseImage(imageID: "runner-legacy-component", rootfsSeed: 37,
+            compatibleWith: .init(imageID: baseImageID, artifactSHA512: ref.sha512, artifactBytes: ref.bytes))
+        let expanded = try await store.images.ensureExpanded(imageID: baseImageID)
+        let baseDisk = expanded.appendingPathComponent(ref.expandedPath)
+        let layer = root.appendingPathComponent("legacy-layer")
+        let integrator = RuntimeV2GuestIntegrator(store: store, build: "runner-legacy-test")
+        for valid in [false, true] {
+            let id = valid ? "runner-legacy-valid" : "runner-legacy-wrong-origin"
+            let directory = LinuxGuestRuntimeImagePreparer.environmentDiskDirectory(
+                writableDirectory: layer, environmentID: id)
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            let legacyDisk = directory.appendingPathComponent("disk.img")
+            try FileManager.default.copyItem(at: baseDisk, to: legacyDisk)
+            try FileManager.default.setAttributes([.posixPermissions: 0o644], ofItemAtPath: legacyDisk.path)
+            let marker = Data(repeating: 0x7B, count: 4096)
+            try writeBytes(legacyDisk, at: 1 << 20, marker)
+            let origin = LinuxGuestRuntimeDiskOrigin(imageID: baseImageID,
+                artifactSHA512: valid ? ref.sha512 : String(repeating: "d", count: 128), artifactBytes: ref.bytes)
+            let encoder = JSONEncoder(); encoder.dateEncodingStrategy = .iso8601
+            try encoder.encode(origin).write(to: directory.appendingPathComponent("origin.json"))
+            let runtimeID = id + "-runtime"
+            if !valid {
+                do {
+                    _ = try await integrator.prepareWorkingDisk(environmentID: id, runtimeID: runtimeID,
+                        imageID: "runner-legacy-component", legacyWritableDirectory: layer,
+                        targetCapacityBytes: 4 << 20)
+                    XCTFail("A matching image name must never override a mismatched legacy origin digest")
+                } catch let error as RuntimeV2Error {
+                    guard case .bootProvenanceMismatch = error else { return XCTFail("Wrong refusal: \(error)") }
+                }
+                XCTAssertEqual(try readBytes(legacyDisk, at: 1 << 20, count: marker.count), marker)
+                let row = try await store.registry.environment(id: id)
+                XCTAssertNil(row)
+                continue
+            }
+            let work = try await integrator.prepareWorkingDisk(environmentID: id, runtimeID: runtimeID,
+                imageID: "runner-legacy-component", legacyWritableDirectory: layer,
+                targetCapacityBytes: 4 << 20)
+            XCTAssertEqual(try readBytes(work.diskURL, at: 1 << 20, count: marker.count), marker)
+            XCTAssertEqual(try readBytes(work.diskURL, at: 0, count: 4096),
+                try readBytes(baseDisk, at: 0, count: 4096))
+            let row = try await store.registry.environment(id: id)
+            let delta = try await store.deltas.loadDelta(environmentID: id)
+            XCTAssertEqual(row?.baseImageID, baseImageID)
+            XCTAssertEqual(delta?.header.baseImageID, baseImageID)
+            XCTAssertEqual(delta?.header.baseRootfsSHA512, ref.sha512)
+            let meta = try XCTUnwrap(RuntimeV2WorkingDirectory.readMeta(from:
+                layout.runtimeVMDirectory(runtimeID: runtimeID)))
+            XCTAssertEqual(meta.baseImageID, baseImageID)
+            XCTAssertEqual(meta.executionImageID, "runner-legacy-component")
+            let stopped = await integrator.completeStopResult(environmentID: id, runtimeID: runtimeID,
+                imageID: "runner-legacy-component", clean: true)
+            guard case .captured = stopped else { return XCTFail("Migrated capture failed: \(stopped)") }
+        }
+    }
+
+    func testRunnerBootProvenanceRevalidatesComponentAndKeepsLegacyMetadataReadable() async throws {
+        _ = try await store.prepareAndRecover(build: "runner-meta-test")
+        let base = try await makeVerifiedBaseImage(imageID: baseImageID)
+        let ref = try rootfsRef(base)
+        try await registerEnvironment("runner-meta", baseImageID: baseImageID, rootfsDigest: ref.sha512)
+        _ = try await makeVerifiedBaseImage(imageID: "runner-good", rootfsSeed: 43,
+            compatibleWith: .init(imageID: baseImageID, artifactSHA512: ref.sha512, artifactBytes: ref.bytes))
+        _ = try await makeVerifiedBaseImage(imageID: "runner-foreign", rootfsSeed: 47)
+        let legacy = RuntimeV2WorkingDirectory.Meta(runtimeID: "runner-meta-runtime", environmentID: "runner-meta",
+            baseImageID: baseImageID, createdAt: Date(), bootBaseDiskDigest: ref.sha512)
+        let directory = try layout.runtimeVMDirectory(runtimeID: legacy.runtimeID)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        try RuntimeV2WorkingDirectory.writeMeta(legacy, to: directory)
+        let decoded = try XCTUnwrap(RuntimeV2WorkingDirectory.readMeta(from: directory))
+        XCTAssertNil(decoded.executionImageID)
+        let oldBase = try await store.templates.bootBase(matching: decoded, expectedImageID: baseImageID)
+        XCTAssertEqual(oldBase.digest, ref.sha512)
+        var upgraded = RuntimeV2WorkingDirectory.Meta(runtimeID: legacy.runtimeID, environmentID: "runner-meta",
+            baseImageID: baseImageID, createdAt: legacy.createdAt, bootBaseDiskDigest: ref.sha512,
+            executionImageID: "runner-good")
+        let selected = try await store.templates.bootBase(matching: upgraded, expectedImageID: "runner-good")
+        XCTAssertEqual(selected.baseImageID, baseImageID)
+        upgraded.executionImageID = "runner-foreign"
+        do {
+            _ = try await store.templates.bootBase(matching: upgraded)
+            XCTFail("Crash recovery must not accept an undeclared component merely from its metadata")
+        } catch let error as RuntimeV2Error {
+            guard case .bootProvenanceMismatch = error else { return XCTFail("Wrong refusal: \(error)") }
+        }
+        var future = legacy; future.version = 99
+        do {
+            _ = try await store.templates.bootBase(matching: future)
+            XCTFail("Unknown provenance formats must preserve the working disk for recovery")
+        } catch let error as RuntimeV2Error {
+            guard case .workingDirectoryProvenanceUnavailable = error else { return XCTFail("Wrong refusal: \(error)") }
+        }
     }
 
     /// The boot base (template id/version/digest + the exact disk digest) is

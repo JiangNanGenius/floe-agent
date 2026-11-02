@@ -1388,6 +1388,12 @@ public actor RuntimeV2TemplateStore {
     public func bootBase(
         matching meta: RuntimeV2WorkingDirectory.Meta, expectedImageID: String? = nil
     ) async throws -> BootBase {
+        guard meta.version == 1 || meta.version == 2 else {
+            throw RuntimeV2Error.workingDirectoryProvenanceUnavailable(
+                environmentID: meta.environmentID,
+                reason: "unsupported working-directory provenance version \(meta.version)"
+            )
+        }
         guard let recordedDigest = meta.bootBaseDiskDigest,
               recordedDigest.count == 128,
               recordedDigest.allSatisfy({ $0.isHexDigit }) else {
@@ -1396,12 +1402,16 @@ public actor RuntimeV2TemplateStore {
                 reason: "the working directory records no boot base digest; the disk's origin cannot be proven"
             )
         }
-        if let expectedImageID, expectedImageID != meta.baseImageID {
+        let executionImageID = meta.executionImageID ?? meta.baseImageID
+        if let expectedImageID, expectedImageID != executionImageID {
             throw RuntimeV2Error.templateBaseImageMismatch(
-                environmentID: meta.environmentID, templateBaseImage: meta.baseImageID,
+                environmentID: meta.environmentID, templateBaseImage: executionImageID,
                 environmentBaseImage: expectedImageID
             )
         }
+        try await images.verifyCompatibleDiskBase(
+            executionImageID: executionImageID, diskBaseImageID: meta.baseImageID,
+            environmentID: meta.environmentID)
         let currentPin = try await environmentPin(environmentID: meta.environmentID)
         if let templateID = meta.templateID {
             guard let version = meta.templateVersion, let digest = meta.templateDigest else {

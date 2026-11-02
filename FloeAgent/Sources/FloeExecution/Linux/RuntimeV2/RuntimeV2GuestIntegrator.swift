@@ -854,16 +854,48 @@ public actor RuntimeV2GuestIntegrator: LinuxGuestRuntimeV2Integrating {
                 .appendingPathComponent(LinuxGuestRuntimeImagePreparer.writableDirectoryName, isDirectory: true)
                 .appendingPathComponent("disks", isDirectory: true)
                 .appendingPathComponent(environmentID, isDirectory: true)
+            var migrationBaseImageID = imageID
+            if let directory = legacyDiskDirectory,
+               fileManager.fileExists(atPath: directory.appendingPathComponent(
+                    LinuxGuestRuntimeImagePreparer.diskFileName).path),
+               let origin = LinuxGuestRuntimeImagePreparer.diskOrigin(atDiskDirectory: directory),
+               origin.imageID != imageID {
+                // First v2 use may coincide with a runner-component update.
+                // Preserve the legacy disk's verified base instead of diffing
+                // it against the replacement component's changed rootfs.
+                try await ensureImageMigrated(origin.imageID)
+                try await store.images.verifyCompatibleDiskBase(
+                    executionImageID: imageID, diskBaseImageID: origin.imageID,
+                    environmentID: environmentID)
+                guard let manifest = try await store.images.manifest(imageID: origin.imageID),
+                      let ref = manifest.artifacts["rootfs"] ?? manifest.artifacts["disk"],
+                      ref.sha512.lowercased() == origin.artifactSHA512.lowercased(),
+                      ref.bytes == origin.artifactBytes else {
+                    throw RuntimeV2Error.bootProvenanceMismatch(
+                        environmentID: environmentID, recorded: "legacy disk base \(origin.imageID)",
+                        current: "the legacy disk origin does not match its verified base")
+                }
+                migrationBaseImageID = origin.imageID
+            }
             _ = try await RuntimeV2EnvironmentMigrator(store: store).migrateLegacyEnvironment(
                 environmentID: environmentID,
                 kind: "linuxVM",
                 ownerID: nil,
                 name: nil,
-                baseImageID: imageID,
+                baseImageID: migrationBaseImageID,
                 legacyDiskDirectory: legacyDiskDirectory,
                 legacyLayerDirectory: legacyWritableDirectory
             )
         }
+        // Existing environments and immutable template pins keep their real
+        // disk base. The new component changes only the verified executable
+        // requirement; applying an old delta to its modified rootfs would be
+        // an illegal rebase, even when its predecessor was declared compatible.
+        let diskBaseImageID = try await store.registry.environment(id: environmentID)?.baseImageID ?? imageID
+        try await ensureImageMigrated(diskBaseImageID)
+        try await store.images.verifyCompatibleDiskBase(
+            executionImageID: imageID, diskBaseImageID: diskBaseImageID,
+            environmentID: environmentID)
         // Lease first: single writable ownership of the environment's delta.
         // In-process staleness is already proven by the caller: the registry
         // only reaches here when no session exists, no teardown is in flight
@@ -892,12 +924,20 @@ public actor RuntimeV2GuestIntegrator: LinuxGuestRuntimeV2Integrating {
         let diskURL = directory.appendingPathComponent("disk.img")
         let materializedCapacity: Int64
         do {
-            guard let manifest = try await store.images.manifest(imageID: imageID),
-                  let rootfsRef = manifest.artifacts["rootfs"] ?? manifest.artifacts["disk"],
-                  try await store.images.isImageVerified(imageID: imageID) else {
-                throw RuntimeV2Error.unverifiedImageReferenced(imageID)
+            guard let current = try await store.registry.environment(id: environmentID),
+                  current.baseImageID == diskBaseImageID else {
+                throw RuntimeV2Error.bootProvenanceMismatch(
+                    environmentID: environmentID,
+                    recorded: "disk base \(diskBaseImageID)",
+                    current: "the environment base changed while its start acquired ownership"
+                )
             }
-            let expanded = try await store.images.ensureExpanded(imageID: imageID)
+            guard let manifest = try await store.images.manifest(imageID: diskBaseImageID),
+                  let rootfsRef = manifest.artifacts["rootfs"] ?? manifest.artifacts["disk"],
+                  try await store.images.isImageVerified(imageID: diskBaseImageID) else {
+                throw RuntimeV2Error.unverifiedImageReferenced(diskBaseImageID)
+            }
+            let expanded = try await store.images.ensureExpanded(imageID: diskBaseImageID)
             let baseRootfs = expanded.appendingPathComponent(rootfsRef.expandedPath)
 
             // Resolve the exact boot base BEFORE any bytes are written. For a
@@ -906,7 +946,7 @@ public actor RuntimeV2GuestIntegrator: LinuxGuestRuntimeV2Integrating {
             // fails closed when the pin is unavailable — no boot happens on a
             // different base.
             let deltaBase = try await store.templates.deltaBase(
-                environmentID: environmentID, imageID: imageID,
+                environmentID: environmentID, imageID: diskBaseImageID,
                 baseRootfs: baseRootfs, baseRootfsSHA512: rootfsRef.sha512
             )
             if fileManager.fileExists(atPath: directory.path) {
@@ -921,11 +961,12 @@ public actor RuntimeV2GuestIntegrator: LinuxGuestRuntimeV2Integrating {
             try RuntimeV2WorkingDirectory.writeMeta(
                 RuntimeV2WorkingDirectory.Meta(
                     runtimeID: runtimeID, environmentID: environmentID,
-                    baseImageID: imageID, createdAt: Date(),
+                    baseImageID: diskBaseImageID, createdAt: Date(),
                     templateID: deltaBase.templatePin?.templateID,
                     templateVersion: deltaBase.templatePin?.version,
                     templateDigest: deltaBase.templatePin?.digest,
-                    bootBaseDiskDigest: deltaBase.digest
+                    bootBaseDiskDigest: deltaBase.digest,
+                    executionImageID: diskBaseImageID == imageID ? nil : imageID
                 ),
                 to: directory
             )
@@ -936,7 +977,7 @@ public actor RuntimeV2GuestIntegrator: LinuxGuestRuntimeV2Integrating {
                 // so an old delta can never land on different bytes.
                 let clone = try await store.templates.clonePinnedTemplateDisk(
                     environmentID: environmentID, runtimeID: runtimeID,
-                    imageID: imageID, into: diskURL, expecting: deltaBase
+                    imageID: diskBaseImageID, into: diskURL, expecting: deltaBase
                 )
                 guard clone != nil else {
                     throw RuntimeV2Error.templatePinUnavailable(
