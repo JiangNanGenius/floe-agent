@@ -2479,7 +2479,8 @@ final class CADAdvancedPatternTests: XCTestCase {
             .circle(id: circle, center: .zero, radius: 10)])
         let curve = path(sketch, [line, arc])
         let placements = try curve.transforms(count: 3, spacing: 0, rotate: true, sketch: { $0 == sketch.id ? sketch : nil })
-        let midAngle = -.pi / 2 + ((10 + 5 * .pi) / 2 - 10) / 10
+        let totalLength: Double = 10 + 5 * Double.pi
+        let midAngle: Double = -Double.pi / 2 + (totalLength / 2 - 10) / 10
         assertPoint(placements[1].applying(to: .zero), SIMD3(10 + 10 * cos(midAngle), 0, -(10 + 10 * sin(midAngle))))
         assertPoint(placements[2].applying(to: .zero), SIMD3(20, 0, -10))
         assertPoint(placements[2].rotation.act(SIMD3(1, 0, 0)), SIMD3(0, 0, -1))
