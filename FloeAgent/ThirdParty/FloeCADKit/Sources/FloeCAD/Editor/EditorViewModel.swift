@@ -20053,6 +20053,9 @@ final class EditorViewModel {
         case .ellipse: return FloeCADStrings.text("cad.datum.entity.ellipse", "Ellipse")
         case .polygon: return FloeCADStrings.text("cad.datum.entity.polygon", "Polygon")
         case .spline: return FloeCADStrings.text("cad.datum.entity.spline", "Spline")
+        case let .exactCurve(_, definition):
+            return FloeCADStrings.text("cad.sketch.curve.kind." + definition.sourceKind.rawValue,
+                                       definition.sourceKind.rawValue.capitalized)
         }
     }
 
