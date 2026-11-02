@@ -435,7 +435,8 @@ final class CADMeshOperationFlowUITests: XCTestCase {
                 }
             }
             if panelOutcome.exists || app.descendants(matching: .any).matching(identifier: "CADMeshIntegrityWarning").firstMatch.exists {
-                fail("a cancelled operation published a late outcome: \(panelOutcome.label)")
+                let message = panelOutcome.exists ? panelOutcome.label : "remaining mesh issues warning"
+                fail("a cancelled operation published a late outcome: \(message)")
                 return false
             }
             RunLoop.current.run(until: Date().addingTimeInterval(0.25))

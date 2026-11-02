@@ -33,12 +33,14 @@ final class CADPreviewBindingTests: XCTestCase {
         if let workDir { try? FileManager.default.removeItem(at: workDir) }
     }
 
+    @MainActor
     private func makeDocument(_ name: String) async throws -> FloeCADDocument {
         try await FloeCADDocument.create(at: workDir.appendingPathComponent("\(name).floecad"),
                                          name: name)
     }
 
     @discardableResult
+    @MainActor
     private func addCube(_ document: FloeCADDocument, name: String,
                          offsetX: Double = 0) -> Body {
         var transform = Transform3D.identity
@@ -52,6 +54,7 @@ final class CADPreviewBindingTests: XCTestCase {
 
     // MARK: - Mesh preview
 
+    @MainActor
     func testMeshCombinePreviewIsTransientAndBindsApply() async throws {
         let document = try await makeDocument("CombinePreview")
         let service = CADMeshService(document: document)
@@ -110,6 +113,7 @@ final class CADPreviewBindingTests: XCTestCase {
                        "the combined inputs are consumed into one body")
     }
 
+    @MainActor
     func testMeshRepairPreviewReturnsGeometryWithoutMutation() async throws {
         let document = try await makeDocument("RepairPreview")
         let service = CADMeshService(document: document)
@@ -132,6 +136,7 @@ final class CADPreviewBindingTests: XCTestCase {
 
     // MARK: - Script preview
 
+    @MainActor
     func testScriptPreviewReturnsTransientMeshAndBindsApply() async throws {
         let document = try await makeDocument("ScriptPreview")
         let service = CADScriptService(document: document)
@@ -185,6 +190,7 @@ final class CADPreviewBindingTests: XCTestCase {
 
     // MARK: - Panel defaults (CUA regressions)
 
+    @MainActor
     func testScriptPanelDefaultSourceEvaluatesToRealGeometry() {
         // The old default `# cube { size 10 }` failed with "Unexpected token #".
         let outcome = ShapeScriptKit.evaluate(source: CADScriptPanelView.defaultSource)
@@ -196,6 +202,7 @@ final class CADPreviewBindingTests: XCTestCase {
                           "the default source must not start with a comment character")
     }
 
+    @MainActor
     func testDrawingPageEditorDefaultsUseValidScaleForNewPages() {
         XCTAssertEqual(CADDrawingPageEditorDefaults.scale(page: nil), "1",
                        "a new page must start at a valid scale of 1, not 0")
@@ -208,6 +215,7 @@ final class CADPreviewBindingTests: XCTestCase {
 
     // MARK: - String formatting
 
+    @MainActor
     func testFormatTemplateHandlesTypedPlaceholders() {
         XCTAssertEqual(
             FloeCADStrings.formatTemplate("PDF export ready (%lld bytes).", arguments: [1234]),
@@ -238,6 +246,7 @@ final class CADPreviewBindingTests: XCTestCase {
             "%lld bytes left")
     }
 
+    @MainActor
     func testFormatUsesHostLocalizerWithTypedCatalogValues() {
         let original = FloeCADStrings.localizer
         defer { FloeCADStrings.localizer = original }

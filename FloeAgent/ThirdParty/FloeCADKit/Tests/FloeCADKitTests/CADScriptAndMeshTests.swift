@@ -36,12 +36,14 @@ final class CADScriptAndMeshTests: XCTestCase {
 
     // MARK: Helpers
 
+    @MainActor
     private func makeDocument(_ name: String) async throws -> FloeCADDocument {
         let url = workDir.appendingPathComponent("\(name).floecad")
         return try await FloeCADDocument.create(at: url, name: name)
     }
 
     @discardableResult
+    @MainActor
     private func addMeshBody(_ document: FloeCADDocument,
                              name: String,
                              mesh: Euclid.Mesh,
@@ -56,6 +58,7 @@ final class CADScriptAndMeshTests: XCTestCase {
     }
 
     @discardableResult
+    @MainActor
     private func addRenderBody(_ document: FloeCADDocument,
                                name: String,
                                render: RenderMesh) -> Body {
@@ -71,6 +74,7 @@ final class CADScriptAndMeshTests: XCTestCase {
 
     // MARK: 1. Valid source
 
+    @MainActor
     func testShapeScriptKitValidSourceProducesMesh() {
         let outcome = ShapeScriptKit.evaluate(source: "cube { size 10 }")
         XCTAssertNil(outcome.errorCode, outcome.errorMessage ?? "")
@@ -88,6 +92,7 @@ final class CADScriptAndMeshTests: XCTestCase {
 
     // MARK: 2. Parse / runtime errors
 
+    @MainActor
     func testShapeScriptErrorsAreReportedNotCrash() {
         let parse = ShapeScriptKit.evaluate(source: "cube {\n  size 10\n")
         XCTAssertEqual(parse.errorCode, "parse_error", parse.errorMessage ?? "")
@@ -102,6 +107,7 @@ final class CADScriptAndMeshTests: XCTestCase {
 
     // MARK: 3. Imports are refused (no file read)
 
+    @MainActor
     func testShapeScriptImportIsRefusedWithoutReadingFiles() throws {
         // A REAL, readable ShapeScript file exists at this path. If the bridge
         // read it, the scene would contain its cube; the refusal must win.
@@ -117,6 +123,7 @@ final class CADScriptAndMeshTests: XCTestCase {
 
     // MARK: 4. Limits
 
+    @MainActor
     func testShapeScriptLimits() {
         var byteLimits = ShapeScriptLimits()
         byteLimits.maxSourceBytes = 64
@@ -142,6 +149,7 @@ final class CADScriptAndMeshTests: XCTestCase {
 
     // MARK: 5. Script service preview/apply/undo/persistence
 
+    @MainActor
     func testScriptServicePreviewApplyUndoAndPersistence() async throws {
         let document = try await makeDocument("Scripts")
         let service = CADScriptService(document: document)
@@ -237,6 +245,7 @@ final class CADScriptAndMeshTests: XCTestCase {
     /// after ANY committed document change (here an unrelated import + save,
     /// with the script output body itself untouched), an automatic re-apply
     /// is refused until the caller explicitly chooses fork or rebuild.
+    @MainActor
     func testScriptApplyEnforcesRecordedDocumentRevision() async throws {
         let document = try await makeDocument("ScriptRevision")
         let service = CADScriptService(document: document)
@@ -280,6 +289,7 @@ final class CADScriptAndMeshTests: XCTestCase {
 
     // MARK: 6. Boolean volumes
 
+    @MainActor
     func testMeshBooleanUnionSubtractAndEmptyRefusal() async throws {
         let document = try await makeDocument("Booleans")
         let service = CADMeshService(document: document)
@@ -332,6 +342,7 @@ final class CADScriptAndMeshTests: XCTestCase {
 
     // MARK: 7. B-rep exactness guard
 
+    @MainActor
     func testMeshOpsRefuseAnalyticBRepUnlessForced() async throws {
         let document = try await makeDocument("Exactness")
         let service = CADMeshService(document: document)
@@ -386,16 +397,19 @@ final class CADScriptAndMeshTests: XCTestCase {
 
     // MARK: 8. Repair / simplify / normals / boundary
 
+    @MainActor
     private func integrityCube() -> RenderMesh {
         EuclidBridge.renderMesh(from: .cube(center: Vector(0, 0, 0), size: Vector(2, 2, 2)))
     }
 
+    @MainActor
     private func integrityCrossing() -> RenderMesh {
         RenderMesh(positions: [[-1, 0, 0], [1, 0, 0], [0, 1, 0],
                                [0, 0.2, -1], [0, 0.2, 1], [0, -0.5, 0]],
                    normals: Array(repeating: [0, 0, 1], count: 6), indices: [0, 1, 2, 3, 4, 5])
     }
 
+    @MainActor
     func testMeshIntegrityDistinguishesOpenEdgesWindingAndNonManifold() throws {
         let cube = integrityCube()
         let healthy = try XCTUnwrap(CADMeshIntegrity.inspect(cube, shouldStop: { false }))
@@ -419,6 +433,7 @@ final class CADScriptAndMeshTests: XCTestCase {
         XCTAssertGreaterThan(bad.selfIntersectionPairs, 0, "A duplicate facet is overlapping geometry")
     }
 
+    @MainActor
     func testMeshSelfIntersectionKeepsSharedBoundariesAndFindsActualOverlap() throws {
         let a = (SIMD3<Double>(0, 0, 0), SIMD3<Double>(2, 0, 0), SIMD3<Double>(0, 2, 0))
         let adjacent = (a.1, SIMD3<Double>(2, 2, 0), a.2)
@@ -436,6 +451,7 @@ final class CADScriptAndMeshTests: XCTestCase {
         XCTAssertEqual(crossing.witnesses, [[0, 1]])
     }
 
+    @MainActor
     func testUnavailableTargetedRepairPreservesGeometryUndoAndRedo() async throws {
         let base = integrityCube()
         var open = base; open.indices.removeLast(6)
@@ -465,6 +481,7 @@ final class CADScriptAndMeshTests: XCTestCase {
         }
     }
 
+    @MainActor
     func testCleanupReportsRemainingDefectsInPreviewApplyUndoAndReopen() async throws {
         let document = try await makeDocument("IncompleteCleanup")
         let positions: [SIMD3<Float>] = [[0,0,0], [1,0,0], [0,1,0], [0,0,0], [1,0,0], [2,0,0]]
@@ -502,6 +519,7 @@ final class CADScriptAndMeshTests: XCTestCase {
         XCTAssertEqual(reopened.session.document.body(with: body.id)?.render, cleaned)
     }
 
+    @MainActor
     func testAbsentRequestedDefectDoesNotApplyUnrelatedCleanup() async throws {
         let document = try await makeDocument("NoUnrelatedCleanup"); defer { document.close() }
         let source = integrityCrossing()
@@ -518,6 +536,7 @@ final class CADScriptAndMeshTests: XCTestCase {
         XCTAssertEqual(document.session.changeCount, count)
     }
 
+    @MainActor
     func testInterruptedMeshInspectionDoesNotPublishZeroDefects() {
         var checkpoints = 0
         let result = CADMeshIntegrity.inspect(integrityCube(), shouldStop: {
@@ -528,6 +547,7 @@ final class CADScriptAndMeshTests: XCTestCase {
         XCTAssertGreaterThan(checkpoints, 5)
     }
 
+    @MainActor
     func testMeshIntegrityClassificationSurvivesScaleAndTranslation() throws {
         for scale: Float in [0.001, 1, 1000] {
             var cube = integrityCube(), crossing = integrityCrossing()
@@ -539,6 +559,7 @@ final class CADScriptAndMeshTests: XCTestCase {
         }
     }
 
+    @MainActor
     func testInwardCavityIsAmbiguousRatherThanMislabelledReversedOuterShell() throws {
         var outer = integrityCube(), inner = integrityCube()
         inner.positions = inner.positions.map { $0 * 0.5 }
@@ -553,6 +574,7 @@ final class CADScriptAndMeshTests: XCTestCase {
         XCTAssertTrue(report.ambiguousShellOrientation)
     }
 
+    @MainActor
     func testMeshRepairSimplifyNormalsAndBoundary() async throws {
         let document = try await makeDocument("MeshQuality")
         let service = CADMeshService(document: document)
@@ -624,6 +646,7 @@ final class CADScriptAndMeshTests: XCTestCase {
 
     // MARK: 9. Combine / transform / material / image / text
 
+    @MainActor
     func testMeshCombineTransformMaterialAndUnavailableOps() async throws {
         let document = try await makeDocument("Combine")
         let service = CADMeshService(document: document)
