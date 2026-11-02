@@ -131,6 +131,7 @@ nonisolated enum SketchPatternKit {
     /// creation and regeneration go through this, keeping `instanceIDs` and the
     /// transform list index-aligned.
     private static func instanceTransforms(_ spec: PatternSpec) -> [SketchPatternTransform] {
+        guard spec.featureSeed == nil, spec.curvePath == nil else { return [] }
         let all: [SketchPatternTransform]
         switch spec.kind {
         case .linear:
@@ -141,6 +142,7 @@ nonisolated enum SketchPatternKit {
             all = PatternKit.circularSketchTransforms(
                 center: .zero, count: spec.count,
                 totalAngle: spec.totalAngle, rotateInstances: spec.rotateInstances)
+        case .curve: return [] // Body paths resolve through the document, never a 2D link.
         }
         return Array(all.dropFirst())
     }

@@ -492,18 +492,18 @@ nonisolated enum AgentExec {
             let kindName = a["kind"] as? String ?? "circular"
             guard let kind = PatternSpec.Kind(rawValue: kindName) else {
                 return .failure(.init(code: "unknown_pattern_kind",
-                                      message: "\"kind\" must be linear or circular, not '\(kindName)'."))
+                                      message: "\"kind\" must be linear, circular or curve, not '\(kindName)'."))
             }
-            let count = a["count"] as? Int ?? 0
-            guard count >= 1 else {
+            guard let rawCount = try optionalDouble(a, "count"), rawCount.isFinite,
+                  (1...10_000).contains(rawCount), let count = Int(exactly: rawCount) else {
                 return .failure(.init(code: "bad_count",
-                                      message: "\"count\" is the TOTAL number of instances including the original, so it must be >= 1."))
+                    message: "count must be a whole number in 1…10000, including the original."))
             }
             let axis = try vector3(a, "axis", default: SIMD3(0, 1, 0))
             guard simd_length(axis) > 1e-9 else {
                 return .failure(.init(code: "degenerate_axis", message: "\"axis\" must be non-zero."))
             }
-            let spec = PatternSpec(
+            var spec = PatternSpec(
                 kind: kind,
                 axis: simd_normalize(axis),
                 center: try vector3(a, "center", default: .zero),
@@ -511,8 +511,22 @@ nonisolated enum AgentExec {
                 spacing: try optionalDouble(a, "spacing") ?? 0,
                 totalAngle: (try angleDegrees(a, "totalAngleDegrees", default: 360)) * .pi / 180,
                 rotateInstances: a["rotateInstances"] as? Bool ?? true)
+            if let raw = a["path"] {
+                guard JSONSerialization.isValidJSONObject(raw) else {
+                    throw AgentExecError(code: "bad_path", message: "path needs version:1 and ordered sketch/entity segments.")
+                }
+                spec.curvePath = try JSONDecoder().decode(CurvePatternPathDefinition.self,
+                    from: JSONSerialization.data(withJSONObject: raw))
+            }
+            if a["seedFeatureID"] != nil {
+                spec.featureSeed = PatternFeatureSeed(featureID: FeatureID(raw: try uuid(a, "seedFeatureID")))
+            }
+            if a["axisID"] != nil {
+                spec.axisRef = ConstructionAxisRef(ConstructionAxisID(raw: try uuid(a, "axisID")))
+            }
+            try spec.validate()
             return .success(.pattern(body: body, spec: spec))
-        } catch let e as AgentExecError { return .failure(e) } catch { return .failure(unexpected) }
+        } catch let e as AgentExecError { return .failure(e) } catch { return .failure(.init(code: "invalid_pattern", message: error.localizedDescription)) }
     }
 
     private static func parseSplit(_ a: [String: Any]) -> Result<AgentExecOp, AgentExecError> {

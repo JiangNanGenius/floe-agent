@@ -135,6 +135,9 @@ nonisolated struct AssociativeDependencyGraph: Sendable {
                 versionsByReference[.feature(node.id)] = version
                 edges[.feature(node.id), default: []].insert(.feature(version.writer))
             }
+            if case let .pattern(_, spec) = node.kind, let seed = spec.featureSeed {
+                edges[.feature(node.id), default: []].insert(.feature(seed.featureID))
+            }
         }
         for sketch in sketches {
             sketchIDs.insert(sketch.id)

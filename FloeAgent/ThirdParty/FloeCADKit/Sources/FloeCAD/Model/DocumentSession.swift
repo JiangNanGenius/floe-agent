@@ -1333,10 +1333,12 @@ final class DocumentSession {
     /// node exists and is a `.pattern`.
     func editPatternFeature(_ id: FeatureID, spec: PatternSpec) {
         guard let node = document.features.node(id),
-              case let .pattern(bodyRef, _) = node.kind else { return }
+              case let .pattern(bodyRef, oldSpec) = node.kind else { return }
 
-        let desiredCopies = max(0, spec.count - 1)
+        let desiredCopies = spec.featureSeed == nil ? max(0, spec.count - 1) : 1
         var afterOutputs = node.outputBodyIDs
+        if oldSpec.featureSeed != nil, spec.featureSeed == nil { afterOutputs = [] }
+        if spec.featureSeed != nil { afterOutputs = [bodyRef.bodyID] }
         if afterOutputs.count > desiredCopies {
             afterOutputs = Array(afterOutputs.prefix(desiredCopies))
         } else {

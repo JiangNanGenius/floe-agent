@@ -280,7 +280,7 @@ struct NumericInputBar: View {
                 )
             }
 
-            if state.kind == .linear {
+            if state.kind == .linear || state.curvePath != nil {
                 HStack(spacing: 6) {
                     Text(FloeCADStrings.label("cad.ui.common.spacing", "Spacing"))
                         .font(.caption)
@@ -289,6 +289,13 @@ struct NumericInputBar: View {
                     // Bind the RAW millimetres: `.length` does the display-unit
                     // conversion itself, so wrapping in `unit.binding` here
                     // would convert twice.
+                    if state.curvePath != nil {
+                        Toggle(FloeCADStrings.label("cad.pattern.fitPath", "Fit path"), isOn: Binding(
+                            get: { viewModel.patternState?.spacing == 0 },
+                            set: { viewModel.patternState?.spacing = $0 ? 0 : 6 }
+                        ))
+                        .toggleStyle(.button)
+                    }
                     ExpressionValueField(
                         placeholder: FloeCADStrings.text("cad.ui.common.spacing", "Spacing"),
                         value: Binding(
@@ -300,6 +307,7 @@ struct NumericInputBar: View {
                         width: 80,
                         identifier: "PatternSpacing"
                     )
+                    .disabled(state.curvePath != nil && state.spacing == 0)
                 }
             } else {
                 HStack(spacing: 6) {
@@ -340,6 +348,41 @@ struct NumericInputBar: View {
     /// the bar's own row at compact width.
     @ViewBuilder
     private func patternPickers(_ axisChoices: [EditorViewModel.PatternState.Axis]) -> some View {
+        if viewModel.patternState?.isSketchPattern == false {
+            Menu {
+                Button(FloeCADStrings.label("cad.pattern.bodies", "Bodies")) {
+                    viewModel.patternState?.featureSeed = nil
+                }
+                ForEach(viewModel.patternSeedChoices) { seed in
+                    Button(seed.name) {
+                        viewModel.patternState?.featureSeed = PatternFeatureSeed(featureID: seed.id)
+                    }
+                }
+            } label: {
+                Label(viewModel.patternSeedChoices.first { $0.id == viewModel.patternState?.featureSeed?.featureID }?.name
+                    ?? FloeCADStrings.text("cad.pattern.bodies", "Bodies"), systemImage: "square.on.square")
+                    .lineLimit(1)
+            }
+            .accessibilityIdentifier("PatternSeedMenu")
+            Menu {
+                Button(FloeCADStrings.label("cad.pattern.noPath", "No path")) { viewModel.selectPatternPath(nil) }
+                ForEach(viewModel.patternPathChoices) { path in
+                    Button(path.name) { viewModel.selectPatternPath(path.path) }
+                }
+                if viewModel.patternState?.curvePath != nil {
+                    Toggle(FloeCADStrings.label("cad.pattern.followPath", "Follow path"), isOn: Binding(
+                        get: { viewModel.patternState?.rotateInstances ?? true },
+                        set: { viewModel.patternState?.rotateInstances = $0 }
+                    ))
+                }
+            } label: {
+                Label(viewModel.patternPathChoices.first { $0.path == viewModel.patternState?.curvePath }?.name
+                    ?? FloeCADStrings.text("cad.pattern.path", "Along path"), systemImage: "point.topleft.down.to.point.bottomright.curvepath")
+                    .lineLimit(1)
+            }
+            .accessibilityIdentifier("PatternPathMenu")
+        }
+        if viewModel.patternState?.curvePath == nil {
         Picker("Type", selection: Binding(
             get: { viewModel.patternState?.kind ?? .linear },
             set: { viewModel.patternState?.kind = $0 }
@@ -383,6 +426,7 @@ struct NumericInputBar: View {
             }
             .pickerStyle(.segmented)
             .fixedSize()
+        }
         }
     }
 

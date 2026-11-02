@@ -301,8 +301,9 @@ nonisolated enum ProjectMergeKit {
                     case .primitive, .mirror:
                         local.subtract(node.outputBodyIDs)
                         if case let .mirror(body, _, false) = node.kind { local.remove(body.bodyID) }
-                    case let .pattern(body, _):
-                        if local.contains(body.bodyID) { local.formUnion(node.outputBodyIDs) }
+                    case let .pattern(body, spec):
+                        if spec.featureSeed != nil { local.remove(body.bodyID); local.subtract(node.outputBodyIDs) }
+                        else if local.contains(body.bodyID) { local.formUnion(node.outputBodyIDs) }
                         else { local.subtract(node.outputBodyIDs) }
                     case let .extrude(_, _, _, _, boolean, _, _), let .draftExtrude(_, _, _, _, _, boolean),
                          let .revolve(_, _, _, _, boolean), let .sweep(_, _, _, boolean, _, _), let .loft(_, boolean):
@@ -654,6 +655,8 @@ nonisolated enum ProjectMergeKit {
             case let .operationFace(version, operation, parents, neighbors):
                 source = .operationFace(version: version, operation: newFeature(operation),
                                         parents: parents.map(remap), neighbors: neighbors.map(remap))
+            case let .patternInstance(version, pattern, index, sourceName):
+                source = .patternInstance(version: version, pattern: newFeature(pattern), index: index, source: remap(sourceName))
             case .primitiveFace, .profileCap, .kernelFace, .immutableSourceFace, .holeFace(_):
                 source = name.source
             }
@@ -788,6 +791,12 @@ nonisolated enum ProjectMergeKit {
                 if let ref = translated.axisRef {
                     translated.axisRef = ConstructionAxisRef(newAxis(ref.axisID))
                 }
+                translated.curvePath = spec.curvePath.map { definition in
+                    CurvePatternPathDefinition(segments: definition.segments.map {
+                        .init(sketchID: newSketch($0.sketchID), entityID: newEntity($0.entityID), reversed: $0.reversed)
+                    })
+                }
+                translated.featureSeed = spec.featureSeed.map { PatternFeatureSeed(featureID: newFeature($0.featureID)) }
                 return .pattern(body: remap(body), spec: translated)
             case let .pushPull(face, distance, mode):
                 return .pushPull(face: remap(face, translation: t),

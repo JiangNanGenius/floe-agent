@@ -69,6 +69,7 @@ nonisolated enum CADDocumentFormat {
     /// sketches retain their existing association floor.
     static let externalSketchProjectionVersion = 7
     static let operationPlaneReferenceVersion = 7
+    static let advancedPatternVersion = 7
     /// Coordinated package floor for a document that actually stores
     /// user-named versions. Ordinary documents keep their existing schema
     /// floor; only a package that gains a checkpoint is raised to this floor.
@@ -149,6 +150,9 @@ nonisolated enum CADDocumentFormat {
 
     static func requiredFormat(document: DesignDocument) -> Int {
         var required = legacyVersion
+        if document.features.nodes.contains(where: {
+            if case let .pattern(_, spec) = $0.kind { return spec.kind == .curve || spec.featureSeed != nil }; return false
+        }) { required = max(required, advancedPatternVersion) }
         if document.features.nodes.contains(where: { $0.kind.operationPlaneReference != nil }) {
             required = max(required, operationPlaneReferenceVersion)
         }
@@ -258,6 +262,12 @@ nonisolated enum CADDocumentFormat {
             reference.faceNames.map { [$0.faceA, $0.faceB] } ?? []
         }
         for node in document.features.nodes {
+            if case let .pattern(body, spec) = node.kind {
+                try spec.validate()
+                if spec.featureSeed != nil, node.outputBodyIDs != [body.bodyID] {
+                    throw CADDocumentFormatError.malformedAssociation("feature-pattern-output")
+                }
+            }
             let refs: [FaceRef]
             switch node.kind {
             case let .thread(_, spec):
@@ -311,9 +321,10 @@ nonisolated enum CADDocumentFormat {
                 present = present || child.present; opaque = opaque || child.opaque
             }
             if fields["creator"] != nil, let source = fields["source"] as? [String: Any] {
-                for key in ["operationFace", "immutableSourceFace"] {
+                for key in ["operationFace", "immutableSourceFace", "patternInstance"] {
                 guard let raw = source[key] else { continue }
-                let label = key == "operationFace" ? "operation-face-identity" : "source-face-identity"
+                let label = key == "operationFace" ? "operation-face-identity"
+                    : key == "patternInstance" ? "pattern-instance-identity" : "source-face-identity"
                 present = true
                 guard let payload = raw as? [String: Any], let value = payload["version"],
                       let version = jsonIntegerValue(value) else {
@@ -937,6 +948,30 @@ nonisolated enum CADDocumentFormat {
             // for the M08 consumer identity BEFORE the hole contract below.
             guard let object = try? JSONSerialization.jsonObject(with: row.kind) as? [String: Any] else {
                 continue
+            }
+            if let pattern = object["pattern"] as? [String: Any], let spec = pattern["spec"] as? [String: Any] {
+                for key in ["curvePath", "featureSeed"] {
+                    guard let raw = spec[key], !(raw is NSNull) else { continue }
+                    result.requiredVersion = max(result.requiredVersion, advancedPatternVersion)
+                    guard let value = raw as? [String: Any], let rawVersion = value["version"],
+                          let version = jsonIntegerValue(rawVersion), version > 0 else {
+                        throw CADDocumentFormatError.malformedAssociation("pattern-\(key)")
+                    }
+                    if version > 1 { result.opaqueFeatures.insert(row.featureID) }
+                }
+                if spec["kind"] as? String == "curve" {
+                    result.requiredVersion = max(result.requiredVersion, advancedPatternVersion)
+                    guard spec["curvePath"] != nil, !(spec["curvePath"] is NSNull) else {
+                        throw CADDocumentFormatError.malformedAssociation("pattern-path")
+                    }
+                }
+                if !result.opaqueFeatures.contains(row.featureID),
+                   (spec["curvePath"] != nil || spec["featureSeed"] != nil) {
+                    do {
+                        let value = try JSONDecoder().decode(PatternSpec.self, from: JSONSerialization.data(withJSONObject: spec))
+                        try value.validate()
+                    } catch { throw CADDocumentFormatError.malformedAssociation("pattern-definition") }
+                }
             }
             if let split = object["split"] as? [String: Any] {
                 result.requiredVersion = max(result.requiredVersion, operationPlaneReferenceVersion)

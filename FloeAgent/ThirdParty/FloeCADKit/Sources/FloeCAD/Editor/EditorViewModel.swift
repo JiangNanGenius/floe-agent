@@ -1836,7 +1836,7 @@ final class EditorViewModel {
     /// body or sketch entity beyond the original. A pattern bar at quantity 1
     /// draws nothing extra and is safe.
     private func patternPreviewDrawsAdditionalGeometry(_ state: PatternState) -> Bool {
-        guard max(1, state.count) > 1 else { return false }
+        guard max(1, state.count) > 1, state.featureSeed == nil else { return false }
         if let bodyID = state.bodyID {
             return session.document.body(with: bodyID) != nil
         }
@@ -2409,7 +2409,7 @@ final class EditorViewModel {
         // Pattern ghost preview (plan §B5): translucent body instances, or
         // accent-blue entity copies for sketch-profile patterns.
         if case .patterning = mode, let state = patternState {
-            if let bodyID = state.bodyID,
+            if let bodyID = state.bodyID, state.featureSeed == nil,
                let body = session.document.body(with: bodyID) {
                 for transform in patternTransforms(state).dropFirst() {
                     scene.bodies.append(BodyDrawable(
@@ -6845,6 +6845,9 @@ final class EditorViewModel {
         /// POSITION — so the pattern can spin about something other than the
         /// world origin, which is all v1 could do.
         var constructionAxisID: ConstructionAxisID?
+        var curvePath: CurvePatternPathDefinition?
+        var featureSeed: PatternFeatureSeed?
+        var rotateInstances = true
 
         enum Axis: String, CaseIterable {
             case x = "X"
@@ -6887,10 +6890,66 @@ final class EditorViewModel {
         didSet { fitCameraToPatternGhosts() }
     }
 
+    struct PatternSeedChoice: Identifiable {
+        var id: FeatureID
+        var name: String
+    }
+
+    var patternSeedChoices: [PatternSeedChoice] {
+        guard let target = patternState?.bodyID,
+              session.document.body(with: target)?.brep != nil else { return [] }
+        return session.document.features.nodes.prefix(session.document.features.rollbackIndex
+            ?? session.document.features.nodes.count).compactMap { node in
+            guard !node.suppressed, session.lastEvalErrors[node.id] == nil else { return nil }
+            let intent: BooleanIntent?
+            switch node.kind {
+            case let .hole(body, _, _, _):
+                return body.bodyID == target ? PatternSeedChoice(id: node.id, name: node.name) : nil
+            case let .extrude(_, _, _, _, value, _, _), let .draftExtrude(_, _, _, _, _, value),
+                 let .revolve(_, _, _, _, value), let .sweep(_, _, _, value, _, _), let .loft(_, value):
+                intent = value
+            default: intent = nil
+            }
+            guard let intent, intent.op == .union || intent.op == .subtract,
+                  intent.resolvedTargets.first?.bodyID == target else { return nil }
+            return PatternSeedChoice(id: node.id, name: node.name)
+        }
+    }
+
+    struct PatternPathChoice: Identifiable {
+        var id: UUID
+        var name: String
+        var path: CurvePatternPathDefinition
+    }
+
+    var patternPathChoices: [PatternPathChoice] {
+        guard patternState?.bodyID != nil else { return [] }
+        return session.document.sketches.flatMap { sketch in
+            sketch.entities.enumerated().compactMap { index, entity in
+                let label: String
+                switch entity {
+                case .line: label = FloeCADStrings.text("cad.pattern.line", "Line")
+                case .arc: label = FloeCADStrings.text("cad.pattern.arc", "Arc")
+                case .circle: label = FloeCADStrings.text("cad.pattern.circle", "Circle")
+                default: return nil
+                }
+                return PatternPathChoice(id: entity.id, name: "\(sketch.name) · \(label) \(index + 1)",
+                    path: CurvePatternPathDefinition(segments: [.init(sketchID: sketch.id, entityID: entity.id)]))
+            }
+        }
+    }
+
+    func selectPatternPath(_ path: CurvePatternPathDefinition?) {
+        guard var state = patternState, !state.isSketchPattern else { return }
+        state.curvePath = path
+        if path != nil { state.spacing = 0; state.constructionAxisID = nil }
+        patternState = state
+    }
+
     /// Keep every ghost instance in frame while the pattern bar is up —
     /// param changes can push instances far outside the current view.
     private func fitCameraToPatternGhosts() {
-        guard case .patterning = mode, let state = patternState,
+        guard case .patterning = mode, let state = patternState, state.featureSeed == nil,
               let bodyID = state.bodyID,
               let body = session.document.body(with: bodyID)
         else { return }
@@ -6985,6 +7044,12 @@ final class EditorViewModel {
     /// 3D instance transforms for the current parameters; the first is always
     /// identity (the original).
     private func patternTransforms(_ state: PatternState) -> [Transform3D] {
+        if let path = state.curvePath {
+            return (try? path.transforms(count: state.count, spacing: state.spacing,
+                rotate: state.rotateInstances, sketch: { id in
+                    session.document.sketches.first { $0.id == id }
+                })) ?? []
+        }
         let line = patternAxisLine(state)
         switch state.kind {
         case .linear:
@@ -7055,6 +7120,21 @@ final class EditorViewModel {
               let body = session.document.body(with: bodyID)
         else {
             cancelPattern()
+            return
+        }
+        if body.brep != nil || state.curvePath != nil || state.featureSeed != nil {
+            let response = CADCommandExecutor(viewModel: self).run(.pattern(body: bodyID, spec: patternSpec(from: state)))
+            guard response.status == 200, let feature = session.document.features.nodes.last,
+                  case .pattern = feature.kind else {
+                let payload = (try? JSONSerialization.jsonObject(with: response.body)) as? [String: Any]
+                errorMessage = payload?["message"] as? String
+                    ?? FloeCADStrings.text("cad.pattern.failed", "The pattern could not be applied. Adjust its source or placement.")
+                return
+            }
+            patternState = nil
+            selection = Set([bodyID] + feature.outputBodyIDs)
+            mode = .idle
+            session.save()
             return
         }
         var document = session.document // local: unique names + revisions
@@ -19379,14 +19459,15 @@ final class EditorViewModel {
         // last resolved display cache — and the only line for a world axis.
         let line = patternAxisLine(state)
         return PatternSpec(
-            kind: state.kind == .linear ? .linear : .circular,
+            kind: state.curvePath != nil ? .curve : state.kind == .linear ? .linear : .circular,
             axis: line.direction,
             center: line.center,
             count: state.count,
             spacing: state.spacing,
             totalAngle: state.totalAngle * .pi / 180,
-            rotateInstances: true,
-            axisRef: state.constructionAxisID.map { ConstructionAxisRef($0) }
+            rotateInstances: state.rotateInstances,
+            axisRef: state.curvePath == nil ? state.constructionAxisID.map { ConstructionAxisRef($0) } : nil,
+            curvePath: state.curvePath, featureSeed: state.featureSeed
         )
     }
 

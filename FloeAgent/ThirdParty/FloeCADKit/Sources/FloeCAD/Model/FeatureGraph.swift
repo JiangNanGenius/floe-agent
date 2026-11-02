@@ -34,7 +34,7 @@ import Euclid
 /// copies; `axis` is the linear direction or the circular rotation axis (world);
 /// `totalAngle` is the circular first→last sweep in RADIANS.
 nonisolated struct PatternSpec: Codable, Hashable, Sendable {
-    enum Kind: String, Codable, Hashable, Sendable { case linear, circular }
+    enum Kind: String, Codable, Hashable, Sendable { case linear, circular, curve }
     var kind: Kind
     var axis: SIMD3<Double>       // linear: direction; circular: rotation axis (world)
     /// Circular only: a point ON the rotation axis. Was implicitly the world
@@ -53,6 +53,8 @@ nonisolated struct PatternSpec: Codable, Hashable, Sendable {
     /// keeps. Nil keeps every document written before this field byte-
     /// identical and keeps spinning about the stored absolute line.
     var axisRef: ConstructionAxisRef?
+    var curvePath: CurvePatternPathDefinition?
+    var featureSeed: PatternFeatureSeed?
 
     init(
         kind: Kind = .linear,
@@ -62,7 +64,9 @@ nonisolated struct PatternSpec: Codable, Hashable, Sendable {
         spacing: Double = 0,
         totalAngle: Double = 2 * .pi,
         rotateInstances: Bool = true,
-        axisRef: ConstructionAxisRef? = nil
+        axisRef: ConstructionAxisRef? = nil,
+        curvePath: CurvePatternPathDefinition? = nil,
+        featureSeed: PatternFeatureSeed? = nil
     ) {
         self.kind = kind
         self.axis = axis
@@ -72,10 +76,12 @@ nonisolated struct PatternSpec: Codable, Hashable, Sendable {
         self.totalAngle = totalAngle
         self.rotateInstances = rotateInstances
         self.axisRef = axisRef
+        self.curvePath = curvePath
+        self.featureSeed = featureSeed
     }
 
     private enum CodingKeys: String, CodingKey {
-        case kind, axis, center, count, spacing, totalAngle, rotateInstances, axisRef
+        case kind, axis, center, count, spacing, totalAngle, rotateInstances, axisRef, curvePath, featureSeed
     }
 
     /// Hand-written because a synthesized `init(from:)` ignores property
@@ -93,6 +99,35 @@ nonisolated struct PatternSpec: Codable, Hashable, Sendable {
         // A present but unreadable axis reference THROWS (Codable) rather than
         // silently dropping the relationship and leaving a decorative pattern.
         axisRef = try c.decodeIfPresent(ConstructionAxisRef.self, forKey: .axisRef)
+        curvePath = try c.decodeIfPresent(CurvePatternPathDefinition.self, forKey: .curvePath)
+        featureSeed = try c.decodeIfPresent(PatternFeatureSeed.self, forKey: .featureSeed)
+    }
+
+    func validate() throws {
+        guard (1...10_000).contains(count), spacing.isFinite, (kind != .curve || spacing >= 0),
+              totalAngle.isFinite, [axis, center].allSatisfy({ $0.x.isFinite && $0.y.isFinite && $0.z.isFinite }),
+              simd_length(axis) > 1e-9 else {
+            throw SweepPathDefinition.Failure(message: "The pattern parameters are invalid.")
+        }
+        guard (kind == .curve) == (curvePath != nil), kind != .curve || axisRef == nil else {
+            throw SweepPathDefinition.Failure(message: "A curve pattern needs its path and no separate axis.")
+        }
+        try curvePath?.validate()
+        try featureSeed?.validate()
+    }
+}
+
+/// The selected operation, never the whole already-modified body. Only
+/// operations publishing a verified exact tool can supply a feature seed.
+nonisolated struct PatternFeatureSeed: Codable, Hashable, Sendable {
+    static var supportedVersion: Int { 1 }
+    var version: Int = 1
+    var featureID: FeatureID
+    init(featureID: FeatureID) { self.featureID = featureID }
+    func validate() throws {
+        guard version == Self.supportedVersion else {
+            throw AssociativeGeometryError.unsupportedSemanticVersion(version)
+        }
     }
 }
 
@@ -507,10 +542,12 @@ nonisolated extension FeatureNode {
             for ref in sections { ids.insert(ref.sketchID) }
         case let .mirror(_, plane, _):
             addPlane(plane)
+        case let .pattern(_, spec):
+            for segment in spec.curvePath?.segments ?? [] { ids.insert(segment.sketchID) }
         case let .split(_, cutter):
             addPlane(cutter.plane)
             if let profile = cutter.profile { ids.insert(profile.sketchID) }
-        case .primitive, .baseSolid, .thread, .boolean, .transform, .pattern, .pushPull, .moveFace,
+        case .primitive, .baseSolid, .thread, .boolean, .transform, .pushPull, .moveFace,
              .scaleFace, .rotateFace, .draftFace, .chamfer, .fillet, .shell,
              .deleteFace, .replaceFace:
             break
@@ -787,6 +824,14 @@ nonisolated extension FeatureGraph {
         // evaluated (their bodies never enter the live set). `prefix` clamps to the
         // node count, so an out-of-range marker is safe. `nil` = all nodes active.
         state.threadVariables = variables
+        state.requestedFeatureTools = Set(nodes.prefix(rollbackIndex ?? nodes.count).compactMap { node in
+            guard !node.suppressed, case let .pattern(_, spec) = node.kind else { return nil }
+            return spec.featureSeed?.featureID
+        })
+        var toolContext = EvalFingerprint()
+        for id in state.requestedFeatureTools.sorted(by: { $0.raw.uuidString < $1.raw.uuidString }) {
+            toolContext.combine(Data(id.raw.uuidString.utf8))
+        }
         for node in nodes.prefix(rollbackIndex ?? nodes.count) where !node.suppressed {
             state.associative.begin(node)
             let prepared = state.associative.prepare(node)
@@ -795,7 +840,8 @@ nonisolated extension FeatureGraph {
                 axisHash: axisHash, stamps: state.stamps,
                 resolvedSketchHash: prepared.sketches, resolvedPlaneHash: prepared.planes,
                 resolvedAxisHash: prepared.axes, operationPlaneStamp: prepared.operationPlaneStamp,
-                variables: variables)
+                variables: variables, publishTool: state.requestedFeatureTools.contains(node.id),
+                toolContext: toolContext.value)
             let delta: EvalNodeDelta
             if let hit = cache.entries[node.id], hit.fingerprint == fingerprint {
                 state.apply(hit.delta, for: node.id)
@@ -819,6 +865,7 @@ nonisolated extension FeatureGraph {
                     return .put(body, table, kernelNames: state.kernelNames[body.id])
                 }
                 recorded.error = state.errors[node.id]
+                if recorded.error != nil { recorded.featureTools = [:] }
                 delta = recorded
                 next.lastRan += 1
             }
@@ -868,9 +915,11 @@ nonisolated extension FeatureGraph {
         resolvedPlaneHash: [ConstructionPlaneID: UInt64],
         resolvedAxisHash: [ConstructionAxisID: UInt64],
         operationPlaneStamp: UInt64?,
-        variables: [String: Double]
+        variables: [String: Double], publishTool: Bool, toolContext: UInt64
     ) -> UInt64 {
         var f = EvalFingerprint()
+        f.combine(publishTool ? 1 : 0)
+        f.combine(toolContext)
         let semanticKind: FeatureKind
         if case let .extrude(profile, plane, _, symmetric, boolean, extras, termination?) = node.kind {
             semanticKind = .extrude(profile: profile, plane: plane, distance: Expr(value: 0),
@@ -1088,6 +1137,13 @@ nonisolated extension FeatureGraph {
         // An isometry keeps every face: the names carry over unchanged.
         if let names, !names.isEmpty {
             state.kernelNames[input.id] = names
+        }
+        // Keep an upstream feature's exact tool in the same world frame as
+        // its target, including cached transform steps and uniform scale.
+        for (feature, var tool) in state.featureTools where tool.targetBodyID == input.id {
+            tool.body.transform = delta.composed(onto: tool.body.transform)
+            state.featureTools[feature] = tool
+            state.journal[node.id, default: EvalNodeDelta()].featureTools[feature] = tool
         }
     }
 
@@ -1388,6 +1444,7 @@ nonisolated extension FeatureGraph {
         // on a spline outline's thousand samples, that wedged the eval on a
         // 72-point cam with a bore (gotcha 24) — and then thrown away.
         var toolBody: Body? = nil
+        var featureToolNames: [Int: ElementName] = [:]
         // OCCT FIRST, Euclid only when OCCT declines — the same §3b decision
         // evalBoolean got, applied late to this branch: the Euclid CSG here
         // ran UNCONDITIONALLY and was thrown away whenever OCCT succeeded,
@@ -1429,6 +1486,7 @@ nonisolated extension FeatureGraph {
                         creator: node.id, ancestry: ShapeAncestry($0),
                         outer: outer, holes: holes)
                 } ?? [:]
+                featureToolNames = toolNames
                 switch OCCTKernel.booleanResultWithAncestry(
                     a, toolBrep, op: OCCTKernel.booleanOp(kind)) {
                 case let .success((outcome, ancestry)):
@@ -1495,6 +1553,9 @@ nonisolated extension FeatureGraph {
             table = ElementNaming.attach(
                 resultNames, to: table,
                 channel: OCCTKernel.renderMeshFaceChannel(from: resultHandle), body: result)
+        }
+        if let toolBody {
+            state.publishTool(for: node.id, body: toolBody, names: featureToolNames, operation: kind, target: target.id)
         }
         state.put(result, table: table)
         if !resultNames.isEmpty { state.kernelNames[result.id] = resultNames }
@@ -2738,6 +2799,7 @@ nonisolated extension FeatureGraph {
                 resultNames, to: table,
                 channel: OCCTKernel.renderMeshFaceChannel(from: resultHandle), body: result)
         }
+        state.publishTool(for: node.id, body: toolBody, names: kernelNames, operation: kind, target: target.id)
         state.put(result, table: table)
         if !resultNames.isEmpty { state.kernelNames[result.id] = resultNames }
     }
@@ -2952,6 +3014,11 @@ nonisolated extension FeatureGraph {
                 table = ElementNaming.attach(
                     names, to: table,
                     channel: OCCTKernel.renderMeshFaceChannel(from: outcome.handle), body: result)
+            }
+            if state.requestedFeatureTools.contains(node.id) {
+                var sourceTool = Body(name: "Hole tool", euclidMesh: Euclid.Mesh([]), revision: 0)
+                sourceTool.brep = tool
+                state.publishTool(for: node.id, body: sourceTool, names: toolNames, operation: .subtract, target: target.id)
             }
             state.put(result, table: table)
             if !names.isEmpty { state.kernelNames[result.id] = names }
@@ -3404,6 +3471,7 @@ nonisolated extension FeatureGraph {
         into state: inout EvalState,
         next nextRevision: () -> UInt64
     ) {
+        do { try spec.validate() } catch { state.errors[node.id] = .brokenRef(error.localizedDescription); return }
         guard let source = state.bodies[bodyRef.bodyID] else {
             state.errors[node.id] = .brokenRef("pattern body unresolved")
             return
@@ -3432,6 +3500,32 @@ nonisolated extension FeatureGraph {
             transforms = PatternKit.circularTransforms(
                 center: line.center, axis: line.direction, count: max(1, spec.count),
                 totalAngle: spec.totalAngle, rotateInstances: spec.rotateInstances)
+        case .curve:
+            guard let path = spec.curvePath, spec.axisRef == nil else {
+                state.errors[node.id] = .brokenRef("Select the curve pattern's path without a separate axis.")
+                return
+            }
+            do {
+                transforms = try path.transforms(count: spec.count, spacing: spec.spacing,
+                    rotate: spec.rotateInstances, sketch: { state.sketch($0) })
+            } catch {
+                state.errors[node.id] = .brokenRef(error.localizedDescription)
+                return
+            }
+        }
+
+        if let seed = spec.featureSeed {
+            do { try seed.validate() } catch {
+                state.errors[node.id] = .brokenRef(error.localizedDescription); return
+            }
+            guard state.errors[seed.featureID] == nil, let tool = state.featureTools[seed.featureID],
+                  tool.targetBodyID == bodyRef.bodyID, source.brep != nil,
+                  node.outputBodyIDs == [bodyRef.bodyID] else {
+                state.errors[node.id] = .brokenRef("The selected feature has no usable exact tool on this target. Use its original retained split output or select another seed explicitly.")
+                return
+            }
+            evalFeaturePattern(node, target: source, tool: tool, transforms: transforms, into: &state, next: nextRevision)
+            return
         }
 
         let localMesh = source.euclidMesh()  // source stays put; copies reuse its local mesh
@@ -3466,6 +3560,56 @@ nonisolated extension FeatureGraph {
         }
     }
 
+    private func evalFeaturePattern(_ node: FeatureNode, target: Body, tool: PatternToolSnapshot,
+                                    transforms: [Transform3D], into state: inout EvalState,
+                                    next nextRevision: () -> UInt64) {
+        var result = target
+        var names = state.kernelNames[target.id] ?? [:]
+        for i in 1..<transforms.count {
+            var instance = tool.body
+            instance.transform = transforms[i].composed(onto: tool.body.transform)
+            guard let outcome = OCCTKernel.composedBooleanResultWithAncestry(tool.operation,
+                target: result, tool: instance) else {
+                state.errors[node.id] = .kernelFailure("Feature pattern requires exact solid operands."); return
+            }
+            switch outcome {
+            case let .failure(error):
+                state.errors[node.id] = .kernelFailure("Pattern instance \(i + 1): \(error.message)"); return
+            case let .success((shape, ancestry)):
+                let health = OCCTKernel.healthReport(for: shape.handle)
+                guard shape.solidCount == 1, health.error == nil, health.isValid, health.openFreeWires == 0 else {
+                    state.errors[node.id] = .kernelFailure("Pattern instance \(i + 1) does not produce one valid solid."); return
+                }
+                guard let prior = result.brep, let world = OCCTKernel.transformed(prior, by: result.transform) else {
+                    state.errors[node.id] = .kernelFailure("The pattern target could not be placed."); return
+                }
+                let before = abs(OCCTKernel.volume(world)), after = abs(OCCTKernel.volume(shape.handle))
+                let tolerance = max(1, before) * 1e-9
+                let changed = tool.operation == .subtract ? after < before - tolerance : after > before + tolerance
+                guard changed, after > tolerance else {
+                    state.errors[node.id] = .kernelFailure("Pattern instance \(i + 1) changes no target material. Adjust its placement."); return
+                }
+                var next = Body(id: target.id, name: target.name, euclidMesh: Euclid.Mesh([]), revision: nextRevision())
+                guard next.adoptBRep(shape.handle) else {
+                    state.errors[node.id] = .emptyGeometry; return
+                }
+                let instanceNames = tool.names.mapValues {
+                    ElementName(creator: node.id, source: .patternInstance(version: 1, pattern: node.id, index: i, source: $0))
+                }
+                names = ElementNaming.composeNames(operation: node.id, ancestry: ancestry,
+                    inputNames: [names, instanceNames], adjacency: OCCTKernel.edgeFaceAdjacency(shape.handle))
+                result = next.keepingAppearance(of: target)
+            }
+        }
+        var table = state.naming.faceTable(for: result, createdBy: node.id, scheme: .generic)
+        if let solid = result.brep {
+            table = ElementNaming.attach(names, to: table,
+                channel: OCCTKernel.renderMeshFaceChannel(from: solid), body: result)
+        }
+        state.put(result, table: table)
+        if !names.isEmpty { state.kernelNames[result.id] = names }
+    }
+
     /// Compose a pattern instance transform onto the source's base transform:
     /// world = pattern.rotation.act(base(x)) + pattern.translation, so rotation
     /// and translation pre-compose. Mirrors
@@ -3490,6 +3634,15 @@ private nonisolated struct EvalState {
     let planes: [ConstructionPlane]
     let naming: TopoNaming
     var threadVariables: [String: Double] = [:]
+    var requestedFeatureTools: Set<FeatureID> = []
+    var featureTools: [FeatureID: PatternToolSnapshot] = [:]
+    mutating func publishTool(for feature: FeatureID, body: Body, names: [Int: ElementName],
+                              operation: BooleanKind, target: BodyID) {
+        guard requestedFeatureTools.contains(feature), body.brep != nil,
+              operation != .intersect else { return }
+        featureTools[feature] = PatternToolSnapshot(body: body, names: names, operation: operation, targetBodyID: target)
+        if let currentNode { journal[currentNode, default: EvalNodeDelta()].featureTools[feature] = featureTools[feature] }
+    }
     var associative: AssociativeGeometryResolver
 
     var bodies: [BodyID: Body] = [:]
@@ -3549,6 +3702,7 @@ private nonisolated struct EvalState {
     /// node's own puts and removes did, in order, then restores the kernel
     /// names each put was back-filled with, and the node's error.
     mutating func apply(_ delta: EvalNodeDelta, for node: FeatureID) {
+        for (feature, tool) in delta.featureTools { featureTools[feature] = tool }
         for op in delta.ops {
             switch op {
             case let .put(body, table, names):

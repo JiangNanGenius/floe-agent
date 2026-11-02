@@ -2408,3 +2408,322 @@ final class CADMirrorReferenceTests: XCTestCase {
         XCTAssertEqual(try center(document, id: output).x, -originalCenter.x, accuracy: 1e-4)
     }
 }
+
+/// M25: actual exact placements and machining, shared native/AI history, and
+/// identity/version/cache boundaries. No tessellated substitute for a solid.
+@MainActor
+final class CADAdvancedPatternTests: XCTestCase {
+    private var directory: URL!
+    override func setUp() async throws {
+        directory = FileManager.default.temporaryDirectory.appendingPathComponent("CADPattern-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    }
+    override func tearDown() async throws { try? FileManager.default.removeItem(at: directory) }
+    private func document() async throws -> FloeCADDocument {
+        try await FloeCADDocument.create(at: directory.appendingPathComponent("\(UUID().uuidString).floecad"), name: "Pattern")
+    }
+    private func run(_ doc: FloeCADDocument, _ op: String, _ args: [String: Any]) throws -> FeatureNode {
+        let response = doc.executeJSON(try JSONSerialization.data(withJSONObject: ["op": op, "args": args]))
+        XCTAssertTrue(response.isOK, "\(op) \(response.errorCode ?? ""): \(response.message ?? "")")
+        guard response.isOK else { throw CADDocumentError(code: response.errorCode ?? "pattern", message: response.message ?? "Failed") }
+        return try XCTUnwrap(doc.session.document.features.nodes.last)
+    }
+    private func plate(_ doc: FloeCADDocument) throws -> (FeatureNode, BodyID) {
+        let id = UUID(), sketch = Sketch(name: "Plate", plane: .ground,
+            entities: [.rect(id: id, min: .zero, max: SIMD2(80, 30))])
+        let node = FeatureNode(name: "Plate", kind: .extrude(profile: ProfileRef(sketchID: sketch.id,
+            entityIDs: [id], holeEntityIDs: [], seedPoint: SIMD2(2, 2)), plane: PlaneRef(source: .sketch(sketch.id)),
+            distance: Expr(value: 10), symmetric: false, boolean: BooleanIntent(op: .newBody, resolvedTargets: []),
+            extraProfiles: []), outputBodyIDs: [BodyID()])
+        doc.session.recordAndRebuild([node], extra: [AddSketchCommand(sketch: sketch)], title: "Plate")
+        XCTAssertTrue(doc.session.lastEvalErrors.isEmpty, "\(doc.session.lastEvalErrors)")
+        return (node, try XCTUnwrap(node.outputBodyIDs.first))
+    }
+    private func hole(_ doc: FloeCADDocument, target: BodyID) throws -> (FeatureNode, Sketch, UUID) {
+        let id = UUID(), sketch = Sketch(name: "Hole", plane: .ground,
+            entities: [.circle(id: id, center: SIMD2(5, 15), radius: 1)])
+        doc.session.perform(AddSketchCommand(sketch: sketch))
+        let node = try run(doc, "feature.hole", ["sketchID": sketch.id.raw.uuidString, "seedPoint": [5, 15],
+            "targetBodyID": target.raw.uuidString, "type": "throughAll"])
+        return (node, sketch, id)
+    }
+    private func volume(_ body: Body) throws -> Double {
+        let handle = try XCTUnwrap(body.brep)
+        XCTAssertTrue(OCCTKernel.healthReport(for: handle).isValid)
+        return abs(OCCTKernel.volume(handle))
+    }
+    private func body(_ doc: FloeCADDocument, _ id: BodyID) throws -> Body { try XCTUnwrap(doc.session.document.body(with: id)) }
+    private func evaluate(_ doc: DesignDocument, cache: inout EvalCache) -> EvalResult {
+        var revision: UInt64 = 0
+        return doc.features.evaluate(sketches: doc.sketches, planes: doc.planes,
+            naming: SignatureNaming(), nextRevision: { revision += 1; return revision }, cache: &cache, axes: doc.axes)
+    }
+    private func update(_ doc: FloeCADDocument, _ node: FeatureID, _ changes: [String: Any]) {
+        let result = CADParameterService(document: doc).handle(action: "update", args: ["feature_id": node.raw.uuidString, "changes": changes])
+        XCTAssertEqual(result["ok"] as? Bool, true, "\(result)")
+    }
+    private func path(_ sketch: Sketch, _ entities: [UUID], reversed: Bool = false) -> CurvePatternPathDefinition {
+        .init(segments: entities.map { .init(sketchID: sketch.id, entityID: $0, reversed: reversed) })
+    }
+    private func assertPoint(_ actual: SIMD3<Double>, _ expected: SIMD3<Double>, file: StaticString = #filePath, line: UInt = #line) {
+        XCTAssertEqual(actual.x, expected.x, accuracy: 1e-8, file: file, line: line)
+        XCTAssertEqual(actual.y, expected.y, accuracy: 1e-8, file: file, line: line)
+        XCTAssertEqual(actual.z, expected.z, accuracy: 1e-8, file: file, line: line)
+    }
+
+    func testExactArcLengthPlacementsAndClosedCircleWithoutDuplicateSeam() throws {
+        let line = UUID(), arc = UUID(), circle = UUID()
+        let sketch = Sketch(name: "Path", plane: .ground, entities: [
+            .line(id: line, a: SIMD2(0, 0), b: SIMD2(10, 0)),
+            .arc(id: arc, center: SIMD2(10, 10), radius: 10, startAngle: -.pi / 2, endAngle: 0),
+            .circle(id: circle, center: .zero, radius: 10)])
+        let curve = path(sketch, [line, arc])
+        let placements = try curve.transforms(count: 3, spacing: 0, rotate: true, sketch: { $0 == sketch.id ? sketch : nil })
+        let midAngle = -.pi / 2 + ((10 + 5 * .pi) / 2 - 10) / 10
+        assertPoint(placements[1].applying(to: .zero), SIMD3(10 + 10 * cos(midAngle), 0, -(10 + 10 * sin(midAngle))))
+        assertPoint(placements[2].applying(to: .zero), SIMD3(20, 0, -10))
+        assertPoint(placements[2].rotation.act(SIMD3(1, 0, 0)), SIMD3(0, 0, -1))
+        let ring = try path(sketch, [circle]).transforms(count: 4, spacing: 0, rotate: true, sketch: { _ in sketch })
+        for (i, t) in ring.enumerated() {
+            let a = Double(i) * .pi / 2
+            assertPoint(t.applying(to: SIMD3(10, 0, 0)), SIMD3(10 * cos(a), 0, -10 * sin(a)))
+        }
+        let reverse = try path(sketch, [circle], reversed: true).transforms(count: 4, spacing: 0, rotate: true, sketch: { _ in sketch })
+        assertPoint(reverse[1].applying(to: SIMD3(10, 0, 0)), SIMD3(0, 0, 10))
+        XCTAssertThrowsError(try path(sketch, [circle]).transforms(count: 5, spacing: 5 * .pi, rotate: false, sketch: { _ in sketch }))
+    }
+
+    func testCurvePathRefusesDisconnectedMissingUnsupportedAndOversizedInputs() throws {
+        let a = UUID(), b = UUID(), spline = UUID()
+        let sketch = Sketch(name: "Broken", plane: .ground, entities: [
+            .line(id: a, a: .zero, b: SIMD2(5, 0)), .line(id: b, a: SIMD2(6, 0), b: SIMD2(10, 0)),
+            .spline(id: spline, points: [.zero, SIMD2(5, 2), SIMD2(10, 0)], closed: false)])
+        for curve in [path(sketch, [a, b]), path(sketch, [UUID()]), path(sketch, [spline]), path(sketch, [a, a])] {
+            XCTAssertThrowsError(try curve.transforms(count: 3, spacing: 0, rotate: false, sketch: { _ in sketch }))
+        }
+        XCTAssertThrowsError(try path(sketch, [a]).transforms(count: 3, spacing: 4, rotate: false, sketch: { _ in sketch }))
+        XCTAssertThrowsError(try path(sketch, [a]).transforms(count: Int.max, spacing: 0, rotate: false, sketch: { _ in sketch }))
+        XCTAssertThrowsError(try path(sketch, [a]).transforms(count: 2, spacing: .nan, rotate: false, sketch: { _ in sketch }))
+        XCTAssertThrowsError(try path(sketch, [a]).transforms(count: 2, spacing: 0, rotate: false, sketch: { _ in nil }))
+    }
+
+    func testNativeCurvePatternKeepsExactBodiesIDsOneUndoAndReopen() async throws {
+        let doc = try await document(); defer { doc.close() }
+        let (_, target) = try plate(doc), line = UUID()
+        let sketch = Sketch(name: "Track", plane: .ground, entities: [.line(id: line, a: .zero, b: SIMD2(200, 0))])
+        doc.session.perform(AddSketchCommand(sketch: sketch))
+        let model = doc.viewModel(); model.selection = [target]; model.beginPattern()
+        let choice = try XCTUnwrap(model.patternPathChoices.first { $0.id == line })
+        model.selectPatternPath(choice.path)
+        XCTAssertEqual(model.patternState?.spacing, 0)
+        let undo = doc.session.undoStack.undoCommands.count
+        model.commitPattern()
+        XCTAssertNil(model.errorMessage)
+        let pattern = try XCTUnwrap(doc.session.document.features.nodes.last)
+        XCTAssertEqual(doc.session.undoStack.undoCommands.count, undo + 1)
+        XCTAssertEqual(pattern.outputBodyIDs.count, 2)
+        for (i, id) in pattern.outputBodyIDs.enumerated() {
+            let copy = try body(doc, id)
+            XCTAssertEqual(try volume(copy), 24000, accuracy: 1e-3)
+            XCTAssertEqual(copy.transform.translation.x, Double(i + 1) * 100, accuracy: 1e-8)
+        }
+        doc.session.undo(); XCTAssertEqual(doc.session.document.bodies.count, 1)
+        doc.session.redo(); XCTAssertEqual(doc.session.document.features.nodes.last?.outputBodyIDs, pattern.outputBodyIDs)
+        let saved = await doc.save(); XCTAssertTrue(saved.succeeded, saved.error ?? "")
+        let url = doc.url; doc.close(); let opened = try await FloeCADDocument.open(at: url); defer { opened.close() }
+        update(opened, pattern.id, ["count": 4])
+        let expanded = try XCTUnwrap(opened.session.document.features.node(pattern.id))
+        XCTAssertEqual(Array(expanded.outputBodyIDs.prefix(2)), pattern.outputBodyIDs)
+        XCTAssertEqual(expanded.outputBodyIDs.count, 3)
+        XCTAssertEqual(try body(opened, expanded.outputBodyIDs[0]).transform.translation.x, 200.0 / 3, accuracy: 1e-8)
+        let changed = CADParameterService(document: opened).handle(action: "updateSketchEntity", args: [
+            "sketch_id": sketch.id.raw.uuidString, "entity_id": line.uuidString, "b": [400, 0]])
+        XCTAssertEqual(changed["ok"] as? Bool, true, "\(changed)")
+        XCTAssertEqual(opened.session.document.features.node(pattern.id)?.outputBodyIDs, expanded.outputBodyIDs)
+        XCTAssertEqual(try body(opened, expanded.outputBodyIDs[0]).transform.translation.x, 400.0 / 3, accuracy: 1e-8)
+    }
+
+    func testNativeHoleFeaturePatternFollowsSourceDiameterAndQuantity() async throws {
+        let doc = try await document(); defer { doc.close() }
+        let (_, target) = try plate(doc), (seed, sketch, circle) = try hole(doc, target: target)
+        let model = doc.viewModel(); model.selection = [target]; model.beginPattern()
+        XCTAssertTrue(model.patternSeedChoices.contains { $0.id == seed.id })
+        model.patternState?.featureSeed = PatternFeatureSeed(featureID: seed.id)
+        model.patternState?.spacing = 20
+        let baselineSceneBodies = model.captureScene().bodies.count
+        XCTAssertEqual(baselineSceneBodies, 1, "A feature pattern must not preview copies of the whole perforated plate")
+        let undo = doc.session.undoStack.undoCommands.count
+        model.commitPattern()
+        XCTAssertNil(model.errorMessage)
+        let pattern = try XCTUnwrap(doc.session.document.features.nodes.last)
+        XCTAssertEqual(pattern.outputBodyIDs, [target])
+        XCTAssertEqual(doc.session.document.bodies.count, 1)
+        XCTAssertEqual(doc.session.undoStack.undoCommands.count, undo + 1)
+        XCTAssertEqual(try volume(body(doc, target)), 24000 - 30 * .pi, accuracy: 1e-3)
+        let result = CADParameterService(document: doc).handle(action: "updateSketchEntity", args: [
+            "sketch_id": sketch.id.raw.uuidString, "entity_id": circle.uuidString, "radius": 2])
+        XCTAssertEqual(result["ok"] as? Bool, true, "\(result)")
+        XCTAssertEqual(try volume(body(doc, target)), 24000 - 120 * .pi, accuracy: 1e-3)
+        update(doc, pattern.id, ["count": 4])
+        XCTAssertEqual(try volume(body(doc, target)), 24000 - 160 * .pi, accuracy: 1e-3)
+        XCTAssertEqual(doc.session.document.features.node(pattern.id)?.outputBodyIDs, [target])
+        doc.session.undo()
+        XCTAssertEqual(try volume(body(doc, target)), 24000 - 120 * .pi, accuracy: 1e-3)
+        let saved = await doc.save(); XCTAssertTrue(saved.succeeded, saved.error ?? "")
+        let url = doc.url; doc.close(); let opened = try await FloeCADDocument.open(at: url); defer { opened.close() }
+        update(opened, pattern.id, ["count": 2])
+        XCTAssertEqual(try volume(body(opened, target)), 24000 - 80 * .pi, accuracy: 1e-3)
+    }
+
+    func testAddingFirstConsumerAfterCachedTransformAndReplayingTools() async throws {
+        let doc = try await document(); defer { doc.close() }
+        let (_, target) = try plate(doc), (seed, _, _) = try hole(doc, target: target)
+        var delta = Transform3D.identity; delta.translation = SIMD3(100, 20, 0); delta.scale = 2
+        var model = doc.session.document
+        let transform = FeatureNode(name: "Move", kind: .transform(body: BodyRef(producer: seed.id, bodyID: target), delta: delta), outputBodyIDs: [target])
+        model.features.nodes.append(transform)
+        var cache = EvalCache()
+        XCTAssertTrue(evaluate(model, cache: &cache).errors.isEmpty)
+        XCTAssertTrue(evaluate(model, cache: &cache).errors.isEmpty)
+        XCTAssertEqual(cache.lastRan, 0)
+        let pattern = FeatureNode(name: "Hole pattern", kind: .pattern(body: BodyRef(producer: transform.id, bodyID: target),
+            spec: PatternSpec(kind: .linear, axis: SIMD3(1, 0, 0), count: 3, spacing: 40,
+                featureSeed: PatternFeatureSeed(featureID: seed.id))), outputBodyIDs: [target])
+        model.features.nodes.append(pattern)
+        let first = evaluate(model, cache: &cache)
+        XCTAssertTrue(first.errors.isEmpty, "\(first.errors)")
+        XCTAssertEqual(try volume(XCTUnwrap(first.bodies.first { $0.id == target })), (24000 - 30 * .pi) * 8, accuracy: 1e-2)
+        let cached = evaluate(model, cache: &cache)
+        XCTAssertTrue(cached.errors.isEmpty, "\(cached.errors)")
+        XCTAssertEqual(cache.lastRan, 0)
+        XCTAssertEqual(try volume(XCTUnwrap(cached.bodies.first { $0.id == target })), (24000 - 30 * .pi) * 8, accuracy: 1e-2)
+        XCTAssertTrue(cached.kernelNames[target]?.values.contains { if case .patternInstance = $0.source { return true }; return false } == true)
+    }
+
+    func testSplitSeedMappingIsExplicitAndInvalidTargetLeavesBothResultsIntact() async throws {
+        let doc = try await document(); defer { doc.close() }
+        let (_, target) = try plate(doc), (seed, _, _) = try hole(doc, target: target)
+        let split = try run(doc, "feature.split", ["bodyID": target.raw.uuidString, "planeOrigin": [0, 5, 0], "planeNormal": [0, 1, 0]])
+        let other = try XCTUnwrap(split.outputBodyIDs.last)
+        let otherVolume = try volume(body(doc, other)), undo = doc.session.undoStack.undoCommands.count
+        let bad = doc.executeJSON(try JSONSerialization.data(withJSONObject: ["op": "feature.pattern", "args": [
+            "bodyID": other.raw.uuidString, "kind": "linear", "axis": [1, 0, 0], "count": 3, "spacing": 20,
+            "seedFeatureID": seed.id.raw.uuidString]]))
+        XCTAssertFalse(bad.isOK)
+        XCTAssertEqual(doc.session.undoStack.undoCommands.count, undo)
+        XCTAssertEqual(try volume(body(doc, other)), otherVolume, accuracy: 1e-3)
+        let pattern = try run(doc, "feature.pattern", ["bodyID": target.raw.uuidString, "kind": "linear", "axis": [1, 0, 0],
+            "count": 3, "spacing": 20, "seedFeatureID": seed.id.raw.uuidString])
+        XCTAssertEqual(pattern.outputBodyIDs, [target]); XCTAssertEqual(doc.session.document.bodies.count, 2)
+        XCTAssertEqual(try volume(body(doc, target)), 12000 - 15 * .pi, accuracy: 1e-3)
+        XCTAssertEqual(try volume(body(doc, other)), otherVolume, accuracy: 1e-3)
+        let descriptor = CADParameterService.describe(pattern, document: doc.session.document)
+        XCTAssertNoThrow(try JSONSerialization.data(withJSONObject: descriptor))
+    }
+
+    func testFeaturePatternFailureHasNoPartialGeometryOrHistoryAndModeCanChange() async throws {
+        let doc = try await document(); defer { doc.close() }
+        let (_, target) = try plate(doc), (seed, _, _) = try hole(doc, target: target)
+        let before = OCCTKernel.serialize(try XCTUnwrap(body(doc, target).brep)), undo = doc.session.undoStack.undoCommands.count
+        let failed = doc.executeJSON(try JSONSerialization.data(withJSONObject: ["op": "feature.pattern", "args": [
+            "bodyID": target.raw.uuidString, "kind": "linear", "axis": [1, 0, 0], "count": 4, "spacing": 30,
+            "seedFeatureID": seed.id.raw.uuidString]]))
+        XCTAssertFalse(failed.isOK, "Fourth hole is outside the plate")
+        XCTAssertEqual(doc.session.undoStack.undoCommands.count, undo)
+        XCTAssertEqual(OCCTKernel.serialize(try XCTUnwrap(body(doc, target).brep)), before)
+        let pattern = try run(doc, "feature.pattern", ["bodyID": target.raw.uuidString, "kind": "linear", "axis": [1, 0, 0],
+            "count": 3, "spacing": 20])
+        let copies = pattern.outputBodyIDs
+        update(doc, pattern.id, ["seed_feature_id": seed.id.raw.uuidString])
+        XCTAssertEqual(doc.session.document.bodies.count, 1)
+        XCTAssertEqual(try volume(body(doc, target)), 24000 - 30 * .pi, accuracy: 1e-3)
+        update(doc, pattern.id, ["seed_feature_id": NSNull()])
+        let restored = try XCTUnwrap(doc.session.document.features.node(pattern.id))
+        XCTAssertFalse(restored.outputBodyIDs.contains(target)); XCTAssertEqual(restored.outputBodyIDs.count, 2)
+        XCTAssertEqual(try volume(body(doc, target)), 24000 - 10 * .pi, accuracy: 1e-3)
+        XCTAssertEqual(doc.session.document.bodies.count, 3)
+        doc.session.undo(); doc.session.undo()
+        XCTAssertEqual(doc.session.document.features.node(pattern.id)?.outputBodyIDs, copies)
+    }
+
+    func testPathAndSeedVersionsAreOpaqueWhenFutureAndLegacyFloorIsUnchanged() async throws {
+        let doc = try await document(); defer { doc.close() }
+        let (_, target) = try plate(doc), (seed, sketch, circle) = try hole(doc, target: target)
+        let legacy = PatternSpec(kind: .linear, count: 3, spacing: -5)
+        XCTAssertNoThrow(try legacy.validate())
+        let legacyJSON = try XCTUnwrap(JSONSerialization.jsonObject(with: JSONEncoder().encode(legacy)) as? [String: Any])
+        XCTAssertNil(legacyJSON["curvePath"]); XCTAssertNil(legacyJSON["featureSeed"])
+        let node = FeatureNode(name: "Pattern", kind: .pattern(body: BodyRef(producer: seed.id, bodyID: target),
+            spec: PatternSpec(kind: .curve, count: 3, curvePath: path(sketch, [circle]), featureSeed: PatternFeatureSeed(featureID: seed.id))), outputBodyIDs: [target])
+        var model = doc.session.document; model.features.nodes.append(node)
+        XCTAssertEqual(CADDocumentFormat.requiredFormat(document: model), 7)
+        var object = try XCTUnwrap(JSONSerialization.jsonObject(with: JSONEncoder().encode(node.kind)) as? [String: Any])
+        var pattern = try XCTUnwrap(object["pattern"] as? [String: Any]), spec = try XCTUnwrap(pattern["spec"] as? [String: Any])
+        let originalSpec = spec
+        for field in ["curvePath", "featureSeed"] {
+            var part = try XCTUnwrap(originalSpec[field] as? [String: Any]); part["version"] = 2
+            spec = originalSpec; spec[field] = part; pattern["spec"] = spec; object["pattern"] = pattern
+            var row = CADFeatureRecord(featureID: node.id.raw, orderIndex: 0, name: node.name, suppressed: false,
+                kind: try JSONSerialization.data(withJSONObject: object), outputBodyIDs: try JSONEncoder().encode([target.raw]))
+            let bytes = row.kind
+            XCTAssertTrue(try CADDocumentFormat.assess(planes: [], sketches: [], features: [row]).opaqueFeatures.contains(node.id.raw))
+            XCTAssertEqual(row.kind, bytes)
+            part["version"] = true; spec[field] = part; pattern["spec"] = spec; object["pattern"] = pattern
+            row.kind = try JSONSerialization.data(withJSONObject: object)
+            XCTAssertThrowsError(try CADDocumentFormat.assess(planes: [], sketches: [], features: [row]))
+        }
+        for invalid: [String: Any] in [["kind": "curve"], ["count": Int.max], ["path": ["version": true, "segments": []]], ["seedFeatureID": "invalid"]] {
+            var args = invalid; args["bodyID"] = target.raw.uuidString
+            if case .success = AgentExec.parse(["op": "feature.pattern", "args": args]) { XCTFail("Malformed pattern accepted") }
+        }
+    }
+
+    func testMergeRemapsCurveAndFeatureIdentityAndRebuildsExactResult() async throws {
+        let doc = try await document(); defer { doc.close() }
+        let (_, target) = try plate(doc), (seed, _, _) = try hole(doc, target: target), line = UUID()
+        let sketch = Sketch(name: "Track", plane: .ground, entities: [.line(id: line, a: .zero, b: SIMD2(40, 0))])
+        doc.session.perform(AddSketchCommand(sketch: sketch))
+        let payload = try JSONSerialization.jsonObject(with: JSONEncoder().encode(path(sketch, [line])))
+        let pattern = try run(doc, "feature.pattern", ["bodyID": target.raw.uuidString, "kind": "curve", "count": 3,
+            "path": payload, "seedFeatureID": seed.id.raw.uuidString, "rotateInstances": false])
+        let merged = try ProjectMergeKit.insert(doc.session.document, into: DesignDocument(), translation: SIMD3(100, 30, -20))
+        let mapped = try XCTUnwrap(merged.document.features.nodes.last)
+        guard case let .pattern(ref, spec) = mapped.kind else { return XCTFail("Missing pattern") }
+        XCTAssertNotEqual(ref.bodyID, target); XCTAssertNotEqual(mapped.id, pattern.id)
+        XCTAssertNotEqual(spec.featureSeed?.featureID, seed.id)
+        XCTAssertNotEqual(spec.curvePath?.segments.first?.sketchID, sketch.id)
+        XCTAssertNotEqual(spec.curvePath?.segments.first?.entityID, line)
+        var cache = EvalCache(); let result = evaluate(merged.document, cache: &cache)
+        XCTAssertTrue(result.errors.isEmpty, "\(result.errors)")
+        XCTAssertEqual(try volume(XCTUnwrap(result.bodies.first { $0.id == ref.bodyID })), 24000 - 30 * .pi, accuracy: 1e-3)
+        let instanceNames = result.kernelNames[ref.bodyID]?.values.filter { if case .patternInstance = $0.source { return true }; return false } ?? []
+        XCTAssertFalse(instanceNames.isEmpty)
+        for name in instanceNames {
+            guard case let .patternInstance(version, id, index, _) = name.source else { continue }
+            XCTAssertEqual(version, 1); XCTAssertEqual(id, mapped.id); XCTAssertTrue((1...2).contains(index))
+            XCTAssertTrue(name.hasSupportedOperationIdentity)
+        }
+    }
+    func testAdditiveFeaturePatternUsesItsToolAndFollowsSourceHeight() async throws {
+        let doc = try await document(); defer { doc.close() }
+        let (_, target) = try plate(doc), circle = UUID()
+        let sketch = Sketch(name: "Boss", plane: .offsetGround(y: 10),
+            entities: [.circle(id: circle, center: SIMD2(5, 15), radius: 2)])
+        doc.session.perform(AddSketchCommand(sketch: sketch))
+        let boss = try run(doc, "feature.extrude", ["sketchID": sketch.id.raw.uuidString,
+            "seedPoint": [5, 15], "distance": 5, "boolean": "union", "booleanTargets": [target.raw.uuidString]])
+        let pattern = try run(doc, "feature.pattern", ["bodyID": target.raw.uuidString, "kind": "linear", "axis": [1, 0, 0],
+            "count": 3, "spacing": 20, "seedFeatureID": boss.id.raw.uuidString])
+        XCTAssertEqual(doc.session.document.bodies.count, 1)
+        XCTAssertEqual(try volume(body(doc, target)), 24000 + 60 * .pi, accuracy: 1e-3)
+        update(doc, boss.id, ["distance": 10])
+        XCTAssertEqual(try volume(body(doc, target)), 24000 + 120 * .pi, accuracy: 1e-3)
+        XCTAssertEqual(doc.session.document.features.node(pattern.id)?.outputBodyIDs, [target])
+        let before = OCCTKernel.serialize(try XCTUnwrap(body(doc, target).brep))
+        let rejected = CADParameterService(document: doc).handle(action: "feature.suppress", args: [
+            "feature_id": boss.id.raw.uuidString, "suppressed": true])
+        XCTAssertEqual(rejected["ok"] as? Bool, false, "A referenced source feature must not silently disappear")
+        XCTAssertEqual(OCCTKernel.serialize(try XCTUnwrap(body(doc, target).brep)), before)
+    }
+
+}

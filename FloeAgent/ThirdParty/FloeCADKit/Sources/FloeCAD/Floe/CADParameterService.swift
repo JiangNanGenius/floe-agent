@@ -4469,6 +4469,10 @@ public final class CADParameterService {
                seen.insert(dependency).inserted {
                 result[node.id, default: []].append(dependency)
             }
+            if case let .pattern(body, spec) = node.kind, let seed = spec.featureSeed {
+                let dependency = BodyRef(producer: seed.featureID, bodyID: body.bodyID)
+                if seen.insert(dependency).inserted { result[node.id, default: []].append(dependency) }
+            }
             // Declared ids cover new bodies (including mirror/pattern copies).
             // In-place evaluation additionally writes its input/target id even
             // when outputBodyIDs only contains a fresh placeholder.
@@ -4510,7 +4514,8 @@ public final class CADParameterService {
              let .rotateFace(face, _, _), let .draftFace(face, _, _, _, _),
              let .replaceFace(face, _, _, _, _):
             return [face.body.bodyID]
-        case .primitive, .baseSolid, .mirror, .pattern:
+        case let .pattern(body, spec): return spec.featureSeed == nil ? [] : [body.bodyID]
+        case .primitive, .baseSolid, .mirror:
             return []
         }
     }
@@ -5108,8 +5113,15 @@ public final class CADParameterService {
             let sketchID: String? = { if case let .sketch(id) = plane.source { return id.raw.uuidString }; return nil }()
             add("plane_id", "unitless", planeID.map { $0 as Any } ?? NSNull(), note: "Set one existing plane_id or sketch_id.")
             add("sketch_id", "unitless", sketchID.map { $0 as Any } ?? NSNull(), note: "Set one existing plane_id or sketch_id.")
-        case let .pattern(_, spec):
+        case let .pattern(body, spec):
             kindName = "pattern"
+            add("mode", "unitless", spec.featureSeed == nil ? "body" : "feature", editable: false)
+            add("seed_feature_id", "unitless", spec.featureSeed.map { $0.featureID.raw.uuidString as Any } ?? NSNull())
+            add("selected_seed_body_id", "unitless", body.bodyID.raw.uuidString, editable: false,
+                note: "Exactly this output is patterned; a split's other outputs are not added implicitly.")
+            let pathValue = spec.curvePath.flatMap { try? JSONEncoder().encode($0) }
+                .flatMap { try? JSONSerialization.jsonObject(with: $0) }
+            add("path", "unitless", pathValue ?? NSNull(), note: "Identity-bound lines, arcs or circles. Set kind explicitly when removing a path.")
             add("count", "unitless", spec.count, minimum: 1, maximum: 10_000)
             add("spacing", "mm", spec.spacing, minimum: 0)
             add("total_angle", "deg", spec.totalAngle * 180 / .pi, minimum: 0, maximum: 360)
@@ -5565,15 +5577,22 @@ public final class CADParameterService {
             // `axis_id` is handled by `update(_:)` before this typed edit: it is
             // a relationship that must resolve/freeze from the document, not a
             // scalar. This branch stays strictly numeric.
-            let allowed = ["count", "spacing", "total_angle", "rotate_instances"]
+            let allowed = ["count", "spacing", "total_angle", "rotate_instances", "kind", "path", "seed_feature_id"]
             guard changes.keys.allSatisfy({ allowed.contains($0) }) else { return unknown(allowed) }
-            let count = value("count").map { Int($0.rounded()) } ?? spec.count
+            let count: Int
+            if let raw = value("count") {
+                guard raw.isFinite, (1...10_000).contains(raw), let integer = Int(exactly: raw) else {
+                    return fail("count", "count must be a whole number in 1…10000.")
+                }
+                count = integer
+            } else { count = spec.count }
             let spacing = value("spacing") ?? spec.spacing
             let totalAngleDegrees = value("total_angle").map { $0 } ?? (spec.totalAngle * 180 / .pi)
             let rotate = boolValue("rotate_instances") ?? spec.rotateInstances
             didChange = count != spec.count || spacing != spec.spacing
                 || abs(totalAngleDegrees - spec.totalAngle * 180 / .pi) > 1e-9
                 || rotate != spec.rotateInstances
+            didChange = didChange || changes["path"] != nil || changes["kind"] != nil || changes["seed_feature_id"] != nil
             guard didChange else { return unknown(allowed) }
             guard count >= 1, count <= 10_000 else { return fail("count", "count must be 1…10000 (total instances).") }
             guard spacing.isFinite, spacing >= 0 else { return fail("spacing", "spacing must be >= 0 mm.") }
@@ -5585,6 +5604,35 @@ public final class CADParameterService {
             newSpec.spacing = spacing
             newSpec.totalAngle = totalAngleDegrees * .pi / 180
             newSpec.rotateInstances = rotate
+            if let raw = changes["kind"] {
+                guard let text = CADMaterialService.string(raw), let kind = PatternSpec.Kind(rawValue: text) else {
+                    return fail("kind", "Use linear, circular or curve.")
+                }
+                newSpec.kind = kind
+            }
+            if let raw = changes["path"] {
+                if raw is NSNull {
+                    guard changes["kind"] != nil else { return fail("path", "Choose the new kind explicitly when removing a path.") }
+                    newSpec.curvePath = nil
+                } else {
+                    guard JSONSerialization.isValidJSONObject(raw),
+                          let data = try? JSONSerialization.data(withJSONObject: raw),
+                          let path = try? JSONDecoder().decode(CurvePatternPathDefinition.self, from: data) else {
+                        return fail("path", "Use version:1 and ordered sketch/entity segments.")
+                    }
+                    newSpec.curvePath = path; newSpec.kind = .curve; newSpec.axisRef = nil
+                }
+            }
+            if let raw = changes["seed_feature_id"] {
+                if raw is NSNull { newSpec.featureSeed = nil }
+                else {
+                    guard let text = CADMaterialService.string(raw), let id = UUID(uuidString: text) else {
+                        return fail("seed_feature_id", "Use a feature UUID or null for body copies.")
+                    }
+                    newSpec.featureSeed = PatternFeatureSeed(featureID: FeatureID(raw: id))
+                }
+            }
+            do { try newSpec.validate() } catch { return fail("pattern", error.localizedDescription) }
             return .success(.pattern(body: body, spec: newSpec))
         case let .pushPull(face, distance, mode):
             guard changes.keys.allSatisfy({ $0 == "distance" }) else { return unknown(["distance"]) }

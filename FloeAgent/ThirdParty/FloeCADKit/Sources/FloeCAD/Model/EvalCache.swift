@@ -13,6 +13,15 @@
 
 import Foundation
 
+/// An actual exact tool produced by a successful upstream operation. This
+/// is ephemeral replay data, not stored geometry or a second feature graph.
+nonisolated struct PatternToolSnapshot: Sendable {
+    var body: Body
+    var names: [Int: ElementName]
+    var operation: BooleanKind
+    var targetBodyID: BodyID
+}
+
 /// One mutation a node made to the replay state, recorded while it ran so a
 /// later replay can re-apply it without touching the kernel.
 nonisolated enum EvalJournalOp: Sendable {
@@ -28,6 +37,7 @@ nonisolated enum EvalJournalOp: Sendable {
 nonisolated struct EvalNodeDelta: Sendable {
     var ops: [EvalJournalOp] = []
     var error: FeatureError? = nil
+    var featureTools: [FeatureID: PatternToolSnapshot] = [:]
 
     /// The bodies this delta puts, in order.
     var putBodyIDs: [BodyID] {

@@ -412,13 +412,17 @@ final class CADCommandExecutor {
                             spec: spec, on: viewModel)
 
         case let .pattern(bodyID, spec):
-            if let bad = missingBody([bodyID], session) { return bad }
-            // count includes the original, so a pattern emits count-1 NEW bodies.
-            let outputs = (0..<max(0, spec.count - 1)).map { _ in BodyID() }
-            return record(FeatureNode(
-                name: spec.kind == .circular ? "Circular Pattern" : "Linear Pattern",
-                kind: .pattern(body: bodyRef(bodyID, session), spec: spec),
-                outputBodyIDs: outputs), on: viewModel)
+            guard let body = session.document.body(with: bodyID) else { return execMissing("body", bodyID.raw.uuidString) }
+            do {
+                try spec.validate()
+                let source = try preservedBodyReference(body, in: session)
+                let outputs = spec.featureSeed == nil ? (0..<max(0, spec.count - 1)).map { _ in BodyID() } : [bodyID]
+                let name = spec.kind == .curve ? "Curve Pattern" : spec.kind == .circular ? "Circular Pattern" : "Linear Pattern"
+                return record(FeatureNode(name: name,
+                    kind: .pattern(body: source.reference, spec: spec), outputBodyIDs: outputs), on: viewModel, prefix: source.prefix)
+            } catch {
+                return .failure(422, "Unprocessable Entity", error: "invalid_pattern", message: error.localizedDescription)
+            }
 
         case let .mirror(bodyID, plane, keepOriginal):
             guard let body = session.document.body(with: bodyID) else { return execMissing("body", bodyID.raw.uuidString) }

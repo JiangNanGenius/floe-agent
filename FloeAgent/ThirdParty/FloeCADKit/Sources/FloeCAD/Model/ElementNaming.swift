@@ -62,6 +62,9 @@ nonisolated struct ElementName: Codable, Hashable, Sendable {
         /// neighborhoods stay on the legacy unqualified path.
         indirect case operationFace(version: Int, operation: FeatureID,
                                     parents: [ElementName], neighbors: [ElementName])
+        /// Authored instance order, never a kernel face ordinal. The source
+        /// is the actual seed tool identity carried through OCCT ancestry.
+        indirect case patternInstance(version: Int, pattern: FeatureID, index: Int, source: ElementName)
     }
 
     var creator: FeatureID
@@ -83,12 +86,14 @@ nonisolated struct ElementName: Codable, Hashable, Sendable {
                 || parents.contains(where: \.requiresExactSignature)
                 || neighbors.contains(where: \.requiresExactSignature)
                 || Set(parents).count != parents.count || Set(neighbors).count != neighbors.count
+        case let .patternInstance(version, pattern, index, source):
+            return version != 1 || pattern != creator || index < 1 || source.requiresExactSignature
         }
     }
 
     var containsQualifiedOperationIdentity: Bool {
         switch source {
-        case .operationFace, .immutableSourceFace: return true
+        case .operationFace, .immutableSourceFace, .patternInstance: return true
         case let .opFace(_, parents, _): return parents.contains(where: \.containsQualifiedOperationIdentity)
         default: return false
         }
@@ -101,6 +106,7 @@ nonisolated struct ElementName: Codable, Hashable, Sendable {
             return !requiresExactSignature && parents.allSatisfy(\.hasSupportedOperationIdentity)
                 && neighbors.allSatisfy(\.hasSupportedOperationIdentity)
         case let .opFace(_, parents, _): return parents.allSatisfy(\.hasSupportedOperationIdentity)
+        case let .patternInstance(_, _, _, source): return !requiresExactSignature && source.hasSupportedOperationIdentity
         default: return true
         }
     }
