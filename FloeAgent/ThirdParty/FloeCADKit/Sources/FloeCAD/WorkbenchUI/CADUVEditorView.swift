@@ -301,7 +301,9 @@ private struct CADUVSeamCanvas: View {
                 }
             }
             .background(.quaternary.opacity(0.3)).clipShape(RoundedRectangle(cornerRadius:10))
-            .contentShape(Rectangle()).gesture(DragGesture(minimumDistance:0).onEnded { value in
+            // Picking is a tap. A zero-distance drag steals the surrounding
+            // Form's vertical scroll whenever the gesture starts on the canvas.
+            .contentShape(Rectangle()).gesture(SpatialTapGesture().onEnded { value in
                 let p=points(geometry.size), tap=value.location
                 let candidates=edges.compactMap { edge -> (CADUVEdge,CGFloat,Float)? in
                     let a=p[Int(edge.a)].point,b=p[Int(edge.b)].point
@@ -355,7 +357,7 @@ private struct CADUVIslandCanvas: View {
                     context.stroke(path,with:.color(selected.contains(faceCharts[f]) ? .accentColor : .primary.opacity(0.5)),lineWidth:0.8)
                 }
             }
-            .clipped().contentShape(Rectangle()).gesture(DragGesture(minimumDistance:0).onEnded { value in
+            .clipped().contentShape(Rectangle()).gesture(SpatialTapGesture().onEnded { value in
                 guard uv.count == faceCharts.count*3 else { return }
                 let tap=value.location, projected=projection(geometry.size)
                 for f in faceCharts.indices {
