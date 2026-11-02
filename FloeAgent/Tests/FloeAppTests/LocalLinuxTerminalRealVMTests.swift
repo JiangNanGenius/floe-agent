@@ -51,9 +51,10 @@
 import Foundation
 import Darwin
 import Testing
+import XCTest
 @testable import FloeApp
 import FloeCore
-import FloeExecution
+@testable import FloeExecution
 import FloeTools
 import FloeEnvironments
 
@@ -422,4 +423,231 @@ private final class PredicateBox: @unchecked Sendable {
     init(_ predicate: @escaping (String) -> Bool) { self.predicate = predicate }
     func matches(_ text: String) -> Bool { predicate(text) }
 }
+
+#if targetEnvironment(simulator)
+/// Opt-in, real App-hosted TinyEMU qualification for a runner-only update.
+/// The descriptor and candidate requirement are fixture inputs, not a new
+/// downloadable image or an assertion that the candidate has been qualified.
+/// Base artifact verification, persistent disk preparation, live negotiation,
+/// in-guest installation/reboot, EXECENV and OPENENV use production code.
+/// Only this fixture's writable disk and shares are changed or removed.
+@MainActor
+final class LinuxRunnerEnvironmentRealGuestTests: XCTestCase {
+    func testRealRunnerUpgradeRetainsDiskAndIsolatesChildEnvironments() async throws {
+        let variables = ProcessInfo.processInfo.environment
+        guard variables["FLOE_RUNNER21_REAL_GUEST"] == "1" else {
+            throw XCTSkip("Opt-in real guest qualification is not enabled.")
+        }
+        let imagesRoot = URL(fileURLWithPath: try XCTUnwrap(variables["FLOE_RUNNER21_IMAGES_ROOT"]),
+                             isDirectory: true)
+        let imageID = LinuxGuestImageDistributionCatalog.defaultImageID
+        let imageDirectory = imagesRoot.appendingPathComponent(imageID, isDirectory: true)
+        let candidate = try JSONDecoder().decode(RunnerCandidate.self, from:
+            Data(contentsOf: imageDirectory.appendingPathComponent("runner-component.json")))
+        XCTAssertEqual(candidate.runnerVersion, "2.1.0")
+        XCTAssertTrue(candidate.expectedCapabilities.contains("env=1"))
+        let helper = imageDirectory.appendingPathComponent("env-transport-check-riscv64")
+        let helperData = try Data(contentsOf: helper)
+        XCTAssertEqual(Array(helperData.prefix(6)), [0x7f, 0x45, 0x4c, 0x46, 2, 1])
+        XCTAssertEqual(Array(helperData[18..<20]), [0xf3, 0])
+        XCTAssertEqual(FloeDigest.sha256Hex(helperData),
+                       try XCTUnwrap(variables["FLOE_RUNNER21_HELPER_SHA256"]))
+
+        let owned = imagesRoot.deletingLastPathComponent()
+            .appendingPathComponent("actual-\(UUID().uuidString)", isDirectory: true)
+        let writable = owned.appendingPathComponent("environment", isDirectory: true)
+        let workspace = owned.appendingPathComponent("workspace", isDirectory: true)
+        for directory in [writable, workspace] {
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        }
+        try FileManager.default.copyItem(at: helper, to: workspace.appendingPathComponent(helper.lastPathComponent))
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath:
+            workspace.appendingPathComponent(helper.lastPathComponent).path)
+        let environmentID = "runner21-\(UUID().uuidString)"
+        let descriptor = LinuxGuestEnvironmentDescriptor(
+            id: environmentID, ownerID: environmentID, taskID: "runner21-qualification",
+            writableDirectory: writable,
+            shares: [.init(tag: LinuxGuestShare.environmentTag, hostDirectory: writable),
+                     .init(tag: LinuxGuestShare.workspaceTag, hostDirectory: workspace)],
+            imageID: imageID, ramMB: 256, vcpus: 1, networkEnabled: true)
+        let resolver = RunnerCandidateResolver(root: imagesRoot, candidate: candidate)
+        let registry = TinyEMULinuxGuestRegistry(
+            environments: RunnerOwnedDescriptor(descriptor: descriptor), images: resolver,
+            limits: LinuxGuestLimits(runnerProbeTimeout: 120),
+            targetDiskCapacityBytes: 17_179_869_184)
+        let began = Date()
+        func phase(_ label: String) {
+            print("FLOE_RUNNER21_PHASE \(label) seconds=\(Date().timeIntervalSince(began))")
+        }
+        func run(_ script: String, timeout: TimeInterval = 120) async throws -> LinuxCommandResult {
+            try await registry.run(environmentID: environmentID, argv: ["/bin/sh", "-c", script],
+                workingDirectory: "/workspace", standardInput: nil, timeout: timeout,
+                maxOutputBytes: 128 * 1024, cancellation: nil)
+        }
+        func stopAndRemoveOwnedFixture() async throws {
+            await registry.stop(environmentID: environmentID)
+            let status = await registry.status(environmentID: environmentID)
+            // Never unlink a disk while a quarantined/live engine can own it.
+            XCTAssertFalse(status.running)
+            guard !status.running, await registry.reservedGuestRAMMB == 0 else {
+                throw RunnerQualificationFailure.liveFixtureRetained(owned.path)
+            }
+            try FileManager.default.removeItem(at: owned)
+        }
+        do {
+            phase("base.start")
+            _ = try await registry.start(environmentID: environmentID, taskID: descriptor.taskID)
+            let before = try await run("printf 'owned-runner21' > /var/tmp/floe-runner21-owned-sentinel; "
+                + "dpkg-query -W -f='${Package} ${Version}\\n' python3 nodejs")
+            XCTAssertEqual(before.exitCode, 0, before.stderr)
+            let diskDirectory = LinuxGuestRuntimeImagePreparer.environmentDiskDirectory(
+                writableDirectory: writable, environmentID: environmentID)
+            let originURL = diskDirectory.appendingPathComponent("origin.json")
+            let originalOrigin = try Data(contentsOf: originURL)
+            await registry.stop(environmentID: environmentID)
+            phase("base.stopped")
+
+            // The required CAPS are inputs. Only the live post-reboot answer,
+            // actual executable digest and successful child calls prove them.
+            await resolver.requireCandidate()
+            _ = try await registry.start(environmentID: environmentID, taskID: descriptor.taskID)
+            phase("candidate.upgraded")
+            let measured = try XCTUnwrap(LinuxGuestRuntimeImagePreparer.recordedRunnerCapabilities(
+                writableDirectory: writable, environmentID: environmentID))
+            XCTAssertTrue(measured.contains("runner=2.1.0"), measured)
+            XCTAssertTrue(measured.split(separator: " ").contains("env=1"), measured)
+            let executable = try await run("sha512sum /usr/local/bin/floe-exec; "
+                + "test \"$(cat /var/tmp/floe-runner21-owned-sentinel)\" = owned-runner21")
+            XCTAssertEqual(executable.exitCode, 0, executable.stderr)
+            XCTAssertTrue(executable.stdout.hasPrefix(candidate.runnerArtifact.sha512), executable.stdout)
+            let packages = try await run("dpkg-query -W -f='${Package} ${Version}\\n' python3 nodejs")
+            XCTAssertEqual(packages.exitCode, 0, packages.stderr)
+            XCTAssertEqual(packages.stdout, before.stdout)
+            XCTAssertEqual(try Data(contentsOf: originURL), originalOrigin)
+
+            async let alpha = Self.sensitiveRun(registry, environmentID, value: "synthetic-alpha")
+            async let beta = Self.sensitiveRun(registry, environmentID, value: "synthetic-beta")
+            let values = try await (alpha, beta)
+            XCTAssertEqual(values.0.stdout, "synthetic-alpha")
+            XCTAssertEqual(values.1.stdout, "synthetic-beta")
+            XCTAssertEqual(values.0.exitCode, 0, values.0.stderr)
+            XCTAssertEqual(values.1.exitCode, 0, values.1.stderr)
+
+            let ptyID = "runner21-pty-\(UUID().uuidString)"
+            let ticket = SensitiveProcessEnvironmentTicket(try SensitiveProcessEnvironment(
+                ["FLOE_R21_SYNTHETIC": "synthetic-pty"]))
+            try await SensitiveProcessEnvironmentCarrier.$pending.withValue(ticket) {
+                try await registry.openSession(environmentID: environmentID, sessionID: ptyID,
+                    argv: ["/bin/sh", "-c", "printf 'PTY:%s\\n' \"$FLOE_R21_SYNTHETIC\""],
+                    workingDirectory: "/workspace", columns: 80, rows: 24)
+            }
+            XCTAssertTrue(ticket.wasConsumed)
+            var pty = Data()
+            let deadline = Date().addingTimeInterval(30)
+            while Date() < deadline {
+                guard let chunk = await registry.readSession(sessionID: ptyID, maxBytes: 8192, waitMs: 250)
+                else { break }
+                pty.append(chunk.output)
+                if !chunk.info.alive { break }
+            }
+            await registry.closeSession(sessionID: ptyID)
+            XCTAssertTrue(String(decoding: pty, as: UTF8.self).contains("PTY:synthetic-pty"))
+            let isolated = try await run("test -z \"${FLOE_R21_SYNTHETIC+x}\" && "
+                + "! grep -azq '^FLOE_R21_SYNTHETIC=' /proc/1/environ && printf 'pid1-clean'")
+            XCTAssertEqual(isolated.exitCode, 0, isolated.stderr)
+            XCTAssertEqual(isolated.stdout, "pid1-clean")
+
+            // Same tracked C harness, cross-built as static RISC-V, now runs
+            // INSIDE the real guest against the installed candidate bytes.
+            // It sends malformed/duplicate/NUL/oversized blocks to the actual
+            // parser, and tests argv/stdin separation and concurrent children.
+            let protocolCheck = try await registry.run(environmentID: environmentID,
+                argv: ["/workspace/env-transport-check-riscv64", "/usr/local/bin/floe-exec"],
+                workingDirectory: "/workspace", standardInput: nil, timeout: 300,
+                maxOutputBytes: 128 * 1024, cancellation: nil)
+            let attachment = XCTAttachment(string: protocolCheck.stdout + "\n" + protocolCheck.stderr)
+            attachment.name = "runner21-actual-riscv-stdio-check"; attachment.lifetime = .keepAlways
+            add(attachment)
+            XCTAssertEqual(protocolCheck.exitCode, 0, protocolCheck.stderr)
+            XCTAssertTrue(protocolCheck.stdout.contains("env transport:"), protocolCheck.stdout)
+            XCTAssertTrue(protocolCheck.stdout.contains(", 0 failed"), protocolCheck.stdout)
+            phase("candidate.protocol.checked")
+
+            await registry.stop(environmentID: environmentID)
+            _ = try await registry.start(environmentID: environmentID, taskID: descriptor.taskID)
+            let reopened = try await run("test \"$(cat /var/tmp/floe-runner21-owned-sentinel)\" = owned-runner21 "
+                + "&& sha512sum /usr/local/bin/floe-exec")
+            XCTAssertEqual(reopened.exitCode, 0, reopened.stderr)
+            XCTAssertTrue(reopened.stdout.hasPrefix(candidate.runnerArtifact.sha512))
+            let afterRestart = try await Self.sensitiveRun(registry, environmentID, value: "synthetic-restart")
+            XCTAssertEqual(afterRestart.stdout, "synthetic-restart")
+            XCTAssertEqual(afterRestart.exitCode, 0, afterRestart.stderr)
+            XCTAssertEqual(try Data(contentsOf: originURL), originalOrigin)
+            let receipt = XCTAttachment(string: "actualCAPS=\(measured)\nrunnerSHA512=\(candidate.runnerArtifact.sha512)\n"
+                + "packages=\(packages.stdout)\nseconds=\(Date().timeIntervalSince(began))\n"
+                + "scope=real App-hosted registry and TinyEMU; candidate only, not App catalog delivery")
+            receipt.name = "runner21-real-guest-upgrade"; receipt.lifetime = .keepAlways; add(receipt)
+            try await stopAndRemoveOwnedFixture()
+            phase("owned.cleanup.complete")
+        } catch {
+            let originalError = error
+            do { try await stopAndRemoveOwnedFixture() }
+            catch { XCTFail("Fixture retained after cleanup failure: \(error)") }
+            throw originalError
+        }
+    }
+
+    private nonisolated static func sensitiveRun(_ registry: TinyEMULinuxGuestRegistry,
+                                                 _ environmentID: String, value: String) async throws -> LinuxCommandResult {
+        let ticket = SensitiveProcessEnvironmentTicket(try SensitiveProcessEnvironment(["FLOE_R21_SYNTHETIC": value]))
+        return try await SensitiveProcessEnvironmentCarrier.$pending.withValue(ticket) {
+            try await registry.run(environmentID: environmentID,
+                argv: ["/bin/sh", "-c", "sleep 1; printf '%s' \"$FLOE_R21_SYNTHETIC\""],
+                workingDirectory: "/workspace", standardInput: nil, timeout: 60,
+                maxOutputBytes: 8192, cancellation: nil)
+        }
+    }
+}
+
+private enum RunnerQualificationFailure: Error { case liveFixtureRetained(String) }
+
+private struct RunnerCandidate: Decodable, Sendable {
+    let runnerVersion: String
+    let expectedCapabilities: String
+    let runnerArtifact: LinuxGuestImageArtifact
+}
+
+private struct RunnerOwnedDescriptor: LinuxGuestEnvironmentProviding {
+    let descriptor: LinuxGuestEnvironmentDescriptor
+    func linuxGuestEnvironment(id: String) async -> LinuxGuestEnvironmentDescriptor? {
+        descriptor.id == id ? descriptor : nil
+    }
+}
+
+private actor RunnerCandidateResolver: LinuxGuestImageResolving {
+    nonisolated let imageRoot: URL?
+    private let base: FileLinuxGuestImageResolver
+    private let verifier = LinuxGuestImageVerifier()
+    private let candidate: RunnerCandidate
+    private var candidateRequired = false
+
+    init(root: URL, candidate: RunnerCandidate) {
+        self.imageRoot = root; self.base = FileLinuxGuestImageResolver(root: root); self.candidate = candidate
+    }
+    func requireCandidate() { candidateRequired = true }
+    func linuxGuestImage(id: String) async -> LinuxGuestImage? {
+        guard var image = await base.linuxGuestImage(id: id) else { return nil }
+        if candidateRequired {
+            image.runnerArtifact = candidate.runnerArtifact
+            image.runnerCapabilities = candidate.expectedCapabilities + " net=up"
+        }
+        return image
+    }
+    func linuxGuestImageVerificationFailure(id: String) async -> String? {
+        guard let image = await linuxGuestImage(id: id), let imageRoot else { return "Missing fixture image" }
+        return await verifier.verificationFailure(image: image,
+            imageDirectory: imageRoot.appendingPathComponent(id, isDirectory: true))
+    }
+}
+#endif
 #endif
