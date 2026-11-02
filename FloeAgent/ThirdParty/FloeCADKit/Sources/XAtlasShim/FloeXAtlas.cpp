@@ -107,6 +107,10 @@ int32_t fxa_pack(const float *input, uint32_t count, const uint32_t *inputCharts
         d.indexData=indices.data(); d.indexCount=count; d.indexFormat=xatlas::IndexFormat::UInt32;
         d.faceMaterialData=inputCharts;
         if (xatlas::AddUvMesh(atlas.get(),d) != xatlas::AddMeshError::Success) return 3;
+        // AddUvMesh does not compute its connected charts. PackCharts requires
+        // this stage for UV input just as it does for a position mesh.
+        xatlas::ComputeCharts(atlas.get());
+        if (run.stopped()) return run.stopStatus();
         xatlas::PackCharts(atlas.get(),options(resolution,padding));
         return copyResult(atlas.get(),nullptr,count,run,uvs,charts,w,h);
     } catch (...) { return 6; }

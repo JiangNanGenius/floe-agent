@@ -59,8 +59,12 @@ nonisolated struct FaceTable: Codable, Sendable {
     /// re-mints the revision; this is not permission to bless an arbitrary
     /// old table against new geometry.
     func rebindingNativeRevision(afterOwnedRestore body: Body) -> FaceTable {
-        guard nativeBodyID == body.id, nativeFaceNames != nil, body.brep != nil,
-              nativeFaceChannel?.count == body.render.triangleCount else { return self }
+        guard nativeBodyID == body.id, body.brep != nil,
+              nativeFaceNames != nil || nativeFaceSignatures != nil,
+              nativeFaceChannel == nil || nativeFaceChannel?.count == body.render.triangleCount else { return self }
+        // Imported/primitive faces can have exact signatures without authored
+        // names or a native triangle channel. An owned geometry restore keeps
+        // those same entries; stamping its new revision creates no face name.
         var result = self
         result.nativeMeshRevision = body.meshRevision
         return result

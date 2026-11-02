@@ -47,7 +47,7 @@ final class CADUVAuthoringTests: XCTestCase {
     private func body(_ doc:FloeCADDocument,_ id:BodyID) throws -> Body { try XCTUnwrap(doc.session.document.body(with:id)) }
     private func read(_ doc:FloeCADDocument,_ id:BodyID) async throws -> [String:Any] {
         let r=await CADMaterialService(document:doc).handleAsync(action:"uv.read",args:["body_id":id.raw.uuidString])
-        XCTAssertEqual(r["ok"] as? Bool,true,"\(r)"); return r
+        return try XCTUnwrap(r["ok"] as? Bool == true ? r : nil,"\(r)")
     }
     private func edit(_ action:String,_ doc:FloeCADDocument,_ id:BodyID,_ extra:[String:Any]=[:]) async throws -> [String:Any] {
         let state=try await read(doc,id)
@@ -55,7 +55,7 @@ final class CADUVAuthoringTests: XCTestCase {
                               "expected_change_count":doc.liveChangeCount]
         for (k,v) in extra { args[k]=v }
         let reply=await CADMaterialService(document:doc).handleAsync(action:action,args:args)
-        XCTAssertEqual(reply["ok"] as? Bool,true,"\(reply)"); return reply
+        return try XCTUnwrap(reply["ok"] as? Bool == true ? reply : nil,"\(reply)")
     }
 
     func testMarkedSeamSeparatesActualXatlasChartsAndPreservesExactBodyAndFaceMaterials() async throws {
@@ -79,6 +79,24 @@ final class CADUVAuthoringTests: XCTestCase {
         XCTAssertEqual(rangesAfter.issues,[])
         XCTAssertEqual(after.render.indices.count,before.render.indices.count)
         XCTAssertEqual(after.render.texcoords?.count,after.render.positions.count)
+        for redo in [false,true] {
+            if redo { doc.session.redo() } else { doc.session.undo() }
+            let restored=try body(doc,id)
+            let restoredRanges=CADFaceMaterialResolver.assessGroups(in:restored,
+                table:doc.session.faceRangeTable(for:restored),tableRevision:restored.meshRevision)
+            XCTAssertEqual(restoredRanges.claimedTriangles,rangesBefore.claimedTriangles)
+            XCTAssertEqual(restoredRanges.issues,[])
+            XCTAssertEqual(restored.materialFaceBindings,before.materialFaceBindings)
+            XCTAssertTrue(restored.brep === before.brep)
+        }
+        let saved=await doc.save(); XCTAssertTrue(saved.succeeded,saved.error ?? "")
+        let url=doc.url; doc.close()
+        let reopened=try await FloeCADDocument.open(at:url); defer { reopened.close() }
+        let restored=try body(reopened,id)
+        let reopenedRanges=CADFaceMaterialResolver.assessGroups(in:restored,
+            table:reopened.session.faceRangeTable(for:restored),tableRevision:restored.meshRevision)
+        XCTAssertEqual(reopenedRanges.claimedTriangles,rangesBefore.claimedTriangles)
+        XCTAssertEqual(reopenedRanges.issues,[])
     }
 
     func testKnownIslandTransformHasAnalyticMoveRotationScaleAndLeavesOtherIslandUntouched() throws {

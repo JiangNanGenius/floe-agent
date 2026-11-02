@@ -211,7 +211,7 @@ final class CADTwoCopyMergeTests: XCTestCase {
     func testSameCheckpointUUIDWithDifferentVerifiedContentIsNotACommonBase() async throws {
         let p = try await pair()
         try edit(p.other, p.first, 99); try await save(p.other)
-        let replacement = try await p.other.createNamedVersion(name: "Shared starting point")
+        let replacement = try await p.other.createNamedVersion(name: "Different verified content")
         let originalURL = p.other.url.appendingPathComponent("versions/\(p.base.uuidString)")
         let replacementURL = p.other.url.appendingPathComponent("versions/\(replacement.version.id.uuidString)")
         try FileManager.default.removeItem(at: originalURL)
@@ -243,11 +243,36 @@ final class CADTwoCopyMergeTests: XCTestCase {
         let before = try exactFiles(p.current.url), depth = p.current.session.undoStack.undoCommands.count
         let redo = p.current.session.undoStack.redoCommands.count
         let report = try await review(p)
-        XCTAssertTrue(report.unsupportedIDs.isEmpty)
+        XCTAssertTrue(report.unsupportedIDs.isEmpty,"\(report.rows)")
         await failure(code: "merge_rebuild_failed") { _ = try await p.current.mergeCopy(planID: report.id) }
         XCTAssertEqual(try exactFiles(p.current.url), before)
         XCTAssertEqual(p.current.session.undoStack.undoCommands.count, depth)
         XCTAssertEqual(p.current.session.undoStack.redoCommands.count, redo)
+        XCTAssertEqual(try distance(p.current, p.second), 10)
+    }
+
+    func testFeatureRenameAfterReopenKeepsBothExactBodyArchivesAndMergesOnlyTheFeature() async throws {
+        let p = try await pair()
+        let store = FileCADDocumentStore(packageURL: p.other.url)
+        let before = try store.verifiedPackage(at: p.other.url)
+        let old = try node(p.other, p.second)
+        p.other.session.perform(RenameFeatureCommand(featureID: p.second,
+            before: old.name, after: "Renamed without changing geometry"))
+        try await save(p.other)
+        let after = try store.verifiedPackage(at: p.other.url)
+        XCTAssertEqual(Set(before.document.bodies.map(\.bodyID)), Set(after.document.bodies.map(\.bodyID)))
+        for body in before.document.bodies {
+            let actual = try XCTUnwrap(after.document.bodies.first { $0.bodyID == body.bodyID })
+            XCTAssertNotNil(body.brepSHA256)
+            XCTAssertEqual(actual.brepSHA256, body.brepSHA256)
+            XCTAssertEqual(actual.meshSHA256, body.meshSHA256)
+        }
+        let report = try await review(p)
+        XCTAssertEqual(report.rows.map(\.id), ["feature:\(p.second.raw.uuidString)"], "\(report.rows)")
+        XCTAssertTrue(report.unsupportedIDs.isEmpty)
+        let result = try await p.current.mergeCopy(planID: report.id)
+        XCTAssertTrue(result.applied)
+        XCTAssertEqual(try node(p.current, p.second).name, "Renamed without changing geometry")
         XCTAssertEqual(try distance(p.current, p.second), 10)
     }
 

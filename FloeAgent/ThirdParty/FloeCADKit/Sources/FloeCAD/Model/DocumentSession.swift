@@ -2045,6 +2045,11 @@ final class DocumentSession {
                     } else {
                         body.surfaceBRep = decoded
                     }
+                    // An unchanged reopened body keeps its verified archive.
+                    // Re-serializing a healed/copy-owned handle can encode the
+                    // same geometry differently, which must not masquerade as
+                    // an untracked shape edit during a two-copy comparison.
+                    brepBlobCache[body.id.raw] = (ObjectIdentifier(decoded), body.meshRevision, data)
                 } else {
                     unreadableRows.bodyBrep.insert(persisted.bodyID)
                 }

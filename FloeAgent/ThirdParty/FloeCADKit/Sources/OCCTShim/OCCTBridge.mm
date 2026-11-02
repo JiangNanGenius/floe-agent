@@ -4479,8 +4479,8 @@ static const NSUInteger kOS3DMaxFindings = 200;
 //     and below every crash/hang value the fuzz corpus found (>= 10^9).
 //
 // Floats never match either tier — their tokens carry '.' or an exponent.
-// TShapes' signed refs ("-3") parse negative and pass; OCCT rejects those
-// cheaply on its own. One pass, reject before OCCT parses.
+// An orientation prefix is a reference only in a TShapes reference list;
+// signed curve parameters/vertex coordinates are ordinary numbers.
 static bool OS3DPlausibleSectionCounts(NSData *data) {
     static const char *const kSections[] = {
         "Locations", "Curve2ds", "Curves", "Polygon3D",
@@ -4502,9 +4502,14 @@ static bool OS3DPlausibleSectionCounts(NSData *data) {
     const long long looseCeiling = length > 10'000'000 ? length : 10'000'000;
     long long i = 0;
     bool atLineStart = true;
+    bool inTShapes = false;
+    bool referenceLine = false;
     while (i < length) {
         if (isspace((unsigned char)bytes[i])) {
-            atLineStart = (bytes[i] == '\n');
+            if (bytes[i] == '\n' || bytes[i] == '\r') {
+                atLineStart = true;
+                referenceLine = false;
+            }
             ++i;
             continue;
         }
@@ -4516,10 +4521,18 @@ static bool OS3DPlausibleSectionCounts(NSData *data) {
         // integer token that follows it on the same line.
         bool strict = false;
         if (atLineStart) {
+            // The pinned ASCII writer ends every subshape-reference list
+            // with '*'. Other TShapes lines also contain signed coordinates.
+            long long lineEnd = i;
+            while (lineEnd < length && bytes[lineEnd] != '\n' && bytes[lineEnd] != '\r') ++lineEnd;
+            while (lineEnd > start && isspace((unsigned char)bytes[lineEnd - 1])) --lineEnd;
+            referenceLine = inTShapes && lineEnd > start && bytes[lineEnd - 1] == '*';
             for (const char *section : kSections) {
                 if (tokenLen == (long long)strlen(section)
                     && memcmp(bytes + start, section, (size_t)tokenLen) == 0) {
                     strict = true;
+                    inTShapes = strcmp(section, "TShapes") == 0;
+                    referenceLine = false;
                     break;
                 }
             }
@@ -4559,9 +4572,12 @@ static bool OS3DPlausibleSectionCounts(NSData *data) {
         // ("+-5") nor uses a negative index, so both are rejected
         // structurally — magnitude alone can't catch index -5.
         long long p = start;
-        const bool markedRef =
-            (bytes[p] == '*' || bytes[p] == '+' || bytes[p] == '-');
-        if (markedRef) ++p;
+        const bool markedRef = bytes[p] == '*' || bytes[p] == '+'
+            || (referenceLine && bytes[p] == '-');
+        // Trimmed curves produced by a real radial edit contain the valid
+        // parameter range "8 -10000000 10000000". Its negative bound must
+        // use the coordinate ceiling, never the blob-length reference bound.
+        if (markedRef || bytes[p] == '-') ++p;
         bool negativeIndex = false;
         if (p < i && (bytes[p] == '+' || bytes[p] == '-')) {
             negativeIndex = (bytes[p] == '-');
