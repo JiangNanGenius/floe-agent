@@ -1,6 +1,7 @@
 // The schema is a writer gate understood by existing format-1 readers.
 // Additive association fields alone cannot protect their meaning from old apps.
 import Foundation
+import CoreFoundation
 
 nonisolated enum CADDocumentFormatError: Error, LocalizedError, Equatable, Sendable {
     case unsupportedFormat(Int)
@@ -803,7 +804,11 @@ nonisolated enum CADDocumentFormat {
                let raw = helix["profileAnchor"], !(raw is NSNull) {
                 result.requiredVersion = max(result.requiredVersion, associativeSweepVersion)
                 guard let values = raw as? [Any], values.count == 2,
-                      values.allSatisfy({ CADMaterialService.number($0)?.isFinite == true }) else {
+                      values.allSatisfy({ value in
+                          guard let number = value as? NSNumber,
+                                CFGetTypeID(number) != CFBooleanGetTypeID() else { return false }
+                          return number.doubleValue.isFinite
+                      }) else {
                     throw CADDocumentFormatError.malformedAssociation("helix-section-anchor")
                 }
             }
