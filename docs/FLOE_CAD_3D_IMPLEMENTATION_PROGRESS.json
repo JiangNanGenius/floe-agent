@@ -1492,10 +1492,34 @@
       "package": "mechanical",
       "implementation": {
         "stage": "C",
-        "status": "planned",
-        "source_changes": [],
-        "verification": [],
-        "limitations": []
+        "status": "accepted_original_criterion_App_native",
+        "source_changes": [
+          "c693b707 identity-bound sweep path and shared native/assistant parameters",
+          "6343ab78 semantic no-op preserves undo",
+          "f0497592 helix section attachment",
+          "943e41f3 full3D section pose"
+        ],
+        "verification": [
+          {
+            "kind": "actual_App_object_and_native",
+            "product_source": "943e41f39b9f6e2d221b99ab914a73837206caa0",
+            "fixture_recovery_source": "98aff6aabfba8cd87883bdeddc3e80c675500566",
+            "original211": {
+              "passed": 33,
+              "failed": 1,
+              "skipped": 0
+            },
+            "focused212": {
+              "passed": 1,
+              "failed": 0,
+              "skipped": 0
+            },
+            "evidence": "docs/qualification/cad-sweep-association-20261102/README.md"
+          }
+        ],
+        "limitations": [
+          "原始M15条件已通过生产App原生链路；实体性能、完整交互和真实LLM仍属于其单独原始条目。"
+        ]
       },
       "alignment_review": {
         "disposition": "planned",
@@ -8782,6 +8806,12 @@
       "actual_component_SMP_protocol_checks": 57,
       "component_archive_and_local_install_verified": true,
       "original_base_delta_and_template_pin_retention_verified": true
+    },
+    "sweep_association_M15_20261102": {
+      "accepted_original_criterion": true,
+      "original_criterion_text_unchanged": true,
+      "evidence": "docs/qualification/cad-sweep-association-20261102/README.md",
+      "whole106_complete": false
     }
   }
 }

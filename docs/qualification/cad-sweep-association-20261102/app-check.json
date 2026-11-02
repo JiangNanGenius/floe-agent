@@ -1,0 +1,52 @@
+{
+  "criterion": "M15",
+  "acceptedOriginalAcceptance": true,
+  "productSource": "943e41f39b9f6e2d221b99ab914a73837206caa0",
+  "focusedRecoverySource": "98aff6aabfba8cd87883bdeddc3e80c675500566",
+  "productSourceUnchangedForFocusedRecovery": true,
+  "original207": {
+    "passed": 30,
+    "failed": 0,
+    "skipped": 0
+  },
+  "original208": {
+    "passed": 32,
+    "failed": 1,
+    "skipped": 0,
+    "genuineFailure": "Scalar radius changed but actual BRep did not; strict old assertion retained"
+  },
+  "recovered210": {
+    "passed": 33,
+    "failed": 0,
+    "skipped": 0
+  },
+  "original211": {
+    "passed": 33,
+    "failed": 1,
+    "skipped": 0,
+    "reason": "Root fixture used +Z instead of actual negativeZ helix start; all33 original assertions passed"
+  },
+  "focused212": {
+    "passed": 1,
+    "failed": 0,
+    "skipped": 0,
+    "seconds": 36.127
+  },
+  "sameOriginalAssertionsRetained": true,
+  "covers": [
+    "Identity-bound ordered open sketch edges; actual source point edit changes same exact solid",
+    "Replace path edge IDs on same sweep and preserve output body IDs",
+    "Explicit detach freezes current path, subsequent source edits do not move detached sweep",
+    "Missing edge and invalid edit refuse while geometry, references and undo stack remain unchanged",
+    "Native history fields call same parameter service for helix radius/pitch/turns",
+    "Real BRep tessellation measures radius change independently of display spine; undo/redo/save/reopen preserve it",
+    "Full three-coordinate section attachment and unchanged sketch/plane reference at nonzero start angle",
+    "Semantic no-op after source edit preserves revision and undo; legacy explicit render path remains unchanged for same value",
+    "Legacy sweep decode and future path version read-only/format7 intent protection"
+  ],
+  "physicalPerformanceVerified": false,
+  "fullInteractiveUITapVerified": false,
+  "paidLLMInvoked": false,
+  "whole106Accepted": false,
+  "published": false
+}
