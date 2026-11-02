@@ -73,9 +73,14 @@ final class ViewportGestureController: NSObject {
     func attach(to view: MTKView, renderer: Renderer) {
         if self.view === view { self.renderer = renderer; return }
         if let previous = self.view {
+            finishClaimedDrag(at: lastPanLocation, cancelled: true)
+            previous.isPaused = true
             for recognizer in ownedRecognizers { previous.removeGestureRecognizer(recognizer) }
             if let pencilInteraction { previous.removeInteraction(pencilInteraction) }
         }
+        interactiveDepth = 0
+        orbitTouchDown = nil
+        orbitTouchIsPencil = false
         ownedRecognizers.removeAll()
         pencilInteraction = nil
         self.view = view

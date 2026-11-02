@@ -778,6 +778,63 @@ struct FloeCADEditorView: View {
         .padding(.top, 8)
     }
 
+    @ViewBuilder
+    private func sketchDetailActions(_ viewModel: EditorViewModel) -> some View {
+        sketchStateChip(viewModel).fixedSize(horizontal: true, vertical: false)
+        if viewModel.lookAtSketchAvailable {
+            Button("Look at Sketch") { viewModel.lookAtSketch() }
+                .controlSize(.small)
+                .accessibilityIdentifier("LookAtSketch")
+        }
+        if viewModel.isPickingSymmetryAxis {
+            Button("Cancel Symmetry") { viewModel.cancelSymmetryAxisPick() }
+                .accessibilityIdentifier("CancelSymmetry")
+        }
+    }
+
+    private func sketchStatusPill(_ viewModel: EditorViewModel) -> some View {
+        ViewThatFits(in: .horizontal) {
+            statusPill(icon: "pencil.and.outline", text: sketchStatusText(viewModel)) {
+                sketchDetailActions(viewModel)
+                Button("Exit Sketching") { viewModel.finishSketch() }
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.small)
+                    .accessibilityIdentifier("ExitSketchingButton")
+            }
+            .fixedSize(horizontal: true, vertical: false)
+
+            // Keep Exit visible at narrow widths and large text sizes. Status
+            // and optional actions can scroll horizontally instead of forcing
+            // every word into a tall capsule over the editable geometry.
+            VStack(alignment: .leading, spacing: 8) {
+                HStack(alignment: .top, spacing: 8) {
+                    Label(sketchStatusText(viewModel), systemImage: "pencil.and.outline")
+                        .font(.caption)
+                        .lineLimit(2)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    Button { viewModel.finishSketch() } label: {
+                        Label("Exit Sketching", systemImage: "checkmark")
+                            .labelStyle(.iconOnly)
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.small)
+                    .accessibilityIdentifier("ExitSketchingButton")
+                }
+                ScrollView(.horizontal) {
+                    HStack(spacing: 12) { sketchDetailActions(viewModel) }
+                        .fixedSize(horizontal: true, vertical: false)
+                }
+                .scrollIndicators(.hidden)
+            }
+            .padding(12)
+            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 16))
+            .shadow(color: .black.opacity(0.15), radius: 8, y: 2)
+            .padding(.top, 8)
+        }
+        .padding(.horizontal, 12)
+        .accessibilityIdentifier("SketchStatusPill")
+    }
+
     /// Measure tool pill: prompts for picks, then shows distance + deltas.
     private func measurePill(_ viewModel: EditorViewModel) -> some View {
         HStack(spacing: 12) {
@@ -1792,26 +1849,7 @@ struct FloeCADEditorView: View {
                             .padding(10)
                             .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
                         }
-                        statusPill(icon: "pencil.and.outline", text: sketchStatusText(viewModel)) {
-                            sketchStateChip(viewModel)
-                            // Shown when the camera drifted >10° off head-on.
-                            if viewModel.lookAtSketchAvailable {
-                                Button("Look at Sketch") {
-                                    viewModel.lookAtSketch()
-                                }
-                                .controlSize(.small)
-                                .accessibilityIdentifier("LookAtSketch")
-                            }
-                            if viewModel.isPickingSymmetryAxis {
-                                Button("Cancel Symmetry") { viewModel.cancelSymmetryAxisPick() }
-                                    .accessibilityIdentifier("CancelSymmetry")
-                            }
-                            Button("Exit Sketching") {
-                                viewModel.finishSketch()
-                            }
-                            .buttonStyle(.borderedProminent)
-                            .controlSize(.small)
-                        }
+                        sketchStatusPill(viewModel)
                     }
                 } else if case .pickingSketchPlane = viewModel.mode {
                     statusPill(

@@ -1,6 +1,7 @@
 import Foundation
 import XCTest
 import UIKit
+import MetalKit
 import simd
 @testable import FloeCAD
 
@@ -429,6 +430,37 @@ final class CADAssociativeSketchDragTests: XCTestCase {
         XCTAssertEqual(delegate.ended, 0)
         XCTAssertEqual(try source(f), f.source)
         XCTAssertEqual(f.document.session.undoStack.undoCommands.count, count)
+        XCTAssertTrue(controller.claimDrag(at: CGPoint(x: 40, y: 30), isPencil: true))
+        controller.changeClaimedDrag(at: CGPoint(x: 50, y: 35))
+        controller.finishClaimedDrag(at: CGPoint(x: 50, y: 35), cancelled: false)
+        XCTAssertEqual(delegate.ended, 1)
+        XCTAssertEqual(f.document.session.undoStack.undoCommands.count, count + 1)
+        XCTAssertEqual(try volume(f, body: f.sourceBody), 17500, accuracy: 1e-3)
+    }
+
+    func testReplacingInputViewCancelsLivePreviewAndFencesItsOldCompletion() async throws {
+        let f = try await fixture()
+        let delegate = ModelInputDelegate(f.model)
+        let controller = ViewportGestureController()
+        controller.delegate = delegate
+        let renderer = Renderer(context: try XCTUnwrap(RenderContext()))
+        let original = MTKView(frame: CGRect(x: 0, y: 0, width: 400, height: 300))
+        controller.attach(to: original, renderer: renderer)
+        let count = f.document.session.undoStack.undoCommands.count
+        XCTAssertTrue(controller.claimDrag(at: CGPoint(x: 40, y: 30), isPencil: true))
+        controller.changeClaimedDrag(at: CGPoint(x: 50, y: 35))
+        XCTAssertNotEqual(try source(f).entities, f.source.entities)
+
+        let replacement = MTKView(frame: original.frame)
+        controller.attach(to: replacement, renderer: renderer)
+        XCTAssertEqual(delegate.cancelled, 1)
+        XCTAssertEqual(delegate.ended, 0)
+        XCTAssertEqual(try source(f), f.source)
+        XCTAssertEqual(f.document.session.undoStack.undoCommands.count, count)
+        controller.finishClaimedDrag(at: CGPoint(x: 50, y: 35), cancelled: false)
+        XCTAssertEqual(delegate.ended, 0)
+        XCTAssertEqual(try source(f), f.source)
+
         XCTAssertTrue(controller.claimDrag(at: CGPoint(x: 40, y: 30), isPencil: true))
         controller.changeClaimedDrag(at: CGPoint(x: 50, y: 35))
         controller.finishClaimedDrag(at: CGPoint(x: 50, y: 35), cancelled: false)

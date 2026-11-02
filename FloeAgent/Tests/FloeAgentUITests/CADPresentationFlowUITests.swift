@@ -2100,6 +2100,13 @@ final class CADExternalProjectionNativeFlowUITests: XCTestCase {
         XCTAssertTrue(element(app, "CADExternalProjectionBrokenWarning").exists)
         let detach = app.buttons["DetachProjectionButton"]
         reveal(detach, in: app)
+        let viewport = element(app, "CADEditorViewport")
+        let status = element(app, "SketchStatusPill")
+        XCTAssertTrue(status.exists)
+        XCTAssertLessThan(status.frame.height, viewport.frame.height * 0.35,
+            "Large text status must leave the drawing surface usable")
+        XCTAssertLessThanOrEqual(status.frame.width, viewport.frame.width)
+        XCTAssertTrue(app.buttons["ExitSketchingButton"].isHittable)
         capture("M05 compact large text warning and native controls")
     }
 }

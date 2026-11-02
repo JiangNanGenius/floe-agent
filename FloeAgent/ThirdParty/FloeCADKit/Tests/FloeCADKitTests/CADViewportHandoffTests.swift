@@ -104,7 +104,18 @@ final class CADViewportHandoffTests: XCTestCase {
         renderer.camera.target = SIMD3(1, 2, 3)
         let camera = renderer.camera
         let originalGestureCount = sizing.gestureRecognizers?.count
-        XCTAssertEqual(originalGestureCount, 7)
+        // UIPencilInteraction can add its own UIKit recognizer. Verify our
+        // seven concrete recognizers, then compare the full before/after
+        // count to catch duplication without counting Apple's private input.
+        let expected: [(UIGestureRecognizer.Type, Int)] = [
+            (UIPanGestureRecognizer.self, 2), (UIPinchGestureRecognizer.self, 1),
+            (UITapGestureRecognizer.self, 2), (UILongPressGestureRecognizer.self, 1),
+            (UIHoverGestureRecognizer.self, 1)]
+        for (kind, count) in expected {
+            XCTAssertEqual(sizing.gestureRecognizers?.filter {
+                ObjectIdentifier(type(of: $0)) == ObjectIdentifier(kind)
+            }.count, count, String(describing: kind))
+        }
 
         let replacement = CADViewportMTKView(frame: CGRect(x: 0, y: 0, width: 400, height: 300))
         replacement.coordinator = coordinator

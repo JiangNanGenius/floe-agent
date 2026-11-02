@@ -91,6 +91,8 @@ public struct CADExternalProjectionReadbackPanel: View {
                 row("CADProjectionViewTree", liveViewports(model))
             }
             .font(.system(size: 9, design: .monospaced))
+            .lineLimit(1)
+            .frame(maxWidth: 340, alignment: .leading)
             .padding(5)
             .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 7))
             .allowsHitTesting(false)
