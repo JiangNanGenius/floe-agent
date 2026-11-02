@@ -67,7 +67,7 @@ nonisolated enum CADMeshSimplificationQuality {
 
     /// Preserve real open boundaries and coincident vertices with distinct
     /// normals/UVs. Interior smooth vertices remain eligible for clustering.
-    static func protection(_ mesh: RenderMesh, shouldStop: () -> Bool) -> Protection? {
+    static func protection(_ mesh: RenderMesh, shouldStop: @escaping () -> Bool) -> Protection? {
         var attributes: [Position: (SIMD3<Float>, SIMD2<Float>?)] = [:]
         var seams: Set<Position> = []
         for i in mesh.positions.indices {
@@ -106,9 +106,9 @@ nonisolated enum CADMeshSimplificationQuality {
 
     static func inspect(before: RenderMesh, after: RenderMesh, protection: Protection, scale: Double = 1,
                         sampleTriangleBudget: Int = 4096,
-                        shouldStop: () -> Bool) -> Report? {
-        let a = CADInterferenceMeshGeometry.build(positions: before.positions, indices: before.indices)
-        let b = CADInterferenceMeshGeometry.build(positions: after.positions, indices: after.indices)
+                        shouldStop: @escaping () -> Bool) -> Report? {
+        let a = CADInterferenceMeshGeometry.build(positions: before.positions, indices: before.indices, shouldStop: shouldStop)
+        let b = CADInterferenceMeshGeometry.build(positions: after.positions, indices: after.indices, shouldStop: shouldStop)
         guard scale.isFinite, scale > 0, sampleTriangleBudget > 0, a.isValid, b.isValid, !shouldStop(),
               let ab = directed(a, b, sampleBudget:sampleTriangleBudget, shouldStop: shouldStop),
               let ba = directed(b, a, sampleBudget:sampleTriangleBudget, shouldStop: shouldStop),
@@ -189,7 +189,7 @@ nonisolated enum CADMeshSimplificationQuality {
         return best.isFinite ? sqrt(max(0,best)) : nil
     }
     private static func directed(_ source: CADInterferenceMeshGeometry, _ target: CADInterferenceMeshGeometry,
-                                 sampleBudget:Int, shouldStop: () -> Bool) -> (sample: Double, bound: Double, samples:Int)? {
+                                 sampleBudget:Int, shouldStop: @escaping () -> Bool) -> (sample: Double, bound: Double, samples:Int)? {
         var maximum = 0.0, upper = 0.0
         let stride = max(1,(source.triangleCount + sampleBudget - 1)/sampleBudget)
         var i = 0, samples = 0

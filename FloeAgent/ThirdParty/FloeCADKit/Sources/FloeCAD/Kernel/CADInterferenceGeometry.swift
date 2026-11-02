@@ -252,9 +252,10 @@ nonisolated struct CADInterferenceBVH: Sendable {
     let triangleCount: Int
 
     static func build(triangleBounds: [CADInterferenceAABB],
-                      centroids: [SIMD3<Double>]) -> CADInterferenceBVH {
+                      centroids: [SIMD3<Double>],
+                      shouldStop: (() -> Bool)? = nil) -> CADInterferenceBVH {
         let count = triangleBounds.count
-        guard count > 0 else {
+        guard count > 0, shouldStop?() != true else {
             return CADInterferenceBVH(nodes: [], order: [], triangleBounds: [],
                                       triangleCount: 0)
         }
@@ -263,9 +264,11 @@ nonisolated struct CADInterferenceBVH: Sendable {
         nodes.reserveCapacity(max(1, count * 2))
 
         func buildNode(_ start: Int, _ end: Int) -> Int32 {
+            if shouldStop?() == true { return -1 }
             let nodeIndex = Int32(nodes.count)
             var bounds = triangleBounds[Int(order[start])]
             for index in (start + 1)..<end {
+                if index & 1023 == 0, shouldStop?() == true { return -1 }
                 bounds = bounds.union(triangleBounds[Int(order[index])])
             }
             nodes.append(Node(bounds: bounds, left: -1, right: -1,
@@ -280,6 +283,7 @@ nonisolated struct CADInterferenceBVH: Sendable {
             let sorted = slice.sorted {
                 centroids[Int($0)][axis] < centroids[Int($1)][axis]
             }
+            if shouldStop?() == true { return -1 }
             order.replaceSubrange(start..<end, with: sorted)
 
             var split = (start + end) / 2
@@ -299,6 +303,9 @@ nonisolated struct CADInterferenceBVH: Sendable {
         }
 
         _ = buildNode(0, count)
+        guard shouldStop?() != true else {
+            return CADInterferenceBVH(nodes: [], order: [], triangleBounds: [], triangleCount: 0)
+        }
         return CADInterferenceBVH(nodes: nodes, order: order,
                                   triangleBounds: triangleBounds,
                                   triangleCount: count)
@@ -318,13 +325,20 @@ nonisolated struct CADInterferenceMeshGeometry: Sendable {
 
     var isValid: Bool { invalidReason == nil && triangleCount > 0 }
 
-    static func build(positions: [SIMD3<Float>], indices: [UInt32]) -> CADInterferenceMeshGeometry {
+    static func build(positions: [SIMD3<Float>], indices: [UInt32],
+                      shouldStop: (() -> Bool)? = nil) -> CADInterferenceMeshGeometry {
         let vertices = positions.map { SIMD3<Double>($0) }
         let emptyTopology = CADInterferenceMeshTopology(
             weldedVertexCount: 0, triangleCount: 0, degenerateTriangleCount: 0,
             boundaryEdgeCount: 0, nonManifoldEdgeCount: 0, componentCount: 0,
             inwardComponentCount: 0, isClosed: false, isOriented: false)
         let emptyBVH = CADInterferenceBVH.build(triangleBounds: [], centroids: [])
+        func interrupted() -> CADInterferenceMeshGeometry {
+            CADInterferenceMeshGeometry(vertices: [], indices: [], triangleCount: 0,
+                bounds: .empty, topology: emptyTopology, bvh: emptyBVH,
+                invalidReason: "mesh inspection interrupted")
+        }
+        if shouldStop?() == true { return interrupted() }
         guard !vertices.isEmpty else {
             return CADInterferenceMeshGeometry(
                 vertices: [], indices: [], triangleCount: 0, bounds: .empty,
@@ -337,7 +351,8 @@ nonisolated struct CADInterferenceMeshGeometry: Sendable {
                 topology: emptyTopology, bvh: emptyBVH,
                 invalidReason: "the mesh index buffer is not a whole number of triangles")
         }
-        for vertex in vertices {
+        for (offset, vertex) in vertices.enumerated() {
+            if offset & 1023 == 0, shouldStop?() == true { return interrupted() }
             guard vertex.x.isFinite, vertex.y.isFinite, vertex.z.isFinite else {
                 return CADInterferenceMeshGeometry(
                     vertices: vertices, indices: indices, triangleCount: indices.count / 3,
@@ -345,7 +360,8 @@ nonisolated struct CADInterferenceMeshGeometry: Sendable {
                     invalidReason: "the mesh contains a non-finite vertex")
             }
         }
-        for index in indices {
+        for (offset, index) in indices.enumerated() {
+            if offset & 1023 == 0, shouldStop?() == true { return interrupted() }
             guard Int(index) < vertices.count else {
                 return CADInterferenceMeshGeometry(
                     vertices: vertices, indices: indices, triangleCount: indices.count / 3,
@@ -361,6 +377,7 @@ nonisolated struct CADInterferenceMeshGeometry: Sendable {
         triangleBounds.reserveCapacity(triangleCount)
         centroids.reserveCapacity(triangleCount)
         for triangle in 0..<triangleCount {
+            if triangle & 1023 == 0, shouldStop?() == true { return interrupted() }
             let base = triangle * 3
             let a = vertices[Int(indices[base])]
             let b = vertices[Int(indices[base + 1])]
@@ -369,10 +386,11 @@ nonisolated struct CADInterferenceMeshGeometry: Sendable {
             centroids.append((a + b + c) / 3)
         }
         let bvh = CADInterferenceBVH.build(triangleBounds: triangleBounds,
-                                           centroids: centroids)
+                                           centroids: centroids, shouldStop: shouldStop)
         let topology = analyseTopology(vertices: vertices, indices: indices,
                                        triangleBounds: triangleBounds,
-                                       triangleCount: triangleCount)
+                                       triangleCount: triangleCount, shouldStop: shouldStop)
+        guard let topology, shouldStop?() != true else { return interrupted() }
         return CADInterferenceMeshGeometry(
             vertices: vertices, indices: indices, triangleCount: triangleCount,
             bounds: bounds, topology: topology, bvh: bvh, invalidReason: nil)
@@ -396,12 +414,14 @@ nonisolated struct CADInterferenceMeshGeometry: Sendable {
     private static func analyseTopology(vertices: [SIMD3<Double>],
                                         indices: [UInt32],
                                         triangleBounds: [CADInterferenceAABB],
-                                        triangleCount: Int) -> CADInterferenceMeshTopology {
+                                        triangleCount: Int,
+                                        shouldStop: (() -> Bool)? = nil) -> CADInterferenceMeshTopology? {
         var keyToWelded: [VertexKey: Int] = [:]
         keyToWelded.reserveCapacity(min(vertices.count, 1 << 18))
         var weldedIndices: [Int] = []
         weldedIndices.reserveCapacity(indices.count)
-        for index in indices {
+        for (offset, index) in indices.enumerated() {
+            if offset & 1023 == 0, shouldStop?() == true { return nil }
             let point = vertices[Int(index)]
             let key = VertexKey(x: point.x.bitPattern,
                                 y: point.y.bitPattern,
@@ -440,6 +460,7 @@ nonisolated struct CADInterferenceMeshGeometry: Sendable {
         }
 
         for triangle in 0..<triangleCount {
+            if triangle & 1023 == 0, shouldStop?() == true { return nil }
             let base = triangle * 3
             let a = weldedIndices[base]
             let b = weldedIndices[base + 1]
@@ -457,7 +478,8 @@ nonisolated struct CADInterferenceMeshGeometry: Sendable {
         var boundary = 0
         var nonManifold = 0
         var oriented = true
-        for use in edges.values {
+        for (offset, use) in edges.values.enumerated() {
+            if offset & 1023 == 0, shouldStop?() == true { return nil }
             if use.total == 1 { boundary += 1 }
             if use.total > 2 { nonManifold += 1 }
             if use.total == 2 && !(use.forward == 1 && use.reverse == 1) {
@@ -482,7 +504,8 @@ nonisolated struct CADInterferenceMeshGeometry: Sendable {
             let rb = find(b)
             if ra != rb { parent[rb] = ra }
         }
-        for triangle in validTriangles {
+        for (offset, triangle) in validTriangles.enumerated() {
+            if offset & 1023 == 0, shouldStop?() == true { return nil }
             union(triangle.a, triangle.b)
             union(triangle.b, triangle.c)
             union(triangle.c, triangle.a)
@@ -490,7 +513,8 @@ nonisolated struct CADInterferenceMeshGeometry: Sendable {
 
         var componentRoots = Set<Int>()
         var componentVolume: [Int: Double] = [:]
-        for triangle in validTriangles {
+        for (offset, triangle) in validTriangles.enumerated() {
+            if offset & 1023 == 0, shouldStop?() == true { return nil }
             let root = find(triangle.a)
             componentRoots.insert(root)
             let base = triangle.triangle * 3

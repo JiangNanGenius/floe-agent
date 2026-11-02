@@ -804,6 +804,22 @@ final class CADScriptAndMeshTests: XCTestCase {
         XCTAssertEqual(try XCTUnwrap(report.boundaryDistanceMM),10,accuracy:1e-8)
     }
 
+    @MainActor
+    func testMeshInspectionCancelsInsideGeometryPreparationWithoutPublishingPartialTree() {
+        let mesh = integrityCube()
+        var checkpoints = 0
+        let interrupted = CADInterferenceMeshGeometry.build(positions:mesh.positions,indices:mesh.indices,
+            shouldStop:{ checkpoints += 1; return checkpoints > 5 })
+        XCTAssertGreaterThan(checkpoints,5)
+        XCTAssertFalse(interrupted.isValid)
+        XCTAssertTrue(interrupted.bvh.nodes.isEmpty, "Never publish a partially built tree")
+        let valid = CADInterferenceMeshGeometry.build(positions:mesh.positions,indices:mesh.indices)
+        XCTAssertTrue(valid.isValid)
+        XCTAssertTrue(valid.topology.isWatertight)
+        XCTAssertEqual(valid.triangleCount,12)
+        XCTAssertFalse(valid.bvh.nodes.isEmpty)
+    }
+
     // MARK: 9. Combine / transform / material / image / text
 
     @MainActor

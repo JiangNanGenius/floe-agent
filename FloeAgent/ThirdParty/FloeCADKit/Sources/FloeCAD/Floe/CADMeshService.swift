@@ -20,7 +20,8 @@
 //     command path in ONE step and returns `"mutated":true`.
 //
 //  Bounds: at most 16 input bodies and 500k input triangles per operation, a
-//  10-second wall-clock deadline, and cancellation checks inside every loop
+//  bounded wall-clock deadlines (10s geometry, 60s inspected mesh cleanup/
+//  simplification), and cancellation checks inside every loop
 //  (Euclid CSG receives the same `isCancelled` closure). Frozen heavy inputs
 //  are validated on the compute thread before Euclid conversion/CSG: finite
 //  positions/normals/UVs, matching buffer counts, whole triangles, in-range
@@ -323,6 +324,7 @@ public final class CADMeshService {
     public nonisolated static let maxInputBodies = 16
     public nonisolated static let maxInputTriangles = 500_000
     public static let wallClockLimitSeconds: Double = 10
+    public static let inspectionWallClockLimitSeconds: Double = 60
     public static let maxImageBytes = 8 * 1024 * 1024
 
     /// Every action `handle(action:args:)` recognizes. `text` is retained for
@@ -337,18 +339,27 @@ public final class CADMeshService {
     public nonisolated static let advertisedActions: [String] = actions.filter { $0 != "text" }
 
     private let document: FloeCADDocument
-    /// Per-service deadline used by every operation. The public initializer
-    /// keeps the shared 10-second limit; the internal one exists only so the
-    /// deadline refusal path can be exercised deterministically.
+    /// Inspected repair/simplify work has a measured longer compute path.
+    /// Geometry retains 10s; complete mesh inspection gets bounded 60s. The
+    /// internal override still exercises the exact original refusal path.
     private let wallClockLimit: Double
+    private let usesDefaultLimits: Bool
 
-    public convenience init(document: FloeCADDocument) {
-        self.init(document: document, wallClockLimitSeconds: Self.wallClockLimitSeconds)
+    public init(document: FloeCADDocument) {
+        self.document = document
+        self.wallClockLimit = Self.wallClockLimitSeconds
+        self.usesDefaultLimits = true
     }
 
     init(document: FloeCADDocument, wallClockLimitSeconds: Double) {
         self.document = document
         self.wallClockLimit = max(wallClockLimitSeconds, 0)
+        self.usesDefaultLimits = false
+    }
+
+    private func limit(for action: String) -> Double {
+        usesDefaultLimits && (action == "simplify" || action == "repair")
+            ? Self.inspectionWallClockLimitSeconds : wallClockLimit
     }
 
     // MARK: Action router
@@ -558,7 +569,7 @@ public final class CADMeshService {
                                        cancellation: CADMeshCancellation) -> [String: Any] {
         let source = sourceToken(for: plan.inputs)
         let computation = Self.compute(plan: plan,
-                                       wallClockLimit: wallClockLimit,
+                                       wallClockLimit: limit(for: plan.action),
                                        cancellation: cancellation,
                                        previewRequested: Self.boolean(args["preview"]))
         return finishHeavy(plan, computation: computation, args: args,
@@ -570,7 +581,7 @@ public final class CADMeshService {
                                  cancellation: CADMeshCancellation) async -> [String: Any] {
         if cancellation.isCancelled || Task.isCancelled { return Self.cancelledReply() }
         let source = sourceToken(for: plan.inputs)
-        let limit = wallClockLimit
+        let limit = limit(for: plan.action)
         let previewRequested = Self.boolean(args["preview"])
         let run = beginRun(action: plan.action, cancellation: cancellation)
         let probe = Self.testHeavyComputeProbe
@@ -628,7 +639,7 @@ public final class CADMeshService {
         case .cancelled:
             return Self.cancelledReply()
         case .timedOut:
-            return limitTime()
+            return limitTime(limit: limit(for: plan.action))
         case .refused(let code, let message):
             return Self.fail(code, message)
         case .repairUnavailable(let entries, let request):
@@ -1771,7 +1782,7 @@ public final class CADMeshService {
                     }
                     let target = max(4, Int((Double(before) * ratio).rounded()))
                     let originalTopology = CADInterferenceMeshGeometry.build(
-                        positions: input.render.positions, indices: input.render.indices).topology
+                        positions: input.render.positions, indices: input.render.indices, shouldStop: serviceCancel).topology
                     var cell = max(diagonal(input.render) * 0.01, 1e-9)
                     var best: RenderMesh?
                     var bestCell = cell
@@ -1789,7 +1800,7 @@ public final class CADMeshService {
                         let candidate = welded.mesh
                         guard candidate.triangleCount >= 4 else { break }
                         let candidateTopology = CADInterferenceMeshGeometry.build(
-                            positions: candidate.positions, indices: candidate.indices).topology
+                            positions: candidate.positions, indices: candidate.indices, shouldStop: serviceCancel).topology
                         guard let candidateProtection = CADMeshSimplificationQuality.protection(
                             candidate, shouldStop: serviceCancel) else { return interrupted() }
                         if CADMeshSimplificationQuality.sameTopology(originalTopology, candidateTopology),
@@ -2137,9 +2148,9 @@ public final class CADMeshService {
 
     // MARK: Response helpers
 
-    private func limitTime() -> [String: Any] {
+    private func limitTime(limit: Double? = nil) -> [String: Any] {
         Self.fail("limit_time",
-                  "The mesh operation exceeded the \(String(format: "%g", wallClockLimit))-second "
+                  "The mesh operation exceeded the \(String(format: "%g", limit ?? wallClockLimit))-second "
                   + "wall-clock limit; nothing changed.")
     }
 

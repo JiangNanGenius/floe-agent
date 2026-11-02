@@ -46,7 +46,7 @@ nonisolated enum CADMeshIntegrity {
 
     /// Nil means inspection did not finish. Never publish an incomplete scan
     /// as a zero-defect report. Runs only on the existing service compute path.
-    static func inspect(_ mesh: RenderMesh, shouldStop: () -> Bool) -> Report? {
+    static func inspect(_ mesh: RenderMesh, shouldStop: @escaping () -> Bool) -> Report? {
         guard !shouldStop(), mesh.triangleCount > 0, mesh.indices.count % 3 == 0,
               mesh.positions.allSatisfy({ $0.x.isFinite && $0.y.isFinite && $0.z.isFinite }),
               mesh.indices.allSatisfy({ Int($0) < mesh.positions.count }) else { return nil }
@@ -71,7 +71,7 @@ nonisolated enum CADMeshIntegrity {
         // Signed zero has one geometric position, even across split normals.
         let positions = mesh.positions.map { SIMD3<Float>($0.x == 0 ? 0 : $0.x,
             $0.y == 0 ? 0 : $0.y, $0.z == 0 ? 0 : $0.z) }
-        let geometry = CADInterferenceMeshGeometry.build(positions: positions, indices: indices)
+        let geometry = CADInterferenceMeshGeometry.build(positions: positions, indices: indices, shouldStop: shouldStop)
         guard geometry.isValid, !shouldStop() else { return nil }
         let epsilon = max(1e-9, geometry.bounds.diagonal * 1e-10)
         var count = 0, witnesses: [[Int]] = []
