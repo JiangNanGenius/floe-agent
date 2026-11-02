@@ -2517,6 +2517,9 @@ final class CADAdvancedPatternTests: XCTestCase {
         let choice = try XCTUnwrap(model.patternPathChoices.first { $0.id == line })
         model.selectPatternPath(choice.path)
         XCTAssertEqual(model.patternState?.spacing, 0)
+        model.selectPatternPath(nil)
+        XCTAssertEqual(model.patternState?.spacing, 6, "Leaving Fit path must not create coincident linear copies")
+        model.selectPatternPath(choice.path)
         let undo = doc.session.undoStack.undoCommands.count
         model.commitPattern()
         XCTAssertNil(model.errorMessage)
@@ -2620,6 +2623,9 @@ final class CADAdvancedPatternTests: XCTestCase {
         XCTAssertEqual(try volume(body(doc, other)), otherVolume, accuracy: 1e-3)
         let descriptor = CADParameterService.describe(pattern, document: doc.session.document)
         XCTAssertNoThrow(try JSONSerialization.data(withJSONObject: descriptor))
+        let parameters = try XCTUnwrap(descriptor["parameters"] as? [[String: Any]])
+        XCTAssertEqual(parameters.first { $0["name"] as? String == "kind" }?["value"] as? String, "linear")
+        XCTAssertEqual(parameters.first { $0["name"] as? String == "seed_feature_id" }?["value"] as? String, seed.id.raw.uuidString)
     }
 
     func testFeaturePatternFailureHasNoPartialGeometryOrHistoryAndModeCanChange() async throws {

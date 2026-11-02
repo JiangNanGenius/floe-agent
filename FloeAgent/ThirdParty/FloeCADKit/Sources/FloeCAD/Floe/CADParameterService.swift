@@ -5115,6 +5115,7 @@ public final class CADParameterService {
             add("sketch_id", "unitless", sketchID.map { $0 as Any } ?? NSNull(), note: "Set one existing plane_id or sketch_id.")
         case let .pattern(body, spec):
             kindName = "pattern"
+            add("kind", "unitless", spec.kind.rawValue)
             add("mode", "unitless", spec.featureSeed == nil ? "body" : "feature", editable: false)
             add("seed_feature_id", "unitless", spec.featureSeed.map { $0.featureID.raw.uuidString as Any } ?? NSNull())
             add("selected_seed_body_id", "unitless", body.bodyID.raw.uuidString, editable: false,

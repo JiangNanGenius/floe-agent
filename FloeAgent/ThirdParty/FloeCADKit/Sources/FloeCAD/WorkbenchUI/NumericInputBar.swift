@@ -383,12 +383,14 @@ struct NumericInputBar: View {
             .accessibilityIdentifier("PatternPathMenu")
         }
         if viewModel.patternState?.curvePath == nil {
-        Picker("Type", selection: Binding(
+        Picker(FloeCADStrings.text("cad.pattern.type", "Pattern type"), selection: Binding(
             get: { viewModel.patternState?.kind ?? .linear },
             set: { viewModel.patternState?.kind = $0 }
         )) {
             ForEach(EditorViewModel.PatternState.Kind.allCases, id: \.self) { kind in
-                Text(kind.rawValue).tag(kind)
+                Text(kind == .linear
+                    ? FloeCADStrings.text("cad.pattern.linear", "Linear")
+                    : FloeCADStrings.text("cad.pattern.circular", "Circular")).tag(kind)
             }
         }
         .pickerStyle(.segmented)

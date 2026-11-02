@@ -6941,6 +6941,7 @@ final class EditorViewModel {
 
     func selectPatternPath(_ path: CurvePatternPathDefinition?) {
         guard var state = patternState, !state.isSketchPattern else { return }
+        if path == nil, state.curvePath != nil, state.spacing == 0 { state.spacing = 6 }
         state.curvePath = path
         if path != nil { state.spacing = 0; state.constructionAxisID = nil }
         patternState = state
