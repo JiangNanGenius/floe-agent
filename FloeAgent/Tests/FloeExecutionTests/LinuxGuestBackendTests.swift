@@ -832,7 +832,10 @@ final class LinuxGuestRegistryTests: XCTestCase {
             _ = try await registry.start(environmentID: "env-1", taskID: nil)
             XCTFail("A new VM must not start over the stopping guest's disk")
         } catch let error as LinuxGuestError {
-            if case .guestBusy = error { } else { XCTFail("Unexpected refusal: \(error)") }
+            if case .stopFailed(let id, let detail) = error {
+                XCTAssertEqual(id, "env-1")
+                XCTAssertTrue(detail.contains("stop is still in progress"))
+            } else { XCTFail("Unexpected refusal: \(error)") }
         } catch {
             XCTFail("Unexpected refusal: \(error)")
         }
