@@ -20,6 +20,7 @@ internal object C07DataExchangeFeature {
             content = {
                 Column(Modifier.fillMaxSize()) {
                     StorageSettingsEntry()
+                    com.floe.android.FontSettingsEntry()
                     Box(Modifier.weight(1f)) { C07DataExchangeSettingsDestination(host) }
                 }
             },

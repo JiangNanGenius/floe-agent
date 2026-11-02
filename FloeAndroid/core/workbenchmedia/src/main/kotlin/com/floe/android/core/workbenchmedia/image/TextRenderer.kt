@@ -22,7 +22,7 @@ internal object ImageLayerPainters {
         scale: Double,
     ): Bitmap {
         val fontSize = max(8.0, min(content.fontSize * scale, canvasHeight * 0.5))
-        val typeface = Typeface.create(content.fontName ?: "sans-serif", Typeface.NORMAL)
+        val typeface = com.floe.android.core.fonts.ManagedFontTypeface.resolve(content.fontName)
         val fill = TextPaint(Paint.ANTI_ALIAS_FLAG).apply {
             this.typeface = typeface
             textSize = fontSize.toFloat()

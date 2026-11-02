@@ -31,6 +31,7 @@ android {
 dependencies {
     api(project(":feature:workbenchcontracts"))
     implementation(libs.kotlinx.coroutines.core)
+    implementation(project(":core:fonts"))
 
     // Exact Media3 1.11.1 platform engine. Transformer pulls the pinned
     // muxer/datasource/container artifacts transitively; exoplayer plays the

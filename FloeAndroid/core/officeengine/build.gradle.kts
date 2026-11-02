@@ -61,6 +61,7 @@ android {
 }
 
 dependencies {
+    implementation(project(":core:fonts"))
     // Reuses the pinned design system (FloeTheme/Floe colors/type, FloeIcons
     // 24-grid glyph family, FloeToolbar/FloCircleButton/FloeUnavailableView)
     // and the already-catalogued Compose/Cupertino substrate. No new library:

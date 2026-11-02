@@ -404,11 +404,14 @@ class FloeApplication : Application() {
         com.floe.android.host.storage.StorageSettingsHost(this, hostScope)
     }
 
+    internal val fontSettings by lazy { com.floe.android.host.fonts.FontSettingsHost(this, hostScope) }
+
     override fun onCreate() {
         super.onCreate()
         // Isolated PDF rendering receives only verified file descriptors;
         // it must never bootstrap the credential, store or Agent owners.
         if (android.os.Process.isIsolated()) return
+        com.floe.android.core.fonts.ManagedFontTypeface.configure(this)
         // The native Office module owns its own service and engine in this
         // same-UID process. Starting another credential/store/Core owner here
         // would duplicate the main process's lifecycle and database writers.

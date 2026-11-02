@@ -48,6 +48,24 @@ object OfficePayloadBootstrap {
         )
     }
 
+    /** Inject only the active, immutable App-owned font snapshot. Old engines
+     * retain their original snapshot. This never exposes incoming/recovery files. */
+    fun withManagedFonts(content: String, snapshotPath: String): String {
+        require(snapshotPath.startsWith("/") && snapshotPath.none { it == '\n' || it == '\r' })
+        val escaped = snapshotPath.replace("&", "&amp;").replace("<", "&lt;")
+            .replace(">", "&gt;").replace("\"", "&quot;")
+        val start = "<!-- Floe managed fonts begin -->"
+        val end = "<!-- Floe managed fonts end -->"
+        val first = content.indexOf(start)
+        val last = content.indexOf(end)
+        require((first < 0) == (last < 0) && (first < 0 || last >= first)) { "Invalid managed font configuration" }
+        val clean = if (first >= 0) content.removeRange(first, last + end.length) else content
+        require(!clean.contains(start) && !clean.contains(end))
+        val close = clean.lastIndexOf("</fontconfig>")
+        require(close >= 0) { "Invalid Office font configuration" }
+        return clean.substring(0, close) + start + "\n<dir>" + escaped + "</dir>\n" + end + "\n" + clean.substring(close)
+    }
+
     /** Asset path of the engine profile tree inside the packaged assets. */
     const val UNPACK_ASSET_ROOT = "unpack"
 

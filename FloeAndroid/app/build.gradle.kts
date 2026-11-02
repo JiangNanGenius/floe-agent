@@ -580,6 +580,7 @@ dependencies {
     implementation(project(":core:designsystem"))
     implementation(project(":core:swiftbridge"))
     implementation(project(":core:runtimeipc"))
+    implementation(project(":core:fonts"))
     implementation(project(":core:workspacebridge"))
     implementation(project(":core:runlifecycle"))
     // G02 App host binding: the real provider/conversation/integrations

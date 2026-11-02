@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="fonts_title">Fonts</string>
+    <string name="fonts_manage">Manage fonts</string>
+    <string name="fonts_import">Import font</string>
+    <string name="fonts_scope">TTF, OTF and font collections, up to 32 MB. Available throughout Floe. Office uses changes in its next engine session.</string>
+    <string name="fonts_empty">No imported fonts</string>
+    <string name="fonts_installed">Font added</string>
+    <string name="fonts_removed">Font removed from the library</string>
+    <string name="fonts_missing">Font is no longer in the library</string>
+    <string name="fonts_failed">Could not complete this operation. Check that the font file is valid and readable.</string>
+    <string name="fonts_remove">Remove font</string>
+    <string name="fonts_remove_note">Projects using this font will need it imported again. Open documents keep their current font until closed.</string>
+    <string name="fonts_sample">%1$s · Aa 0123 字体预览</string>
+</resources>
