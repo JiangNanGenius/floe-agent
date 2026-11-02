@@ -1168,7 +1168,8 @@ class ThreadProjectionBuilder internal constructor(
         snapshotCounter += 1
         val rows = ArrayList<TimelineRowUi>()
         val messages = (userMessages.values + assistantMessages.values)
-            .sortedBy { it.timeLabel }
+            .sortedWith(compareBy<MessageUi> { it.createdAtEpochMillis ?: Long.MIN_VALUE }
+                .thenBy { if (it.createdAtEpochMillis != null) it.id else "" })
         val projectedEventRuns = mutableSetOf<String>()
         fun appendRecordedActivity(runId: String?) {
             if (runId == null || !projectedEventRuns.add(runId)) return
@@ -1689,6 +1690,7 @@ internal object ConversationWire {
                     ?.mapNotNull { chip -> decodeAttachmentChip(chip as? JsonObject) }
                     ?: emptyList(),
                 timeLabel = formatTime(createdAt),
+                createdAtEpochMillis = runCatching { java.time.Instant.parse(createdAt).toEpochMilli() }.getOrNull(),
             )
         } ?: emptyList()
         val earlierCursor = when (val element = root["earlierCursor"]) {

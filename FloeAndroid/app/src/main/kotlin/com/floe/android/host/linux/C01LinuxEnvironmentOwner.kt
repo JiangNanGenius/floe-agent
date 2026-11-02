@@ -3,6 +3,8 @@ package com.floe.android.host.linux
 
 import android.content.Context
 import com.floe.android.runtimeipc.RuntimeConnection
+import com.floe.android.host.RuntimeMetadataRead
+import kotlinx.coroutines.CancellationException
 import org.json.JSONObject
 import java.util.concurrent.TimeUnit
 
@@ -68,14 +70,16 @@ object C01LinuxEnvironmentOwner {
     }
 
     /** Metadata only, scoped by the original runtime workspace identity. */
-    private fun catalog(attached: Attachment, control: JSONObject): JSONObject = try {
+    private suspend fun catalog(attached: Attachment, control: JSONObject): JSONObject = try {
         val projectID = java.util.UUID.fromString(control.getString("projectID")).toString()
         RuntimeConnection(attached.context).use { connection ->
             connection.connect().get(5, TimeUnit.SECONDS)
-            val reply = connection.exchange("environment.list", JSONObject().put("projectID", projectID))
-            check(reply.optBoolean("ok"))
-            reply.getJSONObject("result").put("phase", "ready")
+            RuntimeMetadataRead.read("environment.list", JSONObject().put("projectID", projectID)) {
+                    operation, payload, requestID -> connection.exchange(operation, payload, requestID)
+            }.put("phase", "ready")
         }
+    } catch (cancelled: CancellationException) {
+        throw cancelled
     } catch (_: Exception) {
         refusal("The runtime environment catalog is unavailable.")
     }

@@ -485,9 +485,18 @@ extension FacadeRunDomain {
             mode: modeRaw,
             temporary: temporary)
         if !temporary, !isNotes, components.executionTargets != nil, resolvedExecutionTarget == nil {
-            let executableNames: Set<String> = ["exec.shell", "jobs.submit"]
+            // Every shell route needs the same pinned execution target. Leaving
+            // shell.* visible here would bypass the missing-target ceiling.
+            let executableNames: Set<String> = ["exec.shell", "jobs.submit",
+                "shell.open", "shell.exchange", "shell.signal", "shell.close"]
             let available = ceiling ?? Set(components.registry.allDescriptors.map(\.name))
             ceiling = available.subtracting(executableNames)
+        } else if resolvedExecutionTarget?.target.kind == .ssh {
+            // Interactive shell sessions are local PRoot sessions; the SSH
+            // target owns exec.shell through its existing remote router.
+            let localSessions: Set<String> = ["shell.open", "shell.exchange", "shell.signal", "shell.close"]
+            let available = ceiling ?? Set(components.registry.allDescriptors.map(\.name))
+            ceiling = available.subtracting(localSessions)
         }
         if !temporary, !isNotes,
            let installed = G02RuntimeComposition.shared.installedComposition, installed.epoch == epoch {

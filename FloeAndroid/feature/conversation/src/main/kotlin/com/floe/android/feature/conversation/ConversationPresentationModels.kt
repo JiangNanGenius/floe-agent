@@ -201,6 +201,8 @@ data class MessageUi(
      * (⇄ InternalNoticeProjection / ProposalDecisionPresentation); raw template
      * bytes never reach the ordinary surface, and `trustedNotice` says why. */
     val trustedNoticeSummary: String? = null,
+    /** Original full wire timestamp for chronology; never sort by display HH:mm. */
+    val createdAtEpochMillis: Long? = null,
 )
 
 /* -------------------------------- approvals -------------------------------- */
