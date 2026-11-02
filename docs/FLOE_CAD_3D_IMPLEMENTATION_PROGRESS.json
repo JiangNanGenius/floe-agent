@@ -8770,7 +8770,18 @@
       "component_download_delivery_verified": false,
       "full_environment_template_migration_verified": false,
       "original_criteria_count_unchanged": true,
-      "evidence": "docs/qualification/linux-runner-2.1-20261102/README.md"
+      "evidence": "docs/qualification/linux-runner-2.1-20261102/README.md",
+      "default_RuntimeV2_source_sha": "8e3d12af4e281e65ba4b29d32bb8dda06829b9a7",
+      "default_RuntimeV2_actual_App_object_build_passed": true,
+      "default_RuntimeV2_actual_native": {
+        "passed": 68,
+        "failed": 0,
+        "skipped": 0,
+        "seconds": 319.193
+      },
+      "actual_component_SMP_protocol_checks": 57,
+      "component_archive_and_local_install_verified": true,
+      "original_base_delta_and_template_pin_retention_verified": true
     }
   }
 }

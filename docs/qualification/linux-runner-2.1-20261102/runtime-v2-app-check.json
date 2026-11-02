@@ -1,0 +1,38 @@
+{
+  "schemaVersion": 1,
+  "appSource": "8e3d12af4e281e65ba4b29d32bb8dda06829b9a7",
+  "producerSource": "368826932a4dab19fc1822dd40d421af0f56d689",
+  "build": {
+    "passed": true,
+    "durationSeconds": 110.349,
+    "sourceDrift": false
+  },
+  "native": {
+    "totalTestCount": 68,
+    "passedTests": 68,
+    "failedTests": 0,
+    "skippedTests": 0
+  },
+  "elapsedSeconds": 319.193,
+  "simulatorShutdownExitCode": 0,
+  "actualGuestAssertions": [
+    "Complete original and new catalog-pinned archives through production hash/CRC/sparse installer; DEBUG fixture digest seam only",
+    "Default production composition: verified blob/image store, composite resolver, integrator, leases and private delta",
+    "Original base image ID and rootfs SHA preserved through component execution identity update; no rebase",
+    "Actual old ext4 sentinel and Python/Node package versions persist",
+    "Actual installed2.1 binary SHA512, measured CAPS env1 and isolated child environment",
+    "Graceful stop, captured original-base delta, reboot and exact original sentinel retained"
+  ],
+  "boundaryTests": [
+    "Exact predecessor ID/SHA/size refusal before disk ownership",
+    "Original private delta and immutable template pin preserved, capture and reopen",
+    "First legacy migration with component update preserves original base; wrong origin refused without losing source",
+    "Legacy v1 provenance readable; foreign component and future version refused on recovery",
+    "Original template immutability, lease, capture-retry and cancellation tests"
+  ],
+  "productionCatalogChanged": false,
+  "published": false,
+  "original106Accepted": 57,
+  "original106Pending": 49,
+  "physicalDevicePerformanceVerified": false
+}
