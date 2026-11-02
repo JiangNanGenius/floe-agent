@@ -145,6 +145,11 @@ final class CadWebEngineSession: NSObject, WKNavigationDelegate {
         _ = try await hostCall("undo", payload: [:])
     }
 
+    /// Reapply the same worker-owned snapshot used by the editor's Redo.
+    func redo() async throws {
+        _ = try await hostCall("redo", payload: [:])
+    }
+
     func save() async throws -> Data {
         let base64 = try await hostCall("save", payload: [:])
         guard let data = Data(base64Encoded: base64), !data.isEmpty else {

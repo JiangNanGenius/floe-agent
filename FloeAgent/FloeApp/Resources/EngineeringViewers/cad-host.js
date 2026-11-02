@@ -77,6 +77,10 @@ window.floeCadHostCall = async (operation, payload) => {
       await engine.call('undo');
       return JSON.stringify({ ok: true });
     }
+    case 'redo': {
+      await engine.call('redo');
+      return JSON.stringify({ ok: true });
+    }
     case 'save':
       return b64encode(await engine.call('save'));
     case 'dxf':
