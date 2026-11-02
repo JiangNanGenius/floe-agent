@@ -5022,4 +5022,47 @@ static bool OS3DPlausibleSectionCounts(NSData *data) {
     return TessellateShape(shape->_shape, linearDeflection, angularDeflection);
 }
 
++ (OCCTRenderMesh *)snapshotRenderMeshFromShape:(OCCTShape *)shape
+                       angularDeflection:(double)angularDeflection
+                        linearDeflection:(double)linearDeflection {
+    if (shape == nil) return EmptyRenderMesh();
+    try {
+        // Even a cached second mesh marks live wires Checked. That flag is
+        // serialized, so a naming query must not run the mesher on an undo
+        // snapshot. Own the geometry and use the copier's actual ancestry;
+        // copied and live face ordinals are never assumed to be equal.
+        BRepBuilderAPI_Copy copy(shape->_shape, Standard_True, Standard_False);
+        if (!copy.IsDone() || copy.Shape().IsNull()) return EmptyRenderMesh();
+        TopTools_IndexedMapOfShape originalFaces, copiedFaces;
+        TopExp::MapShapes(shape->_shape, TopAbs_FACE, originalFaces);
+        TopExp::MapShapes(copy.Shape(), TopAbs_FACE, copiedFaces);
+        if (originalFaces.IsEmpty() || originalFaces.Extent() != copiedFaces.Extent())
+            return EmptyRenderMesh();
+        std::vector<uint32_t> originals(copiedFaces.Extent() + 1, 0);
+        for (Standard_Integer index = 1; index <= originalFaces.Extent(); ++index) {
+            const TopoDS_Shape mapped = copy.ModifiedShape(originalFaces(index));
+            const Standard_Integer copied = copiedFaces.FindIndex(mapped);
+            if (copied <= 0 || originals[copied] != 0) return EmptyRenderMesh();
+            originals[copied] = static_cast<uint32_t>(index);
+        }
+        OCCTRenderMesh *mesh = TessellateShape(copy.Shape(), linearDeflection, angularDeflection);
+        const NSUInteger count = mesh.faceIndices.length / sizeof(uint32_t);
+        if (count != mesh.triangleCount) return EmptyRenderMesh();
+        const uint32_t *channel = static_cast<const uint32_t *>(mesh.faceIndices.bytes);
+        std::vector<uint32_t> translated;
+        translated.reserve(count);
+        for (NSUInteger index = 0; index < count; ++index) {
+            const uint32_t copied = channel[index];
+            if (copied == 0 || copied >= originals.size() || originals[copied] == 0)
+                return EmptyRenderMesh();
+            translated.push_back(originals[copied]);
+        }
+        mesh->_faceIndices = [NSData dataWithBytes:translated.data()
+                                           length:translated.size() * sizeof(uint32_t)];
+        return mesh;
+    } catch (...) {
+        return EmptyRenderMesh();
+    }
+}
+
 @end

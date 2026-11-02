@@ -204,6 +204,40 @@ final class CADShellOpeningTests: XCTestCase {
         }
     }
 
+    func testUnprovenHistoryAndMixedQualifiedOpeningNeverAdoptTodaysFace() async throws {
+        let f = try await fixture()
+        let good = try shell(f)
+        guard case let .shell(reference, faces, _) = good.kind else { return XCTFail("Missing shell") }
+        let qualified = try XCTUnwrap(faces.first)
+        var unproven = qualified; unproven.elementName = nil; unproven.role = .derived(index: 0)
+        f.document.session.undo()
+        let bad = FeatureNode(name: "Unproven mixed shell", kind: .shell(
+            body: reference, openFaces: [qualified, unproven], thickness: Expr(value: 1)), outputBodyIDs: [f.body])
+        f.document.session.recordAndRebuild([bad], title: "Old mixed shell")
+        XCTAssertNotNil(f.document.session.lastEvalErrors[bad.id])
+        XCTAssertEqual(try volume(f), 1_500 * .pi, accuracy: 1e-4)
+        let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys]
+        let graph = try encoder.encode(f.document.session.document.features)
+        let undo = f.document.session.undoStack.undoCommands.count
+        let model = f.document.viewModel()
+        XCTAssertFalse(model.beginShellEdit(bad.id), "History is recovery of old intent, not a fresh selection")
+        XCTAssertNotNil(model.errorMessage)
+        XCTAssertTrue(model.shellSelectedFaces.isEmpty)
+        XCTAssertEqual(try encoder.encode(f.document.session.document.features), graph)
+        XCTAssertEqual(f.document.session.undoStack.undoCommands.count, undo)
+        guard case let .shell(_, retained, _)? = f.document.session.document.features.node(bad.id)?.kind else {
+            return XCTFail("Refusal lost the old operands")
+        }
+        XCTAssertEqual(retained, [qualified, unproven])
+        f.document.session.undo()
+        let source = try XCTUnwrap(f.document.session.document.body(with: f.body))
+        let fresh = try XCTUnwrap(OCCTKernel.faceInfo(try XCTUnwrap(source.brep)).first { $0.index == f.curvedFace })
+        let current = FaceRef(body: reference, creator: reference.producer,
+            role: .derived(index: 0), signature: try XCTUnwrap(fresh.signature))
+        XCTAssertNotNil(SignatureNaming().resolve(current, in: source, table: f.document.session.lastFaceTables[f.body]),
+            "Refusing an old operand must leave current geometry selection usable")
+    }
+
     func testKernelFailurePreservesSavedModelAndRedo() async throws {
         let f = try await fixture()
         _ = try shell(f)

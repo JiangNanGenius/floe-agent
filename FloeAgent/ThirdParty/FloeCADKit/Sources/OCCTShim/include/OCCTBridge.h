@@ -783,6 +783,13 @@ typedef NS_ENUM(NSInteger, OCCTOpCode) {
                        angularDeflection:(double)angularDeflection
                         linearDeflection:(double)linearDeflection;
 
+/// Read-only geometric witness. Mesh an independent copy and translate its
+/// face channel through copy history to the original shape's face indices.
+/// Does not update even the original's transient topology/meshing flags.
++ (OCCTRenderMesh *)snapshotRenderMeshFromShape:(OCCTShape *)shape
+                       angularDeflection:(double)angularDeflection
+                        linearDeflection:(double)linearDeflection;
+
 @end
 
 NS_ASSUME_NONNULL_END

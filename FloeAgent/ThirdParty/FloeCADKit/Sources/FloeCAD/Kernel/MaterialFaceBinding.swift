@@ -141,9 +141,8 @@ nonisolated struct CADFaceNamingSnapshot: Codable, Sendable {
     }
 
     private static func nativeBoundaries(_ handle: BRepHandle) -> [Int: String]? {
-        let native = OCCTKernel.renderMesh(from: handle)
-        let render = RenderMesh(positions: native.positions, normals: native.normals, indices: native.indices)
-        return boundaryDigests(render: render, channel: OCCTKernel.renderMeshFaceChannel(from: handle))
+        guard let snapshot = OCCTKernel.faceMeshSnapshot(from: handle) else { return nil }
+        return boundaryDigests(render: snapshot.render, channel: snapshot.channel)
     }
 
     private static func nativeWitnesses(_ handle: BRepHandle) -> [Int: NativeFaceWitness]? {

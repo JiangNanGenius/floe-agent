@@ -31,6 +31,30 @@ final class CADMaterialCoreTests: XCTestCase {
         if let workDir { try? FileManager.default.removeItem(at: workDir) }
     }
 
+    func testReadOnlyNativeFaceSnapshotPreservesEverySourceByteAndActualFaceMapping() throws {
+        let native = try XCTUnwrap(OCCTKernel.primitiveShape(
+            .box(width: 40, depth: 20, height: 10), placement: .identity))
+        _ = OCCTKernel.renderMesh(from: native)
+        let original = try XCTUnwrap(OCCTKernel.serialize(native))
+        let faces = Dictionary(uniqueKeysWithValues: OCCTKernel.faceInfo(native).map { ($0.index, $0) })
+        for _ in 0..<3 {
+            let snapshot = try XCTUnwrap(OCCTKernel.faceMeshSnapshot(from: native))
+            XCTAssertEqual(OCCTKernel.serialize(native), original,
+                "A proof query cannot even mutate the source's serialized Checked/mesh flags")
+            XCTAssertEqual(Set(snapshot.channel.map(Int.init)), Set(faces.keys))
+            for triangle in snapshot.channel.indices {
+                let face = try XCTUnwrap(faces[Int(snapshot.channel[triangle])])
+                let signature = try XCTUnwrap(face.signature)
+                guard case .planar = signature.kind else { return XCTFail("Box must have six actual planar faces") }
+                for vertex in 0..<3 {
+                    let point = SIMD3<Double>(snapshot.render.positions[Int(snapshot.render.indices[triangle * 3 + vertex])])
+                    XCTAssertEqual(simd_dot(signature.normal, point), signature.planeOffset, accuracy: 1e-5,
+                        "Snapshot channel must reference the original face through copy history")
+                }
+            }
+        }
+    }
+
     // MARK: Helpers
 
     func testEnvironmentServiceAndInspectorCommandShareUndoAndReopen() async throws {

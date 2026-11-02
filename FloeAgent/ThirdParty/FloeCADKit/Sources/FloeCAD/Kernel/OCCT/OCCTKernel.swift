@@ -1305,6 +1305,26 @@ nonisolated enum OCCTKernel {
             linearDeflection: renderLinearDeflection).faceIndices.uint32Array()
     }
 
+    /// A naming witness must not mutate the original or its undo snapshots.
+    /// The bridge maps copied faces back through actual construction history.
+    static func faceMeshSnapshot(from handle: BRepHandle) -> (render: RenderMesh, channel: [UInt32])? {
+        let mesh = OCCTBridge.snapshotRenderMesh(from: handle.shape,
+            angularDeflection: renderAngularDeflection, linearDeflection: renderLinearDeflection)
+        let positions = mesh.positions.floatArray(), normals = mesh.normals.floatArray()
+        let indices = mesh.indices.uint32Array(), channel = mesh.faceIndices.uint32Array()
+        let count = mesh.vertexCount
+        guard count > 0, positions.count == count * 3, normals.count == count * 3,
+              !indices.isEmpty, indices.count % 3 == 0,
+              channel.count == indices.count / 3,
+              channel.allSatisfy({ $0 > 0 }), indices.allSatisfy({ $0 < count }) else { return nil }
+        let render = RenderMesh(positions: (0..<count).map {
+            SIMD3(positions[$0 * 3], positions[$0 * 3 + 1], positions[$0 * 3 + 2])
+        }, normals: (0..<count).map {
+            SIMD3(normals[$0 * 3], normals[$0 * 3 + 1], normals[$0 * 3 + 2])
+        }, indices: indices)
+        return (render, channel)
+    }
+
     /// 5 doubles per entry — `cx, cy, rx, ry, rotation` — parallel to the
     /// loops they describe. A non-positive `rx` means "no conic here, use the
     /// polyline", which is how one flat array carries the absent case too.
