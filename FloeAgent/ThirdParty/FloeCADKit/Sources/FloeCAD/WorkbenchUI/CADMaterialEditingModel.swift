@@ -181,7 +181,7 @@ enum CADMaterialTargetResolver {
                                           session: session) {
             switch CADFaceMaterialResolver.match(
                 CADFaceKey(signature: entry.signature, elementName: entry.elementName),
-                candidates: candidates) {
+                candidates: candidates, scope: .currentSelection) {
             case .resolved(let index, _):
                 faceIndex = index
                 signature = kernelSignature(for: index, in: body)
@@ -253,10 +253,11 @@ enum CADMaterialTargetResolver {
     }
 
     static func kernelMatch(for signature: FaceSignature, in body: Body,
-                            elementName: ElementName? = nil, table: FaceTable? = nil) -> CADFaceMatch {
+                            elementName: ElementName? = nil, table: FaceTable? = nil,
+                            scope: CADFaceMaterialResolver.MatchScope = .persisted) -> CADFaceMatch {
         CADFaceMaterialResolver.match(
             CADFaceKey(signature: signature, elementName: elementName),
-            candidates: CADFaceMaterialResolver.candidates(for: body, table: table))
+            candidates: CADFaceMaterialResolver.candidates(for: body, table: table), scope: scope)
     }
 
     static func kernelSignature(for index: Int, in body: Body) -> FaceSignature? {
@@ -283,7 +284,7 @@ enum CADMaterialTargetResolver {
             return nil
         }
         guard case let .resolved(index, _) = kernelMatch(for: signature, in: body,
-            elementName: elementName, table: table) else { return nil }
+            elementName: elementName, table: table, scope: .currentSelection) else { return nil }
         return CADFaceMaterialResolver.triangles(for: index, in: body, table: table)
     }
 
@@ -860,8 +861,13 @@ final class CADMaterialDraftModel {
             let key = CADFaceKey(signature: signature,
                 elementName: candidates.first(where: { $0.index == faceIndex })?.elementName,
                 capturedIndex: faceIndex)
-            if case .ambiguous(let indices) = CADFaceMaterialResolver.match(
-                key, candidates: candidates) {
+            switch CADFaceMaterialResolver.match(key, candidates: candidates) {
+            case .resolved: break
+            case .unresolved(let reason):
+                errorMessage = reason
+                targetError = reason
+                return
+            case .ambiguous(let indices):
                 errorMessage = FloeCADStrings.format(
                     "cad.material.error.ambiguous",
                     "That face is not unique (%d candidates). Reselect a distinct face.",

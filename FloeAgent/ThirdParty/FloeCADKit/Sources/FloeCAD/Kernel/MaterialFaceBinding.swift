@@ -452,6 +452,11 @@ nonisolated struct CADFaceGroupAssessment: Sendable, Equatable {
 }
 
 nonisolated enum CADFaceMaterialResolver {
+    /// A current pick may inspect its actual geometry. A saved material key
+    /// must carry the identity recorded when it was assigned; a matching
+    /// partial fingerprint today cannot recover an old face's identity.
+    nonisolated enum MatchScope: Sendable { case persisted, currentSelection }
+
     /// Retained for query/preview comparisons. Persisted bindings use names
     /// or unique exact fingerprints below, never this similarity threshold.
     static let matchThreshold: Double = 0.72
@@ -481,7 +486,8 @@ nonisolated enum CADFaceMaterialResolver {
     static func assessGroups(in body: Body,
                              table: FaceTable?,
                              tableRevision: UInt64?,
-                             triangleCount overrideTriangleCount: Int? = nil)
+                             triangleCount overrideTriangleCount: Int? = nil,
+                             matchScope: MatchScope = .persisted)
         -> CADFaceGroupAssessment {
         let triangleCount = overrideTriangleCount
             ?? (body.render.indices.count / 3)
@@ -527,7 +533,7 @@ nonisolated enum CADFaceMaterialResolver {
             }
             let materialName = binding.material.materialName ?? "Material"
             let captured = binding.key.capturedIndex
-            switch match(binding.key, candidates: candidates) {
+            switch match(binding.key, candidates: candidates, scope: matchScope) {
             case .resolved(let faceIndex, _):
                 guard tableIsFresh, let table else {
                     issues.append(CADFaceGroupIssue(
@@ -629,13 +635,18 @@ nonisolated enum CADFaceMaterialResolver {
         selected.materialFaceBindings = [CADFaceMaterialBinding(
             key: CADFaceKey(signature: face.signature, elementName: face.elementName, capturedIndex: index),
             material: .default)]
-        let assessment = assessGroups(in: selected, table: table, tableRevision: body.meshRevision)
+        let assessment = assessGroups(in: selected, table: table, tableRevision: body.meshRevision,
+                                      matchScope: .currentSelection)
         guard assessment.issues.isEmpty, assessment.groups.count == 1 else { return nil }
         return assessment.groups.first?.triangles
     }
 
     static func match(_ key: CADFaceKey,
-                      candidates: [CADFaceCandidate]) -> CADFaceMatch {
+                      candidates: [CADFaceCandidate], scope: MatchScope = .persisted) -> CADFaceMatch {
+        if case .persisted = scope, key.elementName?.isStableFaceIdentity != true {
+            return .unresolved(reason: FloeCADStrings.text("cad.material.target.reselectFaceHint",
+                "This selection doesn't match one stable face. Reselect a single face."))
+        }
         guard !candidates.isEmpty else {
             return .unresolved(reason: "The body has no analytic B-rep faces; face materials need an exact solid.")
         }

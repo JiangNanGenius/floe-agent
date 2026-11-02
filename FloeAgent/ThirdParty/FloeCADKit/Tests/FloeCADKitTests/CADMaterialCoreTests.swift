@@ -574,14 +574,42 @@ final class CADMaterialCoreTests: XCTestCase {
         XCTAssertEqual(CADFaceMaterialResolver.match(named, candidates: [actual,
             CADFaceCandidate(index: 2, signature: signature, elementName: name)]),
             .ambiguous(indices: [2, 7]))
+        XCTAssertNil(CADFaceMaterialResolver.match(unnamed, candidates: [
+            .init(index: 8, signature: signature), .init(index: 3, signature: signature)]).resolvedIndex,
+            "An unqualified saved key requires re-selection even when its old fingerprint repeats")
         XCTAssertEqual(CADFaceMaterialResolver.match(unnamed, candidates: [
-            .init(index: 8, signature: signature), .init(index: 3, signature: signature)]),
-            .ambiguous(indices: [3, 8]))
+            .init(index: 8, signature: signature), .init(index: 3, signature: signature)],
+            scope: .currentSelection), .ambiguous(indices: [3, 8]))
         let legacy = ElementName(creator: creator, source: .opFace(operation: creator,
             parents: [name], index: 0))
         XCTAssertNil(CADFaceMaterialResolver.match(
             CADFaceKey(signature: signature, elementName: legacy),
             candidates: [.init(index: 7, signature: changed, elementName: legacy)]).resolvedIndex)
+    }
+
+    func testUnprovenSavedMaterialKeyCannotBorrowTodaysQualifiedFace() throws {
+        let owner = FeatureID()
+        let qualified = ElementName(creator: owner, source: .primitiveFace(.boxFace(.py)))
+        let signature = FaceSignature(kind: .planar, normal: SIMD3(0, 1, 0),
+            centroid: .zero, area: 100, planeOffset: 0)
+        let candidate = CADFaceCandidate(index: 1, signature: signature, elementName: qualified)
+        let legacyOrdinal = ElementName(creator: owner,
+            source: .opFace(operation: owner, parents: [qualified], index: 0))
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        for name in [nil, legacyOrdinal] as [ElementName?] {
+            let key = CADFaceKey(signature: signature, elementName: name, capturedIndex: 1)
+            let original = try encoder.encode(key)
+            guard case .unresolved = CADFaceMaterialResolver.match(key, candidates: [candidate]) else {
+                return XCTFail("Today's unique equal fingerprint cannot prove an old saved assignment")
+            }
+            XCTAssertEqual(try encoder.encode(key), original, "Refusal cannot upgrade or rewrite the key")
+        }
+        let current = CADFaceKey(signature: signature, capturedIndex: 1)
+        XCTAssertEqual(CADFaceMaterialResolver.match(current, candidates: [candidate],
+            scope: .currentSelection).resolvedIndex, 1, "Fresh current geometry remains pickable")
+        let recorded = CADFaceKey(signature: signature, elementName: qualified, capturedIndex: 99)
+        XCTAssertEqual(CADFaceMaterialResolver.match(recorded, candidates: [candidate]).resolvedIndex, 1)
     }
 
     func testNamedRegionMaterialFollowsDimensionsButNeverMovesToTheSurvivingRegion() async throws {
