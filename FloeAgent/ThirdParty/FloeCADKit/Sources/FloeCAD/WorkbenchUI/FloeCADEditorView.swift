@@ -1981,17 +1981,6 @@ struct FloeCADEditorView: View {
                         .controlSize(.small)
                         .keyboardShortcut(.cancelAction)
                     }
-                } else if case .patterning = viewModel.mode {
-                    statusPill(
-                        icon: "square.grid.3x3",
-                        text: "Set pattern options below, then Apply"
-                    ) {
-                        Button("Cancel") {
-                            viewModel.cancelPattern()
-                        }
-                        .controlSize(.small)
-                        .keyboardShortcut(.cancelAction)
-                    }
                 } else if case .rotatingAroundAxis = viewModel.mode {
                     statusPill(
                         icon: "arrow.clockwise",

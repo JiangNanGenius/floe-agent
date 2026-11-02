@@ -2149,7 +2149,7 @@ final class CADAdvancedPatternNativeFlowUITests: XCTestCase {
         XCTAssertTrue(apply.exists && apply.isHittable)
         capture(compact ? "M25 compact large text native feature and path controls" : "M25 native feature and exact path controls")
         if compact {
-            app.buttons["Cancel"].tap()
+            app.buttons["PatternCancel"].tap()
         } else {
             path.tap(); app.buttons["No path"].tap()
             let spacing = app.textFields["PatternSpacing"]

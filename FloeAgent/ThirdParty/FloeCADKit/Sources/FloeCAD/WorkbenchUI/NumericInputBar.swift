@@ -334,6 +334,8 @@ struct NumericInputBar: View {
             Button(FloeCADStrings.label("cad.ui.common.cancel", "Cancel")) {
                 viewModel.cancelPattern()
             }
+            .keyboardShortcut(.cancelAction)
+            .accessibilityIdentifier("PatternCancel")
             Button(FloeCADStrings.label("cad.ui.common.apply", "Apply")) {
                 viewModel.commitPattern()
             }
