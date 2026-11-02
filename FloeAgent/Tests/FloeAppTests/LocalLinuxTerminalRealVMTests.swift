@@ -615,7 +615,9 @@ final class LinuxRunnerEnvironmentRealGuestTests: XCTestCase {
         let archiveSHA512 = try XCTUnwrap(variables["FLOE_RUNNER21_NEW_ARCHIVE_SHA512"])
         let expectedComponent = try JSONDecoder().decode(LinuxGuestImage.self,
             from: Data(contentsOf: newSource.appendingPathComponent("manifest.json")))
-        let baseSource = imagesRoot.appendingPathComponent(LinuxGuestImageDistributionCatalog.defaultImageID)
+        let baseArchive = URL(fileURLWithPath: try XCTUnwrap(variables["FLOE_RUNNER21_BASE_ARCHIVE"]))
+        let baseEntry = try XCTUnwrap(LinuxGuestImageDistributionCatalog.entry(
+            id: LinuxGuestImageDistributionCatalog.defaultImageID))
         let owned = imagesRoot.deletingLastPathComponent().appendingPathComponent("adoption-\(UUID().uuidString)")
         let writable = owned.appendingPathComponent("environment", isDirectory: true)
         let workspace = owned.appendingPathComponent("workspace", isDirectory: true)
@@ -660,7 +662,10 @@ final class LinuxRunnerEnvironmentRealGuestTests: XCTestCase {
                 id: expectedComponent.id, archiveURL: newArchive, archiveSHA512: archiveSHA512,
                 provenance: try XCTUnwrap(expectedComponent.provenance)))
             defer { LinuxGuestImageDistributionCatalog.clearTestEntries() }
-            let base = try await installer.importDirectory(at: baseSource)
+            // The existing 16 GiB image also needs its real catalog-pinned
+            // archive. Ordinary directory imports deliberately keep 4 GiB.
+            let base = try await installer.importArchive(at: baseArchive,
+                expectedSHA512: baseEntry.archiveSHA512, expectedImageID: baseEntry.id)
             phase("base.imported")
             let component = try await installer.importArchive(at: newArchive,
                 expectedSHA512: archiveSHA512, expectedImageID: expectedComponent.id)
