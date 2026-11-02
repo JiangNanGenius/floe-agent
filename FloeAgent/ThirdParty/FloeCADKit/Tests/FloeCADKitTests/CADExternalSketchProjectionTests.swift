@@ -887,7 +887,7 @@ final class CADExternalSketchProjectionTests: XCTestCase {
         let brep = try XCTUnwrap(OCCTKernel.primitiveShape(spec, placement: .identity))
         XCTAssertTrue(body.adoptBRep(brep))
         let writer = FeatureID()
-        let table = SignatureNaming().faceTable(for: body, createdBy: writer, scheme: .generic)
+        let table = SignatureNaming().faceTable(for: body, createdBy: writer, scheme: .primitive(spec))
         let named = ElementNaming.namePrimitiveEntries(table, creator: writer)
         let kernelNames = ElementNaming.kernelNames(
             from: named, channel: OCCTKernel.renderMeshFaceChannel(from: brep))

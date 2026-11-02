@@ -1786,9 +1786,39 @@ final class CADNativeUVAndCopyMergeFlowUITests: XCTestCase {
         let app = launch(compact: compact)
         defer { app.terminate() }
         app.segmentedControls["CADWorkbenchMode"].buttons["Present"].tap()
+        let surface = app.descendants(matching: .any)
+            .matching(identifier: "CADPresentationSurface").firstMatch
+        XCTAssertTrue(surface.waitForExistence(timeout: 30))
+        let granularity = app.segmentedControls["CADPresentSelectionMode"]
+        XCTAssertTrue(granularity.waitForExistence(timeout: 10))
+        app.buttons["CADPresentFit"].tap()
+        granularity.buttons["Body"].tap()
+        // Use the fixture's real top face, projected through the production
+        // Fit camera, as in the existing unpainted-face acceptance flow.
+        // Opening Material with no selection deliberately has no body UVs.
+        let azimuth = Double.pi * 0.22
+        let elevation = Double.pi * 0.12
+        let halfFov = Double.pi / 6
+        let radius = sqrt(100.0 * 100 + 10.0 * 10 + 60.0 * 60) / 2
+        let distance = max(radius / tan(halfFov) * 1.18, radius * 1.6)
+        let horizontal = -25 * cos(azimuth)
+        let vertical = 25 * sin(azimuth) * sin(elevation) + 5 * cos(elevation)
+        let depth = distance - (-25 * cos(elevation) * sin(azimuth) + 5 * sin(elevation))
+        let aspect = Double(surface.frame.width / surface.frame.height)
+        let x = 0.5 + horizontal / (2 * depth * tan(halfFov) * aspect)
+        let y = 0.5 - vertical / (2 * depth * tan(halfFov))
+        XCTAssertGreaterThan(x, 0.1)
+        XCTAssertLessThan(x, 0.9)
+        XCTAssertGreaterThan(y, 0.1)
+        XCTAssertLessThan(y, 0.9)
+        surface.coordinate(withNormalizedOffset: CGVector(dx: x, dy: y)).tap()
+        XCTAssertTrue(app.staticTexts["CADPresentSelection"].waitForExistence(timeout: 20),
+                      "UV editing requires a real selected body")
         let material = app.buttons["CADPresentMaterial"]
         XCTAssertTrue(material.waitForExistence(timeout: 30))
         material.tap()
+        XCTAssertTrue(app.descendants(matching: .any)
+            .matching(identifier: "CADMaterialSelectedTarget").firstMatch.waitForExistence(timeout: 15))
         let open = app.buttons["CADMaterialOpenUVEditor"]
         reveal(open, sheet: "Material", app: app)
         open.tap()
