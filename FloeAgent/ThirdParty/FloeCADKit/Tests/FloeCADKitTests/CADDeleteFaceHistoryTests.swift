@@ -218,6 +218,77 @@ final class CADDeleteFaceHistoryTests: XCTestCase {
         }
     }
 
+    func testExplicitRepairIsNewIntentAndUndoReopenPreservesTheOriginalUnprovenReference() async throws {
+        let f = try await fixture()
+        let brep = try XCTUnwrap(f.document.session.document.body(with: f.body)?.brep)
+        let top = try XCTUnwrap(OCCTKernel.faceInfo(brep).first { $0.normal.y > 0.99 })
+        let old = FaceRef(body: BodyRef(producer: f.source.id, bodyID: f.body), creator: f.source.id,
+            role: .derived(index: 0), signature: try XCTUnwrap(top.signature))
+        let broken = FeatureNode(name: "Old unproven push", kind: .pushPull(face: old,
+            distance: Expr(value: 1), mode: .planarAxial), outputBodyIDs: [f.body])
+        f.document.session.recordAndRebuild([broken], title: "Old feature")
+        XCTAssertNotNil(f.document.session.lastEvalErrors[broken.id])
+        let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys]
+        let originalGraph = try encoder.encode(f.document.session.document.features)
+        let undo = f.document.session.undoStack.undoCommands.count
+        let model = f.document.viewModel()
+        XCTAssertTrue(model.beginFeatureFaceEdit(broken.id), model.errorMessage ?? "")
+        model.handle(.tap(ray: Ray(origin: SIMD3(10, 50, 5), direction: SIMD3(0, -1, 0))))
+        XCTAssertNil(model.errorMessage)
+        XCTAssertTrue(f.document.session.lastEvalErrors.isEmpty, "\(f.document.session.lastEvalErrors)")
+        XCTAssertEqual(f.document.session.undoStack.undoCommands.count, undo + 1)
+        XCTAssertEqual(try volume(f), 13_200 - 99 * .pi, accuracy: 1e-4)
+        guard case let .pushPull(repaired, _, _)? = f.document.session.document.features.node(broken.id)?.kind else {
+            return XCTFail("Repair must keep the existing feature ID")
+        }
+        XCTAssertNotEqual(repaired, old)
+        XCTAssertTrue(try XCTUnwrap(repaired.elementName).isStableFaceIdentity)
+        f.document.session.undo()
+        XCTAssertEqual(try encoder.encode(f.document.session.document.features), originalGraph)
+        XCTAssertEqual(try volume(f), 12_000 - 90 * .pi, accuracy: 1e-4)
+        let saved = await f.document.save(); XCTAssertTrue(saved.succeeded, saved.error ?? "")
+        let reopened = try await FloeCADDocument.open(at: f.document.url); documents.append(reopened)
+        XCTAssertEqual(try encoder.encode(reopened.session.document.features), originalGraph)
+        guard case let .pushPull(restored, _, _)? = reopened.session.document.features.node(broken.id)?.kind else {
+            return XCTFail("Old operand was lost on reopen")
+        }
+        XCTAssertEqual(restored, old)
+        XCTAssertNil(restored.elementName, "Saving or opening cannot invent original selection provenance")
+        var revision: UInt64 = 0
+        let refused = reopened.session.document.features.evaluate(sketches: [], planes: [], naming: SignatureNaming()) {
+            revision += 1; return revision
+        }
+        XCTAssertNotNil(refused.errors[broken.id])
+        XCTAssertNil(refused.proposedUpgrades[broken.id])
+        let insertion = try ProjectMergeKit.insert(reopened.session.document, into: DesignDocument(),
+            translation: SIMD3(100, 0, 0))
+        let mergedBroken = try XCTUnwrap(insertion.document.features.nodes.last)
+        guard case let .pushPull(mergedRef, _, _) = mergedBroken.kind else { return XCTFail("Merge lost old intent") }
+        XCTAssertNil(mergedRef.elementName, "Merge may remap IDs but cannot bless an unproven old face")
+        XCTAssertEqual(mergedRef.role, old.role)
+        let merged = insertion.document.features.evaluate(sketches: [], planes: [], naming: SignatureNaming()) {
+            revision += 1; return revision
+        }
+        XCTAssertNotNil(merged.errors[mergedBroken.id])
+        XCTAssertNil(merged.proposedUpgrades[mergedBroken.id])
+        reopened.close()
+        f.document.session.redo()
+        XCTAssertEqual(try volume(f), 13_200 - 99 * .pi, accuracy: 1e-4)
+        guard case let .pushPull(redone, _, _)? = f.document.session.document.features.node(broken.id)?.kind else {
+            return XCTFail("Redo lost repaired identity")
+        }
+        XCTAssertEqual(redone, repaired)
+        let redoneSaved = await f.document.save(); XCTAssertTrue(redoneSaved.succeeded, redoneSaved.error ?? "")
+        f.document.close()
+        let repairedOpen = try await FloeCADDocument.open(at: f.document.url); documents.append(repairedOpen)
+        guard case let .pushPull(finalRef, _, _)? = repairedOpen.session.document.features.node(broken.id)?.kind else {
+            return XCTFail("Repaired identity was not saved")
+        }
+        XCTAssertEqual(finalRef, repaired)
+        XCTAssertEqual(abs(OCCTKernel.volume(try XCTUnwrap(repairedOpen.session.document.body(with: f.body)?.brep))),
+            13_200 - 99 * .pi, accuracy: 1e-4)
+    }
+
     func testRecordedSemanticLegacyUpgradeRemainsAtomicAcrossKernelFailure() throws {
         let bodyID = BodyID()
         let source = FeatureNode(name: "Box", kind: .primitive(

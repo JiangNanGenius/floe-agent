@@ -690,7 +690,13 @@ final class CADParameterCorrectnessTests: XCTestCase {
         XCTAssertTrue(sourceBody.adoptBRep(handle))
         document.session.perform(AddBodyCommand(body: sourceBody))
         let originalBytes = try XCTUnwrap(OCCTKernel.serialize(handle))
+        func attachSource(_ title: String, _ bytes: Data) {
+            let attachment = XCTAttachment(data: bytes, uniformTypeIdentifier: "public.plain-text")
+            attachment.name = title; attachment.lifetime = .keepAlways; add(attachment)
+        }
+        attachSource("Unowned exact source before edit", originalBytes)
         let top = try XCTUnwrap(OCCTKernel.faceInfo(handle).first { $0.normal.y > 0.99 })
+        XCTAssertEqual(OCCTKernel.serialize(handle), originalBytes, "Query must preserve the original handle")
         let undoBefore = document.session.undoStack.undoCommands.count
         try run(document, "feature.pushPull", ["bodyID": id.raw.uuidString,
             "face": [top.index], "distance": 2])
@@ -711,11 +717,19 @@ final class CADParameterCorrectnessTests: XCTestCase {
         XCTAssertEqual(reference.creator, nodes[0].id)
         let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys]
         let recorded = try encoder.encode(document.session.document.features)
+        let originalAfterEdit = try XCTUnwrap(OCCTKernel.serialize(handle))
+        attachSource("Original handle after independent edit", originalAfterEdit)
         document.session.undo()
         XCTAssertTrue(document.session.document.features.nodes.isEmpty)
         XCTAssertEqual(try body(document).id, id)
+        let restoredHandle = try XCTUnwrap(try body(document).brep)
+        XCTAssertTrue(restoredHandle === handle, "Undo must restore the exact original body snapshot")
+        let beforeMeasure = try XCTUnwrap(OCCTKernel.serialize(restoredHandle))
+        attachSource("Undo source before measure", beforeMeasure)
         XCTAssertEqual(try volume(document), 8_000, accuracy: 1e-4)
-        XCTAssertEqual(OCCTKernel.serialize(try XCTUnwrap(try body(document).brep)), originalBytes)
+        let afterMeasure = try XCTUnwrap(OCCTKernel.serialize(restoredHandle))
+        attachSource("Undo source after measure", afterMeasure)
+        XCTAssertEqual(afterMeasure, originalBytes)
         document.session.redo()
         XCTAssertEqual(try encoder.encode(document.session.document.features), recorded)
         XCTAssertEqual(try volume(document), 9_600, accuracy: 1e-4)
