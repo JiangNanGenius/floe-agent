@@ -67,6 +67,40 @@ object PosixBridge {
      */
     external fun writeStdinPipe(fd: Int, data: ByteArray, offset: Int, length: Int): Int
 
+    /**
+     * C01 managed-service stdio process: fork+exec [executable] with [argv]
+     * and [envp], NO PTY, and THREE dedicated pipes:
+     *   child fd 0 = stdin pipe read end (data + real descriptor EOF),
+     *   child fd 1 = stdout pipe write end (newline JSON-RPC),
+     *   child fd 2 = stderr pipe write end (diagnostics).
+     * Returns {pid, stdinWriteFd, stdoutReadFd, stderrReadFd} on success or
+     * {-errno, -1, -1, -1} on a real launch/spawn failure. All parent ends are
+     * nonblocking; closing stdinWriteFd is the ONLY stdin EOF source. The child
+     * gets its own session/process group so the owner can stop exactly this
+     * process tree. Every pipe end and the half-spawned child are cleaned up
+     * on every failure path.
+     */
+    external fun spawnPipeProcess(
+        executable: String,
+        argv: Array<String>,
+        envp: Array<String>,
+        workingDir: String?,
+        timeoutMs: Int,
+    ): IntArray
+
+    /**
+     * Nonblocking read from one owned stdio pipe. Empty bytes means "no data
+     * yet" (timeout), null means real EOF, failures throw with the errno.
+     */
+    external fun readPipeTimeout(fd: Int, capacity: Int, timeoutMs: Int): ByteArray?
+
+    /**
+     * Bounded write to the owned stdio stdin pipe. Returns bytes accepted
+     * (possibly partial) or -errno when nothing was accepted (-11 EAGAIN full,
+     * -32 EPIPE child closed stdin, -9 EBADF closed). Never blocks.
+     */
+    external fun writePipe(fd: Int, data: ByteArray, offset: Int, length: Int): Int
+
     /** Set winsize on the PTY master. Returns 0 or -errno. */
     external fun setWinsize(masterFd: Int, rows: Int, cols: Int): Int
 

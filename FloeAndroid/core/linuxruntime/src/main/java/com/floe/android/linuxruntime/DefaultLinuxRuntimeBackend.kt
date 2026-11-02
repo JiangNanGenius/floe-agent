@@ -85,6 +85,185 @@ class DefaultLinuxRuntimeBackend(
         )
     }
 
+    /**
+     * C01 separated-stdio spawn: the SAME caller-resolved guest launch
+     * (executable/argv/env/cwd) but with three independent pipes and no
+     * controlling terminal. A failure really means no owned child survives.
+     */
+    override fun spawnPipes(spec: LaunchSpec, timeoutMs: Long): PipeSpawnOutcome {
+        require(timeoutMs in 1..60_000) { "timeoutMs out of range" }
+        class Raw(val pid: Int, val stdinWriteFd: Int, val stdoutReadFd: Int, val stderrReadFd: Int)
+        val env = spec.env.entries.map { "${it.key}=${it.value}" }.toTypedArray()
+        val raw = try {
+            val r = PosixBridge.spawnPipeProcess(
+                spec.executable, spec.argv.toTypedArray(), env, spec.workingDir, timeoutMs.toInt(),
+            )
+            Raw(r[0], r[1], r[2], r[3])
+        } catch (failure: Throwable) {
+            throw failure
+        }
+        if (raw.pid < 0) {
+            // Defense in depth: the native contract closes every fd on failure;
+            // any unexpectedly positive fd is still owned and closed here.
+            if (raw.stdinWriteFd >= 0) PosixBridge.closeFd(raw.stdinWriteFd)
+            if (raw.stdoutReadFd >= 0) PosixBridge.closeFd(raw.stdoutReadFd)
+            if (raw.stderrReadFd >= 0) PosixBridge.closeFd(raw.stderrReadFd)
+            val errno = -raw.pid
+            return PipeSpawnOutcome.Failed(SpawnError(errno, errnoName(errno)))
+        }
+        if (raw.stdinWriteFd < 0 || raw.stdoutReadFd < 0 || raw.stderrReadFd < 0) {
+            // A successful pid without all three owned descriptors is never a
+            // usable stdio channel: stop the real child tree and report it.
+            runCatching { PosixBridge.kill(-raw.pid, 9) }
+            runCatching { PosixBridge.kill(raw.pid, 9) }
+            runCatching { PosixBridge.waitPidTimeout(raw.pid, 2_000) }
+            if (raw.stdinWriteFd >= 0) PosixBridge.closeFd(raw.stdinWriteFd)
+            if (raw.stdoutReadFd >= 0) PosixBridge.closeFd(raw.stdoutReadFd)
+            if (raw.stderrReadFd >= 0) PosixBridge.closeFd(raw.stderrReadFd)
+            return PipeSpawnOutcome.Failed(SpawnError(5 /* EIO */, "incomplete stdio descriptor set"))
+        }
+        val startTicks = PosixBridge.procStartTime(raw.pid)
+        return PipeSpawnOutcome.Spawned(
+            DefaultPipeSession(
+                pid = raw.pid,
+                creationIdentity = "${raw.pid}:$startTicks",
+                executable = spec.executable,
+                argv = spec.argv,
+                ownership = spec.ownership,
+                stdinWriteFd = raw.stdinWriteFd,
+                stdoutReadFd = raw.stdoutReadFd,
+                stderrReadFd = raw.stderrReadFd,
+            ),
+        )
+    }
+
+    internal class DefaultPipeSession(
+        override val pid: Int,
+        override val creationIdentity: String,
+        override val executable: String,
+        override val argv: List<String>,
+        override val ownership: RunOwnership,
+        private val stdinWriteFd: Int,
+        private val stdoutReadFd: Int,
+        private val stderrReadFd: Int,
+    ) : PipeProcessSession {
+        private val lifecycleLock = ReentrantLock(true)
+        private val stdinLock = ReentrantLock(true)
+        private val stdoutLock = ReentrantLock(true)
+        private val stderrLock = ReentrantLock(true)
+        private val stdinClosed = AtomicBoolean(false)
+        private val streamsClosed = AtomicBoolean(false)
+        private var exit: ExitResult? = null
+        private var waitErrno = 0
+
+        override fun readStdout(capacity: Int, timeoutMs: Long): ByteArray? =
+            readStream(stdoutReadFd, stdoutLock, capacity, timeoutMs)
+
+        override fun readStderr(capacity: Int, timeoutMs: Long): ByteArray? =
+            readStream(stderrReadFd, stderrLock, capacity, timeoutMs)
+
+        private fun readStream(fd: Int, lock: ReentrantLock, capacity: Int,
+                               timeoutMs: Long): ByteArray? {
+            require(capacity in 1..(1 shl 20))
+            require(timeoutMs in 0..1000) { "read wait must leave cancellation responsive" }
+            return lock.withLock {
+                if (streamsClosed.get()) return null
+                PosixBridge.readPipeTimeout(fd, capacity, timeoutMs.toInt())
+            }
+        }
+
+        override fun writeStdin(data: ByteArray, offset: Int, length: Int): Int =
+            stdinLock.withLock {
+                if (stdinClosed.get()) return -9 /* EBADF */
+                PosixBridge.writePipe(stdinWriteFd, data, offset, length)
+            }
+
+        override fun closeStdin(): Int = stdinLock.withLock {
+            if (stdinClosed.compareAndSet(false, true)) PosixBridge.closeFd(stdinWriteFd) else 0
+        }
+
+        override fun closeStreams() {
+            if (!streamsClosed.compareAndSet(false, true)) return
+            stdoutLock.withLock { PosixBridge.closeFd(stdoutReadFd) }
+            stderrLock.withLock { PosixBridge.closeFd(stderrReadFd) }
+        }
+
+        override fun pollExit(): ExitResult? = lifecycleLock.withLock {
+            exit?.let { return it }
+            decode(PosixBridge.pollWaitPid(pid))?.also { exit = it }
+        }
+
+        override fun awaitExit(timeoutMs: Long): ExitResult? {
+            require(timeoutMs in 0..86_400_000)
+            val deadline = android.os.SystemClock.elapsedRealtime() + timeoutMs
+            while (true) {
+                pollExit()?.let { return it }
+                val remaining = deadline - android.os.SystemClock.elapsedRealtime()
+                if (remaining <= 0 || Thread.currentThread().isInterrupted) return null
+                try {
+                    Thread.sleep(minOf(15, remaining))
+                } catch (_: InterruptedException) {
+                    Thread.currentThread().interrupt()
+                    return null
+                }
+            }
+        }
+
+        /**
+         * Release stdin, then TERM the exact owned process group, bounded
+         * wait, KILL if still alive, reap the root, close output streams.
+         * Every signal is preceded by the pid+start-time identity check, so a
+         * recycled PID is never signalled.
+         */
+        override fun cancel(): ExitResult? = lifecycleLock.withLock {
+            closeStdin()
+            var last = exit
+            if (last == null) {
+                last = decode(PosixBridge.pollWaitPid(pid))
+                if (last != null) exit = last
+            }
+            if (last == null && !isReapError()) {
+                val nowTicks = PosixBridge.procStartTime(pid)
+                if (nowTicks >= 0 && creationIdentity == "$pid:$nowTicks") {
+                    // Polite stop first (the guest launcher/PRoot forwards it),
+                    // then the bounded hard stop. Both address EXACTLY this
+                    // session's process group (setsid => pgid == pid).
+                    PosixBridge.kill(-pid, 15 /* SIGTERM */)
+                    PosixBridge.kill(pid, 15)
+                    var term = decode(PosixBridge.waitPidTimeout(pid, 2_000))
+                    if (term == null) {
+                        PosixBridge.kill(-pid, 9 /* SIGKILL */)
+                        PosixBridge.kill(pid, 9)
+                        term = decode(PosixBridge.waitPidTimeout(pid, 2_000))
+                    }
+                    var attempts = 0
+                    while (term == null && attempts < 3) {
+                        attempts++
+                        term = decode(PosixBridge.waitPidTimeout(pid, 1_000))
+                    }
+                    last = term
+                    exit = last
+                }
+            }
+            closeStreams()
+            return last
+        }
+
+        override fun lastWaitErrno(): Int = lifecycleLock.withLock { waitErrno }
+
+        private fun isReapError(): Boolean = waitErrno == 10 /* ECHILD */
+
+        private fun decode(r: IntArray): ExitResult? = when (r[0]) {
+            1 -> ExitResult(r[1], signaled = false, termSig = 0)
+            2 -> ExitResult(-1, signaled = true, termSig = r[2])
+            3 -> {
+                waitErrno = r[2]
+                ExitResult(-1, signaled = false, termSig = 0, waitErrno = r[2])
+            }
+            else -> null
+        }
+    }
+
     internal class DefaultPtySession(
         override val pid: Int,
         override val creationIdentity: String,

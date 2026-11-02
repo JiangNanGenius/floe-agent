@@ -59,11 +59,25 @@ object C01LinuxEnvironmentOwner {
         val attached = attachment ?: return refusal("hostNotWired")
         val action = control.optString("action")
         return when (action) {
+            "catalog" -> catalog(attached, control)
             "status" -> status(attached, control)
             "start" -> start(attached, control)
             "stop" -> stop(attached, control)
             else -> refusal("unknownAction")
         }
+    }
+
+    /** Metadata only, scoped by the original runtime workspace identity. */
+    private fun catalog(attached: Attachment, control: JSONObject): JSONObject = try {
+        val projectID = java.util.UUID.fromString(control.getString("projectID")).toString()
+        RuntimeConnection(attached.context).use { connection ->
+            connection.connect().get(5, TimeUnit.SECONDS)
+            val reply = connection.exchange("environment.list", JSONObject().put("projectID", projectID))
+            check(reply.optBoolean("ok"))
+            reply.getJSONObject("result").put("phase", "ready")
+        }
+    } catch (_: Exception) {
+        refusal("The runtime environment catalog is unavailable.")
     }
 
     private suspend fun status(attached: Attachment, control: JSONObject): JSONObject {

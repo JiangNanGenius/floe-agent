@@ -355,12 +355,24 @@ public final class G02InstalledComposition: @unchecked Sendable {
             trustedKeys: nil)) else {
             return nil
         }
+        // C01 separated stdio: ONE provider instance owns the live-peer
+        // contract check and the real three-pipe channel. The SAME instance is
+        // passed to the original MCP factory and to the C02 setup installation.
+        let stdioChannelProvider = C01MCPStdioChannelProvider()
+        transportGate.setMCPStdioProbe {
+            guard G02NativeRootEpoch.readback() == epoch,
+                  RuntimeFacadeLinuxBindings.shared.isCapabilityQualified else { return false }
+            let proof = await MailboxC01LinuxStdioTransport().capability(epoch: epoch)
+            return G02NativeRootEpoch.readback() == epoch && proof.stdioAvailable &&
+                proof.serviceRoleAvailable &&
+                proof.stdioContractVersion == C01ManagedServiceDomain.stdioContractVersion
+        }
         // C02: the ONE original MCP client factory now has a transport
-        // discriminator. The stdio maker is wired here with the C01 pipe
-        // port left explicit (nil until C01 installs/qualifies it); the
-        // HTTP/SSE construction and every existing command stay unchanged.
+        // discriminator. The stdio maker is wired to the REAL C01 provider;
+        // the HTTP/SSE construction and every existing command stay unchanged.
         let mcpFactory = OriginalMCPClientFactory(
-            stdio: C02MCPSetupStdioClientFactory(epoch: epoch, provider: nil))
+            stdio: C02MCPSetupStdioClientFactory(epoch: epoch,
+                                                 provider: stdioChannelProvider))
         let mcpDomain = MCPDomain(services: MCPDomain.Services(
             database: database,
             gateway: SecretGatewayRegistry.shared,
@@ -807,12 +819,12 @@ public final class G02InstalledComposition: @unchecked Sendable {
                 mcpAdmission: transportGate,
                 generation: nil,
                 serviceHost: nil,
-                stdioChannelProvider: nil,
+                stdioChannelProvider: stdioChannelProvider,
                 // The four reviewed template bytes are packaged by
                 // feature/integrations; the host re-verifies every byte
                 // before upload. A missing asset still fails typed.
                 templateAssetAvailable: true,
-                stdioLaneAvailable: false,
+                stdioLaneAvailable: true,
                 liveEpoch: { G02NativeRootEpoch.readback() ?? 0 })
             C02MCPSetupIntegration.install(setupInstallation)
         }

@@ -27,10 +27,14 @@
 // `service.readiness` operation. No readiness flag is set without that live
 // proof.
 //
-// MCP stdio is intentionally not claimed here: it needs three separate pipes
-// (stdin, stdout, stderr) and no PTY. The current helper has no such transport;
-// the typed `startStdioService` entry below fails closed with the exact missing
-// capability instead of pretending a PTY session is a stdio channel.
+// MCP stdio uses the SEPARATE C01 three-pipe lane implemented by
+// `C01LinuxStdioBindings` / `C01MCPStdioChannelProvider`: a real no-PTY child
+// inside the selected PRoot guest with distinct stdin/stdout/stderr pipes.
+// The capability is advertised ONLY by the live peer status handshake
+// (`stdioContractVersion == floe-service-stdio-v1`), and every channel is
+// fenced to the accepted epoch, project/environment/root, task/conversation,
+// one live run and the saved config digest. Nothing here fabricates a stdio
+// channel or falls back to a PTY.
 import Foundation
 import FloeCore
 import FloeTools
@@ -86,7 +90,28 @@ public struct C01ManagedServiceSnapshot: Sendable, Equatable {
     }
 }
 
+// MARK: - Stdio handle
+
+/// A started C01 separated-stdio service. The channel provider turns this into
+/// the C02 byte-pipe channel; the runtime lease is already live and authority
+/// bound when this value exists.
+public struct C01LinuxStdioServiceHandle: Sendable, Equatable {
+    public let sessionID: String
+    public let binding: C01LinuxStdioBinding
+    public let environmentID: String
+    public let runtimeGeneration: String?
+
+    public init(sessionID: String, binding: C01LinuxStdioBinding,
+                environmentID: String, runtimeGeneration: String?) {
+        self.sessionID = sessionID
+        self.binding = binding
+        self.environmentID = environmentID
+        self.runtimeGeneration = runtimeGeneration
+    }
+}
+
 // MARK: - Service domain
+
 
 public final class C01ManagedServiceDomain: C01ManagedServiceJobHosting, @unchecked Sendable {
     public static let shared = C01ManagedServiceDomain()
@@ -102,8 +127,32 @@ public final class C01ManagedServiceDomain: C01ManagedServiceJobHosting, @unchec
         var stopRequested: Bool
     }
 
+    /// One live separated-stdio service. This is a RAM ownership view over the
+    /// REAL runtime lease: the engine, direct three-pipe process and the
+    /// `RuntimeOwnedWorkRegistry` token are the authority; the record only
+    /// keeps root-drain/retirement/diagnostic visibility.
+    private struct StdioRecord: Sendable {
+        var binding: C01LinuxStdioBinding
+        var sessionID: String
+        var state: C01ManagedServiceSnapshot.State
+        var startedAt: Date
+        var stopRequested: Bool
+        var workToken: RuntimeOwnedWorkToken?
+        var transport: any C01LinuxStdioTransporting
+    }
+
     private let lock = NSLock()
     private var records: [UUID: Record] = [:]
+    private var stdioRecords: [String: StdioRecord] = [:]
+    private struct PendingStdioStart {
+        let binding: C01LinuxStdioBinding
+        let token: RuntimeOwnedWorkToken
+        var task: Task<C01LinuxStdioStartReply, Error>?
+        var stopRequested = false
+    }
+    private var pendingStdio: [UUID: PendingStdioStart] = [:]
+    private var stdioDrains: [String: Task<Void, Never>] = [:]
+    private static let maximumStdioServices = 2
     /// Installed by `RuntimeFacadeJobBindings.register()`: resolves the
     /// durable `service` dependency edge on the FIRST proven readiness so a
     /// waiting parent run continues without waiting for the service to stop.
@@ -448,18 +497,328 @@ public final class C01ManagedServiceDomain: C01ManagedServiceJobHosting, @unchec
         }
     }
 
-    // MARK: Stdio (deliberately gated)
+    // MARK: Stdio (real separated three-pipe service)
 
-    /// MCP stdio needs three distinct pipes and no PTY. The released helper
-    /// does not provide that transport, so this entry refuses with the exact
-    /// component capability instead of returning a PTY session.
+    /// Start the REAL C01 separated-stdio process for one saved MCP binding.
+    ///
+    /// This is the missing implementation the old `startStdioService` stub
+    /// refused. The runtime opens a no-PTY child inside the selected PRoot
+    /// guest with three distinct pipes; this method re-proves every frozen
+    /// identity BEFORE dispatch and stores only a RAM ownership view over the
+    /// real engine lease. It never falls back to a PTY, a host process or a
+    /// shell string.
     public func startStdioService(
-        jobID: UUID,
-        context: ToolContext
-    ) async throws -> Never {
-        let capability = await rawCapability()
-        throw FloeError.invalidConfiguration(
-            "Managed stdio services require runtime capability \(Self.stdioContractVersion); this helper advertises \(capability.contractVersion.isEmpty ? "none" : capability.contractVersion). No PTY fallback is used.")
+        _ request: C01LinuxStdioStartRequest,
+        transport: (any C01LinuxStdioTransporting)? = nil
+    ) async throws -> C01LinuxStdioServiceHandle {
+        let binding = request.binding
+        let epoch = RuntimeFacadeLinuxBindings.shared.boundNativeEpoch
+        guard epoch > 0, binding.acceptedEpoch == epoch,
+              G02NativeRootEpoch.readback() == epoch else {
+            throw FloeError.validationFailed(
+                "The stdio service belongs to a different Linux generation; it was not started and will not be replayed")
+        }
+        guard RuntimeFacadeLinuxBindings.shared.isCapabilityQualified,
+              let components = RuntimeFacadeLinuxBindings.shared.components else {
+            throw FloeError.invalidConfiguration(
+                "The Linux engine is not qualified; the separated stdio service was not started")
+        }
+        // Exact workspace/project/root re-proof (never the model's path and
+        // never a first/default workspace).
+        guard let resolved = await LinuxWorkspaceAuthority.resolveWorkspace(
+            conversationID: binding.conversationID),
+              resolved.workspaceID == binding.workspaceID else {
+            throw FloeError.validationFailed(
+                "This task's workspace binding no longer matches the stdio service")
+        }
+        let canonicalRoot = resolved.rootURL.standardizedFileURL.resolvingSymlinksInPath()
+        guard canonicalRoot.path
+                == binding.workspaceRootURL.standardizedFileURL.resolvingSymlinksInPath().path,
+              C02MCPSetupWorkspaceStager.projectRootIdentity(canonicalRoot)
+                == binding.rootIdentity,
+              LinuxShellProjectMapping.projectID(forCanonicalCoreWorkspaceRoot: canonicalRoot)
+                == binding.engineProjectID,
+              C01LinuxStdioLiveRunContext.isManagedProjectRoot(canonicalRoot,
+                                                               projectID: binding.projectID) else {
+            throw FloeError.validationFailed(
+                "The stdio service's project/root identity changed; reopen the server binding")
+        }
+        guard await components.backend.hasCapacity(for: .service) else {
+            throw FloeError.validationFailed(
+                "Both managed-service slots are occupied; stop a service before opening another")
+        }
+        guard stdioCapacityAvailable() else {
+            throw FloeError.validationFailed(
+                "Too many separated stdio services are already retained")
+        }
+        let transport = transport ?? MailboxC01LinuxStdioTransport()
+        let capability = await transport.capability(epoch: epoch)
+        guard capability.stdioAvailable,
+              capability.serviceRoleAvailable,
+              capability.stdioContractVersion == Self.stdioContractVersion else {
+            throw FloeError.invalidConfiguration(
+                "Managed stdio services require the live runtime component \(Self.stdioContractVersion)"
+                    + (capability.detail.isEmpty ? "" : " (\(capability.detail))")
+                    + ". No PTY fallback is used.")
+        }
+        let startID = UUID()
+        let token: RuntimeOwnedWorkToken
+        switch RuntimeOwnedWorkRegistry.shared.attach(
+            epoch: epoch, kind: .tool, ownerID: "mcp-stdio-start:" + startID.uuidString) {
+        case .attached(let attached): token = attached
+        case .rejected, .invalidIdentity:
+            throw FloeError.invalidConfiguration("The runtime is retiring; no stdio process was started")
+        }
+        let reserved = withStdioLock { () -> Bool in
+            guard stdioRecords.count + pendingStdio.count < Self.maximumStdioServices else { return false }
+            pendingStdio[startID] = PendingStdioStart(binding: binding, token: token)
+            return true
+        }
+        guard reserved else {
+            RuntimeOwnedWorkRegistry.shared.detach(token)
+            throw FloeError.invalidConfiguration("Both managed-service slots are occupied")
+        }
+        let start = Task {
+            try Task.checkCancellation()
+            return try await transport.start(request)
+        }
+        let cancelled = withStdioLock { () -> Bool in
+            guard var pending = pendingStdio[startID] else { return true }
+            pending.task = start
+            pendingStdio[startID] = pending
+            return pending.stopRequested
+        }
+        if cancelled { start.cancel() }
+        let reply: C01LinuxStdioStartReply
+        do {
+            reply = try await withTaskCancellationHandler {
+                try await start.value
+            } onCancel: {
+                start.cancel()
+            }
+        }
+        catch {
+            // A cancelled/expired mailbox keeps a claimed start until the
+            // App's exact failed-start watcher proves release. Retain this
+            // token through that settlement instead of guessing "not started".
+            settleFailedStdioStart(startID)
+            throw error
+        }
+        let valid = reply.stdioContractVersion == Self.stdioContractVersion &&
+            reply.environmentID == binding.environmentID &&
+            G02NativeRootEpoch.readback() == epoch && !Task.isCancelled
+        let stopped = withStdioLock { () -> Bool in
+            let pending = pendingStdio.removeValue(forKey: startID)
+            let stopping = !valid || pending?.stopRequested == true
+            stdioRecords[reply.sessionID] = StdioRecord(
+                binding: binding, sessionID: reply.sessionID,
+                state: stopping ? .stopping : .running,
+                startedAt: Date(), stopRequested: stopping,
+                workToken: token, transport: transport)
+            return stopping
+        }
+        monitorStdioService(sessionID: reply.sessionID)
+        if stopped {
+            throw FloeError.invalidConfiguration(
+                "The stdio start was fenced or mismatched; stop is requested and ownership remains until release")
+        }
+        return C01LinuxStdioServiceHandle(
+            sessionID: reply.sessionID, binding: binding,
+            environmentID: reply.environmentID,
+            runtimeGeneration: reply.runtimeGeneration)
+    }
+
+    private func withStdioLock<T>(_ body: () -> T) -> T {
+        lock.lock(); defer { lock.unlock() }
+        return body()
+    }
+
+    private func stopPendingStdio(conversationID: UUID?, epoch: UInt64?) {
+        let tasks = withStdioLock { () -> [Task<C01LinuxStdioStartReply, Error>] in
+            var tasks: [Task<C01LinuxStdioStartReply, Error>] = []
+            for id in Array(pendingStdio.keys) {
+                guard var pending = pendingStdio[id],
+                      conversationID == nil || pending.binding.conversationID == conversationID,
+                      epoch == nil || pending.binding.acceptedEpoch == epoch else { continue }
+                pending.stopRequested = true
+                if let task = pending.task { tasks.append(task) }
+                pendingStdio[id] = pending
+            }
+            return tasks
+        }
+        for task in tasks { task.cancel() }
+    }
+
+    private func settleFailedStdioStart(_ id: UUID) {
+        guard let pending = withStdioLock({ pendingStdio[id] }) else { return }
+        Task { [weak self] in
+            // The existing mailbox/host watcher owns possibly admitted starts.
+            // No ticket means it either never dispatched or really settled.
+            while LinuxShellMailbox.shared.hasLiveTickets(runID: pending.binding.runID) {
+                try? await Task.sleep(nanoseconds: 100_000_000)
+            }
+            guard let self else { return }
+            let removed = self.withStdioLock { self.pendingStdio.removeValue(forKey: id) }
+            if let removed { RuntimeOwnedWorkRegistry.shared.detach(removed.token) }
+        }
+    }
+
+    /// A close timeout retains its record; one service-owned observer handles
+    /// eventual release and natural process exit even without another UI call.
+    public func continueStdioDrain(sessionID: String) {
+        markStdioStopping(sessionID: sessionID)
+        monitorStdioService(sessionID: sessionID)
+    }
+
+    private func monitorStdioService(sessionID: String) {
+        withStdioLock {
+            guard stdioDrains[sessionID] == nil else { return }
+            stdioDrains[sessionID] = Task { [weak self] in
+                guard let self else { return }
+                var stopSent = false
+                while let record = self.withStdioLock({ self.stdioRecords[sessionID] }) {
+                    if record.stopRequested && !stopSent {
+                        do {
+                            try await record.transport.requestStop(sessionID: sessionID)
+                            stopSent = true
+                        } catch { /* retain and re-observe the same owned session */ }
+                    }
+                    do {
+                        let reply = try await record.transport.poll(C01LinuxStdioPollRequest(
+                            sessionID: sessionID, stdoutCursor: 0, stderrCursor: 0, maxBytes: 1))
+                        if reply.leaseReleased {
+                            await self.releaseStdioService(sessionID: sessionID)
+                            break
+                        }
+                    } catch { /* absence of proof cannot release ownership */ }
+                    try? await Task.sleep(nanoseconds: 250_000_000)
+                }
+                self.withStdioLock { _ = self.stdioDrains.removeValue(forKey: sessionID) }
+            }
+        }
+    }
+
+    /// Release the RAM ownership view after the runtime proved the real
+    /// terminal release. Detaches only THIS exact registry token.
+    public func releaseStdioService(sessionID: String) async {
+        let record = withStdioLock { stdioRecords.removeValue(forKey: sessionID) }
+        if let token = record?.workToken {
+            RuntimeOwnedWorkRegistry.shared.detach(token)
+        }
+    }
+
+    /// Trusted conversation-deletion hook for Main: request the EXACT owned
+    /// stop of every stdio service bound to that conversation. A stop request
+    /// is never a proven stop; `hasLiveServices`/the runtime census keep the
+    /// obligation visible until the real release.
+    public func requestStopStdio(conversationID: UUID, epoch: UInt64? = nil) async {
+        stopPendingStdio(conversationID: conversationID, epoch: epoch)
+        let records = stdioSnapshot()
+        for record in records {
+            guard record.binding.conversationID == conversationID else { continue }
+            if let epoch, record.binding.acceptedEpoch != epoch { continue }
+            guard record.state != .stopped, record.state != .failed else { continue }
+            markStdioStopping(sessionID: record.sessionID)
+            try? await record.transport.requestStop(sessionID: record.sessionID)
+            continueStdioDrain(sessionID: record.sessionID)
+        }
+    }
+
+    /// Conversations with a NON-terminal stdio service in this generation.
+    /// Main's deletion fence can incorporate this list (central file); the
+    /// service itself never guesses a run/task lifecycle.
+    public func liveStdioConversations(epoch: UInt64) -> [UUID] {
+        lock.lock(); defer { lock.unlock() }
+        var seen = Set<UUID>()
+        var result: [UUID] = []
+        for record in stdioRecords.values where record.binding.acceptedEpoch == epoch {
+            guard record.state != .stopped, record.state != .failed else { continue }
+            if seen.insert(record.binding.conversationID).inserted {
+                result.append(record.binding.conversationID)
+            }
+        }
+        for pending in pendingStdio.values where pending.binding.acceptedEpoch == epoch {
+            if seen.insert(pending.binding.conversationID).inserted {
+                result.append(pending.binding.conversationID)
+            }
+        }
+        return result
+    }
+
+    /// Bounded diagnostic view of one stdio record (no command text).
+    public func stdioSnapshot(sessionID: String)
+        -> (state: C01ManagedServiceSnapshot.State, epoch: UInt64, environmentID: String)? {
+        lock.lock(); defer { lock.unlock() }
+        guard let record = stdioRecords[sessionID] else { return nil }
+        return (record.state, record.binding.acceptedEpoch, record.binding.environmentID)
+    }
+
+    private func stdioCapacityAvailable() -> Bool {
+        lock.lock(); defer { lock.unlock() }
+        let live = stdioRecords.values.filter {
+            $0.state != .stopped && $0.state != .failed
+        }.count
+        return live + pendingStdio.count < Self.maximumStdioServices
+    }
+
+    private func stdioSnapshot() -> [StdioRecord] {
+        lock.lock(); defer { lock.unlock() }
+        return Array(stdioRecords.values)
+    }
+
+    private func upsertStdio(_ record: StdioRecord) {
+        lock.lock(); defer { lock.unlock() }
+        stdioRecords[record.sessionID] = record
+        if stdioRecords.count > 16 {
+            let terminal = stdioRecords.values
+                .filter { $0.state == .stopped || $0.state == .failed }
+                .sorted { $0.startedAt < $1.startedAt }
+            for old in terminal.prefix(max(0, stdioRecords.count - 12)) {
+                stdioRecords.removeValue(forKey: old.sessionID)
+            }
+        }
+    }
+
+    private func markStdioStopping(sessionID: String) {
+        lock.lock()
+        if var record = stdioRecords[sessionID] {
+            record.stopRequested = true
+            record.state = .stopping
+            stdioRecords[sessionID] = record
+        }
+        lock.unlock()
+    }
+
+    /// Root/environment drain reconciliation for stdio records: request the
+    /// exact stop once, then observe the runtime's real release with bounded
+    /// polls. A record is removed ONLY when `leaseReleased` is proven; a
+    /// transport fault leaves it visible for the next drain pass.
+    private func reconcileStdioRecords(epoch: UInt64?, sessionID: String? = nil) async {
+        let current = stdioSnapshot()
+        for record in current {
+            if let sessionID, record.sessionID != sessionID { continue }
+            if let epoch, record.binding.acceptedEpoch != epoch { continue }
+            guard record.state != .stopped, record.state != .failed else { continue }
+            if !record.stopRequested {
+                markStdioStopping(sessionID: record.sessionID)
+                try? await record.transport.requestStop(sessionID: record.sessionID)
+            }
+            var released = false
+            for _ in 0..<2 {
+                do {
+                    let poll = try await record.transport.poll(C01LinuxStdioPollRequest(
+                        sessionID: record.sessionID, stdoutCursor: 0,
+                        stderrCursor: 0, maxBytes: 1))
+                    if poll.leaseReleased { released = true; break }
+                } catch {
+                    break
+                }
+                try? await Task.sleep(nanoseconds: 50_000_000)
+            }
+            if released {
+                await releaseStdioService(sessionID: record.sessionID)
+            }
+        }
     }
 
     // MARK: Snapshot / UI read
@@ -498,6 +857,7 @@ public final class C01ManagedServiceDomain: C01ManagedServiceJobHosting, @unchec
     /// its own port/preview. A job-drain cancellation normally reaches the
     /// same stop path first; this is the independent owner-cleanup entry.
     public func requestStopAll(epoch: UInt64? = nil) async {
+        stopPendingStdio(conversationID: nil, epoch: epoch)
         let live = allRecords()
         for record in live {
             if let epoch, record.snapshot.epoch != epoch { continue }
@@ -513,6 +873,10 @@ public final class C01ManagedServiceDomain: C01ManagedServiceJobHosting, @unchec
             guard let components = RuntimeFacadeLinuxBindings.shared.components else { continue }
             await components.backend.requestStopForSettlement(sessionID: record.sessionID)
         }
+        // The separated-stdio lane is owned by the same Root drain. Stop the
+        // exact engine leases and observe the real release; a record is only
+        // removed on proven `leaseReleased`.
+        await reconcileStdioRecords(epoch: epoch)
     }
 
     /// Small locked record mutation used by the idempotent drain path.
@@ -534,8 +898,11 @@ public final class C01ManagedServiceDomain: C01ManagedServiceJobHosting, @unchec
     /// snapshot. It is a RAM view, not a readiness claim.
     public var hasLiveServices: Bool {
         lock.lock(); defer { lock.unlock() }
-        return records.values.contains {
+        if records.values.contains(where: {
             $0.snapshot.state != .stopped && $0.snapshot.state != .failed
+        }) { return true }
+        return !pendingStdio.isEmpty || stdioRecords.values.contains {
+            $0.state != .stopped && $0.state != .failed
         }
     }
 

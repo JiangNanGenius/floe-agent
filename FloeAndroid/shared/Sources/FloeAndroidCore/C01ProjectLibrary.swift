@@ -1048,6 +1048,14 @@ public actor C01ProjectLibrary {
             if shellTokens.contains(where: { registry.isAttached($0) }) {
                 return true
             }
+            // C01 separated stdio: the channel's real engine lease is owned by
+            // C01ManagedServiceDomain. Its Ram record remains visible until the
+            // runtime proves the terminal release, so a live MCP stdio process
+            // keeps this conversation non-quiescent for deletion/relocation.
+            if C01ManagedServiceDomain.shared.liveStdioConversations(epoch: epoch)
+                .contains(conversationID) {
+                return true
+            }
             if let jobs {
                 let jobTokens = await jobs.tokensForConversation(conversationID)
                 if jobTokens.contains(where: { registry.isAttached($0) }) {

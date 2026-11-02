@@ -240,7 +240,8 @@ public actor FloeLinuxAuthority {
                 bytes: record.bytes,
                 packageCount: record.packageCount,
                 parentID: record.parentID,
-                templateID: record.templateID
+                templateID: record.templateID,
+                layerFormat: record.layerFormat
             )
         }
         return LinuxAuthorityEnvironmentList(baseRevision: baseRevision, environments: metadata)

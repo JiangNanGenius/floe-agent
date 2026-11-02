@@ -23,16 +23,18 @@ class WorkloadRoleAdmissionTest {
         assertEquals(WorkloadRole.INTERACTIVE, WorkloadRole.fromWire("interactive"))
         assertEquals(WorkloadRole.AGENT, WorkloadRole.fromWire("agent"))
         assertEquals(WorkloadRole.RUN, WorkloadRole.fromWire("run"))
+        assertEquals(WorkloadRole.SERVICE, WorkloadRole.fromWire("service"))
         assertNull(WorkloadRole.fromWire("root"))
         assertNull(WorkloadRole.fromWire(""))
 
         assertEquals(2, WorkloadRole.INTERACTIVE.maximumConcurrent)
         assertEquals(1, WorkloadRole.AGENT.maximumConcurrent)
         assertEquals(1, WorkloadRole.RUN.maximumConcurrent)
-        // Approved default: TWO interactive + ONE shared Agent/run execution
-        // slot. The per-role maxima do NOT sum to the ceiling because the
-        // execution slot is shared, never doubled.
-        assertEquals(3, LinuxRuntimeOperations.MAX_CONCURRENT_WORKLOADS)
+        // C01 v3: TWO interactive + ONE shared Agent/run execution slot + TWO
+        // managed-service slots. The per-role maxima do NOT sum to the ceiling
+        // because the execution slot is shared, never doubled.
+        assertEquals(2, WorkloadRole.SERVICE.maximumConcurrent)
+        assertEquals(5, LinuxRuntimeOperations.MAX_CONCURRENT_WORKLOADS)
         assertTrue(WorkloadRole.AGENT.isExecution)
         assertTrue(WorkloadRole.RUN.isExecution)
         assertFalse(WorkloadRole.INTERACTIVE.isExecution)

@@ -25,11 +25,56 @@ object C01ManagedServiceOwner {
     /** The only helper contract that adds the two service roles. */
     const val REQUIRED_CONTRACT = "floe-multi-workload-v3"
 
+    /**
+     * The separated-stdio contract. It is advertised ONLY by a runtime build
+     * that really implements the three-pipe process operations; a host flag or
+     * the presence of this constant never qualifies a channel.
+     */
+    const val STDIO_CONTRACT = "floe-service-stdio-v1"
+
     private val reserved = ConcurrentHashMap.newKeySet<Int>()
 
     /** Pure: an older v2/invalid contract keeps ordinary exec but no service. */
     fun contractSupportsServices(contractVersion: String?): Boolean =
         contractVersion == REQUIRED_CONTRACT
+
+    /** Pure: only the live peer handshake value enables the stdio lane. */
+    fun contractSupportsStdio(stdioContractVersion: String?): Boolean =
+        stdioContractVersion == STDIO_CONTRACT
+
+    /**
+     * Pure declaration bounds for the separated-stdio lane (the runtime
+     * re-proves every one of them; this only gives focused tests and future
+     * callers the same closed vocabulary):
+     * * non-empty command <= 512 UTF-8 bytes, no NUL/CR/LF and no `..`;
+     * * <= 64 arguments, each <= 4096 UTF-8 bytes, no NUL/CR/LF;
+     * * relative cwd <= 512 bytes, no leading `/`, no `..` component.
+     * Returns nil when admissible, otherwise the first field name.
+     */
+    fun stdioDeclarationRefusal(command: String?, arguments: List<String>?,
+                                cwd: String?): String? {
+        val value = command ?: return "command"
+        if (value.isBlank() || value.toByteArray(Charsets.UTF_8).size > 512 ||
+            value.contains('\u0000') || value.contains('\n') || value.contains('\r') ||
+            value.split('/').contains("..")
+        ) return "command"
+        val list = arguments ?: return "arguments"
+        if (list.size > 64) return "arguments"
+        for (argument in list) {
+            if (argument.toByteArray(Charsets.UTF_8).size > 4_096 ||
+                argument.contains('\u0000') || argument.contains('\n') ||
+                argument.contains('\r')
+            ) return "arguments"
+        }
+        val directory = cwd ?: return "cwd"
+        if (directory.toByteArray(Charsets.UTF_8).size > 512 ||
+            directory.startsWith('/') || directory.startsWith("~") ||
+            directory.contains('\u0000') || directory.contains('\n') ||
+            directory.contains('\r') || directory.contains('\\') ||
+            directory.split('/').contains("..")
+        ) return "cwd"
+        return null
+    }
 
     /** Pure declaration bounds used by focused tests and future callers. */
     fun declarationRefusal(runtime: String?, entry: String?, port: Int?): String? {

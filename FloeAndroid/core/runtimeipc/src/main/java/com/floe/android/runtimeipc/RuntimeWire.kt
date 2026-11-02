@@ -33,6 +33,7 @@ object RuntimeWire {
     const val EXPORT_STATUS = "workspace.exportStatus"
     val operations = setOf("status", "request.status", "install.start", "install.cancel", "install.status",
         "environment.list", "shell.start", "shell.poll", "shell.input", "shell.resize", "shell.cancel",
+        "stdio.start", "stdio.write", "stdio.poll", "stdio.stdinEof", "service.readiness",
         CLEANUP, PREFLIGHT, PREFLIGHT_CANCEL, FILES_TREE, FILES_READ, EXPORT_STATUS)
 
     data class Request(val id: String, val operation: String, val payload: JSONObject)

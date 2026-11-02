@@ -754,11 +754,13 @@ public struct LinuxAuthorityEnvironmentMetadata: Codable, Sendable, Equatable {
     public var packageCount: Int
     public var parentID: String?
     public var templateID: String?
+    /// Absent on older runtime components; callers must not invent a version.
+    public var layerFormat: Int?
 
     public init(id: String, kind: String, ownerID: String?, name: String?, state: String,
                 baseRevision: String, requiresRebuild: Bool, rebuildReason: String?,
                 executionBackend: String?, bytes: Int64, packageCount: Int,
-                parentID: String?, templateID: String?) {
+                parentID: String?, templateID: String?, layerFormat: Int? = nil) {
         self.id = id
         self.kind = kind
         self.ownerID = ownerID
@@ -772,6 +774,7 @@ public struct LinuxAuthorityEnvironmentMetadata: Codable, Sendable, Equatable {
         self.packageCount = packageCount
         self.parentID = parentID
         self.templateID = templateID
+        self.layerFormat = layerFormat
     }
 }
 

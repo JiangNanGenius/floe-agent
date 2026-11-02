@@ -136,7 +136,10 @@ internal class LinuxRuntimeOperations(
      */
     private class Running(
         val lease: LinuxAuthorityClient.Lease,
-        val job: SupervisedPtyJob,
+        /** Common proof-bearing workload surface (PTY or separated stdio). */
+        val job: SupervisedWorkload,
+        /** Non-null ONLY for the C01 no-PTY stdio service lane. */
+        val stdio: SupervisedPipeJob?,
         val deadline: Long,
         val scratch: File,
         val role: WorkloadRole,
@@ -254,6 +257,9 @@ internal class LinuxRuntimeOperations(
     override fun snapshot(request: RuntimeWire.Request): JSONObject? = when (request.operation) {
         "install.status" -> { fields(request.payload, emptySet()); JSONObject(progress.get().toString()) }
         "shell.poll" -> poll(request.payload)
+        // C01 separated stdio: memory-only pages of BOTH independent streams.
+        // This never blocks the control thread and never crosses admission.
+        "stdio.poll" -> stdioPoll(request.payload)
         "workspace.exportStatus" -> exportStatus(request.payload)
         // C01 service readiness: PROVES the declared loopback port is a LISTEN
         // socket owned by the exact service session's process tree. It never
@@ -266,7 +272,35 @@ internal class LinuxRuntimeOperations(
     override fun execute(request: RuntimeWire.Request, workspaceGrant: android.os.IBinder?, cancelled: () -> Boolean): JSONObject = when (request.operation) {
         "install.start" -> install(request, cancelled)
         "install.status" -> { fields(request.payload, emptySet()); JSONObject(progress.get().toString()) }
-        "environment.list" -> { fields(request.payload, emptySet()); configure(); authority.list() }
+        "environment.list" -> {
+            fields(request.payload, setOf("projectID"))
+            configure()
+            val result = authority.list()
+            if (!request.payload.has("projectID")) result else {
+                val projectID = java.util.UUID.fromString(request.payload.getString("projectID"))
+                    .toString().uppercase(java.util.Locale.ROOT)
+                val expected = File(File(root, "Workspaces").canonicalFile, projectID)
+                val workspace = expected.canonicalFile
+                check(workspace.path == expected.path) { "workspaceIdentityChanged" }
+                val owner = java.security.MessageDigest.getInstance("SHA-256")
+                    .digest(workspace.path.toByteArray(Charsets.UTF_8))
+                    .joinToString("") { "%02x".format(it.toInt() and 0xff) }
+                val rows = result.getJSONArray("environments")
+                val projects = (0 until rows.length()).map { rows.getJSONObject(it) }
+                    .filter { it.optString("kind") == "project" && it.optString("ownerID") == owner }
+                val ids = projects.map { it.getString("id") }.toSet()
+                val scoped = org.json.JSONArray()
+                for (index in 0 until rows.length()) {
+                    val row = rows.getJSONObject(index)
+                    if (row.getString("id") in ids ||
+                        (row.optString("kind") == "session" && row.optString("parentID") in ids)) {
+                        scoped.put(row)
+                    }
+                }
+                result.put("environments", scoped).put("projectID", projectID)
+                    .put("workspaceOwnerID", owner)
+            }
+        }
         "shell.start" -> {
             // G07.3A: every in-flight start id is exposed for target-scoped
             // session-less cancellation; concurrent starts never share one.
@@ -277,6 +311,19 @@ internal class LinuxRuntimeOperations(
                 pendingShellStartIDs.remove(request.id)
             }
         }
+        "stdio.start" -> {
+            // C01 managed-service stdio: same admission/exact-stop accounting
+            // as shell.start, but a no-PTY three-pipe child under the service
+            // role.
+            pendingShellStartIDs.add(request.id)
+            try {
+                startStdio(request, checkNotNull(workspaceGrant), cancelled)
+            } finally {
+                pendingShellStartIDs.remove(request.id)
+            }
+        }
+        "stdio.write" -> stdioWrite(request.payload)
+        "stdio.stdinEof" -> stdioStdinEof(request.payload)
         "workspace.preflight" -> preflight(request, checkNotNull(workspaceGrant), cancelled)
         "shell.poll" -> poll(request.payload)
         "shell.input" -> input(request.payload)
@@ -639,7 +686,8 @@ internal class LinuxRuntimeOperations(
                     val startCancellation = checkNotNull(cancelledStarts[request.id]) {
                         "startCancellationMissing"
                     }
-                    val owned = Running(lease, outcome.job, executionDeadlineMillis(admittedAtMillis, seconds),
+                    val owned = Running(lease, outcome.job, null,
+                        executionDeadlineMillis(admittedAtMillis, seconds),
                         scratch, role, projectID, workspace, isOwner, workspaceSession, imported,
                         request.id, startCancellation, latency)
                     owned.startCancelled.set(isCancelled())
@@ -725,6 +773,412 @@ internal class LinuxRuntimeOperations(
         } finally {
             cancelledStarts.remove(request.id)
             if (workspaceGate.isHeldByCurrentThread) workspaceGate.unlock()
+        }
+    }
+
+    /**
+     * C01 managed-service stdio start. The child is the SAME validated PRoot
+     * guest launch as every other workload, but with THREE distinct pipes and
+     * NO PTY, under the trusted `.service` role:
+     *
+     *   child fd0 <- parent stdin pipe (data + real descriptor EOF)
+     *   child fd1 -> parent stdout pipe (newline JSON-RPC; never merged)
+     *   child fd2 -> parent stderr pipe (diagnostics only)
+     *
+     * The payload carries an exact, already-validated argv (not a shell
+     * string) and a workspace-relative cwd. `command` is resolved to an
+     * absolute GUEST path: a bare name is searched inside the selected
+     * environment's own writable root using the fixed guest PATH order; a
+     * relative path is resolved against the validated cwd; an absolute path is
+     * used verbatim. A component `..`, an empty command or a command that is
+     * not found refuses BEFORE a process exists. No host interpreter is ever
+     * consulted and no shell metacharacter expansion happens.
+     */
+    private fun startStdio(request: RuntimeWire.Request, workspaceGrant: android.os.IBinder,
+                           cancelled: () -> Boolean): JSONObject {
+        val payload = request.payload
+        fields(payload, setOf("projectID", "runID", "conversationID", "environmentID",
+            "command", "arguments", "cwd", "timeoutSeconds", "leaseRole"))
+        check(installID.get() == null && activePreflightID.get() == null) { "runtimeBusy" }
+        val role = WorkloadRole.fromWire(payload.optString("leaseRole"))
+            ?: throw IllegalArgumentException("leaseRole invalid")
+        require(role == WorkloadRole.SERVICE) { "stdio.start requires the service lease role" }
+        synchronized(admissionBudget) {
+            val live = running.values.filter { !it.finished.get() }
+            require(live.count { it.role == role } < role.maximumConcurrent) {
+                "workloadCapacity:${role.wireName}"
+            }
+            require(live.size < MAX_CONCURRENT_WORKLOADS) { "workloadCapacity:total" }
+        }
+        val projectID = payload.getString("projectID")
+        val runID = payload.getString("runID")
+        val command = payload.getString("command")
+        require(command.isNotBlank() && command.toByteArray(Charsets.UTF_8).size <= 512 &&
+            '\u0000' !in command && '\n' !in command && '\r' !in command) { "stdioCommand invalid" }
+        val argumentArray = payload.optJSONArray("arguments") ?: org.json.JSONArray()
+        require(argumentArray.length() <= 64)
+        val arguments = (0 until argumentArray.length()).map { index ->
+            val value = argumentArray.opt(index)
+            require(value is String && value.toByteArray(Charsets.UTF_8).size <= 4_096 &&
+                '\u0000' !in value && '\n' !in value && '\r' !in value) { "stdioArguments invalid" }
+            value as String
+        }
+        val cwd = payload.optString("cwd", ".")
+        require(!cwd.startsWith('/') && '\u0000' !in cwd && cwd.length <= 4096 &&
+            cwd.split('/').none { it == ".." }) { "stdioCwd invalid" }
+        val seconds = payload.optDouble("timeoutSeconds", 86_400.0)
+        require(seconds.isFinite() && seconds in 0.05..86_400.0)
+        check(cancelledStarts.putIfAbsent(request.id, AtomicBoolean()) == null) { "duplicateStart" }
+        fun isCancelled(): Boolean =
+            canceled(cancelled) || cancelledStarts[request.id]?.get() == true
+        if (running.isEmpty()) {
+            RuntimeExecutionTrace.mark(Stage.OPS_RECOVER)
+            recover()
+        }
+        configure()
+        val lease = authority.acquire(payload)
+        heldLeases[lease.id] = lease
+        leaseStartIDs[lease.id] = request.id
+        leaseRoles[lease.id] = role
+        var child: Running? = null
+        var preparedScratch: File? = null
+        var preparedWorkspace: RuntimeWorkspaceSession? = null
+        var safeToAbandon = true
+        var startedOwner = false
+        var registeredParticipant = false
+        val terminal = AtomicReference<WorkloadTerminal?>(null)
+        try {
+            workspaceGate.lock()
+            val descriptor = lease.descriptor
+            val writable = ownedPath(descriptor.getString("writableLayer"))
+            val layers = descriptor.getJSONArray("orderedLayers")
+            val ordered = (0 until layers.length()).map { ownedPath(layers.getString(it)) }
+            val prepareStart = SystemClock.elapsedRealtime()
+            val kernel = runCatching { android.system.Os.uname().release }.getOrNull()
+            val syncfsReportsErrors = kernel != null && reportsSyncfsWritebackErrors(kernel)
+            RuntimeExecutionTrace.materializeProgress(
+                if (syncfsReportsErrors) "BARRIER_SYNCFS" else "BARRIER_PER_FILE", 0, 0, 0)
+            val barrier: ((java.nio.file.Path) -> Unit)? = if (syncfsReportsErrors) {
+                { stage -> PosixBridge.syncfsDirectory(stage.toString()) }
+            } else null
+            val materialized = LinuxRootfsMaterializer(
+                durabilityBarrier = barrier,
+                progress = { value ->
+                    RuntimeExecutionTrace.materializeProgress(
+                        value.phase.name, value.entries, value.bytes, value.elapsedMillis)
+                },
+            ).prepare(
+                LinuxRootfsMaterializer.Plan(lease.environmentID, descriptor.getString("baseRevision"),
+                    writable, ordered)) { cancelled() }
+            val prepareMillis = SystemClock.elapsedRealtime() - prepareStart
+            check(!cancelled())
+            val workspace = ownedPath(descriptor.getString("workspaceRoot"))
+            val ownerLeaseID = workspaceOwners[projectID]
+            var sharedOwner: Running? = ownerLeaseID?.let { running[it] }
+                ?.takeIf { !it.finished.get() && it.workspaceOwner && it.projectID == projectID }
+            val isReuseParticipant = when {
+                sharedOwner != null -> true
+                deferredExports.containsKey(projectID) -> true
+                else -> false
+            }
+            var workspaceSession: RuntimeWorkspaceSession? = null
+            var imported: WorkspaceImportReceipt? = null
+            var importMillis = 0L
+            var importedEntries = 0L
+            if (!isReuseParticipant) {
+                preparation.invalidate(projectID)
+                exportStatuses.remove(projectID)
+                val session = RuntimeWorkspaceSession(context, workspaceGrant, projectID, runID, workspace)
+                workspaceSession = session
+                preparedWorkspace = session
+                val importStart = SystemClock.elapsedRealtime()
+                val receipt = session.importBeforeLaunch(WorkspaceCancelSignal { cancelled() })
+                importMillis = SystemClock.elapsedRealtime() - importStart
+                check(receipt.skippedCount == 0) { "Workspace snapshot contains unsupported entries" }
+                imported = receipt
+                importedEntries = (receipt.createdCount + receipt.replacedSyncedCount +
+                    receipt.preservedUnsyncedCount + receipt.unchangedCount).toLong()
+                check(!cancelled())
+            }
+            val scratchParent = File(root, "Scratch").apply { check(mkdirs() || isDirectory) }
+            check(scratchParent.canonicalFile == scratchParent)
+            val scratch = File(scratchParent, lease.id)
+            java.nio.file.Files.createDirectory(scratch.toPath())
+            java.nio.file.Files.write(File(scratch, ".floe-owner").toPath(), lease.id.toByteArray(Charsets.UTF_8),
+                java.nio.file.StandardOpenOption.CREATE_NEW, java.nio.file.StandardOpenOption.WRITE)
+            preparedScratch = scratch
+            val guestArgv = resolveStdioArgv(command, arguments, cwd, writable)
+            val spec = PRootLaunchSpec(File(context.applicationInfo.nativeLibraryDir), writable, scratch,
+                "/workspace" + (if (cwd == "." || cwd.isEmpty()) "" else "/$cwd"), "/home/floe", "/tmp",
+                listOf(LinuxBind(workspace, "/workspace"), LinuxBind(File("/dev"), "/dev"),
+                    LinuxBind(File("/proc"), "/proc")) +
+                    RuntimeNetworkConfiguration.prepareBinds(context, scratch),
+                RunOwnership(lease.environmentID, descriptor.getString("runID"),
+                    descriptor.getString("projectContainerID"), writable.path),
+                emulateGuestRoot = true).command(guestArgv,
+                    guestVariables(descriptor, writable, ordered) +
+                        mapOf("FLOE_ENVIRONMENT_ID" to lease.environmentID),
+                    24, 80, stdinDelivery = StdinDelivery.OneShotPipe)
+            when (val outcome = supervisor.startPipe(
+                spec, LeaseToken(lease.id, descriptor.getString("runID")),
+                onTerminal = { terminal.set(it) },
+                admission = WorkloadAdmission.concurrent,
+            )) {
+                is PipeStartOutcome.Refused -> error("Linux stdio process was not admitted")
+                is PipeStartOutcome.Abandoned -> {
+                    safeToAbandon = outcome.terminal.quiescence == null ||
+                        outcome.terminal.quiescence is Quiescence.Proven
+                    error("Linux stdio process launch failed")
+                }
+                is PipeStartOutcome.Accepted -> {
+                    val admittedAtMillis = SystemClock.elapsedRealtime()
+                    safeToAbandon = false
+                    val isOwner = !isReuseParticipant
+                    val startCancellation = checkNotNull(cancelledStarts[request.id]) {
+                        "startCancellationMissing"
+                    }
+                    val owned = Running(lease, outcome.job, outcome.job,
+                        executionDeadlineMillis(admittedAtMillis, seconds),
+                        scratch, role, projectID, workspace, isOwner, workspaceSession, imported,
+                        request.id, startCancellation, LinuxRuntimePhaseTiming.begin())
+                    owned.startCancelled.set(isCancelled())
+                    child = owned
+                    if (isOwner) {
+                        workspaceOwners[projectID] = lease.id
+                        startedOwner = true
+                    } else {
+                        workspaceParticipants.getOrPut(projectID) {
+                            java.util.concurrent.ConcurrentHashMap.newKeySet()
+                        }.add(lease.id)
+                        registeredParticipant = true
+                    }
+                    running[lease.id] = owned
+                    synchronized(owned) {
+                        authority.started(lease, outcome.job.rootBirth)
+                        owned.authorityBound = true
+                    }
+                    pumpExecutor.execute {
+                        try {
+                            while (owned.job.stateNow != JobState.TERMINATED) {
+                                if (isStartCancelled(owned) || canceled(cancelled)) {
+                                    owned.job.requestCancel("user-stop")
+                                } else if (SystemClock.elapsedRealtime() >= owned.deadline) {
+                                    owned.job.requestCancel("timeout")
+                                }
+                                val pumped = owned.job.pump()
+                                if (pumped is PumpOutcome.Blocked || pumped is PumpOutcome.QuiescePending ||
+                                    pumped is PumpOutcome.ReadFailed) break
+                            }
+                            owned.terminal.set(terminal.get())
+                            finish(owned)
+                        } catch (_: Exception) {
+                            owned.nativeReleaseFailed = true
+                        }
+                        reconcileUntilReleased(owned, terminal)
+                    }
+                    return JSONObject().put("sessionID", lease.id)
+                        .put("environmentID", lease.environmentID)
+                        .put("runtimeGeneration", RuntimeProcessIdentity.bootToken)
+                        .put("leaseRole", role.wireName)
+                        .put("workspaceOwner", isOwner)
+                        .put("prepareReused", materialized.reused)
+                        .put("prepareMillis", prepareMillis)
+                        .put("prepareCopiedBytes", materialized.copiedBytes)
+                        .put("importMillis", importMillis)
+                        .put("importedEntries", importedEntries)
+                        .put("stdioContractVersion", RuntimeKernel.STDIO_CONTRACT)
+                }
+            }
+        } catch (failure: Exception) {
+            RuntimeExecutionTrace.mark(Stage.OPS_START_EXCEPTION)
+            if (safeToAbandon) {
+                runCatching { preparedWorkspace?.close() }
+                preparedScratch?.let { RuntimeNetworkConfiguration.release(it) }
+                val abandonAcknowledged = runCatching { authority.abandonUnstarted(lease) }.isSuccess
+                val cleanup = startAbandonCleanup(
+                    abandonAcknowledged = abandonAcknowledged,
+                    startedOwner = startedOwner,
+                    registeredParticipant = registeredParticipant,
+                )
+                if (cleanup.removeHeldLease) heldLeases.remove(lease.id)
+                if (cleanup.removeLeaseStart) leaseStartIDs.remove(lease.id)
+                if (cleanup.removeLeaseRole) leaseRoles.remove(lease.id)
+                if (cleanup.removeWorkspaceOwner) workspaceOwners.remove(projectID, lease.id)
+                if (cleanup.removeParticipant) workspaceParticipants[projectID]?.remove(lease.id)
+                preparedScratch?.let { cleanupScratch(it, lease.id) }
+            } else child?.let { owned ->
+                owned.startCancelled.set(true)
+                val stopped = runCatching { owned.job.requestCancel("start-binding-failed") }.getOrNull()
+                if (stopped is CancelOutcome.Terminated) owned.terminal.set(stopped.terminal)
+                reconcileUntilReleased(owned, terminal)
+            }
+            throw failure
+        } finally {
+            cancelledStarts.remove(request.id)
+            if (workspaceGate.isHeldByCurrentThread) workspaceGate.unlock()
+        }
+    }
+
+    /**
+     * Resolve the saved command to an absolute GUEST path without a shell.
+     * The pure resolver is [C01StdioCommand]; this wrapper only binds the
+     * SELECTED environment's own writable root (never a host PATH).
+     */
+    private fun resolveStdioArgv(command: String, arguments: List<String>,
+                                 cwd: String, writable: File): List<String> =
+        C01StdioCommand.resolve(command, arguments, cwd, writable)
+
+    /**
+     * Memory-only page of BOTH stdio streams. `stdout` and `stderr` are
+     * independent cursors/EOF flags; a gap in either is reported, never
+     * silently resynchronized. Works for a completed session too (the rings
+     * and terminal fields stay readable until the bounded completed ring
+     * evicts the record).
+     */
+    private fun stdioPoll(payload: JSONObject): JSONObject {
+        fields(payload, setOf("sessionID", "stdoutCursor", "stderrCursor", "maxBytes"))
+        val sessionID = payload.getString("sessionID")
+        val owned = running[sessionID] ?: completed[sessionID]
+        if (owned == null) {
+            // The session was already settled AND evicted from the bounded
+            // completed ring. Nothing survives to read: report a real closed
+            // terminal envelope (never fabricated bytes, never a hang).
+            return JSONObject().put("sessionID", sessionID).put("state", "released")
+                .put("stdoutBase64", "").put("stdoutCursor", 0L).put("stdoutGapBytes", 0L)
+                .put("stdoutMore", false).put("stdoutDroppedBytes", 0L).put("stdoutEof", true)
+                .put("stderrBase64", "").put("stderrCursor", 0L).put("stderrGapBytes", 0L)
+                .put("stderrMore", false).put("stderrDroppedBytes", 0L).put("stderrEof", true)
+                .put("leaseReleased", true).put("cancelled", false)
+        }
+        val pipe = owned.stdio
+            ?: throw IllegalArgumentException("Not a separated stdio session")
+        val stdoutCursor = payload.optLong("stdoutCursor", 0)
+        val stderrCursor = payload.optLong("stderrCursor", 0)
+        val max = payload.optInt("maxBytes", 16_384)
+        require(stdoutCursor >= 0 && stderrCursor >= 0 && max in 1..16_384)
+        val pages = pipe.pages(stdoutCursor, stderrCursor, max)
+        val terminal = owned.terminal.get()
+        return JSONObject().put("sessionID", owned.lease.id)
+            .put("state", if (owned.nativeReleaseFailed) "lease_retained"
+                else owned.job.stateNow.name.lowercase())
+            .put("stdoutBase64", Base64.encodeToString(pages.stdout.bytes, Base64.NO_WRAP))
+            .put("stdoutCursor", pages.stdout.nextCursor)
+            .put("stdoutGapBytes", pages.stdout.gapBytes)
+            .put("stdoutMore", pages.stdout.truncatedMore)
+            .put("stdoutDroppedBytes", pages.stdout.totalDroppedBytes)
+            .put("stdoutEof", pages.stdoutEof)
+            .put("stderrBase64", Base64.encodeToString(pages.stderr.bytes, Base64.NO_WRAP))
+            .put("stderrCursor", pages.stderr.nextCursor)
+            .put("stderrGapBytes", pages.stderr.gapBytes)
+            .put("stderrMore", pages.stderr.truncatedMore)
+            .put("stderrDroppedBytes", pages.stderr.totalDroppedBytes)
+            .put("stderrEof", pages.stderrEof)
+            .put("leaseReleased", owned.finished.get())
+            .put("cancelled", terminal is WorkloadTerminal.Cancelled)
+            .put("cleanupDeferred", owned.cleanupDeferred)
+            .also { result ->
+                (terminal as? WorkloadTerminal.Cancelled)?.let {
+                    result.put("stopReason", it.reason)
+                }
+            }
+            .also { result ->
+                (terminal as? WorkloadTerminal.Completed)?.let {
+                    result.put("exitCode", it.exit.exitCode)
+                    result.put("termSig", it.exit.termSig)
+                    result.put("waitErrno", it.exit.waitErrno)
+                }
+                (terminal as? WorkloadTerminal.Cancelled)?.let {
+                    result.put("exitCode", it.exit.exitCode)
+                    result.put("termSig", it.exit.termSig)
+                    result.put("waitErrno", it.exit.waitErrno)
+                }
+            }
+            .also { result ->
+                owned.workspaceResult?.let { files ->
+                    result.put("workspaceStatus", files.optString("workspaceStatus", "unknown"))
+                    if (files.has("workspaceKey")) result.put("workspaceKey", files.getString("workspaceKey"))
+                    result.put("workspaceOwner", owned.workspaceOwner)
+                    if (files.has("workspaceRecoveryRef")) {
+                        result.put("workspaceRecoveryRef", files.getString("workspaceRecoveryRef"))
+                    }
+                    if (files.has("workspaceRecovery")) {
+                        result.put("workspaceRecovery", files.getJSONObject("workspaceRecovery"))
+                    }
+                }
+            }
+            .also { result ->
+                val stdin = pipe.stdinStatus()
+                result.put("stdin", JSONObject().put("delivery", "pipe")
+                    .put("acceptedBytes", stdin.acceptedBytes).put("eof", stdin.eofDelivered)
+                    .also { value -> stdin.lastErrno?.let { value.put("lastErrno", it) } })
+            }
+    }
+
+    /** One bounded stdin page into the owned stdio pipe (never a PTY write). */
+    private fun stdioWrite(payload: JSONObject): JSONObject {
+        fields(payload, setOf("sessionID", "dataBase64"))
+        val sessionID = payload.getString("sessionID")
+        val owned = running[sessionID]
+        if (owned == null || owned.stdio == null) {
+            return JSONObject().put("acceptedBytes", 0).put("partial", false)
+                .put("errno", 9 /* EBADF: the owned pipe is gone */)
+                .put("state", "released")
+        }
+        val pipe = owned.stdio
+            ?: throw IllegalArgumentException("Not a separated stdio session")
+        check(running[owned.lease.id] === owned) { "Session already finished" }
+        val encoded = payload.getString("dataBase64")
+        require(encoded.length <= 22_000)
+        val bytes = Base64.decode(encoded, Base64.NO_WRAP)
+        require(bytes.size <= 16_384)
+        var accepted = 0
+        var partial = false
+        var errno: Int? = null
+        while (accepted < bytes.size) {
+            val take = minOf(pipe.maxStdinChunkBytes, bytes.size - accepted)
+            when (val result = pipe.writeStdin(bytes, accepted, take)) {
+                is StdinWrite.Complete -> accepted += result.bytes
+                is StdinWrite.Partial -> {
+                    accepted += result.bytes
+                    partial = true
+                    errno = result.errno
+                    break
+                }
+                is StdinWrite.Failed -> {
+                    accepted += result.bytesAlreadyWritten
+                    errno = result.errno
+                    break
+                }
+            }
+        }
+        return JSONObject().put("acceptedBytes", accepted).also {
+            if (partial) it.put("partial", true)
+            if (errno != null) it.put("errno", errno)
+        }
+    }
+
+    /** Close the owned stdin write end: REAL descriptor EOF, never an exit. */
+    private fun stdioStdinEof(payload: JSONObject): JSONObject {
+        fields(payload, setOf("sessionID"))
+        val sessionID = payload.getString("sessionID")
+        val owned = running[sessionID] ?: completed[sessionID]
+        if (owned == null || owned.stdio == null) {
+            return JSONObject().put("stdinEof", "rejected").put("reason", "sessionReleased")
+                .put("leaseReleased", true)
+        }
+        val pipe = owned.stdio
+            ?: throw IllegalArgumentException("Not a separated stdio session")
+        if (running[owned.lease.id] !== owned) {
+            return JSONObject().put("stdinEof", "rejected").put("reason", "sessionReleased")
+                .put("leaseReleased", owned.finished.get())
+        }
+        return when (val eof = pipe.requestStdinEof()) {
+            is StdinEof.Closed -> JSONObject().put("acceptedBytes", 0)
+                .put("stdinEof", if (eof.idempotent) "closed-idempotent" else "closed")
+            is StdinEof.Failed -> JSONObject().put("acceptedBytes", 0)
+                .put("stdinEof", "failed").put("errno", eof.errno)
+            is StdinEof.Rejected -> JSONObject().put("acceptedBytes", 0)
+                .put("stdinEof", "rejected").put("reason", eof.reason)
         }
     }
 
@@ -1119,6 +1573,7 @@ internal class LinuxRuntimeOperations(
     private fun poll(payload: JSONObject): JSONObject {
         fields(payload, setOf("sessionID", "cursor", "maxBytes"))
         val owned = matching(payload)
+        require(owned.stdio == null) { "shell.poll addresses a stdio session; use stdio.poll" }
         val cursor = payload.optLong("cursor", 0)
         val max = payload.optInt("maxBytes", 16_384)
         require(cursor >= 0 && max in 1..16_384)
@@ -1151,6 +1606,7 @@ internal class LinuxRuntimeOperations(
     private fun input(payload: JSONObject): JSONObject {
         fields(payload, setOf("sessionID", "inputBase64"))
         val owned = matching(payload)
+        require(owned.stdio == null) { "shell.input addresses a stdio session; use stdio.write" }
         if (running[owned.lease.id] !== owned) {
             // G03-R3 fast-exit stdin contract: the trusted one-shot backend
             // ALWAYS commands exactly one trailing EMPTY shell.input EOF
@@ -1230,6 +1686,7 @@ internal class LinuxRuntimeOperations(
     private fun resize(payload: JSONObject): JSONObject {
         fields(payload, setOf("sessionID", "rows", "columns"))
         val owned = matching(payload)
+        require(owned.stdio == null) { "a separated stdio process has no terminal size" }
         check(running[owned.lease.id] === owned)
         val rows = payload.getInt("rows"); val columns = payload.getInt("columns")
         require(rows in 1..512 && columns in 1..512)

@@ -3,6 +3,8 @@ package com.floe.android.linuxruntime.supervision
 
 import com.floe.android.linuxruntime.LaunchSpec
 import com.floe.android.linuxruntime.LinuxRuntimeBackend
+import com.floe.android.linuxruntime.PipeProcessSession
+import com.floe.android.linuxruntime.PipeSpawnOutcome
 import com.floe.android.linuxruntime.PtySession
 import com.floe.android.linuxruntime.SpawnOutcome
 import java.util.concurrent.atomic.AtomicReference
@@ -31,6 +33,13 @@ sealed class StartOutcome {
     data class Abandoned(val terminal: WorkloadTerminal.SpawnAbandoned) : StartOutcome()
 }
 
+/** Result of one [RuntimeWorkSupervisor.startPipe] attempt (C01 stdio). */
+sealed class PipeStartOutcome {
+    data class Accepted(val job: SupervisedPipeJob) : PipeStartOutcome()
+    data class Refused(val reason: String) : PipeStartOutcome()
+    data class Abandoned(val terminal: WorkloadTerminal.SpawnAbandoned) : PipeStartOutcome()
+}
+
 /**
  * Result of [RuntimeWorkSupervisor.recoverBeforeAdmission].
  *
@@ -50,21 +59,21 @@ sealed class RecoveryOutcome {
  * every non-owned stray. Existing callers keep this default byte-for-byte.
  *
  * [concurrent] admits up to [maxConcurrent] independently owned jobs (the App
- * composition uses 3: two interactive terminals plus ONE shared Agent/run
- * execution slot). Admission and terminal proofs are SCOPED: they exclude
- * only processes kernel-attributed to OTHER live owned jobs and never signal an
- * unattributable process while a sibling is live. That is what makes two real
- * PTY sessions plus an Agent command safe; it is not a tab-only simulation.
+ * composition uses 5: two interactive terminals, ONE shared Agent/run
+ * execution slot and TWO managed-service slots). Admission and terminal proofs
+ * are SCOPED: they exclude only processes kernel-attributed to OTHER live owned
+ * jobs and never signal an unattributable process while a sibling is live. That
+ * is what makes real concurrent sessions safe; it is not a tab-only simulation.
  */
 data class WorkloadAdmission(
     val maxConcurrent: Int = 1,
     val enforceStraySweep: Boolean = true,
 ) {
-    init { require(maxConcurrent in 1..4) { "maxConcurrent out of range" } }
+    init { require(maxConcurrent in 1..5) { "maxConcurrent out of range" } }
 
     companion object {
         val single = WorkloadAdmission()
-        val concurrent = WorkloadAdmission(maxConcurrent = 3, enforceStraySweep = false)
+        val concurrent = WorkloadAdmission(maxConcurrent = 5, enforceStraySweep = false)
     }
 }
 
@@ -98,6 +107,7 @@ class RuntimeWorkSupervisor(
     private val signals: SignalBoundary,
     private val quiescer: RuntimeUidQuiescer,
     private val jobPolicy: PtyJobPolicy = PtyJobPolicy(),
+    private val pipePolicy: PipeJobPolicy = PipeJobPolicy(),
     private val clock: SupervisorClock = WallClock,
 ) {
     init {
@@ -130,20 +140,20 @@ class RuntimeWorkSupervisor(
      * never be forgotten. Legacy single mode keeps at most one entry because
      * admission refuses a second start.
      */
-    private val jobs = LinkedHashMap<String, SupervisedPtyJob>()
+    private val jobs = LinkedHashMap<String, SupervisedWorkload>()
 
     @Volatile
     private var shuttingDown = false
 
     /** Most recently admitted live job (legacy diagnostic handle). */
-    private val activeRef = AtomicReference<SupervisedPtyJob?>(null)
+    private val activeRef = AtomicReference<SupervisedWorkload?>(null)
 
     /** Last terminal workload: its lease stays reconcilable even after a replacement. */
     @Volatile
-    private var lastTerminal: SupervisedPtyJob? = null
+    private var lastTerminal: SupervisedWorkload? = null
 
     /** The first live workload of this UID, or null. Transient: nothing is stored elsewhere. */
-    fun activeJob(): SupervisedPtyJob? =
+    fun activeJob(): SupervisedWorkload? =
         synchronized(admissionLock) { jobs.values.firstOrNull { it.stateNow != JobState.TERMINATED } }
 
     /** Live owned jobs (diagnostic/test observation; identifiers only). */
@@ -234,6 +244,115 @@ class RuntimeWorkSupervisor(
             // reservation, so a refusal can never wedge admission.
             releaseReservation()
         }
+    }
+
+    /**
+     * C01 separated-stdio start: the SAME explicit [LaunchSpec] and the SAME
+     * immutable admission/proof rules as [start], but the child is spawned on
+     * three dedicated pipes (no PTY) and supervised by [SupervisedPipeJob].
+     * A refusal or spawn failure never claims a quiescence proof for work that
+     * never existed.
+     */
+    fun startPipe(
+        spec: LaunchSpec,
+        lease: LeaseToken,
+        onTerminal: (WorkloadTerminal) -> Unit,
+        admission: WorkloadAdmission = WorkloadAdmission.single,
+    ): PipeStartOutcome {
+        boundaryGuard()?.let { return PipeStartOutcome.Refused(it) }
+        val busy = reserve(admission, "stdio-start")
+        if (busy != null) return PipeStartOutcome.Refused(busy)
+
+        try {
+            val siblingRoots = liveRootPids()
+            val scoped = WorkloadAdmission(
+                maxConcurrent = admission.maxConcurrent,
+                enforceStraySweep = admission.enforceStraySweep && siblingRoots.isEmpty(),
+            )
+            val proof = quiescer.quiesce(
+                "pre-admission",
+                exclusion = QuiescenceExclusion.ownedRoots(siblingRoots),
+                enforce = scoped.enforceStraySweep,
+            )
+            if (proof !is Quiescence.Proven) {
+                return PipeStartOutcome.Refused("admission-unproven:" + describe(proof))
+            }
+
+            val spawn = try {
+                backend.spawnPipes(spec, timeoutMs = jobPolicy.spawnTimeoutMs)
+            } catch (e: Exception) {
+                return PipeStartOutcome.Refused("spawn-threw-${e.javaClass.simpleName}")
+            }
+
+            return when (spawn) {
+                is PipeSpawnOutcome.Failed -> {
+                    val terminal = WorkloadTerminal.SpawnAbandoned(
+                        lease, spec.ownership,
+                        "spawn-failed:errno=${spawn.error.errno}(${spawn.error.message})", null,
+                    )
+                    deliverTo(onTerminal, terminal)
+                    PipeStartOutcome.Abandoned(terminal)
+                }
+
+                is PipeSpawnOutcome.Spawned -> startPipeSpawned(spawn.session, spec, lease, onTerminal)
+            }
+        } finally {
+            releaseReservation()
+        }
+    }
+
+    private fun startPipeSpawned(
+        session: PipeProcessSession,
+        spec: LaunchSpec,
+        lease: LeaseToken,
+        onTerminal: (WorkloadTerminal) -> Unit,
+    ): PipeStartOutcome {
+        val birth = ProcessBirth.fromCreationIdentity(session.creationIdentity)
+        if (birth == null) {
+            val stopped = runCatching { session.cancel() }.getOrNull()
+            val siblings = liveRootPids()
+            val proof = quiescer.quiesce(
+                "spawn-identity-unproven",
+                exclusion = QuiescenceExclusion.ownedRoots(siblings),
+                enforce = siblings.isEmpty(),
+            )
+            val detail = if (stopped == null || stopped.waitErrno != 0) {
+                " root-reap-unproven(waitErrno=${stopped?.waitErrno ?: session.lastWaitErrno()})"
+            } else {
+                ""
+            }
+            val terminal = WorkloadTerminal.SpawnAbandoned(
+                lease, spec.ownership, "creationIdentity-unparsable:${session.creationIdentity}$detail", proof,
+            )
+            return if (proof is Quiescence.Proven && stopped != null && stopped.waitErrno == 0) {
+                deliverTo(onTerminal, terminal)
+                PipeStartOutcome.Abandoned(terminal)
+            } else {
+                PipeStartOutcome.Refused("spawn-identity-unproven-and-retained:" + describe(proof))
+            }
+        }
+
+        val job = SupervisedPipeJob(
+            session = session,
+            boundary = boundary,
+            quiescer = quiescer,
+            census = census,
+            lease = lease,
+            ownership = spec.ownership,
+            spec = spec,
+            policy = pipePolicy,
+            clock = clock,
+            onTerminal = onTerminal,
+            rootBirthOverride = birth,
+            exclusionProvider = {
+                QuiescenceExclusion.ownedRoots(liveRootPids(excludingLease = lease))
+            },
+            enforceProvider = {
+                liveRootPids(excludingLease = lease).isEmpty()
+            },
+        )
+        register(job)
+        return PipeStartOutcome.Accepted(job)
     }
 
     private fun startSpawned(
@@ -418,7 +537,7 @@ class RuntimeWorkSupervisor(
         reserved = false
     }
 
-    private fun register(job: SupervisedPtyJob) = admissionLock.withLock {
+    private fun register(job: SupervisedWorkload) = admissionLock.withLock {
         check(reserved) { "a workload may only be registered on a reserved admission" }
         jobs[job.lease.leaseId] = job
         activeRef.set(job)
@@ -426,7 +545,7 @@ class RuntimeWorkSupervisor(
     }
 
     /** Lock-free retirement; a later reserve() reconciles the slot itself. */
-    private fun retire(job: SupervisedPtyJob) {
+    private fun retire(job: SupervisedWorkload) {
         admissionLock.withLock { jobs.remove(job.lease.leaseId) }
         activeRef.compareAndSet(job, null)
         lastTerminal = job
@@ -441,7 +560,7 @@ class RuntimeWorkSupervisor(
                 .mapTo(LinkedHashSet()) { it.pid }
         }
 
-    private fun reconcilableJob(lease: LeaseToken): SupervisedPtyJob? {
+    private fun reconcilableJob(lease: LeaseToken): SupervisedWorkload? {
         admissionLock.withLock { jobs[lease.leaseId] }?.let { if (it.lease == lease) return it }
         val active = activeRef.get()
         if (active != null && active.lease == lease) return active

@@ -620,16 +620,25 @@ public struct C02ScheduleMetadataSource: G073EnvironmentMetadataSource {
 public struct C02MetadataTargetEnvironmentProvider: C02ExecutionTargetEnvironmentProviding {
     private let metadata: any G073EnvironmentMetadataSource
     private let hosts: RemoteHostStore
+    private let liveCatalog: (@Sendable (C02TargetOwnership) async throws -> [C02RuntimeEnvironmentCatalog.Row])?
 
-    public init(metadata: any G073EnvironmentMetadataSource, hosts: RemoteHostStore) {
+    public init(metadata: any G073EnvironmentMetadataSource, hosts: RemoteHostStore,
+                liveCatalog: (@Sendable (C02TargetOwnership) async throws -> [C02RuntimeEnvironmentCatalog.Row])? = nil) {
         self.metadata = metadata
         self.hosts = hosts
+        self.liveCatalog = liveCatalog
     }
 
     public func localEnvironments(
         taskID: UUID,
         ownership: C02TargetOwnership
     ) async throws -> [C02LocalEnvironmentFacts] {
+        if let liveCatalog {
+            return try await liveCatalog(ownership).filter { row in
+                row.kind == "project" || (row.kind == "session" &&
+                    row.ownerID?.lowercased() == taskID.uuidString.lowercased())
+            }.map { $0.targetFacts(projectOwner: ownership.workspaceID.uuidString) }
+        }
         let rows = await metadata.allEnvironmentMetadata()
         return rows
             .filter { row in
@@ -650,6 +659,13 @@ public struct C02MetadataTargetEnvironmentProvider: C02ExecutionTargetEnvironmen
         taskID: UUID,
         ownership: C02TargetOwnership
     ) async throws -> C02LocalEnvironmentFacts {
+        if liveCatalog != nil {
+            guard let facts = try await localEnvironments(taskID: taskID, ownership: ownership)
+                .first(where: { $0.id == environmentID }) else {
+                throw C02ExecutionTargetError.environmentMissing(environmentID)
+            }
+            return facts
+        }
         guard let row = await metadata.environmentMetadata(id: environmentID) else {
             throw C02ExecutionTargetError.environmentMissing(environmentID)
         }
@@ -1131,7 +1147,10 @@ public enum C02ExecutionTargetProduction {
             database: database, storageRoot: storageRoot)
         let policy = C02SQLiteTargetPolicyProvider(database: database)
         let environments = C02MetadataTargetEnvironmentProvider(
-            metadata: metadata, hosts: hosts)
+            metadata: metadata, hosts: hosts,
+            liveCatalog: { ownership in
+                try await C02RuntimeEnvironmentCatalog.read(ownership: ownership)
+            })
         let trust = C02RemoteHostTrustAdapter(store: hosts)
         // The drain adapter needs the remote adapter for session close; build
         // the adapter first with a mutable holder, then inject it.

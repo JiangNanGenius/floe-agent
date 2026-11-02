@@ -43,6 +43,7 @@ public final class G02QualifiedTransportGate: @unchecked Sendable,
     /// derived from the cloud/HTTP flag: a local pipe can be qualified while
     /// the network transport is closed, and vice versa.
     private var stdioAdmitted: Bool
+    private var stdioProbe: (@Sendable () async -> Bool)?
     private var admissionListener: (@Sendable (Bool) -> Void)?
     /// The typed refusal reason from the last REAL startup admission
     /// evaluation (nil while admitted). Diagnostics only; never a wire
@@ -123,6 +124,18 @@ public final class G02QualifiedTransportGate: @unchecked Sendable,
     /// model envelope, command payload or feature UI.
     public func markMCPStdioQualified(_ value: Bool) {
         lock.withLock { stdioAdmitted = value }
+    }
+
+    /// The trusted composition installs a live peer probe, never a model flag.
+    public func setMCPStdioProbe(_ probe: (@Sendable () async -> Bool)?) {
+        lock.withLock { stdioProbe = probe; stdioAdmitted = false }
+    }
+
+    public func refreshMCPStdioAdmission() async -> Bool {
+        guard let probe = lock.withLock({ stdioProbe }) else { return admitsMCPStdio }
+        let accepted = await probe()
+        lock.withLock { stdioAdmitted = accepted }
+        return accepted
     }
 }
 

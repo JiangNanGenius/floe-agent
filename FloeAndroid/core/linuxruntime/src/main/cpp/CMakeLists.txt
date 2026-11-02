@@ -1,8 +1,11 @@
 cmake_minimum_required(VERSION 3.18)
 project(floe_linuxruntime CXX C)
 
-# JNI PTY transport library (bionic only, no third-party code).
-add_library(floepty SHARED floe_pty_jni.c)
+# JNI process transport library (bionic only, no third-party code).
+# floe_pty_jni.c: interactive PTY + one-shot stdin pipe (unchanged).
+# floe_pipe_jni.c: C01 managed-service stdio process with THREE distinct pipes
+# and no PTY (stdin write, stdout JSON-RPC read, stderr diagnostic read).
+add_library(floepty SHARED floe_pty_jni.c floe_pipe_jni.c)
 
 find_library(log-lib log)
 target_link_libraries(floepty PRIVATE ${log-lib})

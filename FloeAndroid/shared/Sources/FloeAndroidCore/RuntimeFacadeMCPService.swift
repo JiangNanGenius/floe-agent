@@ -101,10 +101,12 @@ public protocol MCPTransportAdmitting: Sendable {
     /// Kept separate from HTTP/SSE admission: a closed network gate must not
     /// disable a local pipe, and an injected pipe must not admit the network.
     var admitsMCPStdio: Bool { get }
+    func refreshMCPStdioAdmission() async -> Bool
 }
 
 public extension MCPTransportAdmitting {
     var admitsMCPStdio: Bool { false }
+    func refreshMCPStdioAdmission() async -> Bool { admitsMCPStdio }
 }
 
 public struct MCPTransportAdmissionClosed: MCPTransportAdmitting {
@@ -1484,7 +1486,7 @@ public actor MCPDomain {
                 return Self.rejection(MCPDomainRefusal.transportClosed)
             }
         case .stdio:
-            guard transportAdmission.admitsMCPStdio else {
+            guard await transportAdmission.refreshMCPStdioAdmission() else {
                 return Self.rejection(MCPDomainRefusal.transportClosed)
             }
         }

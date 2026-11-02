@@ -86,7 +86,7 @@ class RuntimeKernel(context: Context) {
     fun isExecuting(): Boolean = operations?.isExecuting() == true
 
     fun exchange(request: RuntimeWire.Request, workspaceGrant: IBinder?, foregroundAllowed: () -> Boolean): JSONObject {
-        val traceStart = request.operation == "shell.start"
+        val traceStart = request.operation == "shell.start" || request.operation == "stdio.start"
         if (traceStart) RuntimeExecutionTrace.mark(Stage.KERNEL_START_ENTER)
         if (request.operation == "status") {
             val reply = JSONObject()
@@ -106,6 +106,12 @@ class RuntimeKernel(context: Context) {
                 // exclusive-start admission below. It is the engine's own real
                 // attestation; an idle check belongs to the host ingest.
                 .put("workloadContractVersion", MULTI_WORKLOAD_CONTRACT)
+                // C01 separated-stdio contract: advertised ONLY because this
+                // kernel build really implements the pipe process operations
+                // below (stdio.start/write/poll/stdinEof) over three distinct
+                // OS pipes. The Swift stdio provider requires this exact
+                // handshake value; an older helper returns it absent.
+                .put("stdioContractVersion", STDIO_CONTRACT)
             // G07.1 terminal04 (ADDITIVE, diagnostics only): this engine
             // process's OWN settled phase composition for its most recent
             // workload. Absent until a first terminal; stage names and
@@ -146,8 +152,9 @@ class RuntimeKernel(context: Context) {
         // scoped wipe; stopping still refuses, no grant is accepted/required,
         // and the receiver performs its own busy/quiescence deferral first.
         val cleanupLane = request.operation == RuntimeWire.CLEANUP
-        if (request.operation == "shell.start" || request.operation == RuntimeWire.PREFLIGHT)
-            check(workspaceGrant != null) { "Owned workspace grant is required" }
+        if (request.operation == "shell.start" || request.operation == "stdio.start" ||
+            request.operation == RuntimeWire.PREFLIGHT
+        ) check(workspaceGrant != null) { "Owned workspace grant is required" }
         check(metadataOnly || cleanupLane || foregroundAllowed()) { "Foreground work ownership is required" }
         check(!fence.isStopping) { "Runtime is stopping" }
         synchronized(receipts) {
@@ -157,10 +164,11 @@ class RuntimeKernel(context: Context) {
                 // mirror shared state and must never race a live workload.
                 if (traceStart) RuntimeExecutionTrace.mark(Stage.KERNEL_ADMISSION_CHECK)
                 check(!hasOwnedWork()) { "Runtime already owns work" }
-            } else if (request.operation == "shell.start") {
+            } else if (request.operation == "shell.start" || request.operation == "stdio.start") {
                 // G07.3A: concurrent workloads are admitted by ROLE/CAPACITY in
-                // LinuxRuntimeOperations (2 interactive + ONE shared Agent/run), but
-                // never while an install or first-use preflight owns the UID.
+                // LinuxRuntimeOperations (2 interactive + ONE shared Agent/run +
+                // TWO managed services), but never while an install or
+                // first-use preflight owns the UID.
                 if (traceStart) RuntimeExecutionTrace.mark(Stage.KERNEL_ADMISSION_CHECK)
                 check(operations?.hasExclusiveWork() != true) { "Runtime is preparing an exclusive lane" }
             }
@@ -172,7 +180,9 @@ class RuntimeKernel(context: Context) {
             receipts[request.id] = JSONObject().put("requestID", request.id).put("state", "queued")
             count.incrementAndGet() // reserve admission before another Binder call
             if (request.operation == "install.start") pendingInstallID.set(request.id)
-            if (request.operation == "shell.start") pendingShellIDs.add(request.id)
+            if (request.operation == "shell.start" || request.operation == "stdio.start") {
+                pendingShellIDs.add(request.id)
+            }
             if (request.operation == RuntimeWire.PREFLIGHT) pendingPreflightID.set(request.id)
         }
         if (traceStart) RuntimeExecutionTrace.mark(Stage.KERNEL_QUEUED)
@@ -367,6 +377,14 @@ class RuntimeKernel(context: Context) {
          * requires v3 before it will start a managed service.
          */
         const val MULTI_WORKLOAD_CONTRACT = "floe-multi-workload-v3"
+
+        /**
+         * C01 separated-stdio engine contract. This kernel really implements
+         * `stdio.start` / `stdio.write` / `stdio.poll` / `stdio.stdinEof` over
+         * three distinct pipes in [LinuxRuntimeOperations]; the value is the
+         * live peer handshake the Swift provider checks, never a UI flag.
+         */
+        const val STDIO_CONTRACT = "floe-service-stdio-v1"
 
         /**
          * G03-R3 failed-start receipt handoff (job-150dee8e1ed14ba1): the

@@ -66,8 +66,9 @@ final class C08NotesTaskLaunchTests: XCTestCase {
             for index in 0..<8 {
                 var input = base
                 input.resources[0].fileName = "version-\(index).pdf"
+                let frozen = input
                 group.addTask {
-                    (try? C08NotesTaskLaunchFileReceiptStore().prepare(input, receiptRoot: root)) != nil
+                    (try? C08NotesTaskLaunchFileReceiptStore().prepare(frozen, receiptRoot: root)) != nil
                 }
             }
             var count = 0
