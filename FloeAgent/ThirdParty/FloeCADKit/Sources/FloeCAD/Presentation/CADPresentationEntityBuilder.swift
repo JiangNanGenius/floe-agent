@@ -859,6 +859,41 @@ final class CADPresentationEntityBuilder {
     }
 
     private func addLights(to stage: Entity, environment: CADPresentationEnvironment) {
+        if let authored = environment.sceneLights {
+            guard (try? CADSceneLight.validate(authored)) != nil else { return }
+            for value in authored where value.enabled {
+                let color = UIColor(red:CGFloat(value.color[0]),green:CGFloat(value.color[1]),blue:CGFloat(value.color[2]),alpha:1)
+                let position = CADPresentationAxes.point(SIMD3(Float(value.positionMM[0]),Float(value.positionMM[1]),Float(value.positionMM[2])))
+                let direction = simd_normalize(CADPresentationAxes.direction(SIMD3(Float(value.direction[0]),Float(value.direction[1]),Float(value.direction[2]))))
+                let entity: Entity
+                switch value.kind {
+                case .directional:
+                    let light = DirectionalLight()
+                    light.light = .init(color:color,intensity:Float(value.intensity),isRealWorldProxy:false)
+                    light.look(at:position+direction,from:position,relativeTo:nil,forward:.negativeZ)
+                    if value.castsShadow && environment.shadowsEnabled {
+                        light.shadow = .init(shadowProjection:.automatic(maximumDistance:20),depthBias:1)
+                    }
+                    entity = light
+                case .point:
+                    let light = PointLight()
+                    light.light = .init(color:color,intensity:Float(value.intensity),attenuationRadius:Float(value.radiusMM/1000))
+                    light.position = position
+                    entity = light
+                case .spot:
+                    let light = SpotLight()
+                    light.light = .init(color:color,intensity:Float(value.intensity),
+                        innerAngleInDegrees:Float(value.innerAngleDegrees),outerAngleInDegrees:Float(value.outerAngleDegrees),
+                        attenuationRadius:Float(value.radiusMM/1000))
+                    light.look(at:position+direction,from:position,relativeTo:nil,forward:.negativeZ)
+                    if value.castsShadow && environment.shadowsEnabled { light.shadow = .init() }
+                    entity = light
+                }
+                entity.name = "CADPresentationLight-\(value.id.uuidString)"
+                stage.addChild(entity)
+            }
+            return
+        }
         let key = DirectionalLight()
         key.name = "CADPresentationLightKey"
         let keyDirection = CADPresentationAxes.direction(environment.lightDirectionModel)

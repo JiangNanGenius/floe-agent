@@ -692,13 +692,8 @@ final class CADPresentationRenderController: NSObject, UIGestureRecognizerDelega
             await self.builder.applyEnvironment(environment, to: stage,
                                                 bounds: self.floorBounds,
                                                 cache: self.cache)
+            guard !Task.isCancelled else { return }
             await self.applyBackground(environment)
-            if let resource = await self.cache.environment(for: environment) {
-                var lighting = self.arView.environment.lighting
-                lighting.resource = resource
-                lighting.intensityExponent = 0
-                self.arView.environment.lighting = lighting
-            }
         }
     }
 
@@ -710,11 +705,23 @@ final class CADPresentationRenderController: NSObject, UIGestureRecognizerDelega
             alpha: 1)
         var environmentValue = arView.environment
         environmentValue.background = .color(color)
-        if let resource = await cache.environment(for: environment) {
-            environmentValue.lighting.resource = resource
-            environmentValue.lighting.intensityExponent = 0
+        let resource = await cache.environment(for:environment)
+        guard !Task.isCancelled else { return }
+        let oldIssues = issues
+        issues.removeAll { $0.id == "environment-map" }
+        if let resource {
+            let intensity = Float(environment.environmentMap?.intensity ?? 1)
+            environmentValue.lighting.resource = intensity > 0 ? resource : nil
+            environmentValue.lighting.intensityExponent = intensity > 0 ? log2(intensity) : 0
+            if environment.environmentMap?.showsBackground == true { environmentValue.background = .skybox(resource) }
+        } else if let map = environment.environmentMap {
+            environmentValue.lighting.resource = nil
+            issues.append(CADPresentationIssue(id:"environment-map",kind:.imageDecodeFailed,
+                bodyID:nil,bodyName:map.name,detail:cache.environmentFailure(for:environment)
+                    ?? FloeCADStrings.text("cad.environment.damagedMap", "The environment image could not be read. Import it again.")))
         }
         arView.environment = environmentValue
+        if issues != oldIssues { handle?.setIssues(issues) }
     }
 
     // MARK: Material draft preview

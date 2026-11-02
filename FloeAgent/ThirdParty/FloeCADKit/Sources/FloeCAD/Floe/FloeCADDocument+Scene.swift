@@ -179,6 +179,8 @@ extension FloeCADDocument {
     @discardableResult
     func applyViewAppearance(_ appearance: CADViewAppearance) -> Bool {
         let appearance = appearance.sanitized
+        guard (try? CADSceneLight.validate(appearance.sceneLights)) != nil,
+              appearance.environmentMap == nil || (try? appearance.environmentMap?.validate()) != nil else { return false }
         // Equality is semantic: JSON key order is not a new user edit, and
         // selecting the already active look must not add an empty undo step.
         guard !isClosed, session.writeBlock == nil, appearance != viewAppearance else { return false }

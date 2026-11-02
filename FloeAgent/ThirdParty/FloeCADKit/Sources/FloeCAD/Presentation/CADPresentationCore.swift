@@ -243,6 +243,8 @@ nonisolated struct CADPresentationEnvironment: Equatable, Sendable {
     /// Physical floor extent, millimetres.
     var floorSizeMM: Float
     var shadowsEnabled: Bool
+    var sceneLights: [CADSceneLight]? = nil
+    var environmentMap: CADEnvironmentMap? = nil
 
     var backgroundColorLinear: SIMD3<Float> {
         // RealityKit renders in a linear working space; convert the authored
@@ -441,6 +443,11 @@ nonisolated extension CADPresentationEnvironment {
         hasher.combine(floorColor)
         hasher.combine(floorSizeMM)
         hasher.combine(shadowsEnabled)
+        hasher.combine(sceneLights)
+        hasher.combine(environmentMap?.sha256)
+        hasher.combine(environmentMap?.rotationDegrees)
+        hasher.combine(environmentMap?.intensity)
+        hasher.combine(environmentMap?.showsBackground)
         return "env-\(hasher.finalize())"
     }
 }

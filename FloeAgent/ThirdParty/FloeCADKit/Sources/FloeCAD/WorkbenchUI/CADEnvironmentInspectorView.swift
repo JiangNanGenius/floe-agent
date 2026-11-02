@@ -20,6 +20,8 @@ struct CADEnvironmentInspectorView: View {
     let onCancelPreview: () -> Void
 
     @State private var draft: CADViewAppearance
+    private let initialAppearance: CADViewAppearance
+    @State private var problem: String?
     @Environment(\.dismiss) private var dismiss
 
     init(document: FloeCADDocument,
@@ -28,6 +30,7 @@ struct CADEnvironmentInspectorView: View {
         self.document = document
         self.onPreview = onPreview
         self.onCancelPreview = onCancelPreview
+        self.initialAppearance = document.viewAppearance
         _draft = State(initialValue: document.viewAppearance)
     }
 
@@ -87,6 +90,8 @@ struct CADEnvironmentInspectorView: View {
                 } header: {
                     Text(FloeCADStrings.text("cad.environment.section.light", "Light"))
                 }
+
+                CADLightingInspectorSections(draft:$draft,onPreview:preview)
 
                 Section {
                     Toggle(FloeCADStrings.text("cad.environment.floor", "Floor"),
@@ -159,9 +164,18 @@ struct CADEnvironmentInspectorView: View {
                 }
                 ToolbarItem(placement: .confirmationAction) {
                     Button(FloeCADStrings.text("cad.ui.common.apply", "Apply")) {
-                        document.applyViewAppearance(draft)
-                        onPreview(draft)
-                        dismiss()
+                        do {
+                            try CADSceneLight.validate(draft.sceneLights)
+                            try draft.environmentMap?.validate()
+                            guard !document.isClosed, !document.isReadOnly,
+                                  document.viewAppearance == initialAppearance || document.viewAppearance == draft.sanitized else {
+                                problem = FloeCADStrings.text("cad.environment.changed", "The environment changed. Reopen it before applying your changes."); return
+                            }
+                            guard document.viewAppearance == draft.sanitized || document.applyViewAppearance(draft) else {
+                                problem = FloeCADStrings.text("cad.environment.changed", "The environment changed. Reopen it before applying your changes."); return
+                            }
+                            onPreview(draft); dismiss()
+                        } catch { problem = error.localizedDescription }
                     }
                     .accessibilityIdentifier("CADEnvironmentApply")
                 }
@@ -169,6 +183,10 @@ struct CADEnvironmentInspectorView: View {
         }
         .presentationDetents([.medium, .large])
         .presentationDragIndicator(.visible)
+        .alert(FloeCADStrings.text("cad.environment.title", "Environment"),isPresented:Binding(
+            get:{ problem != nil },set:{ if !$0 { problem = nil } })) {
+                Button(FloeCADStrings.text("cad.ui.common.ok", "OK"),role:.cancel) { problem = nil }
+            } message: { Text(problem ?? "") }
         .onDisappear { onCancelPreview() }
     }
 

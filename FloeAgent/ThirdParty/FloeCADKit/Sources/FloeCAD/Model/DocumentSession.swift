@@ -2082,7 +2082,8 @@ final class DocumentSession {
                               isHidden: $0.isHidden, faceMaterials: $0.faceMaterialsData, uv: $0.uvData)
             },
             drawings: project.drawingsData,
-            animation: project.animationData)
+            animation: project.animationData,
+            sceneSettings: project.sceneSettingsData)
         project.hasOpaqueAssociations = project.hasOpaqueAssociations || associationAssessment?.isOpaqueReadOnly == true
         storeIsNewerThanApp = project.formatVersion > Project.currentFormatVersion || project.hasOpaqueAssociations
         #if DEBUG

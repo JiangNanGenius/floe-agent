@@ -24,7 +24,7 @@ public final class CADMaterialService {
     public static let actions: [String] = [
         "list", "read", "create", "update", "remove", "apply", "applyFaces",
         "reassignFaces", "mapping", "textures", "unresolved", "libraryExport",
-        "libraryImport", "libraryList", "environment.read", "environment.update", "undo", "redo",
+        "libraryImport", "libraryList", "environment.read", "environment.update", "environment.import", "undo", "redo",
     ] + CADUVService.actions
 
     /// Applied appearances are complete copies, not live library links. This
@@ -49,10 +49,12 @@ public final class CADMaterialService {
     /// all existing material operations keep their current command path.
     public func handleAsync(action: String, args: [String: Any]) async -> [String: Any] {
         if action.hasPrefix("uv.") { return await CADUVService(document: document).handle(action: action, args: args) }
+        if action == "environment.import" { return await importEnvironment(args) }
         return handle(action: action, args: args)
     }
 
     public func handle(action: String, args: [String: Any]) -> [String: Any] {
+        if action == "environment.import" { return Self.fail("async_required", "Use the asynchronous material service to import an environment image.") }
         if action.hasPrefix("uv.") {
             if action == "uv.status" || action == "uv.cancel" { return CADUVService(document: document).control(action: action) }
             return Self.fail("async_required", "Use the asynchronous material service for UV actions.")
@@ -94,23 +96,26 @@ public final class CADMaterialService {
     // MARK: - Shared viewport appearance
 
     /// The same appearance and undo command used by the Environment inspector.
-    /// The payload describes the existing key light and three presets, not
-    /// independent scene lights, HDRI or a second presentation-only document.
+    /// Presets, authored lights and imported environment metadata all belong
+    /// to that one appearance; image bytes never enter a query response.
     private func environmentReply(action: String, mutated: Bool) -> [String: Any] {
         let appearance = document.viewAppearance
         func settings(_ value: CADViewEnvironmentSettings) -> [String: Any] {
             ["light_intensity": value.lightIntensity, "light_direction": value.lightDirection,
              "background_color": value.backgroundColor]
         }
+        var appearanceJSON:[String:Any] = [
+            "active_environment":appearance.activeEnvironment.rawValue,
+            "environments":["studio":settings(appearance.studio),"daylight":settings(appearance.daylight),"dark":settings(appearance.dark)],
+            "floor_visible":appearance.floorVisible,"floor_color":appearance.floorColor,
+            "floor_size_mm":appearance.floorSizeMM,"shadows_enabled":appearance.shadowsEnabled,
+            "preset_lights":appearance.sceneLights == nil,
+            "lights":(appearance.sceneLights ?? []).map(\.summaryJSON),
+        ]
+        if let map = appearance.environmentMap { appearanceJSON["environment_map"] = map.summaryJSON }
         return Self.ok([
             "action": action, "mutated": mutated,
-            "appearance": [
-                "active_environment": appearance.activeEnvironment.rawValue,
-                "environments": ["studio": settings(appearance.studio),
-                                 "daylight": settings(appearance.daylight), "dark": settings(appearance.dark)],
-                "floor_visible": appearance.floorVisible, "floor_color": appearance.floorColor,
-                "floor_size_mm": appearance.floorSizeMM, "shadows_enabled": appearance.shadowsEnabled,
-            ],
+            "appearance": appearanceJSON,
             "revision": document.revision, "change_count": document.session.changeCount,
             "can_undo": document.session.undoStack.canUndo, "can_redo": document.session.undoStack.canRedo,
         ])
@@ -133,12 +138,37 @@ public final class CADMaterialService {
     private func updateEnvironment(_ args: [String: Any]) -> [String: Any] {
         let allowed: Set<String> = ["action", "op", "revision", "expected_revision", "expected_change_count",
                                    "active_environment", "target_environment", "settings", "floor_visible",
-                                   "floor_color", "floor_size_mm", "shadows_enabled"]
+                                   "floor_color", "floor_size_mm", "shadows_enabled", "lights", "preset_lights", "environment_map"]
         let unknown = Set(args.keys).subtracting(allowed).sorted()
         guard unknown.isEmpty else {
             return Self.fail("invalid_environment", "Unknown environment fields: \(unknown.joined(separator: ", ")).")
         }
         var next = document.viewAppearance
+        do {
+            if let raw = args["lights"] {
+                guard args["preset_lights"] == nil, let rows = raw as? [[String:Any]], rows.count <= CADSceneLight.maximumCount else { throw CADSceneLightingError.invalidLight }
+                next.sceneLights = try rows.map(Self.sceneLight)
+                try CADSceneLight.validate(next.sceneLights)
+            }
+            if let raw = args["preset_lights"] {
+                guard let value = raw as? NSNumber, CFGetTypeID(value) == CFBooleanGetTypeID() else { throw CADSceneLightingError.invalidLight }
+                next.sceneLights = value.boolValue ? nil : (next.sceneLights ?? [])
+            }
+            if let raw = args["environment_map"] {
+                if raw is NSNull { next.environmentMap = nil }
+                else {
+                    guard let patch = raw as? [String:Any], var map = next.environmentMap,
+                          Set(patch.keys).isSubset(of:["rotation_degrees","intensity","shows_background"]) else { throw CADSceneLightingError.invalidMap }
+                    if let raw = patch["rotation_degrees"] { guard let v = Self.environmentNumber(raw) else { throw CADSceneLightingError.invalidMap }; map.rotationDegrees = v }
+                    if let raw = patch["intensity"] { guard let v = Self.environmentNumber(raw) else { throw CADSceneLightingError.invalidMap }; map.intensity = v }
+                    if let raw = patch["shows_background"] {
+                        guard let v = raw as? NSNumber, CFGetTypeID(v) == CFBooleanGetTypeID() else { throw CADSceneLightingError.invalidMap }
+                        map.showsBackground = v.boolValue
+                    }
+                    try map.validate(); next.environmentMap = map
+                }
+            }
+        } catch { return Self.fail("invalid_environment",error.localizedDescription) }
         for key in ["active_environment", "target_environment"] where args[key] != nil {
             guard let name = args[key] as? String, CADViewEnvironmentKind(rawValue: name) != nil else {
                 return Self.fail("invalid_environment", "\(key) must be studio, daylight or dark.")
@@ -208,6 +238,54 @@ public final class CADMaterialService {
         }
         let mutated = document.applyViewAppearance(next)
         return environmentReply(action: "environment.update", mutated: mutated)
+    }
+
+    private static func sceneLight(_ row:[String:Any]) throws -> CADSceneLight {
+        let allowed:Set<String> = ["version","id","name","kind","enabled","position_mm","direction","color","intensity","radius_mm","inner_angle_degrees","outer_angle_degrees","casts_shadow"]
+        guard Set(row.keys).isSubset(of:allowed), let name = row["name"] as? String,
+              let rawKind = row["kind"] as? String, let kind = CADSceneLight.Kind(rawValue:rawKind) else { throw CADSceneLightingError.invalidLight }
+        var value = CADSceneLight(name:name,kind:kind)
+        if let raw = row["version"] { guard environmentNumber(raw) == 1 else { throw CADSceneLightingError.invalidLight } }
+        if let raw = row["id"] { guard let s = raw as? String, let id = UUID(uuidString:s) else { throw CADSceneLightingError.invalidLight }; value.id = id }
+        for (key,path) in [("position_mm",\CADSceneLight.positionMM),("direction",\CADSceneLight.direction),("color",\CADSceneLight.color)] where row[key] != nil {
+            guard let v = environmentVector(row[key]!) else { throw CADSceneLightingError.invalidLight }; value[keyPath:path] = v
+        }
+        for (key,path) in [("intensity",\CADSceneLight.intensity),("radius_mm",\CADSceneLight.radiusMM),
+                           ("inner_angle_degrees",\CADSceneLight.innerAngleDegrees),("outer_angle_degrees",\CADSceneLight.outerAngleDegrees)] where row[key] != nil {
+            guard let v = environmentNumber(row[key]!) else { throw CADSceneLightingError.invalidLight }; value[keyPath:path] = v
+        }
+        for (key,path) in [("enabled",\CADSceneLight.enabled),("casts_shadow",\CADSceneLight.castsShadow)] where row[key] != nil {
+            guard let v = row[key] as? NSNumber, CFGetTypeID(v) == CFBooleanGetTypeID() else { throw CADSceneLightingError.invalidLight }; value[keyPath:path] = v.boolValue
+        }
+        try value.validate(); return value
+    }
+
+    private func importEnvironment(_ args:[String:Any]) async -> [String:Any] {
+        guard !document.isClosed else { return Self.fail("document_closed", "Reopen the document before importing an environment image.") }
+        if let refusal = CADServiceOperations.readOnlyRefusal(document:document,kind:"material",action:"environment.import") { return refusal }
+        if let refusal = environmentPinFailure(args) { return refusal }
+        let allowed:Set<String> = ["action","op","revision","expected_revision","expected_change_count","asset_base64","base64","name"]
+        guard Set(args.keys).isSubset(of:allowed), let raw = (args["asset_base64"] ?? args["base64"]) as? String,
+              raw.utf8.count <= (CADEnvironmentMap.maximumEncodedBytes + 2)/3*4 else { return Self.fail("invalid_environment",CADSceneLightingError.mapTooLarge.localizedDescription) }
+        let name = args["name"] as? String ?? "Environment"
+        let before = document.session.changeCount
+        let worker = Task.detached(priority:.userInitiated) {
+            try Task.checkCancellation()
+            guard let bytes = Data(base64Encoded:raw) else { throw CADSceneLightingError.invalidMap }
+            return try CADEnvironmentMap.imported(data:bytes,name:name)
+        }
+        do {
+            let map = try await withTaskCancellationHandler { try await worker.value } onCancel:{ worker.cancel() }
+            try Task.checkCancellation()
+            guard !document.isClosed else { return Self.fail("document_closed", "The document closed before the image was ready.") }
+            if let refusal = CADServiceOperations.readOnlyRefusal(document:document,kind:"material",action:"environment.import") { return refusal }
+            guard before == document.session.changeCount else { return Self.fail("revision_mismatch", "The document changed. Import the image again.") }
+            if let refusal = environmentPinFailure(args) { return refusal }
+            var appearance = document.viewAppearance; appearance.environmentMap = map
+            let changed = document.applyViewAppearance(appearance)
+            return environmentReply(action:"environment.import",mutated:changed)
+        } catch is CancellationError { return Self.fail("cancelled", "Environment import was cancelled.") }
+        catch { return Self.fail("invalid_environment",error.localizedDescription) }
     }
 
     private static func environmentNumber(_ raw: Any) -> Double? {

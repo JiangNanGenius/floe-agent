@@ -283,7 +283,7 @@ public enum CadNativeEditActions {
     public static let material: Set<String> = [
         "list", "read", "create", "update", "remove", "apply", "applyFaces",
         "reassignFaces", "mapping", "textures", "unresolved", "libraryExport",
-        "libraryImport", "libraryList", "environment.read", "environment.update", "undo", "redo",
+        "libraryImport", "libraryList", "environment.read", "environment.update", "environment.import", "undo", "redo",
         "uv.read", "uv.seams", "uv.unwrap", "uv.pack", "uv.transform", "uv.createSet",
         "uv.activateSet", "uv.removeSet", "uv.status", "uv.cancel",
     ]

@@ -12,6 +12,7 @@
 
 #if canImport(SwiftUI) && canImport(RealityKit) && canImport(UIKit)
 import CoreGraphics
+import CoreImage
 import Foundation
 import ImageIO
 import RealityKit
@@ -29,6 +30,9 @@ final class CADPresentationResourceCache {
     private var environmentOrder: [String] = []
     private var imageCache: [String: CGImage] = [:]
     private var failedImages: Set<String> = []
+    private var environmentFailures: [String:String] = [:]
+    private var environmentSourceBytes: [String:Data] = [:]
+    private var failedEnvironmentSourceBytes: [String:Data] = [:]
 
     private(set) var isDisposed = false
 
@@ -120,21 +124,58 @@ final class CADPresentationResourceCache {
 
     func environment(for environment: CADPresentationEnvironment) async -> EnvironmentResource? {
         guard !Task.isCancelled, !isDisposed else { return nil }
-        let key = environment.stableKey
-        if let cached = environments[key] { return cached }
-        guard let image = CADPresentationEnvironmentImage.make(for: environment) else {
+        let key = environment.environmentMap.map { "hdri-\($0.version)-\($0.sha256)-\($0.width)x\($0.height)-\($0.rotationDegrees)" } ?? environment.stableKey
+        let sourceBytes = environment.environmentMap?.bytes ?? Data()
+        do { try environment.environmentMap?.validate() }
+        catch {
+            if environmentFailures.count >= 3 { environmentFailures.removeAll(); failedEnvironmentSourceBytes.removeAll() }
+            environmentFailures[key] = error.localizedDescription
+            failedEnvironmentSourceBytes[key] = sourceBytes
             return nil
         }
+        if let cached = environments[key], environmentSourceBytes[key] == sourceBytes { return cached }
+        if environmentFailures[key] != nil, failedEnvironmentSourceBytes[key] == sourceBytes { return nil }
+        environments.removeValue(forKey:key)
+        environmentSourceBytes.removeValue(forKey:key)
+        environmentOrder.removeAll { $0 == key }
+        environmentFailures.removeValue(forKey:key)
+        failedEnvironmentSourceBytes.removeValue(forKey:key)
         do {
-            let resource = try await EnvironmentResource(equirectangular: image)
+            let image: CGImage
+            if let map = environment.environmentMap {
+                let worker = Task.detached(priority:.userInitiated) { try CADEnvironmentImageDecoder.decode(map) }
+                image = try await withTaskCancellationHandler { try await worker.value } onCancel: { worker.cancel() }
+            } else {
+                guard let generated = CADPresentationEnvironmentImage.make(for:environment) else { return nil }
+                image = generated
+            }
+            try Task.checkCancellation()
+            let resource: EnvironmentResource
+            if #available(iOS 27.0, *) {
+                resource = try await EnvironmentResource(equirectangular:image,
+                    options:.init(samplingQuality:.normal,specularCubeDimension:512))
+            } else {
+                resource = try await EnvironmentResource(equirectangular:image)
+            }
             guard !Task.isCancelled, !isDisposed else { return nil }
             environments[key] = resource
+            environmentSourceBytes[key] = sourceBytes
             environmentOrder.append(key)
             trimEnvironments()
             return resource
         } catch {
+            if !Task.isCancelled && !isDisposed {
+                if environmentFailures.count >= 3 { environmentFailures.removeAll(); failedEnvironmentSourceBytes.removeAll() }
+                environmentFailures[key] = error.localizedDescription
+                failedEnvironmentSourceBytes[key] = sourceBytes
+            }
             return nil
         }
+    }
+
+    func environmentFailure(for environment:CADPresentationEnvironment) -> String? {
+        let key = environment.environmentMap.map { "hdri-\($0.version)-\($0.sha256)-\($0.width)x\($0.height)-\($0.rotationDegrees)" } ?? environment.stableKey
+        return environmentFailures[key]
     }
 
     // MARK: Release
@@ -148,6 +189,9 @@ final class CADPresentationResourceCache {
         environmentOrder.removeAll()
         imageCache.removeAll()
         failedImages.removeAll()
+        environmentFailures.removeAll()
+        environmentSourceBytes.removeAll()
+        failedEnvironmentSourceBytes.removeAll()
         textureBytes = 0
         isDisposed = true
     }
@@ -246,6 +290,7 @@ final class CADPresentationResourceCache {
         while environmentOrder.count > 3 {
             let key = environmentOrder.removeFirst()
             environments.removeValue(forKey: key)
+            environmentSourceBytes.removeValue(forKey:key)
         }
     }
 
@@ -284,6 +329,31 @@ final class CADPresentationResourceCache {
             let lengthSquared = simd_length_squared(t)
             return lengthSquared > 1e-12 ? t / sqrt(lengthSquared) : SIMD3(1, 0, 0)
         }
+    }
+}
+
+/// Keep the original HDR range and colour space; an environment is not an
+/// 8-bit UI thumbnail. Rotation moves the actual lat/long image, shared by
+/// lighting, background, still capture and every animation frame.
+nonisolated enum CADEnvironmentImageDecoder {
+    static func decode(_ map:CADEnvironmentMap) throws -> CGImage {
+        try Task.checkCancellation()
+        let bytes = try map.checkedBytes()
+        guard let source = CGImageSourceCreateWithData(bytes as CFData,[kCGImageSourceShouldCache:false] as CFDictionary),
+              let image = CGImageSourceCreateImageAtIndex(source,0,[kCGImageSourceShouldCacheImmediately:true] as CFDictionary),
+              image.width == map.width, image.height == map.height else { throw CADSceneLightingError.damagedMap }
+        try Task.checkCancellation()
+        let angle = map.rotationDegrees.truncatingRemainder(dividingBy:360)
+        guard abs(angle) > 1e-10 else { return image }
+        let input = CIImage(cgImage:image)
+        let translation = CGAffineTransform(translationX:CGFloat(angle/360)*CGFloat(image.width),y:0)
+        let rotated = input.applyingFilter("CIAffineTile",parameters:[kCIInputTransformKey:NSValue(cgAffineTransform:translation)])
+            .cropped(to:CGRect(x:0,y:0,width:image.width,height:image.height))
+        guard let colorSpace = CGColorSpace(name:CGColorSpace.extendedLinearSRGB),
+              let result = CIContext(options:[.cacheIntermediates:false]).createCGImage(rotated,from:rotated.extent,
+                format:.RGBAh,colorSpace:colorSpace) else { throw CADSceneLightingError.damagedMap }
+        try Task.checkCancellation()
+        return result
     }
 }
 

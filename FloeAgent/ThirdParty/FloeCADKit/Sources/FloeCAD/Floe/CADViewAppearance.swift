@@ -63,6 +63,9 @@ nonisolated struct CADViewAppearance: Codable, Equatable, Sendable {
     /// Physical floor extent in millimetres.
     var floorSizeMM: Double
     var shadowsEnabled: Bool
+    /// Nil keeps the historical preset lights; [] explicitly removes them.
+    var sceneLights: [CADSceneLight]? = nil
+    var environmentMap: CADEnvironmentMap? = nil
 
     init(schemaVersion: Int = CADViewAppearance.currentSchemaVersion,
          activeEnvironment: CADViewEnvironmentKind = .studio,
@@ -72,7 +75,9 @@ nonisolated struct CADViewAppearance: Codable, Equatable, Sendable {
          floorVisible: Bool = true,
          floorColor: [Double] = [0.5, 0.5, 0.52],
          floorSizeMM: Double = 2000,
-         shadowsEnabled: Bool = true) {
+         shadowsEnabled: Bool = true,
+         sceneLights: [CADSceneLight]? = nil,
+         environmentMap: CADEnvironmentMap? = nil) {
         self.schemaVersion = schemaVersion
         self.activeEnvironment = activeEnvironment
         self.studio = studio
@@ -82,6 +87,8 @@ nonisolated struct CADViewAppearance: Codable, Equatable, Sendable {
         self.floorColor = floorColor
         self.floorSizeMM = floorSizeMM
         self.shadowsEnabled = shadowsEnabled
+        self.sceneLights = sceneLights
+        self.environmentMap = environmentMap
     }
 
     static let defaultStudio = CADViewEnvironmentSettings(

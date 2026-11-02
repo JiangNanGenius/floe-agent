@@ -17461,56 +17461,146 @@
     },
     "cad.blend.pickEdges": {
       "localizations": {
-        "en": { "stringUnit": { "state": "translated", "value": "Tap edges" } },
-        "zh-Hans": { "stringUnit": { "state": "translated", "value": "选择边" } }
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Tap edges"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "选择边"
+          }
+        }
       }
     },
     "cad.blend.edgeCount": {
       "localizations": {
-        "en": { "stringUnit": { "state": "translated", "value": "%ld selected" } },
-        "zh-Hans": { "stringUnit": { "state": "translated", "value": "已选 %ld 条边" } }
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%ld selected"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "已选 %ld 条边"
+          }
+        }
       }
     },
     "cad.blend.short.variable": {
       "localizations": {
-        "en": { "stringUnit": { "state": "translated", "value": "Variable" } },
-        "zh-Hans": { "stringUnit": { "state": "translated", "value": "变半径" } }
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Variable"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "变半径"
+          }
+        }
       }
     },
     "cad.blend.short.twoDistances": {
       "localizations": {
-        "en": { "stringUnit": { "state": "translated", "value": "Two distances" } },
-        "zh-Hans": { "stringUnit": { "state": "translated", "value": "两距离" } }
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Two distances"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "两距离"
+          }
+        }
       }
     },
     "cad.blend.short.distanceAngle": {
       "localizations": {
-        "en": { "stringUnit": { "state": "translated", "value": "Distance + angle" } },
-        "zh-Hans": { "stringUnit": { "state": "translated", "value": "距离与角度" } }
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Distance + angle"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "距离与角度"
+          }
+        }
       }
     },
     "cad.ui.common.options": {
       "localizations": {
-        "en": { "stringUnit": { "state": "translated", "value": "Options" } },
-        "zh-Hans": { "stringUnit": { "state": "translated", "value": "选项" } }
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Options"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "选项"
+          }
+        }
       }
     },
     "cad.blend.short.firstDistance": {
       "localizations": {
-        "en": { "stringUnit": { "state": "translated", "value": "Distance 1" } },
-        "zh-Hans": { "stringUnit": { "state": "translated", "value": "距离 1" } }
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Distance 1"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "距离 1"
+          }
+        }
       }
     },
     "cad.blend.short.secondDistance": {
       "localizations": {
-        "en": { "stringUnit": { "state": "translated", "value": "Distance 2" } },
-        "zh-Hans": { "stringUnit": { "state": "translated", "value": "距离 2" } }
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Distance 2"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "距离 2"
+          }
+        }
       }
     },
     "cad.pattern.fixedSpacing": {
       "localizations": {
-        "en": { "stringUnit": { "state": "translated", "value": "Fixed distance" } },
-        "zh-Hans": { "stringUnit": { "state": "translated", "value": "固定间距" } }
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Fixed distance"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "固定间距"
+          }
+        }
       }
     },
     "cad.ui.common.close": {
@@ -130999,6 +131089,499 @@
           "stringUnit": {
             "state": "translated",
             "value": "处理超时，请减少选择的内容后重试。"
+          }
+        }
+      }
+    },
+    "cad.lights.invalid": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Check the light's values and try again."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "请检查灯光参数后重试。"
+          }
+        }
+      }
+    },
+    "cad.lights.limit": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Up to eight scene lights can be used at once."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "最多可使用八盏灯光。"
+          }
+        }
+      }
+    },
+    "cad.environment.invalidMap": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Choose a readable panoramic image with a 2:1 aspect ratio."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "请选择可读取的 2:1 全景图片。"
+          }
+        }
+      }
+    },
+    "cad.environment.mapTooLarge": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This environment image is too large. Choose a smaller image."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "环境图片过大，请选择较小的图片。"
+          }
+        }
+      }
+    },
+    "cad.environment.missingMap": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The environment image is missing. Import it again."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "环境图片缺失，请重新导入。"
+          }
+        }
+      }
+    },
+    "cad.environment.damagedMap": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The environment image could not be read. Import it again."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "无法读取环境图片，请重新导入。"
+          }
+        }
+      }
+    },
+    "cad.environment.image": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Environment image"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "环境图片"
+          }
+        }
+      }
+    },
+    "cad.environment.rotation": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Rotation"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "旋转"
+          }
+        }
+      }
+    },
+    "cad.environment.brightness": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Brightness"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "亮度"
+          }
+        }
+      }
+    },
+    "cad.environment.showImage": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Show as background"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "显示为背景"
+          }
+        }
+      }
+    },
+    "cad.environment.removeImage": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Remove image"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "移除图片"
+          }
+        }
+      }
+    },
+    "cad.environment.importImage": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Import environment image"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "导入环境图片"
+          }
+        }
+      }
+    },
+    "cad.environment.importing": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Importing image…"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "正在导入图片…"
+          }
+        }
+      }
+    },
+    "cad.lights.numberedName": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Light %@"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "灯光 %@"
+          }
+        }
+      }
+    },
+    "cad.lights.add": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Add light"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "添加灯光"
+          }
+        }
+      }
+    },
+    "cad.lights.usePreset": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Use preset lights"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "使用预设灯光"
+          }
+        }
+      }
+    },
+    "cad.lights.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Scene lights"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "场景灯光"
+          }
+        }
+      }
+    },
+    "cad.lights.directional": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Directional"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "平行光"
+          }
+        }
+      }
+    },
+    "cad.lights.point": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Point"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "点光源"
+          }
+        }
+      }
+    },
+    "cad.lights.spot": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Spot"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "聚光灯"
+          }
+        }
+      }
+    },
+    "cad.lights.name": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Name"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "名称"
+          }
+        }
+      }
+    },
+    "cad.lights.enabled": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Enabled"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "启用"
+          }
+        }
+      }
+    },
+    "cad.lights.color": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Colour"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "颜色"
+          }
+        }
+      }
+    },
+    "cad.lights.position": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Position (mm)"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "位置（毫米）"
+          }
+        }
+      }
+    },
+    "cad.lights.reach": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Reach (mm)"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "范围（毫米）"
+          }
+        }
+      }
+    },
+    "cad.lights.direction": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Direction"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "方向"
+          }
+        }
+      }
+    },
+    "cad.lights.innerAngle": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Inner angle (°)"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "内角（°）"
+          }
+        }
+      }
+    },
+    "cad.lights.outerAngle": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Outer angle (°)"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "外角（°）"
+          }
+        }
+      }
+    },
+    "cad.environment.changed": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The environment changed. Reopen it before applying your changes."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "环境设置已更改，请重新打开后再修改。"
           }
         }
       }

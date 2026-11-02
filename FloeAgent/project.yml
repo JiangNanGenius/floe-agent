@@ -1298,6 +1298,7 @@ targets:
       - path: ThirdParty/FloeCADKit/Tests/FloeCADKitTests/ViewportRenderTests.swift
       - path: ThirdParty/FloeCADKit/Tests/FloeCADKitTests/CADViewOverlayTests.swift
       - path: ThirdParty/FloeCADKit/Tests/FloeCADKitTests/CADMaterialCoreTests.swift
+      - path: ThirdParty/FloeCADKit/Tests/FloeCADKitTests/CADSceneLightingTests.swift
       - path: ThirdParty/FloeCADKit/Tests/FloeCADKitTests/CADMaterialUVConsistencyTests.swift
       - path: ThirdParty/FloeCADKit/Tests/FloeCADKitTests/CADUVAuthoringTests.swift
       - path: ThirdParty/FloeCADKit/Tests/FloeCADKitTests/CADMaterialRenderWitnessTests.swift

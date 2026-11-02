@@ -106,6 +106,61 @@ final class CADBackgroundOwnershipFlowUITests: XCTestCase {
 
 @MainActor
 final class CADPresentationFlowUITests: XCTestCase {
+    func testNamedSceneLightNativeInspectorApplyCancelAndUndo() throws {
+        continueAfterFailure = false
+        XCUIDevice.shared.orientation = .landscapeLeft
+        let app = XCUIApplication()
+        app.launchArguments = ["-AppleLanguages", "(en)", "-AppleLocale", "en_US",
+                               "-ui-testing", "-ui-testing-ipad", "--ui-test-cad-fixture"]
+        app.launch(); defer { app.terminate() }
+        XCTAssertTrue(app.buttons["UndoButton"].waitForExistence(timeout: 60))
+        let mode = app.segmentedControls["CADWorkbenchMode"]
+        mode.buttons["Present"].tap()
+        let environment = app.buttons["CADPresentEnvironment"]
+        XCTAssertTrue(environment.waitForExistence(timeout: 30)); environment.tap()
+        func reveal(_ element: XCUIElement) {
+            for _ in 0..<7 {
+                if element.exists && element.isHittable { return }
+                app.swipeUp()
+            }
+            XCTAssertTrue(element.exists && element.isHittable)
+        }
+        let add = app.buttons["CADSceneLightAdd"]
+        reveal(add); add.tap()
+        app.buttons["Point"].tap()
+        let row = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "CADSceneLight-")).firstMatch
+        reveal(row); row.tap()
+        let name = app.textFields["CADSceneLightName"]
+        XCTAssertTrue(name.waitForExistence(timeout: 10)); name.tap()
+        let oldName = name.value as? String ?? ""
+        name.typeText(String(repeating: XCUIKeyboardKey.delete.rawValue, count: oldName.count) + "Blue fill")
+        snapshotFaceFlow("X17 actual native point light editor")
+        app.navigationBars.buttons["Environment"].tap()
+        app.buttons["CADEnvironmentCancel"].tap()
+        environment.tap()
+        reveal(add)
+        XCTAssertFalse(row.exists, "Cancel must discard the draft light")
+        add.tap(); app.buttons["Spot"].tap()
+        reveal(row); row.tap()
+        let spotName = app.textFields["CADSceneLightName"]
+        XCTAssertTrue(spotName.waitForExistence(timeout: 10)); spotName.tap()
+        let original = spotName.value as? String ?? ""
+        spotName.typeText(String(repeating: XCUIKeyboardKey.delete.rawValue, count: original.count) + "Warm key")
+        snapshotFaceFlow("X17 actual native spotlight controls")
+        app.navigationBars.buttons["Environment"].tap()
+        app.buttons["CADEnvironmentApply"].tap()
+        environment.tap(); reveal(row)
+        XCTAssertTrue(app.staticTexts["Warm key"].exists)
+        snapshotFaceFlow("X17 applied named light in shared inspector")
+        app.buttons["CADEnvironmentCancel"].tap()
+        mode.buttons["Edit"].tap()
+        app.buttons["UndoButton"].tap()
+        mode.buttons["Present"].tap(); environment.tap(); reveal(add)
+        XCTAssertFalse(row.exists, "One ordinary undo removes the applied light")
+        snapshotFaceFlow("X17 actual scene light undo")
+        app.buttons["CADEnvironmentCancel"].tap()
+    }
+
     func testEnvironmentPreviewCancelApplyUndoRedoAndReopen() throws {
         continueAfterFailure = false
         XCUIDevice.shared.orientation = .landscapeLeft

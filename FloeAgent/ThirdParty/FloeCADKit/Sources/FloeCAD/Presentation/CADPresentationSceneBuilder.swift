@@ -351,6 +351,20 @@ enum CADPresentationSceneBuilder {
             }
         }()
         let environment = environment(from: snapshot.appearance)
+        do { try CADSceneLight.validate(environment.sceneLights) }
+        catch {
+            issues.append(CADPresentationIssue(id:"scene-lights",kind:.corruptMaterial,
+                bodyID:nil,bodyName:nil,detail:error.localizedDescription))
+        }
+        if let map = environment.environmentMap {
+            do {
+                try map.validate()
+                guard map.bytes?.isEmpty == false else { throw CADSceneLightingError.missingMap }
+            } catch {
+                issues.append(CADPresentationIssue(id:"environment-map",kind:.imageDecodeFailed,
+                    bodyID:nil,bodyName:map.name,detail:error.localizedDescription))
+            }
+        }
         let images = imagesByID.values.sorted { $0.id < $1.id }
         return CADPresentationScene(
             schemaVersion: CADPresentationScene.currentSchemaVersion,
@@ -415,7 +429,9 @@ enum CADPresentationSceneBuilder {
             floorVisible: clean.floorVisible,
             floorColor: simd_clamp(floor, SIMD3(repeating: 0), SIMD3(repeating: 1)),
             floorSizeMM: Float(clean.floorSizeMM),
-            shadowsEnabled: clean.shadowsEnabled)
+            shadowsEnabled: clean.shadowsEnabled,
+            sceneLights: clean.sceneLights,
+            environmentMap: clean.environmentMap)
     }
 }
 #endif

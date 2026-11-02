@@ -44,6 +44,7 @@ nonisolated enum CADDocumentFormat {
     static let supportedVersion = 7
     /// Root-coordinated unreleased floor; only actual normal-offset links raise it.
     static let sketchCurveEditVersion = 7
+    static let sceneLightingVersion = 7
     static let standardThreadVersion = 7
     /// Shared unreleased format-7 floor. A pre-contract writer ignores an
     /// edge's qualifier and would reinterpret it as an ordinal. Raise only
@@ -141,16 +142,18 @@ nonisolated enum CADDocumentFormat {
         var opaqueAnimation = false
         var opaqueBodyAppearance = false
         var opaqueUVAuthoring = false
+        var opaqueSceneAppearance = false
         var isOpaqueReadOnly: Bool {
             !opaquePlanes.isEmpty || !opaqueSketches.isEmpty
                 || !opaqueAxes.isEmpty || !opaqueDatumPoints.isEmpty
                 || !opaqueFeatures.isEmpty || opaqueDrawings
-                || opaqueAnimation || opaqueBodyAppearance || opaqueUVAuthoring
+                || opaqueAnimation || opaqueBodyAppearance || opaqueUVAuthoring || opaqueSceneAppearance
         }
     }
 
     static func requiredFormat(document: DesignDocument) -> Int {
         var required = legacyVersion
+        required = max(required, sceneLightingIntent(document.sceneSettingsData).version)
         if document.features.nodes.contains(where: {
             if case let .pattern(_, spec) = $0.kind { return spec.kind == .curve || spec.featureSeed != nil }; return false
         }) { required = max(required, advancedPatternVersion) }
@@ -766,8 +769,12 @@ nonisolated enum CADDocumentFormat {
                        bodies: [CADBodyRecord] = [],
                        assembly: Data? = nil,
                        drawings: Data? = nil,
-                       animation: Data? = nil) throws -> Assessment {
+                       animation: Data? = nil,
+                       sceneSettings: Data? = nil) throws -> Assessment {
         var result = Assessment()
+        let lighting = sceneLightingIntent(sceneSettings)
+        result.requiredVersion = max(result.requiredVersion, lighting.version)
+        result.opaqueSceneAppearance = lighting.opaque
         if assemblyRequiresNestedFormat(assembly) {
             result.requiredVersion = max(result.requiredVersion, nestedAssemblyVersion)
         }
@@ -1199,7 +1206,34 @@ nonisolated enum CADDocumentFormat {
         try assess(planes: record.planes, sketches: record.sketches,
                    axes: record.axes, datumPoints: record.datumPoints ?? [],
                    features: record.features, bodies: record.bodies, assembly: record.assembly,
-                   drawings: record.drawings, animation: record.animation)
+                   drawings: record.drawings, animation: record.animation,
+                   sceneSettings: record.sceneSettings)
+    }
+
+    /// Real authored resources/lights require the coordinated unreleased floor;
+    /// a default appearance keeps every previous document's writer version.
+    static func sceneLightingIntent(_ data: Data?) -> (version:Int, opaque:Bool) {
+        guard let data, let root = try? JSONSerialization.jsonObject(with:data) as? [String:Any],
+              let presentation = root["presentation"] as? [String:Any] else { return (legacyVersion,false) }
+        let map = presentation["environmentMap"].flatMap { $0 is NSNull ? nil : $0 }
+        let lights = presentation["sceneLights"].flatMap { $0 is NSNull ? nil : $0 }
+        guard map != nil || lights != nil else { return (legacyVersion,false) }
+        var opaque = false
+        if let map {
+            guard let row = map as? [String:Any] else { return (sceneLightingVersion,true) }
+            let keys:Set<String> = ["version","name","sha256","width","height","bytes","rotationDegrees","intensity","showsBackground"]
+            if row["version"].flatMap({ jsonIntegerValue($0) }) != 1 || !Set(row.keys).isSubset(of:keys)
+                || (try? JSONDecoder().decode(CADEnvironmentMap.self,from:JSONSerialization.data(withJSONObject:row))) == nil { opaque = true }
+        }
+        if let lights {
+            guard let rows = lights as? [[String:Any]], rows.count <= CADSceneLight.maximumCount else { return (sceneLightingVersion,true) }
+            let keys:Set<String> = ["version","id","name","kind","enabled","positionMM","direction","color","intensity","radiusMM","innerAngleDegrees","outerAngleDegrees","castsShadow"]
+            for row in rows {
+                if row["version"].flatMap({ jsonIntegerValue($0) }) != 1 || !Set(row.keys).isSubset(of:keys)
+                    || (try? JSONDecoder().decode(CADSceneLight.self,from:JSONSerialization.data(withJSONObject:row))) == nil { opaque = true }
+            }
+        }
+        return (sceneLightingVersion,opaque)
     }
 
     /// RAW twin of `FeatureNode.referencedConstructionAxisIDs`: true only when
