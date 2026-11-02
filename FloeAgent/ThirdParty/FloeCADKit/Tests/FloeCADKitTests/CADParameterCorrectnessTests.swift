@@ -1601,6 +1601,57 @@ final class CADParameterCorrectnessTests: XCTestCase {
 /// saved fallback coordinates and of the renderer.
 @MainActor
 final class CADFeaturePlaneReferenceTests: XCTestCase {
+    func testSingularFaceCommandsAcceptExactScalarAndLegacyArrayWithoutCoercion() throws {
+        let source = UUID().uuidString, target = BodyID()
+        let operations: [(String, [String: Any])] = [
+            ("feature.pushPull", ["distance": 2]),
+            ("feature.moveFace", ["delta": [0, 0, 2]]),
+            ("feature.scaleFace", ["factor": 1.1]),
+            ("feature.rotateFace", ["angleDegrees": 5]),
+            ("feature.draftFace", ["angleDegrees": 5]),
+            ("feature.replaceFace", ["targetOrigin": [0, 20, 0], "targetNormal": [0, 1, 0]])
+        ]
+        for (op, extra) in operations {
+            for face in [2, [2]] as [Any] {
+                var args = extra; args["bodyID"] = source; args["face"] = face
+                let command: [String: Any] = ["op": op, "args": args]
+                let decoded = try XCTUnwrap(JSONSerialization.jsonObject(with:
+                    JSONSerialization.data(withJSONObject: command)) as? [String: Any])
+                for value in [command, decoded] {
+                    if case .failure(let error) = AgentExec.parse(value) {
+                        XCTFail("\(op) rejected a singular scalar/array: \(error)")
+                    }
+                }
+            }
+            for invalid in [true, 0, -1, 1.5, "2", NSNull(), [true], [1.5], [], [1, 2]] as [Any] {
+                var args = extra; args["bodyID"] = source; args["face"] = invalid
+                if case .success = AgentExec.parse(["op": op, "args": args]) {
+                    XCTFail("\(op) accepted an invalid singular face: \(invalid)")
+                }
+            }
+        }
+        for sourceFace in [1, [1]] as [Any] {
+            for targetFace in [2, [2]] as [Any] {
+                let args: [String: Any] = ["bodyID": source, "face": sourceFace,
+                    "referencePlane": ["bodyID": target.raw.uuidString, "face": targetFace]]
+                guard case let .success(.replaceFace(_, 1, _, _, _, selection)) =
+                    AgentExec.parse(["op": "feature.replaceFace", "args": args]) else {
+                    return XCTFail("Both face spellings must work independently")
+                }
+                XCTAssertEqual(selection, .face(target, 2))
+            }
+        }
+        for faces in [[1, 2], 1] as [Any] {
+            let result = AgentExec.parse(["op": "feature.deleteFace",
+                "args": ["bodyID": source, "faces": faces]])
+            if faces is [Int] {
+                if case .failure(let error) = result { XCTFail("Legacy multi-face array: \(error)") }
+            } else if case .success = result {
+                XCTFail("Multi-face operations still require an explicit array")
+            }
+        }
+    }
+
     private var directory: URL!
     override func setUp() async throws {
         directory = FileManager.default.temporaryDirectory.appendingPathComponent("CADReferencePlane-\(UUID().uuidString)")
@@ -1711,6 +1762,40 @@ final class CADFeaturePlaneReferenceTests: XCTestCase {
             XCTAssertEqual(try volume(untouched), 8_000, accuracy: 1e-3,
                 "A failed target cannot splice in the old16,000mm3 replacement")
         }
+        XCTAssertEqual(try volume(body(document, source)), 16_000, accuracy: 1e-3)
+    }
+
+    func testTargetDependencyPreventsDeleteAndReorderWithoutRetargetingLaterWriters() async throws {
+        let document = try await document(); defer { document.close() }
+        let source = box(document, x: 0, height: 10), target = box(document, x: 60, height: 20)
+        let edit = try linkedReplace(document, source: source, target: target)
+        let service = CADParameterService(document: document)
+        let beforeChange = document.session.changeCount
+        let beforeUndo = document.session.undoStack.undoCommands.count
+        let refused = service.handle(action: "feature.delete", args: ["feature_id": target.id.raw.uuidString])
+        XCTAssertEqual(refused["error"] as? String, "has_dependents", "\(refused)")
+        XCTAssertEqual(refused["dependent_feature_ids"] as? [String], [edit.id.raw.uuidString])
+        let reordered = service.handle(action: "feature.move", args: ["feature_id": edit.id.raw.uuidString, "to_index": 1])
+        XCTAssertEqual(reordered["error"] as? String, "dependency_order", "\(reordered)")
+        let forced = service.handle(action: "feature.delete", args: ["feature_id": target.id.raw.uuidString, "force": true])
+        XCTAssertEqual(forced["ok"] as? Bool, false, "\(forced)")
+        XCTAssertNotNil(document.session.document.features.node(target.id))
+        XCTAssertEqual(document.session.changeCount, beforeChange)
+        XCTAssertEqual(document.session.undoStack.undoCommands.count, beforeUndo)
+        XCTAssertEqual(try volume(body(document, source)), 16_000, accuracy: 1e-3)
+
+        // A later transform must not replace the captured target writer in
+        // either the evaluator or the history operations' dependency graph.
+        try run(document, "feature.transform", ["bodyID": try body(document, target).id.raw.uuidString,
+            "translation": [0, 7, 0]])
+        let later = try XCTUnwrap(document.session.document.features.nodes.last)
+        let dependencies = CADParameterService.bodyWriterDependencies(in: document.session.document.features.nodes)
+        XCTAssertTrue(dependencies[edit.id]?.contains(target.id) == true)
+        XCTAssertFalse(dependencies[edit.id]?.contains(later.id) == true)
+        let descriptor = CADParameterService.describe(edit, document: document.session.document)
+        let values = try XCTUnwrap(descriptor["dependencies"] as? [String: Any])
+        XCTAssertTrue((values["body_ids"] as? [String] ?? []).contains(try body(document, target).id.raw.uuidString))
+        XCTAssertTrue(descriptor["update_supported"] as? Bool == true)
         XCTAssertEqual(try volume(body(document, source)), 16_000, accuracy: 1e-3)
     }
 

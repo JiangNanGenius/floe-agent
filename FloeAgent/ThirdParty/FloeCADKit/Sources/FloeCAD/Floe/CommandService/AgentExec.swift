@@ -760,7 +760,7 @@ nonisolated enum AgentExec {
     private static func parsePushPull(_ a: [String: Any]) -> Result<AgentExecOp, AgentExecError> {
         do {
             let body = BodyID(raw: try uuid(a, "bodyID"))
-            let faces = try edgeIndices(a, "face", allowEmpty: false)
+            let faces = try singleFaceIndices(a)
             guard faces.count == 1 else {
                 return .failure(.init(code: "one_face_only",
                                       message: "push/pull acts on exactly one \"face\"."))
@@ -785,11 +785,35 @@ nonisolated enum AgentExec {
     /// single-face op (push/pull, move/scale/rotate face).
     private static func oneFace(_ a: [String: Any]) throws -> (BodyID, Int) {
         let body = BodyID(raw: try uuid(a, "bodyID"))
-        let faces = try edgeIndices(a, "face", allowEmpty: false)
+        let faces = try singleFaceIndices(a)
         guard faces.count == 1 else {
             throw AgentExecError(code: "one_face_only", message: "this op acts on exactly one \"face\".")
         }
         return (body, faces[0])
+    }
+
+    /// Singular face commands accept one integer or the existing [integer]
+    /// spelling. Multi-face/edge commands still require their original arrays.
+    private static func singleFaceIndices(_ args: [String: Any]) throws -> [Int] {
+        let values: [Any]
+        if let array = args["face"] as? [Any] {
+            values = array
+        } else if let value = args["face"] {
+            values = [value]
+        } else {
+            throw AgentExecError(code: "missing_face", message: "face must name one kernel index.")
+        }
+        guard !values.isEmpty else {
+            throw AgentExecError(code: "missing_face", message: "face must name one kernel index.")
+        }
+        return try values.map { value in
+            guard let number = value as? NSNumber,
+                  CFGetTypeID(number) != CFBooleanGetTypeID(),
+                  let index = Int(exactly: number.doubleValue), index >= 1 else {
+                throw AgentExecError(code: "bad_index", message: "face must be a positive whole kernel index.")
+            }
+            return index
+        }
     }
 
     private static func parseMoveFace(_ a: [String: Any]) -> Result<AgentExecOp, AgentExecError> {
@@ -886,7 +910,7 @@ nonisolated enum AgentExec {
     private static func parseReplaceFace(_ a: [String: Any]) -> Result<AgentExecOp, AgentExecError> {
         do {
             let body = BodyID(raw: try uuid(a, "bodyID"))
-            let faces = try edgeIndices(a, "face", allowEmpty: false)
+            let faces = try singleFaceIndices(a)
             guard faces.count == 1 else {
                 return .failure(.init(code: "bad_face",
                                       message: "args.face must be exactly ONE kernel face index."))

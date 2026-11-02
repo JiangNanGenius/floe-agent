@@ -4463,6 +4463,12 @@ public final class CADParameterService {
                                          bodyID: ref.bodyID)
                 return seen.insert(dependency).inserted ? dependency : nil
             }
+            // A neutral/target face reads the captured writer, not whichever
+            // in-place edit most recently touched that body's reused id.
+            if let dependency = operationPlaneBodyReference(in: node.kind),
+               seen.insert(dependency).inserted {
+                result[node.id, default: []].append(dependency)
+            }
             // Declared ids cover new bodies (including mirror/pattern copies).
             // In-place evaluation additionally writes its input/target id even
             // when outputBodyIDs only contains a fresh placeholder.
@@ -4471,6 +4477,11 @@ public final class CADParameterService {
             }
         }
         return result
+    }
+
+    private static func operationPlaneBodyReference(in kind: FeatureKind) -> BodyRef? {
+        guard let version = kind.operationPlaneReference?.writerVersion else { return nil }
+        return BodyRef(producer: version.writer, bodyID: version.bodyID)
     }
 
     static func bodyWriterDependencies(in nodes: [FeatureNode]) -> [FeatureID: Set<FeatureID>] {
@@ -5183,7 +5194,7 @@ public final class CADParameterService {
         }
 
         let sketchIDs = node.referencedSketchIDs.map(\.raw.uuidString).sorted()
-        let refs = referencedBodies(in: node)
+        let refs = referencedBodies(in: node) + (operationPlaneBodyReference(in: node.kind).map { [$0] } ?? [])
         let resolved = resolvedBodyDependencies(in: document.features.nodes)[node.id] ?? refs
         let featureDeps = Set(resolved.map { $0.producer.raw.uuidString })
         let bodyDeps = Set(refs.map { $0.bodyID.raw.uuidString })
@@ -5246,7 +5257,7 @@ public final class CADParameterService {
         switch kind {
         case .primitive, .extrude, .draftExtrude, .revolve, .pattern,
              .pushPull, .scaleFace, .rotateFace, .draftFace, .chamfer,
-             .fillet, .shell, .hole, .thread, .sweep:
+             .fillet, .shell, .hole, .thread, .sweep, .replaceFace:
             return true
         default:
             return false
