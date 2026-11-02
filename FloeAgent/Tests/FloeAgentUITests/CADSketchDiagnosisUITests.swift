@@ -295,6 +295,36 @@ final class CADSketchConflictDiagnosisUITests: XCTestCase {
 
 @MainActor
 final class CADFaceRotationParameterUITests: XCTestCase {
+    func testCompactLargeTextKeypadKeepsAllKeysVisible() {
+        continueAfterFailure = false
+        XCUIDevice.shared.orientation = .landscapeLeft
+        let app = CADSketchDiagnosisLaunch.app([
+            "--ui-test-cad-face-rotation", "--ui-test-cad-face-rotation-reset",
+            "--ui-test-cad-compact", "-UIPreferredContentSizeCategoryName",
+            "UICTContentSizeCategoryAccessibilityXL"])
+        defer { app.terminate() }
+        CADSketchDiagnosisUI.assertFixtureLoaded(app)
+        app.buttons["CADCompactMoreMenu"].tap()
+        app.buttons["History"].firstMatch.tap()
+        let field = app.textFields["HistoryScalarField-rotateAngle-Rotate Face"]
+        XCTAssertTrue(field.waitForExistence(timeout: 20), app.debugDescription)
+        field.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap()
+        let pad = CADSketchDiagnosisUI.any(app, "NumericKeypad")
+        XCTAssertTrue(pad.waitForExistence(timeout: 10), app.debugDescription)
+        XCTAssertLessThanOrEqual(pad.frame.width, 390,
+                                 "A compact keypad must fit the real compact viewport")
+        for id in ["Keypad-7", "KeypadDelete", "Keypad-4", "Keypad-1", "Keypad-±", "KeypadCommit", "Keypad-mm", "Keypad-deg"] {
+            let key = app.buttons[id]
+            XCTAssertTrue(key.exists && key.isHittable, "\(id): \(app.debugDescription)")
+            XCTAssertGreaterThanOrEqual(key.frame.minX, pad.frame.minX)
+            XCTAssertLessThanOrEqual(key.frame.maxX, pad.frame.maxX)
+            XCTAssertLessThanOrEqual(key.frame.maxY, pad.frame.maxY)
+        }
+        CADSketchDiagnosisUI.snapshot("Compact large text keypad — complete keys, clear contrast",
+                                      in: app, test: self)
+        app.buttons["KeypadCommit"].tap()
+    }
+
     func testFaceRotationHistoryShowsThirtyEditsToFortyFiveAndReopensInDegrees() throws {
         continueAfterFailure = false
         XCUIDevice.shared.orientation = .landscapeLeft

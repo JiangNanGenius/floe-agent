@@ -126,7 +126,7 @@ struct NumericKeypad: View {
         Button(action: { press(key) }) {
             Text(key)
                 .font(.title3.monospacedDigit())
-                .foregroundStyle(.primary)
+                .foregroundStyle(Color(uiColor: .label))
                 .frame(minWidth: 20, maxWidth: .infinity, minHeight: 30)
                 .contentShape(Rectangle())
         }
@@ -151,7 +151,7 @@ struct NumericKeypad: View {
         Button(action: action) {
             Image(systemName: symbol)
                 .font(.body)
-                .foregroundStyle(.primary)
+                .foregroundStyle(Color(uiColor: .label))
                 .frame(minWidth: 20, maxWidth: .infinity, minHeight: 30)
                 .contentShape(Rectangle())
         }

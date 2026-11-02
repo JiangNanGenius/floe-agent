@@ -79,7 +79,7 @@ struct MeshUnitPromptSheet: View {
                                         .monospacedDigit()
                                 }
                                 Spacer()
-                                if candidate == probe.detectedUnit {
+                                if probe.unitIsDeclared && candidate == probe.detectedUnit {
                                     Text(FloeCADStrings.label("cad.ui.meshImport.detected", "Detected"))
                                         .font(.caption.weight(.semibold))
                                         .padding(.horizontal, 8)
@@ -98,7 +98,7 @@ struct MeshUnitPromptSheet: View {
                         .accessibilityValue(
                             probe.sizeDescription(for: candidate)
                             + (candidate == unit ? ", selected" : "")
-                            + (candidate == probe.detectedUnit ? ", detected" : ""))
+                            + (probe.unitIsDeclared && candidate == probe.detectedUnit ? ", detected" : ""))
                         .accessibilityIdentifier("MeshUnitRow-\(candidate.rawValue)")
                     }
                 }

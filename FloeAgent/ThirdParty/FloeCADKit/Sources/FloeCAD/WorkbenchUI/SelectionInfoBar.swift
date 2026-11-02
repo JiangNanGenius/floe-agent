@@ -19,6 +19,7 @@ struct SelectionInfoBar: View {
                 .padding(.horizontal, 16)
                 .padding(.vertical, 8)
                 .cadFloatingSurface(in: RoundedRectangle(cornerRadius: 20, style: .continuous))
+                .accessibilityElement(children: .contain)
                 .accessibilityIdentifier("SelectionInfoBar")
         }
     }
