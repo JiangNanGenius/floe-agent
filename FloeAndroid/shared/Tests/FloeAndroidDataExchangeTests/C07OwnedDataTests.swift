@@ -437,4 +437,247 @@ final class C07OwnedDataTests: XCTestCase {
         XCTAssertNoThrow(try C07PortableDocumentInspector.inspect(
             fileURL: complete, displayName: "complete.pdf"))
     }
+
+    // MARK: - 2026-11-02 user-data expansion
+
+    func testExpandedScopeCoversRealUserDataFamilies() {
+        for id in ["personalizationMemory", "memoryCandidates",
+                   "personalizationDocuments", "personalizationPreferences",
+                   "taskChecklistRevisions", "skillDefinitions",
+                   "modelPreferences", "runDependencyEvidence"] {
+            XCTAssertTrue(C07BackupScope.includedIDs.contains(id), id)
+        }
+        // The earlier blanket exclusions are gone: their labels were never a
+        // user waiver. Only precise, proven exclusions remain.
+        let excludedIDs = Set(C07ScopePolicy.excluded.map(\.id))
+        for gone in ["personalizationMemory", "skillsLibrary",
+                     "taskChecklistRevisions", "modelPreferences",
+                     "runDependencies"] {
+            XCTAssertFalse(excludedIDs.contains(gone), gone)
+        }
+        for required in ["mailDraftsAndTransfers",
+                         "skillPermissionsAndTrust",
+                         "memoryDerivedIndexes", "runDependencyLiveState",
+                         "workspaceRecentFiles"] {
+            XCTAssertTrue(excludedIDs.contains(required), required)
+        }
+        let drafts = C07ScopePolicy.excluded.first {
+            $0.id == "mailDraftsAndTransfers"
+        }
+        XCTAssertEqual(drafts?.reason, "ramOnlyStagingNoPersistentDraftStore")
+    }
+
+    func testLegacyV2ScopeStillValidatesAfterExpansion() throws {
+        let scope = C07BackupScope(
+            included: Array(C07BackupScope.legacyV2IncludedIDs),
+            excluded: C07ScopePolicy.excluded)
+        try C07ScopePolicy.validate(scope)
+    }
+
+    func testExpandedTablesAreRequiredOnlyFromCoordinatedSchema52() {
+        let names = C07OwnedDataPolicy.mandatoryTableNames(forSchema: 51)
+        for table in C07OwnedDataPolicy.expandedUserDataTableNames {
+            XCTAssertFalse(names.contains(table), table)
+        }
+        let at52 = C07OwnedDataPolicy.mandatoryTableNames(forSchema: 52)
+        for table in C07OwnedDataPolicy.expandedUserDataTableNames {
+            XCTAssertTrue(at52.contains(table), table)
+        }
+        for table in C07OwnedDataPolicy.expandedUserDataTableNames {
+            let policy = C07OwnedDataPolicy.policy(for: table)
+            XCTAssertEqual(policy?.minimumSchemaVersion, 52, table)
+            XCTAssertEqual(policy?.disposition, .live, table)
+        }
+    }
+
+    func testLegacySchema51ManifestWithoutNewTablesStillValidates() throws {
+        let records = C07OwnedDataPolicy.mandatoryTableNames(forSchema: 51)
+            .sorted()
+            .map {
+                C07OwnedTableRecord(
+                    name: $0, entry: c07OwnedTableEntry($0), rowCount: 0,
+                    byteCount: 0,
+                    sha256: String(repeating: "0", count: 64))
+            }
+        let manifest = C07OwnedDataManifest(
+            sourceAppSchemaVersion: 51,
+            tables: records,
+            workspaceCount: 0,
+            workspaceByteCount: 0,
+            workspaceSHA256: String(repeating: "0", count: 64),
+            counts: C07OwnedDataCounts(),
+            excluded: C07ScopePolicy.excluded,
+            linuxCheckpointPort: "unavailable")
+        try manifest.validate()
+        // The same package shape must fail closed once the app requires the
+        // coordinated v52 coverage.
+        let incomplete = C07OwnedDataManifest(
+            sourceAppSchemaVersion: 52,
+            tables: records,
+            workspaceCount: 0,
+            workspaceByteCount: 0,
+            workspaceSHA256: String(repeating: "0", count: 64),
+            counts: C07OwnedDataCounts(),
+            excluded: C07ScopePolicy.excluded,
+            linuxCheckpointPort: "unavailable")
+        XCTAssertThrowsError(try incomplete.validate())
+    }
+
+    func testUserDataRowsBoundToTemporaryConversationsNeverExport() {
+        let temporary = UUID().uuidString
+        let memory: C07DBRow = [
+            "id": .string(UUID().uuidString),
+            "scope": .string("task"),
+            "conversation_id": .string(temporary),
+            "status": .string("active"),
+            "content": .string("kept in ram only"),
+            "normalized_content": .string("kept in ram only"),
+            "source_kind": .string("user"),
+            "created_at": .string("2026-01-01T00:00:00Z"),
+            "updated_at": .string("2026-01-01T00:00:00Z"),
+        ]
+        XCTAssertFalse(C07OwnedDataPolicy.shouldExportRow(
+            table: "memory_entries", row: memory,
+            excludedConversationIDs: [temporary]))
+        let detached: C07DBRow = [
+            "id": .string(UUID().uuidString),
+            "scope": .string("global"),
+            "origin_conversation_id": .string(temporary),
+            "status": .string("active"),
+            "content": .string("origin was temporary"),
+            "normalized_content": .string("origin was temporary"),
+            "source_kind": .string("assistant"),
+            "created_at": .string("2026-01-01T00:00:00Z"),
+            "updated_at": .string("2026-01-01T00:00:00Z"),
+        ]
+        XCTAssertFalse(C07OwnedDataPolicy.shouldExportRow(
+            table: "memory_entries", row: detached,
+            excludedConversationIDs: [temporary]))
+        var ordinary = memory
+        ordinary["conversation_id"] = .string(UUID().uuidString)
+        XCTAssertTrue(C07OwnedDataPolicy.shouldExportRow(
+            table: "memory_entries", row: ordinary,
+            excludedConversationIDs: [temporary]))
+    }
+
+    func testMemoryRestoreKeepsContentAndResetsRuntimeState() {
+        let row: C07DBRow = [
+            "id": .string(UUID().uuidString),
+            "scope": .string("workspace"),
+            "workspace_id": .string(UUID().uuidString),
+            "status": .string("active"),
+            "content": .string("  user memory 550e8400-e29b-41d4-a716-446655440000 "),
+            "normalized_content": .string("user memory"),
+            "confidence": .double(0.5),
+            "importance": .double(0.9),
+            "is_pinned": .int(1),
+            "source_kind": .string("user"),
+            "sync_revision": .int(41),
+            "recall_count": .int(7),
+            "last_recalled_at": .string("2026-06-01T00:00:00Z"),
+            "created_at": .string("2026-01-01T00:00:00Z"),
+            "updated_at": .string("2026-06-01T00:00:00Z"),
+        ]
+        let restored = C07OwnedDataPolicy.restoredRow(
+            table: "memory_entries", row: row)
+        XCTAssertEqual(restored["content"], row["content"])
+        XCTAssertEqual(restored["status"], .string("active"))
+        XCTAssertEqual(restored["is_pinned"], .int(1))
+        XCTAssertEqual(restored["sync_revision"], .int(0))
+        XCTAssertEqual(restored["recall_count"], .int(0))
+        XCTAssertTrue(restored["last_recalled_at"]?.isNull == true)
+    }
+
+    func testSkillRestoreIsReferenceOnlyAndNeverGrants() {
+        let row: C07DBRow = [
+            "id": .string("custom-skill"),
+            "name": .string("Custom Skill"),
+            "version": .string("2"),
+            "status": .string("enabled"),
+            "skill_markdown": .string("# Custom\nDo things."),
+            "manifest_json": .string(#"{"name":"Custom"}"#),
+            "declared_capabilities_json": .string(#"["files.read"]"#),
+            "effective_capabilities_json": .string(#"["files.read"]"#),
+            "source_url": .string("https://example.invalid/skill.zip"),
+            "source_digest": .string("aa" + String(repeating: "0", count: 62)),
+            "rewritten_digest": .string("bb" + String(repeating: "0", count: 62)),
+            "rewrite_model_id": .string(UUID().uuidString),
+            "selected_by_model_id": .string(UUID().uuidString),
+            "compatibility_report_json": .string("{}"),
+            "created_at": .string("2026-01-01T00:00:00Z"),
+            "updated_at": .string("2026-01-01T00:00:00Z"),
+        ]
+        let restored = C07OwnedDataPolicy.restoredRow(
+            table: "skills", row: row)
+        XCTAssertEqual(restored["status"], .string("disabled"))
+        XCTAssertEqual(restored["effective_capabilities_json"], .string("[]"))
+        XCTAssertTrue(restored["rewrite_model_id"]?.isNull == true)
+        XCTAssertTrue(restored["selected_by_model_id"]?.isNull == true)
+        // Content and custom source/install references survive verbatim.
+        XCTAssertEqual(restored["skill_markdown"], row["skill_markdown"])
+        XCTAssertEqual(restored["source_url"], row["source_url"])
+        XCTAssertEqual(restored["source_digest"], row["source_digest"])
+        XCTAssertEqual(restored["declared_capabilities_json"],
+                       row["declared_capabilities_json"])
+    }
+
+    func testModelPreferenceAndCursorRestoreNeverReplayState() {
+        let preferences: C07DBRow = [
+            "id": .string("default"),
+            "onboarding_status": .string("seen"),
+            "default_agent_model_id": .string(UUID().uuidString),
+            "auxiliary_image_mode": .string("separate"),
+            "updated_at": .string("2026-01-01T00:00:00Z"),
+            "sync_revision": .int(9),
+        ]
+        let restored = C07OwnedDataPolicy.restoredRow(
+            table: "model_preferences", row: preferences)
+        XCTAssertEqual(restored["sync_revision"], .int(0))
+        XCTAssertEqual(restored["default_agent_model_id"],
+                       preferences["default_agent_model_id"])
+
+        let cursor: C07DBRow = [
+            "kind": .string("soul"),
+            "workspace_key": .string(UUID().uuidString),
+            "automatic_updates_enabled": .int(0),
+            "last_generated_at": .string("2026-06-01T00:00:00Z"),
+            "completed_runs_since_update": .int(12),
+            "user_messages_since_update": .int(34),
+            "updated_at": .string("2026-06-01T00:00:00Z"),
+        ]
+        let restoredCursor = C07OwnedDataPolicy.restoredRow(
+            table: "personalization_update_cursors", row: cursor)
+        XCTAssertEqual(restoredCursor["automatic_updates_enabled"], .int(0))
+        XCTAssertEqual(restoredCursor["completed_runs_since_update"], .int(0))
+        XCTAssertEqual(restoredCursor["user_messages_since_update"], .int(0))
+        XCTAssertTrue(restoredCursor["last_generated_at"]?.isNull == true)
+    }
+
+    func testChecklistRevisionContentTravelsVerbatimAsMappedData() {
+        let policy = C07OwnedDataPolicy.policy(for: "task_checklist_revisions")
+        XCTAssertEqual(policy?.references["conversation_id"], .conversation)
+        XCTAssertEqual(policy?.references["run_id"], .run)
+        XCTAssertEqual(policy?.disposition, .live)
+        let body = #"{"items":[{"id":"step-1","text":"user authored 550e8400-e29b-41d4-a716-446655440000","done":true}]}"#
+        let row: C07DBRow = [
+            "conversation_id": .string(UUID().uuidString),
+            "revision": .int(3),
+            "run_id": .string(UUID().uuidString),
+            "operation_id": .string(UUID().uuidString),
+            "request_digest": .string(String(repeating: "a", count: 64)),
+            "body_json": .string(body),
+        ]
+        let restored = C07OwnedDataPolicy.restoredRow(
+            table: "task_checklist_revisions", row: row)
+        XCTAssertEqual(restored["body_json"], .string(body))
+        XCTAssertEqual(restored["revision"], .int(3))
+    }
+
+    func testRunDependenciesAreEvidenceOnly() {
+        let policy = C07OwnedDataPolicy.policy(for: "run_dependencies")
+        XCTAssertEqual(policy?.disposition, .evidenceArchive)
+        XCTAssertTrue(policy?.optional ?? false)
+        XCTAssertTrue(C07OwnedDataPolicy.evidenceTableNames
+            .contains("run_dependencies"))
+    }
 }

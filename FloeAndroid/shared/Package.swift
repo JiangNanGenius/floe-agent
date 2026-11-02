@@ -855,6 +855,12 @@ let package = Package(
             "FloeAndroidToolResults", "FloeCore", "FloeModels", "FloeTools",
             .product(name: "Crypto", package: "swift-crypto"),
         ], swiftSettings: strictSettings),
+        // Focused DTO regression for the split FloeTools saved-definition
+        // surface (C02). Main adds this target from the bounded patch; the
+        // canonical tree keeps the test source under Tests/FloeToolsTests.
+        .testTarget(name: "FloeToolsTests", dependencies: [
+            "FloeTools", "FloeCore",
+        ], swiftSettings: strictSettings),
         .testTarget(name: "FloeAndroidCoreTests", dependencies: [
             "FloeBrowser", "FloeAndroidCore", "FloeSSH", "FloeVNC", "FloeRDP", "FloeAndroidMail",
             "FloeAndroidDataExchange", "FloeAndroidToolResults",

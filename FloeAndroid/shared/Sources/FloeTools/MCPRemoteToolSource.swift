@@ -29,6 +29,57 @@ public struct MCPServerConfiguration: Codable, Identifiable, Sendable, Hashable 
         case stdio
     }
 
+    /// Secret-free command definition for a stdio MCP server. A user may
+    /// save this BEFORE any C01 project/environment binding exists; it is
+    /// ordinary non-secret configuration and grants no execution authority.
+    /// `StdioBinding` adds the exact runtime ownership required to open a
+    /// pipe. Keeping the definition separate is what allows a restored or
+    /// newly-authored command to remain visible and editable while it is
+    /// unbound, without inventing project/environment/root/task identities.
+    public struct StdioDefinition: Codable, Sendable, Hashable {
+        public var command: String
+        public var arguments: [String]
+        public var workingDirectory: String
+
+        public init(command: String,
+                    arguments: [String] = [],
+                    workingDirectory: String = "") {
+            self.command = command
+            self.arguments = arguments
+            self.workingDirectory = workingDirectory
+        }
+
+        public func validate() throws {
+            guard !command.isEmpty, command.utf8.count <= 512,
+                  !command.contains("\0"), !command.contains("\n"),
+                  !command.contains("\r") else {
+                throw FloeError.invalidConfiguration("MCP stdio command is invalid")
+            }
+            guard arguments.count <= 64,
+                  arguments.allSatisfy({ $0.utf8.count <= 4_096
+                      && !$0.contains("\0") && !$0.contains("\n")
+                      && !$0.contains("\r") }) else {
+                throw FloeError.invalidConfiguration(
+                    "MCP stdio arguments exceed the supported bounds")
+            }
+            guard workingDirectory.utf8.count <= 512,
+                  !workingDirectory.hasPrefix("/"),
+                  !workingDirectory.contains("\\"),
+                  !workingDirectory.contains("\0"),
+                  !workingDirectory.contains("\n"),
+                  !workingDirectory.contains("\r") else {
+                throw FloeError.invalidConfiguration(
+                    "MCP stdio working directory must be relative")
+            }
+            let components = workingDirectory.split(
+                separator: "/", omittingEmptySubsequences: true)
+            guard !components.contains(".."), !components.contains(".") else {
+                throw FloeError.invalidConfiguration(
+                    "MCP stdio working directory escapes the project")
+            }
+        }
+    }
+
     /// Secret-free binding for the C01-owned separated stdio pipe. The
     /// process itself is started and owned by the Linux session lane; this
     /// value only names the exact project/environment/root/task revision the
@@ -101,6 +152,9 @@ public struct MCPServerConfiguration: Codable, Identifiable, Sendable, Hashable 
     /// state, not an empty-string endpoint.
     public var endpoint: URL?
     public var transport: Transport
+    /// Rootless, non-secret command definition. Present for `.stdio` even
+    /// when `stdioBinding` is nil (saved-but-unbound).
+    public var stdioDefinition: StdioDefinition?
     public var stdioBinding: StdioBinding?
     public var enabled: Bool
     /// Canvas is intentionally isolated by default. Ordinary Agent runs may
@@ -117,6 +171,7 @@ public struct MCPServerConfiguration: Codable, Identifiable, Sendable, Hashable 
         displayName: String,
         endpoint: URL? = nil,
         transport: Transport = .streamableHTTP,
+        stdioDefinition: StdioDefinition? = nil,
         stdioBinding: StdioBinding? = nil,
         enabled: Bool = true,
         allowInCanvas: Bool = false,
@@ -131,6 +186,16 @@ public struct MCPServerConfiguration: Codable, Identifiable, Sendable, Hashable 
         self.endpoint = endpoint
         self.transport = transport
         self.stdioBinding = stdioBinding
+        if let stdioDefinition {
+            self.stdioDefinition = stdioDefinition
+        } else if let stdioBinding {
+            self.stdioDefinition = StdioDefinition(
+                command: stdioBinding.command,
+                arguments: stdioBinding.arguments,
+                workingDirectory: stdioBinding.workingDirectory)
+        } else {
+            self.stdioDefinition = nil
+        }
         self.enabled = enabled
         self.allowInCanvas = allowInCanvas
         self.allowInsecureHTTP = allowInsecureHTTP
@@ -141,9 +206,10 @@ public struct MCPServerConfiguration: Codable, Identifiable, Sendable, Hashable 
     }
 
     private enum CodingKeys: String, CodingKey {
-        case id, displayName, endpoint, transport, stdioBinding, enabled,
-             allowInCanvas, allowInsecureHTTP, authentication,
-             credentialHeaderName, timeoutSeconds, disabledRemoteToolNames
+        case id, displayName, endpoint, transport, stdioDefinition,
+             stdioBinding, enabled, allowInCanvas, allowInsecureHTTP,
+             authentication, credentialHeaderName, timeoutSeconds,
+             disabledRemoteToolNames
     }
 
     /// Backward-compatible decode: a row persisted before the transport
@@ -156,6 +222,20 @@ public struct MCPServerConfiguration: Codable, Identifiable, Sendable, Hashable 
         let rawTransport = try container.decodeIfPresent(String.self, forKey: .transport)
         transport = rawTransport.flatMap(Transport.init(rawValue:)) ?? .streamableHTTP
         stdioBinding = try container.decodeIfPresent(StdioBinding.self, forKey: .stdioBinding)
+        // Existing binding-only rows predate the rootless definition. Derive
+        // the definition from the binding so the saved command survives an
+        // edit/export round trip without inventing identity fields.
+        if let definition = try container.decodeIfPresent(
+            StdioDefinition.self, forKey: .stdioDefinition) {
+            stdioDefinition = definition
+        } else if let binding = stdioBinding {
+            stdioDefinition = StdioDefinition(
+                command: binding.command,
+                arguments: binding.arguments,
+                workingDirectory: binding.workingDirectory)
+        } else {
+            stdioDefinition = nil
+        }
         enabled = try container.decodeIfPresent(Bool.self, forKey: .enabled) ?? true
         allowInCanvas = try container.decodeIfPresent(Bool.self, forKey: .allowInCanvas) ?? false
         allowInsecureHTTP = try container.decodeIfPresent(Bool.self, forKey: .allowInsecureHTTP) ?? false
@@ -171,6 +251,7 @@ public struct MCPServerConfiguration: Codable, Identifiable, Sendable, Hashable 
         try container.encode(displayName, forKey: .displayName)
         try container.encodeIfPresent(endpoint, forKey: .endpoint)
         try container.encode(transport, forKey: .transport)
+        try container.encodeIfPresent(stdioDefinition, forKey: .stdioDefinition)
         try container.encodeIfPresent(stdioBinding, forKey: .stdioBinding)
         try container.encode(enabled, forKey: .enabled)
         try container.encode(allowInCanvas, forKey: .allowInCanvas)
@@ -185,15 +266,37 @@ public struct MCPServerConfiguration: Codable, Identifiable, Sendable, Hashable 
         "mcp_" + id.uuidString.replacingOccurrences(of: "-", with: "").lowercased().prefix(10)
     }
 
-    public func validate() throws {
+    /// The saved command for a stdio row, whether it came from the new
+    /// rootless definition or an older binding-only row. Never derives an
+    /// identity: the result is exactly what the user may edit.
+    public var resolvedStdioDefinition: StdioDefinition? {
+        if let stdioDefinition { return stdioDefinition }
+        guard let binding = stdioBinding else { return nil }
+        return StdioDefinition(command: binding.command,
+                               arguments: binding.arguments,
+                               workingDirectory: binding.workingDirectory)
+    }
+
+    /// True for a stdio row whose command is saved but has no current
+    /// C01-owned project/environment/root/task binding.
+    public var requiresStdioBinding: Bool {
+        transport == .stdio && stdioBinding == nil
+    }
+
+    /// VALIDATION FOR A USER-SAVED DEFINITION. It deliberately does not
+    /// require the runtime binding: an unbound stdio command is ordinary
+    /// saved configuration. Operational callers (client factory/connect)
+    /// must use `validate()` below, which adds the binding requirement.
+    public func validateSavedDefinition() throws {
         guard !displayName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             throw FloeError.invalidConfiguration("MCP server name is empty")
         }
         switch transport {
         case .stdio:
-            guard let stdioBinding else {
-                throw FloeError.invalidConfiguration("MCP stdio binding is missing")
+            guard let definition = resolvedStdioDefinition else {
+                throw FloeError.invalidConfiguration("MCP stdio command is missing")
             }
+            try definition.validate()
             guard authentication == .none else {
                 throw FloeError.invalidConfiguration(
                     "MCP stdio servers do not accept transport credentials")
@@ -202,12 +305,20 @@ public struct MCPServerConfiguration: Codable, Identifiable, Sendable, Hashable 
                 throw FloeError.invalidConfiguration(
                     "An MCP stdio server does not have an HTTP endpoint")
             }
-            try stdioBinding.validate()
+            if let stdioBinding {
+                try stdioBinding.validate()
+                guard stdioBinding.command == definition.command,
+                      stdioBinding.arguments == definition.arguments,
+                      stdioBinding.workingDirectory == definition.workingDirectory else {
+                    throw FloeError.invalidConfiguration(
+                        "MCP stdio binding does not match the saved command definition")
+                }
+            }
             return
         case .streamableHTTP:
-            guard stdioBinding == nil else {
+            guard stdioBinding == nil, stdioDefinition == nil else {
                 throw FloeError.invalidConfiguration(
-                    "An HTTP MCP server does not have a stdio binding")
+                    "An HTTP MCP server does not have a stdio definition or binding")
             }
             guard let endpoint else {
                 throw FloeError.invalidConfiguration("MCP endpoint must be an HTTP(S) URL")
@@ -244,6 +355,18 @@ public struct MCPServerConfiguration: Codable, Identifiable, Sendable, Hashable 
                     throw FloeError.invalidConfiguration("Invalid MCP credential header name")
                 }
             }
+        }
+    }
+
+    /// OPERATIONAL VALIDATION. The saved definition must be valid AND a
+    /// stdio row must have the exact C01-owned binding. Every client factory
+    /// and connect path calls this, so a saved-but-unbound definition can be
+    /// listed/edited but never silently started.
+    public func validate() throws {
+        try validateSavedDefinition()
+        if transport == .stdio, stdioBinding == nil {
+            throw FloeError.invalidConfiguration(
+                "MCP stdio server is saved but not bound to a current project environment")
         }
     }
 }

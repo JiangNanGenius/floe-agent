@@ -445,6 +445,29 @@ public enum C07DataExchangeBridge {
         if let count = status.appArtifactCount { plan["appArtifacts"] = count }
         if let count = status.captureFileCount { plan["captureFiles"] = count }
         if let count = status.configSectionCount { plan["configSections"] = count }
+        if let count = status.mcpDefinitionCount {
+            plan["mcpDefinitions"] = count
+        }
+        if let count = status.memoryEntryCount { plan["memoryEntries"] = count }
+        if let count = status.memoryCandidateCount {
+            plan["memoryCandidates"] = count
+        }
+        if let count = status.personalizationDocumentCount {
+            plan["personalizationDocuments"] = count
+        }
+        if let count = status.personalizationCursorCount {
+            plan["personalizationCursors"] = count
+        }
+        if let count = status.checklistRevisionCount {
+            plan["checklistRevisions"] = count
+        }
+        if let count = status.skillCount { plan["skills"] = count }
+        if let count = status.modelPreferenceCount {
+            plan["modelPreferences"] = count
+        }
+        if let count = status.runDependencyCount {
+            plan["runDependencies"] = count
+        }
         if let partial = status.partial { plan["partial"] = partial }
         if let count = status.omissionCount { plan["omissions"] = count }
         if !plan.isEmpty { value["plan"] = plan }
@@ -485,6 +508,28 @@ public enum C07DataExchangeBridge {
         }
         if let count = status.restoredConfigSections {
             receipt["configSections"] = count
+        }
+        if let count = status.restoredMCPDefinitions {
+            receipt["mcpDefinitions"] = count
+        }
+        if let count = status.restoredMemoryEntries {
+            receipt["memoryEntries"] = count
+        }
+        if let count = status.restoredMemoryCandidates {
+            receipt["memoryCandidates"] = count
+        }
+        if let count = status.restoredPersonalizationDocuments {
+            receipt["personalizationDocuments"] = count
+        }
+        if let count = status.restoredPersonalizationCursors {
+            receipt["personalizationCursors"] = count
+        }
+        if let count = status.restoredChecklistRevisions {
+            receipt["checklistRevisions"] = count
+        }
+        if let count = status.restoredSkills { receipt["skills"] = count }
+        if let count = status.restoredModelPreferences {
+            receipt["modelPreferences"] = count
         }
         if let partial = status.partial { receipt["partial"] = partial }
         if !receipt.isEmpty { value["receipt"] = receipt }

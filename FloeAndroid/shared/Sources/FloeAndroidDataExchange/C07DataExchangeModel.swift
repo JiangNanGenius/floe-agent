@@ -303,6 +303,23 @@ public struct C07BackupScope: Codable, Sendable, Equatable {
         "calendarTodos", "toolResultRetention", "appArtifactFiles",
         "captureFiles", "safeRemoteConfiguration", "safeMailConfiguration",
         "voicePreferences", "canvasOpaqueCAD",
+        // 2026-11-02 C07 coverage expansion: real persisted user data that
+        // the earlier blanket exclusions dropped. Every entry is real table
+        // content exported through the ONE logical-row snapshot.
+        "personalizationMemory", "memoryCandidates",
+        "personalizationDocuments", "personalizationPreferences",
+        "taskChecklistRevisions", "skillDefinitions", "modelPreferences",
+        "runDependencyEvidence",
+    ]
+
+    /// Scope ids added by the 2026-11-02 expansion. A v2 archive written by
+    /// an older build (legacyV2IncludedIDs) is still accepted; a full v2
+    /// archive written by this build always carries the expanded scope.
+    public static let expandedUserDataIncludedIDs: Set<String> = [
+        "personalizationMemory", "memoryCandidates",
+        "personalizationDocuments", "personalizationPreferences",
+        "taskChecklistRevisions", "skillDefinitions", "modelPreferences",
+        "runDependencyEvidence",
     ]
 
     public var included: [String]
@@ -637,19 +654,39 @@ public enum C07ScopePolicy {
         .init(id: "externalWorkspaceTokens", reason: "regrantRequired"),
         .init(id: "browserSessions", reason: "cookiesAndSessionState"),
         .init(id: "mailCredentials", reason: "mailOwnerSecrets"),
-        .init(id: "mailDraftsAndTransfers", reason: "notReadOnlyReceipts"),
+        // C06 mail has NO persisted unsent-draft store: compose staging is
+        // RAM-only handles over <root>/MailDrafts/<handle>/ temp bytes with a
+        // 30-minute lifetime, the send body exists only inside the live
+        // `send` call, and MailDeliveryJournal persists only a bounded
+        // digest + replay state (no body, no recipients). Exporting those
+        // ephemeral bytes would fabricate a mail-draft feature that does not
+        // exist; the durable addressing metadata lives in mail_accounts and
+        // is carried by safeMailConfiguration instead.
+        .init(id: "mailDraftsAndTransfers",
+              reason: "ramOnlyStagingNoPersistentDraftStore"),
         .init(id: "runCheckpointsAndPendingInputs", reason: "noRunResume"),
         .init(id: "mediaGenerationJobs", reason: "notReplayed"),
         .init(id: "mediaGenerationCandidates", reason: "generationOwner"),
         .init(id: "creativeAssetIndex", reason: "derivedMediaIndex"),
         .init(id: "canvasRunContexts", reason: "runResumeState"),
-        .init(id: "personalizationMemory",
-              reason: "separateMemoryAuthorityNotInThisPackage"),
-        .init(id: "skillsLibrary", reason: "reinstallableSkillPackages"),
-        .init(id: "taskChecklistRevisions", reason: "runPlanStateNotResumable"),
-        .init(id: "modelPreferences", reason: "derivedUiChoice"),
+        // Memory/search derived state is rebuilt from restored content by
+        // the original producers; only the user's memory text, candidates
+        // and documents travel in the package.
+        .init(id: "memoryDerivedIndexes",
+              reason: "ftsAndVectorRecallIndexesRegeneratedFromContent"),
+        .init(id: "memoryDeletionTombstones",
+              reason: "syncDeletionMarkersNotUserContent"),
+        // A restored skill is source/config/install reference only: the
+        // installed/enabled state and every capability grant are runtime
+        // authorization the original review flow must re-establish.
+        .init(id: "skillPermissionsAndTrust",
+              reason: "capabilityGrantsAndEnabledStateNeverRestored"),
         .init(id: "workspaceRecentFiles", reason: "derivedUiHistory"),
-        .init(id: "runDependencies", reason: "executionGraphNotResumable"),
+        // Run dependencies are preserved ONLY as read-only recovery
+        // evidence; a historical edge never becomes a live pending
+        // dependency again.
+        .init(id: "runDependencyLiveState",
+              reason: "recoveryEvidenceOnlyNeverResumed"),
         // C02 continuity is execution-control state, not reusable user data:
         // a pause marker carries a root epoch/fingerprint and a
         // resumeInProgress CAS claim. Restoring it under new ids would let a
@@ -914,79 +951,59 @@ public enum C07FileSystem {
     }
 
     /// Streams one verified source file into a new destination that must not
-    /// already exist. The caller owns cleanup of a partial destination.
-    public static func copyVerified(source: URL, destination: URL,
-                                    expectedSize: Int64? = nil,
-                                    maximum: Int64 = C07DataExchangeLimits.maximumEntryBytes)
-        throws -> (sha256: String, byteCount: Int64)
-    {
-        let values = try source.resourceValues(forKeys: [
-            .isRegularFileKey, .isSymbolicLinkKey, .fileSizeKey,
-            .contentModificationDateKey,
-        ])
-        guard values.isRegularFile == true, values.isSymbolicLink != true else {
-            throw C07DataExchangeError.specialFileUnsupported(source.lastPathComponent)
-        }
-        if let expectedSize, let size = values.fileSize, Int64(size) != expectedSize {
-            throw C07DataExchangeError.sizeMismatch(source.lastPathComponent)
-        }
-        let sourceSize = values.fileSize.map { Int64($0) }
-        let sourceModified = values.contentModificationDate
-        let input: FileHandle
-        do { input = try FileHandle(forReadingFrom: source) }
-        catch { throw C07DataExchangeError.storageUnavailable("openSource") }
-        defer { try? input.close() }
-        guard FileManager.default.createFile(atPath: destination.path, contents: nil) else {
-            throw C07DataExchangeError.storageUnavailable("createDestination")
-        }
-        let output: FileHandle
-        do { output = try FileHandle(forWritingTo: destination) }
-        catch {
-            removeIfPresent(destination)
-            throw C07DataExchangeError.storageUnavailable("openDestination")
-        }
-        var hasher = SHA256()
-        var count: Int64 = 0
-        do {
-            defer { try? output.close() }
-            while let chunk = try input.read(upToCount: C07DataExchangeLimits.copyChunkBytes),
-                  !chunk.isEmpty {
-                if Task.isCancelled {
-                    removeIfPresent(destination)
-                    throw C07DataExchangeError.cancelled
-                }
-                count += Int64(chunk.count)
-                guard count <= maximum else {
-                    removeIfPresent(destination)
-                    throw C07DataExchangeError.entryTooLarge(source.lastPathComponent)
-                }
-                hasher.update(data: chunk)
-                try output.write(contentsOf: chunk)
-            }
-            try output.synchronize()
-        } catch let error as C07DataExchangeError {
-            removeIfPresent(destination)
-            throw error
-        } catch {
-            removeIfPresent(destination)
-            throw C07DataExchangeError.storageUnavailable("copy")
-        }
-        // A file that changed while it was streamed would produce a
-        // manifest that is internally consistent but not a point-in-time
-        // snapshot. Refuse it instead of silently mixing two revisions.
-        let after = try? source.resourceValues(forKeys: [
-            .fileSizeKey, .contentModificationDateKey,
-        ])
-        if let sourceSize, let afterSize = after?.fileSize,
-           Int64(afterSize) != sourceSize {
-            removeIfPresent(destination)
-            throw C07DataExchangeError.storageUnavailable("sourceChanged")
-        }
-        if let sourceModified, let afterModified = after?.contentModificationDate,
-           afterModified != sourceModified {
-            removeIfPresent(destination)
-            throw C07DataExchangeError.storageUnavailable("sourceChanged")
-        }
-        return (hasher.finalize().map { String(format: "%02x", $0) }.joined(), count)
+    /// already exist. Both sides are addressed relative to explicit trusted
+    /// roots; every open is descriptor-relative and no-follow, the source
+    /// regular-file identity/size/mtime are fstat-gated before and after the
+    /// stream, and the destination is exclusively created and re-verified by
+    /// fstatat before success is reported. A failure removes only the exact
+    /// destination inode this call created; pre-existing user data and the
+    /// caller's staging stay intact. The caller owns the roots.
+    public static func copyVerified(
+        sourceRoot: URL,
+        sourceRelativePath: String,
+        destinationRoot: URL,
+        destinationRelativePath: String,
+        expectedSize: Int64? = nil,
+        maximum: Int64 = C07DataExchangeLimits.maximumEntryBytes,
+        mode: Int = 0o600,
+        createDestinationParents: Bool = true,
+        shouldCancel: @Sendable () -> Bool = { Task.isCancelled }
+    ) throws -> (sha256: String, byteCount: Int64) {
+        try C07RootedFileIO.copyFile(
+            sourceRoot: sourceRoot,
+            sourceRelativePath: sourceRelativePath,
+            destinationRoot: destinationRoot,
+            destinationRelativePath: destinationRelativePath,
+            expectedSize: expectedSize,
+            maximum: maximum,
+            mode: mode,
+            createDestinationParents: createDestinationParents,
+            shouldCancel: shouldCancel)
+    }
+
+    /// Convenience for a file the CALLER ITSELF staged under an app-private
+    /// directory (archive staging, note staging, table staging): the
+    /// immediate parent is a legitimate fixed root for that staged file.
+    /// Never use this for model-, archive- or UI-supplied paths.
+    public static func copyVerifiedStaged(
+        source: URL,
+        destinationRoot: URL,
+        destinationRelativePath: String,
+        expectedSize: Int64? = nil,
+        maximum: Int64 = C07DataExchangeLimits.maximumEntryBytes,
+        mode: Int = 0o600,
+        createDestinationParents: Bool = true,
+        shouldCancel: @Sendable () -> Bool = { Task.isCancelled }
+    ) throws -> (sha256: String, byteCount: Int64) {
+        try C07RootedFileIO.copyFile(
+            sourceRoot: source.deletingLastPathComponent(),
+            sourceRelativePath: source.lastPathComponent,
+            destinationRoot: destinationRoot,
+            destinationRelativePath: destinationRelativePath,
+            expectedSize: expectedSize,
+            maximum: maximum,
+            mode: mode,
+            createDestinationParents: createDestinationParents,
+            shouldCancel: shouldCancel)
     }
 }

@@ -106,6 +106,7 @@ func c07CheckedEntrySize(_ value: UInt64, _ path: String) throws -> Int64 {
 
 public enum C07BackupBuilder {
     private struct EnumeratedProject {
+        var root: URL
         var directories: [String]
         var files: [(relativePath: String, url: URL, byteCount: Int64, mode: Int)]
     }
@@ -260,7 +261,10 @@ public enum C07BackupBuilder {
                 let stagedURL = staging.appendingPathComponent(archivePath)
                 try C07FileSystem.ensureDirectory(stagedURL.deletingLastPathComponent())
                 let result = try C07FileSystem.copyVerified(
-                    source: file.url, destination: stagedURL,
+                    sourceRoot: value.root,
+                    sourceRelativePath: file.relativePath,
+                    destinationRoot: staging,
+                    destinationRelativePath: archivePath,
                     expectedSize: file.byteCount)
                 totalCopyBytes += result.byteCount
                 guard totalCopyBytes <= C07DataExchangeLimits.maximumTotalBytes else {
@@ -297,8 +301,10 @@ public enum C07BackupBuilder {
             do {
                 let digest = try C07Digest.file(
                     note.archiveURL, maximum: C07DataExchangeLimits.maximumNoteArchiveBytes)
-                let copied = try C07FileSystem.copyVerified(
-                    source: note.archiveURL, destination: stagedURL,
+                let copied = try C07FileSystem.copyVerifiedStaged(
+                    source: note.archiveURL,
+                    destinationRoot: staging,
+                    destinationRelativePath: archivePath,
                     expectedSize: digest.byteCount,
                     maximum: C07DataExchangeLimits.maximumNoteArchiveBytes)
                 // Validate the nested iOS-format document package before it
@@ -395,6 +401,21 @@ public enum C07BackupBuilder {
                 },
                 omissions: owned.omissions)
             var tableRecords: [C07OwnedTableRecord] = []
+            // Rows bound to a temporary conversation never leave RAM. The
+            // capture already filtered them; the writer re-checks with the
+            // same predicate so a hand-edited staging tree cannot re-add one.
+            var excludedConversationIDs = Set<String>()
+            if let conversations = owned.tables.first(where: {
+                $0.name == "conversations"
+            }) {
+                try C07RowStream.rows(
+                    in: conversations.url, table: "conversations"
+                ) { row in
+                    guard row["purpose"]?.stringValue == "temporary",
+                          let id = row["id"]?.stringValue else { return }
+                    excludedConversationIDs.insert(id)
+                }
+            }
             for table in owned.tables {
                 guard let policy = C07OwnedDataPolicy.policy(for: table.name) else {
                     throw C07DataExchangeError.invalidManifest("ownedTable:\(table.name)")
@@ -411,7 +432,8 @@ public enum C07BackupBuilder {
                 var countedRows = 0
                 try C07RowStream.rows(in: table.url, table: table.name) { row in
                     guard C07OwnedDataPolicy.shouldExportRow(
-                        table: table.name, row: row) else {
+                        table: table.name, row: row,
+                        excludedConversationIDs: excludedConversationIDs) else {
                         throw C07DataExchangeError.invalidManifest(
                             "rowNotExportable:\(table.name)")
                     }
@@ -423,8 +445,10 @@ public enum C07BackupBuilder {
                 }
                 let stagedURL = staging.appendingPathComponent(entry)
                 try C07FileSystem.ensureDirectory(stagedURL.deletingLastPathComponent())
-                let copied = try C07FileSystem.copyVerified(
-                    source: table.url, destination: stagedURL)
+                let copied = try C07FileSystem.copyVerifiedStaged(
+                    source: table.url,
+                    destinationRoot: staging,
+                    destinationRelativePath: entry)
                 totalCopyBytes += copied.byteCount
                 guard totalCopyBytes <= C07DataExchangeLimits.maximumTotalBytes else {
                     throw C07DataExchangeError.totalTooLarge
@@ -449,8 +473,10 @@ public enum C07BackupBuilder {
             }
             let stagedWorkspaces = staging.appendingPathComponent(workspaceEntry)
             try C07FileSystem.ensureDirectory(stagedWorkspaces.deletingLastPathComponent())
-            let workspaceCopy = try C07FileSystem.copyVerified(
-                source: workspaces.url, destination: stagedWorkspaces,
+            let workspaceCopy = try C07FileSystem.copyVerifiedStaged(
+                source: workspaces.url,
+                destinationRoot: staging,
+                destinationRelativePath: workspaceEntry,
                 maximum: C07OwnedDataLimits.maximumWorkspaceBytes)
             let workspaceData: Data
             do { workspaceData = try Data(contentsOf: stagedWorkspaces) }
@@ -490,8 +516,10 @@ public enum C07BackupBuilder {
                 }
                 let stagedURL = staging.appendingPathComponent(record.entry)
                 try C07FileSystem.ensureDirectory(stagedURL.deletingLastPathComponent())
-                let copied = try C07FileSystem.copyVerified(
-                    source: artifact.url, destination: stagedURL,
+                let copied = try C07FileSystem.copyVerifiedStaged(
+                    source: artifact.url,
+                    destinationRoot: staging,
+                    destinationRelativePath: record.entry,
                     maximum: C07OwnedDataLimits.maximumArtifactBytes)
                 guard copied.byteCount == record.byteCount,
                       copied.sha256 == record.sha256 else {
@@ -532,8 +560,10 @@ public enum C07BackupBuilder {
                 let stagedURL = staging.appendingPathComponent(section.entry)
                 try C07FileSystem.ensureDirectory(
                     stagedURL.deletingLastPathComponent())
-                let copied = try C07FileSystem.copyVerified(
-                    source: sourceResults.url, destination: stagedURL,
+                let copied = try C07FileSystem.copyVerifiedStaged(
+                    source: sourceResults.url,
+                    destinationRoot: staging,
+                    destinationRelativePath: section.entry,
                     maximum: C07OwnedDataLimits.maximumToolResultTotalBytes)
                 guard copied.byteCount == section.byteCount,
                       copied.sha256 == section.sha256 else {
@@ -563,8 +593,10 @@ public enum C07BackupBuilder {
                 let stagedURL = staging.appendingPathComponent(section.entry)
                 try C07FileSystem.ensureDirectory(
                     stagedURL.deletingLastPathComponent())
-                let copied = try C07FileSystem.copyVerified(
-                    source: config.url, destination: stagedURL,
+                let copied = try C07FileSystem.copyVerifiedStaged(
+                    source: config.url,
+                    destinationRoot: staging,
+                    destinationRelativePath: section.entry,
                     maximum: C07OwnedDataLimits.maximumConfigBytes)
                 guard copied.byteCount == section.byteCount,
                       copied.sha256 == section.sha256 else {
@@ -747,7 +779,7 @@ public enum C07BackupBuilder {
         }
         files.sort { $0.0 < $1.0 }
         directories.sort()
-        return EnumeratedProject(directories: directories, files: files)
+        return EnumeratedProject(root: root, directories: directories, files: files)
     }
 
     private static func relativePath(rootPath: String, url: URL) -> String {

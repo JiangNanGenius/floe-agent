@@ -450,9 +450,12 @@ public struct C02MCPSetupStdioClientFactory: MCPStdioClientMaking {
         configuration: MCPServerConfiguration,
         credential: String?
     ) async throws -> any MCPClientTransporting {
-        guard configuration.transport == .stdio,
-              let binding = configuration.stdioBinding else {
+        guard configuration.transport == .stdio else {
             throw FloeError.invalidConfiguration("MCP server is not a stdio configuration")
+        }
+        guard let binding = configuration.stdioBinding else {
+            throw MCPClientError.transportUnavailable(
+                "The saved MCP stdio command has no current project environment binding.")
         }
         try configuration.validate()
         guard configuration.authentication == .none,

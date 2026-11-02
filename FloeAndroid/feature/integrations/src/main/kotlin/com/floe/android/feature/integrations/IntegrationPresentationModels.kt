@@ -568,14 +568,38 @@ enum class McpAuthenticationUi(val swiftRaw: String) {
     CUSTOM_HEADER("customHeader"),
 }
 
+/** ⇄ `MCPServerConfiguration.Transport` raw values. */
+enum class McpTransportKindUi(val swiftRaw: String) {
+    STREAMABLE_HTTP("streamableHTTP"),
+    STDIO("stdio"),
+}
+
+/** The saved command's runtime-binding state. `UNBOUND` is a real saved
+ * state (definition visible/editable, no C01 project/environment pipe yet). */
+enum class McpStdioBindingStateUi {
+    BOUND,
+    UNBOUND,
+    UNAVAILABLE,
+}
+
+/** Non-secret binding facts for display/prefill. The root identity hash and
+ * task/run fingerprints are intentionally NOT projected into UI state. */
+data class McpStdioBindingUi(
+    val state: McpStdioBindingStateUi,
+    val projectId: String? = null,
+    val environmentId: String? = null,
+    val revision: String? = null,
+    val remediation: String? = null,
+)
+
 /**
  * ⇄ MCPRemoteClient transport. The original ships standard Streamable HTTP;
- * the future Linux/stdio route (plan §MCP transports, G03 environment) stays
- * in the projection as a PENDING_ENVIRONMENT entry so G02 capability lists
- * report it as temporarily unavailable — not permanently removed.
+ * the Linux/stdio route remains a PENDING_ENVIRONMENT entry when the C01 pipe
+ * is absent, but a saved stdio DEFINITION stays visible and editable.
  */
 sealed interface McpTransportUi {
     data object StreamableHttp : McpTransportUi
+    data class Stdio(val binding: McpStdioBindingUi) : McpTransportUi
     data class PendingEnvironment(val remediation: String) : McpTransportUi
 }
 
@@ -665,6 +689,13 @@ data class McpServerRowUi(
     /** ⇄ the row's saved disabledRemoteToolNames (sorted names): the per-tool
      * enable set an edit/save round trip must PRESERVE, never reset. */
     val disabledRemoteToolNames: List<String> = emptyList(),
+    /** ⇄ MCPServerConfiguration.transport (`streamableHTTP` / `stdio`). */
+    val transportKind: McpTransportKindUi = McpTransportKindUi.STREAMABLE_HTTP,
+    val stdioCommand: String? = null,
+    val stdioArguments: List<String> = emptyList(),
+    val stdioWorkingDirectory: String? = null,
+    /** Null for HTTP; true/false for stdio (the real binding state). */
+    val stdioBound: Boolean? = null,
 )
 
 /**
@@ -718,6 +749,13 @@ data class McpEditorSeedUi(
     val credentialStored: Boolean,
     val timeoutSeconds: Int,
     val transport: McpTransportUi,
+    /** ⇄ MCPServerConfiguration.transport. For a pending stdio definition the
+     * editor still shows/round-trips command, arguments and relative cwd. */
+    val transportKind: McpTransportKindUi = McpTransportKindUi.STREAMABLE_HTTP,
+    val stdioCommand: String = "",
+    val stdioArguments: List<String> = emptyList(),
+    val stdioWorkingDirectory: String = "",
+    val stdioBinding: McpStdioBindingUi? = null,
     /** ⇄ center.toolsByServerID[serverId]: the live tool list. */
     val tools: List<McpToolRowUi>,
     /** Saved row revision when editing (null for a NEW server): the REAL
@@ -756,6 +794,11 @@ data class McpEditorIdentity(
 data class McpDraftSnapshot(
     val displayName: String = "",
     val endpointText: String = "",
+    val transportKind: McpTransportKindUi = McpTransportKindUi.STREAMABLE_HTTP,
+    val stdioCommand: String = "",
+    /** One argument per line; a blank line is not an empty argument. */
+    val stdioArgumentsText: String = "",
+    val stdioWorkingDirectory: String = "",
     val enabled: Boolean = true,
     val allowInCanvas: Boolean = false,
     val allowInsecureHttp: Boolean = false,
@@ -798,6 +841,7 @@ data class McpSaveRequest(
     override fun toString(): String =
         "McpSaveRequest(editor=${identity.editorId}, epoch=${identity.epoch}, " +
             "serverId=$serverId, name=${draft.displayName}, " +
+            "transport=${draft.transportKind}, " +
             "endpoint=${draft.endpointText}, auth=${draft.authentication}, " +
             "credential=${if (credentialDraft.isNullOrEmpty()) "absent" else "<present:redacted>"}, " +
             "intent=$credentialIntent)"

@@ -17,7 +17,10 @@ import com.floe.android.feature.integrations.McpSaveRequest
 import com.floe.android.feature.integrations.McpServerRevisionUi
 import com.floe.android.feature.integrations.McpServerRowUi
 import com.floe.android.feature.integrations.McpServersUiState
+import com.floe.android.feature.integrations.McpStdioBindingStateUi
+import com.floe.android.feature.integrations.McpStdioBindingUi
 import com.floe.android.feature.integrations.McpToolRowUi
+import com.floe.android.feature.integrations.McpTransportKindUi
 import com.floe.android.feature.integrations.McpTransportUi
 import com.floe.android.feature.integrations.SkillAvailabilityUi
 import com.floe.android.feature.integrations.SkillCatalogCardUi
@@ -2133,8 +2136,8 @@ class IntegrationsHostController internal constructor(
         }
         // S9 "all original saved config fields": every editable field seeds
         // from the REAL decoded row (header name, timeout, insecure-HTTP
-        // flag), never from an invented default that a later save would
-        // silently write over the saved configuration.
+        // flag, transport/stdin command), never from an invented default that
+        // a later save would silently write over the saved configuration.
         return McpEditorSeedUi(
             serverId = serverId,
             displayName = row?.displayName ?: "",
@@ -2147,11 +2150,43 @@ class IntegrationsHostController internal constructor(
                 ?.takeIf { it.isNotEmpty() } ?: "Authorization",
             credentialStored = row?.credentialStored ?: false,
             timeoutSeconds = row?.timeoutSeconds ?: 30,
-            transport = McpTransportUi.StreamableHttp,
+            transport = mcpTransportUi(row),
+            transportKind = row?.transportKind ?: McpTransportKindUi.STREAMABLE_HTTP,
+            stdioCommand = row?.stdioCommand ?: "",
+            stdioArguments = row?.stdioArguments ?: emptyList(),
+            stdioWorkingDirectory = row?.stdioWorkingDirectory ?: "",
+            stdioBinding = mcpStdioBindingUi(row),
             tools = row?.tools ?: emptyList(),
             savedRevision = row?.revision,
             networkActionsAvailable = admitted(),
             networkActionsUnavailableReason = if (admitted()) null else "unavailable",
+        )
+    }
+
+    /**
+     * The editor's transport projection. A saved stdio definition remains a
+     * real `Stdio` transport even when the C01 pipe/binding is absent; the
+     * binding state carries the honest remediation and never invents IDs.
+     */
+    private fun mcpTransportUi(row: McpServerRowUi?): McpTransportUi =
+        if (row?.transportKind == McpTransportKindUi.STDIO) {
+            McpTransportUi.Stdio(
+                mcpStdioBindingUi(row) ?: McpStdioBindingUi(
+                    state = McpStdioBindingStateUi.UNBOUND,
+                    remediation = "bindingRequired",
+                ),
+            )
+        } else {
+            McpTransportUi.StreamableHttp
+        }
+
+    private fun mcpStdioBindingUi(row: McpServerRowUi?): McpStdioBindingUi? {
+        if (row?.transportKind != McpTransportKindUi.STDIO) return null
+        val bound = row.stdioBound == true
+        return McpStdioBindingUi(
+            state = if (bound) McpStdioBindingStateUi.BOUND
+            else McpStdioBindingStateUi.UNBOUND,
+            remediation = if (bound) null else "bindingRequired",
         )
     }
 
@@ -2237,7 +2272,13 @@ class IntegrationsHostController internal constructor(
                     ?.takeIf { it.isNotEmpty() } ?: "Authorization",
                 credentialStored = row?.credentialStored ?: false,
                 timeoutSeconds = row?.timeoutSeconds ?: 30,
-                transport = McpTransportUi.StreamableHttp,
+                transport = mcpTransportUi(row),
+                transportKind = row?.transportKind
+                    ?: McpTransportKindUi.STREAMABLE_HTTP,
+                stdioCommand = row?.stdioCommand ?: "",
+                stdioArguments = row?.stdioArguments ?: emptyList(),
+                stdioWorkingDirectory = row?.stdioWorkingDirectory ?: "",
+                stdioBinding = mcpStdioBindingUi(row),
                 tools = row?.tools ?: emptyList(),
                 savedRevision = row?.revision,
                 networkActionsAvailable = admitted,
@@ -3605,10 +3646,25 @@ internal object IntegrationsWire {
                     destructiveHint = toolObj.bool("destructiveHint") ?: false,
                 )
             }
+            val transportKind = when (obj.string("transport")) {
+                "stdio" -> McpTransportKindUi.STDIO
+                else -> McpTransportKindUi.STREAMABLE_HTTP
+            }
+            val stdioDefinition = obj["stdioDefinition"] as? JsonObject
+            val stdioCommand = stdioDefinition?.string("command")
+            val stdioArguments = (stdioDefinition?.get("arguments") as? JsonArray)
+                ?.mapNotNull { (it as? JsonPrimitive)?.contentOrNull } ?: emptyList()
+            val stdioWorkingDirectory = stdioDefinition?.string("workingDirectory")
+            val stdioBound = when (obj.string("stdioBindingState")) {
+                "bound" -> true
+                "unbound" -> false
+                else -> null
+            }
             McpServerRowUi(
                 serverId = id,
                 displayName = obj.string("displayName") ?: id,
-                endpointDisplay = obj.string("endpoint") ?: "",
+                endpointDisplay = obj.string("endpoint")
+                    ?: if (stdioCommand.isNullOrBlank()) "" else "stdio · $stdioCommand",
                 enabled = obj.bool("enabled") ?: true,
                 allowInCanvas = obj.bool("allowInCanvas") ?: false,
                 allowInsecureHttp = obj.bool("allowInsecureHTTP") ?: false,
@@ -3622,6 +3678,11 @@ internal object IntegrationsWire {
                 revision = McpServerRevisionUi(resourceID, version),
                 disabledRemoteToolNames = (obj["disabledRemoteToolNames"] as? JsonArray)
                     ?.mapNotNull { (it as? JsonPrimitive)?.contentOrNull } ?: emptyList(),
+                transportKind = transportKind,
+                stdioCommand = stdioCommand,
+                stdioArguments = stdioArguments,
+                stdioWorkingDirectory = stdioWorkingDirectory,
+                stdioBound = stdioBound,
             )
         } ?: return null
         val nextCursor = (root["nextCursor"] as? JsonPrimitive)
@@ -3721,27 +3782,54 @@ internal object IntegrationsWire {
             buildMap {
                 put("id", JsonPrimitive(serverID))
                 put("displayName", JsonPrimitive(draft.displayName))
-                put("endpoint", JsonPrimitive(draft.endpointText))
                 put("enabled", JsonPrimitive(draft.enabled))
                 put("allowInCanvas", JsonPrimitive(draft.allowInCanvas))
-                put("allowInsecureHTTP", JsonPrimitive(draft.allowInsecureHttp))
-                put(
-                    "authentication",
-                    JsonPrimitive(
-                        when (draft.authentication) {
-                            McpAuthenticationUi.NONE -> "none"
-                            McpAuthenticationUi.BEARER_TOKEN -> "bearerToken"
-                            McpAuthenticationUi.CUSTOM_HEADER -> "customHeader"
-                        },
-                    ),
-                )
-                put("credentialHeaderName", JsonPrimitive(draft.credentialHeaderName))
                 put("timeoutSeconds", JsonPrimitive(draft.timeoutSeconds))
                 put("createIntent", JsonPrimitive(create))
                 put(
                     "disabledRemoteToolNames",
                     JsonArray(draft.disabledRemoteToolNames.sorted().map { JsonPrimitive(it) }),
                 )
+                if (draft.transportKind == McpTransportKindUi.STDIO) {
+                    put("transport", JsonPrimitive("stdio"))
+                    // Rootless saved definition: no project/environment/root/
+                    // task identity is invented here. The native domain keeps
+                    // any existing binding only when the command is unchanged.
+                    put(
+                        "stdio",
+                        JsonObject(
+                            mapOf(
+                                "command" to JsonPrimitive(draft.stdioCommand.trim()),
+                                "arguments" to JsonArray(
+                                    draft.stdioArgumentsText.split("\n")
+                                        .map { it.trimEnd('\r') }
+                                        .filter { it.isNotEmpty() }
+                                        .map { JsonPrimitive(it) },
+                                ),
+                                "workingDirectory" to JsonPrimitive(
+                                    draft.stdioWorkingDirectory.trim(),
+                                ),
+                            ),
+                        ),
+                    )
+                    put("authentication", JsonPrimitive("none"))
+                    put("allowInsecureHTTP", JsonPrimitive(false))
+                } else {
+                    put("transport", JsonPrimitive("streamableHTTP"))
+                    put("endpoint", JsonPrimitive(draft.endpointText))
+                    put("allowInsecureHTTP", JsonPrimitive(draft.allowInsecureHttp))
+                    put(
+                        "authentication",
+                        JsonPrimitive(
+                            when (draft.authentication) {
+                                McpAuthenticationUi.NONE -> "none"
+                                McpAuthenticationUi.BEARER_TOKEN -> "bearerToken"
+                                McpAuthenticationUi.CUSTOM_HEADER -> "customHeader"
+                            },
+                        ),
+                    )
+                    put("credentialHeaderName", JsonPrimitive(draft.credentialHeaderName))
+                }
             },
         )
     }

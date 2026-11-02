@@ -559,9 +559,20 @@ public actor MCPDomain {
                         "taskID": binding.taskID?.uuidString ?? NSNull(),
                         "revision": String(binding.revision),
                         "command": binding.command,
+                        "arguments": binding.arguments,
                         "workingDirectory": binding.workingDirectory,
                     ] as [String: Any]
                 } ?? NSNull(),
+                "stdioDefinition": server.resolvedStdioDefinition.map { definition in
+                    [
+                        "command": definition.command,
+                        "arguments": definition.arguments,
+                        "workingDirectory": definition.workingDirectory,
+                    ] as [String: Any]
+                } ?? NSNull(),
+                "stdioBindingState": server.transport == .stdio
+                    ? (server.stdioBinding == nil ? "unbound" : "bound")
+                    : NSNull(),
                 "enabled": server.enabled,
                 "allowInCanvas": server.allowInCanvas,
                 "allowInsecureHTTP": server.allowInsecureHTTP,
@@ -706,6 +717,7 @@ public actor MCPDomain {
         let displayName: String
         let endpoint: URL?
         let transport: MCPServerConfiguration.Transport
+        let stdioDefinition: MCPServerConfiguration.StdioDefinition?
         let stdioBinding: MCPServerConfiguration.StdioBinding?
         let enabled: Bool
         let allowInCanvas: Bool
@@ -747,6 +759,7 @@ public actor MCPDomain {
                 throw ConfigDomainError(code: .invalidEnvelope, reason: "mcpCandidate.authentication")
             }
             let endpoint: URL?
+            let stdioDefinition: MCPServerConfiguration.StdioDefinition?
             let stdioBinding: MCPServerConfiguration.StdioBinding?
             switch transport {
             case .streamableHTTP:
@@ -759,6 +772,7 @@ public actor MCPDomain {
                     throw ConfigDomainError(code: .invalidEnvelope, reason: "mcpCandidate.stdio")
                 }
                 endpoint = parsedEndpoint
+                stdioDefinition = nil
                 stdioBinding = nil
             case .stdio:
                 guard dictionary["endpoint"] == nil else {
@@ -770,37 +784,18 @@ public actor MCPDomain {
                 guard let raw = dictionary["stdio"] as? [String: Any] else {
                     throw ConfigDomainError(code: .invalidEnvelope, reason: "mcpCandidate.stdio")
                 }
+                // The SAME closed object carries either the full historical
+                // binding (all identity keys) or a rootless definition (only
+                // command/arguments/workingDirectory). A partial identity is
+                // never accepted: no dummy project/root/task values.
                 try ConfigJSON.closed(raw,
                                       allowed: ["projectID", "environmentID", "rootIdentity",
                                                 "taskID", "revision", "command", "arguments",
                                                 "workingDirectory"],
-                                      required: ["projectID", "environmentID",
-                                                 "rootIdentity", "command"],
+                                      required: ["command"],
                                       context: "mcpStdio")
-                guard let projectString = raw["projectID"] as? String,
-                      let projectID = UUID(uuidString: projectString),
-                      projectID.uuidString.lowercased() == projectString.lowercased(),
-                      let environmentID = raw["environmentID"] as? String,
-                      let rootIdentity = raw["rootIdentity"] as? String,
-                      let command = raw["command"] as? String else {
-                    throw ConfigDomainError(code: .invalidEnvelope, reason: "mcpCandidate.stdioIdentity")
-                }
-                var taskID: UUID?
-                if let taskString = raw["taskID"] as? String {
-                    guard let parsed = UUID(uuidString: taskString) else {
-                        throw ConfigDomainError(code: .invalidEnvelope, reason: "mcpCandidate.stdioTask")
-                    }
-                    taskID = parsed
-                } else if raw["taskID"] != nil, !(raw["taskID"] is NSNull) {
-                    throw ConfigDomainError(code: .invalidEnvelope, reason: "mcpCandidate.stdioTask")
-                }
-                let revision: UInt64
-                if let number = raw["revision"] as? Int, number >= 0 {
-                    revision = UInt64(number)
-                } else if raw["revision"] == nil {
-                    revision = 0
-                } else {
-                    throw ConfigDomainError(code: .invalidEnvelope, reason: "mcpCandidate.stdioRevision")
+                guard let command = raw["command"] as? String else {
+                    throw ConfigDomainError(code: .invalidEnvelope, reason: "mcpCandidate.stdioCommand")
                 }
                 let arguments: [String]
                 if let rawArguments = raw["arguments"] as? [String] {
@@ -818,22 +813,72 @@ public actor MCPDomain {
                 } else {
                     throw ConfigDomainError(code: .invalidEnvelope, reason: "mcpCandidate.stdioWorkingDirectory")
                 }
-                let binding = MCPServerConfiguration.StdioBinding(
-                    projectID: projectID,
-                    environmentID: environmentID,
-                    rootIdentity: rootIdentity,
-                    taskID: taskID,
-                    revision: revision,
-                    command: command,
-                    arguments: arguments,
+                let definition = MCPServerConfiguration.StdioDefinition(
+                    command: command, arguments: arguments,
                     workingDirectory: workingDirectory)
                 do {
-                    try binding.validate()
+                    try definition.validate()
                 } catch {
                     throw ConfigDomainError(code: .invalidEnvelope, reason: "mcpCandidate.stdioShape")
                 }
-                endpoint = nil
-                stdioBinding = binding
+                let identityKeys = ["projectID", "environmentID", "rootIdentity",
+                                    "taskID", "revision"]
+                let suppliedIdentity = identityKeys.filter { raw[$0] != nil }
+                if suppliedIdentity.isEmpty {
+                    endpoint = nil
+                    stdioDefinition = definition
+                    stdioBinding = nil
+                } else {
+                    guard suppliedIdentity.contains("projectID"),
+                          suppliedIdentity.contains("environmentID"),
+                          suppliedIdentity.contains("rootIdentity"),
+                          let projectString = raw["projectID"] as? String,
+                          let projectID = UUID(uuidString: projectString),
+                          projectID.uuidString.lowercased() == projectString.lowercased(),
+                          let environmentID = raw["environmentID"] as? String,
+                          let rootIdentity = raw["rootIdentity"] as? String else {
+                        throw ConfigDomainError(code: .invalidEnvelope,
+                                                reason: "mcpCandidate.stdioIdentity")
+                    }
+                    var taskID: UUID?
+                    if let taskString = raw["taskID"] as? String {
+                        guard let parsed = UUID(uuidString: taskString) else {
+                            throw ConfigDomainError(code: .invalidEnvelope,
+                                                    reason: "mcpCandidate.stdioTask")
+                        }
+                        taskID = parsed
+                    } else if raw["taskID"] != nil, !(raw["taskID"] is NSNull) {
+                        throw ConfigDomainError(code: .invalidEnvelope,
+                                                reason: "mcpCandidate.stdioTask")
+                    }
+                    let revision: UInt64
+                    if let number = raw["revision"] as? Int, number >= 0 {
+                        revision = UInt64(number)
+                    } else if raw["revision"] == nil {
+                        revision = 0
+                    } else {
+                        throw ConfigDomainError(code: .invalidEnvelope,
+                                                reason: "mcpCandidate.stdioRevision")
+                    }
+                    let binding = MCPServerConfiguration.StdioBinding(
+                        projectID: projectID,
+                        environmentID: environmentID,
+                        rootIdentity: rootIdentity,
+                        taskID: taskID,
+                        revision: revision,
+                        command: command,
+                        arguments: arguments,
+                        workingDirectory: workingDirectory)
+                    do {
+                        try binding.validate()
+                    } catch {
+                        throw ConfigDomainError(code: .invalidEnvelope,
+                                                reason: "mcpCandidate.stdioShape")
+                    }
+                    endpoint = nil
+                    stdioDefinition = definition
+                    stdioBinding = binding
+                }
             }
             let enabled = (dictionary["enabled"] as? Bool) ?? true
             let allowInCanvas = (dictionary["allowInCanvas"] as? Bool) ?? false
@@ -849,7 +894,9 @@ public actor MCPDomain {
             }
             let createIntent = (dictionary["createIntent"] as? Bool) ?? false
             return MCPSaveCandidate(id: id, displayName: displayName, endpoint: endpoint,
-                                    transport: transport, stdioBinding: stdioBinding,
+                                    transport: transport,
+                                    stdioDefinition: stdioDefinition,
+                                    stdioBinding: stdioBinding,
                                     enabled: enabled, allowInCanvas: allowInCanvas,
                                     allowInsecureHTTP: allowInsecureHTTP,
                                     authentication: authentication,
@@ -861,7 +908,9 @@ public actor MCPDomain {
 
         func makeConfiguration() -> MCPServerConfiguration {
             MCPServerConfiguration(id: id, displayName: displayName, endpoint: endpoint,
-                                   transport: transport, stdioBinding: stdioBinding,
+                                   transport: transport,
+                                   stdioDefinition: stdioDefinition,
+                                   stdioBinding: stdioBinding,
                                    enabled: enabled, allowInCanvas: allowInCanvas,
                                    allowInsecureHTTP: allowInsecureHTTP,
                                    authentication: authentication,
@@ -974,13 +1023,28 @@ public actor MCPDomain {
                                       leaseBaseRevision: SaveIntentBaseRevision?,
                                       envelopeRevision: ConfigRevision?,
                                       binding: FacadeRootGeneration) async -> sending [String: Any] {
-        let configuration = candidate.makeConfiguration()
-        // ORIGINAL validate() BEFORE any durable/secret effect.
-        do { try configuration.validate() } catch {
+        var configuration = candidate.makeConfiguration()
+        // A saved-but-unbound stdio definition is valid user configuration.
+        // The operational binding is added below only when the definition
+        // itself is unchanged; an identity is never invented here.
+        do { try configuration.validateSavedDefinition() } catch {
             return Self.rejection(Self.mapConfigurationValidation(error))
         }
         let existingIndex = servers.firstIndex { $0.id == candidate.id }
         let existing = existingIndex.map { servers[$0] }
+        if configuration.transport == .stdio,
+           configuration.stdioBinding == nil,
+           let existing,
+           existing.transport == .stdio,
+           let preserved = existing.stdioBinding,
+           existing.resolvedStdioDefinition == configuration.resolvedStdioDefinition {
+            configuration.stdioBinding = preserved
+        }
+        if configuration.stdioBinding != nil {
+            do { try configuration.validate() } catch {
+                return Self.rejection(Self.mapConfigurationValidation(error))
+            }
+        }
         let currentHash = existing.map { MCPServerConfigHash.digest(of: $0) }
         // Identity/creation gates (frozen matrix semantics).
         switch (existing != nil, candidate.createIntent) {
@@ -1057,6 +1121,7 @@ public actor MCPDomain {
             // while silently retaining the old secret.
             let sameConnection = existing.endpoint == configuration.endpoint
                 && existing.transport == configuration.transport
+                && existing.stdioDefinition == configuration.stdioDefinition
                 && existing.stdioBinding == configuration.stdioBinding
                 && existing.authentication == configuration.authentication
                 && existing.credentialHeaderName == configuration.credentialHeaderName
@@ -1163,7 +1228,17 @@ public actor MCPDomain {
         // :445-454). A save NEVER claims a connected state: connect runs
         // through its own fenced worker with an honest terminal.
         var connectResult: [String: Any]
-        if configuration.enabled {
+        if configuration.enabled && configuration.requiresStdioBinding {
+            // Saved successfully, but there is no C01 project/environment/
+            // root binding yet. Keep the row visible and return a typed
+            // connect sub-result instead of pretending a live session.
+            await disconnectInternal(serverID: candidate.id, binding: binding)
+            connectResult = [
+                "connection": MCPServerStateProjection.inactive.wireObject,
+                "errorCode": "needsConfiguration",
+                "reason": "mcpStdioBindingRequired",
+            ]
+        } else if configuration.enabled {
             connectResult = await connectInternal(serverID: candidate.id,
                                                   binding: binding, force: true)
         } else {
@@ -1382,6 +1457,26 @@ public actor MCPDomain {
                                  force: Bool) async -> sending [String: Any] {
         guard let server = servers.first(where: { $0.id == serverID }) else {
             return Self.rejection(ConfigDomainError(code: .notFound, reason: "mcpServerMissing"))
+        }
+        if server.transport == .stdio {
+            guard let binding = server.stdioBinding else {
+                let hash = MCPServerConfigHash.digest(of: server)
+                var connection = connections[serverID] ?? MCPServerConnection()
+                connection.state = .failed(reason: "mcpStdioBindingRequired",
+                                           revision: hash)
+                connections[serverID] = connection
+                return Self.rejection(ConfigDomainError(
+                    code: .needsConfiguration,
+                    reason: "mcpStdioBindingRequired"))
+            }
+            // The binding must belong to THIS saved command. A stale binding
+            // from an earlier edit can never be executed.
+            do {
+                try server.validate()
+            } catch {
+                return Self.rejection(Self.mapConfigurationValidation(error))
+            }
+            _ = binding
         }
         switch server.transport {
         case .streamableHTTP:

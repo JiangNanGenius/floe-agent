@@ -300,9 +300,18 @@ internal class C07DataExchangeHostController(
         }
     }
 
-    fun beginRestore(uri: Uri, restoreKind: String = "auto") {
+    fun beginRestore(
+        uri: Uri,
+        restoreKind: String = "auto",
+        onSourceSettled: (() -> Unit)? = null,
+    ) {
+        val settlement = C07RestoreSourceSettlement(onSourceSettled)
         if (state.value.busy ||
-            state.value.phase == DataExchangePhase.REVIEWING) return
+            state.value.phase == DataExchangePhase.REVIEWING) {
+            // No source read will start; the caller may release its reference.
+            settlement.settle()
+            return
+        }
         cancelRequested = false
         val rawDisplayName = queryDisplayName(uri)
         val displayName = ensureDocumentExtension(
@@ -317,11 +326,12 @@ internal class C07DataExchangeHostController(
         val owner = try {
             owner()
         } catch (failure: Throwable) {
+            settlement.settle()
             fail(failure as? C07ClientFailure
                 ?: C07ClientFailure("runtimeNotInstalled", "runtimeNotInstalled"))
             return
         }
-        activeWork = scope.launch {
+        suspend fun runRestore() {
             var stageID: String? = null
             var upload: UploadSource? = null
             try {
@@ -406,6 +416,20 @@ internal class C07DataExchangeHostController(
                 activeStageID = null
             }
         }
+        val started = try {
+            scope.launch { runRestore() }
+        } catch (failure: Throwable) {
+            // No job exists to complete; this consumer never took the source.
+            settlement.settle()
+            fail(failure as? C07ClientFailure
+                ?: C07ClientFailure("unknown", failure.javaClass.simpleName))
+            return
+        }
+        activeWork = started
+        // The source reference is released exactly once when THIS job
+        // completes, including cancellation before its body runs and a
+        // cleanup failure inside the body's finally.
+        settlement.attach(started)
     }
 
     fun confirmRestore() {
@@ -901,6 +925,15 @@ internal class C07DataExchangeHostController(
             appArtifacts = appArtifacts,
             captureFiles = captureFiles,
             configSections = configSections,
+            mcpDefinitions = mcpDefinitions,
+            memoryEntries = memoryEntries,
+            memoryCandidates = memoryCandidates,
+            personalizationDocuments = personalizationDocuments,
+            personalizationCursors = personalizationCursors,
+            checklistRevisions = checklistRevisions,
+            skills = skills,
+            modelPreferences = modelPreferences,
+            runDependencies = runDependencies,
             omissions = omissions,
             partial = partial,
             warnings = warnings,
@@ -929,6 +962,14 @@ internal class C07DataExchangeHostController(
             captureFiles = captureFiles,
             cadPreserved = cadPreserved,
             configSections = configSections,
+            mcpDefinitions = mcpDefinitions,
+            memoryEntries = memoryEntries,
+            memoryCandidates = memoryCandidates,
+            personalizationDocuments = personalizationDocuments,
+            personalizationCursors = personalizationCursors,
+            checklistRevisions = checklistRevisions,
+            skills = skills,
+            modelPreferences = modelPreferences,
             partial = partial,
         )
 

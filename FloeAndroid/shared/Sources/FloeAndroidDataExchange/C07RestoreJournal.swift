@@ -318,6 +318,14 @@ public struct C07RestoreReceipt: Sendable, Equatable {
     public var captureFilesRestored: Int
     public var cadPreservedRestored: Int
     public var configSectionsRestored: Int
+    // 2026-11-02 user-data expansion receipts.
+    public var memoryEntriesRestored: Int = 0
+    public var memoryCandidatesRestored: Int = 0
+    public var personalizationDocumentsRestored: Int = 0
+    public var personalizationCursorsRestored: Int = 0
+    public var checklistRevisionsRestored: Int = 0
+    public var skillsRestored: Int = 0
+    public var modelPreferencesRestored: Int = 0
     public var partial: Bool
     public var omissions: Int
     public var warnings: [String]
@@ -509,6 +517,15 @@ public enum C07RestoreEngine {
                 captureFilesRestored: artifactReceipt?.captureFiles ?? 0,
                 cadPreservedRestored: artifactReceipt?.cadPreservedFiles ?? 0,
                 configSectionsRestored: artifactReceipt?.configSections ?? 0,
+                memoryEntriesRestored: ownedReceipt?.memoryEntries ?? 0,
+                memoryCandidatesRestored: ownedReceipt?.memoryCandidates ?? 0,
+                personalizationDocumentsRestored:
+                    ownedReceipt?.personalizationDocuments ?? 0,
+                personalizationCursorsRestored:
+                    ownedReceipt?.personalizationCursors ?? 0,
+                checklistRevisionsRestored: ownedReceipt?.checklistRevisions ?? 0,
+                skillsRestored: ownedReceipt?.skills ?? 0,
+                modelPreferencesRestored: ownedReceipt?.modelPreferences ?? 0,
                 partial: ownedReceipt?.partial ?? false,
                 omissions: ownedReceipt?.omissions ?? 0,
                 warnings: warnings,

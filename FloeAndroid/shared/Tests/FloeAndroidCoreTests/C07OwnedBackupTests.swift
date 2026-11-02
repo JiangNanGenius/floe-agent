@@ -8,6 +8,8 @@
 import XCTest
 import Foundation
 import Crypto
+import GRDB
+import FloePersistence
 import FloeAndroidDataExchange
 import FloeAndroidToolResults
 @testable import FloeAndroidCore
@@ -34,11 +36,23 @@ final class C07OwnedBackupTests: XCTestCase {
         XCTAssertFalse(names.contains("known_hosts"))
         XCTAssertFalse(names.contains("audit_entries"))
         XCTAssertFalse(names.contains("checkpoints"))
-        XCTAssertEqual(C07OwnedDataPolicy.evidenceTableNames.count, 4)
+        // Four C02 execution-evidence tables plus the 2026-11-02
+        // run_dependencies recovery evidence. Live user-data tables joined
+        // the graph in the same expansion.
+        XCTAssertEqual(C07OwnedDataPolicy.evidenceTableNames.count, 5)
         XCTAssertTrue(C07OwnedDataPolicy.evidenceTableNames.contains(
             "task_execution_targets"))
         XCTAssertTrue(C07OwnedDataPolicy.evidenceTableNames.contains(
             "task_remote_command_receipts"))
+        XCTAssertTrue(C07OwnedDataPolicy.evidenceTableNames.contains(
+            "run_dependencies"))
+        for userData in ["memory_entries", "memory_candidates",
+                         "personalization_documents", "skills",
+                         "model_preferences", "task_checklist_revisions"] {
+            XCTAssertTrue(names.contains(userData), userData)
+            XCTAssertEqual(C07OwnedDataPolicy.policy(for: userData)?.disposition,
+                           .live, userData)
+        }
     }
 
     func testEvidenceTablesAreNeverLiveRestoreTargets() {
@@ -309,4 +323,297 @@ final class C07OwnedBackupTests: XCTestCase {
         }
     }
 
+    // MARK: - User-data restore adapters (real in-memory schema)
+
+    private func makeDatabase() async throws -> DatabaseManager {
+        let database = try DatabaseManager.inMemory()
+        try await database.migrate()
+        return database
+    }
+
+    func testPersonalizationDocumentsRenumberAboveTargetAndKeepActiveSlot() async throws {
+        let database = try await makeDatabase()
+        try await database.writer { db in
+            // Target already has an active global soul at revision 10.
+            try db.execute(sql: """
+                INSERT INTO personalization_documents (
+                    id, kind, workspace_id, revision, content, source_kind,
+                    evidence_digest, is_active, created_at
+                ) VALUES (?, 'soul', NULL, 10, 'current soul', 'user', '', 1, ?)
+                """, arguments: [UUID().uuidString, "2026-01-01T00:00:00.000Z"])
+            var receipt = C07OwnedDataCommitReceipt()
+            var warnings: [String] = []
+            for (revision, active, text) in [(1, 0, "old soul"),
+                                             (2, 1, "newer soul")] {
+                let values: C07DBRow = [
+                    "id": .string(UUID().uuidString),
+                    "kind": .string("soul"),
+                    "revision": .int(Int64(revision)),
+                    "content": .string(text),
+                    "source_kind": .string("user"),
+                    "evidence_digest": .string(""),
+                    "is_active": .int(Int64(active)),
+                    "created_at": .string("2026-06-01T00:00:00.000Z"),
+                ]
+                try C07UserDataAdapters.commitRow(
+                    table: "personalization_documents", values: values,
+                    restoreID: UUID(), db: db, receipt: &receipt,
+                    warnings: &warnings)
+            }
+            XCTAssertEqual(receipt.personalizationDocuments, 2)
+            let rows = try Row.fetchAll(db, sql: """
+                SELECT revision, content, is_active FROM personalization_documents
+                WHERE kind = 'soul' AND workspace_id IS NULL ORDER BY revision
+                """)
+            XCTAssertEqual(rows.map { $0["revision"] as Int? }, [10, 11, 12])
+            XCTAssertEqual(rows.map { $0["is_active"] as Int? }, [1, 0, 0])
+            // The pre-existing active document stays active; the restored
+            // history is preserved in order above it.
+            XCTAssertEqual(rows[2]["content"] as String?, "newer soul")
+            XCTAssertTrue(warnings.contains(
+                "personalizationKeptCurrentActive:soul"))
+        }
+    }
+
+    func testPersonalizationDocumentBecomesActiveWhenSlotIsEmpty() async throws {
+        let database = try await makeDatabase()
+        try await database.writer { db in
+            var receipt = C07OwnedDataCommitReceipt()
+            var warnings: [String] = []
+            let values: C07DBRow = [
+                "id": .string(UUID().uuidString),
+                "kind": .string("userProfile"),
+                "revision": .int(4),
+                "content": .string("restored profile"),
+                "source_kind": .string("user"),
+                "evidence_digest": .string(""),
+                "is_active": .int(1),
+                "created_at": .string("2026-06-01T00:00:00.000Z"),
+            ]
+            try C07UserDataAdapters.commitRow(
+                table: "personalization_documents", values: values,
+                restoreID: UUID(), db: db, receipt: &receipt,
+                warnings: &warnings)
+            let row = try Row.fetchOne(db, sql: """
+                SELECT revision, is_active FROM personalization_documents
+                WHERE kind = 'userProfile' AND workspace_id IS NULL
+                """)
+            XCTAssertEqual(row?["revision"] as Int?, 4)
+            XCTAssertEqual(row?["is_active"] as Int?, 1)
+            XCTAssertEqual(receipt.personalizationDocuments, 1)
+        }
+    }
+
+    func testSkillRestoreIsDisabledReferenceAndNameConflictSurvives() async throws {
+        let database = try await makeDatabase()
+        try await database.writer { db in
+            // Existing same-name skill with different content.
+            try db.execute(sql: """
+                INSERT INTO skills (
+                    id, name, version, status, skill_markdown, manifest_json,
+                    declared_capabilities_json, effective_capabilities_json,
+                    source_url, source_digest, rewritten_digest,
+                    rewrite_model_id, compatibility_report_json,
+                    created_at, updated_at
+                ) VALUES (?, 'Local Skill', '1', 'enabled', '# Local', '{}',
+                          '[]', '["files.read"]', NULL, NULL,
+                          'cc00000000000000000000000000000000000000000000000000000000000000',
+                          NULL, '{}', ?, ?)
+                """, arguments: [
+                    UUID().uuidString, "2026-01-01T00:00:00.000Z",
+                    "2026-01-01T00:00:00.000Z",
+                ])
+            var receipt = C07OwnedDataCommitReceipt()
+            var warnings: [String] = []
+            let restoredValues: C07DBRow = [
+                "id": .string(UUID().uuidString),
+                "name": .string("local skill"),
+                "version": .string("2"),
+                "status": .string("enabled"),
+                "skill_markdown": .string("# Restored\nDifferent body."),
+                "manifest_json": .string(#"{"name":"Local Skill"}"#),
+                "declared_capabilities_json": .string("[]"),
+                "effective_capabilities_json": .string("[]"),
+                "source_url": .string("https://example.invalid/s.tgz"),
+                "source_digest": .string("dd" + String(repeating: "0", count: 62)),
+                "rewritten_digest": .string("ee" + String(repeating: "0", count: 62)),
+                "compatibility_report_json": .string("{}"),
+                "created_at": .string("2026-06-01T00:00:00.000Z"),
+                "updated_at": .string("2026-06-01T00:00:00.000Z"),
+            ]
+            try C07UserDataAdapters.commitRow(
+                table: "skills", values: restoredValues,
+                restoreID: UUID(), db: db, receipt: &receipt,
+                warnings: &warnings)
+            XCTAssertEqual(receipt.skills, 1)
+            XCTAssertTrue(warnings.contains("skillNameRestored:local skill"))
+            let rows = try Row.fetchAll(
+                db, sql: "SELECT name, status, skill_markdown FROM skills")
+            XCTAssertEqual(rows.count, 2)
+            let restored = try XCTUnwrap(rows.first {
+                ($0["skill_markdown"] as String?)
+                    == "# Restored\nDifferent body."
+            })
+            XCTAssertEqual(restored["name"] as String?, "local skill (restored)")
+            XCTAssertEqual(restored["status"] as String?, "disabled")
+            // No capability grant rows are ever written by the restore.
+            let grants = try Int.fetchOne(
+                db, sql: "SELECT COUNT(*) FROM skill_permissions") ?? 0
+            XCTAssertEqual(grants, 0)
+
+            // Byte-identical definition de-duplicates instead of restoring.
+            let identical: C07DBRow = [
+                "id": .string(UUID().uuidString),
+                "name": .string("local skill"),
+                "version": .string("1"),
+                "status": .string("enabled"),
+                "skill_markdown": .string("# Local"),
+                "manifest_json": .string("{}"),
+                "declared_capabilities_json": .string("[]"),
+                "effective_capabilities_json": .string("[]"),
+                "source_url": .null,
+                "source_digest": .null,
+                "rewritten_digest": .string("cc" + String(repeating: "0", count: 62)),
+                "compatibility_report_json": .string("{}"),
+                "created_at": .string("2026-06-01T00:00:00.000Z"),
+                "updated_at": .string("2026-06-01T00:00:00.000Z"),
+            ]
+            try C07UserDataAdapters.commitRow(
+                table: "skills", values: identical,
+                restoreID: UUID(), db: db, receipt: &receipt,
+                warnings: &warnings)
+            XCTAssertEqual(receipt.skills, 1)
+            XCTAssertEqual(try Int.fetchOne(
+                db, sql: "SELECT COUNT(*) FROM skills") ?? 0, 2)
+        }
+    }
+
+    func testModelPreferencesMergeFillsUnsetRoutesButKeepsLocalChoices() async throws {
+        let database = try await makeDatabase()
+        try await database.writer { db in
+            let localModel = UUID().uuidString
+            let restoredModel = UUID().uuidString
+            let visionModel = UUID().uuidString
+            // Local user has already chosen a default agent and onboarding.
+            try db.execute(sql: """
+                INSERT INTO model_preferences (
+                    id, onboarding_status, default_agent_model_id,
+                    auxiliary_image_mode, updated_at, sync_revision
+                ) VALUES ('default', 'seen', ?, 'separate',
+                          '2026-01-01T00:00:00.000Z', 4)
+                """, arguments: [localModel])
+            var receipt = C07OwnedDataCommitReceipt()
+            var warnings: [String] = []
+            let values: C07DBRow = [
+                "id": .string("default"),
+                "onboarding_status": .string("seen"),
+                "default_agent_model_id": .string(restoredModel),
+                "vision_model_id": .string(visionModel),
+                "auxiliary_image_mode": .string("shared"),
+                "updated_at": .string("2026-06-01T00:00:00.000Z"),
+                "sync_revision": .int(0),
+            ]
+            try C07UserDataAdapters.commitRow(
+                table: "model_preferences", values: values,
+                restoreID: UUID(), db: db, receipt: &receipt,
+                warnings: &warnings)
+            XCTAssertEqual(receipt.modelPreferences, 1)
+            let row = try XCTUnwrap(Row.fetchOne(
+                db, sql: "SELECT * FROM model_preferences WHERE id = 'default'"))
+            // Explicit local default survives; unset vision route is filled.
+            XCTAssertEqual(row["default_agent_model_id"] as String?, localModel)
+            XCTAssertEqual(row["vision_model_id"] as String?, visionModel)
+            XCTAssertEqual(row["onboarding_status"] as String?, "seen")
+            XCTAssertEqual(row["auxiliary_image_mode"] as String?, "separate")
+            XCTAssertEqual(row["sync_revision"] as Int64?, 5)
+            XCTAssertTrue(warnings.contains(
+                "modelPreferencesExistingKept:default_agent_model_id"))
+
+            // A factory-fresh target adopts the restored routes wholesale.
+            try db.execute(sql: "DELETE FROM model_preferences WHERE id = 'default'")
+            try db.execute(sql: """
+                INSERT INTO model_preferences (
+                    id, onboarding_status, auxiliary_image_mode,
+                    updated_at, sync_revision
+                ) VALUES ('default', 'unseen', 'shared',
+                          '1970-01-01T00:00:00.000Z', 0)
+                """)
+            warnings.removeAll()
+            try C07UserDataAdapters.commitRow(
+                table: "model_preferences", values: values,
+                restoreID: UUID(), db: db, receipt: &receipt,
+                warnings: &warnings)
+            let fresh = try XCTUnwrap(Row.fetchOne(
+                db, sql: "SELECT * FROM model_preferences WHERE id = 'default'"))
+            XCTAssertEqual(fresh["default_agent_model_id"] as String?,
+                           restoredModel)
+            XCTAssertEqual(fresh["vision_model_id"] as String?, visionModel)
+            XCTAssertEqual(fresh["onboarding_status"] as String?, "seen")
+        }
+    }
+
+    func testPersonalizationCursorInsertsOnlyWhenAbsent() async throws {
+        let database = try await makeDatabase()
+        try await database.writer { db in
+            try db.execute(sql: """
+                INSERT INTO personalization_update_cursors (
+                    kind, workspace_key, workspace_id,
+                    automatic_updates_enabled, last_generated_at,
+                    completed_runs_since_update, user_messages_since_update,
+                    updated_at
+                ) VALUES ('soul', '', NULL, 0, '2026-05-01T00:00:00.000Z',
+                          9, 9, '2026-05-01T00:00:00.000Z')
+                """)
+            var receipt = C07OwnedDataCommitReceipt()
+            var warnings: [String] = []
+            // Same key already exists: kept, never overwritten.
+            let existing: C07DBRow = [
+                "kind": .string("soul"),
+                "workspace_key": .string(""),
+                "automatic_updates_enabled": .int(1),
+                "completed_runs_since_update": .int(0),
+                "user_messages_since_update": .int(0),
+                "updated_at": .string("2026-06-01T00:00:00.000Z"),
+            ]
+            try C07UserDataAdapters.commitRow(
+                table: "personalization_update_cursors", values: existing,
+                restoreID: UUID(), db: db, receipt: &receipt,
+                warnings: &warnings)
+            XCTAssertEqual(receipt.personalizationCursors, 0)
+            let kept = try XCTUnwrap(Row.fetchOne(
+                db, sql: """
+                    SELECT automatic_updates_enabled, completed_runs_since_update
+                    FROM personalization_update_cursors
+                    WHERE kind = 'soul' AND workspace_key = ''
+                    """))
+            XCTAssertEqual(kept["automatic_updates_enabled"] as Int?, 0)
+            XCTAssertEqual(kept["completed_runs_since_update"] as Int?, 9)
+
+            // A new workspace-scoped key is inserted with the user toggle.
+            let workspace = UUID().uuidString
+            let inserted: C07DBRow = [
+                "kind": .string("userProfile"),
+                "workspace_key": .string(workspace),
+                "workspace_id": .string(workspace),
+                "automatic_updates_enabled": .int(1),
+                "completed_runs_since_update": .int(0),
+                "user_messages_since_update": .int(0),
+                "updated_at": .string("2026-06-01T00:00:00.000Z"),
+            ]
+            try C07UserDataAdapters.commitRow(
+                table: "personalization_update_cursors", values: inserted,
+                restoreID: UUID(), db: db, receipt: &receipt,
+                warnings: &warnings)
+            XCTAssertEqual(receipt.personalizationCursors, 1)
+            let row = try XCTUnwrap(Row.fetchOne(
+                db, sql: """
+                    SELECT workspace_key, automatic_updates_enabled,
+                           last_generated_at
+                    FROM personalization_update_cursors
+                    WHERE kind = 'userProfile' AND workspace_key = ?
+                    """, arguments: [workspace]))
+            XCTAssertEqual(row["automatic_updates_enabled"] as Int?, 1)
+            XCTAssertTrue((row["last_generated_at"] as String?) == nil)
+        }
+    }
 }

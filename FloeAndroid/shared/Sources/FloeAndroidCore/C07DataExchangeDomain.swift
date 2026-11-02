@@ -571,13 +571,20 @@ struct C07LiveRestoreSink: C07RestoreSink, Sendable {
             guard contained(destination, rootPath) else {
                 throw C07DataExchangeError.unsafePath(file.relativePath)
             }
-            try FileManager.default.createDirectory(
-                at: destination.deletingLastPathComponent(),
-                withIntermediateDirectories: true)
+            // The staged archive bytes and the live project tree are both
+            // streamed under explicit roots: intermediate project directories
+            // are created owned (0700) from the opened project root and the
+            // destination leaf is exclusively created and re-verified by
+            // fstatat, so an ancestor/leaf swap can never redirect a project
+            // write into another tree.
             try C07POSIX.writeExclusive(
-                source: file.stagedURL, destination: destination,
+                sourceRoot: file.stagedURL.deletingLastPathComponent(),
+                sourceRelativePath: file.stagedURL.lastPathComponent,
+                destinationRoot: root,
+                destinationRelativePath: file.relativePath,
                 expectedBytes: file.byteCount, expectedSHA256: file.sha256,
-                mode: file.mode)
+                mode: file.mode,
+                createDestinationParents: true)
         }
     }
 
@@ -694,72 +701,62 @@ struct C07LiveRestoreSink: C07RestoreSink, Sendable {
 }
 
 // MARK: - POSIX exclusive write
+//
+// Project-file restore writes go through the same descriptor-safe rooted
+// stream as the archive builder: both sides are opened relative to explicit
+// trusted roots with no-follow traversal, the source identity is fstat-gated
+// before and after the stream, and the destination is exclusively created
+// and re-verified by fstatat. A failure removes only the exact destination
+// inode created by this call.
 
 enum C07POSIX {
+    static func writeExclusive(sourceRoot: URL,
+                               sourceRelativePath: String,
+                               destinationRoot: URL,
+                               destinationRelativePath: String,
+                               expectedBytes: Int64,
+                               expectedSHA256: String,
+                               mode: Int = 0o600,
+                               createDestinationParents: Bool = false)
+        throws
+    {
+        let result = try C07FileSystem.copyVerified(
+            sourceRoot: sourceRoot,
+            sourceRelativePath: sourceRelativePath,
+            destinationRoot: destinationRoot,
+            destinationRelativePath: destinationRelativePath,
+            expectedSize: expectedBytes,
+            mode: mode,
+            createDestinationParents: createDestinationParents)
+        guard result.byteCount == expectedBytes,
+              result.sha256 == expectedSHA256 else {
+            // copyVerified created the destination exclusively; it is our
+            // inode and no pre-existing user file can be affected.
+            C07FileSystem.removeIfPresent(
+                destinationRoot.appendingPathComponent(destinationRelativePath))
+            throw result.sha256 != expectedSHA256
+                ? C07DataExchangeError.hashMismatch(destinationRelativePath)
+                : C07DataExchangeError.sizeMismatch(destinationRelativePath)
+        }
+    }
+
+    /// Compatibility entry for staged absolute URLs: the immediate parent of
+    /// a caller-staged file is its fixed root. Never pass model-, archive-
+    /// or UI-supplied paths here.
     static func writeExclusive(source: URL,
                                destination: URL,
                                expectedBytes: Int64,
                                expectedSHA256: String,
                                mode: Int = 0o600) throws {
-        let path = destination.path
-        let safeMode = mode & 0o777
-        let fd = path.withCString {
-            open($0, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC,
-                 mode_t(S_IRUSR | S_IWUSR))
-        }
-        guard fd >= 0 else {
-            throw C07DataExchangeError.storageUnavailable("exclusiveCreate")
-        }
-        if fchmod(fd, mode_t(safeMode)) != 0 {
-            close(fd)
-            C07FileSystem.removeIfPresent(destination)
-            throw C07DataExchangeError.storageUnavailable("exclusiveMode")
-        }
-        let output = FileHandle(fileDescriptor: fd, closeOnDealloc: true)
-        let input: FileHandle
-        do { input = try FileHandle(forReadingFrom: source) }
-        catch {
-            try? output.close()
-            C07FileSystem.removeIfPresent(destination)
-            throw C07DataExchangeError.storageUnavailable("sourceOpen")
-        }
-        var hasher = SHA256()
-        var count: Int64 = 0
-        do {
-            while let chunk = try input.read(upToCount: C07DataExchangeLimits.copyChunkBytes),
-                  !chunk.isEmpty {
-                if Task.isCancelled {
-                    try? input.close()
-                    try? output.close()
-                    C07FileSystem.removeIfPresent(destination)
-                    throw C07DataExchangeError.cancelled
-                }
-                count += Int64(chunk.count)
-                guard count <= expectedBytes else {
-                    throw C07DataExchangeError.sizeMismatch(destination.lastPathComponent)
-                }
-                hasher.update(data: chunk)
-                try output.write(contentsOf: chunk)
-            }
-            try input.close()
-            try output.synchronize()
-            try output.close()
-        } catch let error as C07DataExchangeError {
-            try? input.close(); try? output.close()
-            C07FileSystem.removeIfPresent(destination)
-            throw error
-        } catch {
-            try? input.close(); try? output.close()
-            C07FileSystem.removeIfPresent(destination)
-            throw C07DataExchangeError.storageUnavailable("projectWrite")
-        }
-        let digest = hasher.finalize().map { String(format: "%02x", $0) }.joined()
-        guard count == expectedBytes, digest == expectedSHA256 else {
-            C07FileSystem.removeIfPresent(destination)
-            throw digest != expectedSHA256
-                ? C07DataExchangeError.hashMismatch(destination.lastPathComponent)
-                : C07DataExchangeError.sizeMismatch(destination.lastPathComponent)
-        }
+        try writeExclusive(
+            sourceRoot: source.deletingLastPathComponent(),
+            sourceRelativePath: source.lastPathComponent,
+            destinationRoot: destination.deletingLastPathComponent(),
+            destinationRelativePath: destination.lastPathComponent,
+            expectedBytes: expectedBytes,
+            expectedSHA256: expectedSHA256,
+            mode: mode,
+            createDestinationParents: false)
     }
 }
 
@@ -816,6 +813,7 @@ public struct C07JobStatus: Sendable, Equatable {
     public var appArtifactCount: Int?
     public var captureFileCount: Int?
     public var configSectionCount: Int?
+    public var mcpDefinitionCount: Int?
     public var omissionCount: Int?
     public var partial: Bool?
     public var restoredTodos: Int?
@@ -824,6 +822,24 @@ public struct C07JobStatus: Sendable, Equatable {
     public var restoredCaptureFiles: Int?
     public var restoredCADPreserved: Int?
     public var restoredConfigSections: Int?
+    public var restoredMCPDefinitions: Int?
+    // 2026-11-02 user-data expansion counts (plan = export side,
+    // restored* = commit side).
+    public var memoryEntryCount: Int? = nil
+    public var memoryCandidateCount: Int? = nil
+    public var personalizationDocumentCount: Int? = nil
+    public var personalizationCursorCount: Int? = nil
+    public var checklistRevisionCount: Int? = nil
+    public var skillCount: Int? = nil
+    public var modelPreferenceCount: Int? = nil
+    public var runDependencyCount: Int? = nil
+    public var restoredMemoryEntries: Int? = nil
+    public var restoredMemoryCandidates: Int? = nil
+    public var restoredPersonalizationDocuments: Int? = nil
+    public var restoredPersonalizationCursors: Int? = nil
+    public var restoredChecklistRevisions: Int? = nil
+    public var restoredSkills: Int? = nil
+    public var restoredModelPreferences: Int? = nil
     public var canCommit: Bool
 }
 
@@ -1250,6 +1266,7 @@ public actor C07DataExchangeDomain {
             appArtifactCount: job.plan?.ownedDataCounts.appArtifacts,
             captureFileCount: job.plan?.ownedDataCounts.captureFiles,
             configSectionCount: job.plan?.ownedDataCounts.configSections,
+            mcpDefinitionCount: job.plan?.ownedDataCounts.mcpDefinitions,
             omissionCount: job.plan?.ownedData?.manifest.omissions?.count
                 ?? job.receipt?.omissions,
             partial: job.plan?.ownedData.map {
@@ -1263,6 +1280,29 @@ public actor C07DataExchangeDomain {
             restoredCaptureFiles: job.receipt?.captureFilesRestored,
             restoredCADPreserved: job.receipt?.cadPreservedRestored,
             restoredConfigSections: job.receipt?.configSectionsRestored,
+            // The restore receipt is the commit marker; the durable plan
+            // carries the typed MCP count that was actually inserted.
+            restoredMCPDefinitions: job.receipt == nil
+                ? nil : job.plan?.ownedDataCounts.mcpDefinitions,
+            memoryEntryCount: job.plan?.ownedDataCounts.memoryEntries,
+            memoryCandidateCount: job.plan?.ownedDataCounts.memoryCandidates,
+            personalizationDocumentCount:
+                job.plan?.ownedDataCounts.personalizationDocuments,
+            personalizationCursorCount:
+                job.plan?.ownedDataCounts.personalizationCursors,
+            checklistRevisionCount: job.plan?.ownedDataCounts.checklistRevisions,
+            skillCount: job.plan?.ownedDataCounts.skills,
+            modelPreferenceCount: job.plan?.ownedDataCounts.modelPreferences,
+            runDependencyCount: job.plan?.ownedDataCounts.runDependencies,
+            restoredMemoryEntries: job.receipt?.memoryEntriesRestored,
+            restoredMemoryCandidates: job.receipt?.memoryCandidatesRestored,
+            restoredPersonalizationDocuments:
+                job.receipt?.personalizationDocumentsRestored,
+            restoredPersonalizationCursors:
+                job.receipt?.personalizationCursorsRestored,
+            restoredChecklistRevisions: job.receipt?.checklistRevisionsRestored,
+            restoredSkills: job.receipt?.skillsRestored,
+            restoredModelPreferences: job.receipt?.modelPreferencesRestored,
             canCommit: ((job.kind == "restore" || job.kind == "noteImport")
                 && job.phase == .ready && job.plan != nil))
     }
@@ -1473,7 +1513,7 @@ struct C07OwnedDataSource {
             counts: &counts))
 
         var configs: [C07SourceConfigSection] = []
-        warnings.append(contentsOf: try captureConfigurations(
+        warnings.append(contentsOf: try await captureConfigurations(
             context: context, captured: captured, workRoot: workRoot,
             configs: &configs, omissions: &omissions, counts: &counts))
         let toolResults = try await captureToolResults(
@@ -1513,7 +1553,8 @@ struct C07OwnedDataSource {
                             "environmentDescriptorWrite")
                     }
                     _ = try collector.appendFile(
-                        source: metadataURL, role: .environmentCheckpoint,
+                        sourceRoot: workRoot, source: metadataURL,
+                        role: .environmentCheckpoint,
                         ownerID: environment.environmentID, containerID: nil,
                         logicalPath: "metadata.json",
                         expectedSHA256: nil, expectedByteCount: nil)
@@ -1526,7 +1567,11 @@ struct C07OwnedDataSource {
                                           "unsafePath")
                             continue
                         }
+                        // Checkpoint bytes are produced and verified by the
+                        // C01-owned port; the port's own directory is the
+                        // fixed root for this staged copy.
                         _ = try collector.appendFile(
+                            sourceRoot: file.url.deletingLastPathComponent(),
                             source: file.url, role: .environmentCheckpoint,
                             ownerID: environment.environmentID, containerID: nil,
                             logicalPath: file.relativePath,
@@ -1613,12 +1658,13 @@ struct C07OwnedDataSource {
             guard schemaVersion == DatabaseManager.currentSchemaVersion else {
                 throw C07DataExchangeError.schemaMismatch(schemaVersion)
             }
-            var tables: [C07SourceTable] = []
-            var counts = C07OwnedDataCounts()
-            var warnings: [String] = []
-            var conversationIDs: [UUID] = []
-            var toolCalls = 0
-            for policy in C07OwnedDataPolicy.tables {
+        var tables: [C07SourceTable] = []
+        var counts = C07OwnedDataCounts()
+        var warnings: [String] = []
+        var conversationIDs: [UUID] = []
+        var toolCalls = 0
+        var excludedConversationIDs = Set<String>()
+        for policy in C07OwnedDataPolicy.tables {
                 let exists = try db.tableExists(policy.name)
                 if !exists {
                     if policy.optional {
@@ -1654,8 +1700,13 @@ struct C07OwnedDataSource {
                         values[column] = dbValue(value)
                     }
                     guard C07OwnedDataPolicy.shouldExportRow(
-                        table: policy.name, row: values) else {
+                        table: policy.name, row: values,
+                        excludedConversationIDs: excludedConversationIDs) else {
                         excludedRows += 1
+                        if policy.name == "conversations",
+                           let id = values["id"]?.stringValue {
+                            excludedConversationIDs.insert(id)
+                        }
                         continue
                     }
                     if policy.name == "conversations",
@@ -1727,6 +1778,16 @@ struct C07OwnedDataSource {
         case "run_events", "run_usage", "run_errors", "child_run_entries",
              "goal_events":
             counts.actionReceipts += rows
+        case "memory_entries": counts.memoryEntries = rows
+        case "memory_candidates": counts.memoryCandidates = rows
+        case "personalization_documents":
+            counts.personalizationDocuments = rows
+        case "personalization_update_cursors":
+            counts.personalizationCursors = rows
+        case "task_checklist_revisions": counts.checklistRevisions = rows
+        case "skills": counts.skills = rows
+        case "model_preferences": counts.modelPreferences = rows
+        case "run_dependencies": counts.runDependencies = rows
         default: break
         }
     }
@@ -2036,10 +2097,10 @@ struct C07OwnedDataSource {
                 data, role: .canvasProject, ownerID: references.canvasID,
                 containerID: references.canvasID, logicalPath: "project.json")
             counts.canvasProjects += 1
+            let materialsRoot = context.artifactRoot
+                .appendingPathComponent("Materials", isDirectory: true)
             for name in references.materialNames.sorted() {
-                let materialURL = context.artifactRoot
-                    .appendingPathComponent("Materials", isDirectory: true)
-                    .appendingPathComponent(name)
+                let materialURL = materialsRoot.appendingPathComponent(name)
                 if !FileManager.default.fileExists(atPath: materialURL.path) {
                     omissions.add("canvasMaterial",
                                   "\(references.canvasID.uuidString)/\(name)",
@@ -2047,7 +2108,8 @@ struct C07OwnedDataSource {
                     continue
                 }
                 _ = try collector.appendFile(
-                    source: materialURL, role: .canvasMaterial, ownerID: nil,
+                    sourceRoot: materialsRoot, source: materialURL,
+                    role: .canvasMaterial, ownerID: nil,
                     containerID: references.canvasID, logicalPath: name,
                     expectedSHA256: nil, expectedByteCount: nil)
             }
@@ -2096,9 +2158,11 @@ struct C07OwnedDataSource {
                     .appendingPathComponent(childID.uuidString, isDirectory: true)
                 for assetPath in media.assetPaths.sorted() {
                     seenAssetPaths.insert(assetPath)
-                    let assetURL = assetPath.hasPrefix("WorkbenchRoot/")
-                        ? context.artifactRoot.appendingPathComponent(assetPath)
-                        : childRoot.appendingPathComponent(assetPath)
+                    let assetInWorkbenchRoot = assetPath.hasPrefix("WorkbenchRoot/")
+                    let assetRoot = assetInWorkbenchRoot
+                        ? context.artifactRoot
+                        : childRoot
+                    let assetURL = assetRoot.appendingPathComponent(assetPath)
                     guard FileManager.default.fileExists(atPath: assetURL.path) else {
                         omissions.add(
                             "canvasAsset",
@@ -2107,7 +2171,8 @@ struct C07OwnedDataSource {
                         continue
                     }
                     _ = try collector.appendFile(
-                        source: assetURL, role: .canvasAsset, ownerID: childID,
+                        sourceRoot: assetRoot, source: assetURL,
+                        role: .canvasAsset, ownerID: childID,
                         containerID: references.canvasID,
                         logicalPath: assetPath,
                         expectedSHA256: nil, expectedByteCount: nil)
@@ -2152,7 +2217,8 @@ struct C07OwnedDataSource {
                             continue
                         }
                         _ = try collector.appendFile(
-                            source: fileURL, role: .canvasAsset,
+                            sourceRoot: childRoot, source: fileURL,
+                            role: .canvasAsset,
                             ownerID: childID,
                             containerID: references.canvasID,
                             logicalPath: relative,
@@ -2175,7 +2241,8 @@ struct C07OwnedDataSource {
                     continue
                 }
                 _ = try collector.appendFile(
-                    source: assetURL, role: .canvasNodeAsset, ownerID: nil,
+                    sourceRoot: context.artifactRoot, source: assetURL,
+                    role: .canvasNodeAsset, ownerID: nil,
                     containerID: references.canvasID, logicalPath: path,
                     expectedSHA256: nil, expectedByteCount: nil)
             }
@@ -2246,7 +2313,8 @@ struct C07OwnedDataSource {
                 throw C07DataExchangeError.storageUnavailable("sourceChanged")
             }
             _ = try collector.appendFile(
-                source: url, role: .attachment, ownerID: attachmentID,
+                sourceRoot: attachmentsRoot, source: url,
+                role: .attachment, ownerID: attachmentID,
                 containerID: nil, logicalPath: relative,
                 expectedSHA256: digest.sha256,
                 expectedByteCount: digest.byteCount)
@@ -2332,7 +2400,8 @@ struct C07OwnedDataSource {
                     continue
                 }
                 _ = try collector.appendFile(
-                    source: url, role: .privateTaskFile,
+                    sourceRoot: root, source: url,
+                    role: .privateTaskFile,
                     ownerID: conversationID, containerID: nil,
                     logicalPath: relative,
                     expectedSHA256: nil, expectedByteCount: nil)
@@ -2398,7 +2467,8 @@ struct C07OwnedDataSource {
                     continue
                 }
                 _ = try collector.appendFile(
-                    source: url, role: .mailReceipt, ownerID: nil,
+                    sourceRoot: root, source: url,
+                    role: .mailReceipt, ownerID: nil,
                     containerID: nil, logicalPath: logical,
                     expectedSHA256: nil, expectedByteCount: nil)
                 counts.mailReceipts += 1
@@ -2460,7 +2530,8 @@ struct C07OwnedDataSource {
                     continue
                 }
                 _ = try collector.appendFile(
-                    source: url, role: .appArtifact, ownerID: nil,
+                    sourceRoot: context.artifactRoot, source: url,
+                    role: .appArtifact, ownerID: nil,
                     containerID: nil, logicalPath: logical,
                     expectedSHA256: nil, expectedByteCount: nil)
                 counts.appArtifacts = (counts.appArtifacts ?? 0) + 1
@@ -2523,7 +2594,8 @@ struct C07OwnedDataSource {
                     continue
                 }
                 _ = try collector.appendFile(
-                    source: url, role: .captureFile, ownerID: nil,
+                    sourceRoot: root, source: url,
+                    role: .captureFile, ownerID: nil,
                     containerID: nil, logicalPath: logical,
                     expectedSHA256: nil, expectedByteCount: nil)
                 counts.captureFiles = (counts.captureFiles ?? 0) + 1
@@ -2540,7 +2612,7 @@ struct C07OwnedDataSource {
         workRoot: URL,
         configs: inout [C07SourceConfigSection],
         omissions: inout C07OmissionCollector,
-        counts: inout C07OwnedDataCounts) throws -> [String]
+        counts: inout C07OwnedDataCounts) async throws -> [String]
     {
         var warnings: [String] = []
         let directory = workRoot.appendingPathComponent("config", isDirectory: true)
@@ -2621,13 +2693,51 @@ struct C07OwnedDataSource {
             try write(data, kind: .mailAccounts)
         }
 
+        // MCP definitions live in the ORIGINAL
+        // `floe.mcp.remoteServers.v1` settings row. They are projected into a
+        // typed, credential-free document; the raw JSON is never archived.
+        // A row that cannot be projected is declared as an omission rather
+        // than silently copied or hidden behind a generic settings prefix.
+        do {
+            if let raw = try await context.settingsStore.value(
+                forKey: C07MCPConfigurationExchange.settingsKey) {
+                let exported = try C07MCPConfigurationExchange.export(raw: raw)
+                for skip in exported.skipped {
+                    omissions.add("mcpServerDefinition", skip.sourceID,
+                                  skip.reason)
+                }
+                for name in exported.sanitizedNames {
+                    warnings.append("mcpEndpointSanitized:\(name)")
+                }
+                if !exported.skipped.isEmpty {
+                    warnings.append("mcpDefinitionsOmitted:\(exported.skipped.count)")
+                }
+                if !exported.document.servers.isEmpty {
+                    let data: Data
+                    do { data = try encoder.encode(exported.document) }
+                    catch {
+                        throw C07DataExchangeError.storageUnavailable(
+                            "mcpEncode")
+                    }
+                    try write(data, kind: .mcpServers)
+                    counts.mcpDefinitions = exported.document.servers.count
+                }
+            }
+        } catch {
+            omissions.add("mcpConfiguration",
+                          "floe.mcp.remoteServers.v1",
+                          "invalidStoredConfiguration")
+            warnings.append("mcpConfigurationUnavailable")
+        }
+
         // Fill in exact counts + enforce the raw secret-key gate once more.
         for index in configs.indices {
             let url = configs[index].url
             let data: Data
             do { data = try Data(contentsOf: url) }
             catch { throw C07DataExchangeError.storageUnavailable("configRead") }
-            guard !C07ConfigSafety.containsForbiddenKey(data) else {
+            guard C07ConfigSafety.validate(
+                data, kind: configs[index].section.kind) else {
                 throw C07DataExchangeError.credentialExcluded(
                     configs[index].section.entry)
             }
@@ -2642,6 +2752,9 @@ struct C07OwnedDataSource {
             case .mailAccounts:
                 count = (try? JSONDecoder().decode(
                     C07MailAccountConfigDocument.self, from: data))?.accounts.count ?? 0
+            case .mcpServers:
+                count = (try? JSONDecoder().decode(
+                    C07MCPConfigDocument.self, from: data))?.servers.count ?? 0
             }
             let digest = try C07Digest.file(
                 url, maximum: C07OwnedDataLimits.maximumConfigBytes)
@@ -2860,8 +2973,8 @@ private struct C07ArtifactCollector {
     }
 
     mutating func appendFile(
-        source: URL, role: C07ArtifactRole, ownerID: UUID?,
-        containerID: UUID?, logicalPath: String,
+        sourceRoot: URL, source: URL, role: C07ArtifactRole,
+        ownerID: UUID?, containerID: UUID?, logicalPath: String,
         expectedSHA256: String?, expectedByteCount: Int64?
     ) throws -> Bool {
         let entry = try C07ArtifactPath.entry(
@@ -2871,13 +2984,27 @@ private struct C07ArtifactCollector {
             throw C07DataExchangeError.specialFileUnsupported(
                 source.lastPathComponent)
         }
+        // The stream is owned by the caller-fixed root: a symlink or
+        // ancestor swap between enumeration and open is a typed refusal,
+        // never a redirected read.
+        let rootPath = sourceRoot.standardizedFileURL.path
+        let sourcePath = source.standardizedFileURL.path
+        guard sourcePath.hasPrefix(rootPath.hasSuffix("/") ? rootPath : rootPath + "/") else {
+            throw C07DataExchangeError.unsafePath(sourcePath)
+        }
+        let sourceRelativePath = String(sourcePath.dropFirst(rootPath.count + (rootPath.hasSuffix("/") ? 0 : 1)))
+        try C07Path.validateRelative(sourceRelativePath)
         let temp = temporaryURL()
         let copied: (sha256: String, byteCount: Int64)
         do {
             copied = try C07FileSystem.copyVerified(
-                source: source, destination: temp,
+                sourceRoot: sourceRoot,
+                sourceRelativePath: sourceRelativePath,
+                destinationRoot: stagingRoot,
+                destinationRelativePath: temp.lastPathComponent,
                 expectedSize: expectedByteCount,
-                maximum: C07OwnedDataLimits.maximumArtifactBytes)
+                maximum: C07OwnedDataLimits.maximumArtifactBytes,
+                createDestinationParents: false)
         } catch {
             C07FileSystem.removeIfPresent(temp)
             throw error
@@ -3027,6 +3154,7 @@ extension C07LiveRestoreSink {
                 }
                 if policy.disposition == .live,
                    !policy.freshPrimary,
+                   !policy.preservePrimary,
                    policy.primaryKind != .executionEvidence,
                    mapping.newID(policy.primaryKind, old: primary) == nil {
                     try mapping.insert(
@@ -3121,7 +3249,16 @@ extension C07LiveRestoreSink {
         // recovery record with remapped ids.
         var remoteHostIDs: [String: String] = [:]
         var mailAccountIDs: [String: String] = [:]
+        var mcpServerIDs: [String: String] = [:]
         var configEntries: [String] = []
+        var mcpServersRowExisted: Bool?
+        do {
+            mcpServersRowExisted = (try await context.settingsStore.value(
+                forKey: C07MCPConfigurationExchange.settingsKey)) != nil
+        } catch {
+            // Unknown absence must not authorize deleting the row on rollback.
+            mcpServersRowExisted = nil
+        }
         let orderedConfigs = staged.configs.sorted {
             configOrder($0.section.kind) < configOrder($1.section.kind)
         }
@@ -3129,11 +3266,30 @@ extension C07LiveRestoreSink {
             let data: Data
             do { data = try Data(contentsOf: config.url) }
             catch { throw C07DataExchangeError.storageUnavailable("configRead") }
-            guard !C07ConfigSafety.containsForbiddenKey(data) else {
+            guard C07ConfigSafety.validate(
+                data, kind: config.section.kind) else {
                 throw C07DataExchangeError.credentialExcluded(
                     config.section.entry)
             }
             switch config.section.kind {
+            case .mcpServers:
+                let document: C07MCPConfigDocument
+                do { document = try JSONDecoder().decode(
+                    C07MCPConfigDocument.self, from: data) }
+                catch { throw C07DataExchangeError.invalidManifest("mcpDecode") }
+                try document.validate()
+                guard document.servers.count == config.section.count else {
+                    throw C07DataExchangeError.invalidManifest("mcpCount")
+                }
+                for server in document.servers {
+                    let old = server.sourceID.uuidString
+                    let new = UUID().uuidString
+                    try mapping.insert(.mcpServer, old: old, new: new)
+                    mcpServerIDs[old] = new
+                }
+                // The live merge happens in commitOwnedData; no read-only
+                // config document is produced for MCP definitions.
+                continue
             case .remoteHosts:
                 let document: C07RemoteHostConfigDocument
                 do { document = try JSONDecoder().decode(
@@ -3559,6 +3715,50 @@ extension C07LiveRestoreSink {
         // Exact live-id collision check for every root identity.
         try await verifyNoRootCollisions(mapping: mapping)
 
+        // Durable pre-restore snapshots for rollback-exact adapter merges:
+        // the singleton model_preferences row and the exact set of
+        // personalization cursor keys this restore is allowed to insert.
+        let previousPreferences = try await context.database.reader { db in
+            try Row.fetchOne(
+                db, sql: "SELECT * FROM model_preferences WHERE id = 'default'"
+            ).map { row in
+                var values: C07DBRow = [:]
+                for column in row.columnNames {
+                    values[column] = C07UserDataAdapters.dbValue(row[column])
+                }
+                return values
+            }
+        }
+        var cursorKeysToInsert: [String] = []
+        let existingCursorKeys: Set<String> = try await context.database.reader { db in
+            let rows = try Row.fetchAll(
+                db, sql: "SELECT kind, workspace_key FROM personalization_update_cursors")
+            return Set(rows.map { row in
+                let kind = (row["kind"] as String?) ?? ""
+                let key = (row["workspace_key"] as String?) ?? ""
+                return "\(kind)|\(key)"
+            })
+        }
+        if let cursorTable = staged.tables.first(where: {
+            $0.name == "personalization_update_cursors"
+        }) {
+            try C07RowStream.rows(
+                in: cursorTable.url, table: "personalization_update_cursors"
+            ) { row in
+                guard let kind = row["kind"]?.stringValue, !kind.isEmpty else {
+                    return
+                }
+                let oldWorkspace = row["workspace_id"]?.stringValue
+                let newWorkspace = oldWorkspace.flatMap {
+                    mapping.newID(.workspace, old: $0)
+                }
+                let key = "\(kind)|\(newWorkspace ?? "")"
+                if !existingCursorKeys.contains(key) {
+                    cursorKeysToInsert.append(key)
+                }
+            }
+        }
+
         let plan = C07OwnedDataRestorePlanFile(
             restoreID: restoreID,
             idMap: mapping,
@@ -3575,6 +3775,12 @@ extension C07LiveRestoreSink {
             remoteHostIDs: remoteHostIDs.isEmpty ? nil : remoteHostIDs,
             mailAccountIDs: mailAccountIDs.isEmpty ? nil : mailAccountIDs,
             configEntries: configEntries.isEmpty ? nil : configEntries,
+            mcpServerIDs: mcpServerIDs.isEmpty ? nil : mcpServerIDs,
+            mcpServersRowExisted: mcpServerIDs.isEmpty
+                ? nil : mcpServersRowExisted,
+            previousModelPreferences: previousPreferences,
+            personalizationCursorKeys: cursorKeysToInsert.isEmpty
+                ? nil : Array(Set(cursorKeysToInsert)).sorted(),
             counts: counts,
             warnings: warnings)
         let written = try C07DurablePlan.write(plan, root: journalRoot)
@@ -3657,7 +3863,7 @@ extension C07LiveRestoreSink {
             if !createdRoots.contains(path) { createdRoots.append(path) }
         }
 
-        func copyFile(_ source: URL, to destination: URL,
+        func copyFile(_ source: URL, to destination: URL, under root: URL,
                       record: C07ArtifactRecord) throws -> Bool {
             if FileManager.default.fileExists(atPath: destination.path) {
                 if let digest = try? C07Digest.file(destination),
@@ -3668,14 +3874,44 @@ extension C07LiveRestoreSink {
                 throw C07DataExchangeError.artifactCollision(
                     destination.lastPathComponent)
             }
-            try ensureOwnedDirectory(destination.deletingLastPathComponent())
-            try C07POSIX.writeExclusive(
-                source: source, destination: destination,
-                expectedBytes: record.byteCount,
-                expectedSHA256: record.sha256,
-                mode: record.mode ?? 0o600)
+            // Destination containment is re-derived from the trusted root;
+            // the stream itself is descriptor-relative and no-follow, so an
+            // archive-supplied logical path can never redirect the write
+            // through a planted symlink ancestor.
+            let rootPath = root.standardizedFileURL.path
+            let destinationPath = destination.standardizedFileURL.path
+            guard destinationPath.hasPrefix(rootPath + "/") else {
+                throw C07DataExchangeError.unsafePath(destinationPath)
+            }
+            let relative = String(destinationPath.dropFirst(rootPath.count + 1))
+            try C07Path.validateRelative(relative)
+            try C07FileSystem.copyVerified(
+                sourceRoot: source.deletingLastPathComponent(),
+                sourceRelativePath: source.lastPathComponent,
+                destinationRoot: root,
+                destinationRelativePath: relative,
+                expectedSize: record.byteCount,
+                maximum: C07OwnedDataLimits.maximumArtifactBytes,
+                mode: record.mode ?? 0o600,
+                createDestinationParents: true)
             noteCreated(destination)
             return true
+        }
+
+        func writeData(_ data: Data, to destination: URL, under root: URL,
+                       mode: Int) throws {
+            let rootPath = root.standardizedFileURL.path
+            let destinationPath = destination.standardizedFileURL.path
+            guard destinationPath.hasPrefix(rootPath + "/") else {
+                throw C07DataExchangeError.unsafePath(destinationPath)
+            }
+            let relative = String(destinationPath.dropFirst(rootPath.count + 1))
+            try C07Path.validateRelative(relative)
+            try C07RootedFileIO.writeFile(
+                data, destinationRoot: root,
+                destinationRelativePath: relative,
+                mode: mode,
+                createDestinationParents: true)
         }
 
         func materialMap(for canvasOwner: UUID) -> [String: String] {
@@ -3741,8 +3977,8 @@ extension C07LiveRestoreSink {
                 taskWorkspacePath: nil)
             let destination = canvasesRoot.appendingPathComponent(
                 "\(newID.uuidString).json")
-            try ensureOwnedDirectory(canvasesRoot)
-            try writeExclusiveData(rewritten, destination: destination)
+            try writeData(rewritten, to: destination, under: canvasesRoot,
+                          mode: 0o600)
             noteCreated(destination)
             canvasProjects += 1
         }
@@ -3776,8 +4012,8 @@ extension C07LiveRestoreSink {
                 pathMap: map, taskWorkspacePath: mediaRoot.path)
             let destination = mediaProjectsRoot.appendingPathComponent(
                 "media-project-\(newID.uuidString).json")
-            try ensureOwnedDirectory(mediaProjectsRoot)
-            try writeExclusiveData(rewritten, destination: destination)
+            try writeData(rewritten, to: destination, under: mediaProjectsRoot,
+                          mode: 0o600)
             noteCreated(destination)
             mediaProjects += 1
         }
@@ -3787,7 +4023,8 @@ extension C07LiveRestoreSink {
             let map = materialMap(for: canvasOwner)
             let newName = map[artifact.record.logicalPath] ?? artifact.record.logicalPath
             let destination = materialsRoot.appendingPathComponent(newName)
-            _ = try copyFile(artifact.url, to: destination, record: artifact.record)
+            _ = try copyFile(artifact.url, to: destination,
+                             under: materialsRoot, record: artifact.record)
         }
 
         for artifact in staged.artifacts where artifact.record.role == .canvasAsset {
@@ -3807,7 +4044,11 @@ extension C07LiveRestoreSink {
                     .appendingPathComponent(newText, isDirectory: true)
                     .appendingPathComponent(artifact.record.logicalPath)
             }
-            _ = try copyFile(artifact.url, to: destination, record: artifact.record)
+            let assetRoot = artifact.record.logicalPath.hasPrefix("WorkbenchRoot/")
+                ? artifactRoot
+                : workbenchRoot.appendingPathComponent(newText, isDirectory: true)
+            _ = try copyFile(artifact.url, to: destination,
+                             under: assetRoot, record: artifact.record)
             mediaAssets += 1
         }
 
@@ -3815,7 +4056,8 @@ extension C07LiveRestoreSink {
             let rewritten = C07IDRewrite.rewritePath(
                 artifact.record.logicalPath, mapping: plan.idMap)
             let destination = artifactRoot.appendingPathComponent(rewritten)
-            _ = try copyFile(artifact.url, to: destination, record: artifact.record)
+            _ = try copyFile(artifact.url, to: destination,
+                             under: artifactRoot, record: artifact.record)
         }
 
         for artifact in staged.artifacts where artifact.record.role == .attachment {
@@ -3824,7 +4066,8 @@ extension C07LiveRestoreSink {
                 throw C07DataExchangeError.referenceMissing("attachmentPath")
             }
             let destination = attachmentsRoot.appendingPathComponent(relative)
-            _ = try copyFile(artifact.url, to: destination, record: artifact.record)
+            _ = try copyFile(artifact.url, to: destination,
+                             under: attachmentsRoot, record: artifact.record)
         }
 
         for artifact in staged.artifacts where artifact.record.role == .privateTaskFile {
@@ -3836,14 +4079,16 @@ extension C07LiveRestoreSink {
             let destination = privateTasksRoot
                 .appendingPathComponent(newConversation, isDirectory: true)
                 .appendingPathComponent(artifact.record.logicalPath)
-            _ = try copyFile(artifact.url, to: destination, record: artifact.record)
+            _ = try copyFile(artifact.url, to: destination,
+                             under: privateTasksRoot, record: artifact.record)
             privateTaskFiles += 1
         }
 
         for artifact in staged.artifacts where artifact.record.role == .mailReceipt {
             let destination = mailReceiptRoot
                 .appendingPathComponent(artifact.record.logicalPath)
-            _ = try copyFile(artifact.url, to: destination, record: artifact.record)
+            _ = try copyFile(artifact.url, to: destination,
+                             under: mailReceiptRoot, record: artifact.record)
             mailReceipts += 1
         }
 
@@ -3856,7 +4101,8 @@ extension C07LiveRestoreSink {
                 throw C07DataExchangeError.unsafePath(rewritten)
             }
             let destination = artifactRoot.appendingPathComponent(rewritten)
-            _ = try copyFile(artifact.url, to: destination, record: artifact.record)
+            _ = try copyFile(artifact.url, to: destination,
+                             under: artifactRoot, record: artifact.record)
             appArtifacts += 1
         }
 
@@ -3867,7 +4113,9 @@ extension C07LiveRestoreSink {
                 .appendingPathComponent(plan.restoreID.uuidString,
                                         isDirectory: true)
                 .appendingPathComponent(artifact.record.logicalPath)
-            _ = try copyFile(artifact.url, to: destination, record: artifact.record)
+            _ = try copyFile(artifact.url, to: destination,
+                             under: context.restoredArtifactRoot,
+                             record: artifact.record)
             captureFiles += 1
         }
 
@@ -3894,7 +4142,8 @@ extension C07LiveRestoreSink {
                 .appendingPathComponent(artifact.record.logicalPath)
             var readOnly = artifact.record
             readOnly.mode = 0o444
-            _ = try copyFile(artifact.url, to: destination, record: readOnly)
+            _ = try copyFile(artifact.url, to: destination,
+                             under: context.cadPreservedRoot, record: readOnly)
             cadPreservedFiles += 1
         }
 
@@ -3979,11 +4228,21 @@ extension C07LiveRestoreSink {
                 let data: Data
                 do { data = try Data(contentsOf: config.url) }
                 catch { throw C07DataExchangeError.storageUnavailable("configRead") }
+                guard C07ConfigSafety.validate(
+                    data, kind: config.section.kind) else {
+                    throw C07DataExchangeError.credentialExcluded(
+                        config.section.entry)
+                }
                 let encoder = JSONEncoder()
                 encoder.outputFormatting = [.sortedKeys]
                 encoder.dateEncodingStrategy = .iso8601
                 let output: Data
                 switch config.section.kind {
+                case .mcpServers:
+                    // Live definitions are merged into the original store by
+                    // commitOwnedData; an orphaned read-only copy is not the
+                    // restore consumer.
+                    continue
                 case .remoteHosts:
                     let document = try JSONDecoder().decode(
                         C07RemoteHostConfigDocument.self, from: data)
@@ -4042,7 +4301,8 @@ extension C07LiveRestoreSink {
                 }
                 let destination = destinationRoot.appendingPathComponent(
                     "\(config.section.kind.rawValue).json")
-                try writeExclusiveData(output, destination: destination, mode: 0o444)
+                try writeData(output, to: destination, under: destinationRoot,
+                              mode: 0o444)
                 noteCreated(destination)
                 configSections += 1
             }
@@ -4061,7 +4321,7 @@ extension C07LiveRestoreSink {
                 withJSONObject: receipt, options: [.sortedKeys]) {
                 let url = destinationRoot.appendingPathComponent(
                     "restore-manifest.json")
-                try writeExclusiveData(data, destination: url, mode: 0o444)
+                try writeData(data, to: url, under: destinationRoot, mode: 0o444)
                 noteCreated(url)
             }
         }
@@ -4186,34 +4446,6 @@ extension C07LiveRestoreSink {
         }
     }
 
-    private func writeExclusiveData(_ data: Data, destination: URL,
-                                    mode: Int = 0o600) throws {
-        let path = destination.path
-        let fd = path.withCString {
-            open($0, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC,
-                 mode_t(S_IRUSR | S_IWUSR))
-        }
-        guard fd >= 0 else {
-            throw C07DataExchangeError.artifactCollision(
-                destination.lastPathComponent)
-        }
-        if fchmod(fd, mode_t(mode & 0o777)) != 0 {
-            close(fd)
-            C07FileSystem.removeIfPresent(destination)
-            throw C07DataExchangeError.storageUnavailable("mode")
-        }
-        let handle = FileHandle(fileDescriptor: fd, closeOnDealloc: true)
-        do {
-            try handle.write(contentsOf: data)
-            try handle.synchronize()
-            try handle.close()
-        } catch {
-            try? handle.close()
-            C07FileSystem.removeIfPresent(destination)
-            throw C07DataExchangeError.storageUnavailable("write")
-        }
-    }
-
     private func safeArtifactName(_ raw: String) -> String {
         var value = raw.precomposedStringWithCanonicalMapping
         value = value.replacingOccurrences(of: "/", with: "-")
@@ -4247,11 +4479,79 @@ extension C07LiveRestoreSink {
         let staged = prepared.staged
         let now = c07DateString(Date())
 
+        // Decode the typed MCP section before the writer transaction. The
+        // merge itself reads the CURRENT settings row inside that transaction
+        // so a concurrent local edit is preserved.
+        var mcpDefinitions: [C07MCPServerDefinition] = []
+        if let section = staged.configs.first(where: {
+            $0.section.kind == .mcpServers
+        }) {
+            let data: Data
+            do { data = try Data(contentsOf: section.url) }
+            catch { throw C07DataExchangeError.storageUnavailable("mcpRead") }
+            guard let document = try? JSONDecoder().decode(
+                C07MCPConfigDocument.self, from: data) else {
+                throw C07DataExchangeError.invalidManifest("mcpDecode")
+            }
+            try document.validate()
+            guard document.servers.count == section.section.count else {
+                throw C07DataExchangeError.invalidManifest("mcpCount")
+            }
+            mcpDefinitions = document.servers
+        }
+
         let outcome: (C07OwnedDataCommitReceipt, [String])
         outcome = try await context.database.writer {
             db -> (C07OwnedDataCommitReceipt, [String]) in
             var warnings = plan.warnings
             var receipt = C07OwnedDataCommitReceipt()
+            // 0. MCP definitions: fresh IDs, disabled, unbound. This is the
+            //    ORIGINAL `floe.mcp.remoteServers.v1` row, never a parallel
+            //    store. Only the exact inserted definitions change.
+            if !mcpDefinitions.isEmpty {
+                guard let identities = plan.mcpServerIDs,
+                      identities.count == mcpDefinitions.count else {
+                    throw C07DataExchangeError.referenceMissing(
+                        "mcpServerIdentities")
+                }
+                let key = C07MCPConfigurationExchange.settingsKey
+                let currentRaw = try String.fetchOne(
+                    db,
+                    sql: "SELECT value_json FROM app_settings WHERE key = ?",
+                    arguments: [key])
+                let merged = try C07MCPConfigurationExchange.merge(
+                    currentRaw: currentRaw,
+                    definitions: mcpDefinitions,
+                    newIDs: identities)
+                guard let newRaw = merged.raw else {
+                    throw C07DataExchangeError.invalidManifest("mcpMerge")
+                }
+                try db.execute(
+                    sql: """
+                        INSERT INTO app_settings (key, value_json, updated_at)
+                        VALUES (?, ?, ?)
+                        ON CONFLICT(key) DO UPDATE SET
+                            value_json = excluded.value_json,
+                            updated_at = excluded.updated_at
+                        """,
+                    arguments: [key, newRaw, now])
+                receipt.mcpDefinitions = mcpDefinitions.count
+                if mcpDefinitions.contains(where: {
+                    $0.requiresEndpointReconfiguration
+                }) {
+                    warnings.append("mcpDefinitionEndpointSanitized")
+                }
+                if mcpDefinitions.contains(where: {
+                    $0.transport == .stdio
+                }) {
+                    warnings.append("mcpDefinitionsRequireEnvironmentBinding")
+                }
+                if mcpDefinitions.contains(where: {
+                    $0.authentication != "none"
+                }) {
+                    warnings.append("mcpDefinitionsRequireCredentials")
+                }
+            }
             // 1. New workspace rows for private-task and external roots.
             //    Managed/retained projects already exist from the C01 restore.
             for descriptor in staged.workspaces {
@@ -4336,6 +4636,11 @@ extension C07LiveRestoreSink {
                                 restoreID: plan.restoreID,
                                 table: table.record.name,
                                 old: oldPrimary))
+                    } else if policy.preservePrimary {
+                        // Singleton/preference rows keep their fixed key
+                        // verbatim ('default', personalization kind); it is
+                        // structural identity, not a remappable id.
+                        values[policy.primaryColumn] = row[policy.primaryColumn]
                     } else if let mapped = plan.idMap.newID(
                         policy.primaryKind, old: oldPrimary) {
                         values[policy.primaryColumn] = .string(mapped)
@@ -4399,6 +4704,19 @@ extension C07LiveRestoreSink {
                                 value, mapping: plan.idMap)
                         }
                     }
+                    // User-data rows with target-dependent commit semantics
+                    // (singleton merges, revision renumbering, name-conflict
+                    // rules) are committed by the adapter inside this same
+                    // writer transaction, after the identical normalization
+                    // and reference mapping as every other live row.
+                    if C07UserDataAdapters.isAdapterOwned(table.record.name) {
+                        try C07UserDataAdapters.commitRow(
+                            table: table.record.name, values: values,
+                            restoreID: plan.restoreID, db: db,
+                            receipt: &receipt, warnings: &warnings)
+                        rowsInserted += 1
+                        return
+                    }
                     // Attachment bytes become an app-private new path. No
                     // bookmark/token is transplanted.
                     if table.record.name == "attachments" {
@@ -4451,8 +4769,10 @@ extension C07LiveRestoreSink {
                     try statement.execute(arguments: arguments)
                     rowsInserted += 1
                 }
-                updateReceipt(table: table.record.name, rows: rowsInserted,
-                              receipt: &receipt)
+                if !C07UserDataAdapters.isAdapterOwned(table.record.name) {
+                    updateReceipt(table: table.record.name, rows: rowsInserted,
+                                  receipt: &receipt)
+                }
             }
 
             // 3. Workspace links. Ownership is the canonical relation; the
@@ -4525,6 +4845,9 @@ extension C07LiveRestoreSink {
         case "calendar_todos": receipt.todos = rows
         case "providers": receipt.providers = rows
         case "models": receipt.models = rows
+        case "memory_entries": receipt.memoryEntries = rows
+        case "memory_candidates": receipt.memoryCandidates = rows
+        case "task_checklist_revisions": receipt.checklistRevisions = rows
         default: break
         }
     }
@@ -4552,6 +4875,10 @@ extension C07LiveRestoreSink {
         let providers = map.allNewIDs(.provider)
         let models = map.allNewIDs(.model)
         let todos = map.allNewIDs(.todo)
+        let memoryEntries = map.allNewIDs(.memoryEntry)
+        let memoryCandidates = map.allNewIDs(.memoryCandidate)
+        let personalizationDocuments = map.allNewIDs(.personalizationDocument)
+        let skills = map.allNewIDs(.skill)
 
         try await context.database.writer { db in
             for chunk in conversations.chunked(max: 400) {
@@ -4618,6 +4945,99 @@ extension C07LiveRestoreSink {
                 for chunk in todos.chunked(max: 400) {
                     try c07DeleteWhereIn(db, table: "calendar_todos",
                                          column: "id", values: chunk)
+                }
+            }
+            // Expanded user-data rows: exact new identities only. Rows whose
+            // owner conversation/workspace is also restored were already
+            // removed by the cascades above; these chunked deletes cover the
+            // detached (origin-only) rows and the reference-only tables.
+            if try db.tableExists("memory_entries") {
+                for chunk in memoryEntries.chunked(max: 400) {
+                    try c07DeleteWhereIn(db, table: "memory_entries",
+                                         column: "id", values: chunk)
+                }
+            }
+            if try db.tableExists("memory_candidates") {
+                for chunk in memoryCandidates.chunked(max: 400) {
+                    try c07DeleteWhereIn(db, table: "memory_candidates",
+                                         column: "id", values: chunk)
+                }
+            }
+            if try db.tableExists("personalization_documents") {
+                for chunk in personalizationDocuments.chunked(max: 400) {
+                    try c07DeleteWhereIn(db, table: "personalization_documents",
+                                         column: "id", values: chunk)
+                }
+            }
+            if try db.tableExists("skills") {
+                for chunk in skills.chunked(max: 400) {
+                    try c07DeleteWhereIn(db, table: "skills",
+                                         column: "id", values: chunk)
+                }
+            }
+            // Adapter merges: restore the exact pre-restore singleton
+            // preferences, or remove the row this restore created.
+            if try db.tableExists("model_preferences") {
+                if let previous = plan.previousModelPreferences {
+                    try db.execute(
+                        sql: "DELETE FROM model_preferences WHERE id = 'default'")
+                    try C07UserDataAdapters.insert(
+                        "model_preferences", previous, into: db)
+                } else if (plan.counts.modelPreferences ?? 0) > 0 {
+                    try db.execute(
+                        sql: "DELETE FROM model_preferences WHERE id = 'default'")
+                }
+            }
+            if try db.tableExists("personalization_update_cursors"),
+               let keys = plan.personalizationCursorKeys {
+                for raw in keys {
+                    let parts = raw.split(
+                        separator: "|", maxSplits: 1,
+                        omittingEmptySubsequences: false).map(String.init)
+                    guard parts.count == 2 else { continue }
+                    try db.execute(
+                        sql: """
+                            DELETE FROM personalization_update_cursors
+                            WHERE kind = ? AND workspace_key = ?
+                            """,
+                        arguments: [parts[0], parts[1]])
+                }
+            }
+            // MCP definitions: remove exactly the fresh IDs this restore
+            // inserted. A concurrent local server remains untouched. The
+            // row is deleted only when it did not exist before the restore
+            // and nothing else remains.
+            if let rawIDs = plan.mcpServerIDs, !rawIDs.isEmpty {
+                let ids = Set(rawIDs.values.compactMap { UUID(uuidString: $0) })
+                let key = C07MCPConfigurationExchange.settingsKey
+                let currentRaw = try String.fetchOne(
+                    db,
+                    sql: "SELECT value_json FROM app_settings WHERE key = ?",
+                    arguments: [key])
+                let removed: String?
+                do {
+                    removed = try C07MCPConfigurationExchange.removing(
+                        ids: ids,
+                        fromRaw: currentRaw,
+                        removeRowWhenEmpty: plan.mcpServersRowExisted == false)
+                } catch {
+                    throw C07DataExchangeError.rollbackFailed(
+                        "mcpServerRollback")
+                }
+                if let removed {
+                    try db.execute(
+                        sql: """
+                            INSERT INTO app_settings (key, value_json, updated_at)
+                            VALUES (?, ?, ?)
+                            ON CONFLICT(key) DO UPDATE SET
+                                value_json = excluded.value_json,
+                                updated_at = excluded.updated_at
+                            """,
+                        arguments: [key, removed, c07DateString(Date())])
+                } else if currentRaw != nil {
+                    try db.execute(
+                        sql: "DELETE FROM app_settings WHERE key = ?",
+                        arguments: [key])
                 }
             }
         }
@@ -4717,6 +5137,7 @@ func configOrder(_ kind: C07OwnedConfigKind) -> Int {
     case .remoteHosts: return 0
     case .mailAccounts: return 1
     case .rdpEndpoints: return 2
+    case .mcpServers: return 3
     }
 }
 

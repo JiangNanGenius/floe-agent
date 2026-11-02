@@ -165,6 +165,12 @@ public enum C07OwnedConfigKind: String, Codable, Sendable, CaseIterable {
     /// Non-secret mail account addressing/server metadata. Credential
     /// account references are excluded and no live account is created.
     case mailAccounts
+    /// User-authored MCP server definitions. Command/transport/endpoint
+    /// metadata and the non-secret authentication METHOD travel; credential
+    /// bytes/references, project/environment/root/task bindings, live
+    /// sessions, tool grants and cleanup keys never do. Restore writes fresh
+    /// disabled, unbound definitions through the ORIGINAL MCP settings store.
+    case mcpServers
 
     public var entry: String { "data/config/\(rawValue).json" }
     public var format: String { "floe.config.\(rawValue)" }
@@ -428,6 +434,289 @@ public struct C07MailAccountConfigDocument: Codable, Sendable, Equatable {
     }
 }
 
+// MARK: - MCP user definitions
+
+public enum C07MCPTransport: String, Codable, Sendable, CaseIterable {
+    case streamableHTTP
+    case stdio
+}
+
+/// Safe endpoint projection. Userinfo/query/fragment are NEVER copied;
+/// a suspicious path is omitted and the definition is marked for explicit
+/// reconfiguration. This keeps an auth-bearing URL from becoming backup data
+/// while still letting the original editor prefill scheme/host/port.
+public struct C07MCPEndpointProjection: Codable, Sendable, Equatable {
+    public var scheme: String
+    public var host: String
+    public var port: Int?
+    public var path: String
+    public var omittedQuery: Bool
+    public var omittedFragment: Bool
+    public var omittedUserInfo: Bool
+    public var omittedPath: Bool
+
+    public init(scheme: String, host: String, port: Int? = nil,
+                path: String = "", omittedQuery: Bool = false,
+                omittedFragment: Bool = false,
+                omittedUserInfo: Bool = false,
+                omittedPath: Bool = false) {
+        self.scheme = scheme
+        self.host = host
+        self.port = port
+        self.path = path
+        self.omittedQuery = omittedQuery
+        self.omittedFragment = omittedFragment
+        self.omittedUserInfo = omittedUserInfo
+        self.omittedPath = omittedPath
+    }
+
+    public func validate() throws {
+        guard ["http", "https"].contains(scheme.lowercased()),
+              !host.isEmpty, host.utf8.count <= 1_024,
+              port == nil || (1...65_535).contains(port ?? 0),
+              path.utf8.count <= 2_048,
+              path.isEmpty || path.hasPrefix("/"),
+              !path.contains("\0"), !path.contains("\n"), !path.contains("\r"),
+              !C07MCPServerDefinition.containsSecretLike(path) else {
+            throw C07DataExchangeError.invalidManifest("mcpEndpoint")
+        }
+    }
+}
+
+/// One MCP user definition. `sourceID` is the pre-restore UUID and is never
+/// reused; a restore allocates fresh identities. No runtime binding is
+/// represented here at all.
+public struct C07MCPServerDefinition: Codable, Sendable, Equatable {
+    public var sourceID: UUID
+    public var displayName: String
+    public var transport: C07MCPTransport
+    public var endpoint: C07MCPEndpointProjection?
+    public var authentication: String
+    public var credentialHeaderName: String?
+    public var allowInsecureHTTP: Bool
+    public var timeoutSeconds: Double
+    public var command: String?
+    public var arguments: [String]
+    public var workingDirectory: String?
+    public var requiresReauthentication: Bool
+    public var requiresEnvironmentBinding: Bool
+    public var requiresEndpointReconfiguration: Bool
+
+    public init(sourceID: UUID, displayName: String,
+                transport: C07MCPTransport,
+                endpoint: C07MCPEndpointProjection? = nil,
+                authentication: String = "none",
+                credentialHeaderName: String? = nil,
+                allowInsecureHTTP: Bool = false,
+                timeoutSeconds: Double = 30,
+                command: String? = nil,
+                arguments: [String] = [],
+                workingDirectory: String? = nil,
+                requiresReauthentication: Bool = false,
+                requiresEnvironmentBinding: Bool = false,
+                requiresEndpointReconfiguration: Bool = false) {
+        self.sourceID = sourceID
+        self.displayName = displayName
+        self.transport = transport
+        self.endpoint = endpoint
+        self.authentication = authentication
+        self.credentialHeaderName = credentialHeaderName
+        self.allowInsecureHTTP = allowInsecureHTTP
+        self.timeoutSeconds = timeoutSeconds
+        self.command = command
+        self.arguments = arguments
+        self.workingDirectory = workingDirectory
+        self.requiresReauthentication = requiresReauthentication
+        self.requiresEnvironmentBinding = requiresEnvironmentBinding
+        self.requiresEndpointReconfiguration = requiresEndpointReconfiguration
+    }
+
+    public static let authenticationMethods: Set<String> = [
+        "none", "bearerToken", "customHeader",
+    ]
+
+    /// Conservative scanner used by export AND restore validation. Command
+    /// arguments often carry API tokens; those definitions are omitted and
+    /// must be reconfigured instead of copied into a package.
+    public static func containsSecretLike(_ value: String) -> Bool {
+        let lower = value.lowercased()
+        let markers = [
+            "token", "secret", "password", "passwd", "api_key", "apikey",
+            "api-key", "bearer", "authorization", "credential", "private_key",
+            "private-key", "access_key", "access-key",
+        ]
+        if markers.contains(where: { lower.contains($0) }) { return true }
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmed.count >= 40 else { return false }
+        let allowed = CharacterSet(
+            charactersIn: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/=_-"
+        )
+        let scalars = trimmed.unicodeScalars
+        guard scalars.allSatisfy({ allowed.contains($0) }) else { return false }
+        return trimmed.contains(where: { $0.isNumber })
+    }
+
+    public func validate() throws {
+        guard !displayName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              displayName.utf8.count <= 256,
+              authenticationMethods.contains(authentication),
+              (5.0...120.0).contains(timeoutSeconds) else {
+            throw C07DataExchangeError.invalidManifest("mcpDefinition")
+        }
+        switch transport {
+        case .streamableHTTP:
+            guard let endpoint, command == nil, arguments.isEmpty,
+                  workingDirectory == nil,
+                  !requiresEnvironmentBinding else {
+                throw C07DataExchangeError.invalidManifest("mcpHTTPDefinition")
+            }
+            try endpoint.validate()
+            if authentication == "customHeader" {
+                guard let name = credentialHeaderName,
+                      C07MCPServerDefinition.isValidHeaderName(name) else {
+                    throw C07DataExchangeError.invalidManifest("mcpHeaderName")
+                }
+            } else {
+                guard credentialHeaderName == nil else {
+                    throw C07DataExchangeError.invalidManifest("mcpHeaderName")
+                }
+            }
+            guard requiresReauthentication == (authentication != "none") else {
+                throw C07DataExchangeError.invalidManifest("mcpAuthFlag")
+            }
+        case .stdio:
+            guard endpoint == nil,
+                  authentication == "none",
+                  credentialHeaderName == nil,
+                  requiresEnvironmentBinding,
+                  !requiresReauthentication else {
+                throw C07DataExchangeError.invalidManifest("mcpStdioDefinition")
+            }
+            guard let command, !command.isEmpty, command.utf8.count <= 512,
+                  !command.contains("\0"), !command.contains("\n"),
+                  !command.contains("\r"),
+                  !containsSecretLike(command) else {
+                throw C07DataExchangeError.invalidManifest("mcpCommand")
+            }
+            guard arguments.count <= 64,
+                  arguments.allSatisfy({ $0.utf8.count <= 4_096
+                      && !$0.contains("\0") && !$0.contains("\n")
+                      && !$0.contains("\r")
+                      && !containsSecretLike($0) }) else {
+                throw C07DataExchangeError.invalidManifest("mcpArguments")
+            }
+            if let workingDirectory {
+                guard workingDirectory.utf8.count <= 512,
+                      !workingDirectory.hasPrefix("/"),
+                      !workingDirectory.contains("\\"),
+                      !workingDirectory.contains("\0"),
+                      !workingDirectory.contains("\n"),
+                      !workingDirectory.contains("\r"),
+                      !containsSecretLike(workingDirectory) else {
+                    throw C07DataExchangeError.invalidManifest(
+                        "mcpWorkingDirectory")
+                }
+                let components = workingDirectory.split(
+                    separator: "/", omittingEmptySubsequences: true)
+                guard !components.contains(".."), !components.contains(".") else {
+                    throw C07DataExchangeError.invalidManifest(
+                        "mcpWorkingDirectory")
+                }
+            }
+        }
+    }
+
+    public static func isValidHeaderName(_ name: String) -> Bool {
+        let tokenCharacters = CharacterSet(
+            charactersIn: "!#$%&'*+-.^_`|~0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
+        )
+        let lower = name.lowercased()
+        let reserved: Set<String> = [
+            "accept", "connection", "content-length", "content-type", "host",
+            "mcp-method", "mcp-name", "mcp-protocol-version", "mcp-session-id",
+            "transfer-encoding",
+        ]
+        return !name.isEmpty && name.utf8.count <= 256
+            && name.unicodeScalars.allSatisfy({ tokenCharacters.contains($0) })
+            && !reserved.contains(lower)
+            && !lower.hasPrefix("mcp-param-")
+    }
+}
+
+public struct C07MCPConfigDocument: Codable, Sendable, Equatable {
+    public var format: String
+    public var formatVersion: Int
+    public var servers: [C07MCPServerDefinition]
+
+    public init(servers: [C07MCPServerDefinition],
+                format: String = C07OwnedConfigKind.mcpServers.format,
+                formatVersion: Int = C07OwnedConfigKind.mcpServers.formatVersion) {
+        self.format = format
+        self.formatVersion = formatVersion
+        self.servers = servers
+    }
+
+    public func validate() throws {
+        guard format == C07OwnedConfigKind.mcpServers.format,
+              formatVersion == C07OwnedConfigKind.mcpServers.formatVersion,
+              servers.count <= C07OwnedDataLimits.maximumConfigEntries else {
+            throw C07DataExchangeError.invalidManifest("mcpConfig")
+        }
+        var ids = Set<UUID>()
+        for server in servers {
+            guard ids.insert(server.sourceID).inserted else {
+                throw C07DataExchangeError.duplicateIdentity("mcpServer")
+            }
+            try server.validate()
+        }
+    }
+
+    /// Exact-key gate over the RAW archived JSON. It rejects any unknown /
+    /// secret-shaped field instead of decoding around it, and then runs the
+    /// typed bounds. The generic configuration key scan is deliberately not
+    /// used here because reviewed fields such as `authentication` and
+    /// `credentialHeaderName` are non-secret metadata.
+    public static func validateRaw(_ data: Data) throws {
+        guard data.count <= C07OwnedDataLimits.maximumConfigBytes,
+              let object = try? JSONSerialization.jsonObject(with: data)
+                as? [String: Any],
+              Set(object.keys) == Set(["format", "formatVersion", "servers"]),
+              let rawServers = object["servers"] as? [[String: Any]] else {
+            throw C07DataExchangeError.invalidManifest("mcpConfigShape")
+        }
+        let serverKeys: Set<String> = [
+            "sourceID", "displayName", "transport", "endpoint",
+            "authentication", "credentialHeaderName", "allowInsecureHTTP",
+            "timeoutSeconds", "command", "arguments", "workingDirectory",
+            "requiresReauthentication", "requiresEnvironmentBinding",
+            "requiresEndpointReconfiguration",
+        ]
+        let endpointKeys: Set<String> = [
+            "scheme", "host", "port", "path", "omittedQuery",
+            "omittedFragment", "omittedUserInfo", "omittedPath",
+        ]
+        for server in rawServers {
+            guard Set(server.keys).isSubset(of: serverKeys),
+                  server["sourceID"] is String,
+                  server["displayName"] is String,
+                  server["transport"] is String else {
+                throw C07DataExchangeError.invalidManifest("mcpConfigKey")
+            }
+            if let endpoint = server["endpoint"] as? [String: Any] {
+                guard Set(endpoint.keys).isSubset(of: endpointKeys) else {
+                    throw C07DataExchangeError.invalidManifest("mcpEndpointKey")
+                }
+            } else if server["endpoint"] != nil, !(server["endpoint"] is NSNull) {
+                throw C07DataExchangeError.invalidManifest("mcpEndpointShape")
+            }
+        }
+        let decoded: C07MCPConfigDocument
+        do { decoded = try JSONDecoder().decode(Self.self, from: data) }
+        catch { throw C07DataExchangeError.invalidManifest("mcpConfigDecode") }
+        try decoded.validate()
+    }
+}
+
 // MARK: - Raw configuration safety
 
 public enum C07ConfigSafety {
@@ -442,6 +731,20 @@ public enum C07ConfigSafety {
     /// Rejects a document that carries a secret-bearing key anywhere in its
     /// object graph. Applied to the RAW archived JSON, so a field the typed
     /// decoder ignores can never slip through a restore.
+    /// Kind-aware gate. MCP definitions use their own exact-key/bounds
+    /// validator (their reviewed non-secret field names contain "auth" and
+    /// "credential"); every other configuration keeps the generic secret-key
+    /// scan unchanged.
+    public static func validate(_ data: Data,
+                                kind: C07OwnedConfigKind) -> Bool {
+        switch kind {
+        case .mcpServers:
+            return (try? C07MCPConfigDocument.validateRaw(data)) != nil
+        case .remoteHosts, .rdpEndpoints, .mailAccounts:
+            return !containsForbiddenKey(data)
+        }
+    }
+
     public static func containsForbiddenKey(_ data: Data) -> Bool {
         guard let object = try? JSONSerialization.jsonObject(with: data) else {
             return true
@@ -991,10 +1294,20 @@ public enum C07OwnedDataClosure {
             let data: Data
             do { data = try Data(contentsOf: config.url) }
             catch { throw C07DataExchangeError.storageUnavailable("configRead") }
-            guard !C07ConfigSafety.containsForbiddenKey(data) else {
+            guard C07ConfigSafety.validate(
+                data, kind: config.section.kind) else {
                 throw C07DataExchangeError.credentialExcluded(config.section.entry)
             }
             switch config.section.kind {
+            case .mcpServers:
+                let document: C07MCPConfigDocument
+                do { document = try JSONDecoder().decode(
+                    C07MCPConfigDocument.self, from: data) }
+                catch { throw C07DataExchangeError.invalidManifest("mcpDecode") }
+                try document.validate()
+                guard document.servers.count == config.section.count else {
+                    throw C07DataExchangeError.invalidManifest("mcpCount")
+                }
             case .remoteHosts:
                 let document: C07RemoteHostConfigDocument
                 do { document = try JSONDecoder().decode(

@@ -70,11 +70,19 @@ fun McpServerEditorPage(
     val inFlight = projected?.saveInFlight == true || slot.saveDispatched
     val networkAvailable = projected?.networkActionsAvailable == true
     val saveError = projected?.saveError
-    // ⇄ disabled(displayName.empty || endpointText.empty) at the toolbar;
-    // everything else is answered by the host's Swift validation on dispatch.
-    val saveEnabled = projected != null && networkAvailable && !inFlight &&
-        draft.displayName.isNotBlank() && draft.endpointText.isNotEmpty()
+    val isStdio = draft.transportKind == McpTransportKindUi.STDIO
+    // A saved stdio definition needs no network/LLM subscription to persist.
+    // An HTTP save still requires the host's admitted network action.
+    val transportReady = if (isStdio) {
+        draft.stdioCommand.isNotBlank()
+    } else {
+        draft.endpointText.isNotEmpty()
+    }
+    val saveEnabled = projected != null &&
+        (isStdio || networkAvailable) && !inFlight &&
+        draft.displayName.isNotBlank() && transportReady
     var authMenuOpen by remember(identity.editorId) { mutableStateOf(false) }
+    var transportMenuOpen by remember(identity.editorId) { mutableStateOf(false) }
 
     Column(
         modifier = modifier
@@ -117,7 +125,7 @@ fun McpServerEditorPage(
             // that plainly instead of pretending the form can commit.
             if (projected == null) {
                 IntegrationMetaLine(stringResource(R.string.integration_waiting_host))
-            } else if (!networkAvailable) {
+            } else if (!networkAvailable && !isStdio) {
                 IntegrationMetaLine(
                     projected.networkActionsUnavailableReason
                         ?: stringResource(R.string.integration_network_unavailable),
@@ -142,20 +150,71 @@ fun McpServerEditorPage(
                     value = draft.displayName,
                     onValueChange = { holder.setMcpDisplayName(identity, it) },
                 )
-                FloeFormTextField(
-                    label = stringResource(R.string.mcp_endpoint_field),
-                    value = draft.endpointText,
-                    onValueChange = { holder.setMcpEndpoint(identity, it) },
-                    keyboardOptions = KeyboardOptions(
-                        keyboardType = KeyboardType.Uri,
-                        autoCorrectEnabled = false,
+                FloeFormChoiceField(
+                    label = stringResource(R.string.mcp_transport_field),
+                    options = listOf(
+                        FloeChoiceOption(
+                            McpTransportKindUi.STREAMABLE_HTTP.swiftRaw,
+                            stringResource(R.string.mcp_transport_http),
+                        ),
+                        FloeChoiceOption(
+                            McpTransportKindUi.STDIO.swiftRaw,
+                            stringResource(R.string.mcp_transport_stdio),
+                        ),
                     ),
-                    isError = McpFormPreflight.looksInvalid(draft)
-                        ?.let {
-                            it == McpPreflightFinding.ENDPOINT_REQUIRED ||
-                                it == McpPreflightFinding.ENDPOINT_UNPARSEABLE
-                        } == true,
+                    selectedKey = draft.transportKind.swiftRaw,
+                    expanded = transportMenuOpen,
+                    onExpandedChange = { transportMenuOpen = it },
+                    onSelect = { key ->
+                        val next = if (key == McpTransportKindUi.STDIO.swiftRaw) {
+                            McpTransportKindUi.STDIO
+                        } else {
+                            McpTransportKindUi.STREAMABLE_HTTP
+                        }
+                        holder.setMcpTransport(identity, next)
+                    },
                 )
+                if (isStdio) {
+                    FloeFormTextField(
+                        label = stringResource(R.string.mcp_command_field),
+                        value = draft.stdioCommand,
+                        onValueChange = { holder.setMcpCommand(identity, it) },
+                        keyboardOptions = KeyboardOptions(autoCorrectEnabled = false),
+                        isError = McpFormPreflight.looksInvalid(draft) ==
+                            McpPreflightFinding.COMMAND_REQUIRED,
+                    )
+                    FloeFormTextField(
+                        label = stringResource(R.string.mcp_arguments_field),
+                        value = draft.stdioArgumentsText,
+                        onValueChange = { holder.setMcpArguments(identity, it) },
+                        keyboardOptions = KeyboardOptions(autoCorrectEnabled = false),
+                    )
+                    IntegrationMetaLine(stringResource(R.string.mcp_arguments_hint))
+                    FloeFormTextField(
+                        label = stringResource(R.string.mcp_working_directory_field),
+                        value = draft.stdioWorkingDirectory,
+                        onValueChange = { holder.setMcpWorkingDirectory(identity, it) },
+                        keyboardOptions = KeyboardOptions(autoCorrectEnabled = false),
+                        isError = McpFormPreflight.looksInvalid(draft) ==
+                            McpPreflightFinding.WORKING_DIRECTORY_INVALID,
+                    )
+                    IntegrationMetaLine(stringResource(R.string.mcp_working_directory_hint))
+                } else {
+                    FloeFormTextField(
+                        label = stringResource(R.string.mcp_endpoint_field),
+                        value = draft.endpointText,
+                        onValueChange = { holder.setMcpEndpoint(identity, it) },
+                        keyboardOptions = KeyboardOptions(
+                            keyboardType = KeyboardType.Uri,
+                            autoCorrectEnabled = false,
+                        ),
+                        isError = McpFormPreflight.looksInvalid(draft)
+                            ?.let {
+                                it == McpPreflightFinding.ENDPOINT_REQUIRED ||
+                                    it == McpPreflightFinding.ENDPOINT_UNPARSEABLE
+                            } == true,
+                    )
+                }
                 FloeSwitchRow(
                     title = stringResource(R.string.mcp_enabled_field),
                     checked = draft.enabled,
@@ -167,8 +226,33 @@ fun McpServerEditorPage(
                     onCheckedChange = { holder.setMcpAllowInCanvas(identity, it) },
                 )
             }
-            IntegrationSectionFooter(stringResource(R.string.mcp_server_footer))
+            IntegrationSectionFooter(
+                if (isStdio) {
+                    stringResource(R.string.mcp_stdio_footer)
+                } else {
+                    stringResource(R.string.mcp_server_footer)
+                },
+            )
+            if (isStdio) {
+                FloeSettingsSectionCard(
+                    title = stringResource(R.string.mcp_stdio_binding_section),
+                ) {
+                    val bound = seed.stdioBinding?.state ==
+                        McpStdioBindingStateUi.BOUND
+                    FloeStatusLine(
+                        icon = if (bound) FloeIcons.ShieldCheck else FloeIcons.InfoCircle,
+                        text = if (bound) {
+                            stringResource(R.string.mcp_stdio_binding_bound)
+                        } else {
+                            stringResource(R.string.mcp_stdio_binding_unbound)
+                        },
+                        color = Floe.colors.secondaryLabel,
+                        modifier = Modifier.padding(horizontal = 16.dp, vertical = 10.dp),
+                    )
+                }
+            }
 
+            if (!isStdio) {
             /* ---------------------------- authentication ---------------------------- */
             FloeSettingsSectionCard(title = stringResource(R.string.mcp_auth_section)) {
                 val stored = projected?.credentialStored ?: seed.credentialStored
@@ -235,6 +319,7 @@ fun McpServerEditorPage(
                     checked = draft.allowInsecureHttp,
                     onCheckedChange = { holder.setMcpAllowInsecureHttp(identity, it) },
                 )
+            }
             }
 
             /* -------------------------------- tools -------------------------------- */
@@ -341,4 +426,8 @@ private fun preflightMessage(finding: McpPreflightFinding): String = when (findi
         stringResource(R.string.mcp_insecure_blocked_hint)
     McpPreflightFinding.HEADER_NAME_INVALID ->
         stringResource(R.string.mcp_header_name_invalid)
+    McpPreflightFinding.COMMAND_REQUIRED ->
+        stringResource(R.string.mcp_command_required)
+    McpPreflightFinding.WORKING_DIRECTORY_INVALID ->
+        stringResource(R.string.mcp_working_directory_invalid)
 }

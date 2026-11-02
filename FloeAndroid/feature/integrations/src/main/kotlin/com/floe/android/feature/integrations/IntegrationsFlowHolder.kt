@@ -608,6 +608,35 @@ class IntegrationsFlowHolder(
     fun setMcpEndpoint(identity: McpEditorIdentity, value: String): IntegrationsFlowResult =
         withEditor(identity) { it.update { s -> s.copy(endpointText = value) } }
 
+    fun setMcpTransport(
+        identity: McpEditorIdentity,
+        kind: McpTransportKindUi,
+    ): IntegrationsFlowResult = withEditor(identity) { slot ->
+        slot.update { draft ->
+            draft.copy(
+                transportKind = kind,
+                authentication = if (kind == McpTransportKindUi.STDIO) {
+                    McpAuthenticationUi.NONE
+                } else {
+                    draft.authentication
+                },
+            )
+        }
+        if (kind == McpTransportKindUi.STDIO) slot.clearSecureInput()
+    }
+
+    fun setMcpCommand(identity: McpEditorIdentity, value: String): IntegrationsFlowResult =
+        withEditor(identity) { it.update { s -> s.copy(stdioCommand = value) } }
+
+    fun setMcpArguments(identity: McpEditorIdentity, value: String): IntegrationsFlowResult =
+        withEditor(identity) { it.update { s -> s.copy(stdioArgumentsText = value) } }
+
+    fun setMcpWorkingDirectory(
+        identity: McpEditorIdentity,
+        value: String,
+    ): IntegrationsFlowResult =
+        withEditor(identity) { it.update { s -> s.copy(stdioWorkingDirectory = value) } }
+
     fun setMcpEnabled(identity: McpEditorIdentity, enabled: Boolean): IntegrationsFlowResult =
         withEditor(identity) { it.update { s -> s.copy(enabled = enabled) } }
 
@@ -654,7 +683,9 @@ class IntegrationsFlowHolder(
         // Swift validation stays the authority.
         val preflight = McpFormPreflight.looksInvalid(slot.snapshot.value)
         if (preflight == McpPreflightFinding.ENDPOINT_REQUIRED ||
-            preflight == McpPreflightFinding.ENDPOINT_UNPARSEABLE
+            preflight == McpPreflightFinding.ENDPOINT_UNPARSEABLE ||
+            preflight == McpPreflightFinding.COMMAND_REQUIRED ||
+            preflight == McpPreflightFinding.WORKING_DIRECTORY_INVALID
         ) {
             return rejected(RejectedReason.INPUT_INSUFFICIENT)
         }
@@ -818,6 +849,10 @@ class IntegrationsFlowHolder(
     private fun draftFromSeed(seed: McpEditorSeedUi): McpDraftSnapshot = McpDraftSnapshot(
         displayName = seed.displayName,
         endpointText = seed.endpointText,
+        transportKind = seed.transportKind,
+        stdioCommand = seed.stdioCommand,
+        stdioArgumentsText = seed.stdioArguments.joinToString("\n"),
+        stdioWorkingDirectory = seed.stdioWorkingDirectory,
         enabled = seed.enabled,
         allowInCanvas = seed.allowInCanvas,
         allowInsecureHttp = seed.allowInsecureHttp,

@@ -265,6 +265,15 @@ private fun SectionScope.McpServerRow(
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                 )
+                if (row.stdioBound == false) {
+                    FloeText(
+                        stringResource(R.string.mcp_stdio_unbound_state),
+                        style = Floe.typography.metadata,
+                        color = Floe.colors.pending,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
                 FloeText(
                     text = badgeLabel(badge),
                     style = Floe.typography.metadata,

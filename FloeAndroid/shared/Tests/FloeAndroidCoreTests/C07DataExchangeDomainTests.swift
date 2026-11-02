@@ -77,6 +77,55 @@ final class C07DataExchangeDomainTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: destination.path))
     }
 
+    func testProjectWriteRefusesSymlinkedDestinationAncestor() throws {
+        let root = try Root()
+        let outside = root.url.appendingPathComponent("outside", isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: outside, withIntermediateDirectories: true)
+        let victim = try root.file("outside/victim.txt", Data("victim".utf8))
+        let project = root.url.appendingPathComponent("project", isDirectory: true)
+        try FileManager.default.createDirectory(at: project)
+        try FileManager.default.createSymbolicLink(
+            at: project.appendingPathComponent("linked"),
+            withDestinationURL: outside)
+        let data = Data("project bytes".utf8)
+        let source = try root.file("source.bin", data)
+        XCTAssertThrowsError(
+            try C07FileSystem.copyVerified(
+                sourceRoot: source.deletingLastPathComponent(),
+                sourceRelativePath: source.lastPathComponent,
+                destinationRoot: project,
+                destinationRelativePath: "linked/victim.txt",
+                expectedSize: Int64(data.count))) { error in
+            guard case C07DataExchangeError.symlinkUnsupported = error else {
+                return XCTFail("expected symlinkUnsupported, got \(error)")
+            }
+        }
+        XCTAssertEqual(try Data(contentsOf: victim), Data("victim".utf8))
+    }
+
+    func testProjectWriteCreatesOwnedDirectoriesUnderRoot() throws {
+        let root = try Root()
+        let data = Data("nested project bytes".utf8)
+        let source = try root.file("source.bin", data)
+        let project = root.url.appendingPathComponent("project", isDirectory: true)
+        try FileManager.default.createDirectory(at: project)
+        try C07POSIX.writeExclusive(
+            sourceRoot: source.deletingLastPathComponent(),
+            sourceRelativePath: source.lastPathComponent,
+            destinationRoot: project,
+            destinationRelativePath: "a/b/c.txt",
+            expectedBytes: Int64(data.count),
+            expectedSHA256: digest(data),
+            createDestinationParents: true)
+        XCTAssertEqual(try Data(contentsOf: project.appendingPathComponent(
+            "a/b/c.txt")), data)
+        let values = try project.appendingPathComponent("a/b")
+            .resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey])
+        XCTAssertTrue(values.isDirectory == true)
+        XCTAssertTrue(values.isSymbolicLink != true)
+    }
+
     func testProjectNameSanitizationPreservesAUsefulName() {
         XCTAssertEqual(
             C07LiveRestoreSink.safeProjectName("  Docs / 2026 \\ final  "),

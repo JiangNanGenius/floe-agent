@@ -223,9 +223,26 @@ public enum C07IDKind: String, Codable, Sendable, CaseIterable {
     /// non-secret config archive, never inserted into a live table.
     case remoteHost
     case mailAccount
+    /// Saved MCP definition. Restore allocates a fresh identity so a
+    /// definition can never overwrite a current user server.
+    case mcpServer
     /// Receipt-only rows whose primary identity is not rewritten because
     /// they never enter a live authorization table.
     case executionEvidence
+    /// Durable user memory entry. New identity is allocated so a restore
+    /// never collides with an existing memory; the user's text travels
+    /// verbatim and memory stays data-only (no tool permission or trust).
+    case memoryEntry
+    /// Pending/activated/rejected durable memory candidate awaiting review.
+    case memoryCandidate
+    /// Versioned user-authored personalization document (soul / userProfile).
+    case personalizationDocument
+    /// Personalization auto-update preference cursor (composite key;
+    /// `preservePrimary` keeps the kind/workspace key, never remapped).
+    case preference
+    /// Installed skill definition row. Content and install/source references
+    /// are restored; installed/enabled state and grants are not.
+    case skill
 
     /// Root identities are checked against live storage before commit. Child
     /// rows are protected by their own primary keys and exact journal plan.
@@ -316,6 +333,21 @@ public enum C07RowNormalization: String, Codable, Sendable {
     case attachment
     case conversation
     case todo
+    /// Memory rows keep content/status verbatim; derived sync/recall state
+    /// is reset so a restore never replays usage history or remote revisions.
+    case memory
+    /// Durable memory candidates are review queue entries, not authority.
+    case memoryCandidate
+    /// Versioned personalization document (revision renumbering happens in
+    /// the commit adapter against the target DB).
+    case personalizationDocument
+    /// Auto-update preference cursor: only the user toggle travels;
+    /// counters and last-generated timestamps are runtime state.
+    case personalizationCursor
+    /// A restored skill is reference-only: disabled, ungranted, unbound.
+    case skill
+    /// Singleton model preferences merge into the existing 'default' row.
+    case modelPreferences
 }
 
 public struct C07OwnedTablePolicy: Sendable {
@@ -340,9 +372,18 @@ public struct C07OwnedTablePolicy: Sendable {
     /// Evidence tables may be absent before the coordinated schema
     /// registration; their absence is declared, never hidden.
     public var optional: Bool
+    /// Singleton/preference rows whose PRIMARY column is a fixed key
+    /// ('default', personalization kind, workspace_key) rather than a
+    /// remappable identity. The primary value travels verbatim; identity
+    /// allocation and mapping are skipped for it.
+    public var preservePrimary: Bool
     /// The table is expected to exist from this coordinated schema onward.
     /// Below this version its absence is a declared schema fact, not a
     /// silent scope reduction; at or above it, absence is a hard failure.
+    /// For the 2026-11-02 user-data expansion this is set to the coordinated
+    /// v52 freeze so archives written by earlier builds (schema <= 51,
+    /// legacy scope) still validate while full v2 archives written from v52
+    /// onward always carry the expanded coverage.
     public var minimumSchemaVersion: Int?
     /// Columns that only become required from a later coordinated schema.
     /// Used for `calendar_todos.reminders_suspended` (schema 52). A package
@@ -357,12 +398,13 @@ public struct C07OwnedTablePolicy: Sendable {
                 clearedOnExport: [String: C07DBValue] = [:],
                 jsonIDColumns: Set<String> = [],
                 normalization: C07RowNormalization = .none,
-                freshPrimary: Bool = false,
-                requiredColumns: Set<String> = [],
-                disposition: C07TableDisposition = .live,
-                optional: Bool = false,
-                minimumSchemaVersion: Int? = nil,
-                requiredColumnMinimumSchema: [String: Int] = [:]) {
+                 freshPrimary: Bool = false,
+                 requiredColumns: Set<String> = [],
+                 disposition: C07TableDisposition = .live,
+                 optional: Bool = false,
+                 preservePrimary: Bool = false,
+                 minimumSchemaVersion: Int? = nil,
+                 requiredColumnMinimumSchema: [String: Int] = [:]) {
         self.name = name
         self.primaryColumn = primaryColumn
         self.primaryKind = primaryKind
@@ -375,6 +417,7 @@ public struct C07OwnedTablePolicy: Sendable {
         self.disposition = disposition
         self.freshPrimary = freshPrimary
         self.optional = optional
+        self.preservePrimary = preservePrimary
         self.minimumSchemaVersion = minimumSchemaVersion
         self.requiredColumnMinimumSchema = requiredColumnMinimumSchema
     }
@@ -420,6 +463,29 @@ public enum C07OwnedDataPolicy {
               requiredColumns: ["id", "provider_id", "remote_model_id",
                                 "display_name", "context_tokens",
                                 "max_output_tokens", "capabilities", "is_enabled"]),
+        // User-chosen model defaults/overrides (the singleton 'default' row).
+        // The row merges into the target's existing preferences: unset routes
+        // are filled with the remapped model identities; explicit local
+        // choices are never overwritten. Sync revisions never travel.
+        .init(name: "model_preferences", primaryKind: .preference,
+              optionalReferences: [
+                  "default_agent_model_id": .model,
+                  "general_auxiliary_llm_model_id": .model,
+                  "canvas_agent_model_id": .model,
+                  "vision_model_id": .model,
+                  "canvas_vision_model_id": .model,
+                  "approval_model_id": .model,
+                  "package_review_model_id": .model,
+                  "shared_image_model_id": .model,
+                  "image_generation_model_id": .model,
+                  "image_editing_model_id": .model,
+                  "default_video_model_id": .model,
+              ],
+              normalization: .modelPreferences,
+              requiredColumns: ["id", "onboarding_status", "auxiliary_image_mode",
+                                "updated_at", "sync_revision"],
+              preservePrimary: true,
+              minimumSchemaVersion: 52),
         .init(name: "conversations", primaryKind: .conversation,
               normalization: .conversation,
               requiredColumns: ["id", "title", "created_at", "updated_at"]),
@@ -487,6 +553,60 @@ public enum C07OwnedDataPolicy {
               freshPrimary: true,
               requiredColumns: ["id", "message_id", "part_index", "kind",
                                 "metadata_json", "created_at"]),
+        // Durable user memory. Content/status/pinning travel verbatim;
+        // recall statistics and the sync revision are runtime state and are
+        // reset on restore. Owner references that no longer exist become
+        // NULL (the retained text and its origin label still identify it).
+        .init(name: "memory_entries", primaryKind: .memoryEntry,
+              optionalReferences: ["workspace_id": .workspace,
+                                    "conversation_id": .conversation,
+                                    "origin_workspace_id": .workspace,
+                                    "origin_conversation_id": .conversation],
+              normalization: .memory,
+              requiredColumns: ["id", "scope", "status", "content",
+                                "normalized_content", "source_kind",
+                                "created_at", "updated_at"],
+              minimumSchemaVersion: 52),
+        // Durable memory candidates awaiting (or concluded) review. The
+        // review queue entry is user data; it grants nothing.
+        .init(name: "memory_candidates", primaryKind: .memoryCandidate,
+              optionalReferences: ["workspace_id": .workspace,
+                                    "conversation_id": .conversation,
+                                    "source_attachment_id": .attachment],
+              jsonIDColumns: ["evidence_json", "conflicts_json"],
+              normalization: .memoryCandidate,
+              requiredColumns: ["id", "scope", "content", "confidence",
+                                "stability", "importance", "sensitivity",
+                                "origin", "evidence_json", "conflicts_json",
+                                "status", "created_at", "updated_at"],
+              minimumSchemaVersion: 52),
+        // Versioned user-authored personalization documents (soul /
+        // userProfile). Revisions are renumbered above the target's current
+        // maximum per kind/workspace by the commit adapter so history order
+        // is preserved without ever overwriting an existing document.
+        .init(name: "personalization_documents",
+              primaryKind: .personalizationDocument,
+              optionalReferences: ["workspace_id": .workspace],
+              normalization: .personalizationDocument,
+              requiredColumns: ["id", "kind", "revision", "content",
+                                "source_kind", "evidence_digest", "is_active",
+                                "created_at"],
+              minimumSchemaVersion: 52),
+        // Auto-update preference per document kind/workspace. Only the
+        // user's automatic_updates_enabled toggle travels; the kind/
+        // workspace_key primary is preserved and the workspace reference is
+        // remapped. Inserted only when the target has no cursor for the key.
+        .init(name: "personalization_update_cursors",
+              primaryColumn: "kind",
+              primaryKind: .preference,
+              optionalReferences: ["workspace_id": .workspace],
+              normalization: .personalizationCursor,
+              requiredColumns: ["kind", "workspace_key",
+                                "automatic_updates_enabled",
+                                "completed_runs_since_update",
+                                "user_messages_since_update", "updated_at"],
+              preservePrimary: true,
+              minimumSchemaVersion: 52),
         .init(name: "run_events", primaryKind: .run,
               references: ["run_id": .run],
               jsonIDColumns: ["payload_json"],
@@ -593,6 +713,33 @@ public enum C07OwnedDataPolicy {
                                 "updated_at"],
               minimumSchemaVersion: 52,
               requiredColumnMinimumSchema: ["reminders_suspended": 52]),
+        // User-authored task checklist version history. The composite
+        // (conversation_id, revision) key is content, not resumable state:
+        // the conversation/run references are remapped, the revision body
+        // travels verbatim, and nothing auto-resumes a restored plan.
+        .init(name: "task_checklist_revisions", primaryColumn: "conversation_id",
+              primaryKind: .conversation,
+              references: ["conversation_id": .conversation,
+                            "run_id": .run],
+              normalization: .none,
+              requiredColumns: ["conversation_id", "revision", "run_id",
+                                "operation_id", "request_digest", "body_json"],
+              minimumSchemaVersion: 52),
+        // Installed skill definitions: the user's custom source/config/
+        // install references (source_url/source_digest, markdown, manifest,
+        // declared capabilities) are restored through the original skills
+        // table so they stay recoverable through the original services.
+        // Installed/enabled state and capability grants never travel
+        // (see `skillPermissionsAndTrust` in the scope exclusions).
+        .init(name: "skills", primaryKind: .skill,
+              normalization: .skill,
+              requiredColumns: ["id", "name", "version", "status",
+                                "skill_markdown", "manifest_json",
+                                "declared_capabilities_json",
+                                "effective_capabilities_json",
+                                "rewritten_digest", "compatibility_report_json",
+                                "created_at", "updated_at"],
+              minimumSchemaVersion: 52),
         // C02 execution-target evidence. These rows are exported and
         // verified, then restored ONLY into the read-only receipt archive.
         // A historical target, run pin or remote-command receipt never
@@ -637,6 +784,19 @@ public enum C07OwnedDataPolicy {
                                 "command_sha256", "state", "started_at",
                                 "updated_at", "body_json"],
               disposition: .evidenceArchive, optional: true),
+        // Parent-run -> background-job dependency edges. The durable edge is
+        // user plan/history content: it is exported, reference-verified and
+        // retained ONLY under RestoredReceipts as read-only recovery
+        // evidence. It is never inserted into the live table, so a
+        // historical edge can never pin a run nonterminal again.
+        .init(name: "run_dependencies", primaryColumn: "job_id",
+              primaryKind: .executionEvidence,
+              references: ["run_id": .run,
+                            "conversation_id": .conversation],
+              requiredColumns: ["job_id", "run_id", "conversation_id",
+                                "kind", "state", "created_at"],
+              disposition: .evidenceArchive, optional: true,
+              minimumSchemaVersion: 52),
     ]
 
     public static func policy(for table: String) -> C07OwnedTablePolicy? {
@@ -665,16 +825,42 @@ public enum C07OwnedDataPolicy {
     /// Tables required for a full backup at one coordinated schema version.
     /// `calendar_todos` is required from schema 52 onward; on an older app it
     /// does not exist and its absence is a declared schema fact, not a
-    /// silent scope reduction.
+    /// silent scope reduction. The 2026-11-02 user-data expansion tables are
+    /// likewise required from the coordinated v52 freeze onward: archives
+    /// written by earlier builds (schema <= 51) validate with the legacy
+    /// scope, while full v2 archives from v52 onward always carry them.
     public static func mandatoryTableNames(forSchema schemaVersion: Int) -> Set<String> {
         var result = mandatoryTableNames
-        if schemaVersion >= 52 { result.insert("calendar_todos") }
+        if schemaVersion >= 52 {
+            result.insert("calendar_todos")
+            result.formUnion(expandedUserDataTableNames)
+        }
         return result
     }
 
+    /// Live user-data tables added by the 2026-11-02 coverage expansion.
+    public static let expandedUserDataTableNames: Set<String> = [
+        "model_preferences", "memory_entries", "memory_candidates",
+        "personalization_documents", "personalization_update_cursors",
+        "task_checklist_revisions", "skills",
+    ]
+
     /// Export-time row admission. Temporary chats never leave RAM and must
-    /// never appear in a package, even if a historical bug wrote one.
-    public static func shouldExportRow(table: String, row: C07DBRow) -> Bool {
+    /// never appear in a package, even if a historical bug wrote one; the
+    /// same rule binds every user-data row that references a conversation.
+    public static func shouldExportRow(table: String, row: C07DBRow,
+                                       excludedConversationIDs: Set<String> = [])
+        -> Bool
+    {
+        func referencesExcludedConversation() -> Bool {
+            for column in ["conversation_id", "origin_conversation_id"] {
+                if let id = row[column]?.stringValue,
+                   !id.isEmpty, excludedConversationIDs.contains(id) {
+                    return true
+                }
+            }
+            return false
+        }
         switch table {
         case "conversations":
             return row["purpose"]?.stringValue != "temporary"
@@ -682,6 +868,9 @@ public enum C07OwnedDataPolicy {
             // An attachment without an owning conversation has no verified
             // restore owner; it is declared, not guessed.
             return row["conversation_id"]?.stringValue?.isEmpty == false
+        case "memory_entries", "memory_candidates", "task_checklist_revisions",
+             "run_dependencies":
+            return !referencesExcludedConversation()
         case "providers":
             return true
         default:
@@ -792,6 +981,39 @@ public enum C07OwnedDataPolicy {
             if purpose != "ordinary" && purpose != "notes" {
                 result["purpose"] = .string("ordinary")
             }
+        case .memory:
+            // The user's memory text, status, pinning, fact identity and
+            // retention policy travel verbatim. Recall statistics and the
+            // sync revision are runtime/remote state: a restore never
+            // replays usage history or claims a remote revision.
+            result["sync_revision"] = .int(0)
+            result["last_recalled_at"] = .null
+            result["recall_count"] = .int(0)
+        case .memoryCandidate:
+            // Review-queue content only; nothing to disarm.
+            break
+        case .personalizationDocument:
+            // Revision renumbering is target-dependent and happens in the
+            // commit adapter; content/source/evidence travel verbatim.
+            break
+        case .personalizationCursor:
+            // Only the user's automatic-updates toggle travels. Counters
+            // and the last-generated timestamp are runtime state.
+            result["last_generated_at"] = .null
+            result["completed_runs_since_update"] = .int(0)
+            result["user_messages_since_update"] = .int(0)
+        case .skill:
+            // Reference-only restore: the definition and its source/install
+            // references survive; installed/enabled state, effective
+            // capability grants and model bindings are never fabricated.
+            result["status"] = .string("disabled")
+            result["effective_capabilities_json"] = .string("[]")
+            result["selected_by_model_id"] = .null
+            result["rewrite_model_id"] = .null
+        case .modelPreferences:
+            // Remote sync state never travels; the merge adapter advances
+            // the target revision inside the one writer transaction.
+            result["sync_revision"] = .int(0)
         }
         // Never let an archive reintroduce a secret column even if the
         // writer predates the export-side redaction.
@@ -1195,8 +1417,21 @@ public struct C07OwnedDataCounts: Codable, Sendable, Equatable {
     public var appArtifacts: Int?
     public var captureFiles: Int?
     public var configSections: Int?
+    /// MCP server definitions represented in the typed `mcpServers`
+    /// configuration section. Optional so an existing archive still decodes.
+    public var mcpDefinitions: Int?
     public var toolResults: Int?
     public var omissions: Int?
+    // 2026-11-02 user-data expansion counts. Optional so an existing
+    // archive still decodes; absent means zero for that category.
+    public var memoryEntries: Int?
+    public var memoryCandidates: Int?
+    public var personalizationDocuments: Int?
+    public var personalizationCursors: Int?
+    public var checklistRevisions: Int?
+    public var skills: Int?
+    public var modelPreferences: Int?
+    public var runDependencies: Int?
 
     public init(conversations: Int = 0, messages: Int = 0,
                 messageParts: Int = 0, runs: Int = 0, toolCalls: Int = 0,
@@ -1212,8 +1447,14 @@ public struct C07OwnedDataCounts: Codable, Sendable, Equatable {
                 remoteCommandReceipts: Int = 0, artifacts: Int = 0,
                 artifactBytes: Int64 = 0, todos: Int? = nil,
                 appArtifacts: Int? = nil, captureFiles: Int? = nil,
-                configSections: Int? = nil, toolResults: Int? = nil,
-                omissions: Int? = nil) {
+                configSections: Int? = nil, mcpDefinitions: Int? = nil,
+                toolResults: Int? = nil,
+                omissions: Int? = nil, memoryEntries: Int? = nil,
+                memoryCandidates: Int? = nil,
+                personalizationDocuments: Int? = nil,
+                personalizationCursors: Int? = nil,
+                checklistRevisions: Int? = nil, skills: Int? = nil,
+                modelPreferences: Int? = nil, runDependencies: Int? = nil) {
         self.conversations = conversations
         self.messages = messages
         self.messageParts = messageParts
@@ -1241,8 +1482,17 @@ public struct C07OwnedDataCounts: Codable, Sendable, Equatable {
         self.appArtifacts = appArtifacts
         self.captureFiles = captureFiles
         self.configSections = configSections
+        self.mcpDefinitions = mcpDefinitions
         self.toolResults = toolResults
         self.omissions = omissions
+        self.memoryEntries = memoryEntries
+        self.memoryCandidates = memoryCandidates
+        self.personalizationDocuments = personalizationDocuments
+        self.personalizationCursors = personalizationCursors
+        self.checklistRevisions = checklistRevisions
+        self.skills = skills
+        self.modelPreferences = modelPreferences
+        self.runDependencies = runDependencies
     }
 }
 
@@ -1453,6 +1703,13 @@ public struct C07OwnedDataManifest: Codable, Sendable, Equatable {
         if let configSections {
             guard (counts.configSections ?? configSections.count) == configSections.count else {
                 throw C07DataExchangeError.invalidManifest("configCountField")
+            }
+        }
+        if let declaredMCP = counts.mcpDefinitions {
+            let sectionCount = configSections?
+                .first(where: { $0.kind == .mcpServers })?.count ?? 0
+            guard declaredMCP == sectionCount else {
+                throw C07DataExchangeError.invalidManifest("mcpCountField")
             }
         }
         if let declaredCount = counts.omissions,
@@ -1682,6 +1939,22 @@ public struct C07OwnedDataRestorePlanFile: Codable, Sendable, Equatable {
     public var remoteHostIDs: [String: String]?
     public var mailAccountIDs: [String: String]?
     public var configEntries: [String]?
+    /// Old MCP definition UUID -> fresh restored UUID. The values are the
+    /// EXACT identities a rollback removes from the original MCP settings
+    /// row; nothing else in that row is rewritten.
+    public var mcpServerIDs: [String: String]?
+    /// Whether `floe.mcp.remoteServers.v1` existed before the restore. A
+    /// rollback removes the row only when it did not exist and no concurrent
+    /// local definition remains.
+    public var mcpServersRowExisted: Bool?
+    /// Pre-restore snapshot of the singleton model_preferences row so a
+    /// rollback can restore the exact prior preferences after a merge.
+    /// Nil means the row did not exist at prepare time.
+    public var previousModelPreferences: C07DBRow?
+    /// Exact (kind, workspace_key) personalization cursor keys this restore
+    /// will INSERT (target had no cursor for them at prepare time), so a
+    /// rollback removes precisely those rows and nothing else.
+    public var personalizationCursorKeys: [String]?
     public var counts: C07OwnedDataCounts
     public var warnings: [String]
 
@@ -1697,6 +1970,10 @@ public struct C07OwnedDataRestorePlanFile: Codable, Sendable, Equatable {
                 remoteHostIDs: [String: String]? = nil,
                 mailAccountIDs: [String: String]? = nil,
                 configEntries: [String]? = nil,
+                mcpServerIDs: [String: String]? = nil,
+                mcpServersRowExisted: Bool? = nil,
+                previousModelPreferences: C07DBRow? = nil,
+                personalizationCursorKeys: [String]? = nil,
                 counts: C07OwnedDataCounts,
                 warnings: [String]) {
         self.restoreID = restoreID
@@ -1712,6 +1989,10 @@ public struct C07OwnedDataRestorePlanFile: Codable, Sendable, Equatable {
         self.remoteHostIDs = remoteHostIDs
         self.mailAccountIDs = mailAccountIDs
         self.configEntries = configEntries
+        self.mcpServerIDs = mcpServerIDs
+        self.mcpServersRowExisted = mcpServersRowExisted
+        self.previousModelPreferences = previousModelPreferences
+        self.personalizationCursorKeys = personalizationCursorKeys
         self.counts = counts
         self.warnings = warnings
     }
@@ -1973,6 +2254,17 @@ public struct C07OwnedDataCommitReceipt: Sendable, Equatable {
     public var models: Int
     public var evidenceRows: Int
     public var todos: Int
+    // 2026-11-02 user-data expansion receipts.
+    public var memoryEntries: Int
+    public var memoryCandidates: Int
+    public var personalizationDocuments: Int
+    public var personalizationCursors: Int
+    public var checklistRevisions: Int
+    public var skills: Int
+    public var modelPreferences: Int
+    /// Fresh disabled/unbound MCP definitions inserted into the original
+    /// settings row by this restore.
+    public var mcpDefinitions: Int
     public var partial: Bool
     public var omissions: Int
     public var warnings: [String]
@@ -1982,6 +2274,11 @@ public struct C07OwnedDataCommitReceipt: Sendable, Equatable {
                 workspaces: Int = 0, schedules: Int = 0,
                 providers: Int = 0, models: Int = 0,
                 evidenceRows: Int = 0, todos: Int = 0,
+                memoryEntries: Int = 0, memoryCandidates: Int = 0,
+                personalizationDocuments: Int = 0,
+                personalizationCursors: Int = 0,
+                checklistRevisions: Int = 0, skills: Int = 0,
+                modelPreferences: Int = 0, mcpDefinitions: Int = 0,
                 partial: Bool = false, omissions: Int = 0,
                 warnings: [String] = []) {
         self.conversations = conversations
@@ -1995,6 +2292,14 @@ public struct C07OwnedDataCommitReceipt: Sendable, Equatable {
         self.models = models
         self.evidenceRows = evidenceRows
         self.todos = todos
+        self.memoryEntries = memoryEntries
+        self.memoryCandidates = memoryCandidates
+        self.personalizationDocuments = personalizationDocuments
+        self.personalizationCursors = personalizationCursors
+        self.checklistRevisions = checklistRevisions
+        self.skills = skills
+        self.modelPreferences = modelPreferences
+        self.mcpDefinitions = mcpDefinitions
         self.partial = partial
         self.omissions = omissions
         self.warnings = warnings

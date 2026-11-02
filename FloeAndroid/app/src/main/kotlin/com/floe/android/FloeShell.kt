@@ -82,10 +82,13 @@ import com.floe.android.host.entryflow.C07EntryFlowFeature
 import com.floe.android.host.entryflow.C07EntryFlowHost
 import com.floe.android.host.entryflow.C07EntryFlowSurface
 import com.floe.android.host.entryflow.C07EntryNavigation
+import com.floe.android.host.entryflow.C07EntryPackageKind
 import com.floe.android.host.entryflow.C07HomeAttachmentStager
+import com.floe.android.host.entryflow.C07PackageReviewOwner
 import com.floe.android.design.SidebarSelection
 import com.floe.android.design.WorkbenchSelection
 import com.floe.android.feature.canvas.CreativeAvailability
+import com.floe.android.feature.dataexchange.DataExchangePhase
 import com.floe.android.feature.providers.FloeProviderSettingsDestination
 import com.floe.android.host.AttachmentPickerEffect
 import com.floe.android.host.LocalNetworkPermissionEffect
@@ -93,6 +96,8 @@ import com.floe.android.host.RuntimeHost
 import com.floe.android.host.officerecovery.OfficeRecoveryEffect
 import com.floe.android.host.RuntimeHostProvider
 import com.floe.android.host.SkillsFolderPickerEffect
+import com.floe.android.safgateway.SafAccessFlag
+import com.floe.android.safgateway.SafUriRef
 import com.floe.android.host.creative.GenerationForegroundOwner
 import com.floe.android.host.creative.GenerationReturnDecision
 import com.floe.android.host.creative.GenerationReturnNavigation
@@ -294,6 +299,52 @@ private fun FloeShellContent(
                         val (nonce, generation) =
                             host.conversations.rootWorkspace.currentDraftOwner()
                         return host.attachments.stageDraftUris(nonce, generation, uris)
+                    }
+                },
+            )
+            // C07 package handoff: the EXISTING Data Exchange owner performs
+            // archive inspection/review (never restore on arrival). The source
+            // reference is retained here BEFORE the entry owner releases its
+            // lease, and released by that owner's exact source-settled callback.
+            C07EntryFlowHost.installPackageReviewOwner(
+                object : C07PackageReviewOwner {
+                    override val settingsSectionKey: String = "data-exchange"
+
+                    override fun beginReview(
+                        uri: android.net.Uri,
+                        kind: C07EntryPackageKind,
+                        displayName: String,
+                        releaseSource: () -> Unit,
+                    ): Boolean {
+                        // A .floecad package is a DIRECTORY. The only real
+                        // import is the existing task-scoped workspace tree
+                        // import; never fabricate a ZIP review for it.
+                        if (kind == C07EntryPackageKind.CAD) return false
+                        if (host.nativeRootEpoch() == null) return false
+                        val exchange = host.c07DataExchange
+                        if (exchange.state.value.busy ||
+                            exchange.state.value.phase == DataExchangePhase.REVIEWING
+                        ) {
+                            return false
+                        }
+                        val retained = try {
+                            com.floe.android.host.SharedUriGrantAuthority.broker.retain(
+                                SafUriRef(uri.toString()),
+                                SafAccessFlag.READ,
+                            )
+                        } catch (_: RuntimeException) {
+                            return false
+                        }
+                        return try {
+                            exchange.beginRestore(uri, kind.wire) {
+                                runCatching { retained.release() }
+                                releaseSource()
+                            }
+                            true
+                        } catch (_: Throwable) {
+                            runCatching { retained.release() }
+                            false
+                        }
                     }
                 },
             )

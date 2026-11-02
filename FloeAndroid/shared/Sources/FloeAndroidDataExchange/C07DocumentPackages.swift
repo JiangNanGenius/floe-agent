@@ -844,8 +844,14 @@ public enum C07CanvasPackage {
         {
             let target = stage.appendingPathComponent(name)
             try C07FileSystem.ensureDirectory(target.deletingLastPathComponent())
-            let copied = try C07FileSystem.copyVerified(
-                source: url, destination: target, maximum: maximum)
+            // Canvas sources are enumerated from the app-owned artifact
+            // roots by the caller; the immediate parent of each enumerated
+            // file is the fixed root for that staged copy.
+            let copied = try C07FileSystem.copyVerifiedStaged(
+                source: url,
+                destinationRoot: stage,
+                destinationRelativePath: name,
+                maximum: maximum)
             return (name, copied.byteCount, copied.sha256)
         }
 

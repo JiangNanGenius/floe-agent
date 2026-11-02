@@ -3276,5 +3276,25 @@
       "deviceVerified": false,
       "note": "Original183 identities/statuses and accepted product scope retained. Other150 source reviews remain pending or as individually recorded. Current working code must be reconciled at freeze; this is immutable4437 source evidence, not qualification."
     }
+  },
+  "implementationBatches": {
+    "c07-userdata-mcp-io": {
+      "state": "source-integrated-unqualified",
+      "files": 41,
+      "coverage": [
+        "Persisted memory/candidates/personalization/checklists/model preferences/disabled skill references and safe dependency history",
+        "Descriptor-relative root/component opens and mkdirat, bounded verified stream and exact-inode failure cleanup",
+        "Original MCP HTTP/stdio rootless saved definitions and editor; typed credential-free disabled/unbound config restore with fresh IDs",
+        "Existing share package -> DataExchange inspection/review; URI reference releases once on actual Job completion including pre-body cancellation"
+      ],
+      "stillPending": [
+        "Single coordinated schema52",
+        "Actual C01/MCP fresh runtime binding producers",
+        "Full backup scope reconciliation including newly persistent Office recoverable documents"
+      ],
+      "compiled": false,
+      "testsRun": false,
+      "deviceVerified": false
+    }
   }
 }

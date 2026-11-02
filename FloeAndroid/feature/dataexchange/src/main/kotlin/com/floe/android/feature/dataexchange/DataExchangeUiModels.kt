@@ -63,6 +63,15 @@ public data class DataExchangePlanUi(
     val appArtifacts: Int = 0,
     val captureFiles: Int = 0,
     val configSections: Int = 0,
+    val mcpDefinitions: Int = 0,
+    val memoryEntries: Int = 0,
+    val memoryCandidates: Int = 0,
+    val personalizationDocuments: Int = 0,
+    val personalizationCursors: Int = 0,
+    val checklistRevisions: Int = 0,
+    val skills: Int = 0,
+    val modelPreferences: Int = 0,
+    val runDependencies: Int = 0,
     val omissions: Int = 0,
     val partial: Boolean = false,
     val warnings: List<String>,
@@ -90,6 +99,14 @@ public data class DataExchangeReceiptUi(
     val captureFiles: Int = 0,
     val cadPreserved: Int = 0,
     val configSections: Int = 0,
+    val mcpDefinitions: Int = 0,
+    val memoryEntries: Int = 0,
+    val memoryCandidates: Int = 0,
+    val personalizationDocuments: Int = 0,
+    val personalizationCursors: Int = 0,
+    val checklistRevisions: Int = 0,
+    val skills: Int = 0,
+    val modelPreferences: Int = 0,
     val partial: Boolean = false,
 ) {
     val isEmpty: Boolean
@@ -97,7 +114,9 @@ public data class DataExchangeReceiptUi(
             settings == 0 && conversations == 0 && messages == 0 &&
             canvasProjects == 0 && mediaProjects == 0 && todos == 0 &&
             toolResults == 0 && appArtifacts == 0 && captureFiles == 0 &&
-            configSections == 0
+            configSections == 0 && mcpDefinitions == 0 && memoryEntries == 0 &&
+            memoryCandidates == 0 && personalizationDocuments == 0 &&
+            checklistRevisions == 0 && skills == 0
 }
 
 public data class DataExchangeUiState(

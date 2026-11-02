@@ -410,6 +410,42 @@ public fun DataExchangeSettingsPage(
                                 style = Floe.typography.metadata,
                             )
                         }
+                        if (receipt.mcpDefinitions > 0) {
+                            FloeText(
+                                stringResource(R.string.dataexchange_result_mcp,
+                                    receipt.mcpDefinitions),
+                                style = Floe.typography.metadata,
+                            )
+                            FloeText(
+                                stringResource(R.string.dataexchange_mcp_restored_notice),
+                                style = Floe.typography.metadata,
+                                color = Floe.colors.secondaryLabel,
+                            )
+                        }
+                        if (receipt.memoryEntries > 0 || receipt.memoryCandidates > 0 ||
+                            receipt.personalizationDocuments > 0
+                        ) {
+                            FloeText(
+                                stringResource(
+                                    R.string.dataexchange_result_memory,
+                                    receipt.memoryEntries, receipt.memoryCandidates,
+                                    receipt.personalizationDocuments,
+                                ),
+                                style = Floe.typography.metadata,
+                            )
+                        }
+                        if (receipt.checklistRevisions > 0 || receipt.skills > 0 ||
+                            receipt.modelPreferences > 0
+                        ) {
+                            FloeText(
+                                stringResource(
+                                    R.string.dataexchange_result_userdata,
+                                    receipt.checklistRevisions, receipt.skills,
+                                    receipt.modelPreferences,
+                                ),
+                                style = Floe.typography.metadata,
+                            )
+                        }
                         if (receipt.partial) {
                             FloeText(
                                 stringResource(R.string.dataexchange_result_partial),
@@ -628,6 +664,38 @@ private fun PlanReview(plan: DataExchangePlanUi, importMode: Boolean) {
                         plan.configSections),
                     style = Floe.typography.metadata,
                     color = Floe.colors.secondaryLabel,
+                )
+            }
+            if (plan.mcpDefinitions > 0) {
+                FloeText(
+                    stringResource(R.string.dataexchange_plan_mcp,
+                        plan.mcpDefinitions),
+                    style = Floe.typography.metadata,
+                    color = Floe.colors.secondaryLabel,
+                )
+            }
+            if (plan.memoryEntries > 0 || plan.memoryCandidates > 0 ||
+                plan.personalizationDocuments > 0
+            ) {
+                FloeText(
+                    stringResource(
+                        R.string.dataexchange_plan_memory,
+                        plan.memoryEntries, plan.memoryCandidates,
+                        plan.personalizationDocuments,
+                    ),
+                    style = Floe.typography.metadata,
+                )
+            }
+            if (plan.checklistRevisions > 0 || plan.skills > 0 ||
+                plan.modelPreferences > 0
+            ) {
+                FloeText(
+                    stringResource(
+                        R.string.dataexchange_plan_userdata,
+                        plan.checklistRevisions, plan.skills,
+                        plan.modelPreferences,
+                    ),
+                    style = Floe.typography.metadata,
                 )
             }
             if (plan.partial || plan.omissions > 0) {
