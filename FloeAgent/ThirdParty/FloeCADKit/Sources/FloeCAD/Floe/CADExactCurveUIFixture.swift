@@ -50,17 +50,12 @@ public struct CADExactCurveReadbackPanel: View {
 
     public var body: some View {
         TimelineView(.periodic(from: .now, by: 0.3)) { _ in
-            let model = document.viewModel()
-            let sketch = document.session.document.sketches.first { $0.name == CADExactCurveUIFixture.sketchName }
-            let exactCount = sketch?.entities.filter { if case .exactCurve = $0 { return true }; return false }.count ?? 0
-            let source = sketch?.entities.first { $0.id == CADExactCurveUIFixture.sourceID }
-            let definition = source.flatMap { try? SketchCurveDefinition($0) }
             VStack(alignment: .leading, spacing: 1) {
-                row("CADExactCurveState", "entities=\(sketch?.entities.count ?? -1) exact=\(exactCount) links=\(sketch?.curveOffsetLinks.count ?? -1) source=\(source != nil) ready=\(ready)")
-                row("CADExactCurveInterval", definition.map { String(format: "%.8f,%.8f", locale: Locale(identifier: "en_US_POSIX"), $0.interval.lower, $0.interval.upper) } ?? "missing")
-                row("CADExactCurvePick", screen(SIMD2(30,0), sketch: sketch, model: model))
-                row("CADExactCurveEndPick", screen(SIMD2(0,-18), sketch: sketch, model: model))
-                row("CADExactCurveError", model.errorMessage ?? "none")
+                row("CADExactCurveState", stateText)
+                row("CADExactCurveInterval", intervalText)
+                row("CADExactCurvePick", screen(SIMD2(30,0)))
+                row("CADExactCurveEndPick", screen(SIMD2(0,-18)))
+                row("CADExactCurveError", document.viewModel().errorMessage ?? "none")
             }
             .font(.system(size: 9, design: .monospaced)).lineLimit(1)
             .padding(5).background(.regularMaterial, in: RoundedRectangle(cornerRadius: 7))
@@ -91,8 +86,25 @@ public struct CADExactCurveReadbackPanel: View {
     private func row(_ id: String, _ value: String) -> some View {
         Text(value).accessibilityLabel(value).accessibilityIdentifier(id)
     }
-    private func screen(_ point: SIMD2<Double>, sketch: Sketch?, model: EditorViewModel) -> String {
-        guard let sketch, let value = model.cameraControl?.worldToScreenPoint(sketch.plane.toWorld(point)) else { return "pending" }
+    private var sketch: Sketch? {
+        document.session.document.sketches.first { $0.name == CADExactCurveUIFixture.sketchName }
+    }
+    private var stateText: String {
+        guard let sketch else { return "missing" }
+        let exactCount = sketch.entities.filter { entity in
+            if case .exactCurve = entity { return true }; return false
+        }.count
+        let hasSource = sketch.entities.contains { $0.id == CADExactCurveUIFixture.sourceID }
+        return "entities=\(sketch.entities.count) exact=\(exactCount) links=\(sketch.curveOffsetLinks.count) source=\(hasSource) ready=\(ready)"
+    }
+    private var intervalText: String {
+        guard let source = sketch?.entities.first(where: { $0.id == CADExactCurveUIFixture.sourceID }),
+              let definition = try? SketchCurveDefinition(source) else { return "missing" }
+        return String(format: "%.8f,%.8f", locale: Locale(identifier: "en_US_POSIX"),
+                      definition.interval.lower, definition.interval.upper)
+    }
+    private func screen(_ point: SIMD2<Double>) -> String {
+        guard let sketch, let value = document.viewModel().cameraControl?.worldToScreenPoint(sketch.plane.toWorld(point)) else { return "pending" }
         return String(format: "%.3f,%.3f", locale: Locale(identifier: "en_US_POSIX"), value.x, value.y)
     }
 }
