@@ -370,7 +370,8 @@ public struct C02MCPSetupStdioUnavailable: C02MCPSetupStdioChannelProviding {
 /// cancel) onto the newline-delimited JSON-RPC client over the C01 pipe.
 /// The actor serializes initialization, cancellation and close; a late
 /// reply after close is refused by the C02 client's closed/live checks.
-public actor C02MCPStdioTransport: MCPClientTransporting {
+public actor C02MCPStdioTransport: MCPClientTransporting, MCPExecutionContextValidating {
+    private let invocationChannel: any C02MCPSetupStdioChannel
     private let client: C02MCPStdioClient
     private let timeoutSeconds: TimeInterval
     private var initialized = false
@@ -397,10 +398,19 @@ public actor C02MCPStdioTransport: MCPClientTransporting {
             command: binding.command,
             arguments: binding.arguments,
             cwdRelative: binding.workingDirectory)
+        self.invocationChannel = channel
         self.client = C02MCPStdioClient(config: stdioConfig,
                                         channel: channel,
                                         isLive: isLive)
         self.timeoutSeconds = configuration.timeoutSeconds
+    }
+
+    public func validateInvocation(context: ToolContext) async throws {
+        guard !disconnected, let taskID = context.conversationID,
+              let validator = invocationChannel as? any C02MCPSetupInvocationValidatingChannel else {
+            throw MCPClientError.transportUnavailable("The local MCP execution binding is unavailable.")
+        }
+        try await validator.validateInvocation(runID: context.runID, taskID: taskID)
     }
 
     public func discoverTools() async throws -> [MCPDiscoveredTool] {
@@ -713,6 +723,12 @@ public struct C02MCPSetupProjectCatalogAdapter: C02MCPSetupProjectProviding {
             rootURL: URL(fileURLWithPath: C01ProjectRootLayout.projectDirectory(
                 rootPath: rootPath, projectID: detail.project.id), isDirectory: true),
             revision: detail.project.revision)
+    }
+
+    public func tasks(project: C02MCPSetupProject) async throws -> [C02MCPSetupTaskChoice] {
+        let detail = try await library.get(projectID: project.id)
+        return detail.tasks.filter { $0.purpose == "ordinary" && !$0.isArchived }
+            .map { C02MCPSetupTaskChoice(id: $0.id, title: $0.title) }
     }
 
     public func environments(project: C02MCPSetupProject) async throws -> [C02MCPSetupEnvironmentOption] {

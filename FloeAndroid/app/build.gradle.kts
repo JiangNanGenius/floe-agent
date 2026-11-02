@@ -485,7 +485,7 @@ val verifyRootCaptureHelper = tasks.register("verifyRootCaptureHelper") {
         }
         val expected = metadata["sha256"] as? String
         val size = (metadata["sizeBytes"] as? Number)?.toLong()
-        val digest = java.security.MessageDigest.getInstance("SHA-256")
+        val digest = MessageDigest.getInstance("SHA-256")
             .digest(binary.readBytes()).joinToString("") { "%02x".format(it) }
         if (expected == null || size == null || digest != expected || binary.length() != size) {
             throw GradleException("Full root capture helper does not match its digest manifest")

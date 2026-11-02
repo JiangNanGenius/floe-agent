@@ -477,10 +477,27 @@ public struct C02MCPSetupOptions: Sendable, Equatable {
     }
 }
 
+public struct C02MCPSetupTaskChoice: Sendable {
+    public let id: UUID
+    public let title: String
+    public init(id: UUID, title: String) { self.id = id; self.title = title }
+}
+public struct C02MCPSetupStdioChoices: Sendable {
+    public let projects: [C02MCPSetupProject]
+    public let projectID: UUID?
+    public let rootIdentity: String?
+    public let environments: [C02MCPSetupEnvironmentOption]
+    public let tasks: [C02MCPSetupTaskChoice]
+}
+
 public protocol C02MCPSetupProjectProviding: Sendable {
     func projects() async throws -> [C02MCPSetupProject]
     func project(id: UUID) async throws -> C02MCPSetupProject?
     func environments(project: C02MCPSetupProject) async throws -> [C02MCPSetupEnvironmentOption]
+    func tasks(project: C02MCPSetupProject) async throws -> [C02MCPSetupTaskChoice]
+}
+public extension C02MCPSetupProjectProviding {
+    func tasks(project: C02MCPSetupProject) async throws -> [C02MCPSetupTaskChoice] { [] }
 }
 
 public protocol C02MCPSetupEnvironmentProviding: Sendable {
@@ -585,7 +602,7 @@ public struct C02MCPSetupTemplateIdentity: Sendable, Equatable {
             }
         }
         guard requireLauncher else { return }
-        let launcherURL = try guardPaths.resolve("node-http/" + launcherName)
+        let launcherURL = try guardPaths.resolve("node-http/" + C02MCPSetupLimits.launcherName)
         guard (try? Data(contentsOf: launcherURL)) == Data(C02MCPSetupTemplateIdentity.launcher.utf8) else {
             throw C02MCPSetupFailure(.templateChanged,
                                      message: "The MCP template launcher changed after extraction.",
@@ -1444,6 +1461,10 @@ public protocol C02MCPSetupStdioChannel: Sendable {
     func close() async
 }
 
+public protocol C02MCPSetupInvocationValidatingChannel: Sendable {
+    func validateInvocation(runID: UUID, taskID: UUID) async throws
+}
+
 public actor C02MCPStdioClient {
     public static let supportedProtocolRevisions: Set<String> = [
         "2025-06-18", "2025-03-26", "2024-11-05",
@@ -1814,6 +1835,24 @@ public actor C02MCPSetupCenter {
             generationAvailable: dependencies.generation != nil,
             stdioLaneAvailable: dependencies.stdioLaneAvailable,
             unavailableReason: dependencies.serviceHost == nil ? "serviceLaneUnavailable" : nil)
+    }
+
+    public func stdioChoices(projectID: UUID?) async throws -> C02MCPSetupStdioChoices {
+        try checkLive(operation: "stdio.choices")
+        let projects = try await dependencies.projects.projects()
+        guard let projectID else {
+            return C02MCPSetupStdioChoices(projects: projects, projectID: nil,
+                rootIdentity: nil, environments: [], tasks: [])
+        }
+        guard let project = try await dependencies.projects.project(id: projectID),
+              C01ProjectRootLayout.inspectProjectDirectory(rootPath: project.rootURL.path,
+                  projectID: projectID) == .available else {
+            throw C02MCPSetupFailure(.projectMissing, message: "The selected project is no longer available.", retryable: true)
+        }
+        return C02MCPSetupStdioChoices(projects: projects, projectID: project.id,
+            rootIdentity: C02MCPSetupWorkspaceStager.projectRootIdentity(project.rootURL),
+            environments: try await dependencies.projects.environments(project: project),
+            tasks: try await dependencies.projects.tasks(project: project))
     }
 
     public func validateRemote(_ draft: C02MCPSetupDraft) -> C02MCPSetupPreflight {

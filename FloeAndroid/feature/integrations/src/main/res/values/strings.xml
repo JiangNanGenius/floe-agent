@@ -306,4 +306,10 @@
     <string name="mcp_setup_phase_interrupted">Interrupted</string>
     <string name="mcp_setup_retry">Try again</string>
     <string name="mcp_setup_retry_commit">Try adding again</string>
+    <string name="mcp_stdio_loading">Reading project environments…</string>
+    <string name="mcp_stdio_choices_failed">Project choices could not be read. Reopen this editor to try again.</string>
+    <string name="mcp_stdio_task">Task</string>
+    <string name="mcp_stdio_untitled_task">Untitled task</string>
+    <string name="mcp_stdio_empty_tasks">Add a task to this project first.</string>
+    <string name="mcp_stdio_task_hint">The command runs in this task’s Linux environment. Its process stops when the task or environment stops.</string>
 </resources>

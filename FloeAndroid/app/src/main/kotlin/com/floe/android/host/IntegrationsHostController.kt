@@ -19,6 +19,9 @@ import com.floe.android.feature.integrations.McpServerRowUi
 import com.floe.android.feature.integrations.McpServersUiState
 import com.floe.android.feature.integrations.McpStdioBindingStateUi
 import com.floe.android.feature.integrations.McpStdioBindingUi
+import com.floe.android.feature.integrations.McpStdioChoicesUi
+import com.floe.android.feature.integrations.McpStdioChoiceUi
+import com.floe.android.host.mcpsetup.McpSetupClient
 import com.floe.android.feature.integrations.McpToolRowUi
 import com.floe.android.feature.integrations.McpTransportKindUi
 import com.floe.android.feature.integrations.McpTransportUi
@@ -51,6 +54,8 @@ import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicLong
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.launch
 import com.floe.android.feature.integrations.McpSetupStartRequestUi
 import com.floe.android.host.mcpsetup.McpSetupHostController
@@ -2190,6 +2195,41 @@ class IntegrationsHostController internal constructor(
         )
     }
 
+    private val stdioChoiceRequests = mutableMapOf<String, Long>()
+
+    override fun requestMcpStdioChoices(identity: McpEditorIdentity, projectId: String?): Boolean {
+        val editor = destinationState.value.editor ?: return false
+        if (!editor.identity.isCurrentFor(identity)) return false
+        val token = editorRouteTokens[identity.editorId] ?: return false
+        val epoch = host.nativeRootEpoch() ?: return false
+        val generation = (stdioChoiceRequests[identity.editorId] ?: 0L) + 1L
+        stdioChoiceRequests[identity.editorId] = generation
+        publishEditor(identity) { current -> current.copy(stdioChoices = current.stdioChoices.copy(
+            projectId = projectId, rootIdentity = null, environments = emptyList(), tasks = emptyList(),
+            loading = true, failed = false,
+        )) }
+        host.scope.launch {
+            val result = withContext(Dispatchers.IO) {
+                runCatching { McpSetupClient().stdioChoices(projectId) }
+            }
+            if (stdioChoiceRequests[identity.editorId] != generation ||
+                editorRouteTokens[identity.editorId] != token || host.nativeRootEpoch() != epoch) return@launch
+            result.fold(onSuccess = { choices ->
+                publishEditor(identity) { current -> current.copy(stdioChoices = McpStdioChoicesUi(
+                    projects = choices.projects.map { McpStdioChoiceUi(it.id, it.name) },
+                    projectId = choices.projectId, rootIdentity = choices.rootIdentity,
+                    environments = choices.environments.map { McpStdioChoiceUi(it.id, it.label) },
+                    tasks = choices.tasks.map { McpStdioChoiceUi(it.id, it.title) },
+                )) }
+            }, onFailure = {
+                publishEditor(identity) { current -> current.copy(stdioChoices = current.stdioChoices.copy(
+                    loading = false, failed = true,
+                )) }
+            })
+        }
+        return true
+    }
+
     override fun mcpEditorOpened(identity: McpEditorIdentity) {
         mcpSaveFailureSequencer.reset(identity.editorId, identity.epoch)
         // ONE shared UI incarnation per editor creation; the native admission
@@ -2220,6 +2260,7 @@ class IntegrationsHostController internal constructor(
     }
 
     override fun mcpEditorClosed(identity: McpEditorIdentity, discarded: Boolean) {
+        stdioChoiceRequests.remove(identity.editorId)
         // Draft/secret disposal is slot-owned (RAM only); a save already
         // admitted may still commit, but its late result is fenced by the
         // identity epoch and cannot touch this closed editor.
@@ -3809,7 +3850,15 @@ internal object IntegrationsWire {
                                 "workingDirectory" to JsonPrimitive(
                                     draft.stdioWorkingDirectory.trim(),
                                 ),
-                            ),
+                            ) + (draft.stdioSelection?.takeIf {
+                                !it.rootIdentity.isNullOrBlank() && !it.environmentId.isNullOrBlank() && !it.taskId.isNullOrBlank()
+                            }?.let { selected -> mapOf(
+                                "projectID" to JsonPrimitive(selected.projectId),
+                                "rootIdentity" to JsonPrimitive(selected.rootIdentity),
+                                "environmentID" to JsonPrimitive(selected.environmentId),
+                                "taskID" to JsonPrimitive(selected.taskId),
+                                "revision" to JsonPrimitive(1),
+                            ) } ?: emptyMap()),
                         ),
                     )
                     put("authentication", JsonPrimitive("none"))

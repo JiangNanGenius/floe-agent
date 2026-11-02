@@ -1047,6 +1047,23 @@ public actor MCPDomain {
                 return Self.rejection(Self.mapConfigurationValidation(error))
             }
         }
+        if let stdio = candidate.stdioBinding, stdio != existing?.stdioBinding {
+            guard let taskID = stdio.taskID,
+                  let workspace = await LinuxWorkspaceAuthority.resolveWorkspace(conversationID: taskID),
+                  workspace.workspaceID == stdio.projectID,
+                  C02MCPSetupWorkspaceStager.projectRootIdentity(workspace.rootURL) == stdio.rootIdentity.lowercased(),
+                  let rows = try? await C02RuntimeEnvironmentCatalog.read(
+                    workspaceRoot: workspace.rootURL, epoch: binding.epoch),
+                  rows.contains(where: { row in
+                      row.id == stdio.environmentID && row.state == "active" && !row.requiresRebuild &&
+                      row.executionBackend == "linuxPRoot" &&
+                      (row.kind == "project" || (row.kind == "session" &&
+                       row.ownerID?.lowercased() == taskID.uuidString.lowercased()))
+                  }) else {
+                return Self.rejection(ConfigDomainError(code: .invalidEnvelope,
+                    reason: "mcpStdioBindingChanged"))
+            }
+        }
         let currentHash = existing.map { MCPServerConfigHash.digest(of: $0) }
         // Identity/creation gates (frozen matrix semantics).
         switch (existing != nil, candidate.createIntent) {
@@ -1442,6 +1459,46 @@ public actor MCPDomain {
 
 
     // MARK: mcp.connect — connect/refresh/setEnabled/setToolEnabled
+
+    /// Run-scoped discovery for user-enabled local servers. Reuse only a
+    /// client whose real pipe still belongs to this exact run; otherwise use
+    /// the original connection lifecycle to create the replacement. Foreign
+    /// and unavailable namespaces are removed from this run's tool ceiling.
+    public func prepareStdioForRun(taskID: UUID, runID: UUID, workspaceRoot: URL?,
+                                   allowStart: Bool) async -> [String] {
+        guard let generation = try? requireBinding() else {
+            return servers.filter { $0.transport == .stdio }.map { $0.namespacePrefix + "_" }
+        }
+        do { try await loadServers() } catch {
+            return servers.filter { $0.transport == .stdio }.map { $0.namespacePrefix + "_" }
+        }
+        var excluded: [String] = []
+        var admitted = Set<UUID>()
+        let candidates = servers.filter { $0.transport == .stdio }
+        for server in candidates {
+            guard server.enabled, server.stdioBinding?.taskID == taskID, allowStart,
+                  let workspaceRoot else {
+                excluded.append(server.namespacePrefix + "_"); continue
+            }
+            let context = ToolContext(runID: runID, workspaceRootURL: workspaceRoot,
+                cancellation: CancellationToken(), conversationID: taskID)
+            if let client = connections[server.id]?.client as? any MCPExecutionContextValidating,
+               (try? await client.validateInvocation(context: context)) != nil {
+                admitted.insert(server.id)
+                continue
+            }
+            _ = await connectInternal(serverID: server.id, binding: generation, force: false)
+            if let connection = connections[server.id], case .ready = connection.state {
+                admitted.insert(server.id)
+            } else { excluded.append(server.namespacePrefix + "_") }
+        }
+        // Re-read after async discovery: a newly added or rebound foreign
+        // server must not appear just because it missed the initial snapshot.
+        excluded += servers.filter { $0.transport == .stdio &&
+            (!admitted.contains($0.id) || !$0.enabled || $0.stdioBinding?.taskID != taskID)
+        }.map { $0.namespacePrefix + "_" }
+        return Array(Set(excluded))
+    }
 
     public func connect(serverID: UUID) async -> sending [String: Any] {
         let binding: FacadeRootGeneration

@@ -89,6 +89,12 @@ data class McpSetupEnvironmentDto(
     val layerFormat: Int,
 )
 
+data class McpSetupTaskDto(val id: String, val title: String)
+data class McpSetupStdioChoicesDto(
+    val projects: List<McpSetupProjectDto>, val projectId: String?, val rootIdentity: String?,
+    val environments: List<McpSetupEnvironmentDto>, val tasks: List<McpSetupTaskDto>,
+)
+
 data class McpSetupCapabilitiesDto(
     val epoch: Long,
     val templateBundled: Boolean,
@@ -155,6 +161,8 @@ data class McpSetupOptionsDto(
 )
 
 interface McpSetupService {
+    fun stdioChoices(projectId: String?): McpSetupStdioChoicesDto =
+        throw UnsupportedOperationException("Stdio binding choices are unavailable")
     fun capabilities(): McpSetupCapabilitiesDto
     fun projects(): List<McpSetupProjectDto>
     fun environments(projectId: String): List<McpSetupEnvironmentDto>
@@ -214,6 +222,31 @@ internal class McpSetupClient(
                     layerFormat = row.int("layerFormat") ?: 0,
                 )
             }
+    }
+
+    override fun stdioChoices(projectId: String?): McpSetupStdioChoicesDto {
+        if (projectId != null) requireUuid(projectId, "projectID")
+        val response = exchange("mcp.setup.stdio.choices") {
+            if (projectId != null) put("projectID", projectId)
+        }
+        return McpSetupStdioChoicesDto(
+            projects = response.requireArray("projects").map { element ->
+                val row = element.jsonObject
+                McpSetupProjectDto(row.string("id") ?: throw malformed("Missing project"),
+                    row.string("name") ?: "", row.string("revision") ?: "")
+            },
+            projectId = response.string("projectID"), rootIdentity = response.string("rootIdentity"),
+            environments = response.requireArray("environments").map { element ->
+                val row = element.jsonObject
+                McpSetupEnvironmentDto(row.string("id") ?: throw malformed("Missing environment"),
+                    row.string("label") ?: "", row.string("backend") ?: "",
+                    row.string("containerID") ?: "", row.string("baseRevision") ?: "", row.int("layerFormat") ?: 0)
+            },
+            tasks = response.requireArray("tasks").map { element ->
+                val row = element.jsonObject
+                McpSetupTaskDto(row.string("id") ?: throw malformed("Missing task"), row.string("title") ?: "")
+            },
+        )
     }
 
     override fun validate(draft: McpSetupDraftDto): McpSetupPreflightDto {

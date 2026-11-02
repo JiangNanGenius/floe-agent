@@ -66,11 +66,11 @@ extension FacadeRunDomain {
     }
 
     func requestG04NativeRunStop(runID: UUID, conversationID: UUID) -> Bool {
-        guard let operation = workspaceOperationLeases[conversationID]?.values.first(where: {
+        let operations = workspaceOperationLeases[conversationID]?.values.filter {
             $0.nativeRunID == runID && RuntimeOwnedWorkRegistry.shared.isAttached($0.token)
-        }) else { return false }
-        operation.cancellation.cancel()
-        return true // Request only; the actual owner retains the token.
+        } ?? []
+        for operation in operations { operation.cancellation.cancel() }
+        return !operations.isEmpty // Request only; owners retain their tokens.
     }
 
     func cancelG04WorkspaceOperations(conversationID: UUID? = nil) {

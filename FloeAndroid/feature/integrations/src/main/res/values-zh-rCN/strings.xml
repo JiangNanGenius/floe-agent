@@ -295,4 +295,10 @@
     <string name="mcp_setup_phase_interrupted">已中断</string>
     <string name="mcp_setup_retry">重试</string>
     <string name="mcp_setup_retry_commit">重试添加</string>
+    <string name="mcp_stdio_loading">正在读取项目环境…</string>
+    <string name="mcp_stdio_choices_failed">暂时无法读取项目选项，请重新打开此编辑窗口重试。</string>
+    <string name="mcp_stdio_task">任务</string>
+    <string name="mcp_stdio_untitled_task">未命名任务</string>
+    <string name="mcp_stdio_empty_tasks">请先在此项目中添加任务。</string>
+    <string name="mcp_stdio_task_hint">命令在此任务的 Linux 环境中运行，任务或环境停止时，进程也会停止。</string>
 </resources>

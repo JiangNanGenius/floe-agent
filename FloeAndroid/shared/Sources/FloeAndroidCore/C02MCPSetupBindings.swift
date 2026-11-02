@@ -36,7 +36,7 @@ public enum C02MCPSetupWire {
         "mcp.setup.build.cancel", "mcp.setup.service.start", "mcp.setup.verify",
         "mcp.setup.commit", "mcp.setup.stop", "mcp.setup.discard",
         "mcp.setup.records.list", "mcp.setup.records.status",
-        "mcp.setup.stdio.capabilities",
+        "mcp.setup.stdio.capabilities", "mcp.setup.stdio.choices",
     ]
 }
 
@@ -159,6 +159,24 @@ public enum C02MCPSetupBridge {
             return awaitResult(operation: operation, requestID: requestID, seconds: 20) {
                 let options = try await runtime.center.options(projectID: projectID)
                 return success(["environments": options.environments.map(environmentJSON)])
+            }
+        case "mcp.setup.stdio.choices":
+            let projectID: UUID?
+            if let raw = object["projectID"] {
+                guard let text = boundedString(raw, 64), let id = UUID(uuidString: text) else {
+                    return failure("invalidRequest", "A valid project identity is required.", retryable: false, operation: operation)
+                }
+                projectID = id
+            } else { projectID = nil }
+            return awaitResult(operation: operation, requestID: requestID, seconds: 25) {
+                let choices = try await runtime.center.stdioChoices(projectID: projectID)
+                return success([
+                    "projects": choices.projects.map(projectJSON),
+                    "projectID": choices.projectID?.uuidString as Any? ?? NSNull(),
+                    "rootIdentity": choices.rootIdentity as Any? ?? NSNull(),
+                    "environments": choices.environments.map(environmentJSON),
+                    "tasks": choices.tasks.map { ["id": $0.id.uuidString, "title": $0.title] },
+                ])
             }
         case "mcp.setup.validate":
             guard let draftObject = object["draft"] as? [String: Any],

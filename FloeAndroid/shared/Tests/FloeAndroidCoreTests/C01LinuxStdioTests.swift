@@ -48,17 +48,39 @@ final class C01LinuxStdioTests: XCTestCase {
     }
 
     private func channel(_ transport: Transport, events: CloseEvents = CloseEvents(),
-                         closeBudget: TimeInterval = 0) -> C01MCPStdioChannel {
-        let task = UUID(), project = UUID()
+                         closeBudget: TimeInterval = 0,
+                         runID: UUID = UUID(), taskID: UUID = UUID()) -> C01MCPStdioChannel {
+        let task = taskID, project = UUID()
         let binding = C01LinuxStdioBinding(projectID: project, engineProjectID: UUID(),
             environmentID: "test-env", rootIdentity: String(repeating: "a", count: 64),
-            taskID: task, runID: UUID(), conversationID: task, workspaceID: project,
+            taskID: task, runID: runID, conversationID: task, workspaceID: project,
             workspaceRootURL: URL(fileURLWithPath: "/test/Projects/\(project.uuidString)"),
             serverRevision: 1, configDigest: String(repeating: "b", count: 64), displayName: "Fixture",
             command: "node", arguments: ["server.mjs"], cwdRelative: ".", acceptedEpoch: 7)
         return C01MCPStdioChannel(configurationID: UUID(), binding: binding, sessionID: UUID().uuidString,
             transport: transport, validity: { true }, closeReleaseBudget: closeBudget,
             onClosed: { _, released in await events.append(released) })
+    }
+
+    func testForeignRunCannotBorrowAStdioChannel() async throws {
+        let transport = Transport()
+        let runID = UUID(), taskID = UUID()
+        let subject = channel(transport, runID: runID, taskID: taskID)
+        try await subject.validateInvocation(runID: runID, taskID: taskID)
+        do {
+            try await subject.validateInvocation(runID: UUID(), taskID: taskID)
+            XCTFail("another run borrowed this process")
+        } catch let error as C02MCPSetupFailure {
+            XCTAssertEqual(error.code, .stdioUnavailable)
+        }
+        do {
+            try await subject.validateInvocation(runID: runID, taskID: UUID())
+            XCTFail("another task borrowed this process")
+        } catch let error as C02MCPSetupFailure {
+            XCTAssertEqual(error.code, .stdioUnavailable)
+        }
+        let writes = await transport.writes
+        XCTAssertTrue(writes.isEmpty)
     }
 
     func testSplitUTF8LineAndStderrStaySeparate() async throws {

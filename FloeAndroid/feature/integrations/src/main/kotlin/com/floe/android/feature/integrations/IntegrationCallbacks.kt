@@ -235,6 +235,9 @@ interface IntegrationUiCallbacks {
 
     /** Destructive; only after the explicit confirm dialog (⇄ remove: also
      * deletes the bound credential account — the host's authority). */
+    /** Read current native project/environment/task choices for this editor. */
+    fun requestMcpStdioChoices(identity: McpEditorIdentity, projectId: String?): Boolean = false
+
     fun deleteMcpServer(serverId: String): Boolean
 
     /** ⇄ setEnabled: enabling triggers a real refresh; disabling

@@ -26,7 +26,7 @@
 // * `close()` requests the exact owned stop, waits (bounded) for the runtime's
 //   real `leaseReleased`, then releases the domain record. A late reply after
 //   close can never restore the channel: `closed` fences every operation and
-//   the process is already gone.
+//   ownership remains retained if real release is not yet proven.
 //
 // No host process, no PTY, no shell interpretation and no model-visible tool
 // name exists on any path through this file.
@@ -271,10 +271,11 @@ public struct C01MCPStdioChannelProvider: C02MCPSetupStdioChannelProviding {
                     ?? "The Linux separated stdio service was refused.").prefix(512)),
                 retryable: true)
         }
-        let validity: @Sendable () -> Bool = {
+        let validity: @Sendable () -> Bool = { [domain] in
             G02NativeRootEpoch.readback() == liveEpoch &&
                 RuntimeFacadeLinuxBindings.shared.boundNativeEpoch == liveEpoch &&
-                RuntimeFacadeLinuxBindings.shared.isCapabilityQualified
+                RuntimeFacadeLinuxBindings.shared.isCapabilityQualified &&
+                domain.isStdioSessionCurrent(sessionID: handle.sessionID)
         }
         return C01MCPStdioChannel(
             configurationID: configuration.id,
@@ -295,7 +296,7 @@ public struct C01MCPStdioChannelProvider: C02MCPSetupStdioChannelProviding {
 
 // MARK: - Channel
 
-public actor C01MCPStdioChannel: C02MCPSetupStdioChannel {
+public actor C01MCPStdioChannel: C02MCPSetupStdioChannel, C02MCPSetupInvocationValidatingChannel {
     private let configurationID: UUID
     private let binding: C01LinuxStdioBinding
     private let sessionID: String
@@ -493,6 +494,14 @@ public actor C01MCPStdioChannel: C02MCPSetupStdioChannel {
         let value = stderrBuffer.prefix(take)
         stderrBuffer.removeFirst(take)
         return Data(value)
+    }
+
+    public func validateInvocation(runID: UUID, taskID: UUID) async throws {
+        try await assertUsable()
+        guard binding.runID == runID, binding.conversationID == taskID else {
+            throw C02MCPSetupFailure(.stdioUnavailable,
+                message: "This MCP process belongs to another task run. Reconnect it in the current task.", retryable: true)
+        }
     }
 
     public func close() async {

@@ -30,6 +30,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -78,9 +79,15 @@ fun McpServerEditorPage(
     } else {
         draft.endpointText.isNotEmpty()
     }
-    val saveEnabled = projected != null &&
+    val targetComplete = draft.stdioSelection?.let {
+        !it.rootIdentity.isNullOrBlank() && !it.environmentId.isNullOrBlank() && !it.taskId.isNullOrBlank()
+    } ?: true
+    val saveEnabled = projected != null && (!isStdio || targetComplete) &&
         (isStdio || networkAvailable) && !inFlight &&
         draft.displayName.isNotBlank() && transportReady
+    LaunchedEffect(identity.editorId, isStdio) {
+        if (isStdio) holder.requestMcpStdioChoices(identity, draft.stdioSelection?.projectId)
+    }
     var authMenuOpen by remember(identity.editorId) { mutableStateOf(false) }
     var transportMenuOpen by remember(identity.editorId) { mutableStateOf(false) }
 
@@ -199,6 +206,8 @@ fun McpServerEditorPage(
                             McpPreflightFinding.WORKING_DIRECTORY_INVALID,
                     )
                     IntegrationMetaLine(stringResource(R.string.mcp_working_directory_hint))
+                    McpStdioBindingFields(identity, draft,
+                        projected?.stdioChoices ?: McpStdioChoicesUi(), holder)
                 } else {
                     FloeFormTextField(
                         label = stringResource(R.string.mcp_endpoint_field),
@@ -430,4 +439,62 @@ private fun preflightMessage(finding: McpPreflightFinding): String = when (findi
         stringResource(R.string.mcp_command_required)
     McpPreflightFinding.WORKING_DIRECTORY_INVALID ->
         stringResource(R.string.mcp_working_directory_invalid)
+}
+
+
+@Composable
+private fun SectionScope.McpStdioBindingFields(
+    identity: McpEditorIdentity,
+    draft: McpDraftSnapshot,
+    choices: McpStdioChoicesUi,
+    holder: IntegrationsFlowHolder,
+) {
+    var projectsOpen by remember(identity.editorId) { mutableStateOf(false) }
+    var environmentsOpen by remember(identity.editorId, choices.projectId) { mutableStateOf(false) }
+    var tasksOpen by remember(identity.editorId, choices.projectId) { mutableStateOf(false) }
+    val selection = draft.stdioSelection?.takeIf { it.projectId == choices.projectId }
+    FloeFormChoiceField(
+        label = stringResource(R.string.mcp_setup_project),
+        options = choices.projects.map { FloeChoiceOption(it.id, it.label) },
+        selectedKey = choices.projectId ?: "",
+        expanded = projectsOpen,
+        onExpandedChange = { projectsOpen = it },
+        onSelect = { projectId ->
+            projectsOpen = false
+            holder.setMcpStdioSelection(identity, McpStdioSelectionUi(projectId, null))
+            holder.requestMcpStdioChoices(identity, projectId)
+        },
+    )
+    if (choices.loading) IntegrationMetaLine(stringResource(R.string.mcp_stdio_loading))
+    if (choices.failed) IntegrationIssueLine(stringResource(R.string.mcp_stdio_choices_failed))
+    if (choices.projectId != null && !choices.loading && !choices.failed) {
+        FloeFormChoiceField(
+            label = stringResource(R.string.mcp_setup_environment),
+            options = choices.environments.map { FloeChoiceOption(it.id, it.label) },
+            selectedKey = selection?.environmentId ?: "",
+            expanded = environmentsOpen,
+            onExpandedChange = { environmentsOpen = it },
+            onSelect = { environmentId ->
+                environmentsOpen = false
+                holder.setMcpStdioSelection(identity, McpStdioSelectionUi(
+                    choices.projectId, choices.rootIdentity, environmentId, selection?.taskId))
+            },
+        )
+        FloeFormChoiceField(
+            label = stringResource(R.string.mcp_stdio_task),
+            options = choices.tasks.map { FloeChoiceOption(it.id,
+                it.label.ifBlank { stringResource(R.string.mcp_stdio_untitled_task) }) },
+            selectedKey = selection?.taskId ?: "",
+            expanded = tasksOpen,
+            onExpandedChange = { tasksOpen = it },
+            onSelect = { taskId ->
+                tasksOpen = false
+                holder.setMcpStdioSelection(identity, McpStdioSelectionUi(
+                    choices.projectId, choices.rootIdentity, selection?.environmentId, taskId))
+            },
+        )
+        if (choices.environments.isEmpty()) IntegrationMetaLine(stringResource(R.string.mcp_setup_empty_env))
+        if (choices.tasks.isEmpty()) IntegrationMetaLine(stringResource(R.string.mcp_stdio_empty_tasks))
+        IntegrationMetaLine(stringResource(R.string.mcp_stdio_task_hint))
+    }
 }

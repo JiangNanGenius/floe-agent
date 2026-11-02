@@ -2142,6 +2142,7 @@ public actor FacadeRunDomain {
             // process's work this facade must not pretend to own.
             return RunDomainReply(.rejected(RunDomainError(.notFound, .runMissing)))
         }
+        _ = requestG04NativeRunStop(runID: query.runID, conversationID: query.conversationID)
         switch ownership.phase {
         case .admitting:
             // C0: the launch re-checks this flag before prepare; provable
@@ -3873,6 +3874,7 @@ public actor FacadeRunDomain {
     /// epoch re-registers nothing.
     func retire(runID: UUID, terminalSucceeded: Bool, feedTerminal: Bool) async {
         guard let ownership = owners[runID] else { return }
+        _ = requestG04NativeRunStop(runID: runID, conversationID: ownership.conversationID)
         await tools.retireDelegate(runID: runID)
         if let token = ownership.consumerToken {
             components.events.detachConsumer(token)

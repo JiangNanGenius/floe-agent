@@ -489,6 +489,19 @@ extension FacadeRunDomain {
             let available = ceiling ?? Set(components.registry.allDescriptors.map(\.name))
             ceiling = available.subtracting(executableNames)
         }
+        if !temporary, !isNotes,
+           let installed = G02RuntimeComposition.shared.installedComposition, installed.epoch == epoch {
+            let root = await LinuxWorkspaceAuthority.trustedWorkspaceRoot(
+                runID: runID, conversationID: conversationID)
+            let hidden = await installed.mcpDomain.prepareStdioForRun(
+                taskID: conversationID, runID: runID, workspaceRoot: root,
+                allowStart: modeRaw != .plan && ceiling?.isEmpty != true &&
+                    RuntimeFacadeLinuxBindings.shared.isCapabilityQualified)
+            if !hidden.isEmpty {
+                let offered = ceiling ?? Set(components.registry.allDescriptors.map(\.name))
+                ceiling = Set(offered.filter { name in !hidden.contains(where: { name.hasPrefix($0) }) })
+            }
+        }
         let toolsEnabled = ceiling.map { !$0.isEmpty } ?? true
         // The ORIGINAL provider adapter: the host/test factory override when
         // injected, otherwise the ORIGINAL ProviderAdapterFactory coverage

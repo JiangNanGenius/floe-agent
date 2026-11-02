@@ -584,6 +584,23 @@ enum class McpStdioBindingStateUi {
 
 /** Non-secret binding facts for display/prefill. The root identity hash and
  * task/run fingerprints are intentionally NOT projected into UI state. */
+data class McpStdioChoiceUi(val id: String, val label: String)
+data class McpStdioSelectionUi(
+    val projectId: String,
+    val rootIdentity: String?,
+    val environmentId: String? = null,
+    val taskId: String? = null,
+)
+data class McpStdioChoicesUi(
+    val projects: List<McpStdioChoiceUi> = emptyList(),
+    val projectId: String? = null,
+    val rootIdentity: String? = null,
+    val environments: List<McpStdioChoiceUi> = emptyList(),
+    val tasks: List<McpStdioChoiceUi> = emptyList(),
+    val loading: Boolean = false,
+    val failed: Boolean = false,
+)
+
 data class McpStdioBindingUi(
     val state: McpStdioBindingStateUi,
     val projectId: String? = null,
@@ -809,6 +826,7 @@ data class McpDraftSnapshot(
     /** ⇄ disabledRemoteToolNames edited against the draft (iOS editor edits
      * its own @State server copy; persistence happens on save). */
     val disabledRemoteToolNames: Set<String> = emptySet(),
+    val stdioSelection: McpStdioSelectionUi? = null,
 )
 
 /**
@@ -906,6 +924,7 @@ data class McpEditorUiState(
      * backend identifier, never a credential/secret carrier.
      */
     val saveFailureSequence: Long = 0,
+    val stdioChoices: McpStdioChoicesUi = McpStdioChoicesUi(),
 )
 
 /* ---------------------------------- root ---------------------------------- */

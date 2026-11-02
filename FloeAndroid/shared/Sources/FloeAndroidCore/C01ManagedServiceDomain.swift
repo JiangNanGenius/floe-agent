@@ -138,6 +138,8 @@ public final class C01ManagedServiceDomain: C01ManagedServiceJobHosting, @unchec
         var startedAt: Date
         var stopRequested: Bool
         var workToken: RuntimeOwnedWorkToken?
+        let operation: G04WorkspaceOwnedOperation
+        let ownerDomain: FacadeRunDomain
         var transport: any C01LinuxStdioTransporting
     }
 
@@ -147,6 +149,8 @@ public final class C01ManagedServiceDomain: C01ManagedServiceJobHosting, @unchec
     private struct PendingStdioStart {
         let binding: C01LinuxStdioBinding
         let token: RuntimeOwnedWorkToken
+        let operation: G04WorkspaceOwnedOperation
+        let ownerDomain: FacadeRunDomain
         var task: Task<C01LinuxStdioStartReply, Error>?
         var stopRequested = false
     }
@@ -562,24 +566,34 @@ public final class C01ManagedServiceDomain: C01ManagedServiceJobHosting, @unchec
                     + ". No PTY fallback is used.")
         }
         let startID = UUID()
-        let token: RuntimeOwnedWorkToken
-        switch RuntimeOwnedWorkRegistry.shared.attach(
-            epoch: epoch, kind: .tool, ownerID: "mcp-stdio-start:" + startID.uuidString) {
-        case .attached(let attached): token = attached
-        case .rejected, .invalidIdentity:
-            throw FloeError.invalidConfiguration("The runtime is retiring; no stdio process was started")
+        guard let ownerDomain = RunDomainFacade.current(epoch: epoch)?.0,
+              let operation = await ownerDomain.beginG04WorkspaceOperation(
+                conversationID: binding.conversationID, expectedEpoch: epoch,
+                nativeRunID: binding.runID) else {
+            throw FloeError.invalidConfiguration("The task is stopping; no stdio process was started")
         }
+        guard let composition = G02RuntimeComposition.shared.installedComposition,
+              let run = try? await composition.cluster.runStore.run(id: binding.runID),
+              run.conversationID == binding.conversationID,
+              !LinuxWorkspaceAuthority.isTerminalRunState(run.state),
+              !operation.cancellation.isCancelled else {
+            await ownerDomain.endG04WorkspaceOperation(operation)
+            throw FloeError.invalidConfiguration("The stdio task is no longer active")
+        }
+        let token = operation.token
         let reserved = withStdioLock { () -> Bool in
             guard stdioRecords.count + pendingStdio.count < Self.maximumStdioServices else { return false }
-            pendingStdio[startID] = PendingStdioStart(binding: binding, token: token)
+            pendingStdio[startID] = PendingStdioStart(binding: binding, token: token,
+                operation: operation, ownerDomain: ownerDomain)
             return true
         }
         guard reserved else {
-            RuntimeOwnedWorkRegistry.shared.detach(token)
+            await ownerDomain.endG04WorkspaceOperation(operation)
             throw FloeError.invalidConfiguration("Both managed-service slots are occupied")
         }
         let start = Task {
             try Task.checkCancellation()
+            try operation.cancellation.throwIfCancelled()
             return try await transport.start(request)
         }
         let cancelled = withStdioLock { () -> Bool in
@@ -589,6 +603,13 @@ public final class C01ManagedServiceDomain: C01ManagedServiceJobHosting, @unchec
             return pending.stopRequested
         }
         if cancelled { start.cancel() }
+        let stopObserver = Task {
+            while !Task.isCancelled && !start.isCancelled {
+                if operation.cancellation.isCancelled { start.cancel(); break }
+                try? await Task.sleep(nanoseconds: 100_000_000)
+            }
+        }
+        defer { stopObserver.cancel() }
         let reply: C01LinuxStdioStartReply
         do {
             reply = try await withTaskCancellationHandler {
@@ -606,7 +627,7 @@ public final class C01ManagedServiceDomain: C01ManagedServiceJobHosting, @unchec
         }
         let valid = reply.stdioContractVersion == Self.stdioContractVersion &&
             reply.environmentID == binding.environmentID &&
-            G02NativeRootEpoch.readback() == epoch && !Task.isCancelled
+            G02NativeRootEpoch.readback() == epoch && !Task.isCancelled && !operation.cancellation.isCancelled
         let stopped = withStdioLock { () -> Bool in
             let pending = pendingStdio.removeValue(forKey: startID)
             let stopping = !valid || pending?.stopRequested == true
@@ -614,7 +635,7 @@ public final class C01ManagedServiceDomain: C01ManagedServiceJobHosting, @unchec
                 binding: binding, sessionID: reply.sessionID,
                 state: stopping ? .stopping : .running,
                 startedAt: Date(), stopRequested: stopping,
-                workToken: token, transport: transport)
+                workToken: token, operation: operation, ownerDomain: ownerDomain, transport: transport)
             return stopping
         }
         monitorStdioService(sessionID: reply.sessionID)
@@ -659,7 +680,7 @@ public final class C01ManagedServiceDomain: C01ManagedServiceJobHosting, @unchec
             }
             guard let self else { return }
             let removed = self.withStdioLock { self.pendingStdio.removeValue(forKey: id) }
-            if let removed { RuntimeOwnedWorkRegistry.shared.detach(removed.token) }
+            if let removed { await removed.ownerDomain.endG04WorkspaceOperation(removed.operation) }
         }
     }
 
@@ -677,7 +698,8 @@ public final class C01ManagedServiceDomain: C01ManagedServiceJobHosting, @unchec
                 guard let self else { return }
                 var stopSent = false
                 while let record = self.withStdioLock({ self.stdioRecords[sessionID] }) {
-                    if record.stopRequested && !stopSent {
+                    if (record.stopRequested || record.operation.cancellation.isCancelled) && !stopSent {
+                        self.markStdioStopping(sessionID: sessionID)
                         do {
                             try await record.transport.requestStop(sessionID: sessionID)
                             stopSent = true
@@ -702,9 +724,7 @@ public final class C01ManagedServiceDomain: C01ManagedServiceJobHosting, @unchec
     /// terminal release. Detaches only THIS exact registry token.
     public func releaseStdioService(sessionID: String) async {
         let record = withStdioLock { stdioRecords.removeValue(forKey: sessionID) }
-        if let token = record?.workToken {
-            RuntimeOwnedWorkRegistry.shared.detach(token)
-        }
+        if let record { await record.ownerDomain.endG04WorkspaceOperation(record.operation) }
     }
 
     /// Trusted conversation-deletion hook for Main: request the EXACT owned
@@ -743,6 +763,14 @@ public final class C01ManagedServiceDomain: C01ManagedServiceJobHosting, @unchec
             }
         }
         return result
+    }
+
+    public func isStdioSessionCurrent(sessionID: String) -> Bool {
+        withStdioLock {
+            guard let record = stdioRecords[sessionID] else { return false }
+            return !record.stopRequested && !record.operation.cancellation.isCancelled &&
+                RuntimeOwnedWorkRegistry.shared.isAttached(record.operation.token)
+        }
     }
 
     /// Bounded diagnostic view of one stdio record (no command text).

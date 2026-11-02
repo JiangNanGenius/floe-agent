@@ -625,6 +625,12 @@ class IntegrationsFlowHolder(
         if (kind == McpTransportKindUi.STDIO) slot.clearSecureInput()
     }
 
+    fun requestMcpStdioChoices(identity: McpEditorIdentity, projectId: String?): Boolean =
+        host.requestMcpStdioChoices(identity, projectId)
+
+    fun setMcpStdioSelection(identity: McpEditorIdentity, selection: McpStdioSelectionUi?): IntegrationsFlowResult =
+        withEditor(identity) { it.update { draft -> draft.copy(stdioSelection = selection) } }
+
     fun setMcpCommand(identity: McpEditorIdentity, value: String): IntegrationsFlowResult =
         withEditor(identity) { it.update { s -> s.copy(stdioCommand = value) } }
 

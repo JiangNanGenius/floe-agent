@@ -408,6 +408,12 @@ public protocol MCPClientTransporting: AnyObject, Sendable {
     func disconnectTransport() async
 }
 
+/// Optional transport-side proof of the native task/run that owns a local
+/// process. Network clients do not acquire local workspace authority here.
+public protocol MCPExecutionContextValidating: Sendable {
+    func validateInvocation(context: ToolContext) async throws
+}
+
 public enum MCPClientError: Error, LocalizedError, Sendable {
     case invalidResponse(String)
     case httpError(status: Int, body: String)
@@ -1376,6 +1382,17 @@ public enum MCPRemoteToolSource {
             )
             registry.register(AnyAgentTool(descriptor: descriptor) { arguments, context in
                 try context.cancellation.throwIfCancelled()
+                if configuration.transport == .stdio {
+                    guard let binding = configuration.stdioBinding,
+                          binding.taskID == context.conversationID,
+                          !context.temporaryReadOnly,
+                          let root = context.workspaceRootURL,
+                          FloeDigest.sha256Hex(Data(root.standardizedFileURL.resolvingSymlinksInPath().path.utf8)) == binding.rootIdentity.lowercased(),
+                          let validator = client as? any MCPExecutionContextValidating else {
+                        throw FloeError.validationFailed("This local MCP server is bound to another task or workspace")
+                    }
+                    try await validator.validateInvocation(context: context)
+                }
                 try validateArguments(arguments, against: descriptor.parametersJSON)
                 return try await client.callTool(name: tool.remoteName, argumentsJSON: arguments)
             })
