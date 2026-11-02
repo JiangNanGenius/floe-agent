@@ -15170,7 +15170,7 @@ final class EditorViewModel {
             DetachExternalReferencesCommand(
                 sketchID: sketchID,
                 beforeReferences: sketch.externalReferences ?? [],
-                entityIDs: linked),
+                entityIDs: linked.sorted { $0.uuidString < $1.uuidString }),
             sketchID: sketchID)
         if !applied {
             errorMessage = FloeCADStrings.text(
