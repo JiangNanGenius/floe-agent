@@ -3312,6 +3312,20 @@ static double OS3DSpanExactArea(const TopoDS_Face &face) {
     }
 }
 
++ (nullable OCCTShape *)threadOrientedSolid:(OCCTShape *)shape {
+    if (shape == nil || shape->_shape.IsNull()) return nil;
+    try {
+        TopTools_IndexedMapOfShape solids;
+        TopExp::MapShapes(shape->_shape, TopAbs_SOLID, solids);
+        if (solids.Extent() != 1) return nil;
+        TopoDS_Solid solid = TopoDS::Solid(solids(1));
+        if (!BRepLib::OrientClosedSolid(solid)) return nil;
+        OCCTShape *result = [OCCTShape new];
+        result->_shape = solid;
+        return result;
+    } catch (...) { return nil; }
+}
+
 + (nullable NSData *)threadCylinderExtentOfShape:(OCCTShape *)shape faceIndex:(NSInteger)faceIndex {
     if (shape == nil || shape->_shape.IsNull() || faceIndex < 1) return nil;
     try {

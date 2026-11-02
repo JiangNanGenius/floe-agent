@@ -483,6 +483,9 @@ nonisolated enum OCCTKernel {
         return OCCTBridge.threadSweep(outerLoop: p.loop, segments: p.segments,
             basis: planeBasis(plane), helix: data).map(BRepHandle.init)
     }
+    static func threadOrientedSolid(_ shape: BRepHandle) -> BRepHandle? {
+        OCCTBridge.threadOrientedSolid(shape.shape).map(BRepHandle.init)
+    }
 
     /// Turn resolved profile holes into extrude boundaries, keeping the ones
     /// that are circles analytic. One place, because both the new-body and the

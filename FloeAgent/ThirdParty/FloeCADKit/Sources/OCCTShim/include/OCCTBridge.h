@@ -306,6 +306,10 @@ typedef NS_ENUM(NSInteger, OCCTOpCode) {
 /// axial lower/upper bounds, inner-face flag. Nil for unsupported stock.
 + (nullable NSData *)threadCylinderExtentOfShape:(OCCTShape *)shape faceIndex:(NSInteger)faceIndex
     NS_SWIFT_NAME(threadCylinderExtent(of:faceIndex:));
+/// Normalize one closed thread operand's solid orientation without rebuilding
+/// its faces or changing their identity/order. Nil for unsupported operands.
++ (nullable OCCTShape *)threadOrientedSolid:(OCCTShape *)shape
+    NS_SWIFT_NAME(threadOrientedSolid(_:));
 
 /// Loft through ordered section profiles, each on its own plane.
 ///

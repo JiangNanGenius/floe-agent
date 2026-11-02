@@ -73,7 +73,11 @@ nonisolated enum ThreadKit {
         }
         func boolean(_ a: BRepHandle, _ b: BRepHandle, _ op: BooleanKind) throws
             -> (BRepHandle, ShapeAncestry) {
-            switch OCCTKernel.booleanResultWithAncestry(a, b, op: OCCTKernel.booleanOp(op)) {
+            guard let target = OCCTKernel.threadOrientedSolid(a),
+                  let tool = OCCTKernel.threadOrientedSolid(b) else {
+                throw CADThreadError.invalid("The thread operands must be closed, oriented solids.")
+            }
+            switch OCCTKernel.booleanResultWithAncestry(target, tool, op: OCCTKernel.booleanOp(op)) {
             case let .success((outcome, ancestry)):
                 guard outcome.solidCount == 1 else { throw CADThreadError.invalid("The thread split the solid.") }
                 try healthy(outcome.handle)
@@ -124,11 +128,15 @@ nonisolated enum ThreadKit {
         let (trimmed, _) = try boolean(swept, envelope, .intersect)
         recordStep?("trimmed-cutter", trimmed)
         let before = OCCTKernel.volume(target)
+        let beforeGroove = abs(OCCTKernel.volume(work))
         try subtract(trimmed)
         recordStep?("result", work)
         let after = OCCTKernel.volume(work)
         guard before.isFinite, after.isFinite, before > after + max(1e-7, before * 1e-10), after > 0 else {
             throw CADThreadError.invalid("The thread removes no material from this stock.")
+        }
+        guard beforeGroove > abs(after) + max(1e-7, beforeGroove * 1e-10) else {
+            throw CADThreadError.invalid("The thread groove could not be cut. The stock is unchanged.")
         }
         return Result(shape: work, names: names)
     }
