@@ -2110,4 +2110,72 @@ final class CADExternalProjectionNativeFlowUITests: XCTestCase {
         capture("M05 compact large text warning and native controls")
     }
 }
+
+@MainActor
+final class CADAdvancedPatternNativeFlowUITests: XCTestCase {
+    func testNativePatternSourceAndPathMenusApplyFeature() { check(compact: false) }
+    func testCompactLargeTextPatternSourceAndPathMenusCancel() { check(compact: true) }
+
+    private func check(compact: Bool) {
+        continueAfterFailure = false
+        XCUIDevice.shared.orientation = .landscapeLeft
+        let app = XCUIApplication()
+        app.launchArguments = ["-AppleLanguages", "(en)", "-AppleLocale", "en_US", "-ui-testing",
+            "--ui-test-cad-fixture", "--ui-test-cad-uninstanced"]
+        app.launchArguments += compact ? ["--ui-test-cad-compact", "--ui-test-cad-large-text"] : ["-ui-testing-ipad"]
+        app.launch(); defer { app.terminate() }
+        XCTAssertTrue(app.buttons["UndoButton"].waitForExistence(timeout: 60))
+        toggleItems(app)
+        let row = app.descendants(matching: .any).matching(identifier: "ItemRow-Extrude").firstMatch
+        XCTAssertTrue(row.waitForExistence(timeout: 20), app.debugDescription)
+        XCTAssertTrue(row.isHittable); row.tap()
+        toggleItems(app)
+        let transform = app.buttons["TransformGroup"]
+        XCTAssertTrue(transform.waitForExistence(timeout: 15) && transform.isHittable)
+        transform.tap()
+        let pattern = app.buttons["PatternButton"]
+        XCTAssertTrue(pattern.waitForExistence(timeout: 15) && pattern.isEnabled)
+        pattern.tap()
+        let seed = app.buttons["PatternSeedMenu"]
+        XCTAssertTrue(seed.waitForExistence(timeout: 15) && seed.isHittable)
+        seed.tap()
+        let feature = app.buttons["Extrude"].firstMatch
+        XCTAssertTrue(feature.waitForExistence(timeout: 10) && feature.isHittable); feature.tap()
+        let path = app.buttons["PatternPathMenu"]
+        XCTAssertTrue(path.exists && path.isHittable); path.tap()
+        let circle = app.buttons["Hole · Circle 1"].firstMatch
+        XCTAssertTrue(circle.waitForExistence(timeout: 10) && circle.isHittable); circle.tap()
+        let apply = app.buttons["PatternApply"]
+        XCTAssertTrue(apply.exists && apply.isHittable)
+        capture(compact ? "M25 compact large text native feature and path controls" : "M25 native feature and exact path controls")
+        if compact {
+            app.buttons["Cancel"].tap()
+        } else {
+            path.tap(); app.buttons["No path"].tap()
+            let spacing = app.textFields["PatternSpacing"]
+            XCTAssertTrue(spacing.exists && spacing.isHittable)
+            spacing.tap()
+            let old = spacing.value as? String ?? "0"
+            spacing.typeText(String(repeating: XCUIKeyboardKey.delete.rawValue, count: old.count) + "20\n")
+            apply.tap()
+        }
+        let gone = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: apply)
+        XCTAssertEqual(XCTWaiter.wait(for: [gone], timeout: 30), .completed, app.debugDescription)
+        XCTAssertFalse(app.alerts.firstMatch.exists, app.debugDescription)
+        capture(compact ? "M25 compact native cancel returns to document" : "M25 native patterned feature applied")
+    }
+
+    private func toggleItems(_ app: XCUIApplication) {
+        if app.buttons["ItemsButton"].exists { app.buttons["ItemsButton"].tap() }
+        else {
+            let more = app.buttons["CADCompactMoreMenu"]
+            XCTAssertTrue(more.exists && more.isHittable); more.tap()
+            app.buttons["Items"].tap()
+        }
+    }
+    private func capture(_ name: String) {
+        let attachment = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
+        attachment.name = name; attachment.lifetime = .keepAlways; add(attachment)
+    }
+}
 #endif
