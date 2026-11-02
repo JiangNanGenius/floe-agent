@@ -357,6 +357,12 @@
     <string name="notes_export_pdf">PDF（扁平化副本）</string>
     <string name="notes_export_page_image">页面图片</string>
     <string name="notes_export_markdown">Markdown 大纲</string>
+    <string name="notes_export_docx">Word 文档</string>
+    <string name="notes_docx_empty_page">此页没有文字内容。</string>
+    <string name="notes_docx_image_alt">手记图片</string>
+    <string name="notes_docx_page_visual_alt">页面视觉效果</string>
+    <string name="notes_docx_conversion_note">文字可编辑；手写、形状和 PDF 页面视觉效果以页面图片保留，复杂排版可能不同。</string>
+    <string name="notes_export_open_docx">打开 Word 文档</string>
     <string name="notes_export_markdown_document">Markdown 文档</string>
     <string name="notes_export_text">纯文本</string>
     <string name="notes_export_pages_all">全部页面</string>

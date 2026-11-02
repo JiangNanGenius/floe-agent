@@ -9,6 +9,8 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.net.Uri
 import android.provider.OpenableColumns
+import com.floe.android.core.officeengine.OfficeEngine
+import com.floe.android.core.officeengine.OfficePreviewRequest
 import com.floe.android.feature.notes.ui.api.NotesExchangePort
 import com.floe.android.feature.notes.ui.api.NotesImportKind
 import com.floe.android.feature.notes.ui.api.NotesOpenAttachmentOutcome
@@ -21,6 +23,8 @@ import com.floe.android.feature.notes.ui.api.NotesShareStreamRequest
 import com.floe.android.feature.notes.ui.api.NotesShareTextRequest
 import java.io.File
 import java.io.IOException
+import java.util.Locale
+import java.util.UUID
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -159,7 +163,7 @@ internal class NotesExchangeEffects(
                     registeredToken = null
                     throw NotesPlatformErrors.notes(error, "shareLaunchFailed")
                 }
-                NotesShareOutcome(launched = true)
+                NotesShareOutcome(launched = true, contentUri = uri.toString())
             } catch (error: Throwable) {
                 NotesShareRegistry.release(registeredToken)
                 NotesPlatformFiles.deleteQuietly(work)
@@ -186,6 +190,67 @@ internal class NotesExchangeEffects(
             throw NotesPlatformErrors.notes(error, "shareTextLaunchFailed")
         }
         return NotesShareOutcome(launched = true)
+    }
+
+    override suspend fun openOwnedExport(uri: String): NotesOpenAttachmentOutcome {
+        val parsed = runCatching { Uri.parse(uri) }.getOrNull()
+            ?: return NotesOpenAttachmentOutcome.Failed(
+                NotesPortFailure(NotesPortFailure.NOT_FOUND, "exportHandle"),
+            )
+        if (parsed.scheme != "content" || parsed.authority != NotesShareRegistry.authorityFor(context)) {
+            return NotesOpenAttachmentOutcome.Failed(
+                NotesPortFailure(NotesPortFailure.NOT_FOUND, "exportHandle"),
+            )
+        }
+        val segments = parsed.pathSegments
+        if (segments.size != 2 || segments[0] != "share") {
+            return NotesOpenAttachmentOutcome.Failed(
+                NotesPortFailure(NotesPortFailure.NOT_FOUND, "exportHandle"),
+            )
+        }
+        val entry = NotesShareRegistry.resolve(segments[1])
+            ?: return NotesOpenAttachmentOutcome.Failed(
+                NotesPortFailure(NotesPortFailure.NOT_FOUND, "exportHandle"),
+            )
+        if (NotesPlatformNames.extensionOf(entry.displayName) != "docx") {
+            return NotesOpenAttachmentOutcome.Unavailable(
+                NotesPortFailure(NotesPortFailure.UNSUPPORTED, "openExportFormat"),
+            )
+        }
+        return withContext(ioDispatcher) {
+            try {
+                val file = entry.file.canonicalFile
+                if (!NotesPlatformFiles.isPlainFile(file, NotesPlatformFiles.MAX_STAGED_EXPORT_BYTES)) {
+                    return@withContext NotesOpenAttachmentOutcome.Failed(
+                        NotesPortFailure(NotesPortFailure.NOT_FOUND, "exportFile"),
+                    )
+                }
+                val request = OfficePreviewRequest.of(
+                    sessionToken = UUID.randomUUID().toString(),
+                    stagedFilePath = file.path,
+                    sha256 = NotesPlatformFiles.sha256(file),
+                    lengthBytes = file.length(),
+                    displayName = NotesPlatformNames.safeFileName(entry.displayName, "export", "docx"),
+                    languageTag = Locale.getDefault().toLanguageTag(),
+                ).getOrNull()
+                if (request == null) {
+                    return@withContext NotesOpenAttachmentOutcome.Failed(
+                        NotesPortFailure(NotesPortFailure.FAILED, "previewRequest"),
+                    )
+                }
+                // Existing App-owned read-only Office preview consumer. This
+                // is a launch boundary; it never opens a second editor or
+                // claims that another app consumed the file.
+                broker.launchExternal(OfficeEngine.viewerIntent(context, request))
+                NotesOpenAttachmentOutcome.Opened
+            } catch (cancelled: kotlinx.coroutines.CancellationException) {
+                throw cancelled
+            } catch (error: Throwable) {
+                NotesOpenAttachmentOutcome.Failed(
+                    NotesPlatformErrors.notes(error, "openExportFailed").failure,
+                )
+            }
+        }
     }
 
     override suspend fun openAttachment(request: NotesOpenAttachmentRequest): NotesOpenAttachmentOutcome {

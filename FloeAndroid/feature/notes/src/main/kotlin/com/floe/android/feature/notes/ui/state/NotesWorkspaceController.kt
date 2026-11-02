@@ -15,6 +15,8 @@ import com.floe.android.feature.notes.NotesException
 import com.floe.android.feature.notes.NotesService
 import com.floe.android.feature.notes.MindMapAttachment
 import com.floe.android.feature.notes.MindMapAttachmentKind
+import com.floe.android.feature.notes.ui.api.NotesDocxExportRequest
+import com.floe.android.feature.notes.ui.api.NotesDocxLabels
 import com.floe.android.feature.notes.ui.api.NotesExportElement
 import com.floe.android.feature.notes.ui.api.NotesExportPage
 import com.floe.android.feature.notes.ui.api.NotesExportedStream
@@ -22,6 +24,7 @@ import com.floe.android.feature.notes.ui.api.NotesHostPorts
 import com.floe.android.feature.notes.ui.api.NotesImportKind
 import com.floe.android.feature.notes.ui.api.NotesOfficeIndexOutcome
 import com.floe.android.feature.notes.ui.api.NotesOfficeIndexingPort
+import com.floe.android.feature.notes.ui.api.NotesOpenAttachmentOutcome
 import com.floe.android.feature.notes.ui.api.NotesPickedFile
 import com.floe.android.feature.notes.ui.api.NotesPortFailure
 import com.floe.android.feature.notes.ui.api.NotesShareStreamRequest
@@ -71,6 +74,8 @@ internal data class NotesExportReceipt(
     val pageCount: Int?,
     val pageIDs: List<String>,
     val locationLabel: String?,
+    /** Opaque App-owned replay handle; never displayed or persisted. */
+    val contentUri: String? = null,
 )
 
 /**
@@ -642,28 +647,144 @@ internal class NotesWorkspaceController(
      * Markdown, plain text escaping, page text/OCR, ordered pages) with
      * explicit limitations for image/ink/shape/PDF-page content. Distinct from
      * the mind-map outline and the plain-text export.
+     *
+     * [requestedPageIDs] uses the exact same ordered selection semantics as
+     * PDF/DOCX: null is the whole document, an explicit list is caller order,
+     * and empty/duplicate/unknown/stale input is refused. A subset is never
+     * silently widened to all pages.
      */
     suspend fun exportNotebookMarkdown(
         session: NotesDocumentSession,
+        requestedPageIDs: List<String>? = null,
         labels: NotesMarkdownLabels = NotesMarkdownLabels(),
     ): Boolean {
         lastFailure = null
         lastExportReceipt = null
-        val document = (prepareExportDocument(session) ?: return false).document
+        val snapshot = prepareExportDocument(session) ?: return false
+        val document = snapshot.document
         if (document.kind != com.floe.android.feature.notes.NoteDocumentKind.NOTEBOOK) {
             lastFailure = NotesFailure("invalidOperation", "notNotebook")
             return false
         }
-        val text = NotesNotebookMarkdown.build(document, labels)
+        if (document.deletedAt != null) {
+            lastFailure = NotesFailure("notFound", "document")
+            return false
+        }
+        val selected = when (
+            val resolved = NotesExportSelection.resolve(
+                document,
+                requestedPageIDs,
+                snapshot.presentedRevision,
+            )
+        ) {
+            is NotesExportSelectionResult.Ready -> resolved.pages
+            is NotesExportSelectionResult.Refused -> {
+                lastFailure = resolved.failure.toNotesFailure()
+                return false
+            }
+        }
+        val text = NotesNotebookMarkdown.build(document, selected, labels)
         return deliverText(
             NotesShareTextRequest(
                 fileName = safeExportName(document.title) + ".md",
                 mediaType = "text/markdown",
                 text = text,
             ),
-            pageIDs = document.pages.map { it.id },
-            pageCount = document.pages.size,
+            pageIDs = selected.map { it.id },
+            pageCount = selected.size,
         )
+    }
+
+    /** Source-compatible whole-document Markdown call for existing callers. */
+    suspend fun exportNotebookMarkdown(
+        session: NotesDocumentSession,
+        labels: NotesMarkdownLabels,
+    ): Boolean = exportNotebookMarkdown(session, null, labels)
+
+    /**
+     * Real WordprocessingML export of exactly [requestedPageIDs] (or the whole
+     * notebook, in stored order, when null). Text stays editable; the media
+     * host composes images and the protected non-text page layer. Selection,
+     * revision, ownership and delivery rules are identical to PDF/Markdown.
+     */
+    suspend fun exportDocx(
+        session: NotesDocumentSession,
+        requestedPageIDs: List<String>? = null,
+        labels: NotesDocxLabels = NotesDocxLabels(),
+    ): Boolean {
+        lastFailure = null
+        lastExportReceipt = null
+        val snapshot = prepareExportDocument(session) ?: return false
+        val document = snapshot.document
+        if (document.kind != com.floe.android.feature.notes.NoteDocumentKind.NOTEBOOK) {
+            lastFailure = NotesFailure("invalidOperation", "notNotebook")
+            return false
+        }
+        if (document.deletedAt != null) {
+            lastFailure = NotesFailure("notFound", "document")
+            return false
+        }
+        val selected = when (
+            val resolved = NotesExportSelection.resolve(
+                document,
+                requestedPageIDs,
+                snapshot.presentedRevision,
+            )
+        ) {
+            is NotesExportSelectionResult.Ready -> resolved.pages
+            is NotesExportSelectionResult.Refused -> {
+                lastFailure = resolved.failure.toNotesFailure()
+                return false
+            }
+        }
+        val stream = try {
+            ports.media.exportDocx(
+                NotesDocxExportRequest(
+                    documentID = document.id,
+                    title = document.title,
+                    pages = selected.map { page -> exportPageSpec(document, page) },
+                    fileName = safeExportName(document.title) + ".docx",
+                    labels = labels,
+                    pageNumbers = selected.map { page ->
+                        document.pages.indexOfFirst { it.id == page.id } + 1
+                    },
+                    read = resources.reader(),
+                ),
+            )
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (error: Throwable) {
+            lastFailure = error.toNotesFailure()
+            return false
+        }
+        return deliver(PreparedExport(stream, selected.map { it.id }))
+    }
+
+    /**
+     * Reopen the exact exported bytes through the App's existing read-only
+     * Office preview consumer. The handle is an opaque App-owned content URI
+     * returned by the share host for this receipt; no path, guessed URI or
+     * generated "receipt" is accepted. Opening does not alter or re-create the
+     * export receipt (which still means only that the chooser launched).
+     */
+    suspend fun openExportedDocument(): NotesOpenAttachmentOutcome {
+        val receipt = lastExportReceipt
+            ?: return NotesOpenAttachmentOutcome.Unavailable(
+                NotesPortFailure(NotesPortFailure.NOT_FOUND, "noExport"),
+            )
+        val uri = receipt.contentUri
+            ?: return NotesOpenAttachmentOutcome.Unavailable(
+                NotesPortFailure(NotesPortFailure.UNSUPPORTED, "openExportUnavailable"),
+            )
+        return try {
+            ports.exchange.openOwnedExport(uri)
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (error: Throwable) {
+            NotesOpenAttachmentOutcome.Failed(
+                NotesPortFailure(NotesPortFailure.FAILED, error.toNotesFailure().detail),
+            )
+        }
     }
 
     suspend fun printActiveDocument(
@@ -953,6 +1074,7 @@ internal class NotesWorkspaceController(
                         pageCount = prepared.pageIDs.size,
                         pageIDs = prepared.pageIDs,
                         locationLabel = outcome.locationLabel,
+                        contentUri = outcome.contentUri,
                     )
                     true
                 }

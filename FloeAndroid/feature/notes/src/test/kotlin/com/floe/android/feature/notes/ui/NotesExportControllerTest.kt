@@ -13,6 +13,8 @@ import com.floe.android.feature.notes.NoteRect
 import com.floe.android.feature.notes.NotesService
 import com.floe.android.feature.notes.ui.api.NotesAssistantPort
 import com.floe.android.feature.notes.ui.api.NotesCoverImageRequest
+import com.floe.android.feature.notes.ui.api.NotesDocxExportRequest
+import com.floe.android.feature.notes.ui.api.NotesDocxLabels
 import com.floe.android.feature.notes.ui.api.NotesExchangePort
 import com.floe.android.feature.notes.ui.api.NotesExportedStream
 import com.floe.android.feature.notes.ui.api.NotesHostPorts
@@ -126,6 +128,7 @@ class NotesExportControllerTest {
     private class FakeMedia : NotesMediaPort {
         var pdfRequest: NotesPdfExportRequest? = null
         var imageRequest: NotesPageImageExportRequest? = null
+        var docxRequest: NotesDocxExportRequest? = null
         var closed = 0
 
         private fun bytes(): ByteArray = "export-bytes".encodeToByteArray()
@@ -158,6 +161,11 @@ class NotesExportControllerTest {
             return stream(request.fileName, "image/png")
         }
 
+        override suspend fun exportDocx(request: NotesDocxExportRequest): NotesExportedStream {
+            docxRequest = request
+            return stream(request.fileName, "application/vnd.openxmlformats-officedocument.wordprocessingml.document")
+        }
+
         override suspend fun probeImage(request: NotesImageProbeRequest): NotesImageInfo? = null
 
         override suspend fun prepareCoverImage(request: NotesCoverImageRequest): NotesPreparedImage =
@@ -176,6 +184,9 @@ class NotesExportControllerTest {
     private class FakeExchange : NotesExchangePort {
         var fail = false
         var cancel = false
+        var contentUri: String? = null
+        var openOutcome: NotesOpenAttachmentOutcome = NotesOpenAttachmentOutcome.Opened
+        var openedUri: String? = null
         var streamRequest: NotesShareStreamRequest? = null
         var textRequest: NotesShareTextRequest? = null
 
@@ -183,7 +194,7 @@ class NotesExportControllerTest {
             streamRequest = request
             if (cancel) throw CancellationException("cancelled")
             if (fail) throw NotesPortFailureException(NotesPortFailure(NotesPortFailure.FAILED, "shareFailed"))
-            return NotesShareOutcome(launched = true, locationLabel = "Files")
+            return NotesShareOutcome(launched = true, locationLabel = "Files", contentUri = contentUri)
         }
 
         override suspend fun shareText(request: NotesShareTextRequest): NotesShareOutcome {
@@ -201,6 +212,11 @@ class NotesExportControllerTest {
             request: NotesOpenAttachmentRequest,
         ): NotesOpenAttachmentOutcome =
             NotesOpenAttachmentOutcome.Unavailable(NotesPortFailure(NotesPortFailure.UNAVAILABLE))
+
+        override suspend fun openOwnedExport(uri: String): NotesOpenAttachmentOutcome {
+            openedUri = uri
+            return openOutcome
+        }
     }
 
     @Suppress("UNCHECKED_CAST")
@@ -426,6 +442,192 @@ class NotesExportControllerTest {
             assertTrue(harness.controller.exportCurrentPageImage(harness.session))
             assertEquals("p1", harness.media.imageRequest?.page?.pageID)
             assertEquals(listOf("p1"), harness.controller.lastExportReceipt?.pageIDs)
+        } finally {
+            harness.close()
+        }
+    }
+
+    @Test
+    fun `notebook markdown honors an ordered subset and excludes unselected pages`() = runBlocking {
+        val harness = Harness(document(pages = listOf(page("p1"), page("p2"), page("p3"))))
+        try {
+            harness.load()
+            assertTrue(harness.controller.exportNotebookMarkdown(harness.session, listOf("p3", "p1")))
+            val request = harness.exchange.textRequest
+            assertNotNull(request)
+            val delivered = request!!
+            assertEquals("Export.md", delivered.fileName)
+            assertTrue(delivered.text.contains("## Page 3"))
+            assertTrue(delivered.text.contains("## Page 1"))
+            assertFalse(delivered.text.contains("## Page 2"))
+            assertFalse(delivered.text.contains("p2"))
+            assertEquals(listOf("p3", "p1"), harness.controller.lastExportReceipt?.pageIDs)
+            assertEquals(2, harness.controller.lastExportReceipt?.pageCount)
+            assertNull(harness.media.pdfRequest)
+            assertNull(harness.media.docxRequest)
+        } finally {
+            harness.close()
+        }
+    }
+
+    @Test
+    fun `notebook markdown default keeps the whole document in stored order`() = runBlocking {
+        val harness = Harness(document())
+        try {
+            harness.load()
+            assertTrue(harness.controller.exportNotebookMarkdown(harness.session))
+            val text = harness.exchange.textRequest?.text.orEmpty()
+            assertTrue(text.indexOf("## Page 1") < text.indexOf("## Page 2"))
+            assertEquals(listOf("p1", "p2"), harness.controller.lastExportReceipt?.pageIDs)
+            assertEquals(2, harness.controller.lastExportReceipt?.pageCount)
+        } finally {
+            harness.close()
+        }
+    }
+
+    @Test
+    fun `notebook markdown refuses stale duplicate unknown and empty selections before sharing`() = runBlocking {
+        val cases = listOf(
+            Triple(document(revision = 4), listOf("p1"), "conflict"),
+            Triple(document(), listOf("p1", "p1"), "invalidPageSelection"),
+            Triple(document(), listOf("missing"), "notFound"),
+            Triple(document(), emptyList(), "invalidPageSelection"),
+        )
+        for ((current, selection, code) in cases) {
+            val harness = Harness(document())
+            try {
+                harness.load()
+                harness.service.current = current
+                assertFalse(harness.controller.exportNotebookMarkdown(harness.session, selection))
+                assertNull(harness.exchange.textRequest)
+                assertNull(harness.controller.lastExportReceipt)
+                assertEquals(code, harness.controller.lastFailure?.code)
+            } finally {
+                harness.close()
+            }
+        }
+    }
+
+    @Test
+    fun `docx export passes the exact ordered selection and produces a share receipt`() = runBlocking {
+        val harness = Harness(document(pages = listOf(page("p1"), page("p2"), page("p3"))))
+        try {
+            harness.load()
+            assertTrue(harness.controller.exportDocx(harness.session, listOf("p3", "p1")))
+            val request = harness.media.docxRequest
+            assertNotNull(request)
+            val delivered = request!!
+            assertEquals(listOf("p3", "p1"), delivered.pages.map { it.pageID })
+            assertEquals(listOf(3, 1), delivered.pageNumbers)
+            assertEquals("Export.docx", delivered.fileName)
+            assertEquals(NotesDocxLabels().pageHeadingFormat, delivered.labels.pageHeadingFormat)
+            assertEquals(listOf("p3", "p1"), harness.controller.lastExportReceipt?.pageIDs)
+            assertEquals(2, harness.controller.lastExportReceipt?.pageCount)
+            assertEquals(1, harness.media.closed)
+            assertNull(harness.exchange.textRequest)
+        } finally {
+            harness.close()
+        }
+    }
+
+    @Test
+    fun `docx default exports the whole document in stored order`() = runBlocking {
+        val harness = Harness(document())
+        try {
+            harness.load()
+            assertTrue(harness.controller.exportDocx(harness.session))
+            assertEquals(listOf("p1", "p2"), harness.media.docxRequest?.pages?.map { it.pageID })
+            assertEquals(listOf(1, 2), harness.media.docxRequest?.pageNumbers)
+        } finally {
+            harness.close()
+        }
+    }
+
+    @Test
+    fun `docx stale or invalid selection never reaches the media or share surface`() = runBlocking {
+        val stale = Harness(document())
+        try {
+            stale.load()
+            stale.service.current = document(revision = 4)
+            assertFalse(stale.controller.exportDocx(stale.session, listOf("p1")))
+            assertNull(stale.media.docxRequest)
+            assertNull(stale.exchange.streamRequest)
+            assertNull(stale.controller.lastExportReceipt)
+            assertEquals("conflict", stale.controller.lastFailure?.code)
+        } finally {
+            stale.close()
+        }
+        val duplicate = Harness(document())
+        try {
+            duplicate.load()
+            assertFalse(duplicate.controller.exportDocx(duplicate.session, listOf("p1", "p1")))
+            assertNull(duplicate.media.docxRequest)
+            assertNull(duplicate.exchange.streamRequest)
+            assertEquals("invalidPageSelection", duplicate.controller.lastFailure?.code)
+        } finally {
+            duplicate.close()
+        }
+    }
+
+    @Test
+    fun `docx cancellation during delivery leaves no success receipt`() = runBlocking {
+        val harness = Harness(document())
+        try {
+            harness.load()
+            harness.exchange.cancel = true
+            val error = runCatching { harness.controller.exportDocx(harness.session) }.exceptionOrNull()
+            assertTrue(error is CancellationException)
+            assertNull(harness.controller.lastExportReceipt)
+            assertNotNull(harness.media.docxRequest)
+            assertEquals(1, harness.media.closed)
+        } finally {
+            harness.close()
+        }
+    }
+
+    @Test
+    fun `docx reopen uses the exact owned handle and never invents one`() = runBlocking {
+        val harness = Harness(document())
+        try {
+            harness.load()
+            harness.exchange.contentUri = "content://com.floe.android.dev.notes.exports/share/token1"
+            assertTrue(harness.controller.exportDocx(harness.session))
+            val receipt = harness.controller.lastExportReceipt
+            assertNotNull(receipt)
+            assertEquals(harness.exchange.contentUri, receipt!!.contentUri)
+            val outcome = harness.controller.openExportedDocument()
+            assertTrue(outcome is NotesOpenAttachmentOutcome.Opened)
+            assertEquals(harness.exchange.contentUri, harness.exchange.openedUri)
+            assertEquals(harness.exchange.contentUri, harness.controller.lastExportReceipt?.contentUri)
+        } finally {
+            harness.close()
+        }
+    }
+
+    @Test
+    fun `reopen without a generated export is unavailable and does not call the host`() = runBlocking {
+        val harness = Harness(document())
+        try {
+            harness.load()
+            val outcome = harness.controller.openExportedDocument()
+            assertTrue(outcome is NotesOpenAttachmentOutcome.Unavailable)
+            assertNull(harness.exchange.openedUri)
+        } finally {
+            harness.close()
+        }
+    }
+
+    @Test
+    fun `docx share failure leaves no success receipt`() = runBlocking {
+        val harness = Harness(document())
+        try {
+            harness.load()
+            harness.exchange.fail = true
+            assertFalse(harness.controller.exportDocx(harness.session))
+            assertNotNull(harness.media.docxRequest)
+            assertNull(harness.controller.lastExportReceipt)
+            assertEquals("failed", harness.controller.lastFailure?.code)
+            assertEquals(1, harness.media.closed)
         } finally {
             harness.close()
         }

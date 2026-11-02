@@ -360,6 +360,12 @@
     <string name="notes_export_pdf">PDF (flattened copy)</string>
     <string name="notes_export_page_image">Page Image</string>
     <string name="notes_export_markdown">Markdown Outline</string>
+    <string name="notes_export_docx">Word Document</string>
+    <string name="notes_docx_empty_page">No text content on this page.</string>
+    <string name="notes_docx_image_alt">Note image</string>
+    <string name="notes_docx_page_visual_alt">Page visual</string>
+    <string name="notes_docx_conversion_note">Text is editable. Handwriting, shapes and PDF page visuals are page images; complex layout may differ.</string>
+    <string name="notes_export_open_docx">Open Word Document</string>
     <string name="notes_export_markdown_document">Markdown Document</string>
     <string name="notes_export_text">Plain Text</string>
     <string name="notes_export_pages_all">All pages</string>

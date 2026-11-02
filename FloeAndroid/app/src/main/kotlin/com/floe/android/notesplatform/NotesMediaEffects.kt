@@ -13,6 +13,13 @@ import android.view.MotionEvent
 import android.view.View
 import com.floe.android.core.notesmedia.api.NotesMedia
 import com.floe.android.core.notesmedia.export.ImageFormat
+import com.floe.android.core.notesmedia.export.NotesDocxBlock
+import com.floe.android.core.notesmedia.export.NotesDocxDocument
+import com.floe.android.core.notesmedia.export.NotesDocxImage
+import com.floe.android.core.notesmedia.export.NotesDocxMarkdown
+import com.floe.android.core.notesmedia.export.NotesDocxPackageBuilder
+import com.floe.android.core.notesmedia.export.NotesDocxPage
+import com.floe.android.core.notesmedia.export.NotesDocxRun
 import com.floe.android.core.notesmedia.export.NotesExportEngine
 import com.floe.android.core.notesmedia.export.NotesExportPagePlan
 import com.floe.android.core.notesmedia.export.NotesExportQuality
@@ -54,6 +61,7 @@ import com.floe.android.feature.notes.NoteElementKind
 import com.floe.android.feature.notes.NotePaper
 import com.floe.android.feature.notes.NoteRect
 import com.floe.android.feature.notes.ui.api.NotesCoverImageRequest
+import com.floe.android.feature.notes.ui.api.NotesDocxExportRequest
 import com.floe.android.feature.notes.ui.api.NotesExportPage
 import com.floe.android.feature.notes.ui.api.NotesExportElement
 import com.floe.android.feature.notes.ui.api.NotesExportedStream
@@ -155,6 +163,7 @@ internal class NotesMediaEffects(
             inkEditablePersistence = caps.inkEditablePersistence,
             imageExport = caps.imageExport,
             pdfExport = caps.pdfAnnotationExport,
+            docxExport = true,
             systemPrint = caps.systemPrint,
         )
     }
@@ -429,6 +438,317 @@ internal class NotesMediaEffects(
             }
         }
     }
+
+    override suspend fun exportDocx(request: NotesDocxExportRequest): NotesExportedStream {
+        if (request.pages.isEmpty()) throw NotesPlatformErrors.failed("noPages")
+        if (request.pages.size > NotesDocxPackageBuilder.MAX_PAGES) {
+            throw NotesPlatformErrors.unsupported("tooManyPages")
+        }
+        return withContext(ioDispatcher) {
+            val work = NotesPlatformFiles.newWorkDirectory(workRoot, "exportdocx")
+            try {
+                val pages = ArrayList<NotesDocxPage>(request.pages.size)
+                val imageBudget = DocxImageBudget()
+                request.pages.forEachIndexed { index, page ->
+                    pages += buildDocxPage(page, request, work, index, imageBudget)
+                }
+                val built = NotesDocxPackageBuilder.build(
+                    NotesDocxDocument(
+                        title = request.title,
+                        pages = pages,
+                        footerNote = request.labels.conversionNote,
+                    ),
+                )
+                if (built.byteCount != built.bytes.size.toLong() ||
+                    built.pageCount != request.pages.size ||
+                    built.sha256.length != 64
+                ) {
+                    throw NotesPlatformErrors.failed("docxReadback")
+                }
+                val fileName = NotesPlatformNames.safeFileName(request.fileName, "export", "docx")
+                val destination = File(work, fileName)
+                NotesPlatformFiles.writeAtomicDurable(destination, built.bytes)
+                if (!NotesPlatformFiles.isPlainFile(destination, NotesPlatformFiles.MAX_STAGED_EXPORT_BYTES) ||
+                    destination.length() != built.byteCount ||
+                    NotesPlatformFiles.sha256(destination) != built.sha256
+                ) {
+                    throw NotesPlatformErrors.failed("docxReadback")
+                }
+                fileStream(
+                    file = destination,
+                    fileName = fileName,
+                    mediaType = "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                    work = work,
+                    ioDispatcher = ioDispatcher,
+                )
+            } catch (error: Throwable) {
+                NotesPlatformFiles.deleteQuietly(work)
+                throw NotesPlatformErrors.notes(error, "docxExportFailed")
+            }
+        }
+    }
+
+    private class DocxImageBudget {
+        private var remaining = NotesDocxPackageBuilder.MAX_TOTAL_BYTES.toLong()
+
+        fun retain(image: NotesDocxImage): NotesDocxImage {
+            if (image.bytes.size.toLong() > remaining) {
+                throw NotesPlatformErrors.unsupported("imagesTooLarge")
+            }
+            remaining -= image.bytes.size
+            return image
+        }
+    }
+
+    private suspend fun buildDocxPage(
+        page: NotesExportPage,
+        request: NotesDocxExportRequest,
+        work: File,
+        index: Int,
+        imageBudget: DocxImageBudget,
+    ): NotesDocxPage {
+        if (!page.widthPt.isFinite() || !page.heightPt.isFinite() ||
+            page.widthPt.toDouble() < NotesDocxPackageBuilder.MIN_PAGE_PT ||
+            page.heightPt.toDouble() < NotesDocxPackageBuilder.MIN_PAGE_PT ||
+            page.widthPt.toDouble() > NotesDocxPackageBuilder.MAX_PAGE_PT ||
+            page.heightPt.toDouble() > NotesDocxPackageBuilder.MAX_PAGE_PT
+        ) {
+            throw NotesPlatformErrors.unsupported("pageSize")
+        }
+        val pageNumber = request.pageNumbers.getOrNull(index) ?: (index + 1)
+        val blocks = ArrayList<NotesDocxBlock>()
+        blocks += NotesDocxBlock.Heading(1, listOf(NotesDocxRun(docxPageHeading(request, pageNumber))))
+        val ordered = page.elements.withIndex().sortedWith(
+            compareBy(
+                { it.value.frame.y },
+                { it.value.frame.x },
+                { it.index },
+            ),
+        )
+        var imageOrdinal = 0
+        ordered.forEach { (_, element) ->
+            when (element.kind) {
+                NoteElementKind.TEXT -> {
+                    if (element.text.isBlank()) return@forEach
+                    val converted = if (element.isMarkdown) {
+                        NotesDocxMarkdown.markdownBlocks(element.text, element.color, element.fontSize)
+                    } else {
+                        NotesDocxMarkdown.plainBlocks(element.text, element.color, element.fontSize)
+                    }
+                    blocks += converted
+                }
+                NoteElementKind.IMAGE -> {
+                    blocks += NotesDocxBlock.Image(
+                        imageBudget.retain(buildDocxImage(page, element, request, work, "$index-$imageOrdinal")),
+                    )
+                    imageOrdinal += 1
+                }
+                NoteElementKind.RECTANGLE,
+                NoteElementKind.ELLIPSE,
+                NoteElementKind.LINE,
+                NoteElementKind.ARROW,
+                -> Unit // included in the protected page-visual layer below
+            }
+        }
+        val background = renderDocxBackground(page, request, work, index)?.let(imageBudget::retain)
+        return NotesDocxPage(
+            widthPt = page.widthPt.toDouble(),
+            heightPt = page.heightPt.toDouble(),
+            blocks = blocks,
+            background = background,
+        )
+    }
+
+    private suspend fun buildDocxImage(
+        page: NotesExportPage,
+        element: NotesExportElement,
+        request: NotesDocxExportRequest,
+        work: File,
+        token: String,
+    ): NotesDocxImage {
+        val resourceID = element.imageResourceID
+            ?: throw NotesPlatformErrors.failed("missingImageResource")
+        val staged = stageResource(
+            read = request.read,
+            resourceID = resourceID,
+            work = work,
+            fileName = "docx-image-$token.bin",
+            maxBytes = NotesPlatformFiles.MAX_STAGED_IMAGE_BYTES,
+        )
+        val maxEdge = (maxOf(element.frame.width, element.frame.height).toInt() * 2)
+            .coerceIn(64, 2048)
+        val decoded = decodeImage(staged.file, maxEdge)
+            ?: throw NotesPlatformErrors.failed("imageDecode")
+        try {
+            val hasAlpha = decoded.hasAlpha()
+            val format = if (hasAlpha) Bitmap.CompressFormat.PNG else Bitmap.CompressFormat.JPEG
+            val quality = if (format == Bitmap.CompressFormat.PNG) 100 else 90
+            val extension = if (hasAlpha) "png" else "jpg"
+            val encoded = File(work, "docx-image-$token.$extension")
+            FileOutputStream(encoded).use { out ->
+                if (!decoded.compress(format, quality, out)) {
+                    throw NotesPlatformErrors.failed("imageEncode")
+                }
+                out.flush()
+                runCatching { out.fd.sync() }
+            }
+            val bytes = encoded.readBounded(NotesDocxPackageBuilder.MAX_IMAGE_BYTES.toLong())
+            val verify = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+            BitmapFactory.decodeByteArray(bytes, 0, bytes.size, verify)
+            if (verify.outWidth <= 0 || verify.outHeight <= 0) {
+                throw NotesPlatformErrors.failed("imageReadback")
+            }
+            val pageWidth = page.widthPt.toDouble()
+            val pageHeight = page.heightPt.toDouble()
+            val leftPt = element.frame.x.coerceIn(0.0, (pageWidth - 1.0).coerceAtLeast(0.0))
+            val topPt = element.frame.y.coerceIn(0.0, (pageHeight - 1.0).coerceAtLeast(0.0))
+            val maxWidth = (pageWidth - leftPt).coerceAtLeast(1.0)
+            val maxHeight = (pageHeight - topPt).coerceAtLeast(1.0)
+            val widthPt = element.frame.width.coerceIn(1.0, maxWidth)
+            val heightPt = element.frame.height.coerceIn(1.0, maxHeight)
+            return NotesDocxImage(
+                bytes = bytes,
+                mediaType = if (hasAlpha) "image/png" else "image/jpeg",
+                widthEmu = Math.round(widthPt * 12_700.0),
+                heightEmu = Math.round(heightPt * 12_700.0),
+                leftEmu = Math.round(leftPt * 12_700.0),
+                topEmu = Math.round(topPt * 12_700.0),
+                altText = request.labels.imageAltText,
+                behindText = false,
+            )
+        } finally {
+            if (!decoded.isRecycled) runCatching { decoded.recycle() }
+        }
+    }
+
+    /**
+     * Renders only the page's protected visual layers (PDF/background image,
+     * paper, ink and shapes) through the SAME existing Notes export engine.
+     * Typed text stays editable in the DOCX; the returned PNG is anchored
+     * behind it at the note's exact page size.
+     */
+    private suspend fun renderDocxBackground(
+        page: NotesExportPage,
+        request: NotesDocxExportRequest,
+        work: File,
+        index: Int,
+    ): NotesDocxImage? {
+        val shapes = page.elements.filter {
+            it.kind != NoteElementKind.TEXT && it.kind != NoteElementKind.IMAGE
+        }
+        val hasVisual = page.pdfPageIndex != null ||
+            page.backgroundResourceID != null ||
+            page.drawingResourceID != null ||
+            shapes.isNotEmpty()
+        if (!hasVisual) return null
+        val baseRequest = NotesPdfExportRequest(
+            documentID = request.documentID,
+            title = request.title,
+            pages = listOf(page),
+            pdfResourceID = page.pdfResourceID,
+            pdfSha256 = null,
+            pdfByteCount = null,
+            fileName = request.fileName,
+            read = request.read,
+        )
+        val base = buildComposedPdf(listOf(page), baseRequest, work)
+        val snapshot = verifySnapshot(base.file, "page.pdf")
+        val session = openSnapshot(snapshot)
+        try {
+            val pageId = PdfPageId(0)
+            val pageWidth = page.widthPt
+            val pageHeight = page.heightPt
+            val overlays = ArrayList<NotesOverlay>()
+            shapes.forEach { element ->
+                overlays += NotesOverlay.Shape(
+                    page = pageId,
+                    bounds = clampBounds(element.frame, pageWidth, pageHeight),
+                    kind = when (element.kind) {
+                        NoteElementKind.RECTANGLE ->
+                            com.floe.android.core.notesmedia.export.NotesShapeKind.RECT
+                        NoteElementKind.ELLIPSE ->
+                            com.floe.android.core.notesmedia.export.NotesShapeKind.ELLIPSE
+                        NoteElementKind.LINE ->
+                            com.floe.android.core.notesmedia.export.NotesShapeKind.LINE
+                        else -> com.floe.android.core.notesmedia.export.NotesShapeKind.ARROW
+                    },
+                    strokeWidthPt = 2f,
+                    colorArgb = parseColor(element.color),
+                )
+            }
+            val drawingID = page.drawingResourceID
+            if (drawingID != null) {
+                val staged = stageResource(
+                    read = request.read,
+                    resourceID = drawingID,
+                    work = work,
+                    fileName = "docx-bg-ink-$index.ink",
+                    maxBytes = InkFormat.MAX_DOCUMENT_BYTES,
+                )
+                val bytes = staged.file.readBounded(InkFormat.MAX_DOCUMENT_BYTES)
+                if (!looksLikeFloeInk(bytes)) {
+                    throw NotesPlatformErrors.unsupported("foreignInkExport")
+                }
+                val ink = when (val decoded = InkDocumentCodec.decode(bytes)) {
+                    is InkDecodeResult.Ok -> decoded.snapshot
+                    is InkDecodeResult.Invalid ->
+                        throw NotesPlatformErrors.failed("inkDecode:" + decoded.refusal.name)
+                }
+                overlays += NotesOverlay.InkMark(
+                    page = pageId,
+                    bounds = InkBox(0f, 0f, pageWidth, pageHeight),
+                    snapshot = ink,
+                )
+            }
+            val plan = when (val planned = NotesExportPlanner.plan(
+                snapshot.sha256,
+                session.geometry,
+                listOf(pageId),
+                overlays,
+                NotesExportQuality.HIGH,
+            )) {
+                is com.floe.android.core.notesmedia.export.NotesExportPlanResult.Ready -> planned.plan
+                is com.floe.android.core.notesmedia.export.NotesExportPlanResult.Refused ->
+                    throw NotesPlatformErrors.unsupported("exportRefused:" + planned.refusal.name)
+            }
+            val destination = File(work, "docx-bg-$index.jpg")
+            val exported = NotesExportEngine(session).exportImage(
+                pagePlan = plan.pages.first(),
+                destination = destination,
+                format = ImageFormat.JPEG,
+                maxEdgePx = 2048,
+                overwrite = false,
+            )
+            if (!exported.ok) {
+                throw NotesPlatformErrors.failed("pageVisualExportFailed:" + exported.failure?.name)
+            }
+            if (!NotesPlatformFiles.isPlainFile(
+                    destination,
+                    NotesDocxPackageBuilder.MAX_IMAGE_BYTES.toLong(),
+                )
+            ) {
+                throw NotesPlatformErrors.failed("pageVisualExportMissing")
+            }
+            val bytes = destination.readBounded(NotesDocxPackageBuilder.MAX_IMAGE_BYTES.toLong())
+            return NotesDocxImage(
+                bytes = bytes,
+                mediaType = "image/jpeg",
+                widthEmu = Math.round(page.widthPt.toDouble() * 12_700.0),
+                heightEmu = Math.round(page.heightPt.toDouble() * 12_700.0),
+                leftEmu = 0L,
+                topEmu = 0L,
+                altText = request.labels.pageVisualAltText,
+                behindText = true,
+            )
+        } finally {
+            runCatching { session.close() }
+        }
+    }
+
+    private fun docxPageHeading(request: NotesDocxExportRequest, number: Int): String =
+        runCatching {
+            String.format(Locale.getDefault(), request.labels.pageHeadingFormat, number)
+        }.getOrDefault("Page $number")
 
     override suspend fun print(request: NotesPrintRequest): NotesPrintOutcome {
         val work = withContext(ioDispatcher) {

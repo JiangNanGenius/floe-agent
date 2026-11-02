@@ -76,6 +76,7 @@ import com.floe.android.feature.notes.ui.NotesIcons
 import com.floe.android.feature.notes.ui.R
 import com.floe.android.feature.notes.ui.api.NotesIndexingAvailability
 import com.floe.android.feature.notes.ui.api.NotesIndexingStatus
+import com.floe.android.feature.notes.ui.api.NotesOpenAttachmentOutcome
 import com.floe.android.feature.notes.ui.api.NotesPdfSearchOutcome
 import com.floe.android.feature.notes.ui.api.NotesPrintOutcome
 import com.floe.android.feature.notes.ui.api.NotesSettingsTarget
@@ -93,6 +94,7 @@ import com.floe.android.feature.notes.ui.presentation.resolveElementText
 import com.floe.android.feature.notes.ui.presentation.toNotesFailure
 import com.floe.android.feature.notes.ui.state.NotesDocumentSession
 import com.floe.android.feature.notes.ui.state.NotesWorkspaceController
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
@@ -878,6 +880,13 @@ internal fun NotesExportSheet(
         else -> null
     }
     val pageImageEnabled = pageSelection == null || pageSelection.size == 1
+    val docxLabels = com.floe.android.feature.notes.ui.api.NotesDocxLabels(
+        pageHeadingFormat = stringResource(R.string.notes_markdown_page_heading),
+        emptyPage = stringResource(R.string.notes_docx_empty_page),
+        imageAltText = stringResource(R.string.notes_docx_image_alt),
+        pageVisualAltText = stringResource(R.string.notes_docx_page_visual_alt),
+        conversionNote = stringResource(R.string.notes_docx_conversion_note),
+    )
     val markdownLabels = NotesMarkdownLabels(
         pageHeadingFormat = stringResource(R.string.notes_markdown_page_heading),
         emptyPage = stringResource(R.string.notes_markdown_empty_page),
@@ -992,14 +1001,46 @@ internal fun NotesExportSheet(
                 } else {
                     if (document.kind == NoteDocumentKind.NOTEBOOK) {
                         ExportRow(
+                            stringResource(R.string.notes_export_docx),
+                            state != NotesExportState.WORKING,
+                        ) {
+                            run { controller.exportDocx(session, pageSelection, docxLabels) }
+                        }
+                        ExportRow(
                             stringResource(R.string.notes_export_markdown_document),
                             state != NotesExportState.WORKING,
                         ) {
-                            run { controller.exportNotebookMarkdown(session, markdownLabels) }
+                            run { controller.exportNotebookMarkdown(session, pageSelection, markdownLabels) }
                         }
                     }
                     ExportRow(stringResource(R.string.notes_export_text), state != NotesExportState.WORKING) {
                         run { controller.exportPlainText(session) }
+                    }
+                }
+                val receipt = controller.lastExportReceipt
+                val canOpenDocx = receipt != null &&
+                    receipt.mediaType == "application/vnd.openxmlformats-officedocument.wordprocessingml.document" &&
+                    receipt.contentUri != null
+                if (canOpenDocx) {
+                    ExportRow(
+                        stringResource(R.string.notes_export_open_docx),
+                        state != NotesExportState.WORKING,
+                    ) {
+                        scope.launch {
+                            state = NotesExportState.WORKING
+                            val outcome = try {
+                                controller.openExportedDocument()
+                            } catch (cancelled: CancellationException) {
+                                throw cancelled
+                            } catch (_: Throwable) {
+                                null
+                            }
+                            state = when (outcome) {
+                                NotesOpenAttachmentOutcome.Opened -> NotesExportState.READY
+                                is NotesOpenAttachmentOutcome.Unavailable -> NotesExportState.UNSUPPORTED
+                                is NotesOpenAttachmentOutcome.Failed, null -> NotesExportState.FAILED
+                            }
+                        }
                     }
                 }
                 if (state == NotesExportState.WORKING) {

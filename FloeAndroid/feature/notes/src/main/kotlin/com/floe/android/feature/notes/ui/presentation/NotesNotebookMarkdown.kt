@@ -53,14 +53,28 @@ public object NotesNotebookMarkdown {
     public fun build(
         document: NoteDocument,
         labels: NotesMarkdownLabels = NotesMarkdownLabels(),
+    ): String = build(document, document.pages, labels)
+
+    /**
+     * Build only [pages] in the caller's order. Page headings retain the
+     * page's stable document number, so an ordered subset such as
+     * `[page-3, page-1]` cannot be mistaken for pages 1 and 2. The default
+     * overload above is the whole document.
+     */
+    public fun build(
+        document: NoteDocument,
+        pages: List<NotePage>,
+        labels: NotesMarkdownLabels = NotesMarkdownLabels(),
     ): String {
         require(document.kind == NoteDocumentKind.NOTEBOOK) {
             "Markdown document export requires a notebook"
         }
         val output = StringBuilder()
         output.append("# ").append(escapeMarkdownPlainText(document.title).replace('\n', ' ')).append("\n\n")
-        document.pages.forEachIndexed { index, page ->
-            output.append("## ").append(pageHeading(labels, index + 1)).append("\n\n")
+        val numbers = document.pages.mapIndexed { index, page -> page.id to index + 1 }.toMap()
+        pages.forEachIndexed { ordinal, page ->
+            val number = numbers[page.id] ?: (ordinal + 1)
+            output.append("## ").append(pageHeading(labels, number)).append("\n\n")
             val blocks = pageBlocks(document, page, labels)
             if (blocks.isEmpty()) {
                 output.append('_').append(labels.emptyPage).append('_').append("\n\n")

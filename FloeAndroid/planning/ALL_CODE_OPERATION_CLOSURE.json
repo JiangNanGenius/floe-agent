@@ -1344,13 +1344,15 @@
       },
       "currentImplementation": {
         "state": "source-integrated-unqualified",
-        "batch": "c08-notes-exports",
-        "behavior": "Stable ordered page subset with fresh stored document/revision; same protected PDF/image composition and share-launch receipt. Real notebook Markdown plus explicit nontext limitations; existing mind-map outline retained.",
+        "batch": "c08-notes-export-completion",
+        "behavior": "Notes PDF/DOCX/Markdown honor exact stable ordered subset. Native editable DOCX package/media composition, actual bounded OOXML structure/resource checks, original protected renderer, original share launch and owned-handle read-only reopen. No source mutation.",
         "sourceFiles": 11,
-        "mainCorrection": "Unwrap FreshExportDocument in Markdown call; one-line post-handoff correction",
+        "mainCorrection": "Preserve previous wrapper fix; enforce cumulative64MiB media budget while retaining each image/background, before whole-document collection",
         "compiled": false,
         "testsRun": false,
-        "deviceVerified": false
+        "deviceVerified": false,
+        "docxCodeReady": true,
+        "markdownSubsetCodeReady": true
       }
     },
     {

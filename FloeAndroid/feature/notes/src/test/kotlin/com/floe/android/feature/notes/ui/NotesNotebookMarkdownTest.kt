@@ -66,6 +66,22 @@ class NotesNotebookMarkdownTest {
     }
 
     @Test
+    fun `an ordered subset keeps stable page numbers and excludes other pages`() {
+        val first = NotePage(id = "p1", elements = listOf(text("e1", "First body")))
+        val second = NotePage(id = "p2", elements = listOf(text("e2", "Second body")))
+        val third = NotePage(id = "p3", elements = listOf(text("e3", "Third body")))
+        val markdown = NotesNotebookMarkdown.build(
+            document(listOf(first, second, third)),
+            listOf(third, first),
+        )
+        assertTrue(markdown.contains("## Page 3"))
+        assertTrue(markdown.contains("## Page 1"))
+        assertFalse(markdown.contains("## Page 2"))
+        assertFalse(markdown.contains("Second body"))
+        assertTrue(markdown.indexOf("## Page 3") < markdown.indexOf("## Page 1"))
+    }
+
+    @Test
     fun `authored markdown structure is preserved verbatim`() {
         val body = """
             # Section
