@@ -262,12 +262,6 @@ nonisolated enum CADDocumentFormat {
             reference.faceNames.map { [$0.faceA, $0.faceB] } ?? []
         }
         for node in document.features.nodes {
-            if case let .pattern(body, spec) = node.kind {
-                try spec.validate()
-                if spec.featureSeed != nil, node.outputBodyIDs != [body.bodyID] {
-                    throw CADDocumentFormatError.malformedAssociation("feature-pattern-output")
-                }
-            }
             let refs: [FaceRef]
             switch node.kind {
             case let .thread(_, spec):
@@ -702,6 +696,12 @@ nonisolated enum CADDocumentFormat {
         // before any commit. A non-encodable hole must FAIL the transaction,
         // never be silently dropped by a try?-encode row update.
         for node in document.features.nodes {
+            if case let .pattern(body, spec) = node.kind {
+                try spec.validate()
+                if spec.featureSeed != nil, node.outputBodyIDs != [body.bodyID] {
+                    throw CADDocumentFormatError.malformedAssociation("feature-pattern-output")
+                }
+            }
             if case let .split(target, cutter) = node.kind {
                 try cutter.validate()
                 guard node.outputBodyIDs.count == 2, node.outputBodyIDs.first == target.bodyID,
