@@ -158,6 +158,7 @@ struct HistoryPanelView: View {
         case .pattern: return "square.grid.3x3"
         case .chamfer: return "square.on.circle"
         case .fillet: return "circle.circle"
+        case let .advancedBlend(_, _, law): return law.mode.isFillet ? "circle.circle" : "square.on.circle"
         case .shell: return "cube.transparent"
         case .deleteFace: return "square.slash"
         case .replaceFace: return "arrow.up.and.down.square"

@@ -269,6 +269,51 @@ nonisolated struct EdgeRef: Codable, Hashable, Sendable {
     var faceNames: EdgeName? = nil
 }
 
+// MARK: - Advanced edge blends (M21)
+
+/// Persist the physical law and the chosen SUPPORT FACE identities, never
+/// current kernel indices. The symmetric variable-radius profile avoids an
+/// unstable first/last edge orientation after parameter changes or merge.
+nonisolated struct AdvancedBlendDefinition: Codable, Hashable, Sendable {
+    nonisolated enum Mode: String, Codable, Hashable, CaseIterable, Sendable {
+        case variableFillet, twoDistanceChamfer, distanceAngleChamfer
+        var isFillet: Bool { self == .variableFillet }
+    }
+    var version: Int = 1
+    var mode: Mode
+    var first: Expr
+    var second: Expr
+    var supportFaces: [ElementName] = []
+
+    var firstKey: String { mode.isFillet ? "end_radius" : "first_distance" }
+    var secondKey: String {
+        switch mode {
+        case .variableFillet: return "middle_radius"
+        case .twoDistanceChamfer: return "second_distance"
+        case .distanceAngleChamfer: return "angle"
+        }
+    }
+    var secondUnit: String { mode == .distanceAngleChamfer ? "deg" : "mm" }
+
+    func validate(edgeCount: Int) throws {
+        guard version == 1 else { throw AdvancedBlendError.unsupportedVersion(version) }
+        guard first.value.isFinite, second.value.isFinite,
+              first.value > 1e-6, second.value > 1e-6,
+              mode != .distanceAngleChamfer || second.value < 90,
+              edgeCount > 0,
+              (mode.isFillet ? supportFaces.isEmpty : supportFaces.count == edgeCount) else {
+            throw AdvancedBlendError.malformed
+        }
+        guard supportFaces.allSatisfy(\.hasSupportedOperationIdentity) else {
+            throw AdvancedBlendError.malformed
+        }
+    }
+}
+nonisolated enum AdvancedBlendError: Error, Equatable, Sendable {
+    case unsupportedVersion(Int)
+    case malformed
+}
+
 // MARK: - Mechanical holes (M12)
 
 /// The semantic face roles a hole operation mints. They come from the tool's

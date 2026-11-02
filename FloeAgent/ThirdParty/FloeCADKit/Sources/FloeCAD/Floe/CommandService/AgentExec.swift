@@ -117,7 +117,7 @@ nonisolated enum AgentExecOp: Sendable, Equatable {
     /// (TOPO_NAMING_HISTORY_DESIGN step 4b unblocked expressing this over
     /// the wire: the recorded refs carry durable `EdgeName`s, so the feature
     /// replays by identity like a hand-picked blend).
-    case blend(body: BodyID, isFillet: Bool, amount: Double, edges: [Int])
+    case blend(body: BodyID, isFillet: Bool, amount: Double, edges: [Int], advanced: AdvancedBlendDefinition? = nil, flip: Bool = false)
     /// Open faces are 1-based kernel face indices from `GET /v1/faces?body=`;
     /// EMPTY means a fully-enclosed hollow.
     case shell(body: BodyID, thickness: Double, openFaces: [Int])
@@ -662,8 +662,43 @@ nonisolated enum AgentExec {
                                       message: "args.\(key) must be > 0 mm."))
             }
             let edges = try edgeIndices(a, "edges", allowEmpty: false)
+            var advanced: AdvancedBlendDefinition?
+            var flip = false
+            if let raw = a["flip"] {
+                guard let number = raw as? NSNumber, CFGetTypeID(number) == CFBooleanGetTypeID() else {
+                    return .failure(.init(code: "bad_flip", message: "flip must be true or false."))
+                }
+                flip = number.boolValue
+            }
+            if isFillet {
+                guard a["secondDistance"] == nil, a["angleDegrees"] == nil, !flip else {
+                    return .failure(.init(code: "bad_blend", message: "Fillet uses radius and optional middleRadius."))
+                }
+                if let middle = try optionalDouble(a, "middleRadius") {
+                    guard middle > 1e-6 else { return .failure(.init(code: "bad_radius", message: "middleRadius must be positive.")) }
+                    advanced = AdvancedBlendDefinition(mode: .variableFillet,
+                        first: Expr(value: amount), second: Expr(value: middle))
+                }
+            } else {
+                guard a["middleRadius"] == nil, a["secondDistance"] == nil || a["angleDegrees"] == nil else {
+                    return .failure(.init(code: "bad_blend", message: "Choose secondDistance or angleDegrees."))
+                }
+                if let second = try optionalDouble(a, "secondDistance") {
+                    guard second > 1e-6 else { return .failure(.init(code: "bad_distance", message: "secondDistance must be positive.")) }
+                    advanced = AdvancedBlendDefinition(mode: .twoDistanceChamfer,
+                        first: Expr(value: amount), second: Expr(value: second))
+                } else if let angle = try optionalDouble(a, "angleDegrees") {
+                    guard angle > 1e-6, angle < 90 else {
+                        return .failure(.init(code: "bad_angle", message: "angleDegrees must be between 0 and 90 degrees."))
+                    }
+                    advanced = AdvancedBlendDefinition(mode: .distanceAngleChamfer,
+                        first: Expr(value: amount), second: Expr(value: angle))
+                } else if flip {
+                    return .failure(.init(code: "bad_flip", message: "flip requires a two-distance or distance-angle chamfer."))
+                }
+            }
             return .success(.blend(body: body, isFillet: isFillet,
-                                   amount: amount, edges: edges))
+                                   amount: amount, edges: edges, advanced: advanced, flip: flip))
         } catch let e as AgentExecError { return .failure(e) } catch { return .failure(unexpected) }
     }
 

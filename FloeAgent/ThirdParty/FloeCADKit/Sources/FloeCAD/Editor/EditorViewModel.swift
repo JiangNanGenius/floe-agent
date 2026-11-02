@@ -5092,6 +5092,57 @@ final class EditorViewModel {
     var blendValue: Double = 1 {
         didSet { if blendValue != oldValue { updateBlendPreview() } }
     }
+    private(set) var blendAdvancedMode: AdvancedBlendDefinition.Mode?
+    private var blendEditAdvanced: AdvancedBlendDefinition?
+    var blendSecondValue: Double = 1 {
+        didSet { if blendSecondValue != oldValue { updateBlendPreview() } }
+    }
+    var blendSwapSupport = false {
+        didSet { if blendSwapSupport != oldValue { updateBlendPreview() } }
+    }
+
+    func setBlendAdvancedMode(_ value: AdvancedBlendDefinition.Mode?) {
+        guard blendAdvancedMode != value else { return }
+        blendAdvancedMode = value
+        blendSecondValue = value == .distanceAngleChamfer ? 45 : max(blendValue, 1e-3)
+        blendSwapSupport = false
+        updateBlendPreview()
+    }
+
+    private func currentBlendReferences(bodyRef: BodyRef, source: Body) -> [EdgeRef] {
+        blendSelectedEdges.map { edge in
+            blendEditReferences.first(where: { $0.edge == edge })?.reference
+                ?? EdgeRef(body: bodyRef, signature: EdgeTopology.signature(of: edge),
+                           faceNames: mintEdgeName(body: source, edge: edge, kernelNames: blendEditKernelNames))
+        }
+    }
+
+    private func currentAdvancedBlendDefinition(refs: [EdgeRef]) throws -> AdvancedBlendDefinition? {
+        guard let mode = blendAdvancedMode else { return nil }
+        var definition = AdvancedBlendDefinition(mode: mode,
+            first: Expr(value: blendValue), second: Expr(value: blendSecondValue))
+        if let saved = blendEditAdvanced, saved.mode == mode {
+            if saved.first.value == blendValue { definition.first = saved.first }
+            if saved.second.value == blendSecondValue { definition.second = saved.second }
+        }
+        if !mode.isFillet {
+            for ref in refs {
+                guard let pair = ref.faceNames else { throw AdvancedBlendError.malformed }
+                var support = pair.faceA
+                if let saved = blendEditAdvanced, !saved.mode.isFillet,
+                   let offset = blendEditReferences.firstIndex(where: { $0.reference == ref }),
+                   saved.supportFaces.indices.contains(offset) {
+                    support = saved.supportFaces[offset]
+                    guard support == pair.faceA || support == pair.faceB else { throw AdvancedBlendError.malformed }
+                }
+                if blendSwapSupport { support = support == pair.faceA ? pair.faceB : pair.faceA }
+                definition.supportFaces.append(support)
+            }
+        }
+        try definition.validate(edgeCount: refs.count)
+        return definition
+    }
+
     /// Live result preview: the source body with the pending blend applied,
     /// rendered IN PLACE of the source while the pick is armed (same swap the
     /// face push/pull preview uses). Monotonic revision keeps the GPU cache
@@ -5165,11 +5216,15 @@ final class EditorViewModel {
         let refs: [EdgeRef]
         let amount: Double
         let bodyRef: BodyRef
+        let savedAdvanced: AdvancedBlendDefinition?
         switch node.kind {
         case let .fillet(body, edges, radius):
-            kind = .fillet; refs = edges; amount = radius.value; bodyRef = body
+            kind = .fillet; refs = edges; amount = radius.value; bodyRef = body; savedAdvanced = nil
         case let .chamfer(body, edges, setback):
-            kind = .chamfer; refs = edges; amount = setback.value; bodyRef = body
+            kind = .chamfer; refs = edges; amount = setback.value; bodyRef = body; savedAdvanced = nil
+        case let .advancedBlend(body, edges, definition):
+            kind = definition.mode.isFillet ? .fillet : .chamfer
+            refs = edges; amount = definition.first.value; bodyRef = body; savedAdvanced = definition
         default:
             return false
         }
@@ -5201,6 +5256,10 @@ final class EditorViewModel {
         blendEditBodyRef = bodyRef
         blendEditSource = source
         blendEditKernelNames = names
+        blendEditAdvanced = savedAdvanced
+        blendAdvancedMode = savedAdvanced?.mode
+        blendSecondValue = savedAdvanced?.second.value ?? amount
+        blendSwapSupport = false
         blendBodyID = bodyRef.bodyID
         blendValue = amount
         blendPreview = nil
@@ -5214,7 +5273,7 @@ final class EditorViewModel {
     /// rows). The label is the context-menu item.
     func referenceEditLabel(_ id: FeatureID) -> String? {
         switch session.document.features.node(id)?.kind {
-        case .fillet, .chamfer: return "Edit Edges"
+        case .fillet, .chamfer, .advancedBlend: return "Edit Edges"
         case .shell, .deleteFace: return "Edit Faces"
         case .boolean: return "Edit Tool"
         case .mirror, .pattern, .transform: return "Edit Body"
@@ -5231,7 +5290,7 @@ final class EditorViewModel {
     @discardableResult
     func beginReferenceEdit(_ id: FeatureID) -> Bool {
         switch session.document.features.node(id)?.kind {
-        case .fillet, .chamfer: return beginBlendEdit(id)
+        case .fillet, .chamfer, .advancedBlend: return beginBlendEdit(id)
         case .shell: return beginShellEdit(id)
         case .deleteFace: return beginDeleteFaceEdit(id)
         case .boolean: return beginBooleanEdit(id)
@@ -5249,7 +5308,7 @@ final class EditorViewModel {
     /// Whether a History row offers "Edit Edges".
     func isBlendFeature(_ id: FeatureID) -> Bool {
         switch session.document.features.node(id)?.kind {
-        case .fillet, .chamfer: return true
+        case .fillet, .chamfer, .advancedBlend: return true
         default: return false
         }
     }
@@ -5283,6 +5342,9 @@ final class EditorViewModel {
         blendEditSource = nil
         blendEditKernelNames = nil
         blendEditReferences = []
+        blendEditAdvanced = nil
+        blendAdvancedMode = nil
+        blendSwapSupport = false
         if case .pickingBlendEdges = mode { mode = .idle }
     }
 
@@ -5310,6 +5372,32 @@ final class EditorViewModel {
     /// midpoints are body-LOCAL, so no transform juggling is needed. Nil
     /// when the blend fails (too-big radius) — preview shows invalid.
     private func blendedBody(_ kind: BlendKind, source: Body, revision: UInt64) -> Body? {
+        if blendAdvancedMode != nil {
+            guard let brep = source.brep else {
+                blendPreviewFailure = FloeCADStrings.text("cad.blend.exactRequired", "Choose a solid with editable edges.")
+                return nil
+            }
+            let names = blendEditKernelNames ?? session.lastKernelNames[source.id] ?? [:]
+            let bodyRef = blendEditBodyRef ?? BodyRef(producer: featureNode(owning: source.id)?.id ?? FeatureID(), bodyID: source.id)
+            let refs = currentBlendReferences(bodyRef: bodyRef, source: source)
+            do {
+                guard let definition = try currentAdvancedBlendDefinition(refs: refs) else { return nil }
+                let context = EdgeTopology.ReferenceContext(body: source, kernelNames: names)
+                let indices = refs.compactMap { context.resolve($0)?.nativeIndex }
+                guard indices.count == refs.count else { throw AdvancedBlendError.malformed }
+                let (handle, _) = try OCCTKernel.advancedBlendResultWithAncestry(brep,
+                    edgeIndices: indices, faceNames: names, definition: definition).get()
+                var result = Body(id: source.id, name: source.name, transform: source.transform,
+                    primitive: nil, euclidMesh: source.euclidMesh(), revision: revision)
+                guard result.adoptBRep(handle) else { throw AdvancedBlendError.malformed }
+                blendPreviewFailure = nil
+                return result
+            } catch {
+                blendPreviewFailure = (error as? OCCTOpError)?.message
+                    ?? FloeCADStrings.text("cad.blend.invalidDefinition", "Check the sizes and selected edges.")
+                return nil
+            }
+        }
         if OCCTKernel.useOCCTAsSourceOfTruth, let brep = source.brep {
             let midpoints = blendSelectedEdges.map { edge -> SIMD3<Double> in
                 SIMD3(Double(edge.midpoint.x), Double(edge.midpoint.y), Double(edge.midpoint.z))
@@ -5433,7 +5521,7 @@ final class EditorViewModel {
         // Computed ONCE here (a handful of fillet builds), never per tick.
         // The edge set is frozen for the duration of the drag.
         blendDragMax = nil
-        if kind == .fillet, OCCTKernel.useOCCTAsSourceOfTruth,
+        if kind == .fillet, blendAdvancedMode == nil, OCCTKernel.useOCCTAsSourceOfTruth,
            let source = blendSource, let brep = source.brep {
             let midpoints = blendSelectedEdges.map { edge -> SIMD3<Double> in
                 SIMD3(Double(edge.midpoint.x), Double(edge.midpoint.y), Double(edge.midpoint.z))
@@ -5656,26 +5744,57 @@ final class EditorViewModel {
                                faceNames: mintEdgeName(body: source, edge: edge,
                                                       kernelNames: blendEditKernelNames))
             }
+            let definition: AdvancedBlendDefinition?
+            do { definition = try currentAdvancedBlendDefinition(refs: edgeRefs) }
+            catch { errorMessage = FloeCADStrings.text("cad.blend.invalidDefinition", "Check the sizes and selected edges."); return }
             let unchanged: Bool
             switch session.document.features.node(featureID)?.kind {
             case let .fillet(currentBody, currentEdges, radius):
-                unchanged = kind == .fillet && currentBody == bodyRef
+                unchanged = definition == nil && kind == .fillet && currentBody == bodyRef
                     && currentEdges == edgeRefs && radius.value == blendValue
             case let .chamfer(currentBody, currentEdges, setback):
-                unchanged = kind == .chamfer && currentBody == bodyRef
+                unchanged = definition == nil && kind == .chamfer && currentBody == bodyRef
                     && currentEdges == edgeRefs && setback.value == blendValue
+            case let .advancedBlend(currentBody, currentEdges, currentDefinition):
+                unchanged = currentBody == bodyRef && currentEdges == edgeRefs && currentDefinition == definition
             default: unchanged = false
             }
             if unchanged { cancelBlend(); return }
-            let after: FeatureKind = kind == .fillet
+            let after: FeatureKind
+            if let definition { after = .advancedBlend(body: bodyRef, edges: edgeRefs, definition: definition) }
+            else { after = kind == .fillet
                 ? .fillet(body: bodyRef, edges: edgeRefs, radius: Expr(value: blendValue))
-                : .chamfer(body: bodyRef, edges: edgeRefs, setback: Expr(value: blendValue))
+                : .chamfer(body: bodyRef, edges: edgeRefs, setback: Expr(value: blendValue)) }
             prepareForHistoryChange()
             resetBlendState()
             session.editFeature(featureID, to: after)
             session.save()
             mode = .selected(bodyID)
             selection = [bodyID]
+            return
+        }
+
+        if let advanced = blendAdvancedMode {
+            guard let brep = source.brep else { return }
+            let tolerance = OCCTKernel.matchTolerance(for: brep)
+            let indices = blendSelectedEdges.compactMap { edge in
+                OCCTKernel.nearestEdgeIndex(brep,
+                    to: SIMD3(Double(edge.midpoint.x), Double(edge.midpoint.y), Double(edge.midpoint.z)), tolerance: tolerance)
+            }
+            guard indices.count == blendSelectedEdges.count else {
+                errorMessage = FloeCADStrings.text("cad.blend.invalidDefinition", "Check the sizes and selected edges."); return
+            }
+            let law = AdvancedBlendDefinition(mode: advanced, first: Expr(value: blendValue), second: Expr(value: blendSecondValue))
+            let response = CADCommandExecutor(viewModel: self).run(.blend(body: bodyID,
+                isFillet: kind == .fillet, amount: blendValue, edges: indices, advanced: law, flip: blendSwapSupport))
+            guard response.status == 200 else {
+                let payload = (try? JSONSerialization.jsonObject(with: response.body)) as? [String: Any]
+                errorMessage = payload?["message"] as? String
+                    ?? FloeCADStrings.text("cad.blend.invalidDefinition", "Check the sizes and selected edges.")
+                return
+            }
+            resetBlendState()
+            mode = .selected(bodyID); selection = [bodyID]; session.save()
             return
         }
 
@@ -19667,6 +19786,7 @@ final class EditorViewModel {
         /// Face rotate: shown in degrees, stored in radians (the kernel's unit).
         case rotateAngle
         case helixRadius, helixPitch, helixTurns
+        case blendSecond
     }
 
     /// One editable option of a feature, as the History row shows it: a
@@ -19770,6 +19890,17 @@ final class EditorViewModel {
             return [FeatureScalar(key: .primary,
                                     label: FloeCADStrings.text("cad.feature.setback", "Setback"),
                                     unit: "mm", value: setback.value)]
+        case let .advancedBlend(_, _, definition):
+            return [FeatureScalar(key: .primary,
+                label: definition.mode.isFillet
+                    ? FloeCADStrings.text("cad.blend.endRadius", "End radius")
+                    : FloeCADStrings.text("cad.blend.firstDistance", "First distance"),
+                unit: "mm", value: definition.first.value),
+                FeatureScalar(key: .blendSecond,
+                    label: definition.mode.isFillet ? FloeCADStrings.text("cad.blend.middleRadius", "Middle radius")
+                        : definition.mode == .distanceAngleChamfer ? FloeCADStrings.text("cad.feature.angle", "Angle")
+                        : FloeCADStrings.text("cad.blend.secondDistance", "Second distance"),
+                    unit: definition.secondUnit == "deg" ? "°" : "mm", value: definition.second.value)]
         case let .fillet(_, _, radius):
             return [FeatureScalar(key: .primary,
                                     label: FloeCADStrings.text("cad.feature.radius", "Radius"),
@@ -20311,6 +20442,9 @@ final class EditorViewModel {
     /// angle (degrees) is the one kind with a second scalar.
     func editFeatureScalar(_ id: FeatureID, key: FeatureScalarKey, value: Double) {
         switch key {
+        case .blendSecond:
+            guard let node = session.document.features.node(id), case let .advancedBlend(_, _, law) = node.kind else { return }
+            if let reply = performFeatureUpdate(id, changes: [law.secondKey: value]), reply["mutated"] as? Bool == true { session.save() }
         case .helixRadius, .helixPitch, .helixTurns:
             let parameter: String
             switch key {
@@ -20321,7 +20455,9 @@ final class EditorViewModel {
             if let reply = performFeatureUpdate(id, changes: [parameter: value]),
                reply["mutated"] as? Bool == true { session.save() }
         case .primary:
-            editFeatureDistance(id, value)
+            if let node = session.document.features.node(id), case let .advancedBlend(_, _, law) = node.kind {
+                if let reply = performFeatureUpdate(id, changes: [law.firstKey: value]), reply["mutated"] as? Bool == true { session.save() }
+            } else { editFeatureDistance(id, value) }
         case .taperAngle:
             guard let node = session.document.features.node(id),
                   case let .draftExtrude(profile, plane, distance, taperAngle, symmetric, boolean) = node.kind,
@@ -20416,6 +20552,9 @@ final class EditorViewModel {
             return .chamfer(body: body, edges: edges, setback: expr)
         case let .fillet(body, edges, _):
             return .fillet(body: body, edges: edges, radius: expr)
+        case let .advancedBlend(body, edges, definition):
+            var changed = definition; changed.first = expr
+            return .advancedBlend(body: body, edges: edges, definition: changed)
         case let .shell(body, openFaces, _):
             return .shell(body: body, openFaces: openFaces, thickness: expr)
         case let .draftExtrude(profile, plane, _, taperAngle, symmetric, boolean):
@@ -20653,6 +20792,12 @@ final class EditorViewModel {
         case let .fillet(_, edges, radius):
             return f("cad.feature.fillet", "Fillet %@ mm (%@)", fmt(radius.value),
                      count(edges.count, "1 edge", "%d edges"))
+        case let .advancedBlend(_, _, definition):
+            switch definition.mode {
+            case .variableFillet: return FloeCADStrings.text("cad.blend.variableFillet", "Variable Fillet")
+            case .twoDistanceChamfer: return FloeCADStrings.text("cad.blend.twoDistances", "Two-Distance Chamfer")
+            case .distanceAngleChamfer: return FloeCADStrings.text("cad.blend.distanceAngle", "Distance-Angle Chamfer")
+            }
         case let .shell(_, openFaces, thickness):
             if openFaces.isEmpty {
                 return f("cad.feature.shellClosed", "Shell %@ mm (hollow)", fmt(thickness.value))

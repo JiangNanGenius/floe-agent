@@ -4507,7 +4507,7 @@ public final class CADParameterService {
         case let .hole(target, _, _, _), let .thread(target, _):
             return [target.bodyID]
         case let .split(target, _): return [target.bodyID]
-        case let .transform(body, _), let .chamfer(body, _, _),
+        case let .transform(body, _), let .advancedBlend(body, _, _), let .chamfer(body, _, _),
              let .fillet(body, _, _), let .shell(body, _, _), let .deleteFace(body, _):
             return [body.bodyID]
         case let .pushPull(face, _, _), let .moveFace(face, _), let .scaleFace(face, _),
@@ -5168,6 +5168,17 @@ public final class CADParameterService {
             add("radius", "mm", radius.value, minimum: 1e-6)
             add("edge_count", "unitless", edges.count, editable: false)
             unit = "mm"
+        case let .advancedBlend(_, edges, definition):
+            kindName = definition.mode.rawValue
+            if let data = try? JSONEncoder().encode(definition.supportFaces),
+               let references = try? JSONSerialization.jsonObject(with: data) {
+                add("support_faces", nil, references, editable: false)
+            }
+            add(definition.firstKey, "mm", definition.first.value, minimum: 1e-6)
+            add(definition.secondKey, definition.secondUnit, definition.second.value,
+                minimum: 1e-6, maximum: definition.mode == .distanceAngleChamfer ? 90 : nil)
+            add("edge_count", "unitless", edges.count, editable: false)
+            unit = "mm"
         case let .shell(_, openFaces, thickness):
             kindName = "shell"
             add("thickness", "mm", thickness.value)
@@ -5332,7 +5343,7 @@ public final class CADParameterService {
 
     private static func edgeReferences(in kind: FeatureKind) -> [EdgeRef] {
         switch kind {
-        case let .chamfer(_, edges, _), let .fillet(_, edges, _): return edges
+        case let .chamfer(_, edges, _), let .fillet(_, edges, _), let .advancedBlend(_, edges, _): return edges
         default: return []
         }
     }
@@ -5696,6 +5707,22 @@ public final class CADParameterService {
             guard changes.keys.allSatisfy({ $0 == "radius" }) else { return unknown(["radius"]) }
             guard let r = value("radius"), r > 1e-6 else { return fail("radius", "radius must be > 0 mm.") }
             return .success(.fillet(body: body, edges: edges, radius: Expr(value: r, formula: nil)))
+        case let .advancedBlend(body, edges, definition):
+            let allowed = [definition.firstKey, definition.secondKey]
+            guard changes.keys.allSatisfy({ allowed.contains($0) }) else { return unknown(allowed) }
+            var changed = definition
+            if changes[definition.firstKey] != nil {
+                guard let number = value(definition.firstKey) else { return fail(definition.firstKey, "Use a finite positive distance.") }
+                changed.first = Expr(value: number)
+            }
+            if changes[definition.secondKey] != nil {
+                guard let number = value(definition.secondKey) else { return fail(definition.secondKey, "Use a finite positive value.") }
+                changed.second = Expr(value: number)
+            }
+            do { try changed.validate(edgeCount: edges.count) }
+            catch { return fail("blend", "Distances must be positive; an angle must be between 0 and 90 degrees.") }
+            guard !requireChange || changed != definition else { return fail("blend", "Nothing changed.") }
+            return .success(.advancedBlend(body: body, edges: edges, definition: changed))
         case let .shell(body, openFaces, thickness):
             guard changes.keys.allSatisfy({ $0 == "thickness" }) else { return unknown(["thickness"]) }
             guard let t = value("thickness"), abs(t) > 1e-6 else {

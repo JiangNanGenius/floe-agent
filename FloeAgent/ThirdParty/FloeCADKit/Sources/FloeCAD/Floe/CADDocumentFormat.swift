@@ -70,6 +70,7 @@ nonisolated enum CADDocumentFormat {
     static let externalSketchProjectionVersion = 7
     static let operationPlaneReferenceVersion = 7
     static let advancedPatternVersion = 7
+    static let advancedBlendVersion = 7
     /// Coordinated package floor for a document that actually stores
     /// user-named versions. Ordinary documents keep their existing schema
     /// floor; only a package that gains a checkpoint is raised to this floor.
@@ -159,6 +160,9 @@ nonisolated enum CADDocumentFormat {
         if document.features.nodes.contains(where: { if case .thread = $0.kind { return true }; return false }) {
             required = max(required, standardThreadVersion)
         }
+        if document.features.nodes.contains(where: {
+            if case .advancedBlend = $0.kind { return true }; return false
+        }) { required = max(required, advancedBlendVersion) }
         if document.bodies.contains(where: { $0.uvData != nil }) { required = max(required, uvAuthoringVersion) }
         if document.features.nodes.contains(where: {
             switch $0.kind {
@@ -241,7 +245,7 @@ nonisolated enum CADDocumentFormat {
     private static func edgeReferences(in document: DesignDocument) -> [EdgeRef] {
         var references = document.features.nodes.flatMap { node -> [EdgeRef] in
             switch node.kind {
-            case let .fillet(_, edges, _), let .chamfer(_, edges, _): return edges
+            case let .fillet(_, edges, _), let .chamfer(_, edges, _), let .advancedBlend(_, edges, _): return edges
             default: return []
             }
         }
@@ -262,6 +266,7 @@ nonisolated enum CADDocumentFormat {
             reference.faceNames.map { [$0.faceA, $0.faceB] } ?? []
         }
         for node in document.features.nodes {
+            if case let .advancedBlend(_, _, definition) = node.kind { names += definition.supportFaces }
             let refs: [FaceRef]
             switch node.kind {
             case let .thread(_, spec):
@@ -647,6 +652,13 @@ nonisolated enum CADDocumentFormat {
             return false
         }) { throw CADDocumentFormatError.opaqueAssociations }
         let encoder = JSONEncoder()
+        for node in document.features.nodes {
+            if case let .advancedBlend(_, edges, definition) = node.kind {
+                if definition.version != 1 { throw CADDocumentFormatError.opaqueAssociations }
+                do { try definition.validate(edgeCount: edges.count); _ = try encoder.encode(node.kind) }
+                catch { throw CADDocumentFormatError.malformedAssociation("advanced-blend") }
+            }
+        }
         for plane in document.planes {
             guard let definition = plane.definition else { continue }
             guard definition.isSupportedSemanticVersion else {
@@ -948,6 +960,21 @@ nonisolated enum CADDocumentFormat {
             // for the M08 consumer identity BEFORE the hole contract below.
             guard let object = try? JSONSerialization.jsonObject(with: row.kind) as? [String: Any] else {
                 continue
+            }
+            if let blend = object["advancedBlend"] as? [String: Any] {
+                result.requiredVersion = max(result.requiredVersion, advancedBlendVersion)
+                guard let definition = blend["definition"] as? [String: Any],
+                      let raw = definition["version"], let version = jsonIntegerValue(raw), version > 0 else {
+                    throw CADDocumentFormatError.malformedAssociation("advanced-blend")
+                }
+                if version > 1 { result.opaqueFeatures.insert(row.featureID) }
+                else {
+                    do {
+                        let decoded = try JSONDecoder().decode(FeatureKind.self, from: row.kind)
+                        guard case let .advancedBlend(_, edges, law) = decoded else { throw AdvancedBlendError.malformed }
+                        try law.validate(edgeCount: edges.count)
+                    } catch { throw CADDocumentFormatError.malformedAssociation("advanced-blend") }
+                }
             }
             if let pattern = object["pattern"] as? [String: Any], let spec = pattern["spec"] as? [String: Any] {
                 for key in ["curvePath", "featureSeed"] {

@@ -451,6 +451,7 @@ nonisolated enum FeatureKind: Codable, Sendable {
     case chamfer(body: BodyRef, edges: [EdgeRef], setback: Expr)
     /// Phase E: round the referenced convex edges of `body` to `radius`.
     case fillet(body: BodyRef, edges: [EdgeRef], radius: Expr)
+    case advancedBlend(body: BodyRef, edges: [EdgeRef], definition: AdvancedBlendDefinition)
     /// Phase E: hollow `body` to a wall of `thickness`, cutting the referenced
     /// faces open (empty = fully enclosed hollow). Exact solids support flat
     /// and cylindrical openings; the mesh approximation remains planar.
@@ -548,7 +549,7 @@ nonisolated extension FeatureNode {
             addPlane(cutter.plane)
             if let profile = cutter.profile { ids.insert(profile.sketchID) }
         case .primitive, .baseSolid, .thread, .boolean, .transform, .pushPull, .moveFace,
-             .scaleFace, .rotateFace, .draftFace, .chamfer, .fillet, .shell,
+             .scaleFace, .rotateFace, .draftFace, .chamfer, .fillet, .advancedBlend, .shell,
              .deleteFace, .replaceFace:
             break
         }
@@ -570,7 +571,7 @@ nonisolated extension FeatureNode {
             add(plane)
         case let .split(_, cutter): add(cutter.plane)
         case .primitive, .baseSolid, .thread, .loft, .boolean, .transform, .pattern, .pushPull, .moveFace,
-             .scaleFace, .rotateFace, .draftFace, .chamfer, .fillet, .shell,
+             .scaleFace, .rotateFace, .draftFace, .chamfer, .fillet, .advancedBlend, .shell,
              .deleteFace, .replaceFace:
             break
         }
@@ -620,7 +621,7 @@ nonisolated extension FeatureNode {
             return [target.bodyID]
         case let .split(target, _): return [target.bodyID]
         case let .transform(body, _), let .mirror(body, _, _), let .pattern(body, _),
-             let .chamfer(body, _, _), let .fillet(body, _, _), let .shell(body, _, _),
+             let .chamfer(body, _, _), let .fillet(body, _, _), let .advancedBlend(body, _, _), let .shell(body, _, _),
              let .deleteFace(body, _):
             return [body.bodyID]
         case let .pushPull(face, _, _), let .moveFace(face, _), let .scaleFace(face, _),
@@ -1045,6 +1046,9 @@ nonisolated extension FeatureGraph {
             evalEdgeBlend(
                 node, bodyRef: body, edgeRefs: edges, amount: radius.value,
                 isFillet: true, into: &state, next: nextRevision)
+        case let .advancedBlend(body, edges, definition):
+            evalEdgeBlend(node, bodyRef: body, edgeRefs: edges, amount: definition.first.value,
+                isFillet: definition.mode.isFillet, advanced: definition, into: &state, next: nextRevision)
         case let .shell(body, openFaces, thickness):
             evalShell(
                 node, bodyRef: body, openFaceRefs: openFaces,
@@ -1739,6 +1743,9 @@ nonisolated extension FeatureGraph {
     private static func kind(_ kind: FeatureKind, replacingEdge ref: EdgeRef,
                              with upgraded: EdgeRef) -> FeatureKind? {
         switch kind {
+        case let .advancedBlend(body, edges, definition) where edges.contains(ref):
+            return .advancedBlend(body: body,
+                edges: edges.map { $0 == ref ? upgraded : $0 }, definition: definition)
         case let .fillet(body, edges, radius) where edges.contains(ref):
             return .fillet(body: body,
                            edges: edges.map { $0 == ref ? upgraded : $0 },
@@ -2154,9 +2161,14 @@ nonisolated extension FeatureGraph {
         edgeRefs: [EdgeRef],
         amount: Double,
         isFillet: Bool,
+        advanced: AdvancedBlendDefinition? = nil,
         into state: inout EvalState,
         next nextRevision: () -> UInt64
     ) {
+        if let advanced {
+            do { try advanced.validate(edgeCount: edgeRefs.count) }
+            catch { state.errors[node.id] = .kernelFailure("invalid or unsupported advanced blend definition"); return }
+        }
         guard amount.isFinite, amount > 1e-6 else {
             state.errors[node.id] = .kernelFailure("blend amount must be finite and positive")
             return
@@ -2197,11 +2209,15 @@ nonisolated extension FeatureGraph {
                 // BY INDEX (a repeat used to trap the whole app on rebuild).
                 var seen = Set<Int>()
                 let unique = indices.filter { seen.insert($0).inserted }
-                let blended = isFillet
-                    ? OCCTKernel.filletResultWithAncestry(
-                        brep, edgeIndices: unique, radius: amount)
-                    : OCCTKernel.chamferResultWithAncestry(
-                        brep, edgeIndices: unique, distance: amount)
+                let blended: Result<(handle: BRepHandle, ancestry: ShapeAncestry), OCCTOpError>
+                if let advanced {
+                    blended = OCCTKernel.advancedBlendResultWithAncestry(brep,
+                        edgeIndices: indices, faceNames: names, definition: advanced)
+                } else {
+                    blended = isFillet
+                        ? OCCTKernel.filletResultWithAncestry(brep, edgeIndices: unique, radius: amount)
+                        : OCCTKernel.chamferResultWithAncestry(brep, edgeIndices: unique, distance: amount)
+                }
                 switch blended {
                 case let .success((handle, ancestry)):
                     var result = Body(
@@ -2247,6 +2263,11 @@ nonisolated extension FeatureGraph {
                     return
                 }
             }
+        }
+
+        guard advanced == nil else {
+            state.errors[node.id] = .kernelFailure("advanced blends require a closed exact solid")
+            return
         }
 
         func d3(_ v: SIMD3<Float>) -> SIMD3<Double> {

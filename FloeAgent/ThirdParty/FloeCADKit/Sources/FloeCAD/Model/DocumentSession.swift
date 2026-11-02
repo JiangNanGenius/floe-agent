@@ -1451,6 +1451,10 @@ final class DocumentSession {
             return [FeatureExpressionSlot(name: "setback", unit: "mm", expr: setback)]
         case let .fillet(_, _, radius):
             return [FeatureExpressionSlot(name: "radius", unit: "mm", expr: radius)]
+        case let .advancedBlend(_, _, definition):
+            return [FeatureExpressionSlot(name: definition.firstKey, unit: "mm", expr: definition.first),
+                    FeatureExpressionSlot(name: definition.secondKey, unit: definition.secondUnit,
+                                          storedUnit: definition.secondUnit, expr: definition.second)]
         case let .shell(_, _, thickness):
             return [FeatureExpressionSlot(name: "thickness", unit: "mm", expr: thickness)]
         case let .thread(_, spec):
@@ -1540,6 +1544,12 @@ final class DocumentSession {
         case let .fillet(body, edges, radius):
             guard name == "radius" else { return nil }
             return .fillet(body: body, edges: edges, radius: expr)
+        case let .advancedBlend(body, edges, definition):
+            var changed = definition
+            if name == definition.firstKey { changed.first = expr }
+            else if name == definition.secondKey { changed.second = expr }
+            else { return nil }
+            return .advancedBlend(body: body, edges: edges, definition: changed)
         case let .shell(body, openFaces, thickness):
             guard name == "thickness" else { return nil }
             return .shell(body: body, openFaces: openFaces, thickness: expr)

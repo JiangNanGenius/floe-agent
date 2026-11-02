@@ -509,9 +509,9 @@ final class CADCommandExecutor {
                     boolean: intent),
                 outputBodyIDs: [BodyID()]), on: viewModel)
 
-        case let .blend(bodyID, isFillet, amount, edges):
+        case let .blend(bodyID, isFillet, amount, edges, advanced, flip):
             return execBlend(body: bodyID, isFillet: isFillet, amount: amount,
-                             edgeIndices: edges, on: viewModel)
+                             edgeIndices: edges, advanced: advanced, flip: flip, on: viewModel)
 
         case let .shell(bodyID, thickness, openFaces):
             return execShell(body: bodyID, thickness: thickness,
@@ -1127,7 +1127,7 @@ final class CADCommandExecutor {
     /// node through the same path as a hand-picked blend, so the feature
     /// replays identically.
     private func execBlend(body bodyID: BodyID, isFillet: Bool, amount: Double,
-                           edgeIndices: [Int],
+                           edgeIndices: [Int], advanced: AdvancedBlendDefinition? = nil, flip: Bool = false,
                            on viewModel: EditorViewModel) -> AgentResponse {
         // The blend commits atomically. Report every requested index, including
         // failures before feature recording, without claiming partial success.
@@ -1190,7 +1190,10 @@ final class CADCommandExecutor {
             signatureByEdge[index] = EdgeTopology.signature(of: edge)
             if signatureByEdge.count == wanted.count { break }
         }
-        let ref = bodyRef(bodyID, session)
+        let binding: (reference: BodyRef, prefix: [FeatureNode])
+        do { binding = try preservedBodyReference(context.body, in: session) }
+        catch { return report(.failure(422, "Unprocessable Entity", error: "source_preservation_failed", message: error.localizedDescription)) }
+        let ref = binding.reference
         var refs: [EdgeRef] = []
         for index in edgeIndices {
             guard let signature = signatureByEdge[index] else {
@@ -1202,13 +1205,30 @@ final class CADCommandExecutor {
             refs.append(EdgeRef(body: ref, signature: signature,
                                 faceNames: edgeNames[index]))
         }
-        let node = FeatureNode(
-            name: isFillet ? "Fillet" : "Chamfer",
-            kind: isFillet
-                ? .fillet(body: ref, edges: refs, radius: Expr(value: amount))
-                : .chamfer(body: ref, edges: refs, setback: Expr(value: amount)),
-            outputBodyIDs: [bodyID])
-        return report(record(node, on: viewModel))
+        let kind: FeatureKind
+        if var law = advanced {
+            guard law.mode.isFillet == isFillet else {
+                return report(.failure(400, "Bad Request", error: "bad_blend", message: "The blend mode does not match its operation."))
+            }
+            law.first = Expr(value: amount)
+            law.supportFaces = []
+            if !isFillet {
+                for edge in refs {
+                    guard let name = edge.faceNames else {
+                        return report(.failure(409, "Conflict", error: "unaddressable_support", message: "This edge has no stable support-face identity."))
+                    }
+                    law.supportFaces.append(flip ? name.faceB : name.faceA)
+                }
+            }
+            do { try law.validate(edgeCount: refs.count) }
+            catch { return report(.failure(400, "Bad Request", error: "bad_blend", message: "The advanced blend dimensions are invalid.")) }
+            kind = .advancedBlend(body: ref, edges: refs, definition: law)
+        } else {
+            kind = isFillet ? .fillet(body: ref, edges: refs, radius: Expr(value: amount))
+                : .chamfer(body: ref, edges: refs, setback: Expr(value: amount))
+        }
+        let node = FeatureNode(name: isFillet ? "Fillet" : "Chamfer", kind: kind, outputBodyIDs: [bodyID])
+        return report(record(node, on: viewModel, prefix: binding.prefix))
     }
 
     /// feature.hole: one locating circle + typed hole semantics. Validates the

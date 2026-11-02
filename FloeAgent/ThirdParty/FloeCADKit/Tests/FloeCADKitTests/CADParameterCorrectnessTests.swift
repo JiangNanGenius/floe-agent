@@ -2907,3 +2907,193 @@ final class CADAdvancedBlendKernelTests: XCTestCase {
         XCTAssertGreaterThan(OCCTKernel.volume(variable.handle), OCCTKernel.volume(handle))
     }
 }
+
+@MainActor
+final class CADAdvancedBlendDocumentTests: XCTestCase {
+    private var directory: URL!
+    override func setUp() async throws {
+        directory = FileManager.default.temporaryDirectory.appendingPathComponent("CADAdvancedBlend-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    }
+    override func tearDown() async throws { try? FileManager.default.removeItem(at: directory) }
+    private func document() async throws -> FloeCADDocument {
+        try await FloeCADDocument.create(at: directory.appendingPathComponent("\(UUID().uuidString).floecad"), name: "Blend")
+    }
+    private func box(_ doc: FloeCADDocument) throws -> (FeatureNode, BodyID, SelectableEdge, Int) {
+        let id = UUID(), sketch = Sketch(name: "Profile", plane: .ground,
+            entities: [.rect(id: id, min: .zero, max: SIMD2(40, 20))])
+        let target = BodyID(), source = FeatureNode(name: "Box", kind: .extrude(profile: ProfileRef(sketchID: sketch.id,
+            entityIDs: [id], holeEntityIDs: [], seedPoint: SIMD2(5, 5)), plane: PlaneRef(source: .sketch(sketch.id)),
+            distance: Expr(value: 10), symmetric: false, boolean: BooleanIntent(op: .newBody, resolvedTargets: []),
+            extraProfiles: []), outputBodyIDs: [target])
+        doc.session.recordAndRebuild([source], extra: [AddSketchCommand(sketch: sketch)], title: "Box")
+        XCTAssertTrue(doc.session.lastEvalErrors.isEmpty)
+        let body = try XCTUnwrap(doc.session.document.body(with: target)), brep = try XCTUnwrap(body.brep)
+        let edge = try XCTUnwrap(EdgeTopology.selectableEdges(from: body.render).first { abs($0.direction.y) > 0.99 })
+        let index = try XCTUnwrap(OCCTKernel.nearestEdgeIndex(brep,
+            to: SIMD3(Double(edge.midpoint.x), Double(edge.midpoint.y), Double(edge.midpoint.z)),
+            tolerance: OCCTKernel.matchTolerance(for: brep)))
+        return (source, target, edge, index)
+    }
+    private func run(_ doc: FloeCADDocument, _ op: String, _ args: [String: Any]) throws -> FeatureNode {
+        let result = doc.executeJSON(try JSONSerialization.data(withJSONObject: ["op": op, "args": args]))
+        XCTAssertTrue(result.isOK, "\(result.errorCode ?? "") \(result.message ?? "")")
+        guard result.isOK else { throw CADDocumentError(code: "blend", message: result.message ?? "Failed") }
+        XCTAssertTrue(doc.session.lastEvalErrors.isEmpty, "\(doc.session.lastEvalErrors)")
+        return try XCTUnwrap(doc.session.document.features.nodes.last)
+    }
+    private func volume(_ doc: FloeCADDocument, _ target: BodyID) throws -> Double {
+        OCCTKernel.volume(try XCTUnwrap(doc.session.document.body(with: target)?.brep))
+    }
+    private func law(_ doc: FloeCADDocument, _ id: FeatureID) throws -> AdvancedBlendDefinition {
+        guard case let .advancedBlend(_, _, law) = try XCTUnwrap(doc.session.document.features.node(id)).kind else {
+            throw CADDocumentError(code: "law", message: "Missing advanced blend")
+        }
+        return law
+    }
+
+    func testBothChamferModesAreOneUndoFollowSourceAndReopenWithSameSupportNames() async throws {
+        for angle in [false, true] {
+            let doc = try await document(); defer { doc.close() }
+            let (source, target, _, edge) = try box(doc), beforeUndo = doc.session.undoStack.undoCommands.count
+            var args: [String: Any] = ["bodyID": target.raw.uuidString, "edges": [edge], "setback": 2, "flip": true]
+            args[angle ? "angleDegrees" : "secondDistance"] = angle ? 30 : 4
+            let feature = try run(doc, "feature.chamfer", args), savedLaw = try law(doc, feature.id)
+            let wedge = angle ? 10 * 2 * tan(Double.pi / 6) : 40
+            XCTAssertEqual(try volume(doc, target), 8000 - wedge, accuracy: 1e-5)
+            XCTAssertEqual(doc.session.undoStack.undoCommands.count, beforeUndo + 1)
+            XCTAssertEqual(savedLaw.supportFaces.count, 1)
+            doc.session.undo(); XCTAssertEqual(try volume(doc, target), 8000, accuracy: 1e-6)
+            doc.session.redo(); XCTAssertEqual(try volume(doc, target), 8000 - wedge, accuracy: 1e-5)
+            let service = CADParameterService(document: doc)
+            let updated = service.handle(action: "update", args: ["feature_id": source.id.raw.uuidString, "changes": ["distance": 20]])
+            XCTAssertEqual(updated["ok"] as? Bool, true, "\(updated)")
+            XCTAssertEqual(try volume(doc, target), 16000 - wedge * 2, accuracy: 1e-4)
+            XCTAssertEqual(try law(doc, feature.id), savedLaw)
+            let saved = await doc.save(); XCTAssertTrue(saved.succeeded, saved.error ?? "")
+            let url = doc.url; doc.close()
+            let reopened = try await FloeCADDocument.open(at: url); defer { reopened.close() }
+            XCTAssertEqual(try law(reopened, feature.id), savedLaw)
+            XCTAssertEqual(try volume(reopened, target), 16000 - wedge * 2, accuracy: 1e-4)
+            XCTAssertEqual(reopened.session.document.features.node(feature.id)?.outputBodyIDs, [target])
+        }
+    }
+
+    func testVariableFilletNativeHistoryPreservesFormulaAndNoChangeAddsNoUndo() async throws {
+        let doc = try await document(); defer { doc.close() }
+        let (_, target, _, edge) = try box(doc)
+        let feature = try run(doc, "feature.fillet", ["bodyID": target.raw.uuidString, "edges": [edge], "radius": 1, "middleRadius": 2])
+        let variable = Variable(name: "middle", expression: "2")
+        doc.session.perform(AddVariableCommand(variable: variable)); doc.session.variablesDidChange()
+        guard case let .advancedBlend(ref, edges, old) = feature.kind else { return XCTFail("Missing variable law") }
+        var definition = old; definition.second = Expr(value: 2, formula: "middle")
+        doc.session.editFeature(feature.id, to: .advancedBlend(body: ref, edges: edges, definition: definition))
+        let beforeVolume = try volume(doc, target), undo = doc.session.undoStack.undoCommands.count
+        let model = doc.viewModel(); XCTAssertTrue(model.beginBlendEdit(feature.id))
+        XCTAssertEqual(model.blendAdvancedMode, .variableFillet); XCTAssertEqual(model.blendSecondValue, 2)
+        XCTAssertNotNil(model.blendPreview); XCTAssertTrue(model.canCommitBlend)
+        model.commitBlend()
+        XCTAssertEqual(doc.session.undoStack.undoCommands.count, undo)
+        XCTAssertEqual(try law(doc, feature.id).second.formula, "middle")
+        var after = variable; after.expression = "3"
+        doc.session.perform(EditVariableCommand(before: variable, after: after)); doc.session.variablesDidChange()
+        XCTAssertTrue(doc.session.lastEvalErrors.isEmpty, "\(doc.session.lastEvalErrors)")
+        XCTAssertEqual(try law(doc, feature.id).second, Expr(value: 3, formula: "middle"))
+        XCTAssertLessThan(try volume(doc, target), beforeVolume - 1)
+        let descriptor = CADParameterService.describe(try XCTUnwrap(doc.session.document.features.node(feature.id)), document: doc.session.document)
+        let parameters = try XCTUnwrap(descriptor["parameters"] as? [[String: Any]])
+        XCTAssertTrue(parameters.contains { $0["name"] as? String == "middle_radius" && $0["editable"] as? Bool == true })
+        let expectedVolume = try volume(doc, target)
+        let save = await doc.save(); XCTAssertTrue(save.succeeded, save.error ?? "")
+        let url = doc.url; doc.close(); let reopened = try await FloeCADDocument.open(at: url); defer { reopened.close() }
+        XCTAssertEqual(try law(reopened, feature.id).second, Expr(value: 3, formula: "middle"))
+        XCTAssertEqual(try volume(reopened, target), expectedVolume, accuracy: 1e-5)
+    }
+
+    func testNativePickCreatesAdvancedFeatureAndCancelDoesNotLeakTheMode() async throws {
+        let doc = try await document(); defer { doc.close() }
+        let (_, target, edge, _) = try box(doc), model = doc.viewModel()
+        model.selection = [target]; model.beginBlend(.chamfer)
+        model.blendSelectedEdges = [edge]; model.setBlendAdvancedMode(.twoDistanceChamfer)
+        model.blendValue = 2; model.blendSecondValue = 4
+        XCTAssertNotNil(model.blendPreview); XCTAssertTrue(model.canCommitBlend)
+        let undo = doc.session.undoStack.undoCommands.count
+        model.commitBlend()
+        XCTAssertEqual(doc.session.undoStack.undoCommands.count, undo + 1)
+        let feature = try XCTUnwrap(doc.session.document.features.nodes.last)
+        XCTAssertEqual(try law(doc, feature.id).mode, .twoDistanceChamfer)
+        XCTAssertEqual(try volume(doc, target), 7960, accuracy: 1e-5)
+        XCTAssertTrue(model.beginBlendEdit(feature.id))
+        XCTAssertEqual(model.blendAdvancedMode, .twoDistanceChamfer)
+        model.blendSwapSupport = true; XCTAssertNotNil(model.blendPreview)
+        model.cancelBlend()
+        XCTAssertEqual(try volume(doc, target), 7960, accuracy: 1e-5)
+        model.selection = [target]; model.beginBlend(.fillet)
+        XCTAssertNil(model.blendAdvancedMode); XCTAssertFalse(model.blendSwapSupport)
+        model.cancelBlend()
+    }
+
+    func testInvalidParameterEditIsAtomicAndMissingSupportCannotChooseAnotherFace() async throws {
+        let doc = try await document(); defer { doc.close() }
+        let (_, target, _, edge) = try box(doc)
+        let feature = try run(doc, "feature.chamfer", ["bodyID": target.raw.uuidString, "edges": [edge], "setback": 2, "secondDistance": 4])
+        let previous = try law(doc, feature.id), bytes = try XCTUnwrap(OCCTKernel.serialize(try XCTUnwrap(doc.session.document.body(with: target)?.brep)))
+        let undo = doc.session.undoStack.undoCommands.count, service = CADParameterService(document: doc)
+        for changes: [String: Any] in [["first_distance": 10000], ["second_distance": -1], ["angle": 45]] {
+            let reply = service.handle(action: "update", args: ["feature_id": feature.id.raw.uuidString, "changes": changes])
+            XCTAssertEqual(reply["ok"] as? Bool, false, "\(reply)")
+            XCTAssertEqual(doc.session.undoStack.undoCommands.count, undo)
+            XCTAssertEqual(try law(doc, feature.id), previous)
+            XCTAssertEqual(OCCTKernel.serialize(try XCTUnwrap(doc.session.document.body(with: target)?.brep)), bytes)
+        }
+        var model = doc.session.document
+        guard case let .advancedBlend(ref, refs, saved) = feature.kind else { return XCTFail("Missing law") }
+        var broken = saved; broken.supportFaces[0].creator = FeatureID()
+        let bad = FeatureNode(id: feature.id, name: feature.name, kind: .advancedBlend(body: ref, edges: refs, definition: broken), outputBodyIDs: [target])
+        model.features.nodes[model.features.nodes.count - 1] = bad
+        let result = model.features.evaluate(sketches: model.sketches, planes: model.planes, naming: SignatureNaming()) { 1 }
+        XCTAssertNotNil(result.errors[feature.id]); XCTAssertEqual(result.bodies.count, 1)
+        XCTAssertEqual(OCCTKernel.volume(try XCTUnwrap(result.bodies.first?.brep)), 8000, accuracy: 1e-6)
+    }
+
+    func testSemanticVersionIsIntentBasedFutureOpaqueAndBooleanVersionRefused() async throws {
+        let doc = try await document(); defer { doc.close() }
+        let (_, target, _, edge) = try box(doc)
+        let legacy = try run(doc, "feature.fillet", ["bodyID": target.raw.uuidString, "edges": [edge], "radius": 1])
+        XCTAssertEqual(CADDocumentFormat.requiredFormat(document: doc.session.document), 7, "Qualified legacy edge intent keeps its existing floor")
+        doc.session.undo()
+        let feature = try run(doc, "feature.chamfer", ["bodyID": target.raw.uuidString, "edges": [edge], "setback": 2, "angleDegrees": 30])
+        XCTAssertNotEqual(feature.id, legacy.id)
+        XCTAssertEqual(CADDocumentFormat.requiredFormat(document: doc.session.document), 7)
+        var object = try XCTUnwrap(JSONSerialization.jsonObject(with: JSONEncoder().encode(feature.kind)) as? [String: Any])
+        var blend = try XCTUnwrap(object["advancedBlend"] as? [String: Any]), definition = try XCTUnwrap(blend["definition"] as? [String: Any])
+        definition["version"] = 2; blend["definition"] = definition; object["advancedBlend"] = blend
+        var row = CADFeatureRecord(featureID: feature.id.raw, orderIndex: 0, name: feature.name, suppressed: false,
+            kind: try JSONSerialization.data(withJSONObject: object), outputBodyIDs: try JSONEncoder().encode([target.raw]))
+        let original = row.kind
+        XCTAssertTrue(try CADDocumentFormat.assess(planes: [], sketches: [], features: [row]).opaqueFeatures.contains(feature.id.raw))
+        XCTAssertEqual(row.kind, original)
+        definition["version"] = true; blend["definition"] = definition; object["advancedBlend"] = blend
+        row.kind = try JSONSerialization.data(withJSONObject: object)
+        XCTAssertThrowsError(try CADDocumentFormat.assess(planes: [], sketches: [], features: [row]))
+        for args: [String: Any] in [["secondDistance": 2, "angleDegrees": 30], ["angleDegrees": 90], ["flip": 1]] {
+            var full = args; full["bodyID"] = target.raw.uuidString; full["edges"] = [edge]; full["setback"] = 2
+            if case .success = AgentExec.parse(["op": "feature.chamfer", "args": full]) { XCTFail("Invalid advanced arguments accepted") }
+        }
+    }
+
+    func testMergeRemapsSupportIdentitiesAndKeepsActualAdvancedGeometry() async throws {
+        let doc = try await document(); defer { doc.close() }
+        let (_, target, _, edge) = try box(doc)
+        let feature = try run(doc, "feature.chamfer", ["bodyID": target.raw.uuidString, "edges": [edge], "setback": 2, "secondDistance": 4])
+        let original = try law(doc, feature.id)
+        let inserted = try ProjectMergeKit.insert(doc.session.document, into: DesignDocument(), translation: SIMD3(100, 30, -20))
+        let mapped = try XCTUnwrap(inserted.document.features.nodes.last)
+        guard case let .advancedBlend(ref, _, definition) = mapped.kind else { return XCTFail("Missing remapped law") }
+        XCTAssertNotEqual(ref.bodyID, target); XCTAssertNotEqual(definition.supportFaces, original.supportFaces)
+        let result = inserted.document.features.evaluate(sketches: inserted.document.sketches,
+            planes: inserted.document.planes, naming: SignatureNaming()) { 1 }
+        XCTAssertTrue(result.errors.isEmpty, "\(result.errors)")
+        XCTAssertEqual(OCCTKernel.volume(try XCTUnwrap(result.bodies.first?.brep)), 7960, accuracy: 1e-5)
+    }
+}

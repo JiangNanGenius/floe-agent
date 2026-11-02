@@ -2184,4 +2184,65 @@ final class CADAdvancedPatternNativeFlowUITests: XCTestCase {
         attachment.name = name; attachment.lifetime = .keepAlways; add(attachment)
     }
 }
+
+@MainActor
+final class CADAdvancedBlendNativeFlowUITests: XCTestCase {
+    func testAdvancedBlendMenusAndFieldsAtRegularWidth() { check(compact: false) }
+    func testAdvancedBlendMenusAndFieldsInCompactLargeText() { check(compact: true) }
+
+    private func check(compact: Bool) {
+        continueAfterFailure = false
+        XCUIDevice.shared.orientation = .landscapeLeft
+        let app = XCUIApplication()
+        app.launchArguments = ["-AppleLanguages", "(en)", "-AppleLocale", "en_US", "-ui-testing",
+            "--ui-test-cad-fixture", "--ui-test-cad-uninstanced"]
+        app.launchArguments += compact ? ["--ui-test-cad-compact", "--ui-test-cad-large-text"] : ["-ui-testing-ipad"]
+        app.launch(); defer { app.terminate() }
+        XCTAssertTrue(app.buttons["UndoButton"].waitForExistence(timeout: 60))
+        let modify = app.buttons["ModifyGroup"]
+        XCTAssertTrue(modify.exists && modify.isHittable); modify.tap()
+        app.buttons["ChamferButton"].tap()
+        let menu = app.buttons["BlendModeMenu"]
+        XCTAssertTrue(menu.waitForExistence(timeout: 15) && menu.isHittable)
+        menu.tap(); app.buttons["Two-Distance Chamfer"].firstMatch.tap()
+        let second = app.textFields["BlendSecondValueField"]
+        XCTAssertTrue(second.waitForExistence(timeout: 10))
+        reveal(second, in: app)
+        XCTAssertTrue(second.isHittable, app.debugDescription)
+        let swap = app.buttons["BlendSwapSides"]
+        reveal(swap, in: app); XCTAssertTrue(swap.exists && swap.isHittable); swap.tap()
+        capture(compact ? "M21 compact large text two-distance native controls" : "M21 two-distance native controls")
+        reveal(menu, in: app, left: false); menu.tap()
+        app.buttons["Distance-Angle Chamfer"].firstMatch.tap()
+        XCTAssertTrue(second.exists)
+        capture(compact ? "M21 compact native distance angle" : "M21 native distance angle")
+        let cancel = app.buttons["BlendCancel"]
+        XCTAssertTrue(cancel.exists && cancel.isHittable); cancel.tap()
+        XCTAssertFalse(app.buttons["BlendApply"].exists)
+        if !app.buttons["FilletButton"].isHittable { modify.tap() }
+        app.buttons["FilletButton"].tap()
+        XCTAssertTrue(menu.waitForExistence(timeout: 10)); reveal(menu, in: app, left: false); menu.tap()
+        app.buttons["Variable Fillet"].firstMatch.tap()
+        XCTAssertTrue(second.waitForExistence(timeout: 10)); reveal(second, in: app)
+        XCTAssertTrue(second.isHittable)
+        XCTAssertFalse(app.buttons["BlendSwapSides"].exists)
+        capture(compact ? "M21 compact large text variable radius controls" : "M21 variable radius controls")
+        app.buttons["BlendCancel"].tap()
+        XCTAssertFalse(app.buttons["BlendApply"].exists)
+        XCTAssertEqual(app.alerts.count, 0)
+    }
+    private func reveal(_ control: XCUIElement, in app: XCUIApplication, left: Bool = true) {
+        for _ in 0..<6 where !control.isHittable {
+            // Scroll only within the observed field/bar row, leaving fixed
+            // Apply/Cancel actions untouched. No viewport coordinate picking.
+            let bar = app.scrollViews.containing(.textField, identifier: "BlendValueField").firstMatch
+            XCTAssertTrue(bar.exists, app.debugDescription)
+            if left { bar.swipeLeft() } else { bar.swipeRight() }
+        }
+    }
+    private func capture(_ name: String) {
+        let attachment = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
+        attachment.name = name; attachment.lifetime = .keepAlways; add(attachment)
+    }
+}
 #endif

@@ -315,7 +315,7 @@ nonisolated enum ProjectMergeKit {
                     case let .split(target, _):
                         local.remove(target.bodyID); local.subtract(node.outputBodyIDs)
                     case .transform, .pushPull, .moveFace, .scaleFace, .rotateFace,
-                         .draftFace, .chamfer, .fillet, .shell, .deleteFace, .replaceFace:
+                         .draftFace, .chamfer, .fillet, .advancedBlend, .shell, .deleteFace, .replaceFace:
                         break // each preserves the input's body-local geometry frame
                     }
                     localFramesAfter[node.id] = local
@@ -827,6 +827,11 @@ nonisolated enum ProjectMergeKit {
                 return .fillet(body: remap(body),
                                edges: edges.map { remap($0, translation: t) },
                                radius: radius)
+            case let .advancedBlend(body, edges, definition):
+                var changed = definition
+                changed.supportFaces = definition.supportFaces.map { remap($0) }
+                return .advancedBlend(body: remap(body),
+                    edges: edges.map { remap($0, translation: t) }, definition: changed)
             case let .shell(body, openFaces, thickness):
                 return .shell(body: remap(body),
                               openFaces: openFaces.map { remap($0, translation: t) },

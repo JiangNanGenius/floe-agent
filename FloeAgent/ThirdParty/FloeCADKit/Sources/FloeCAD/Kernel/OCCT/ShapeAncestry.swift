@@ -170,6 +170,30 @@ nonisolated extension OCCTKernel {
         return .success((BRepHandle(shape), ShapeAncestry(history)))
     }
 
+    static func advancedBlendResultWithAncestry(
+        _ handle: BRepHandle, edgeIndices: [Int], faceNames: [Int: ElementName],
+        definition: AdvancedBlendDefinition
+    ) -> Result<(handle: BRepHandle, ancestry: ShapeAncestry), OCCTOpError> {
+        do { try definition.validate(edgeCount: edgeIndices.count) }
+        catch { return .failure(.kernelRefused("invalid or unsupported advanced blend definition")) }
+        if definition.mode.isFillet {
+            return variableFilletResultWithAncestry(handle, edgeIndices: edgeIndices,
+                endRadius: definition.first.value, middleRadius: definition.second.value)
+        }
+        var supports: [Int] = []
+        for name in definition.supportFaces {
+            let matches = faceNames.filter { $0.value == name }.map(\.key)
+            guard matches.count == 1 else {
+                return .failure(.noTargetMatched("a chamfer support face is missing or ambiguous"))
+            }
+            supports.append(matches[0])
+        }
+        let angle = definition.mode == .distanceAngleChamfer
+        return advancedChamferResultWithAncestry(handle, edgeIndices: edgeIndices,
+            referenceFaceIndices: supports, firstDistance: definition.first.value,
+            secondAmount: definition.second.value * (angle ? .pi / 180 : 1), distanceAngle: angle)
+    }
+
     /// The support face is an explicit current-shape identity for each edge,
     /// not whichever adjacent face happens to be enumerated first by OCCT.
     static func advancedChamferResultWithAncestry(

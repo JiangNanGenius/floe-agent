@@ -909,11 +909,28 @@ struct FloeCADEditorView: View {
                     .fixedSize()
             }
             Divider().frame(height: 20)
-            Text(kind.valueLabel).font(.caption).foregroundStyle(.barLabel).fixedSize()
+            blendModeMenu(kind, viewModel)
+            Text(viewModel.blendAdvancedMode == .variableFillet
+                 ? FloeCADStrings.text("cad.blend.endRadius", "End radius") : kind.valueLabel)
+                .font(.caption).foregroundStyle(.barLabel).fixedSize()
             // Text, applied live, arithmetic allowed — see ExpressionValueField.
             ExpressionValueField(placeholder: settings.unit.symbol, value: value,
                                  clamp: nil, identifier: "BlendValueField")
             Text(settings.unit.symbol).font(.caption).foregroundStyle(.barLabel).fixedSize()
+            if let advanced = viewModel.blendAdvancedMode {
+                Text(advanced == .variableFillet ? FloeCADStrings.text("cad.blend.middleRadius", "Middle radius")
+                     : advanced == .distanceAngleChamfer ? FloeCADStrings.text("cad.feature.angle", "Angle")
+                     : FloeCADStrings.text("cad.blend.secondDistance", "Second distance"))
+                    .font(.caption).foregroundStyle(.barLabel).fixedSize()
+                ExpressionValueField(placeholder: advanced == .distanceAngleChamfer ? "°" : settings.unit.symbol,
+                    value: Binding(get: { viewModel.blendSecondValue }, set: { viewModel.blendSecondValue = $0 }),
+                    clamp: nil, identifier: "BlendSecondValueField")
+                if !advanced.isFillet {
+                    Toggle(FloeCADStrings.text("cad.blend.swapSides", "Swap sides"), isOn: Binding(
+                        get: { viewModel.blendSwapSupport }, set: { viewModel.blendSwapSupport = $0 }))
+                        .toggleStyle(.button).controlSize(.small).accessibilityIdentifier("BlendSwapSides")
+                }
+            }
             // While dragging, show the kernel-derived ceiling the drag is
             // clamped to, so the stop doesn't read as a stuck gesture.
             if let cap = viewModel.blendDragMax {
@@ -935,6 +952,27 @@ struct FloeCADEditorView: View {
                 .disabled(!viewModel.canCommitBlend)
                 .accessibilityIdentifier("BlendApply")
         }
+    }
+
+    private func blendModeMenu(_ kind: BlendKind, _ viewModel: EditorViewModel) -> some View {
+        Menu {
+            Button(FloeCADStrings.text("cad.blend.uniform", "Uniform")) { viewModel.setBlendAdvancedMode(nil) }
+            if kind == .fillet {
+                Button(FloeCADStrings.text("cad.blend.variableFillet", "Variable Fillet")) { viewModel.setBlendAdvancedMode(.variableFillet) }
+            } else {
+                Button(FloeCADStrings.text("cad.blend.twoDistances", "Two-Distance Chamfer")) { viewModel.setBlendAdvancedMode(.twoDistanceChamfer) }
+                Button(FloeCADStrings.text("cad.blend.distanceAngle", "Distance-Angle Chamfer")) { viewModel.setBlendAdvancedMode(.distanceAngleChamfer) }
+            }
+        } label: {
+            let label: String = switch viewModel.blendAdvancedMode {
+            case .variableFillet: FloeCADStrings.text("cad.blend.variableFillet", "Variable Fillet")
+            case .twoDistanceChamfer: FloeCADStrings.text("cad.blend.twoDistances", "Two-Distance Chamfer")
+            case .distanceAngleChamfer: FloeCADStrings.text("cad.blend.distanceAngle", "Distance-Angle Chamfer")
+            case nil: FloeCADStrings.text("cad.blend.uniform", "Uniform")
+            }
+            Label(label, systemImage: "slider.horizontal.3")
+        }
+        .controlSize(.small).accessibilityIdentifier("BlendModeMenu")
     }
 
     /// Shell bar (Phase E, spec §4.4): pick prompt, wall-thickness field,
