@@ -738,6 +738,12 @@ struct CADWorkbenchFixtureHarness: View {
                             .padding(.top, 6)
                             .padding(.leading, 6)
                     }
+                } else if ProcessInfo.processInfo.arguments.contains("--ui-test-cad-projection") {
+                    ZStack(alignment: .topTrailing) {
+                        workbench(document)
+                        CADExternalProjectionReadbackPanel(document: document)
+                            .padding(.top, 6).padding(.trailing, 6)
+                    }
                 } else {
                     workbench(document)
                 }
@@ -781,6 +787,9 @@ struct CADWorkbenchFixtureHarness: View {
                 if arguments.contains(CADDatumPlaneFormFixture.Mode.cleanupArgument) {
                     let removed = CADDatumPlaneFormFixture.removeAllFixtures()
                     datumCleanupStatus = removed ? "removed" : "removal_failed"
+                } else if arguments.contains("--ui-test-cad-projection") {
+                    document = try await CADExternalProjectionUIFixture.open(
+                        broken: arguments.contains("--ui-test-cad-projection-broken"))
                 } else if let mode = CADDatumPlaneFormFixture.Mode.selected(from: arguments) {
                     // M07 r3: the real native angle / three-point form. The
                     // package is built through the production command path;

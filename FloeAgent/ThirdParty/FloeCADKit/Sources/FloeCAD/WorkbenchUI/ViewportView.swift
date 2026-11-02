@@ -32,6 +32,13 @@ struct ViewportView: UIViewRepresentable {
 
     func makeUIView(context: Context) -> MTKView {
         let view = CADViewportMTKView(frame: .zero)
+        #if DEBUG
+        if ProcessInfo.processInfo.arguments.contains("--ui-test-cad-projection") {
+            view.isAccessibilityElement = true
+            view.accessibilityLabel = "CAD canvas"
+            view.accessibilityIdentifier = "CADProjectionViewport"
+        }
+        #endif
         view.coordinator = context.coordinator
         context.coordinator.attach(to: view)
         return view

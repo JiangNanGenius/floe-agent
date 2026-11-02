@@ -1973,4 +1973,117 @@ final class CADThreadOptionsNativeFlowUITests: XCTestCase {
         XCTAssertTrue(app.buttons["UndoButton"].waitForExistence(timeout: 15))
     }
 }
+@MainActor
+final class CADExternalProjectionNativeFlowUITests: XCTestCase {
+    override func setUpWithError() throws {
+        continueAfterFailure = false
+        XCUIDevice.shared.orientation = .landscapeLeft
+    }
+
+    private func launch(broken: Bool, compact: Bool = false) -> XCUIApplication {
+        let app = XCUIApplication()
+        app.launchArguments = ["-AppleLanguages", "(en)", "-AppleLocale", "en_US", "-ui-testing",
+            "--ui-test-cad-fixture", "--ui-test-cad-projection"]
+        if broken { app.launchArguments += ["--ui-test-cad-projection-broken"] }
+        app.launchArguments += compact ? ["--ui-test-cad-compact", "--ui-test-cad-large-text"] : ["-ui-testing-ipad"]
+        app.launch()
+        XCTAssertTrue(app.buttons["UndoButton"].waitForExistence(timeout: 60), app.debugDescription)
+        waitState(app, ["ready=true"])
+        return app
+    }
+
+    private func element(_ app: XCUIApplication, _ id: String) -> XCUIElement {
+        app.descendants(matching: .any).matching(identifier: id).firstMatch
+    }
+
+    private func waitState(_ app: XCUIApplication, _ terms: [String], timeout: TimeInterval = 30) {
+        let state = element(app, "CADProjectionState")
+        let predicate = NSPredicate { _, _ in state.exists && terms.allSatisfy { state.label.contains($0) } }
+        expectation(for: predicate, evaluatedWith: state)
+        waitForExpectations(timeout: timeout)
+    }
+
+    private func reveal(_ button: XCUIElement, in app: XCUIApplication) {
+        for _ in 0..<6 {
+            if button.exists && button.isHittable { return }
+            let palette = app.scrollViews["ToolPalette"]
+            if palette.exists { palette.swipeUp() }
+        }
+        XCTAssertTrue(button.exists && button.isHittable, app.debugDescription)
+    }
+
+    private func tapWorldReadback(_ id: String, in app: XCUIApplication) {
+        let text = element(app, id)
+        XCTAssertTrue(text.waitForExistence(timeout: 15))
+        let values = text.label.split(separator: ",").compactMap { Double($0) }
+        XCTAssertEqual(values.count, 2, text.label)
+        guard values.count == 2 else { return }
+        let viewport = element(app, "CADProjectionViewport")
+        XCTAssertTrue(viewport.exists && viewport.frame.width > 0)
+        XCTAssertGreaterThan(values[0], 0); XCTAssertGreaterThan(values[1], 0)
+        XCTAssertLessThan(values[0], Double(viewport.frame.width))
+        XCTAssertLessThan(values[1], Double(viewport.frame.height))
+        viewport.coordinate(withNormalizedOffset: .zero)
+            .withOffset(CGVector(dx: CGFloat(values[0]), dy: CGFloat(values[1]))).tap()
+    }
+
+    private func capture(_ title: String) {
+        let image = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
+        image.name = title; image.lifetime = .keepAlways; add(image)
+    }
+
+    private func save(_ app: XCUIApplication) {
+        app.buttons["cad.host.save"].tap()
+        let outcome = element(app, "cad.host.saveOutcome")
+        XCTAssertTrue(outcome.waitForExistence(timeout: 60))
+        XCTAssertEqual(outcome.label, "Saved")
+    }
+
+    func testProjectPaletteAndActualViewportTapCreateOneLinkedEdge() {
+        let app = launch(broken: false); defer { app.terminate() }
+        waitState(app, ["references=0", "entities=0", "broken=0"])
+        let project = app.buttons["Project"]
+        reveal(project, in: app); project.tap()
+        waitState(app, ["armed=true"])
+        tapWorldReadback("CADProjectionEdgeScreen", in: app)
+        waitState(app, ["references=1", "entities=1", "broken=0"])
+        XCTAssertEqual(element(app, "CADProjectionError").label, "none")
+        capture("M05 actual Project tool viewport edge selection")
+        app.buttons["UndoButton"].tap()
+        waitState(app, ["references=0", "entities=0"])
+        app.buttons["RedoButton"].tap()
+        waitState(app, ["references=1", "entities=1"])
+        save(app)
+    }
+
+    func testBrokenLinkWarningAndNativeDetachKeepLineUndoRedoAndSave() {
+        let app = launch(broken: true); defer { app.terminate() }
+        waitState(app, ["references=1", "entities=1", "broken=1"])
+        let warning = element(app, "CADExternalProjectionBrokenWarning")
+        XCTAssertTrue(warning.exists)
+        capture("M05 actual missing source warning")
+        tapWorldReadback("CADProjectionLineScreen", in: app)
+        waitState(app, ["selected=1"])
+        let detach = app.buttons["DetachProjectionButton"]
+        reveal(detach, in: app)
+        XCTAssertTrue(detach.isEnabled); detach.tap()
+        waitState(app, ["references=0", "entities=1", "broken=0"])
+        XCTAssertFalse(warning.exists)
+        capture("M05 native Detach preserves projected line")
+        app.buttons["UndoButton"].tap()
+        waitState(app, ["references=1", "entities=1", "broken=1"])
+        app.buttons["RedoButton"].tap()
+        waitState(app, ["references=0", "entities=1", "broken=0"])
+        save(app)
+    }
+
+    func testCompactLargeTextBrokenLinkAndDetachControlRemainVisible() {
+        let app = launch(broken: true, compact: true); defer { app.terminate() }
+        waitState(app, ["references=1", "entities=1", "broken=1"])
+        XCTAssertTrue(element(app, "CADExternalProjectionBrokenWarning").exists)
+        let detach = app.buttons["DetachProjectionButton"]
+        reveal(detach, in: app)
+        capture("M05 compact large text warning and native controls")
+    }
+}
 #endif
