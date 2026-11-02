@@ -71,7 +71,7 @@ public enum StorageSuspensionAdmission {
 /// What a completing storage lease may do with its system assertion.
 public enum StorageSuspensionLeaseExit: Sendable, Equatable {
     /// End the assertion now: foreground, another budget still protects the
-    /// process, or the connection state is already owned elsewhere.
+    /// process, or another final handoff already owns this generation.
     case endNow
     /// The last background lease completed while owners were still draining.
     /// Hold the assertion until the background transition reaches quiescence.
@@ -84,12 +84,15 @@ public enum StorageSuspensionLeaseExit: Sendable, Equatable {
         isBackground: Bool,
         quiescenceComplete: Bool,
         leaseCount: Int,
-        connectionsSuspended: Bool,
+        connectionsSuspended _: Bool,
         finalizingHandoff: Bool
     ) -> Self {
         guard isBackground, leaseCount == 1, !finalizingHandoff else { return .endNow }
         guard quiescenceComplete else { return .deferUntilQuiescence }
-        guard !connectionsSuspended else { return .endNow }
+        // A posted suspension fence only interrupts SQLite. The writer may
+        // still own its transaction, especially after another lease expired.
+        // Always drain before returning the final valid assertion; retain
+        // the argument label for callers of this shared policy helper.
         return .fenceThenEnd
     }
 }

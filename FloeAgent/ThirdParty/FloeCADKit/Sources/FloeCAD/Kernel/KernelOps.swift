@@ -1543,7 +1543,14 @@ nonisolated extension KernelOps {
     static func radialFaceIndex(body: Body, triangles: [Int]) throws -> Int {
         guard let solid = body.brep, !triangles.isEmpty else { throw ExactEditError.refused }
         let render = OCCTKernel.renderMesh(from: solid)
-        guard render.positions == body.render.positions, render.indices == body.render.indices else {
+        // UV seams may split vertex storage while retaining exactly the same
+        // ordered triangle corners. Match that geometry, never vertex ordinals
+        // or a nearest-position/majority fallback.
+        guard render.indices.count == body.render.indices.count,
+              zip(render.indices, body.render.indices).allSatisfy({ native, displayed in
+                  Int(native) < render.positions.count && Int(displayed) < body.render.positions.count
+                      && render.positions[Int(native)] == body.render.positions[Int(displayed)]
+              }) else {
             throw ExactEditError.refused
         }
         let channel = OCCTKernel.renderMeshFaceChannel(from: solid)

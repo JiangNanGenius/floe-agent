@@ -7923,11 +7923,11 @@ final class EditorViewModel {
                 return
             }
 
-            // Curved side surface? A plain cylinder's wall push/pulls radially
-            // (edits the diameter); other curved surfaces just select the body,
-            // so a single tessellation facet can never be extruded into a tab.
+            // Exact cylindrical walls (including imported bores) use native
+            // radial offset. A mesh-only wall still requires a whole cylinder;
+            // never replace a compound mesh with one fitted cylinder.
             if let cyl = FaceTopology.cylindricalFace(in: body.render, seedTriangle: hit.triangleIndex) {
-                if cyl.matchesWholeBody {
+                if canBeginCylinderRadial(body: body, cylinder: cyl) {
                     beginCylinderRadial(body: body, cylinder: cyl, hit: hit)
                 } else {
                     mode = .selected(hit.bodyID) // curved but compound → whole body
@@ -8268,11 +8268,9 @@ final class EditorViewModel {
             cancelTool()
             selection = [body.id]
             selectedImageID = nil
-            // A curved choice lands where a direct tap on that wall lands: a
-            // plain cylinder's wall arms the radial push/pull, any other
-            // curved smooth region selects as a face.
+            // Use the same exact-wall/whole-mesh admission as a direct tap.
             if let cyl = FaceTopology.cylindricalFace(in: body.render, seedTriangle: hit.triangleIndex),
-               cyl.matchesWholeBody {
+               canBeginCylinderRadial(body: body, cylinder: cyl) {
                 beginCylinderRadial(body: body, cylinder: cyl, hit: hit)
                 return
             }
@@ -9879,6 +9877,14 @@ final class EditorViewModel {
     /// Returns nil when the source body is gone or the result is empty.
     /// Enter radial push/pull on a plain cylinder: the pull arrow points
     /// radially outward at the tap point, and dragging edits the radius.
+    private func canBeginCylinderRadial(body: Body, cylinder: FaceTopology.CylindricalFace) -> Bool {
+        guard let solid = body.brep else { return cylinder.matchesWholeBody }
+        guard let index = try? KernelOps.radialFaceIndex(body: body, triangles: cylinder.triangles),
+              let signature = OCCTKernel.faceInfo(solid).first(where: { $0.index == index })?.signature,
+              case .cylindrical = signature.kind else { return false }
+        return true
+    }
+
     private func beginCylinderRadial(
         body: Body, cylinder cyl: FaceTopology.CylindricalFace, hit: PickHit
     ) {

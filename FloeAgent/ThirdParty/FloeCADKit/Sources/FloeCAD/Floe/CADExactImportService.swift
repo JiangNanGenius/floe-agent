@@ -398,7 +398,17 @@ public nonisolated enum CADExactImportService {
                 message: "An IGES surface root unexpectedly contained a solid; "
                     + "nothing was imported.")
         }
-        let mesh = OCCTKernel.renderMesh(from: handle)
+        guard let exact = OCCTKernel.serialize(handle),
+              let restored = OCCTKernel.deserialize(exact) else {
+            throw CADDocumentError(
+                code: "import_failed",
+                message: "The exact shape could not be preserved; nothing was imported.")
+        }
+        // The applied body restores these persisted bytes, not the STEP/IGES
+        // reader's handle. Tessellation order can change across that boundary.
+        // Prepare its matching display mesh here, still off the main actor;
+        // picked triangles must identify the same native faces after apply.
+        let mesh = OCCTKernel.renderMesh(from: restored)
         guard !mesh.positions.isEmpty, !mesh.indices.isEmpty else {
             throw CADDocumentError(code: "empty_mesh",
                                    message: "The imported shape produced no render mesh.")
@@ -412,11 +422,6 @@ public nonisolated enum CADExactImportService {
             + render.normals.count * MemoryLayout<SIMD3<Float>>.stride
             + render.indices.count * MemoryLayout<UInt32>.stride
             + edgeSet.segments.count * MemoryLayout<SIMD3<Float>>.stride
-        guard let exact = OCCTKernel.serialize(handle) else {
-            throw CADDocumentError(
-                code: "import_failed",
-                message: "The exact shape could not be serialized; nothing was imported.")
-        }
         try budget.checkCancellation()
         // No byte-budget charge here: exact STEP/IGES is not a compressed
         // asset's declared expansion, and R1's exact path only accounted

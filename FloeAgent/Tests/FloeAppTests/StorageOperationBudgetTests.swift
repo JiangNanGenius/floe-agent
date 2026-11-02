@@ -108,9 +108,11 @@ struct StorageOperationBudgetTests {
         #expect(StorageSuspensionLeaseExit.decide(
             isBackground: true, quiescenceComplete: true, leaseCount: 1,
             connectionsSuspended: false, finalizingHandoff: false) == .fenceThenEnd)
+        // Expiration may already have posted the SQLite fence without
+        // unwinding its writer. The remaining valid lease must still drain.
         #expect(StorageSuspensionLeaseExit.decide(
             isBackground: true, quiescenceComplete: true, leaseCount: 1,
-            connectionsSuspended: true, finalizingHandoff: false) == .endNow)
+            connectionsSuspended: true, finalizingHandoff: false) == .fenceThenEnd)
         #expect(StorageSuspensionLeaseExit.decide(
             isBackground: true, quiescenceComplete: true, leaseCount: 1,
             connectionsSuspended: false, finalizingHandoff: true) == .endNow)

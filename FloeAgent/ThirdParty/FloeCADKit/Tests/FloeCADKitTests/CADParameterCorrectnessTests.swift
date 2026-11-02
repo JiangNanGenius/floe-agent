@@ -65,8 +65,9 @@ final class CADParameterCorrectnessTests: XCTestCase {
     private func run(_ document: FloeCADDocument, _ op: String,
                      _ args: [String: Any]) throws -> [String: Any] {
         let input = try JSONSerialization.data(withJSONObject: ["op": op, "args": args])
-        let result = document.executeJSON(input)
-        XCTAssertTrue(result.isOK, "\(op): \(result.errorCode ?? "") \(result.message ?? "")")
+        let outcome = document.executeJSON(input)
+        let result = try XCTUnwrap(outcome.isOK ? outcome : nil,
+            "\(op): \(outcome.errorCode ?? "") \(outcome.message ?? "")")
         let payload = try XCTUnwrap(
             try JSONSerialization.jsonObject(with: result.payload) as? [String: Any])
         XCTAssertNotEqual(payload["failed"] as? Bool, true, "\(op): \(payload)")
@@ -685,7 +686,7 @@ final class CADParameterCorrectnessTests: XCTestCase {
         let before = try XCTUnwrap(OCCTKernel.serialize(try XCTUnwrap(try body(document).brep)))
         let count = document.session.undoStack.undoCommands.count
         try run(document, "feature.pushPull", ["bodyID": id.raw.uuidString,
-            "face": try boreIndex(document, radius: 2), "distance": 1, "mode": "cylinderRadial"])
+            "face": [try boreIndex(document, radius: 2)], "distance": 1, "mode": "cylinderRadial"])
         XCTAssertEqual(try body(document).id, id)
         XCTAssertEqual(try volume(document), 8000 - 90 * .pi, accuracy: 1e-3)
         XCTAssertGreaterThan(try boreIndex(document, radius: 3), 0)
@@ -731,7 +732,7 @@ final class CADParameterCorrectnessTests: XCTestCase {
         let document = try await makeDocument(); defer { document.close() }
         let id = try await importedBoredPlate(document, twoHoles: true)
         try run(document, "feature.pushPull", ["bodyID": id.raw.uuidString,
-            "face": try boreIndex(document, radius: 2, x: -8), "distance": 1, "mode": "cylinderRadial"])
+            "face": [try boreIndex(document, radius: 2, x: -8)], "distance": 1, "mode": "cylinderRadial"])
         XCTAssertGreaterThan(try boreIndex(document, radius: 3, x: -8), 0)
         XCTAssertGreaterThan(try boreIndex(document, radius: 2, x: 8), 0)
         XCTAssertEqual(try volume(document), 8000 - 130 * .pi, accuracy: 1e-3)
@@ -741,10 +742,10 @@ final class CADParameterCorrectnessTests: XCTestCase {
         let document = try await makeDocument(); defer { document.close() }
         let id = try await importedBoredPlate(document)
         try run(document, "feature.pushPull", ["bodyID": id.raw.uuidString,
-            "face": try boreIndex(document, radius: 2), "distance": 1, "mode": "cylinderRadial"])
+            "face": [try boreIndex(document, radius: 2)], "distance": 1, "mode": "cylinderRadial"])
         let first = try XCTUnwrap(document.session.document.features.nodes.last)
         try run(document, "feature.pushPull", ["bodyID": id.raw.uuidString,
-            "face": try boreIndex(document, radius: 3), "distance": 1, "mode": "cylinderRadial"])
+            "face": [try boreIndex(document, radius: 3)], "distance": 1, "mode": "cylinderRadial"])
         XCTAssertEqual(try volume(document), 8000 - 160 * .pi, accuracy: 1e-3)
         let reply = CADParameterService(document: document).handle(action: "update", args: [
             "feature_id": first.id.raw.uuidString, "changes": ["distance": 2]])
@@ -780,11 +781,15 @@ final class CADParameterCorrectnessTests: XCTestCase {
         document.session.perform(ReplaceBodyCommand(title: "Placement", before: original, after: scaled))
         let cylinder = try XCTUnwrap(FaceTopology.enumerateFaces(in: scaled.render).cylindrical.first)
         let viewModel = document.viewModel()
-        viewModel.toolContext = .init(profile: Profile(loop: [SIMD2(-0.001,-0.001), SIMD2(0.001,-0.001),
-            SIMD2(0.001,0.001), SIMD2(-0.001,0.001)], kind: .polygonal, sourceEntityIDs: []),
-            holes: [], plane: .ground, sourceBody: id, faceTriangles: cylinder.triangles,
-            cylinderFace: cylinder, kind: .extrude(distance: 0))
-        viewModel.mode = .faceSelected(id)
+        let nativeFace = try KernelOps.radialFaceIndex(body: scaled, triangles: cylinder.triangles)
+        XCTAssertEqual(nativeFace, try boreIndex(document, radius: 2))
+        let triangle = try XCTUnwrap(cylinder.triangles.first)
+        let vertices = (0..<3).map { scaled.render.positions[Int(scaled.render.indices[triangle * 3 + $0])] }
+        let localHit = (vertices[0] + vertices[1] + vertices[2]) / 3
+        let hit = PickHit(bodyID: id, distance: 1,
+            worldPoint: SIMD3<Float>(scaled.transform.applying(to: SIMD3<Double>(localHit))), triangleIndex: triangle)
+        viewModel.chooseSelectThrough(.init(id: "imported-bore", name: "Bore", target: .face(hit)))
+        _ = try XCTUnwrap(viewModel.toolContext?.cylinderFace, "The native selected bore must arm radial editing")
         viewModel.setExtrudeDistance(2) // two world mm = one local radius mm
         let preview = try XCTUnwrap(viewModel.toolContext?.preview)
         let extent = preview.render.localAABB
@@ -804,14 +809,16 @@ final class CADParameterCorrectnessTests: XCTestCase {
         let before = try XCTUnwrap(OCCTKernel.serialize(try XCTUnwrap(try body(document).brep)))
         let undo = document.session.undoStack.undoCommands.count
         let command = try JSONSerialization.data(withJSONObject: ["op": "feature.pushPull", "args": [
-            "bodyID": id.raw.uuidString, "face": try boreIndex(document, radius: 2),
+            "bodyID": id.raw.uuidString, "face": [try boreIndex(document, radius: 2)],
             "distance": -3, "mode": "cylinderRadial"]])
-        XCTAssertFalse(document.executeJSON(command).isOK)
+        let collapsed = document.executeJSON(command)
+        XCTAssertFalse(collapsed.isOK)
+        XCTAssertEqual(collapsed.errorCode, "bad_radial_offset", "This must reach radius validation, not fail argument parsing")
         XCTAssertTrue(document.session.document.features.nodes.isEmpty)
         XCTAssertEqual(document.session.undoStack.undoCommands.count, undo)
         XCTAssertEqual(try XCTUnwrap(OCCTKernel.serialize(try XCTUnwrap(try body(document).brep))), before)
         try run(document, "feature.pushPull", ["bodyID": id.raw.uuidString,
-            "face": try boreIndex(document, radius: 2), "distance": 1, "mode": "cylinderRadial"])
+            "face": [try boreIndex(document, radius: 2)], "distance": 1, "mode": "cylinderRadial"])
         let feature = try XCTUnwrap(document.session.document.features.nodes.last)
         let afterUndo = document.session.undoStack.undoCommands.count
         let rejection = CADParameterService(document: document).handle(action: "update", args: [
@@ -822,11 +829,30 @@ final class CADParameterCorrectnessTests: XCTestCase {
         XCTAssertGreaterThan(try boreIndex(document, radius: 3), 0)
     }
 
+    func testNativeRadialFaceMappingAcceptsUVCornerSplitsAndRejectsChangedGeometry() async throws {
+        let document = try await makeDocument(); defer { document.close() }
+        _ = try await importedBoredPlate(document)
+        let original = try body(document)
+        let cylinder = try XCTUnwrap(FaceTopology.enumerateFaces(in: original.render).cylindrical.first)
+        let index = try KernelOps.radialFaceIndex(body: original, triangles: cylinder.triangles)
+        var split = original
+        split.render = RenderMesh(
+            positions: original.render.indices.map { original.render.positions[Int($0)] },
+            normals: original.render.indices.map { original.render.normals[Int($0)] },
+            indices: original.render.indices.indices.map(UInt32.init),
+            texcoords: original.render.indices.indices.map { SIMD2<Float>(Float($0 % 2), Float($0 % 3)) })
+        XCTAssertEqual(try KernelOps.radialFaceIndex(body: split, triangles: cylinder.triangles), index,
+            "Only vertex storage changed; the exact ordered native triangles still identify the selected wall")
+        split.render.positions[0].x += 0.01
+        XCTAssertThrowsError(try KernelOps.radialFaceIndex(body: split, triangles: cylinder.triangles),
+            "Changed triangle content must not inherit the old native face channel")
+    }
+
     func testImportedSourceDigestFutureVersionAndFaceWitnessFenceTheReplayMemo() async throws {
         let document = try await makeDocument(); defer { document.close() }
         let id = try await importedBoredPlate(document)
         try run(document, "feature.pushPull", ["bodyID": id.raw.uuidString,
-            "face": try boreIndex(document, radius: 2), "distance": 1, "mode": "cylinderRadial"])
+            "face": [try boreIndex(document, radius: 2)], "distance": 1, "mode": "cylinderRadial"])
         let base = document.session.document.features.nodes[0]
         guard case let .baseSolid(source) = base.kind else { return XCTFail("Source missing") }
         var payload = try XCTUnwrap(JSONSerialization.jsonObject(with: JSONEncoder().encode(source)) as? [String: Any])
@@ -858,7 +884,7 @@ final class CADParameterCorrectnessTests: XCTestCase {
         let document = try await makeDocument(); defer { document.close() }
         let id = try await importedBoredPlate(document)
         try run(document, "feature.pushPull", ["bodyID": id.raw.uuidString,
-            "face": try boreIndex(document, radius: 2), "distance": 1, "mode": "cylinderRadial"])
+            "face": [try boreIndex(document, radius: 2)], "distance": 1, "mode": "cylinderRadial"])
         let owner = try XCTUnwrap(document.session.document.features.nodes.last)
         let move = FeatureNode(name: "Move", kind: .transform(body: BodyRef(producer: owner.id, bodyID: id),
             delta: Transform3D(translation: SIMD3(10, 0, 0))), outputBodyIDs: [id])
@@ -881,7 +907,7 @@ final class CADParameterCorrectnessTests: XCTestCase {
         let document = try await makeDocument(); defer { document.close() }
         let id = try await importedBoredPlate(document)
         try run(document, "feature.pushPull", ["bodyID": id.raw.uuidString,
-            "face": try boreIndex(document, radius: 2), "distance": 1, "mode": "cylinderRadial"])
+            "face": [try boreIndex(document, radius: 2)], "distance": 1, "mode": "cylinderRadial"])
         let radial = try XCTUnwrap(document.session.document.features.nodes.last)
         let toolID = BodyID()
         let tool = FeatureNode(name: "Corner cutter", kind: .primitive(
@@ -894,7 +920,7 @@ final class CADParameterCorrectnessTests: XCTestCase {
         XCTAssertTrue(document.session.lastEvalErrors.isEmpty, "\(document.session.lastEvalErrors)")
         XCTAssertEqual(try volume(document), 7840 - 90 * .pi, accuracy: 1e-3)
         try run(document, "feature.pushPull", ["bodyID": id.raw.uuidString,
-            "face": try boreIndex(document, radius: 3), "distance": 1, "mode": "cylinderRadial"])
+            "face": [try boreIndex(document, radius: 3)], "distance": 1, "mode": "cylinderRadial"])
         let insertion = try ProjectMergeKit.insert(document.session.document, into: DesignDocument(),
             translation: SIMD3(100, 50, 20))
         var revision: UInt64 = 0
