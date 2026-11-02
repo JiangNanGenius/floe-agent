@@ -414,4 +414,110 @@ final class CADFaceRotationParameterUITests: XCTestCase {
                       file: file, line: line)
     }
 }
+
+// SPDX-License-Identifier: MPL-2.0
+@MainActor
+final class CADExactCurveEditingUITests: XCTestCase {
+    private func launch(reopen: Bool = false) -> XCUIApplication {
+        let app = XCUIApplication()
+        app.launchArguments = ["-AppleLanguages", "(en)", "-AppleLocale", "en_US",
+            "-ui-testing", "-ui-testing-ipad", "--ui-test-cad-fixture", "--ui-test-cad-exact-curves"]
+        if reopen { app.launchArguments += ["--ui-test-cad-exact-curves-reopen"] }
+        app.launch()
+        state(app, ["ready=true", "source=true"])
+        return app
+    }
+    private func any(_ app: XCUIApplication, _ id: String) -> XCUIElement {
+        app.descendants(matching: .any).matching(identifier: id).firstMatch
+    }
+    private func state(_ app: XCUIApplication, _ terms: [String]) {
+        let label = any(app, "CADExactCurveState")
+        let predicate = NSPredicate { _, _ in label.exists && terms.allSatisfy { label.label.contains($0) } }
+        XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: predicate, object: label)], timeout: 30), .completed,
+                       label.exists ? label.label : app.debugDescription)
+    }
+    private func palette(_ app: XCUIApplication, _ name: String) {
+        let button = app.buttons[name]
+        for _ in 0..<6 {
+            if button.exists && button.isHittable { break }
+            let scroll = app.scrollViews["ToolPalette"]
+            if scroll.exists { scroll.swipeUp() }
+        }
+        XCTAssertTrue(button.exists && button.isHittable, app.debugDescription)
+        button.tap()
+    }
+    private func tapPoint(_ app: XCUIApplication, _ id: String) {
+        let text = any(app, id)
+        XCTAssertTrue(text.waitForExistence(timeout: 10))
+        let values = text.label.split(separator: ",").compactMap { Double($0) }
+        guard values.count == 2 else { return XCTFail(text.label) }
+        let viewport = any(app, "CADEditorViewport")
+        XCTAssertGreaterThan(values[0], 0); XCTAssertGreaterThan(values[1], 0)
+        XCTAssertLessThan(values[0], Double(viewport.frame.width)); XCTAssertLessThan(values[1], Double(viewport.frame.height))
+        viewport.coordinate(withNormalizedOffset: .zero).withOffset(CGVector(dx: values[0], dy: values[1])).tap()
+    }
+    private func boundary(_ app: XCUIApplication, _ label: String) {
+        let picker = any(app, "SketchCurveBoundary")
+        XCTAssertTrue(picker.waitForExistence(timeout: 10)); picker.tap()
+        let choice = app.buttons[label]
+        XCTAssertTrue(choice.waitForExistence(timeout: 10), app.debugDescription); choice.tap()
+    }
+    private func interval(_ app: XCUIApplication, _ lower: Double, _ upper: Double) {
+        let text = any(app, "CADExactCurveInterval")
+        let expected = NSPredicate { _, _ in
+            guard text.exists else { return false }
+            let values = text.label.split(separator: ",").compactMap { Double($0) }
+            return values.count == 2 && abs(values[0] - lower) < 1e-6 && abs(values[1] - upper) < 1e-6
+        }
+        XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: expected, object: text)], timeout: 15), .completed,
+                       text.exists ? text.label : "missing curve interval")
+    }
+    private func capture(_ name: String) {
+        let attachment = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
+        attachment.name = name; attachment.lifetime = .keepAlways; add(attachment)
+    }
+    private func save(_ app: XCUIApplication) {
+        app.buttons["cad.host.save"].tap()
+        let status = any(app, "cad.host.saveOutcome")
+        XCTAssertTrue(status.waitForExistence(timeout: 60)); XCTAssertEqual(status.label, "Saved")
+    }
+
+    func testNativeBoundaryTrimExtendUndoAndReopenKeepExactEllipse() {
+        var app = launch(); defer { app.terminate() }
+        state(app, ["entities=3", "exact=0", "links=0"])
+        palette(app, "Trim"); boundary(app, "Line 2")
+        tapPoint(app, "CADExactCurvePick")
+        state(app, ["entities=3", "exact=1", "source=true"])
+        interval(app, .pi / 2, 3 * .pi / 2)
+        capture("M03 native boundary exact ellipse trim")
+        app.buttons["Extend"].tap(); boundary(app, "Line 3")
+        tapPoint(app, "CADExactCurveEndPick")
+        let end = 2 * Double.pi - acos(25.0 / 30)
+        interval(app, .pi / 2, end)
+        app.buttons["SketchCurveDone"].tap()
+        app.buttons["UndoButton"].tap(); interval(app, .pi / 2, 3 * .pi / 2)
+        app.buttons["RedoButton"].tap(); interval(app, .pi / 2, end)
+        save(app); capture("M03 native exact ellipse extension saved")
+        app.terminate(); app = launch(reopen: true)
+        state(app, ["entities=3", "exact=1", "links=0", "source=true"])
+        interval(app, .pi / 2, end)
+        capture("M03 native exact curve reopened")
+    }
+
+    func testNativeEllipseOffsetPreviewCommitUndoAndReopenKeepRelation() {
+        var app = launch(); defer { app.terminate() }
+        palette(app, "Offset"); tapPoint(app, "CADExactCurvePick")
+        let apply = app.buttons["SketchOffsetApply"]
+        XCTAssertTrue(apply.waitForExistence(timeout: 15)); XCTAssertTrue(apply.isEnabled)
+        capture("M04 native exact ellipse linked offset preview")
+        apply.tap()
+        state(app, ["entities=4", "exact=1", "links=1", "source=true"])
+        app.buttons["UndoButton"].tap(); state(app, ["entities=3", "exact=0", "links=0"])
+        app.buttons["RedoButton"].tap(); state(app, ["entities=4", "exact=1", "links=1"])
+        save(app); app.terminate(); app = launch(reopen: true)
+        state(app, ["entities=4", "exact=1", "links=1", "source=true"])
+        capture("M04 native exact ellipse offset reopened")
+    }
+}
+
 #endif

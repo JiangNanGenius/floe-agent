@@ -138,6 +138,7 @@
 #include <algorithm>
 #include <cmath>
 #include <Geom_TrimmedCurve.hxx>
+#include <Geom_OffsetCurve.hxx>
 #include <gp_Dir.hxx>
 #include <gp_Pnt.hxx>
 #include <gp_Vec.hxx>
@@ -1000,14 +1001,13 @@ static Handle(Geom_Curve) OS3DSketchCurveDefinition(
         Handle(Geom_Curve) basis = OS3DSketchCurveDefinition(
             base, extend, false, extensionLower, extensionUpper, depth + 1);
         if (basis.IsNull()) return Handle(Geom_Curve)();
-        const gp_Pln plane(gp_Pnt(0,0,0), gp_Dir(0,0,1));
-        Handle(Geom2d_Curve) basis2d = GeomAPI::To2d(basis, plane);
-        if (basis2d.IsNull()) return Handle(Geom_Curve)();
         // Geom2d_OffsetCurve uses T^Z (right of travel). The product's public
         // line/spline convention is left; outward_conic is right for CCW.
         const double nativeOffset = v[5] == 0 ? -v[6] : v[6];
-        Handle(Geom2d_OffsetCurve) offset = new Geom2d_OffsetCurve(basis2d, nativeOffset);
-        curve = GeomAPI::To3d(offset, plane);
+        // OCCT 7.8 GeomAPI::To3d -> GeomAdaptor::MakeCurve rejects OtherCurve,
+        // including an offset. Construct the equivalent exact 3D offset from
+        // the same basis/parameter instead; no approximation or refit.
+        curve = new Geom_OffsetCurve(basis, nativeOffset, gp_Dir(0,0,1));
         if (curve.IsNull() || extend || !applyInterval || v[4] == 1) return curve;
         first = OS3DDefinitionParameter(record, v[2], true, depth);
         last = OS3DDefinitionParameter(record, v[3], true, depth);
@@ -2973,8 +2973,8 @@ static std::set<Standard_Integer> OS3DNearestFaces(
         }
         // Ask OCCT's exact edge argument analyzer first, covering a loop wholly
         // inside one of the diagnostic ranges as well as cross-range contact.
-        const gp_Pln plane(gp_Pnt(0,0,0), gp_Dir(0,0,1));
-        Handle(Geom_Curve) exact3d = GeomAPI::To3d(offset, plane);
+        Handle(Geom_Curve) exact3d = OS3DSketchCurveDefinition(definition, false);
+        if (exact3d.IsNull()) return nil;
         BRepBuilderAPI_MakeEdge edgeBuilder(exact3d, first, last);
         if (!edgeBuilder.IsDone()) return nil;
         BOPAlgo_ArgumentAnalyzer argumentAnalyzer;

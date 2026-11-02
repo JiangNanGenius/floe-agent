@@ -744,6 +744,12 @@ struct CADWorkbenchFixtureHarness: View {
                             .padding(.top, 6)
                             .padding(.leading, 6)
                     }
+                } else if ProcessInfo.processInfo.arguments.contains("--ui-test-cad-exact-curves") {
+                    ZStack(alignment: .topTrailing) {
+                        workbench(document)
+                        CADExactCurveReadbackPanel(document: document)
+                            .padding(.top, 6).padding(.trailing, 6)
+                    }
                 } else if ProcessInfo.processInfo.arguments.contains("--ui-test-cad-projection") {
                     ZStack(alignment: .topTrailing) {
                         workbench(document)
@@ -829,6 +835,9 @@ struct CADWorkbenchFixtureHarness: View {
                     // so the same test can reopen it through History.
                     document = try await CADHoleFormFixture.open(
                         reset: arguments.contains("--ui-test-cad-hole-form-reset"))
+                } else if arguments.contains("--ui-test-cad-exact-curves") {
+                    document = try await CADExactCurveUIFixture.open(
+                        reopen: arguments.contains("--ui-test-cad-exact-curves-reopen"))
                 } else if arguments.contains("--ui-test-cad-sketch-loop") {
                     document = try await CADQualificationFixture.openSplineLoop()
                 } else if arguments.contains("--ui-test-cad-sketch-conflict") {

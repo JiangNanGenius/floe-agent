@@ -13,6 +13,11 @@ nonisolated struct SketchCurveIntersection: Equatable, Sendable {
 nonisolated extension OCCTKernel {
     private static func curveFailure(_ fallback: String, _ message: String,
                                      status: OCCTOpStatus) -> SketchCurveEditFailure {
+        #if DEBUG
+        // Native failure context belongs to diagnostics, never normal product
+        // copy. Keep the actual kernel reason when a qualification fails.
+        print("CAD curve kernel refusal [\(fallback)] status=\(status.code.rawValue): \(status.detail ?? "no detail")")
+        #endif
         let code: String
         switch status.code.rawValue {
         case 6: code = "curve_offset_cusp"
