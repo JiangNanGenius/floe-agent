@@ -302,6 +302,38 @@ final class CADParameterCorrectnessTests: XCTestCase {
         XCTAssertNil(decodedPath)
     }
 
+    func testSelectingTheCurrentSweepPathAfterSourceEditCreatesNoUndo() async throws {
+        let document = try await makeDocument(); defer { document.close() }
+        let (feature, sketch, edge) = try makeAssociatedSweep(document)
+        let service = CADParameterService(document: document)
+        let changed = service.handle(action: "updateSketchEntity", args: [
+            "sketch_id": sketch.raw.uuidString, "entity_id": edge.uuidString, "b": [35, 0]])
+        XCTAssertEqual(changed["ok"] as? Bool, true, "\(changed)")
+        let revision = document.revision, undo = document.session.undoStack.undoCommands.count
+        let count = document.session.changeCount
+        let same = service.handle(action: "update", args: ["feature_id": feature.id.raw.uuidString,
+            "changes": ["path": ["version": 1, "segments": [["sketchID": sketch.raw.uuidString,
+                "entityID": edge.uuidString, "reversed": false]]]]])
+        XCTAssertEqual(same["error"] as? String, "no_change", "\(same)")
+        XCTAssertEqual(document.revision, revision)
+        XCTAssertEqual(document.session.changeCount, count)
+        XCTAssertEqual(document.session.undoStack.undoCommands.count, undo)
+        XCTAssertEqual(try volume(document), 35 * .pi, accuracy: 1e-4)
+    }
+
+    func testUnchangedLegacyHelixParameterDoesNotReplaceItsSavedRenderPath() throws {
+        let helix = HelixSpec(axisPoint: .zero, axisDirection: SIMD3(0, 1, 0),
+            referenceDirection: SIMD3(1, 0, 0), radius: 3.5, pitch: 2, turns: 2)
+        let profile = ProfileRef(sketchID: SketchID(), entityIDs: [UUID()], holeEntityIDs: [], seedPoint: .zero)
+        let legacy = FeatureKind.sweep(profile: profile, plane: PlaneRef(source: .ground),
+            spine: [PointWrapper(.zero), PointWrapper(SIMD3(0, 2, 0))],
+            boolean: .init(op: .newBody, resolvedTargets: []), helix: helix)
+        let result = CADParameterService.updated(legacy, changes: ["helix_pitch": 2])
+        guard case let .success(unchanged) = result else { return XCTFail("Current value must validate") }
+        let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys]
+        XCTAssertEqual(try encoder.encode(unchanged), try encoder.encode(legacy))
+    }
+
     private func parameter(_ document: FloeCADDocument, feature: FeatureID,
                            name: String) throws -> [String: Any] {
         let featureRow = try XCTUnwrap(try rows(document, "features").first {

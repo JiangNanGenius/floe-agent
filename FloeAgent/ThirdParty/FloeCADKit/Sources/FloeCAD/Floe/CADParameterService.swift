@@ -330,7 +330,18 @@ public final class CADParameterService {
         let kindEncoder = JSONEncoder()
         kindEncoder.outputFormatting = [.sortedKeys]
         do {
-            let beforeData = try kindEncoder.encode(node.kind)
+            var comparisonKind = node.kind
+            if case let .sweep(profile, plane, _, boolean, helix, path) = node.kind, let path,
+               let points = try? path.resolvedSpine(sketch: { id in
+                   document.session.document.sketches.first(where: { $0.id == id })
+               }) {
+                // Upstream edits change the resolved path without rewriting
+                // the old fallback point cache. Comparing that cache with a
+                // freshly resolved one would create an undo for the SAME path.
+                comparisonKind = .sweep(profile: profile, plane: plane, spine: points.map(PointWrapper.init),
+                                         boolean: boolean, helix: helix, path: path)
+            }
+            let beforeData = try kindEncoder.encode(comparisonKind)
             let editedData = try kindEncoder.encode(edited)
             guard editedData != beforeData else {
                 return Self.fail("no_change", "The feature already has those values.")
@@ -4811,6 +4822,7 @@ public final class CADParameterService {
                     default: spec.turns = v
                     }
                 }
+                if spec == nextHelix { return .success(kind) }
                 do { nextSpine = try spec.checkedSampledSpine().map(PointWrapper.init) }
                 catch { return fail("helix", error.localizedDescription) }
                 nextHelix = spec
