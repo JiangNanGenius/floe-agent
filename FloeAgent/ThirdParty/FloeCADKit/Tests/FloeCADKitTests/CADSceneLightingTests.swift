@@ -193,10 +193,13 @@ final class CADSceneLightingTests: XCTestCase {
         let before = document.session.document.sceneSettingsData
         let count = document.liveChangeCount
         let args: [String: Any] = ["name": "Studio.hdr", "asset_base64": panorama().base64EncodedString()]
-        let task = Task { @MainActor in await service.handleAsync(action: "environment.import", args: args) }
+        let task = Task { @MainActor in
+            let reply = await service.handleAsync(action: "environment.import", args: args)
+            return reply["error"] as? String
+        }
         task.cancel()
         let cancelled = await task.value
-        XCTAssertEqual(cancelled["error"] as? String, "cancelled")
+        XCTAssertEqual(cancelled, "cancelled")
         XCTAssertEqual(document.liveChangeCount, count)
         XCTAssertEqual(document.session.document.sceneSettingsData, before)
         document.close()
