@@ -9465,7 +9465,7 @@
     "license_delta": "GLTFKit2 ownMIT/cgltfMIT do notclear precompiled libktx4.2.1 etcdec exception; prefer existing O3DV+same-r176 localGLTFLoader qualification"
   },
   "current_integration_verification": {
-    "source": "2bc771d63641147493f33b26b18c0e27ae04612b",
+    "source": "da5d17d3fdaa33f9b9a0b2853b2c57114fb8f0ae",
     "all_106_retained": true,
     "all_106_accepted": false,
     "release_ready": false,
@@ -9760,6 +9760,17 @@
       },
       "canonical_simulator_shutdown": true,
       "physical_device": false
+    },
+    "compact_native_ui": {
+      "source": "da5d17d3fdaa33f9b9a0b2853b2c57114fb8f0ae",
+      "app_object_build_passed": true,
+      "selected_ui_test_objects": true,
+      "actual_ui_passed": 6,
+      "failed": 0,
+      "skipped": 0,
+      "root_visual_review": true,
+      "reference": "docs/qualification/cad-advanced-blends-20261103/README.md",
+      "physical_phone_used": false
     }
   }
 }
