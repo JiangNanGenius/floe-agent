@@ -49,7 +49,8 @@ public enum AndroidBridge {
                 || requestVersion == BridgeV22.version
                 || requestVersion == BridgeV21.version
                 || requestVersion == BridgeV24.version
-                || requestVersion == BridgeV23.version else {
+                || requestVersion == BridgeV23.version
+                || requestVersion == BridgeV25.version else {
             return response(["ok": false, "error": "unsupportedVersion"])
         }
         if requestVersion == BridgeV2.version {
@@ -426,6 +427,24 @@ public enum AndroidBridge {
                                 stampVersion: BridgeV24.version)
             }
             return response(object, stampVersion: BridgeV24.version)
+        }
+        if requestVersion == BridgeV25.version {
+            // Additive G04 host-only archive document channel: bounded
+            // listing, confirmed extract/decompress with real progress and
+            // cancellation, bounded entry preview and preview-staging
+            // discard over the ORIGINAL G04 workspace lease. No model tool,
+            // no V3 command, no file authority crosses this ABI. V1-V24
+            // branches above remain byte-identical.
+            let object = G04ArchiveBridge.handle(requestData: data,
+                                                 fallbackRequestID: requestID)
+            let encoded = (try? JSONSerialization.data(withJSONObject: object,
+                                                       options: [.sortedKeys]))
+                ?? Data(#"{"ok":false,"error":"encoding"}"#.utf8)
+            guard encoded.count <= G04ArchiveWire.maximumResponseBytes else {
+                return response(["ok": false, "error": "responseTooLarge"],
+                                stampVersion: BridgeV25.version)
+            }
+            return response(object, stampVersion: BridgeV25.version)
         }
         switch request["operation"] as? String {
         case "handshake":

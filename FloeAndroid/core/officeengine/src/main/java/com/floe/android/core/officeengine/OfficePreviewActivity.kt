@@ -266,6 +266,33 @@ class OfficePreviewActivity : ComponentActivity(), OfficeEngineService.OfficeEng
     private var internalSaveEnabled = false
 
     /**
+     * Manual workspace original save (OFC-SAVE-REOPEN): this mount's App
+     * host owns the workspace-original commit and explicitly accepts
+     * [OfficeSaveOriginalHandoffPolicy.TRANSACTION_SAVE_ORIGINAL] (launch
+     * Intent extra + same-UID capability binder). The visible "Save Original"
+     * action performs one real `.uno:Save` flush and hands the verified
+     * working-copy facts to that host; the App alone re-verifies its OWN
+     * working copy and runs the existing native workspace CAS. Save Copy
+     * stays fully available beside it. Present ONLY for ordinary task-owned
+     * workspace EDIT mounts — never provider/run-output/recovery mounts.
+     */
+    private var saveOriginalEnabled = false
+    private var saveOriginalChannel: android.os.IBinder? = null
+
+    /**
+     * The one original-save op in flight for this mount. Its terminal
+     * receipt is consumed here (never by the external/internal lanes); a
+     * stale or duplicate receipt after the op settled opens nothing.
+     */
+    private var saveOriginalOpId: String? = null
+
+    /** One handoff verification in flight (never two original saves per op). */
+    private var saveOriginalHandoffInFlight = false
+
+    /** True when the accepted answer must close this mount (dirty sheet). */
+    private var saveOriginalClosePending = false
+
+    /**
      * The one internal-save op in flight for this mount. Its terminal receipt
      * is consumed here (never by the external close-save path); a stale or
      * duplicate receipt after the op settled opens nothing.
@@ -456,6 +483,12 @@ class OfficePreviewActivity : ComponentActivity(), OfficeEngineService.OfficeEng
         // action. Without it everything below behaves exactly as before.
         internalSaveEnabled = intent.getBooleanExtra(OfficeHostSaveHandoffPolicy.EXTRA_INTERNAL_SAVE, false) &&
             hostSaveChannel != null
+        // Manual workspace original save: same trust model — an inert
+        // same-UID capability reference from our own non-exported launch
+        // Intent, present only when the App declared the mount eligible.
+        saveOriginalChannel = intent.extras?.getBinder(OfficeSaveOriginalHandoffPolicy.EXTRA_SAVE_ORIGINAL_CHANNEL)
+        saveOriginalEnabled = intent.getBooleanExtra(OfficeSaveOriginalHandoffPolicy.EXTRA_SAVE_ORIGINAL, false) &&
+            saveOriginalChannel != null
         // G05-R3 approval-notice capability + App-owned review target: same
         // trust model again. Both are present only for OWNED opens; either
         // missing simply means this surface never shows the banner.
@@ -510,6 +543,7 @@ class OfficePreviewActivity : ComponentActivity(), OfficeEngineService.OfficeEng
                     viewerUrl = viewerUrl,
                     editableSession = request?.permission == OfficePermission.EDIT,
                     internalSaveSession = internalSaveEnabled,
+                    originalSaveSession = saveOriginalEnabled,
                     editState = editState,
                     revisionState = revisionState,
                     revisionProof = revisionProof,
@@ -543,6 +577,7 @@ class OfficePreviewActivity : ComponentActivity(), OfficeEngineService.OfficeEng
                     onBack = ::performBack,
                     onToggleEdit = ::toggleEditMode,
                     onSaveCopy = { startSaveCopy(forClose = false) },
+                    onSaveOriginal = { startSaveOriginal(forClose = false) },
                     onSavePdfCopy = { startExportOp(OfficeExportPurpose.SAF_COPY) },
                     onPreviewPdf = { startExportOp(OfficeExportPurpose.PDF_PREVIEW) },
                     onPrintPdf = { startExportOp(OfficeExportPurpose.PDF_PRINT) },
@@ -596,10 +631,12 @@ class OfficePreviewActivity : ComponentActivity(), OfficeEngineService.OfficeEng
                 // Dirty-close guard (editable mounts): explicit user choice,
                 // honest outcomes only. An internal-Notes mount offers "Save
                 // and close" (one real flush, App-owned snapshot, no picker);
-                // a generic host keeps "Save Copy and close", which closes
-                // ONLY after the App's verified COPY_SAVED settlement for that
-                // exact op. Failure/cancel/UNKNOWN keeps the editor open with
-                // everything retained.
+                // a workspace-original mount offers "Save Original and close"
+                // (one real flush, App-owned workspace CAS proof) with Save
+                // Copy kept beside it; a generic host keeps "Save Copy and
+                // close", which closes ONLY after the App's verified
+                // COPY_SAVED settlement for that exact op. Failure/cancel/
+                // UNKNOWN keeps the editor open with everything retained.
                 FloeActionSheet(
                     visible = showDirtyCloseSheet,
                     onDismiss = { showDirtyCloseSheet = false },
@@ -609,22 +646,33 @@ class OfficePreviewActivity : ComponentActivity(), OfficeEngineService.OfficeEng
                         FloeText(stringResource(R.string.office_viewer_dirty_title), style = Floe.typography.toolbarTitle)
                         FloeText(
                             stringResource(
-                                if (internalSaveEnabled) {
-                                    R.string.office_viewer_dirty_internal_message
-                                } else {
-                                    R.string.office_viewer_dirty_message
+                                when {
+                                    internalSaveEnabled -> R.string.office_viewer_dirty_internal_message
+                                    saveOriginalEnabled -> R.string.office_viewer_dirty_original_message
+                                    else -> R.string.office_viewer_dirty_message
                                 },
                             ),
                             color = Floe.colors.secondaryLabel,
                         )
-                        if (internalSaveEnabled) {
-                            FloeCapsuleButton(stringResource(R.string.office_action_save_note_close), onClick = {
-                                startInternalSaveAndClose()
-                            })
-                        } else {
-                            FloeCapsuleButton(stringResource(R.string.office_action_save_close), onClick = {
-                                startSaveCopy(forClose = true)
-                            })
+                        when {
+                            internalSaveEnabled -> {
+                                FloeCapsuleButton(stringResource(R.string.office_action_save_note_close), onClick = {
+                                    startInternalSaveAndClose()
+                                })
+                            }
+                            saveOriginalEnabled -> {
+                                FloeCapsuleButton(stringResource(R.string.office_action_save_original_close), onClick = {
+                                    startSaveOriginal(forClose = true)
+                                })
+                                FloeCapsuleButton(stringResource(R.string.office_action_save_close), onClick = {
+                                    startSaveCopy(forClose = true)
+                                })
+                            }
+                            else -> {
+                                FloeCapsuleButton(stringResource(R.string.office_action_save_close), onClick = {
+                                    startSaveCopy(forClose = true)
+                                })
+                            }
                         }
                         FloeCapsuleButton(stringResource(R.string.office_action_discard_close), onClick = ::discardAndClose)
                         FloeCapsuleButton(stringResource(R.string.office_action_keep_editing), onClick = {
@@ -894,6 +942,13 @@ class OfficePreviewActivity : ComponentActivity(), OfficeEngineService.OfficeEng
             applyInternalSaveReceipt(receipt)
             return
         }
+        // The manual original-save lane is narrowed the same way: its
+        // FLUSHED/UNMODIFIED receipt must never clear the external copy
+        // state, and a stale/duplicate terminal for a settled op is dropped.
+        if (receipt.opId == saveOriginalOpId) {
+            applySaveOriginalReceipt(receipt)
+            return
+        }
         val isCloseSave = closeAfterExportOpId == receipt.opId
         when (receipt.state) {
             OfficeSaveState.SUBMITTED -> Unit // no notice: terminal states speak
@@ -1131,6 +1186,203 @@ class OfficePreviewActivity : ComponentActivity(), OfficeEngineService.OfficeEng
         noticeDetail = detail
     }
 
+    // --- Manual workspace original save (OFC-SAVE-REOPEN) ---
+
+    /**
+     * The visible "Save Original" action for an ordinary task-owned
+     * workspace mount. One real `WORKING_COPY_FLUSH` on the existing engine
+     * lane (`.uno:Save`, dontTerminateEdit=1) writes the latest in-memory
+     * state to the App-owned working copy; the engine re-reads and digests
+     * it. Only a FLUSHED/UNMODIFIED receipt with real working-copy facts is
+     * offered to the App host, which re-verifies its OWN working copy and
+     * runs the existing native workspace CAS before answering. Accepted ->
+     * the original carries the verified edit (and the armed close proceeds
+     * when [forClose]); refused/rejected/unknown -> the editor stays open
+     * with the working copy and any recovery data retained, and a rejected
+     * (conflict-shaped) answer points at the existing original-version
+     * review. No model content operation is faked and no edit is reapplied;
+     * Save Copy remains available beside this action.
+     */
+    private fun startSaveOriginal(forClose: Boolean) {
+        userDiscarded = false
+        if (!saveOriginalEnabled) return
+        if (closeSavePhase != null || pdfBusyKey != null) return
+        // Never start an original save underneath an external Save-Copy
+        // picker/settlement or an internal-save handoff: the destinations
+        // must not interleave.
+        if (pendingHandoffOpId != null) return
+        if (synchronized(awaitingSettlementOps) { awaitingSettlementOps.isNotEmpty() }) return
+        if (internalSaveOpId != null || internalSaveHandoffInFlight) return
+        if (saveOriginalOpId != null || saveOriginalHandoffInFlight) return
+        val token = request?.sessionToken ?: return
+        if (request?.permission != OfficePermission.EDIT) return
+        val opId = newOpId("original")
+        val op = OfficeSaveRequest.of(
+            opId = opId,
+            sessionToken = token,
+            generation = nativeGeneration,
+            operation = OfficeSaveOperation.WORKING_COPY_FLUSH,
+            // false = dontSaveIfUnmodified=0: an explicit user save must
+            // produce a real write + verified digest, never a silent skip.
+            saveIfUnmodified = false,
+        ).getOrNull() ?: run {
+            noticeKey = "saveFailed"
+            noticeDetail = "invalid original save request"
+            return
+        }
+        showDirtyCloseSheet = false
+        saveOriginalOpId = opId
+        saveOriginalClosePending = forClose
+        // The input stays frozen through the handoff answer in both the
+        // menu and the dirty-close case: the App re-verifies the exact
+        // working-copy digest, so no later edit may land underneath it. The
+        // busy cover absorbs touches while the App verifies + commits.
+        closeSavePhase = CloseSavePhase.SAVING
+        freezeDocumentInput()
+        val receipt = service?.submitSaveOperation(op) ?: run {
+            saveOriginalOpId = null
+            abortSaveOriginal("saveFailed", "editor unavailable")
+            return
+        }
+        // A synchronous REJECTED was never dispatched to listeners; apply it
+        // through the same narrowed handler exactly once.
+        if (receipt.state == OfficeSaveState.REJECTED) applyReceipt(receipt)
+    }
+
+    private fun applySaveOriginalReceipt(receipt: OfficeSaveReceipt) {
+        when (receipt.state) {
+            OfficeSaveState.SUBMITTED -> Unit
+            OfficeSaveState.FLUSHED, OfficeSaveState.UNMODIFIED -> {
+                if (saveOriginalHandoffInFlight) return
+                val mountFormat = request?.format?.fileExtension
+                val notice = OfficeSaveOriginalHandoffPolicy.noticeFromReceipt(receipt, mountFormat)
+                if (notice == null) {
+                    abortSaveOriginal("saveFailed", "working copy unavailable")
+                    return
+                }
+                saveOriginalHandoffInFlight = true
+                // The App re-reads/digests/commits against its own working
+                // copy, so this bounded verification runs off the main
+                // thread; the busy cover keeps input frozen until the answer.
+                runCatching {
+                    Thread({
+                        val answer = OfficeSaveOriginalChannel.postSaveOriginal(saveOriginalChannel, notice)
+                        mainHandler.post {
+                            saveOriginalHandoffInFlight = false
+                            if (isDestroyed || isFinishing) return@post
+                            when (answer) {
+                                OfficeSaveOriginalHandoffPolicy.SAVE_ORIGINAL_ACCEPTED -> {
+                                    // The App proved the workspace original
+                                    // now carries the verified edit.
+                                    saveOriginalOpId = null
+                                    closeSavePhase = null
+                                    noticeKey = "originalSaved"
+                                    noticeDetail = null
+                                    if (saveOriginalClosePending) {
+                                        saveOriginalClosePending = false
+                                        request?.sessionToken?.let { token ->
+                                            service?.requestClose(token, "user-back", userInitiated = true)
+                                        }
+                                    } else {
+                                        unfreezeDocumentInput()
+                                    }
+                                }
+                                OfficeSaveOriginalHandoffPolicy.SAVE_ORIGINAL_UNCHANGED -> {
+                                    // The working copy still equals the
+                                    // authoritative original: nothing to
+                                    // commit, which is an honest success.
+                                    saveOriginalOpId = null
+                                    closeSavePhase = null
+                                    noticeKey = "saveUnmodified"
+                                    noticeDetail = null
+                                    if (saveOriginalClosePending) {
+                                        saveOriginalClosePending = false
+                                        request?.sessionToken?.let { token ->
+                                            service?.requestClose(token, "user-back", userInitiated = true)
+                                        }
+                                    } else {
+                                        unfreezeDocumentInput()
+                                    }
+                                }
+                                OfficeSaveOriginalHandoffPolicy.SAVE_ORIGINAL_REJECTED -> {
+                                    // A real conflict / verification refusal:
+                                    // the original stays untouched, the
+                                    // working copy is retained, and the
+                                    // existing original-version review
+                                    // decides. The editor stays open.
+                                    abortSaveOriginal("originalSaveConflict", null)
+                                }
+                                OfficeSaveOriginalHandoffPolicy.SAVE_ORIGINAL_ACCEPTED_SOURCE_PENDING ->
+                                    finishSaveOriginalSourcePending(savedLocally = true, conflict = false)
+                                OfficeSaveOriginalHandoffPolicy.SAVE_ORIGINAL_ACCEPTED_SOURCE_CONFLICT ->
+                                    finishSaveOriginalSourcePending(savedLocally = true, conflict = true)
+                                OfficeSaveOriginalHandoffPolicy.SAVE_ORIGINAL_UNCHANGED_SOURCE_PENDING ->
+                                    finishSaveOriginalSourcePending(savedLocally = false, conflict = false)
+                                OfficeSaveOriginalHandoffPolicy.SAVE_ORIGINAL_UNCHANGED_SOURCE_CONFLICT ->
+                                    finishSaveOriginalSourcePending(savedLocally = false, conflict = true)
+                                else -> {
+                                    // Transport/fence refusal: nothing was
+                                    // proven either way; the editor stays
+                                    // open with everything retained.
+                                    abortSaveOriginal("originalSaveFailed", null)
+                                }
+                            }
+                        }
+                    }, "office-original-save").start()
+                }.onFailure {
+                    saveOriginalHandoffInFlight = false
+                    abortSaveOriginal("saveFailed", "originalSaveUnavailable")
+                }
+            }
+            OfficeSaveState.FAILED, OfficeSaveState.UNKNOWN -> {
+                abortSaveOriginal(
+                    if (receipt.state == OfficeSaveState.UNKNOWN) "saveUnknown" else "saveFailed",
+                    (receipt.failure?.name ?: "") + (receipt.message?.let { ": $it" } ?: ""),
+                )
+            }
+            OfficeSaveState.CANCELLED, OfficeSaveState.REJECTED ->
+                abortSaveOriginal("saveFailed", receipt.failure?.name)
+            else -> abortSaveOriginal("saveFailed", "unexpected original save state")
+        }
+    }
+
+    /** Ends an original-save attempt honestly: the editor stays open, input
+     *  is unfrozen, the working copy is retained, and no close is
+     *  authorized. A conflict-shaped refusal surfaces the existing review
+     *  entry so the user can compare versions deliberately. */
+    private fun abortSaveOriginal(notice: String, detail: String?) {
+        saveOriginalOpId = null
+        saveOriginalClosePending = false
+        saveOriginalHandoffInFlight = false
+        closeSavePhase = null
+        unfreezeDocumentInput()
+        noticeKey = notice
+        noticeDetail = detail
+    }
+
+    /**
+     * The LOCAL workspace original is proven saved (or already current) but
+     * the attached provider sync did not complete — never close as if fully
+     * synced. The editor stays open with the working copy retained, an
+     * actionable bilingual notice says exactly what did and didn't happen,
+     * and the existing Save Copy / close choices stay usable. The journaled
+     * provider row keeps its recovery identity for the existing reconcile
+     * flow; nothing is replayed here.
+     */
+    private fun finishSaveOriginalSourcePending(savedLocally: Boolean, conflict: Boolean) {
+        saveOriginalOpId = null
+        saveOriginalClosePending = false
+        closeSavePhase = null
+        unfreezeDocumentInput()
+        noticeKey = when {
+            savedLocally && conflict -> "originalSavedSourceConflict"
+            savedLocally -> "originalSavedSourcePending"
+            conflict -> "originalUnchangedSourceConflict"
+            else -> "originalUnchangedSourcePending"
+        }
+        noticeDetail = null
+    }
+
     /**
      * Ends a close-save attempt honestly: the editor stays open, input is
      * unfrozen, the staged output and working copy are retained, and no
@@ -1291,6 +1543,9 @@ class OfficePreviewActivity : ComponentActivity(), OfficeEngineService.OfficeEng
         }
         internalSaveOpId = null
         internalSaveHandoffInFlight = false
+        saveOriginalOpId = null
+        saveOriginalHandoffInFlight = false
+        saveOriginalClosePending = false
         exportPurposes.clear()
         pdfBusyKey = null
         pdfRenderHost?.release()
@@ -1904,6 +2159,9 @@ private fun OfficeViewerScreen(
     viewerUrl: String?,
     editableSession: Boolean,
     internalSaveSession: Boolean = false,
+    /** Manual workspace original save: this mount may write the workspace
+     *  original through the App-owned CAS (the "Save Original" action). */
+    originalSaveSession: Boolean = false,
     editState: OfficeEditState?,
     revisionState: OfficeRevisionState?,
     revisionProof: OfficeRevisionPdfProof?,
@@ -1930,6 +2188,7 @@ private fun OfficeViewerScreen(
     onBack: () -> Unit,
     onToggleEdit: () -> Unit,
     onSaveCopy: () -> Unit,
+    onSaveOriginal: () -> Unit,
     onSavePdfCopy: () -> Unit,
     onPreviewPdf: () -> Unit,
     onPrintPdf: () -> Unit,
@@ -1992,6 +2251,16 @@ private fun OfficeViewerScreen(
                 showEditorMenu = false
                 showReview = true
             })
+            if (originalSaveSession) {
+                // Manual workspace original save (OFC-SAVE-REOPEN): one
+                // visible action that saves the verified working copy back
+                // to the task workspace original through the App-owned CAS.
+                // Save Copy stays right below it, always.
+                FloeCapsuleButton(stringResource(R.string.office_action_save_original), onClick = {
+                    showEditorMenu = false
+                    onSaveOriginal()
+                })
+            }
             FloeCapsuleButton(stringResource(R.string.office_action_save_copy), onClick = {
                 showEditorMenu = false
                 onSaveCopy()
@@ -2866,9 +3135,13 @@ private fun NoticeGlyph(key: String) {
         "pdfFailed", "printUnavailable" -> FloeIcons.WarningTriangle
         "saveUnknown" -> FloeIcons.WarningTriangle
         "saveFlushed", "copySaved", "pdfRevisionsKept", "originalUnchanged",
-        "originalKept" -> FloeIcons.CheckCircle
+        "originalKept", "originalSaved" -> FloeIcons.CheckCircle
         "macroBlocked" -> FloeIcons.ShieldAlert
-        "revisionFailed", "pdfRevisionWarning", "originalStale" -> FloeIcons.WarningTriangle
+        "revisionFailed", "pdfRevisionWarning", "originalStale",
+        "originalSaveConflict", "originalSaveFailed" -> FloeIcons.WarningTriangle
+        "originalSavedSourcePending", "originalSavedSourceConflict",
+        "originalUnchangedSourcePending", "originalUnchangedSourceConflict",
+        -> FloeIcons.WarningTriangle
         else -> FloeIcons.InfoCircle
     }
     Image(
@@ -2946,6 +3219,40 @@ private fun noticeText(key: String, detail: String?): String {
         "originalStale" -> reviewText(
             "The original changed again. Check it again before deciding.",
             "原始文件又发生变化。决定前请重新检查。",
+        )
+        // Manual workspace original save (OFC-SAVE-REOPEN): honest wording —
+        // "saved" only after the App's real CAS answer; a conflict keeps the
+        // editor open and routes the decision to the existing review.
+        "originalSaved" -> reviewText(
+            "Saved to the original in your workspace.",
+            "已保存到工作空间中的原始文件。",
+        )
+        "originalSaveConflict" -> reviewText(
+            "The original changed and wasn\'t overwritten. Your version is kept — review both versions to decide.",
+            "原始文件已变化，未覆盖。你的版本已保留——请审阅两个版本后再决定。",
+        )
+        "originalSaveFailed" -> reviewText(
+            "Couldn\'t save to the original. Your working copy is kept.",
+            "保存到原始文件失败，工作副本已保留。",
+        )
+        // The local original is saved (or already current) but the attached
+        // provider sync is incomplete — never worded as a fully synced save,
+        // and the editor stays open with everything retained.
+        "originalSavedSourcePending" -> reviewText(
+            "Saved to the original in your workspace. Syncing to your connected file provider is still pending — reconcile it from Provider files.",
+            "已保存到工作空间中的原始文件。与已连接文件提供方的同步仍在等待——可在“外部文件”中核对处理。",
+        )
+        "originalSavedSourceConflict" -> reviewText(
+            "Saved to the original in your workspace. Your file provider has a conflicting version — review it in Provider files.",
+            "已保存到工作空间中的原始文件。你的文件提供方存在冲突版本——请在“外部文件”中审阅处理。",
+        )
+        "originalUnchangedSourcePending" -> reviewText(
+            "Your edits are already saved in the workspace original. Syncing to your connected file provider is still pending — reconcile it from Provider files.",
+            "你的更改已保存在工作空间原始文件中。与已连接文件提供方的同步仍在等待——可在“外部文件”中核对处理。",
+        )
+        "originalUnchangedSourceConflict" -> reviewText(
+            "Your edits are already saved in the workspace original. Your file provider has a conflicting version — review it in Provider files.",
+            "你的更改已保存在工作空间原始文件中。你的文件提供方存在冲突版本——请在“外部文件”中审阅处理。",
         )
         else -> stringResource(R.string.office_notice_internal_error)
     }

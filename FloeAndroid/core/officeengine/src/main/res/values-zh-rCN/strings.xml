@@ -47,6 +47,10 @@
     <string name="office_action_save_close">存副本并关闭</string>
     <string name="office_action_save_note_close">保存并关闭</string>
     <string name="office_viewer_dirty_internal_message">要将这些更改保存到此手记吗？</string>
+    <!-- 手动工作空间原始文件保存（OFC-SAVE-REOPEN）。 -->
+    <string name="office_action_save_original">保存到原文件</string>
+    <string name="office_action_save_original_close">保存到原文件并关闭</string>
+    <string name="office_viewer_dirty_original_message">将这些更改保存回工作空间中的原始文件吗？</string>
     <string name="office_busy_saving">正在保存…</string>
     <string name="office_action_discard_close">放弃更改</string>
     <string name="office_action_keep_editing">继续编辑</string>

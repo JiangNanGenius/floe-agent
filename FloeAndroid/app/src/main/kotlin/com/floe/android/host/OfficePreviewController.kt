@@ -17,6 +17,8 @@ import com.floe.android.core.officeengine.OfficePermission
 import com.floe.android.core.officeengine.OfficePreviewActivity
 import com.floe.android.core.officeengine.OfficePreviewRequest
 import com.floe.android.core.officeengine.OfficeRequestPolicy
+import com.floe.android.core.officeengine.OfficeSaveOriginalChannel
+import com.floe.android.core.officeengine.OfficeSaveOriginalHandoffPolicy
 import com.floe.android.core.officeengine.OfficeViewerOutcome
 import com.floe.android.core.officeengine.revisionreview.OfficeConflictPreviewNaming
 import com.floe.android.core.officeengine.revisionreview.OfficeConflictPreviewRole
@@ -164,6 +166,62 @@ internal class OfficePreviewController(context: Context, private val scope: Coro
     private val conflictReviewBinder: IBinder by lazy {
         OfficeConflictReviewChannel.parentBinder(conflictReview)
     }
+
+    /**
+     * Parent endpoint of the module's narrow manual-original-save
+     * capability (OfficeSaveOriginalHandoffPolicy, OFC-SAVE-REOPEN): the
+     * foreground viewer posts ONE verified working-copy notice here and the
+     * App answers with a single bounded verdict. Same trust model as the
+     * conflict-review channel: a same-UID, non-exported binder on THIS
+     * non-exported launch Intent only; every transaction re-proves the exact
+     * owned operation, the live owner and the engine generation. It grants
+     * no file, provider or navigation authority by itself.
+     */
+    private val saveOriginalBinder: IBinder by lazy {
+        OfficeSaveOriginalChannel.parentBinder(this::acceptSaveOriginalNotice)
+    }
+
+    /**
+     * App-side orchestration of the manual workspace original save. Every
+     * join is the EXISTING owned object (this controller for the operation
+     * and its App-owned working copy; the trusted source-host native lane
+     * for the CAS; the RuntimeHost-installed push port for the provider
+     * journal). No parallel controller, no raw write path.
+     */
+    private val saveOriginalHost = OfficeSaveOriginalHost(
+        commitPort = NativeOfficeOriginalCommitPort,
+        operation = this::saveOriginalOperationFacts,
+        verifyWorkingCopy = { file, notice ->
+            OfficeSaveOriginalVerification.verify(file, workingRoot, notice)
+        },
+        workingCopyFile = { path -> File(path) },
+    )
+
+    /**
+     * RuntimeHost-installed provider journal push (the EXISTING
+     * [WorkspaceSourceHostController] headless lane, byte-reusing the Core
+     * model path's pushOriginalViaHeadlessLane). Null until Main wiring.
+     * The host invokes it AT MOST ONCE per explicit save action, awaited on
+     * the handoff lane, and correlates its typed terminal into the final
+     * verdict (synced vs source-pending vs source-conflict) — never
+     * fire-and-forget. A document without a source binding (or an unwired
+     * host) simply skips the push; the local commit answer is unaffected,
+     * and a missing lane at call time is an honest source-pending verdict,
+     * never evidence the external original updated.
+     */
+    @Volatile
+    internal var saveOriginalPushPort: (suspend (OfficeOriginalPushRequest) -> WorkspaceSourceResult?)? = null
+
+    /** One provider journal push over the existing headless lane, pre-bound
+     *  to the exact owner facts and fence by [saveOriginalOperationFacts]. */
+    internal data class OfficeOriginalPushRequest(
+        val taskID: String,
+        val workspaceID: String,
+        val nativeEpoch: Long,
+        val hostGeneration: Long,
+        val logicalPath: String,
+        val ownerFence: () -> Boolean,
+    )
 
     private val lock = Any()
     private var sequence = 0L
@@ -348,6 +406,16 @@ internal class OfficePreviewController(context: Context, private val scope: Coro
         @Volatile var saveOriginal: OfficeSaveCopyOriginal? = null
         /** Set exactly once by settle: fences late Save-Copy/owner-alive reads. */
         @Volatile var viewEnded = false
+        /** CURRENT authoritative baseline for the workspace original CAS: the
+         *  open-time snapshot digest until a proven manual original save
+         *  updates it to the committed bytes. Never mutated without the
+         *  corresponding bytes/proof (the immutable open-time snapshot pair
+         *  below stays untouched). Null when this route owns no workspace
+         *  original (provider/run-output/recovery mounts stay copy-only). */
+        @Volatile var originalBaselineSha256: String? = null
+        @Volatile var originalBaselineBytes: Long = -1L
+        /** Fences a second handoff while one original save is in flight. */
+        @Volatile var saveOriginalInFlight = false
         /** Durable recovery candidate created before the editable mount. */
         @Volatile var recoveryCandidateId: String? = null
     }
@@ -491,6 +559,11 @@ internal class OfficePreviewController(context: Context, private val scope: Coro
                 op.workingCopyBytes = copy.bytes
                 op.input = copy.file
                 op.editable = true
+                // The workspace route owns the original: the open-time
+                // snapshot digest is the FIRST CAS baseline. A proven manual
+                // original save advances it; nothing else may.
+                op.originalBaselineSha256 = snapshot.sha256
+                op.originalBaselineBytes = snapshot.bytes
                 val candidateId = recordRecoveryCandidate(
                     op = op,
                     route = OfficeRecoveryRoute.WORKSPACE,
@@ -1075,11 +1148,16 @@ internal class OfficePreviewController(context: Context, private val scope: Coro
         // launch Intent; the module can display the banner and raise the chat,
         // but the answer itself is always re-validated here per query.
         val ownedNotice = op.ownerTaskId != null && approvalNoticeLookup != null
+        // Manual original save: ONLY the exact owned workspace EDIT mount
+        // with full owner facts receives the capability; every other route
+        // stays copy-only and never sees the button.
+        val saveOriginalCapable = saveOriginalRouteAuthority(op, request)
         val intent = OfficeEngine.viewerIntent(
             context, request, closeAckBinder, op.id,
             hostSaveChannel = if (op.editable) saveCopy.channel else null,
             approvalNotice = if (ownedNotice) approvalNoticeBinder else null,
             reviewComponent = if (ownedNotice) ComponentName(context, MainActivity::class.java) else null,
+            saveOriginalChannel = if (saveOriginalCapable) saveOriginalBinder else null,
         )
         // C08 revision/conflict review capability: a same-UID, non-exported
         // binder on THIS non-exported launch Intent only. It answers observed
@@ -1298,8 +1376,16 @@ internal class OfficePreviewController(context: Context, private val scope: Coro
             sourceLogicalPath = request.sourceLogicalPath,
             sourceId = request.sourceId,
             sourceRevision = request.sourceRevision,
-            originalSnapshotSha256 = op.snapshotSha256,
-            originalSnapshotBytes = op.snapshotBytes,
+            // The Core lane's CAS expectation binds the CURRENT authoritative
+            // baseline: after a proven manual original save, the model path
+            // and repeat saves compare against the committed bytes, never
+            // the stale open-time digest.
+            originalSnapshotSha256 = op.originalBaselineSha256 ?: op.snapshotSha256,
+            originalSnapshotBytes = if (op.originalBaselineSha256 != null) {
+                op.originalBaselineBytes
+            } else {
+                op.snapshotBytes
+            },
             editable = op.editable,
             stagedWorkingCopyPath = op.workingCopy?.let {
                 runCatching { it.canonicalPath }.getOrNull()
@@ -1362,7 +1448,11 @@ internal class OfficePreviewController(context: Context, private val scope: Coro
                 sessionToken = sessionToken,
                 generation = generation,
                 route = route,
-                baseSha256 = op.snapshotSha256 ?: request.sha256,
+                // The review compares the live original against the CURRENT
+                // authoritative baseline (advanced by a proven manual
+                // original save), never stale open-time metadata: after a
+                // save, "unchanged" must mean unchanged since THAT version.
+                baseSha256 = op.originalBaselineSha256 ?: op.snapshotSha256 ?: request.sha256,
                 baseRevision = request.sourceRevision,
                 originalUri = op.saveOriginal?.uri?.uriString,
                 ownerTaskId = op.ownerTaskId,
@@ -1473,6 +1563,177 @@ internal class OfficePreviewController(context: Context, private val scope: Coro
     /** Drop temporary review snapshots for an exact session (never input). */
     private fun releaseConflictReview(sessionToken: String) {
         runCatching { conflictReview.releaseSession(sessionToken) }
+    }
+
+    // ------------------------------------------------------------------
+    // Manual workspace original save (OFC-SAVE-REOPEN)
+    // ------------------------------------------------------------------
+
+    /**
+     * True ONLY for an EDIT mount of an ordinary task-owned workspace
+     * document whose full owner facts and CAS baseline are present. Mirrors
+     * [conflictReviewIdentity]'s WORKSPACE route rule: provider-picked,
+     * run-output, recovery and read-only mounts answer false and stay
+     * copy-only — never a fake workspace-ownership control.
+     */
+    private fun saveOriginalRouteAuthority(op: Operation, request: OfficePreviewRequest): Boolean {
+        if (op.retired || op.viewEnded || !op.editable || !op.ownerCurrent()) return false
+        if (request.permission != OfficePermission.EDIT) return false
+        if (op.ownerTaskId == null || op.ownerWorkspaceId == null) return false
+        if (op.ownerNativeEpoch?.toLongOrNull() == null) return false
+        if (request.hostGeneration?.toLongOrNull() == null) return false
+        if (request.sourceLogicalPath.isNullOrEmpty()) return false
+        if (op.originalBaselineSha256 == null) return false
+        // The durable open-time snapshot pair must exist (the immutable
+        // artifact the baseline was derived from).
+        return op.snapshot != null && op.snapshotSha256 != null
+    }
+
+    /**
+     * Resolves the EXACT live owned operation for one original-save notice
+     * under the controller lock: current, un-retired, VIEWING, editable,
+     * owner-current, exact session token AND the exact engine mount
+     * generation (the caller proves the generation with the SAME bounded
+     * retry the review lane uses, then this join re-proves it against the
+     * captured [Operation]). Marks the handoff in flight so a duplicate
+     * notice can never interleave with the verification/commit. Returns
+     * null (REFUSED) for any other owner, epoch, session or state.
+     */
+    private fun saveOriginalOperationFacts(
+        sessionToken: String,
+        generation: Long,
+    ): OfficeSaveOriginalOperation? = synchronized(lock) {
+        val op = active ?: return null
+        if (op.retired || op.viewEnded || op.phase != Phase.VIEWING || !op.editable ||
+            !op.ownerCurrent() || op.sessionToken != sessionToken
+        ) return null
+        val request = mutableState.value.viewer?.request ?: return null
+        if (request.sessionToken != sessionToken || request.permission != OfficePermission.EDIT) {
+            return null
+        }
+        if (op.saveOriginalInFlight) return null
+        if (!saveOriginalRouteAuthority(op, request)) return null
+        val workingCopy = op.workingCopy ?: return null
+        val workingPath = runCatching { workingCopy.canonicalPath }.getOrNull() ?: return null
+        val taskID = op.ownerTaskId ?: return null
+        val workspaceID = op.ownerWorkspaceId ?: return null
+        val epoch = op.ownerNativeEpoch?.toLongOrNull() ?: return null
+        val hostGeneration = request.hostGeneration?.toLongOrNull() ?: return null
+        val logicalPath = request.sourceLogicalPath ?: return null
+        val baselineSha = op.originalBaselineSha256 ?: return null
+        // The engine generation binding is established asynchronously when
+        // the edit session opens; the bounded retry happens in
+        // [acceptSaveOriginalNotice] BEFORE this join, so here we only
+        // require the notice generation to be the live one.
+        val liveGeneration = runCatching { saveCopy.aiReadGeneration(sessionToken) }.getOrDefault(0L)
+        if (liveGeneration != generation) return null
+        op.saveOriginalInFlight = true
+        OfficeSaveOriginalOperation(
+            baselineSha256 = baselineSha,
+            baselineBytes = op.originalBaselineBytes,
+            commit = OfficeOriginalCommitFacts(
+                taskID = taskID,
+                workspaceID = workspaceID,
+                nativeEpoch = epoch,
+                hostGeneration = hostGeneration,
+                logicalPath = logicalPath,
+                sourceID = request.sourceId,
+                sourceRevision = request.sourceRevision,
+                expectedOriginalSHA256 = baselineSha,
+                sourcePath = workingPath,
+            ),
+            stillOwned = { saveOriginalStillOwned(sessionToken, workingPath) },
+            markCommitted = { sha256, bytes ->
+                synchronized(lock) {
+                    if (active === op && !op.retired) {
+                        // The real commit proved these bytes; only now may
+                        // the expectation advance (repeat saves can never
+                        // fight stale open-time metadata).
+                        op.originalBaselineSha256 = sha256
+                        op.originalBaselineBytes = bytes
+                    }
+                }
+            },
+            releaseInFlight = {
+                synchronized(lock) {
+                    if (active === op && op.sessionToken == sessionToken) {
+                        op.saveOriginalInFlight = false
+                    }
+                }
+            },
+            // Provider sync rides the EXISTING journaled ladder only when a
+            // source binding exists AND RuntimeHost installed the push port.
+            // The lane itself re-admits the exact owner + live root epoch on
+            // every hop, so this fence stays minimal.
+            pushOriginal = request.sourceId
+                ?.takeIf { it.isNotEmpty() }
+                ?.let { saveOriginalPushPort }
+                ?.let { push ->
+                    suspend {
+                        push(
+                            OfficeOriginalPushRequest(
+                                taskID = taskID,
+                                workspaceID = workspaceID,
+                                nativeEpoch = epoch,
+                                hostGeneration = hostGeneration,
+                                logicalPath = logicalPath,
+                                ownerFence = { saveOriginalStillOwned(sessionToken, workingPath) },
+                            ),
+                        )
+                    }
+                },
+        )
+    }
+
+    /** Post-commit/post-copy re-fence for ONE exact operation: still the
+     *  current, un-retired, not-view-ended, VIEWING owner with the SAME
+     *  App-owned working copy. Never touches another owner or a replaced
+     *  operation. */
+    private fun saveOriginalStillOwned(sessionToken: String, workingPath: String): Boolean =
+        synchronized(lock) {
+            val op = active ?: return false
+            !op.retired && !op.viewEnded && op.phase == Phase.VIEWING && op.ownerCurrent() &&
+                op.sessionToken == sessionToken &&
+                op.workingCopy?.let { runCatching { it.canonicalPath }.getOrNull() } == workingPath
+        }
+
+    /**
+     * Answers ONE verified original-save notice on a Binder thread (the
+     * viewer posts from its dedicated handoff thread). First proves the
+     * exact engine mount generation with the SAME bounded retry the review
+     * lane uses, then runs the real orchestration; the native hop blocks
+     * this thread to its honest terminal. One of the
+     * [OfficeSaveOriginalHandoffPolicy] verdicts; the in-flight mark is
+     * always released.
+     */
+    private fun acceptSaveOriginalNotice(
+        notice: OfficeSaveOriginalHandoffPolicy.SaveOriginalNotice,
+    ): Int {
+        if (OfficeSaveOriginalHandoffPolicy.validateSaveOriginal(
+                notice.opId,
+                notice.sessionToken,
+                notice.generation,
+                notice.format,
+                notice.workingCopySha256,
+                notice.workingCopyBytes,
+            ) == null
+        ) {
+            return OfficeSaveOriginalHandoffPolicy.SAVE_ORIGINAL_REFUSED
+        }
+        var liveGeneration = 0L
+        for (attempt in 0 until 20) {
+            liveGeneration = runCatching { saveCopy.aiReadGeneration(notice.sessionToken) }.getOrDefault(0L)
+            if (liveGeneration == notice.generation) break
+            if (attempt < 19) runCatching { Thread.sleep(50L) }
+        }
+        if (liveGeneration != notice.generation) {
+            return OfficeSaveOriginalHandoffPolicy.SAVE_ORIGINAL_REFUSED
+        }
+        // The in-flight fence is released by the host on EVERY path after
+        // the facts were acquired (see OfficeSaveOriginalOperation).
+        return runCatching {
+            kotlinx.coroutines.runBlocking { saveOriginalHost.accept(notice) }
+        }.getOrDefault(OfficeSaveOriginalHandoffPolicy.SAVE_ORIGINAL_REJECTED)
     }
 
     /** Narrow READ-ONLY capability join for the G05-R2 Office AI host lane

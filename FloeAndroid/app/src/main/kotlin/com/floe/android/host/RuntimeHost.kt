@@ -161,6 +161,26 @@ class RuntimeHost internal constructor(
     internal val cadViewer: C04CadViewerController
         get() = cadViewerDelegate.value
     /**
+     * WSF-SAFE-EXTRACT Application-owned archive document controller. It
+     * owns only the trusted `floe.archive/25` bridge calls, the
+     * long-running extract job, its real cancellation/progress and the
+     * typed state the full-window browser renders; every byte and effect
+     * stays behind the bridge on the ORIGINAL G04 workspace lease. Created
+     * lazily on the first explicit archive open; the root-stop gate below
+     * drains it before the epoch retires.
+     */
+    private val workspaceArchiveDelegate = lazy {
+        WorkspaceArchiveHostController(
+            scope = scope,
+            ioDispatcher = ioDispatcher,
+            currentNativeEpoch = ::nativeRootEpoch,
+            currentHostGeneration = { commandClient.generation() },
+            isTemporaryTask = { id -> conversations.entryFor(id)?.isTemporary == true },
+        )
+    }
+    internal val workspaceArchive: WorkspaceArchiveHostController
+        get() = workspaceArchiveDelegate.value
+    /**
      * C05 Application-owned SSH remote-host controller. Created lazily on
      * the first Remote screen use; it owns only the trusted-host bridge
      * calls, PTY polling and bounded input lanes. The root-stop gate below
@@ -589,6 +609,19 @@ class RuntimeHost internal constructor(
         }
 
     /**
+     * Root-stop gate for the archive document surface: cancel a still-
+     * running extraction (the engine abandons its staging), discard hidden
+     * preview staging and join the owned jobs before the native root
+     * retires. An unproven drain keeps the old generation pending.
+     */
+    internal suspend fun prepareWorkspaceArchiveForRootStop(): Boolean =
+        if (workspaceArchiveDelegate.isInitialized()) {
+            workspaceArchive.prepareForRootStop(ARCHIVE_STOP_WAIT_MS)
+        } else {
+            true
+        }
+
+    /**
      * Root-stop gate for C05 SSH: close every live session, PTY, exec
      * channel and loopback listener and await their owned shutdown before
      * the native root retires. An unproven drain keeps the old generation
@@ -875,6 +908,9 @@ class RuntimeHost internal constructor(
         // close before the root retires; a refused drain keeps the old
         // generation rather than pretending the document work is gone.
         if (!prepareWorkspaceDocumentPreviewForRootStop()) return
+        // An in-flight archive extract/preview staging is real workspace
+        // work owned by this host; drain it with the same contract.
+        if (!prepareWorkspaceArchiveForRootStop()) return
         if (!prepareNetworkForRootStop()) return
         commandClient.bumpGeneration()
         providers.stop()
@@ -1439,6 +1475,9 @@ class RuntimeHost internal constructor(
 
         /** Bounded join for the C04A viewer WebView/snapshot drain. */
         internal const val CAD_VIEWER_STOP_WAIT_MS = 8_000L
+
+        /** Bounded join for the archive extract/preview-staging drain. */
+        internal const val ARCHIVE_STOP_WAIT_MS = 8_000L
 
         /** Bounded join for the C05 SSH session/PTY/tunnel drain. */
         internal const val C05_REMOTE_STOP_WAIT_MS = 8_000L

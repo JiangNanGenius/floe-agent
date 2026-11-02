@@ -1,0 +1,41 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="archive_reading">Reading archive…</string>
+    <string name="archive_empty">This archive is empty.</string>
+    <string name="archive_entry_count">%1$d entries</string>
+    <string name="archive_listing_truncated">Too many entries; only the first ones are shown.</string>
+    <string name="archive_action_extract">Extract</string>
+    <string name="archive_action_decompress">Decompress</string>
+    <string name="archive_cancel">Cancel</string>
+    <string name="archive_retry">Try again</string>
+    <string name="archive_confirm_extract_title">Extract to a new folder?</string>
+    <string name="archive_confirm_extract_body">Creates “%1$s”. An existing folder is never overwritten.</string>
+    <string name="archive_confirm_decompress_title">Decompress to a new file?</string>
+    <string name="archive_confirm_decompress_body">Creates “%1$s”. An existing file is never overwritten.</string>
+    <string name="archive_extracted_to">Extracted to “%1$s”.</string>
+    <string name="archive_decompressed_to">Decompressed to “%1$s”.</string>
+    <string name="archive_open_folder">Open folder</string>
+    <string name="archive_open_parent_folder">Show in folder</string>
+    <string name="archive_progress_bytes">%1$s of %2$s</string>
+    <string name="archive_progress_bytes_unknown">%1$s written</string>
+    <string name="archive_preview_select_title">Select a file</string>
+    <string name="archive_preview_select_message">File content is read on demand after a bounded extraction. The archive itself is never modified.</string>
+    <string name="archive_preview_loading">Preparing preview…</string>
+    <string name="archive_preview_truncated">Content is long; only the beginning is shown.</string>
+    <string name="archive_preview_unavailable_title">Preview unavailable</string>
+    <string name="archive_preview_unavailable_message">This entry can\'t be previewed here. Extract the archive to open it.</string>
+    <string name="archive_preview_not_utf8">This isn\'t a UTF-8 text file, so it can\'t be previewed inline.</string>
+    <string name="archive_preview_failed_title">Preview failed</string>
+    <string name="archive_close_preview">Close preview</string>
+    <string name="archive_read_failed_title">Can\'t read archive</string>
+    <string name="archive_failed_owner">This document is no longer available.</string>
+    <string name="archive_failed_unsupported">This archive format isn\'t supported here.</string>
+    <string name="archive_failed_not_found">The archive was not found in this workspace.</string>
+    <string name="archive_failed_too_large">This archive is too large to process.</string>
+    <string name="archive_failed_conflict">“%1$s” already exists. Nothing was overwritten.</string>
+    <string name="archive_failed_cancelled">Extraction was cancelled. Nothing was written.</string>
+    <string name="archive_failed_source">The archive couldn\'t be read from this workspace.</string>
+    <string name="archive_failed_transport">The archive service isn\'t available right now. Try again.</string>
+    <string name="archive_failed_core_update">The archive viewer needs a core update.</string>
+    <string name="archive_failed_generic">The operation failed: %1$s</string>
+</resources>

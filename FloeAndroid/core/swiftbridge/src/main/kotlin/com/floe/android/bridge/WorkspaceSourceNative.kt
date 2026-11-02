@@ -125,6 +125,26 @@ object WorkspaceSourceNative {
         stageTicket: Long, reply: ByteArray,
     ): Int
 
+    /** ---- Manual workspace original save (OFC-SAVE-REOPEN; additive) ----
+     *
+     * One bounded LOCAL workspace-CAS hop for the exact owned document: the
+     * trusted host passes the App-reverified working-copy path plus the
+     * open-time baseline digest; native re-verifies the source body, acquires
+     * the ORIGINAL write lease and runs `replaceBinaryFile` (the same CAS
+     * the Core model path uses). A post-commit error is classified by the
+     * ACTUAL original readback, never "throw means untouched". Reply body:
+     *   {"ok":1,"local":"committed","committedSHA256":..,"committedBytes":..}
+     *   {"ok":0,"local":"conflict"|"refused"|"cancelled"|"unknown","detail":..}
+     * Returns the copied reply length (>= 0) or a typed negative status.
+     * On an older installed Core the symbol is missing and Kotlin raises
+     * UnsatisfiedLinkError/LinkageError — the App maps that to the honest
+     * unknown/retained refusal instead of pretending the commit ran. */
+    external fun saveOriginal(
+        epoch: Long, taskID: String, workspaceID: String, logicalPath: String,
+        expectedOriginalSHA256: String, expectedSourceSHA256: String,
+        expectedSourceBytes: Long, sourcePath: String, reply: ByteArray,
+    ): Int
+
     /** Typed counters JSON only (no paths, bytes, identities). */
     external fun hostStats(reply: ByteArray): Int
 }

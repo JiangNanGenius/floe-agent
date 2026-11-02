@@ -47,8 +47,11 @@
       "originalOperation": "Add a BYOK provider (base URL, key, model), validate with a live check, persist capability overrides",
       "originalStatus": "planned",
       "required": true,
-      "codeReview": "pending per-operation UI/service/runtime-storage/failure reconciliation",
-      "qualification": "not newly verified this round"
+      "codeReview": "present-source-connected at 66d3b8b2f9e1c89a790ca7a37d3fb216f06a871a; original provider configuration, stream and runtime path inspected",
+      "qualification": "Existing source/component evidence reusable where unchanged. One authorized Ark task activation observed stream/tool requests and generated file; old terminal-return failure retained. Provider HTTP request count not measured. No other real provider invoked; post-repair final task attachment not verified.",
+      "previousCodeReviews": [
+        "pending per-operation UI/service/runtime-storage/failure reconciliation"
+      ]
     },
     {
       "id": "PRV-STREAM-CHAT",
@@ -57,8 +60,11 @@
       "originalOperation": "Stream chat completion events and render them incrementally",
       "originalStatus": "planned",
       "required": true,
-      "codeReview": "pending per-operation UI/service/runtime-storage/failure reconciliation",
-      "qualification": "not newly verified this round"
+      "codeReview": "present-source-connected at 66d3b8b2f9e1c89a790ca7a37d3fb216f06a871a; original provider configuration, stream and runtime path inspected",
+      "qualification": "Existing source/component evidence reusable where unchanged. One authorized Ark task activation observed stream/tool requests and generated file; old terminal-return failure retained. Provider HTTP request count not measured. No other real provider invoked; post-repair final task attachment not verified.",
+      "previousCodeReviews": [
+        "pending per-operation UI/service/runtime-storage/failure reconciliation"
+      ]
     },
     {
       "id": "PRV-CANCEL-RETRY",
@@ -67,8 +73,11 @@
       "originalOperation": "Cancel an in-flight request; retry with visible backoff on transient failure",
       "originalStatus": "planned",
       "required": true,
-      "codeReview": "pending per-operation UI/service/runtime-storage/failure reconciliation",
-      "qualification": "not newly verified this round"
+      "codeReview": "present-source-connected at 66d3b8b2f9e1c89a790ca7a37d3fb216f06a871a; original provider configuration, stream and runtime path inspected",
+      "qualification": "Existing source/component evidence reusable where unchanged. One authorized Ark task activation observed stream/tool requests and generated file; old terminal-return failure retained. Provider HTTP request count not measured. No other real provider invoked; post-repair final task attachment not verified.",
+      "previousCodeReviews": [
+        "pending per-operation UI/service/runtime-storage/failure reconciliation"
+      ]
     },
     {
       "id": "PRV-REASONING-EFFORT",
@@ -77,8 +86,11 @@
       "originalOperation": "Automatic reasoning-effort selection per model capability",
       "originalStatus": "planned",
       "required": true,
-      "codeReview": "pending per-operation UI/service/runtime-storage/failure reconciliation",
-      "qualification": "not newly verified this round"
+      "codeReview": "present-source-connected at 66d3b8b2f9e1c89a790ca7a37d3fb216f06a871a; original provider configuration, stream and runtime path inspected",
+      "qualification": "Existing source/component evidence reusable where unchanged. One authorized Ark task activation observed stream/tool requests and generated file; old terminal-return failure retained. Provider HTTP request count not measured. No other real provider invoked; post-repair final task attachment not verified.",
+      "previousCodeReviews": [
+        "pending per-operation UI/service/runtime-storage/failure reconciliation"
+      ]
     },
     {
       "id": "PRV-CUSTOM-ENDPOINT",
@@ -87,8 +99,11 @@
       "originalOperation": "Custom endpoint and wire-protocol adaptation for OpenAI-compatible services",
       "originalStatus": "planned",
       "required": true,
-      "codeReview": "pending per-operation UI/service/runtime-storage/failure reconciliation",
-      "qualification": "not newly verified this round"
+      "codeReview": "present-source-connected at 66d3b8b2f9e1c89a790ca7a37d3fb216f06a871a; original provider configuration, stream and runtime path inspected",
+      "qualification": "Existing source/component evidence reusable where unchanged. One authorized Ark task activation observed stream/tool requests and generated file; old terminal-return failure retained. Provider HTTP request count not measured. No other real provider invoked; post-repair final task attachment not verified.",
+      "previousCodeReviews": [
+        "pending per-operation UI/service/runtime-storage/failure reconciliation"
+      ]
     },
     {
       "id": "PRV-CAPABILITY-ROUTE",
@@ -97,8 +112,11 @@
       "originalOperation": "Route image/video/tool capability only to models that actually support it",
       "originalStatus": "planned",
       "required": true,
-      "codeReview": "pending per-operation UI/service/runtime-storage/failure reconciliation",
-      "qualification": "not newly verified this round"
+      "codeReview": "present-source-connected at 66d3b8b2f9e1c89a790ca7a37d3fb216f06a871a; original provider configuration, stream and runtime path inspected",
+      "qualification": "Existing source/component evidence reusable where unchanged. One authorized Ark task activation observed stream/tool requests and generated file; old terminal-return failure retained. Provider HTTP request count not measured. No other real provider invoked; post-repair final task attachment not verified.",
+      "previousCodeReviews": [
+        "pending per-operation UI/service/runtime-storage/failure reconciliation"
+      ]
     },
     {
       "id": "PRV-TOOL-CALLS",
@@ -107,8 +125,11 @@
       "originalOperation": "Parse and dispatch model tool calls with typed arguments",
       "originalStatus": "planned",
       "required": true,
-      "codeReview": "pending per-operation UI/service/runtime-storage/failure reconciliation",
-      "qualification": "not newly verified this round"
+      "codeReview": "present-source-connected at 66d3b8b2f9e1c89a790ca7a37d3fb216f06a871a; original provider configuration, stream and runtime path inspected",
+      "qualification": "Existing source/component evidence reusable where unchanged. One authorized Ark task activation observed stream/tool requests and generated file; old terminal-return failure retained. Provider HTTP request count not measured. No other real provider invoked; post-repair final task attachment not verified.",
+      "previousCodeReviews": [
+        "pending per-operation UI/service/runtime-storage/failure reconciliation"
+      ]
     },
     {
       "id": "CHA-PLAN-GOAL",
@@ -117,8 +138,11 @@
       "originalOperation": "Plan and goal controls visible during a run with follow-up steering",
       "originalStatus": "planned",
       "required": true,
-      "codeReview": "pending per-operation UI/service/runtime-storage/failure reconciliation",
-      "qualification": "not newly verified this round"
+      "codeReview": "present-source-connected at 66d3b8b2f9e1c89a790ca7a37d3fb216f06a871a; existing task/runtime/storage and reachable UI routes rechecked",
+      "qualification": "No new cloud compaction/scheduled run or destructive history operation performed. Existing exact component evidence reusable; current candidate12 manual terminal success does not prove complete post-repair model task, all wait/resume/restart branches or timer delivery.",
+      "previousCodeReviews": [
+        "pending per-operation UI/service/runtime-storage/failure reconciliation"
+      ]
     },
     {
       "id": "CHA-FOLLOWUP-HISTORY",
@@ -127,8 +151,11 @@
       "originalOperation": "Continue a conversation with assembled bounded history, surviving restart",
       "originalStatus": "planned",
       "required": true,
-      "codeReview": "pending per-operation UI/service/runtime-storage/failure reconciliation",
-      "qualification": "not newly verified this round"
+      "codeReview": "present-source-connected at 66d3b8b2f9e1c89a790ca7a37d3fb216f06a871a; existing task/runtime/storage and reachable UI routes rechecked",
+      "qualification": "No new cloud compaction/scheduled run or destructive history operation performed. Existing exact component evidence reusable; current candidate12 manual terminal success does not prove complete post-repair model task, all wait/resume/restart branches or timer delivery.",
+      "previousCodeReviews": [
+        "pending per-operation UI/service/runtime-storage/failure reconciliation"
+      ]
     },
     {
       "id": "CHA-SEARCH",
@@ -137,8 +164,11 @@
       "originalOperation": "Search the conversation list and message content (incl. CJK)",
       "originalStatus": "planned",
       "required": true,
-      "codeReview": "pending per-operation UI/service/runtime-storage/failure reconciliation",
-      "qualification": "not newly verified this round"
+      "codeReview": "present-source-connected at 66d3b8b2f9e1c89a790ca7a37d3fb216f06a871a; existing task/runtime/storage and reachable UI routes rechecked",
+      "qualification": "No new cloud compaction/scheduled run or destructive history operation performed. Existing exact component evidence reusable; current candidate12 manual terminal success does not prove complete post-repair model task, all wait/resume/restart branches or timer delivery.",
+      "previousCodeReviews": [
+        "pending per-operation UI/service/runtime-storage/failure reconciliation"
+      ]
     },
     {
       "id": "CHA-ARCHIVE-BULK",
@@ -147,8 +177,11 @@
       "originalOperation": "Archive conversations and batch-manage them (move/delete/rename)",
       "originalStatus": "planned",
       "required": true,
-      "codeReview": "pending per-operation UI/service/runtime-storage/failure reconciliation",
-      "qualification": "not newly verified this round"
+      "codeReview": "present-source-connected at 66d3b8b2f9e1c89a790ca7a37d3fb216f06a871a; existing task/runtime/storage and reachable UI routes rechecked",
+      "qualification": "No new cloud compaction/scheduled run or destructive history operation performed. Existing exact component evidence reusable; current candidate12 manual terminal success does not prove complete post-repair model task, all wait/resume/restart branches or timer delivery.",
+      "previousCodeReviews": [
+        "pending per-operation UI/service/runtime-storage/failure reconciliation"
+      ]
     },
     {
       "id": "CHA-RESUME-RUN",
@@ -157,8 +190,11 @@
       "originalOperation": "Resume or reconcile an interrupted background run after restart",
       "originalStatus": "planned",
       "required": true,
-      "codeReview": "pending per-operation UI/service/runtime-storage/failure reconciliation",
-      "qualification": "not newly verified this round"
+      "codeReview": "present-source-connected at 66d3b8b2f9e1c89a790ca7a37d3fb216f06a871a; existing task/runtime/storage and reachable UI routes rechecked",
+      "qualification": "No new cloud compaction/scheduled run or destructive history operation performed. Existing exact component evidence reusable; current candidate12 manual terminal success does not prove complete post-repair model task, all wait/resume/restart branches or timer delivery.",
+      "previousCodeReviews": [
+        "pending per-operation UI/service/runtime-storage/failure reconciliation"
+      ]
     },
     {
       "id": "CHA-DRAFT-KEEP",
@@ -167,8 +203,11 @@
       "originalOperation": "Composer draft survives navigation, rotation and view rebuild",
       "originalStatus": "planned",
       "required": true,
-      "codeReview": "pending per-operation UI/service/runtime-storage/failure reconciliation",
-      "qualification": "not newly verified this round"
+      "codeReview": "present-source-connected at 66d3b8b2f9e1c89a790ca7a37d3fb216f06a871a; existing task/runtime/storage and reachable UI routes rechecked",
+      "qualification": "No new cloud compaction/scheduled run or destructive history operation performed. Existing exact component evidence reusable; current candidate12 manual terminal success does not prove complete post-repair model task, all wait/resume/restart branches or timer delivery.",
+      "previousCodeReviews": [
+        "pending per-operation UI/service/runtime-storage/failure reconciliation"
+      ]
     },
     {
       "id": "CHA-ATTACH-INGEST-AND",
@@ -177,8 +216,11 @@
       "originalOperation": "Import a user-selected attachment from a SAF/content URI with bounded MIME/size/path validation, app-private staging, digest and retry-safe commit; arrival never auto-sends or executes",
       "originalStatus": "planned",
       "required": true,
-      "codeReview": "pending per-operation UI/service/runtime-storage/failure reconciliation",
-      "qualification": "not newly verified this round"
+      "codeReview": "present-source-connected at 66d3b8b2f9e1c89a790ca7a37d3fb216f06a871a; existing task/runtime/storage and reachable UI routes rechecked",
+      "qualification": "No new cloud compaction/scheduled run or destructive history operation performed. Existing exact component evidence reusable; current candidate12 manual terminal success does not prove complete post-repair model task, all wait/resume/restart branches or timer delivery.",
+      "previousCodeReviews": [
+        "pending per-operation UI/service/runtime-storage/failure reconciliation"
+      ]
     },
     {
       "id": "CHA-ATTACH-LIFECYCLE-AND",
@@ -187,8 +229,11 @@
       "originalOperation": "Progress, cancel, retry and failure lifecycle for attachment ingest; late callbacks cannot commit into another task",
       "originalStatus": "planned",
       "required": true,
-      "codeReview": "pending per-operation UI/service/runtime-storage/failure reconciliation",
-      "qualification": "not newly verified this round"
+      "codeReview": "present-source-connected at 66d3b8b2f9e1c89a790ca7a37d3fb216f06a871a; existing task/runtime/storage and reachable UI routes rechecked",
+      "qualification": "No new cloud compaction/scheduled run or destructive history operation performed. Existing exact component evidence reusable; current candidate12 manual terminal success does not prove complete post-repair model task, all wait/resume/restart branches or timer delivery.",
+      "previousCodeReviews": [
+        "pending per-operation UI/service/runtime-storage/failure reconciliation"
+      ]
     },
     {
       "id": "CHA-MANUAL-COMPACT",
@@ -197,8 +242,11 @@
       "originalOperation": "Manually compact a durable conversation's context through the ORIGINAL cloud summarizer lane, preserving history and answering short/no-history honestly",
       "originalStatus": "planned",
       "required": true,
-      "codeReview": "pending per-operation UI/service/runtime-storage/failure reconciliation",
-      "qualification": "not newly verified this round"
+      "codeReview": "present-source-connected at 66d3b8b2f9e1c89a790ca7a37d3fb216f06a871a; existing task/runtime/storage and reachable UI routes rechecked",
+      "qualification": "No new cloud compaction/scheduled run or destructive history operation performed. Existing exact component evidence reusable; current candidate12 manual terminal success does not prove complete post-repair model task, all wait/resume/restart branches or timer delivery.",
+      "previousCodeReviews": [
+        "pending per-operation UI/service/runtime-storage/failure reconciliation"
+      ]
     },
     {
       "id": "APR-CALL-BOUND",
@@ -207,8 +255,11 @@
       "originalOperation": "Approval binds to the exact task and exact tool call; grants are consumed or expire",
       "originalStatus": "planned",
       "required": true,
-      "codeReview": "pending per-operation UI/service/runtime-storage/failure reconciliation",
-      "qualification": "not newly verified this round"
+      "codeReview": "present-source-connected at 66d3b8b2f9e1c89a790ca7a37d3fb216f06a871a; existing task/runtime/storage and reachable UI routes rechecked",
+      "qualification": "No new cloud compaction/scheduled run or destructive history operation performed. Existing exact component evidence reusable; current candidate12 manual terminal success does not prove complete post-repair model task, all wait/resume/restart branches or timer delivery. Original Ark test displayed real one-shot approval and recorded terminal failure; post-repair model-result loop remains pending.",
+      "previousCodeReviews": [
+        "pending per-operation UI/service/runtime-storage/failure reconciliation"
+      ]
     },
     {
       "id": "APR-TOOL-RECORD-OUTPUT",
@@ -217,8 +268,11 @@
       "originalOperation": "Tool history cards show the real recorded output, not a success string",
       "originalStatus": "planned",
       "required": true,
-      "codeReview": "pending per-operation UI/service/runtime-storage/failure reconciliation",
-      "qualification": "not newly verified this round"
+      "codeReview": "present-source-connected at 66d3b8b2f9e1c89a790ca7a37d3fb216f06a871a; existing task/runtime/storage and reachable UI routes rechecked",
+      "qualification": "No new cloud compaction/scheduled run or destructive history operation performed. Existing exact component evidence reusable; current candidate12 manual terminal success does not prove complete post-repair model task, all wait/resume/restart branches or timer delivery. Original Ark test displayed real one-shot approval and recorded terminal failure; post-repair model-result loop remains pending.",
+      "previousCodeReviews": [
+        "pending per-operation UI/service/runtime-storage/failure reconciliation"
+      ]
     },
     {
       "id": "APR-UNTRUSTED-NO-GRANT",
@@ -227,8 +281,11 @@
       "originalOperation": "Imported documents, web responses and tool outputs never grant tool permissions",
       "originalStatus": "planned",
       "required": true,
-      "codeReview": "pending per-operation UI/service/runtime-storage/failure reconciliation",
-      "qualification": "not newly verified this round"
+      "codeReview": "present-source-connected at 66d3b8b2f9e1c89a790ca7a37d3fb216f06a871a; existing task/runtime/storage and reachable UI routes rechecked",
+      "qualification": "No new cloud compaction/scheduled run or destructive history operation performed. Existing exact component evidence reusable; current candidate12 manual terminal success does not prove complete post-repair model task, all wait/resume/restart branches or timer delivery.",
+      "previousCodeReviews": [
+        "pending per-operation UI/service/runtime-storage/failure reconciliation"
+      ]
     },
     {
       "id": "APR-DOC-EDIT-PROFILE",
@@ -237,8 +294,11 @@
       "originalOperation": "Routine task-authorized document/media edits avoid per-edit interactive approval while keeping revision and save validation",
       "originalStatus": "planned",
       "required": true,
-      "codeReview": "pending per-operation UI/service/runtime-storage/failure reconciliation",
-      "qualification": "not newly verified this round"
+      "codeReview": "present-source-connected at 66d3b8b2f9e1c89a790ca7a37d3fb216f06a871a; existing task/runtime/storage and reachable UI routes rechecked",
+      "qualification": "No new cloud compaction/scheduled run or destructive history operation performed. Existing exact component evidence reusable; current candidate12 manual terminal success does not prove complete post-repair model task, all wait/resume/restart branches or timer delivery.",
+      "previousCodeReviews": [
+        "pending per-operation UI/service/runtime-storage/failure reconciliation"
+      ]
     },
     {
       "id": "SUB-DELEGATE",
@@ -288,8 +348,11 @@
       "originalOperation": "Temporary chat stays RAM-only with a text/public-web tool ceiling",
       "originalStatus": "planned",
       "required": true,
-      "codeReview": "pending per-operation UI/service/runtime-storage/failure reconciliation",
-      "qualification": "not newly verified this round"
+      "codeReview": "present-source-connected at 66d3b8b2f9e1c89a790ca7a37d3fb216f06a871a; existing task/runtime/storage and reachable UI routes rechecked",
+      "qualification": "No new cloud compaction/scheduled run or destructive history operation performed. Existing exact component evidence reusable; current candidate12 manual terminal success does not prove complete post-repair model task, all wait/resume/restart branches or timer delivery.",
+      "previousCodeReviews": [
+        "pending per-operation UI/service/runtime-storage/failure reconciliation"
+      ]
     },
     {
       "id": "TMP-NAV-DISCARD",
@@ -298,8 +361,11 @@
       "originalOperation": "Navigating to another conversation or New Task immediately fences and discards temporary state, even with a run in flight; late callbacks are dropped",
       "originalStatus": "planned",
       "required": true,
-      "codeReview": "pending per-operation UI/service/runtime-storage/failure reconciliation",
-      "qualification": "not newly verified this round"
+      "codeReview": "present-source-connected at 66d3b8b2f9e1c89a790ca7a37d3fb216f06a871a; existing task/runtime/storage and reachable UI routes rechecked",
+      "qualification": "No new cloud compaction/scheduled run or destructive history operation performed. Existing exact component evidence reusable; current candidate12 manual terminal success does not prove complete post-repair model task, all wait/resume/restart branches or timer delivery.",
+      "previousCodeReviews": [
+        "pending per-operation UI/service/runtime-storage/failure reconciliation"
+      ]
     },
     {
       "id": "TMP-KEEP-PROMOTE",
@@ -308,8 +374,11 @@
       "originalOperation": "Explicit successful Keep uses atomic promotion into ordinary history/workspace ownership",
       "originalStatus": "planned",
       "required": true,
-      "codeReview": "pending per-operation UI/service/runtime-storage/failure reconciliation",
-      "qualification": "not newly verified this round"
+      "codeReview": "present-source-connected at 66d3b8b2f9e1c89a790ca7a37d3fb216f06a871a; existing task/runtime/storage and reachable UI routes rechecked",
+      "qualification": "No new cloud compaction/scheduled run or destructive history operation performed. Existing exact component evidence reusable; current candidate12 manual terminal success does not prove complete post-repair model task, all wait/resume/restart branches or timer delivery.",
+      "previousCodeReviews": [
+        "pending per-operation UI/service/runtime-storage/failure reconciliation"
+      ]
     },
     {
       "id": "WSF-WRITE-LAYER",
@@ -2798,8 +2867,11 @@
       "originalOperation": "Schedule config snapshots stored with the task",
       "originalStatus": "planned",
       "required": true,
-      "codeReview": "pending per-operation UI/service/runtime-storage/failure reconciliation",
-      "qualification": "not newly verified this round"
+      "codeReview": "present-source-connected at 66d3b8b2f9e1c89a790ca7a37d3fb216f06a871a; existing task/runtime/storage and reachable UI routes rechecked",
+      "qualification": "No new cloud compaction/scheduled run or destructive history operation performed. Existing exact component evidence reusable; current candidate12 manual terminal success does not prove complete post-repair model task, all wait/resume/restart branches or timer delivery.",
+      "previousCodeReviews": [
+        "pending per-operation UI/service/runtime-storage/failure reconciliation"
+      ]
     },
     {
       "id": "SCH-DEDUP-FIRE",
@@ -2808,8 +2880,11 @@
       "originalOperation": "Deduplicated triggering with after-run firing semantics",
       "originalStatus": "planned",
       "required": true,
-      "codeReview": "pending per-operation UI/service/runtime-storage/failure reconciliation",
-      "qualification": "not newly verified this round"
+      "codeReview": "present-source-connected at 66d3b8b2f9e1c89a790ca7a37d3fb216f06a871a; existing task/runtime/storage and reachable UI routes rechecked",
+      "qualification": "No new cloud compaction/scheduled run or destructive history operation performed. Existing exact component evidence reusable; current candidate12 manual terminal success does not prove complete post-repair model task, all wait/resume/restart branches or timer delivery.",
+      "previousCodeReviews": [
+        "pending per-operation UI/service/runtime-storage/failure reconciliation"
+      ]
     },
     {
       "id": "SCH-MISSED-CYCLE",
@@ -2818,8 +2893,11 @@
       "originalOperation": "Missed cycles reported accurately, never silently skipped",
       "originalStatus": "planned",
       "required": true,
-      "codeReview": "pending per-operation UI/service/runtime-storage/failure reconciliation",
-      "qualification": "not newly verified this round"
+      "codeReview": "present-source-connected at 66d3b8b2f9e1c89a790ca7a37d3fb216f06a871a; existing task/runtime/storage and reachable UI routes rechecked",
+      "qualification": "No new cloud compaction/scheduled run or destructive history operation performed. Existing exact component evidence reusable; current candidate12 manual terminal success does not prove complete post-repair model task, all wait/resume/restart branches or timer delivery.",
+      "previousCodeReviews": [
+        "pending per-operation UI/service/runtime-storage/failure reconciliation"
+      ]
     },
     {
       "id": "SCH-STATE-TRUTH",
@@ -2828,8 +2906,11 @@
       "originalOperation": "Schedule state truthful against shared task policy",
       "originalStatus": "planned",
       "required": true,
-      "codeReview": "pending per-operation UI/service/runtime-storage/failure reconciliation",
-      "qualification": "not newly verified this round"
+      "codeReview": "present-source-connected at 66d3b8b2f9e1c89a790ca7a37d3fb216f06a871a; existing task/runtime/storage and reachable UI routes rechecked",
+      "qualification": "No new cloud compaction/scheduled run or destructive history operation performed. Existing exact component evidence reusable; current candidate12 manual terminal success does not prove complete post-repair model task, all wait/resume/restart branches or timer delivery.",
+      "previousCodeReviews": [
+        "pending per-operation UI/service/runtime-storage/failure reconciliation"
+      ]
     },
     {
       "id": "CNV-NODES-EDGES",
@@ -3200,8 +3281,8 @@
       "originalOperation": "Voice input to composer draft with permission and cancel",
       "originalStatus": "planned",
       "required": true,
-      "codeReview": "pending per-operation UI/service/runtime-storage/failure reconciliation",
-      "qualification": "not newly verified this round"
+      "codeReview": "present-source-connected at 66d3b8b2f9e1c89a790ca7a37d3fb216f06a871a; original voice adapter or transactional data exchange entry/service/storage/failure chain inspected",
+      "qualification": "Source-connected review only; no new paid speech request, microphone/audio playback, real personal backup/restore, destructive data action or device migration acceptance this round. Prior component evidence reusable only for unchanged boundary."
     },
     {
       "id": "VOI-FILE-TRANSCRIBE",
@@ -3210,8 +3291,8 @@
       "originalOperation": "Audio file transcription with caption/subtitle export",
       "originalStatus": "planned",
       "required": true,
-      "codeReview": "pending per-operation UI/service/runtime-storage/failure reconciliation",
-      "qualification": "not newly verified this round"
+      "codeReview": "present-source-connected at 66d3b8b2f9e1c89a790ca7a37d3fb216f06a871a; original voice adapter or transactional data exchange entry/service/storage/failure chain inspected",
+      "qualification": "Source-connected review only; no new paid speech request, microphone/audio playback, real personal backup/restore, destructive data action or device migration acceptance this round. Prior component evidence reusable only for unchanged boundary."
     },
     {
       "id": "VOI-CONSENT-CANCEL",
@@ -3220,8 +3301,8 @@
       "originalOperation": "Recording consent state and live-transcription cancellation",
       "originalStatus": "planned",
       "required": true,
-      "codeReview": "pending per-operation UI/service/runtime-storage/failure reconciliation",
-      "qualification": "not newly verified this round"
+      "codeReview": "present-source-connected at 66d3b8b2f9e1c89a790ca7a37d3fb216f06a871a; original voice adapter or transactional data exchange entry/service/storage/failure chain inspected",
+      "qualification": "Source-connected review only; no new paid speech request, microphone/audio playback, real personal backup/restore, destructive data action or device migration acceptance this round. Prior component evidence reusable only for unchanged boundary."
     },
     {
       "id": "BAK-VERSIONED-PACKAGE",
@@ -3230,8 +3311,8 @@
       "originalOperation": "Versioned document packages with resource manifests for exchange",
       "originalStatus": "planned",
       "required": true,
-      "codeReview": "pending per-operation UI/service/runtime-storage/failure reconciliation",
-      "qualification": "not newly verified this round",
+      "codeReview": "present-source-connected at 66d3b8b2f9e1c89a790ca7a37d3fb216f06a871a; original voice adapter or transactional data exchange entry/service/storage/failure chain inspected",
+      "qualification": "Source-connected review only; no new paid speech request, microphone/audio playback, real personal backup/restore, destructive data action or device migration acceptance this round. Prior component evidence reusable only for unchanged boundary.",
       "implementationOwner": "job-087b4b17880048d1"
     },
     {
@@ -3241,8 +3322,8 @@
       "originalOperation": "Verify packages on import and reject unknown formats",
       "originalStatus": "planned",
       "required": true,
-      "codeReview": "pending per-operation UI/service/runtime-storage/failure reconciliation",
-      "qualification": "not newly verified this round",
+      "codeReview": "present-source-connected at 66d3b8b2f9e1c89a790ca7a37d3fb216f06a871a; original voice adapter or transactional data exchange entry/service/storage/failure chain inspected",
+      "qualification": "Source-connected review only; no new paid speech request, microphone/audio playback, real personal backup/restore, destructive data action or device migration acceptance this round. Prior component evidence reusable only for unchanged boundary.",
       "implementationOwner": "job-087b4b17880048d1"
     },
     {
@@ -3252,8 +3333,8 @@
       "originalOperation": "Restore without losing originals",
       "originalStatus": "planned",
       "required": true,
-      "codeReview": "pending per-operation UI/service/runtime-storage/failure reconciliation",
-      "qualification": "not newly verified this round",
+      "codeReview": "present-source-connected at 66d3b8b2f9e1c89a790ca7a37d3fb216f06a871a; original voice adapter or transactional data exchange entry/service/storage/failure chain inspected",
+      "qualification": "Source-connected review only; no new paid speech request, microphone/audio playback, real personal backup/restore, destructive data action or device migration acceptance this round. Prior component evidence reusable only for unchanged boundary.",
       "implementationOwner": "job-087b4b17880048d1"
     },
     {
@@ -4842,6 +4923,639 @@
           "qualification": "No new real radio/server/speed/root capture traffic performed in this source review. Existing exact component evidence retained; Root App acceptance remains controlled-emulator only and pending."
         }
       ]
+    },
+    "providers7-20261103": {
+      "androidCommit": "66d3b8b2f9e1c89a790ca7a37d3fb216f06a871a",
+      "iosReference": "36f63bf400dfaa3a127259eac006b38d72516390",
+      "operations": [
+        {
+          "id": "PRV-CONFIG-VALIDATE",
+          "entry": "Settings Providers -> add/edit, explicit test connection, model editor",
+          "chain": "Original config ingress/store, one-shot secret gateway, row revision CAS and actual probe adapter; required credentials/config errors differ from developer ownership or funding gates. Region carried from durable seed on name-only edits.",
+          "evidence": [
+            "app/src/main/kotlin/com/floe/android/host/ProviderHostController.kt",
+            "shared/Sources/FloeAndroidCore/RuntimeFacadeConfig.swift",
+            "shared/Sources/FloeAndroidCore/RuntimeFacadeRunAssembly.swift",
+            "shared/Sources/FloeAndroidCore/RuntimeFacadeConfigIngress.swift",
+            "shared/Sources/FloeAndroidCore/RuntimeFacadeConfigModels.swift"
+          ],
+          "evidenceSha256": {
+            "app/src/main/kotlin/com/floe/android/host/ProviderHostController.kt": "53191955f46005fe16a8d413570188cc22e56cefd888bcfa81ea4574a6d2f20d",
+            "shared/Sources/FloeAndroidCore/RuntimeFacadeConfig.swift": "8241c0ed9d43d952140fbe35be02f63537598fae82c03fd62c8012c6c2b3f55c",
+            "shared/Sources/FloeAndroidCore/RuntimeFacadeRunAssembly.swift": "6ba6b11bea3026fa4f4be56f0f11c5989e20d402d09c4d54dfcf59e6520a3bf1",
+            "shared/Sources/FloeAndroidCore/RuntimeFacadeConfigIngress.swift": "7e938f2e8a56beb0d9159ac23799c1dbd58d311a6006cda9698cee4a1945b975",
+            "shared/Sources/FloeAndroidCore/RuntimeFacadeConfigModels.swift": "7be67224de380699be27460f3e8e59e16061ab00fa241aed821db0246d42cf0c"
+          },
+          "qualification": "Existing source/component evidence reusable where unchanged. One authorized Ark task activation observed stream/tool requests and generated file; old terminal-return failure retained. Provider HTTP request count not measured. No other real provider invoked; post-repair final task attachment not verified."
+        },
+        {
+          "id": "PRV-STREAM-CHAT",
+          "entry": "Ordinary task send -> timeline stream",
+          "chain": "Original run adapter and streaming URLSession/SSE event path -> durable run projection -> Compose incremental timeline. The existing authorized Ark test actually emitted stream/tool-request events; downstream terminal-return failure is retained separately.",
+          "evidence": [
+            "app/src/main/kotlin/com/floe/android/host/ProviderHostController.kt",
+            "shared/Sources/FloeAndroidCore/RuntimeFacadeConfig.swift",
+            "shared/Sources/FloeAndroidCore/RuntimeFacadeRunAssembly.swift",
+            "shared/Sources/FloeProviders/ProviderAdapter.swift",
+            "feature/conversation/src/main/kotlin/com/floe/android/feature/conversation/ConversationTimelineRows.kt"
+          ],
+          "evidenceSha256": {
+            "app/src/main/kotlin/com/floe/android/host/ProviderHostController.kt": "53191955f46005fe16a8d413570188cc22e56cefd888bcfa81ea4574a6d2f20d",
+            "shared/Sources/FloeAndroidCore/RuntimeFacadeConfig.swift": "8241c0ed9d43d952140fbe35be02f63537598fae82c03fd62c8012c6c2b3f55c",
+            "shared/Sources/FloeAndroidCore/RuntimeFacadeRunAssembly.swift": "6ba6b11bea3026fa4f4be56f0f11c5989e20d402d09c4d54dfcf59e6520a3bf1",
+            "shared/Sources/FloeProviders/ProviderAdapter.swift": "689d0b8f36c242a8211554c3bb0e9ccf1f4be3bae9e1b3cbf4db2d01e6cf4c46",
+            "feature/conversation/src/main/kotlin/com/floe/android/feature/conversation/ConversationTimelineRows.kt": "5490b9c270f0355f2c77230844bb85dc250974d86aa4aa83ef9c1e3ad1370ccd"
+          },
+          "qualification": "Existing source/component evidence reusable where unchanged. One authorized Ark task activation observed stream/tool requests and generated file; old terminal-return failure retained. Provider HTTP request count not measured. No other real provider invoked; post-repair final task attachment not verified."
+        },
+        {
+          "id": "PRV-CANCEL-RETRY",
+          "entry": "Task stop/pause and provider retry status",
+          "chain": "Original adapter onTermination cancels owned request; AgentRuntime bounds retries, freezes same request and emits retrying/backoff status. No real-provider retry was deliberately invoked for this source review.",
+          "evidence": [
+            "app/src/main/kotlin/com/floe/android/host/ProviderHostController.kt",
+            "shared/Sources/FloeAndroidCore/RuntimeFacadeConfig.swift",
+            "shared/Sources/FloeAndroidCore/RuntimeFacadeRunAssembly.swift",
+            "shared/Sources/FloeProviders/ProviderAdapter.swift",
+            "shared/Sources/FloeAgentRuntime/AgentRuntime.swift"
+          ],
+          "evidenceSha256": {
+            "app/src/main/kotlin/com/floe/android/host/ProviderHostController.kt": "53191955f46005fe16a8d413570188cc22e56cefd888bcfa81ea4574a6d2f20d",
+            "shared/Sources/FloeAndroidCore/RuntimeFacadeConfig.swift": "8241c0ed9d43d952140fbe35be02f63537598fae82c03fd62c8012c6c2b3f55c",
+            "shared/Sources/FloeAndroidCore/RuntimeFacadeRunAssembly.swift": "6ba6b11bea3026fa4f4be56f0f11c5989e20d402d09c4d54dfcf59e6520a3bf1",
+            "shared/Sources/FloeProviders/ProviderAdapter.swift": "689d0b8f36c242a8211554c3bb0e9ccf1f4be3bae9e1b3cbf4db2d01e6cf4c46",
+            "shared/Sources/FloeAgentRuntime/AgentRuntime.swift": "42b4314669b276bc16eacf0830b0987142f83f3bd3bc8b1078b193092a865615"
+          },
+          "qualification": "Existing source/component evidence reusable where unchanged. One authorized Ark task activation observed stream/tool requests and generated file; old terminal-return failure retained. Provider HTTP request count not measured. No other real provider invoked; post-repair final task attachment not verified."
+        },
+        {
+          "id": "PRV-REASONING-EFFORT",
+          "entry": "Model reasoning settings -> run ingress",
+          "chain": "Original AutomaticReasoningEffort support/clamp and once-per-round auxiliary decision reused on continuation; unsupported/unconfigured paths retain provider default, not fake effort transmission.",
+          "evidence": [
+            "app/src/main/kotlin/com/floe/android/host/ProviderHostController.kt",
+            "shared/Sources/FloeAndroidCore/RuntimeFacadeConfig.swift",
+            "shared/Sources/FloeAndroidCore/RuntimeFacadeRunAssembly.swift",
+            "shared/Sources/FloeProviders/AutomaticReasoningEffort.swift",
+            "shared/Sources/FloeProviders/ReasoningCompatibility.swift"
+          ],
+          "evidenceSha256": {
+            "app/src/main/kotlin/com/floe/android/host/ProviderHostController.kt": "53191955f46005fe16a8d413570188cc22e56cefd888bcfa81ea4574a6d2f20d",
+            "shared/Sources/FloeAndroidCore/RuntimeFacadeConfig.swift": "8241c0ed9d43d952140fbe35be02f63537598fae82c03fd62c8012c6c2b3f55c",
+            "shared/Sources/FloeAndroidCore/RuntimeFacadeRunAssembly.swift": "6ba6b11bea3026fa4f4be56f0f11c5989e20d402d09c4d54dfcf59e6520a3bf1",
+            "shared/Sources/FloeProviders/AutomaticReasoningEffort.swift": "68c867b6a39b7d1a75337afd1658e60c7b946774eb14231c3841bc6e29f53fd9",
+            "shared/Sources/FloeProviders/ReasoningCompatibility.swift": "fb0c3d9095378b8aec450448a7e14ba74a5bf80f9af5b08fca46c355d009ac9e"
+          },
+          "qualification": "Existing source/component evidence reusable where unchanged. One authorized Ark task activation observed stream/tool requests and generated file; old terminal-return failure retained. Provider HTTP request count not measured. No other real provider invoked; post-repair final task attachment not verified."
+        },
+        {
+          "id": "PRV-CUSTOM-ENDPOINT",
+          "entry": "Providers -> always-offered custom endpoint preset and protocol selection",
+          "chain": "Original provider config/validation and normal OpenAI-compatible Responses/ChatCompletion or Anthropic adapter route. Host network availability is actual native configuration admission, not developer subscription or smoke-test gating.",
+          "evidence": [
+            "app/src/main/kotlin/com/floe/android/host/ProviderHostController.kt",
+            "shared/Sources/FloeAndroidCore/RuntimeFacadeConfig.swift",
+            "shared/Sources/FloeAndroidCore/RuntimeFacadeRunAssembly.swift",
+            "feature/providers/src/main/kotlin/com/floe/android/feature/providers/FloeProviderSettingsDestination.kt",
+            "shared/Sources/FloeProviders/ProviderAdapter.swift"
+          ],
+          "evidenceSha256": {
+            "app/src/main/kotlin/com/floe/android/host/ProviderHostController.kt": "53191955f46005fe16a8d413570188cc22e56cefd888bcfa81ea4574a6d2f20d",
+            "shared/Sources/FloeAndroidCore/RuntimeFacadeConfig.swift": "8241c0ed9d43d952140fbe35be02f63537598fae82c03fd62c8012c6c2b3f55c",
+            "shared/Sources/FloeAndroidCore/RuntimeFacadeRunAssembly.swift": "6ba6b11bea3026fa4f4be56f0f11c5989e20d402d09c4d54dfcf59e6520a3bf1",
+            "feature/providers/src/main/kotlin/com/floe/android/feature/providers/FloeProviderSettingsDestination.kt": "4271fd120dd8647fd42094e623bb954f472a6f66950a8cbd02cca1ad6eb6df35",
+            "shared/Sources/FloeProviders/ProviderAdapter.swift": "689d0b8f36c242a8211554c3bb0e9ccf1f4be3bae9e1b3cbf4db2d01e6cf4c46"
+          },
+          "qualification": "Existing source/component evidence reusable where unchanged. One authorized Ark task activation observed stream/tool requests and generated file; old terminal-return failure retained. Provider HTTP request count not measured. No other real provider invoked; post-repair final task attachment not verified."
+        },
+        {
+          "id": "PRV-CAPABILITY-ROUTE",
+          "entry": "Model capability overrides and auxiliary routing",
+          "chain": "RuntimeFacadeRunIngress effectiveCapabilities uses saved explicitCapabilities when present, otherwise base; admission requires actual enabled text/vision/tools capabilities. Existing narrow legacy producer-mask repair uses full-row CAS and preserves zero/media/unknown/provenance cases.",
+          "evidence": [
+            "app/src/main/kotlin/com/floe/android/host/ProviderHostController.kt",
+            "shared/Sources/FloeAndroidCore/RuntimeFacadeConfig.swift",
+            "shared/Sources/FloeAndroidCore/RuntimeFacadeRunAssembly.swift",
+            "shared/Sources/FloeAndroidCore/RuntimeFacadeRunIngress.swift"
+          ],
+          "evidenceSha256": {
+            "app/src/main/kotlin/com/floe/android/host/ProviderHostController.kt": "53191955f46005fe16a8d413570188cc22e56cefd888bcfa81ea4574a6d2f20d",
+            "shared/Sources/FloeAndroidCore/RuntimeFacadeConfig.swift": "8241c0ed9d43d952140fbe35be02f63537598fae82c03fd62c8012c6c2b3f55c",
+            "shared/Sources/FloeAndroidCore/RuntimeFacadeRunAssembly.swift": "6ba6b11bea3026fa4f4be56f0f11c5989e20d402d09c4d54dfcf59e6520a3bf1",
+            "shared/Sources/FloeAndroidCore/RuntimeFacadeRunIngress.swift": "df2097a0b45b8f00d1c0ed6ecdfb8a78e21e955a7a085448f981bb3c2bbdaa4e"
+          },
+          "qualification": "Existing source/component evidence reusable where unchanged. One authorized Ark task activation observed stream/tool requests and generated file; old terminal-return failure retained. Provider HTTP request count not measured. No other real provider invoked; post-repair final task attachment not verified."
+        },
+        {
+          "id": "PRV-TOOL-CALLS",
+          "entry": "Model tool request -> permission card -> native executor",
+          "chain": "Original provider wire tool fragments -> typed AgentEvent.toolRequest -> original AgentRuntime registry/authorization/executor; actual Ark test generated exec.shell request and tool-discovery calls, but post-repair full artifact delivery remains unverified.",
+          "evidence": [
+            "app/src/main/kotlin/com/floe/android/host/ProviderHostController.kt",
+            "shared/Sources/FloeAndroidCore/RuntimeFacadeConfig.swift",
+            "shared/Sources/FloeAndroidCore/RuntimeFacadeRunAssembly.swift",
+            "shared/Sources/FloeProviders/ProviderAdapter.swift",
+            "shared/Sources/FloeAgentRuntime/AgentRuntime.swift"
+          ],
+          "evidenceSha256": {
+            "app/src/main/kotlin/com/floe/android/host/ProviderHostController.kt": "53191955f46005fe16a8d413570188cc22e56cefd888bcfa81ea4574a6d2f20d",
+            "shared/Sources/FloeAndroidCore/RuntimeFacadeConfig.swift": "8241c0ed9d43d952140fbe35be02f63537598fae82c03fd62c8012c6c2b3f55c",
+            "shared/Sources/FloeAndroidCore/RuntimeFacadeRunAssembly.swift": "6ba6b11bea3026fa4f4be56f0f11c5989e20d402d09c4d54dfcf59e6520a3bf1",
+            "shared/Sources/FloeProviders/ProviderAdapter.swift": "689d0b8f36c242a8211554c3bb0e9ccf1f4be3bae9e1b3cbf4db2d01e6cf4c46",
+            "shared/Sources/FloeAgentRuntime/AgentRuntime.swift": "42b4314669b276bc16eacf0830b0987142f83f3bd3bc8b1078b193092a865615"
+          },
+          "qualification": "Existing source/component evidence reusable where unchanged. One authorized Ark task activation observed stream/tool requests and generated file; old terminal-return failure retained. Provider HTTP request count not measured. No other real provider invoked; post-repair final task attachment not verified."
+        }
+      ]
+    },
+    "tasks20-20261103": {
+      "androidCommit": "66d3b8b2f9e1c89a790ca7a37d3fb216f06a871a",
+      "iosReference": "36f63bf400dfaa3a127259eac006b38d72516390",
+      "operations": [
+        {
+          "id": "CHA-PLAN-GOAL",
+          "entry": "Task mode / current plan-goal controls and follow-up",
+          "chain": "Original run launch/mode/steering and bounded native goal-plan-checklist detail routes; task epoch/holder identity remains the same, no separate executor.",
+          "evidence": [
+            "app/src/main/kotlin/com/floe/android/host/ConversationHostController.kt",
+            "shared/Sources/FloeAndroidCore/RuntimeFacadeRunAssembly.swift",
+            "shared/Sources/FloeAgentRuntime/ConversationRunService.swift"
+          ],
+          "evidenceSha256": {
+            "app/src/main/kotlin/com/floe/android/host/ConversationHostController.kt": "7ea71cf10f7d95d8008c82d850365f731a9e84b4f54e6c8c5a52f05f51704475",
+            "shared/Sources/FloeAndroidCore/RuntimeFacadeRunAssembly.swift": "6ba6b11bea3026fa4f4be56f0f11c5989e20d402d09c4d54dfcf59e6520a3bf1",
+            "shared/Sources/FloeAgentRuntime/ConversationRunService.swift": "9e27e52ee8c518dd7dcb7ff2b1cbfdd7b531d4a9c5c051221308b9739e5407cd"
+          },
+          "qualification": "No new cloud compaction/scheduled run or destructive history operation performed. Existing exact component evidence reusable; current candidate12 manual terminal success does not prove complete post-repair model task, all wait/resume/restart branches or timer delivery."
+        },
+        {
+          "id": "CHA-FOLLOWUP-HISTORY",
+          "entry": "Conversation reopen -> continue -> bounded history",
+          "chain": "Original durable conversation/run stores, thread content handles and run assembly; follow-up uses owning conversation context and original bounded history.",
+          "evidence": [
+            "app/src/main/kotlin/com/floe/android/host/ConversationHostController.kt",
+            "shared/Sources/FloeAndroidCore/RuntimeFacadeConversations.swift",
+            "shared/Sources/FloeAndroidCore/RuntimeFacadeConversationContent.swift",
+            "shared/Sources/FloeAndroidCore/RuntimeFacadeRunAssembly.swift"
+          ],
+          "evidenceSha256": {
+            "app/src/main/kotlin/com/floe/android/host/ConversationHostController.kt": "7ea71cf10f7d95d8008c82d850365f731a9e84b4f54e6c8c5a52f05f51704475",
+            "shared/Sources/FloeAndroidCore/RuntimeFacadeConversations.swift": "3bf4efaefe6464875c6b2940fad12b8a4e5e7480746f182dbb0ebfd165414c3b",
+            "shared/Sources/FloeAndroidCore/RuntimeFacadeConversationContent.swift": "0d8ebcb9955f4289ae7c7056e9f4e2aeb11e15d512c4c1a2fae4190a18c461dc",
+            "shared/Sources/FloeAndroidCore/RuntimeFacadeRunAssembly.swift": "6ba6b11bea3026fa4f4be56f0f11c5989e20d402d09c4d54dfcf59e6520a3bf1"
+          },
+          "qualification": "No new cloud compaction/scheduled run or destructive history operation performed. Existing exact component evidence reusable; current candidate12 manual terminal success does not prove complete post-repair model task, all wait/resume/restart branches or timer delivery."
+        },
+        {
+          "id": "CHA-SEARCH",
+          "entry": "Task Center / thread search",
+          "chain": "Actual conversation.search and per-thread search commands through original native stores, with query/generation fencing and real returned pages.",
+          "evidence": [
+            "app/src/main/kotlin/com/floe/android/host/ConversationHostController.kt",
+            "shared/Sources/FloeAndroidCore/RuntimeFacadeConversations.swift",
+            "feature/conversation/src/main/kotlin/com/floe/android/feature/conversation/ConversationThreadSearch.kt"
+          ],
+          "evidenceSha256": {
+            "app/src/main/kotlin/com/floe/android/host/ConversationHostController.kt": "7ea71cf10f7d95d8008c82d850365f731a9e84b4f54e6c8c5a52f05f51704475",
+            "shared/Sources/FloeAndroidCore/RuntimeFacadeConversations.swift": "3bf4efaefe6464875c6b2940fad12b8a4e5e7480746f182dbb0ebfd165414c3b",
+            "feature/conversation/src/main/kotlin/com/floe/android/feature/conversation/ConversationThreadSearch.kt": "388559c6b68a461ea91c4b307cf74705cb27b9947adf4b70d8ccdc0d5c74801c"
+          },
+          "qualification": "No new cloud compaction/scheduled run or destructive history operation performed. Existing exact component evidence reusable; current candidate12 manual terminal success does not prove complete post-repair model task, all wait/resume/restart branches or timer delivery."
+        },
+        {
+          "id": "CHA-ARCHIVE-BULK",
+          "entry": "Task Center archive/restore/move/rename/delete",
+          "chain": "Original conversation metadata CAS and deletion fences, bounded task selection and per-item outcomes; no UI-only fake repository.",
+          "evidence": [
+            "app/src/main/kotlin/com/floe/android/host/ConversationHostController.kt",
+            "shared/Sources/FloeAndroidCore/RuntimeFacadeConversations.swift",
+            "shared/Sources/FloeAndroidCore/RuntimeFacadeRuns.swift"
+          ],
+          "evidenceSha256": {
+            "app/src/main/kotlin/com/floe/android/host/ConversationHostController.kt": "7ea71cf10f7d95d8008c82d850365f731a9e84b4f54e6c8c5a52f05f51704475",
+            "shared/Sources/FloeAndroidCore/RuntimeFacadeConversations.swift": "3bf4efaefe6464875c6b2940fad12b8a4e5e7480746f182dbb0ebfd165414c3b",
+            "shared/Sources/FloeAndroidCore/RuntimeFacadeRuns.swift": "06b5235046561998616ae363ec3292660f7c0db0ad8e0038c8b75642be878105"
+          },
+          "qualification": "No new cloud compaction/scheduled run or destructive history operation performed. Existing exact component evidence reusable; current candidate12 manual terminal success does not prove complete post-repair model task, all wait/resume/restart branches or timer delivery."
+        },
+        {
+          "id": "CHA-RESUME-RUN",
+          "entry": "Continue / task continuity sheet",
+          "chain": "Actual G02DomainServices installs C02TaskContinuityProduction; storage pause/wait identity and explicit CAS resume delegate to original run retry/checkpoint/target ownership. UI banner/sheet is wired in FloeDetailColumn.",
+          "evidence": [
+            "app/src/main/kotlin/com/floe/android/host/ConversationHostController.kt",
+            "shared/Sources/FloeAndroidCore/G02DomainServices.swift",
+            "shared/Sources/FloeAndroidCore/C02TaskContinuityDomain.swift",
+            "shared/Sources/FloeAndroidCore/C02TaskContinuityIntegration.swift",
+            "app/src/main/kotlin/com/floe/android/FloeDetailColumn.kt"
+          ],
+          "evidenceSha256": {
+            "app/src/main/kotlin/com/floe/android/host/ConversationHostController.kt": "7ea71cf10f7d95d8008c82d850365f731a9e84b4f54e6c8c5a52f05f51704475",
+            "shared/Sources/FloeAndroidCore/G02DomainServices.swift": "79e3378eceb7df18f7869dd05409f63e8e45098fbe8523eb06adcfb4619d611f",
+            "shared/Sources/FloeAndroidCore/C02TaskContinuityDomain.swift": "df76365f9f56e228073601e2a20a4767d2817e55cf22827479440187b68e86da",
+            "shared/Sources/FloeAndroidCore/C02TaskContinuityIntegration.swift": "49d94f8923423be2e3a1dce97a221d02f9e0537d688d79701b111cd902cb6154",
+            "app/src/main/kotlin/com/floe/android/FloeDetailColumn.kt": "ddc0d43b124ec5c3dd01628c87722c7d74e0fa9fac5e6eb2301bfd16bc37dc7c"
+          },
+          "qualification": "No new cloud compaction/scheduled run or destructive history operation performed. Existing exact component evidence reusable; current candidate12 manual terminal success does not prove complete post-repair model task, all wait/resume/restart branches or timer delivery."
+        },
+        {
+          "id": "CHA-DRAFT-KEEP",
+          "entry": "Composer editing/navigation/reconstruction",
+          "chain": "ConversationFlowHolder single mutation path calls host.saveDraft with exact session, text/selection and staged attachment ids; restored seed/rebind uses owning conversation.",
+          "evidence": [
+            "app/src/main/kotlin/com/floe/android/host/ConversationHostController.kt",
+            "feature/conversation/src/main/kotlin/com/floe/android/feature/conversation/ConversationFlowHolder.kt"
+          ],
+          "evidenceSha256": {
+            "app/src/main/kotlin/com/floe/android/host/ConversationHostController.kt": "7ea71cf10f7d95d8008c82d850365f731a9e84b4f54e6c8c5a52f05f51704475",
+            "feature/conversation/src/main/kotlin/com/floe/android/feature/conversation/ConversationFlowHolder.kt": "dfbec7ea4b8f07d5ebd942fd9b1a7294fb11be3ebd8b634936391f37d1d1a1f4"
+          },
+          "qualification": "No new cloud compaction/scheduled run or destructive history operation performed. Existing exact component evidence reusable; current candidate12 manual terminal success does not prove complete post-repair model task, all wait/resume/restart branches or timer delivery."
+        },
+        {
+          "id": "CHA-ATTACH-INGEST-AND",
+          "entry": "System file/photo share/picker -> composer attachment",
+          "chain": "AttachmentImportController freezes actual launch owner; real content input -> service-owned private staging -> native digest and task input commit, no arrival auto-send.",
+          "evidence": [
+            "app/src/main/kotlin/com/floe/android/host/AttachmentImportController.kt",
+            "app/src/main/kotlin/com/floe/android/attachments/AttachmentStagingService.kt",
+            "shared/Sources/FloeAndroidCore/RuntimeFacadeAttachmentStaging.swift",
+            "shared/Sources/FloeAndroidCore/RuntimeFacadeAttachmentCommit.swift"
+          ],
+          "evidenceSha256": {
+            "app/src/main/kotlin/com/floe/android/host/AttachmentImportController.kt": "cb1e21d195fa0b7d559563917d3a674d530b1317fa1f76230d36b4a6f87451df",
+            "app/src/main/kotlin/com/floe/android/attachments/AttachmentStagingService.kt": "71f91cef584fb4a99c4038be361be9ae52182e87a2765d54bce8a1a31a3c2eb4",
+            "shared/Sources/FloeAndroidCore/RuntimeFacadeAttachmentStaging.swift": "9cb2516ea4b03145b9ee4907ca9f56506283ed81c54b005348c5e79d7e947b42",
+            "shared/Sources/FloeAndroidCore/RuntimeFacadeAttachmentCommit.swift": "ceed648a0694bb65609194924b1f48f543031e87168a35585285c3be6c09e725"
+          },
+          "qualification": "No new cloud compaction/scheduled run or destructive history operation performed. Existing exact component evidence reusable; current candidate12 manual terminal success does not prove complete post-repair model task, all wait/resume/restart branches or timer delivery."
+        },
+        {
+          "id": "CHA-ATTACH-LIFECYCLE-AND",
+          "entry": "Attachment ingest progress/cancel/retry",
+          "chain": "Original request owner/generation and Root staging transaction; late callbacks cannot commit into replacement task and accepted bytes are not represented solely by progress text.",
+          "evidence": [
+            "app/src/main/kotlin/com/floe/android/host/AttachmentImportController.kt",
+            "app/src/main/kotlin/com/floe/android/attachments/AttachmentStagingService.kt",
+            "shared/Sources/FloeAndroidCore/RuntimeFacadeAttachmentBridge.swift",
+            "shared/Sources/FloeAndroidCore/RuntimeFacadeAttachmentCommit.swift"
+          ],
+          "evidenceSha256": {
+            "app/src/main/kotlin/com/floe/android/host/AttachmentImportController.kt": "cb1e21d195fa0b7d559563917d3a674d530b1317fa1f76230d36b4a6f87451df",
+            "app/src/main/kotlin/com/floe/android/attachments/AttachmentStagingService.kt": "71f91cef584fb4a99c4038be361be9ae52182e87a2765d54bce8a1a31a3c2eb4",
+            "shared/Sources/FloeAndroidCore/RuntimeFacadeAttachmentBridge.swift": "25350d2f353caf648d587e03072e660b83bd08b83f296ca11e55c9a768e80875",
+            "shared/Sources/FloeAndroidCore/RuntimeFacadeAttachmentCommit.swift": "ceed648a0694bb65609194924b1f48f543031e87168a35585285c3be6c09e725"
+          },
+          "qualification": "No new cloud compaction/scheduled run or destructive history operation performed. Existing exact component evidence reusable; current candidate12 manual terminal success does not prove complete post-repair model task, all wait/resume/restart branches or timer delivery."
+        },
+        {
+          "id": "CHA-MANUAL-COMPACT",
+          "entry": "Task menu -> compact context",
+          "chain": "Host submits original conversation.compact lifecycle command, selected/persisted model only; native compaction reservation preserves full history and returns actual compacted/shortHistory/noHistory, with same-session response fence.",
+          "evidence": [
+            "app/src/main/kotlin/com/floe/android/host/ConversationHostController.kt",
+            "shared/Sources/FloeAndroidCore/RuntimeFacadeConversations.swift",
+            "shared/Sources/FloeAgentRuntime/ContextEngine.swift"
+          ],
+          "evidenceSha256": {
+            "app/src/main/kotlin/com/floe/android/host/ConversationHostController.kt": "7ea71cf10f7d95d8008c82d850365f731a9e84b4f54e6c8c5a52f05f51704475",
+            "shared/Sources/FloeAndroidCore/RuntimeFacadeConversations.swift": "3bf4efaefe6464875c6b2940fad12b8a4e5e7480746f182dbb0ebfd165414c3b",
+            "shared/Sources/FloeAgentRuntime/ContextEngine.swift": "e5c8305f3d243456c61be4551da293fcd48ea80436d12885a8ff9a2d851bb769"
+          },
+          "qualification": "No new cloud compaction/scheduled run or destructive history operation performed. Existing exact component evidence reusable; current candidate12 manual terminal success does not prove complete post-repair model task, all wait/resume/restart branches or timer delivery."
+        },
+        {
+          "id": "APR-CALL-BOUND",
+          "entry": "Actual run approval card -> allow/deny",
+          "chain": "Original run.approval.resolve revision/CAS, exact run/tool call/request and single-use authorization identity; no new grant store or broad path authority from user payload.",
+          "evidence": [
+            "app/src/main/kotlin/com/floe/android/host/ConversationHostController.kt",
+            "shared/Sources/FloeAndroidCore/RuntimeFacadeRunIngress.swift",
+            "shared/Sources/FloeAgentRuntime/AgentRuntime.swift",
+            "feature/conversation/src/main/kotlin/com/floe/android/feature/conversation/ConversationApprovalUi.kt"
+          ],
+          "evidenceSha256": {
+            "app/src/main/kotlin/com/floe/android/host/ConversationHostController.kt": "7ea71cf10f7d95d8008c82d850365f731a9e84b4f54e6c8c5a52f05f51704475",
+            "shared/Sources/FloeAndroidCore/RuntimeFacadeRunIngress.swift": "df2097a0b45b8f00d1c0ed6ecdfb8a78e21e955a7a085448f981bb3c2bbdaa4e",
+            "shared/Sources/FloeAgentRuntime/AgentRuntime.swift": "42b4314669b276bc16eacf0830b0987142f83f3bd3bc8b1078b193092a865615",
+            "feature/conversation/src/main/kotlin/com/floe/android/feature/conversation/ConversationApprovalUi.kt": "b536d5094453253197bbec8b01e93a0a16b9fe96bae1480feb06f54bf59bcc41"
+          },
+          "qualification": "No new cloud compaction/scheduled run or destructive history operation performed. Existing exact component evidence reusable; current candidate12 manual terminal success does not prove complete post-repair model task, all wait/resume/restart branches or timer delivery. Original Ark test displayed real one-shot approval and recorded terminal failure; post-repair model-result loop remains pending."
+        },
+        {
+          "id": "APR-TOOL-RECORD-OUTPUT",
+          "entry": "Timeline tool record / result content pages",
+          "chain": "Original recorded AgentRuntime tool results and bounded native conversation-content projection rendered by timeline rows; returned failure remains failure rather than treating summary text as file delivery.",
+          "evidence": [
+            "shared/Sources/FloeAgentRuntime/AgentRuntime.swift",
+            "shared/Sources/FloeAndroidCore/RuntimeFacadeConversationContent.swift",
+            "feature/conversation/src/main/kotlin/com/floe/android/feature/conversation/ConversationTimelineRows.kt",
+            "feature/conversation/src/main/kotlin/com/floe/android/feature/conversation/ConversationRunOutputUi.kt"
+          ],
+          "evidenceSha256": {
+            "shared/Sources/FloeAgentRuntime/AgentRuntime.swift": "42b4314669b276bc16eacf0830b0987142f83f3bd3bc8b1078b193092a865615",
+            "shared/Sources/FloeAndroidCore/RuntimeFacadeConversationContent.swift": "0d8ebcb9955f4289ae7c7056e9f4e2aeb11e15d512c4c1a2fae4190a18c461dc",
+            "feature/conversation/src/main/kotlin/com/floe/android/feature/conversation/ConversationTimelineRows.kt": "5490b9c270f0355f2c77230844bb85dc250974d86aa4aa83ef9c1e3ad1370ccd",
+            "feature/conversation/src/main/kotlin/com/floe/android/feature/conversation/ConversationRunOutputUi.kt": "10744e7d1378593450fd3f0656bd6f97535523fe0b4c4f7ce37fadb1ac7da935"
+          },
+          "qualification": "No new cloud compaction/scheduled run or destructive history operation performed. Existing exact component evidence reusable; current candidate12 manual terminal success does not prove complete post-repair model task, all wait/resume/restart branches or timer delivery. Original Ark test displayed real one-shot approval and recorded terminal failure; post-repair model-result loop remains pending."
+        },
+        {
+          "id": "APR-UNTRUSTED-NO-GRANT",
+          "entry": "Imported/history/web/tool data -> model context -> tool admission",
+          "chain": "Historical envelope is untrusted; runtime trusted context and original exact-call policy/permission service own authority. Imported descriptions/paths/flags do not create grants.",
+          "evidence": [
+            "shared/Sources/FloeAgentRuntime/ConversationEnvelope.swift",
+            "shared/Sources/FloeAndroidCore/RuntimeFacadeRunIngress.swift",
+            "shared/Sources/FloeSecurity/ApprovalPolicy.swift",
+            "shared/Sources/FloeAgentRuntime/AgentRuntime.swift"
+          ],
+          "evidenceSha256": {
+            "shared/Sources/FloeAgentRuntime/ConversationEnvelope.swift": "e114aa1359a34eaadf1d1caf1f1f802aa10e44ee0c7c5f06ff3a949154ef4587",
+            "shared/Sources/FloeAndroidCore/RuntimeFacadeRunIngress.swift": "df2097a0b45b8f00d1c0ed6ecdfb8a78e21e955a7a085448f981bb3c2bbdaa4e",
+            "shared/Sources/FloeSecurity/ApprovalPolicy.swift": "d4c94dcf1dbfee655364e2d7d3db7b269aff3e351bbc09e7cc3adf9ef00195af",
+            "shared/Sources/FloeAgentRuntime/AgentRuntime.swift": "42b4314669b276bc16eacf0830b0987142f83f3bd3bc8b1078b193092a865615"
+          },
+          "qualification": "No new cloud compaction/scheduled run or destructive history operation performed. Existing exact component evidence reusable; current candidate12 manual terminal success does not prove complete post-repair model task, all wait/resume/restart branches or timer delivery."
+        },
+        {
+          "id": "APR-DOC-EDIT-PROFILE",
+          "entry": "Ordinary owned document/media edit call",
+          "chain": "Compiled OrdinaryDocumentActionProfile recognizes real mixed-action tool names; Human/Automatic policy first applies deterministic resolved mutable-target carve-out outside repositories, preserving revision/ownership/commit validation and explicit destructive/consent reviews.",
+          "evidence": [
+            "shared/Sources/FloeSecurity/OrdinaryDocumentActionProfile.swift",
+            "shared/Sources/FloeSecurity/DeterministicLocalApprovalPolicy.swift",
+            "shared/Sources/FloeSecurity/ApprovalPolicy.swift"
+          ],
+          "evidenceSha256": {
+            "shared/Sources/FloeSecurity/OrdinaryDocumentActionProfile.swift": "df94a5d1292fa66d9a1325b378d498f04476ab5be0caeb2b991e66f108fba23d",
+            "shared/Sources/FloeSecurity/DeterministicLocalApprovalPolicy.swift": "95c38ef9b0ab0fdb83baa215184ea3179a440b2ae4bbf2e4a2566eb2f953c291",
+            "shared/Sources/FloeSecurity/ApprovalPolicy.swift": "d4c94dcf1dbfee655364e2d7d3db7b269aff3e351bbc09e7cc3adf9ef00195af"
+          },
+          "qualification": "No new cloud compaction/scheduled run or destructive history operation performed. Existing exact component evidence reusable; current candidate12 manual terminal success does not prove complete post-repair model task, all wait/resume/restart branches or timer delivery."
+        },
+        {
+          "id": "TMP-TOOL-CEILING",
+          "entry": "Temporary chat send/discovery/direct tool calls",
+          "chain": "RAM temporary runtime plus original text/public-web ceiling; only public web names admitted and workspace environment still refuses temporary direct file effects.",
+          "evidence": [
+            "shared/Sources/FloeAndroidCore/RuntimeFacadeTemporary.swift",
+            "shared/Sources/FloeAndroidCore/RuntimeFacadeTemporaryRunAdapter.swift",
+            "shared/Sources/FloeTools/TemporaryChatToolPolicy.swift"
+          ],
+          "evidenceSha256": {
+            "shared/Sources/FloeAndroidCore/RuntimeFacadeTemporary.swift": "54fa00840f8dd0fa8501588553146d34b26083f12e0685bae69ad0eaa29e5708",
+            "shared/Sources/FloeAndroidCore/RuntimeFacadeTemporaryRunAdapter.swift": "698258f0f40fcc452af67f571278c373ae6bd36743da9332541bf47c81f02625",
+            "shared/Sources/FloeTools/TemporaryChatToolPolicy.swift": "3479a0a13704785a4854128becdbaa293abe01ed2902fe1a74f01842255e860f"
+          },
+          "qualification": "No new cloud compaction/scheduled run or destructive history operation performed. Existing exact component evidence reusable; current candidate12 manual terminal success does not prove complete post-repair model task, all wait/resume/restart branches or timer delivery."
+        },
+        {
+          "id": "TMP-NAV-DISCARD",
+          "entry": "Actual conversation/destination/New Task navigation",
+          "chain": "TemporaryNavigationFence retires exact identity; native temporary runtime checks navigation/retirement before promotion transaction and fences late callbacks. Background/view reconstruction is not navigation.",
+          "evidence": [
+            "app/src/main/kotlin/com/floe/android/host/TemporaryNavigationFence.kt",
+            "app/src/main/kotlin/com/floe/android/host/ConversationHostController.kt",
+            "shared/Sources/FloeAndroidCore/RuntimeFacadeTemporary.swift",
+            "shared/Sources/FloeAndroidCore/RuntimeFacadeTemporaryRouting.swift"
+          ],
+          "evidenceSha256": {
+            "app/src/main/kotlin/com/floe/android/host/TemporaryNavigationFence.kt": "6c8a309b1a29cd8e29881bf6d5129914ffbf156801c7de6d36a47f38cff6b7bb",
+            "app/src/main/kotlin/com/floe/android/host/ConversationHostController.kt": "7ea71cf10f7d95d8008c82d850365f731a9e84b4f54e6c8c5a52f05f51704475",
+            "shared/Sources/FloeAndroidCore/RuntimeFacadeTemporary.swift": "54fa00840f8dd0fa8501588553146d34b26083f12e0685bae69ad0eaa29e5708",
+            "shared/Sources/FloeAndroidCore/RuntimeFacadeTemporaryRouting.swift": "d29db76cf59a63682785d889e92ee6c8c3dca1608df11a2dcd1e06747d136689"
+          },
+          "qualification": "No new cloud compaction/scheduled run or destructive history operation performed. Existing exact component evidence reusable; current candidate12 manual terminal success does not prove complete post-repair model task, all wait/resume/restart branches or timer delivery."
+        },
+        {
+          "id": "TMP-KEEP-PROMOTE",
+          "entry": "Temporary chat -> explicit Keep",
+          "chain": "Original atomic promotion and held physical write lifecycle; frozen watermark/lease/incarnation validated in actual promoter transaction, successful pre-navigation commit retained while late selection cannot replace current destination.",
+          "evidence": [
+            "shared/Sources/FloeAndroidCore/RuntimeFacadeTemporary.swift",
+            "shared/Sources/FloeAndroidCore/RuntimeFacadeTemporaryBridge.swift",
+            "app/src/main/kotlin/com/floe/android/host/TemporaryNavigationFence.kt"
+          ],
+          "evidenceSha256": {
+            "shared/Sources/FloeAndroidCore/RuntimeFacadeTemporary.swift": "54fa00840f8dd0fa8501588553146d34b26083f12e0685bae69ad0eaa29e5708",
+            "shared/Sources/FloeAndroidCore/RuntimeFacadeTemporaryBridge.swift": "1eaf025a896339189c0098244b572bb1d7c724aa6796f554f95a3b935bed8070",
+            "app/src/main/kotlin/com/floe/android/host/TemporaryNavigationFence.kt": "6c8a309b1a29cd8e29881bf6d5129914ffbf156801c7de6d36a47f38cff6b7bb"
+          },
+          "qualification": "No new cloud compaction/scheduled run or destructive history operation performed. Existing exact component evidence reusable; current candidate12 manual terminal success does not prove complete post-repair model task, all wait/resume/restart branches or timer delivery."
+        },
+        {
+          "id": "SCH-SNAPSHOT",
+          "entry": "Task schedule editor -> save",
+          "chain": "Original G073 schedule domain snapshots actual task/model/environment/policy identity; policy snapshot is not a tool grant. Android schedules only explicit ready stored config.",
+          "evidence": [
+            "shared/Sources/FloeAndroidCore/G073TaskScheduleDomain.swift",
+            "app/src/main/kotlin/com/floe/android/schedule/TaskScheduleHostController.kt",
+            "shared/Sources/FloeAndroidCore/ScheduleEnvironmentOwnership.swift"
+          ],
+          "evidenceSha256": {
+            "shared/Sources/FloeAndroidCore/G073TaskScheduleDomain.swift": "f14b678392fba3dcf945807bd5636237b7602c5821d8909398c11a1a1bd62caf",
+            "app/src/main/kotlin/com/floe/android/schedule/TaskScheduleHostController.kt": "8c3c2ae680b57ef9a68ce40a8e05463f51ec7ff9f5fcd6068dd9edbf84780844",
+            "shared/Sources/FloeAndroidCore/ScheduleEnvironmentOwnership.swift": "2f576ef7ac0b777b71e3273b4fd12f86ca67b59ad2ab40a3c356a836f6831c58"
+          },
+          "qualification": "No new cloud compaction/scheduled run or destructive history operation performed. Existing exact component evidence reusable; current candidate12 manual terminal success does not prove complete post-repair model task, all wait/resume/restart branches or timer delivery."
+        },
+        {
+          "id": "SCH-DEDUP-FIRE",
+          "entry": "Exact/flexible system wake -> occurrence claim -> original run launch",
+          "chain": "Durable occurrence claim CAS and stable launch identity prevent duplicate alarm/worker firing; unknown in-flight outcome reconciles, no silent paid replay; original after-run completion port.",
+          "evidence": [
+            "shared/Sources/FloeAndroidCore/G073TaskScheduleDomain.swift",
+            "app/src/main/kotlin/com/floe/android/schedule/TaskScheduleWorkers.kt",
+            "app/src/main/kotlin/com/floe/android/host/ScheduleRuntimeBindings.kt"
+          ],
+          "evidenceSha256": {
+            "shared/Sources/FloeAndroidCore/G073TaskScheduleDomain.swift": "f14b678392fba3dcf945807bd5636237b7602c5821d8909398c11a1a1bd62caf",
+            "app/src/main/kotlin/com/floe/android/schedule/TaskScheduleWorkers.kt": "62fdaa9a6eb407910b505bdd501c0463949d5eafb664faf8418c339c23a461cf",
+            "app/src/main/kotlin/com/floe/android/host/ScheduleRuntimeBindings.kt": "e4aa3cdd644b2aa89321efacf083cee74e1caa2fa4f412157e0691011e4eeb0b"
+          },
+          "qualification": "No new cloud compaction/scheduled run or destructive history operation performed. Existing exact component evidence reusable; current candidate12 manual terminal success does not prove complete post-repair model task, all wait/resume/restart branches or timer delivery."
+        },
+        {
+          "id": "SCH-MISSED-CYCLE",
+          "entry": "Schedule timeline/status after wake gap",
+          "chain": "Original native occurrence reconciliation and Android wake policy distinguish missed/deferred/permission/system conditions instead of reporting a nonexistent run as completed.",
+          "evidence": [
+            "shared/Sources/FloeAndroidCore/G073TaskScheduleDomain.swift",
+            "app/src/main/kotlin/com/floe/android/schedule/TaskScheduleWakePolicy.kt",
+            "app/src/main/kotlin/com/floe/android/schedule/TaskSchedulePresentation.kt"
+          ],
+          "evidenceSha256": {
+            "shared/Sources/FloeAndroidCore/G073TaskScheduleDomain.swift": "f14b678392fba3dcf945807bd5636237b7602c5821d8909398c11a1a1bd62caf",
+            "app/src/main/kotlin/com/floe/android/schedule/TaskScheduleWakePolicy.kt": "c29d04e963c4cedd6746eeb6c2f08a160b13ffdfee29ef81bef33eb6f778d639",
+            "app/src/main/kotlin/com/floe/android/schedule/TaskSchedulePresentation.kt": "9749f1b4cb46bf2006335f91055717a0c816ac32e692245e34af4aef2608f81c"
+          },
+          "qualification": "No new cloud compaction/scheduled run or destructive history operation performed. Existing exact component evidence reusable; current candidate12 manual terminal success does not prove complete post-repair model task, all wait/resume/restart branches or timer delivery."
+        },
+        {
+          "id": "SCH-STATE-TRUTH",
+          "entry": "Schedule detail/status/notification return",
+          "chain": "Host/native projections use original schedule/task policy and real owner snapshots; Root phase and actual launch/result state are retained, no timer-only success.",
+          "evidence": [
+            "shared/Sources/FloeAndroidCore/G073TaskScheduleDomain.swift",
+            "app/src/main/kotlin/com/floe/android/schedule/TaskScheduleHostController.kt",
+            "app/src/main/kotlin/com/floe/android/host/ScheduleRuntimeBindings.kt"
+          ],
+          "evidenceSha256": {
+            "shared/Sources/FloeAndroidCore/G073TaskScheduleDomain.swift": "f14b678392fba3dcf945807bd5636237b7602c5821d8909398c11a1a1bd62caf",
+            "app/src/main/kotlin/com/floe/android/schedule/TaskScheduleHostController.kt": "8c3c2ae680b57ef9a68ce40a8e05463f51ec7ff9f5fcd6068dd9edbf84780844",
+            "app/src/main/kotlin/com/floe/android/host/ScheduleRuntimeBindings.kt": "e4aa3cdd644b2aa89321efacf083cee74e1caa2fa4f412157e0691011e4eeb0b"
+          },
+          "qualification": "No new cloud compaction/scheduled run or destructive history operation performed. Existing exact component evidence reusable; current candidate12 manual terminal success does not prove complete post-repair model task, all wait/resume/restart branches or timer delivery."
+        }
+      ]
+    },
+    "voice-backup6-20261103": {
+      "androidCommit": "66d3b8b2f9e1c89a790ca7a37d3fb216f06a871a",
+      "iosReference": "36f63bf400dfaa3a127259eac006b38d72516390",
+      "operations": [
+        {
+          "id": "VOI-INPUT-DRAFT",
+          "entry": "Existing reachable App voice/media or backup Settings route",
+          "chain": "Composer microphone -> original holder -> ConversationHostController.startVoiceInput -> C03VoiceHost system/cloud adapter -> fenced draft callback; navigation/permission/cancel does not auto-send.",
+          "evidence": [
+            "app/src/main/kotlin/com/floe/android/host/ConversationHostController.kt",
+            "app/src/main/kotlin/com/floe/android/host/voice/C03VoiceHost.kt",
+            "app/src/main/kotlin/com/floe/android/host/voice/C03SystemSpeechRecognizer.kt",
+            "app/src/main/kotlin/com/floe/android/host/voice/C03SystemTextToSpeech.kt",
+            "shared/Sources/FloeAndroidCore/C03VoiceDomain.swift",
+            "shared/Sources/FloeAndroidCore/C03VoiceBindings.swift"
+          ],
+          "evidenceSha256": {
+            "app/src/main/kotlin/com/floe/android/host/ConversationHostController.kt": "7ea71cf10f7d95d8008c82d850365f731a9e84b4f54e6c8c5a52f05f51704475",
+            "app/src/main/kotlin/com/floe/android/host/voice/C03VoiceHost.kt": "6116c6b110798de6fc06ce6c865ccfeb0c41710d864343f7f8da796c297c0ebf",
+            "app/src/main/kotlin/com/floe/android/host/voice/C03SystemSpeechRecognizer.kt": "43b14ac83429dd03158c81362caafb6d070817267a249df58d9f0483f4882b71",
+            "app/src/main/kotlin/com/floe/android/host/voice/C03SystemTextToSpeech.kt": "2a1924a9b0683b2afc55bf69bc6eb0f681964dfc6c98a821507ed6b65fb69927",
+            "shared/Sources/FloeAndroidCore/C03VoiceDomain.swift": "27e5644560f98c09eb0fc7d9f958c25c6c8c83ed679f5fd4e418468317c7d0b2",
+            "shared/Sources/FloeAndroidCore/C03VoiceBindings.swift": "59e3d628fce4bdc3d04c8bab12ef7ee07566de7ba02b6579dbaa087a8a1476d3"
+          },
+          "qualification": "Source-connected review only; no new paid speech request, microphone/audio playback, real personal backup/restore, destructive data action or device migration acceptance this round. Prior component evidence reusable only for unchanged boundary."
+        },
+        {
+          "id": "VOI-CONSENT-CANCEL",
+          "entry": "Existing reachable App voice/media or backup Settings route",
+          "chain": "Original microphone consent and recognizer/player actual completion/error; same owner token and foreground/root cancellation; default system, saved cloud choice retained, no App local speech model.",
+          "evidence": [
+            "app/src/main/kotlin/com/floe/android/host/ConversationHostController.kt",
+            "app/src/main/kotlin/com/floe/android/host/voice/C03VoiceHost.kt",
+            "app/src/main/kotlin/com/floe/android/host/voice/C03SystemSpeechRecognizer.kt",
+            "app/src/main/kotlin/com/floe/android/host/voice/C03SystemTextToSpeech.kt",
+            "shared/Sources/FloeAndroidCore/C03VoiceDomain.swift",
+            "shared/Sources/FloeAndroidCore/C03VoiceBindings.swift"
+          ],
+          "evidenceSha256": {
+            "app/src/main/kotlin/com/floe/android/host/ConversationHostController.kt": "7ea71cf10f7d95d8008c82d850365f731a9e84b4f54e6c8c5a52f05f51704475",
+            "app/src/main/kotlin/com/floe/android/host/voice/C03VoiceHost.kt": "6116c6b110798de6fc06ce6c865ccfeb0c41710d864343f7f8da796c297c0ebf",
+            "app/src/main/kotlin/com/floe/android/host/voice/C03SystemSpeechRecognizer.kt": "43b14ac83429dd03158c81362caafb6d070817267a249df58d9f0483f4882b71",
+            "app/src/main/kotlin/com/floe/android/host/voice/C03SystemTextToSpeech.kt": "2a1924a9b0683b2afc55bf69bc6eb0f681964dfc6c98a821507ed6b65fb69927",
+            "shared/Sources/FloeAndroidCore/C03VoiceDomain.swift": "27e5644560f98c09eb0fc7d9f958c25c6c8c83ed679f5fd4e418468317c7d0b2",
+            "shared/Sources/FloeAndroidCore/C03VoiceBindings.swift": "59e3d628fce4bdc3d04c8bab12ef7ee07566de7ba02b6579dbaa087a8a1476d3"
+          },
+          "qualification": "Source-connected review only; no new paid speech request, microphone/audio playback, real personal backup/restore, destructive data action or device migration acceptance this round. Prior component evidence reusable only for unchanged boundary."
+        },
+        {
+          "id": "VOI-FILE-TRANSCRIBE",
+          "entry": "Existing reachable App voice/media or backup Settings route",
+          "chain": "Creative media transcription -> CreativeHostBindings -> voice.transcribeAndWrite -> bounded cloud chunks and original C03 typed segments/subtitle writeback; actual G09 source ownership and cancellation.",
+          "evidence": [
+            "app/src/main/kotlin/com/floe/android/host/ConversationHostController.kt",
+            "app/src/main/kotlin/com/floe/android/host/voice/C03VoiceHost.kt",
+            "app/src/main/kotlin/com/floe/android/host/voice/C03SystemSpeechRecognizer.kt",
+            "app/src/main/kotlin/com/floe/android/host/voice/C03SystemTextToSpeech.kt",
+            "shared/Sources/FloeAndroidCore/C03VoiceDomain.swift",
+            "shared/Sources/FloeAndroidCore/C03VoiceBindings.swift",
+            "app/src/main/kotlin/com/floe/android/CreativeHostBindings.kt",
+            "app/src/main/kotlin/com/floe/android/host/voice/C03AudioChunker.kt"
+          ],
+          "evidenceSha256": {
+            "app/src/main/kotlin/com/floe/android/host/ConversationHostController.kt": "7ea71cf10f7d95d8008c82d850365f731a9e84b4f54e6c8c5a52f05f51704475",
+            "app/src/main/kotlin/com/floe/android/host/voice/C03VoiceHost.kt": "6116c6b110798de6fc06ce6c865ccfeb0c41710d864343f7f8da796c297c0ebf",
+            "app/src/main/kotlin/com/floe/android/host/voice/C03SystemSpeechRecognizer.kt": "43b14ac83429dd03158c81362caafb6d070817267a249df58d9f0483f4882b71",
+            "app/src/main/kotlin/com/floe/android/host/voice/C03SystemTextToSpeech.kt": "2a1924a9b0683b2afc55bf69bc6eb0f681964dfc6c98a821507ed6b65fb69927",
+            "shared/Sources/FloeAndroidCore/C03VoiceDomain.swift": "27e5644560f98c09eb0fc7d9f958c25c6c8c83ed679f5fd4e418468317c7d0b2",
+            "shared/Sources/FloeAndroidCore/C03VoiceBindings.swift": "59e3d628fce4bdc3d04c8bab12ef7ee07566de7ba02b6579dbaa087a8a1476d3",
+            "app/src/main/kotlin/com/floe/android/CreativeHostBindings.kt": "733b3a0e7c1e7d1b2beba7964dd79c2a69ec593765c25ebbd88fa7c93c3376e9",
+            "app/src/main/kotlin/com/floe/android/host/voice/C03AudioChunker.kt": "9adb4feedf8d5bda89498863e93c43a1867034a4f2e0bafbee40b76bd2e64b16"
+          },
+          "qualification": "Source-connected review only; no new paid speech request, microphone/audio playback, real personal backup/restore, destructive data action or device migration acceptance this round. Prior component evidence reusable only for unchanged boundary."
+        },
+        {
+          "id": "BAK-VERSIONED-PACKAGE",
+          "entry": "Existing reachable App voice/media or backup Settings route",
+          "chain": "Settings Backup & Data Exchange -> C07 host -> versioned backup/document package manifest with bounded role-specific resource graph and digest records; logical DB snapshot, never active SQLite/WAL copy.",
+          "evidence": [
+            "app/src/main/kotlin/com/floe/android/host/dataexchange/C07DataExchangeDestination.kt",
+            "app/src/main/kotlin/com/floe/android/host/dataexchange/C07DataExchangeHostController.kt",
+            "shared/Sources/FloeAndroidCore/C07DataExchangeDomain.swift",
+            "shared/Sources/FloeAndroidDataExchange/C07BackupArchive.swift",
+            "shared/Sources/FloeAndroidDataExchange/C07RestoreJournal.swift",
+            "shared/Sources/FloeAndroidDataExchange/C07OwnedDataIntegrity.swift",
+            "shared/Sources/FloeAndroidDataExchange/C07DocumentPackages.swift"
+          ],
+          "evidenceSha256": {
+            "app/src/main/kotlin/com/floe/android/host/dataexchange/C07DataExchangeDestination.kt": "3e9455f4f81a090dcf47bcad9b1538aac7d5cf2402ef377acf3214aaf649a8c0",
+            "app/src/main/kotlin/com/floe/android/host/dataexchange/C07DataExchangeHostController.kt": "4fab5beb0c11d1efd3d0f6e53f138158aa93251e901ce5ff3b8ba07468e84361",
+            "shared/Sources/FloeAndroidCore/C07DataExchangeDomain.swift": "c760274243e785690f35ccebafe84f24d52e3cb9cfc437c3940460f6c23b9a64",
+            "shared/Sources/FloeAndroidDataExchange/C07BackupArchive.swift": "be767b84cf79f26ce8de0df9c1b235e01cd0d4a985fb1241ee2e5330aaf903b7",
+            "shared/Sources/FloeAndroidDataExchange/C07RestoreJournal.swift": "fa9a3c9f256f64cf2ac89a55f92d0e219aff7449f63342517e808700bdaf0c85",
+            "shared/Sources/FloeAndroidDataExchange/C07OwnedDataIntegrity.swift": "fc182e9f9917a6ccf15bffffb99d41b6c64c998af5e994991e73f8aa3eb171d0",
+            "shared/Sources/FloeAndroidDataExchange/C07DocumentPackages.swift": "9f26a5c1262f91cd0b4bdb0dcf2c9740ff6d8e05c96d3a94612a12a9a55b1854"
+          },
+          "qualification": "Source-connected review only; no new paid speech request, microphone/audio playback, real personal backup/restore, destructive data action or device migration acceptance this round. Prior component evidence reusable only for unchanged boundary."
+        },
+        {
+          "id": "BAK-VERIFY-REJECT-UNKNOWN",
+          "entry": "Existing reachable App voice/media or backup Settings route",
+          "chain": "Original archive/staged integrity verification rejects unknown schema/type, reference/digest/path/ratio bounds before import mutation; source settlement retains SAF failure recovery.",
+          "evidence": [
+            "app/src/main/kotlin/com/floe/android/host/dataexchange/C07DataExchangeDestination.kt",
+            "app/src/main/kotlin/com/floe/android/host/dataexchange/C07DataExchangeHostController.kt",
+            "shared/Sources/FloeAndroidCore/C07DataExchangeDomain.swift",
+            "shared/Sources/FloeAndroidDataExchange/C07BackupArchive.swift",
+            "shared/Sources/FloeAndroidDataExchange/C07RestoreJournal.swift",
+            "shared/Sources/FloeAndroidDataExchange/C07OwnedDataIntegrity.swift"
+          ],
+          "evidenceSha256": {
+            "app/src/main/kotlin/com/floe/android/host/dataexchange/C07DataExchangeDestination.kt": "3e9455f4f81a090dcf47bcad9b1538aac7d5cf2402ef377acf3214aaf649a8c0",
+            "app/src/main/kotlin/com/floe/android/host/dataexchange/C07DataExchangeHostController.kt": "4fab5beb0c11d1efd3d0f6e53f138158aa93251e901ce5ff3b8ba07468e84361",
+            "shared/Sources/FloeAndroidCore/C07DataExchangeDomain.swift": "c760274243e785690f35ccebafe84f24d52e3cb9cfc437c3940460f6c23b9a64",
+            "shared/Sources/FloeAndroidDataExchange/C07BackupArchive.swift": "be767b84cf79f26ce8de0df9c1b235e01cd0d4a985fb1241ee2e5330aaf903b7",
+            "shared/Sources/FloeAndroidDataExchange/C07RestoreJournal.swift": "fa9a3c9f256f64cf2ac89a55f92d0e219aff7449f63342517e808700bdaf0c85",
+            "shared/Sources/FloeAndroidDataExchange/C07OwnedDataIntegrity.swift": "fc182e9f9917a6ccf15bffffb99d41b6c64c998af5e994991e73f8aa3eb171d0"
+          },
+          "qualification": "Source-connected review only; no new paid speech request, microphone/audio playback, real personal backup/restore, destructive data action or device migration acceptance this round. Prior component evidence reusable only for unchanged boundary."
+        },
+        {
+          "id": "BAK-RESTORE-SAFE",
+          "entry": "Existing reachable App voice/media or backup Settings route",
+          "chain": "Original durable restore plan/journal -> exact new identity/artifact roots -> database writer transaction and reverse rollback; schedules disabled/interrupted, credentials/grants excluded; no automatic remote action replay.",
+          "evidence": [
+            "app/src/main/kotlin/com/floe/android/host/dataexchange/C07DataExchangeDestination.kt",
+            "app/src/main/kotlin/com/floe/android/host/dataexchange/C07DataExchangeHostController.kt",
+            "shared/Sources/FloeAndroidCore/C07DataExchangeDomain.swift",
+            "shared/Sources/FloeAndroidDataExchange/C07BackupArchive.swift",
+            "shared/Sources/FloeAndroidDataExchange/C07RestoreJournal.swift",
+            "shared/Sources/FloeAndroidDataExchange/C07OwnedDataIntegrity.swift"
+          ],
+          "evidenceSha256": {
+            "app/src/main/kotlin/com/floe/android/host/dataexchange/C07DataExchangeDestination.kt": "3e9455f4f81a090dcf47bcad9b1538aac7d5cf2402ef377acf3214aaf649a8c0",
+            "app/src/main/kotlin/com/floe/android/host/dataexchange/C07DataExchangeHostController.kt": "4fab5beb0c11d1efd3d0f6e53f138158aa93251e901ce5ff3b8ba07468e84361",
+            "shared/Sources/FloeAndroidCore/C07DataExchangeDomain.swift": "c760274243e785690f35ccebafe84f24d52e3cb9cfc437c3940460f6c23b9a64",
+            "shared/Sources/FloeAndroidDataExchange/C07BackupArchive.swift": "be767b84cf79f26ce8de0df9c1b235e01cd0d4a985fb1241ee2e5330aaf903b7",
+            "shared/Sources/FloeAndroidDataExchange/C07RestoreJournal.swift": "fa9a3c9f256f64cf2ac89a55f92d0e219aff7449f63342517e808700bdaf0c85",
+            "shared/Sources/FloeAndroidDataExchange/C07OwnedDataIntegrity.swift": "fc182e9f9917a6ccf15bffffb99d41b6c64c998af5e994991e73f8aa3eb171d0"
+          },
+          "qualification": "Source-connected review only; no new paid speech request, microphone/audio playback, real personal backup/restore, destructive data action or device migration acceptance this round. Prior component evidence reusable only for unchanged boundary."
+        }
+      ],
+      "sourceOnly": true,
+      "compiled": false,
+      "deviceVerified": false
     }
   },
   "implementationBatches": {

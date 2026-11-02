@@ -1581,6 +1581,164 @@ public final class G04WorkspaceSourceHost: @unchecked Sendable {
                          buffer: buffer, capacity: capacity)
     }
 
+    // MARK: - Manual original save (OFC-SAVE-REOPEN; local workspace CAS)
+
+    /// The bounded manual "Save Original" hop (job-4c314431dd8348d4): the
+    /// App re-verified its OWN working copy and asks the ORIGINAL workspace
+    /// CAS authority to adopt those exact bytes for the owned document. The
+    /// commit runs through the SAME `G04WorkspaceComposition.liveAccess` ->
+    /// owned write lease -> `WorkspaceFileService.replaceBinaryFile` CAS the
+    /// Core model path uses (`OfficeAIHostBridge.saveOriginal`); a post-
+    /// commit error is classified by inspecting the ACTUAL original bytes
+    /// under the SAME lease (never "throw means untouched"), reusing
+    /// `OfficeAIHostBridge.classifyOriginalReadback`. Provider sync is NOT
+    /// part of this hop — the App drives the EXISTING journaled ladder over
+    /// the headless lane after a proven local commit.
+    ///
+    /// Status space: the documented -5xx tokens; a cancellation honoured
+    /// before the commit rides the reply body ("local":"cancelled"). The
+    /// reply is a bounded JSON body: {"ok":1,"local":"committed",
+    /// "committedSHA256":..,"committedBytes":..} or {"ok":0,"local":
+    /// "conflict"|"refused"|"cancelled"|"unknown","detail":bounded}.
+    func saveOriginal(epoch: UInt64, taskHex: String, workspaceHex: String, logicalPath: String,
+                      expectedOriginalSHA256: String, expectedSourceSHA256: String,
+                      expectedSourceBytes: Int, sourcePath: String,
+                      buffer: UnsafeMutablePointer<CChar>?, capacity: Int32) -> Int32 {
+        func isSHA256(_ value: String) -> Bool {
+            value.count == 64 && value.lowercased() == value &&
+                value.allSatisfy { ($0 >= "0" && $0 <= "9") || ($0 >= "a" && $0 <= "f") }
+        }
+        guard let taskID = Self.canonicalUUID(taskHex), let workspaceID = Self.canonicalUUID(workspaceHex),
+              Self.validLogicalPath(logicalPath),
+              isSHA256(expectedOriginalSHA256), isSHA256(expectedSourceSHA256),
+              expectedSourceBytes >= 1,
+              expectedSourceBytes <= WorkspaceFileService.officeBinaryReplacementBudget,
+              !sourcePath.isEmpty, sourcePath.utf8.count <= 4096 else {
+            return Int32(G04SourceHostStatus.invalidArguments)
+        }
+        guard let live = liveEpoch(), live == epoch else {
+            return Int32(epoch == 0 ? G04SourceHostStatus.notInstalled
+                                    : G04SourceHostStatus.generationFenced)
+        }
+        guard let installed = G02RuntimeComposition.shared.installedComposition,
+              installed.epoch == epoch else {
+            return Int32(G04SourceHostStatus.generationFenced)
+        }
+        let sourceURL = URL(fileURLWithPath: sourcePath)
+        let box = HostHopBox<String>()
+        let gate = DispatchSemaphore(value: 0)
+        Task.detached(priority: .userInitiated) {
+            do {
+                box.value = .success(try await Self.saveOriginalCommit(
+                    epoch: epoch, installed: installed, taskID: taskID, workspaceID: workspaceID,
+                    logicalPath: logicalPath, expectedOriginal: expectedOriginalSHA256,
+                    sourceURL: sourceURL, expectedSource: expectedSourceSHA256,
+                    expectedBytes: expectedSourceBytes))
+            } catch {
+                box.value = .failure(error)
+            }
+            gate.signal()
+        }
+        if gate.wait(timeout: .now() + .seconds(G04SourceHostLimits.fileHopSeconds)) == .timedOut {
+            lock.lock()
+            counters.hopsTimedOut += 1
+            lock.unlock()
+            return Int32(G04SourceHostStatus.hopTimeout)
+        }
+        switch box.value {
+        case .success(let json):
+            return Self.copy(json, buffer: buffer, capacity: capacity)
+        case .failure(let error):
+            return Int32(Self.errorStatus(error))
+        case .none:
+            return Int32(G04SourceHostStatus.internal)
+        }
+    }
+
+    /// The async CAS body: lease admission + `replaceBinaryFile` + actual-
+    /// readback classification. Runs on ONE detached task; the caller thread
+    /// blocks on the semaphore above, exactly like the reviewed ladder hops.
+    private static func saveOriginalCommit(epoch: UInt64, installed: G02InstalledComposition,
+                                           taskID: UUID, workspaceID: UUID, logicalPath: String,
+                                           expectedOriginal: String, sourceURL: URL,
+                                           expectedSource: String, expectedBytes: Int) async throws -> String {
+        // Independent native re-verification of the staged source body (the
+        // App already re-digested it; this closes the same-process loop).
+        let sourceValues = try? sourceURL.resourceValues(forKeys: [.isRegularFileKey, .fileSizeKey])
+        guard sourceValues?.isRegularFile == true,
+              Int64(sourceValues?.fileSize ?? -1) == Int64(expectedBytes),
+              expectedBytes <= WorkspaceFileService.officeBinaryReplacementBudget else {
+            return Self.json(["ok": 0, "local": "unknown", "detail": "sourceUnproven"])
+        }
+        let sourceDigest = try FloeDigest.sha256Hex(ofFileAt: sourceURL)
+        guard sourceDigest == expectedSource else {
+            return Self.json(["ok": 0, "local": "unknown", "detail": "sourceDigestMismatch"])
+        }
+        let access = G04WorkspaceComposition.liveAccess(epoch: epoch, installed: installed)
+        let owner = G04WorkspaceOwner(epoch: epoch, taskID: taskID, workspaceID: workspaceID)
+        let lease: G04WorkspaceAccessLease
+        do {
+            lease = try await access.acquire(owner: owner, intent: .write, relativePath: logicalPath)
+        } catch {
+            return Self.json(["ok": 0, "local": "refused",
+                              "detail": String(describing: error).prefix(160).description])
+        }
+        // The acquired lease's OWN service (mutation lock, path guard, freeze
+        // gate, streaming digest CAS) — the accepted Main-normal18 contract.
+        // The lease stays held through the failure classification below,
+        // exactly like the Core model path (OfficeAIHostBridge.saveOriginal).
+        var commitError: (any Error)?
+        var outcome: WriteOutcome?
+        do {
+            outcome = try lease.service.replaceBinaryFile(
+                logicalPath, from: sourceURL,
+                expectedOriginalSHA256: expectedOriginal,
+                expectedSourceSHA256: expectedSource,
+                expectedSourceBytes: expectedBytes,
+                cancellation: lease.cancellation)
+        } catch {
+            commitError = error
+        }
+        if let outcome {
+            await lease.release()
+            return Self.json(["ok": 1, "local": "committed",
+                              "committedSHA256": outcome.sha256,
+                              "committedBytes": outcome.bytesWritten])
+        }
+        guard let commitError else {
+            await lease.release()
+            return Self.json(["ok": 0, "local": "unknown", "detail": "commitOutcomeUnknown"])
+        }
+        // Post-commit error: classify by the ACTUAL original bytes under the
+        // SAME owned lease (a cooperating-writer CAS, not an OS-level one —
+        // an IO/receipt error after the atomic adoption may already have
+        // written). Never "throw means untouched", never a silent retry.
+        let classification = OfficeAIHostBridge.classifyOriginalReadback(
+            service: lease.service, logicalPath: logicalPath,
+            expectedOriginal: expectedOriginal, expectedSaved: expectedSource,
+            expectedBytes: Int64(expectedBytes))
+        await lease.release()
+        switch classification {
+        case .saved:
+            return Self.json(["ok": 1, "local": "committed",
+                              "committedSHA256": expectedSource, "committedBytes": expectedBytes,
+                              "detail": "writtenPerActualReadback"])
+        case .untouched:
+            if commitError is CancellationError ||
+                (commitError as? FloeError) == .cancelled {
+                return Self.json(["ok": 0, "local": "cancelled",
+                                  "detail": "cancelledBeforeCommit"])
+            }
+            return Self.json(["ok": 0, "local": "conflict",
+                              "detail": "originalIntactPerReadback"])
+        case .drifted:
+            return Self.json(["ok": 0, "local": "unknown",
+                              "detail": "originalDriftedPerReadback"])
+        case .unreadable:
+            return Self.json(["ok": 0, "local": "unknown", "detail": "readbackUnprovable"])
+        }
+    }
+
     // MARK: - Stats (typed counters only; no paths, bytes or identities)
 
     func statsJSON() -> String {
@@ -1978,6 +2136,34 @@ public func floeG04SourceHostReconcileStaged(_ epoch: UInt64, _ taskHex: UnsafeM
         epoch: epoch, taskHex: G04HostC.string(taskHex) ?? "",
         workspaceHex: G04HostC.string(workspaceHex) ?? "", recoveryHex: G04HostC.string(recoveryHex) ?? "",
         stageTicket: stageTicket, buffer: buffer, capacity: capacity)
+}
+
+/// Manual workspace original save (OFC-SAVE-REOPEN): the bounded local CAS
+/// hop over the ORIGINAL workspace write authority. Trusted host only — no
+/// V3 key, no model route; the App's exact-owner pump is the sole caller.
+@_cdecl("floe_g04_source_host_save_original")
+public func floeG04SourceHostSaveOriginal(
+    _ epoch: UInt64,
+    _ taskHex: UnsafeMutablePointer<CChar>?,
+    _ workspaceHex: UnsafeMutablePointer<CChar>?,
+    _ logicalPath: UnsafeMutablePointer<CChar>?,
+    _ expectedOriginalSHA256: UnsafeMutablePointer<CChar>?,
+    _ expectedSourceSHA256: UnsafeMutablePointer<CChar>?,
+    _ expectedSourceBytes: Int64,
+    _ sourcePath: UnsafeMutablePointer<CChar>?,
+    _ buffer: UnsafeMutablePointer<CChar>?,
+    _ capacity: Int32
+) -> Int32 {
+    G04WorkspaceSourceHost.shared.saveOriginal(
+        epoch: epoch,
+        taskHex: G04HostC.string(taskHex) ?? "",
+        workspaceHex: G04HostC.string(workspaceHex) ?? "",
+        logicalPath: G04HostC.string(logicalPath) ?? "",
+        expectedOriginalSHA256: G04HostC.string(expectedOriginalSHA256) ?? "",
+        expectedSourceSHA256: G04HostC.string(expectedSourceSHA256) ?? "",
+        expectedSourceBytes: Int(clamping: max(expectedSourceBytes, 0)),
+        sourcePath: G04HostC.string(sourcePath) ?? "",
+        buffer: buffer, capacity: capacity)
 }
 
 /// Typed counters JSON only (no paths, no bytes, no identities).

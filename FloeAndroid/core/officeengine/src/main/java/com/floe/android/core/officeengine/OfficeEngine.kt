@@ -129,6 +129,19 @@ object OfficeEngine {
          * only — the actual capability is the same-UID [hostSaveChannel].
          */
         internalSave: Boolean = false,
+        /**
+         * Manual workspace original save (OFC-SAVE-REOPEN): this App host
+         * owns the workspace-original commit and accepts
+         * [OfficeSaveOriginalHandoffPolicy.TRANSACTION_SAVE_ORIGINAL] on
+         * [saveOriginalChannel]. Present ONLY for EDIT mounts of ordinary
+         * task-owned workspace documents; the viewer then offers the visible
+         * "Save Original" action (one real `.uno:Save` flush, then the App
+         * re-verifies its OWN working copy and runs the existing native
+         * workspace CAS). Provider-picked, run-output, read-only, recovery
+         * and Notes mounts never receive it and stay copy-only. Shape only —
+         * the capability is the same-UID [saveOriginalChannel] binder.
+         */
+        saveOriginalChannel: android.os.IBinder? = null,
     ): android.content.Intent =
         OfficePreviewActivity.intentFor(context, request).apply {
             // An IBinder is NOT a Parcelable: it travels through the Bundle's
@@ -161,6 +174,19 @@ object OfficeEngine {
             }
             if (internalSave) {
                 putExtra(OfficeHostSaveHandoffPolicy.EXTRA_INTERNAL_SAVE, true)
+            }
+            if (saveOriginalChannel != null) {
+                // Same inert-capability trust model as the close-ack /
+                // host-save binders: the binder travels inside this
+                // non-exported launch Intent only and the App re-validates
+                // the exact owned operation on every transaction.
+                val originalCapabilities = android.os.Bundle()
+                originalCapabilities.putBinder(
+                    OfficeSaveOriginalHandoffPolicy.EXTRA_SAVE_ORIGINAL_CHANNEL,
+                    saveOriginalChannel,
+                )
+                putExtras(originalCapabilities)
+                putExtra(OfficeSaveOriginalHandoffPolicy.EXTRA_SAVE_ORIGINAL, true)
             }
         }
 

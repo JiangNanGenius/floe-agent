@@ -86,7 +86,9 @@ import java.util.Locale
  *   BitmapFactory decoder (G07.1);
  * - media and supported CAD: their owned media preview and read-only C04
  *   viewer; unsupported formats keep an explicit typed fallback;
- * - archive/binary and unsupported image encodings: a typed fallback rather
+ * - archive: the real bounded archive browser (list/inspect/extract) over
+ *   the ORIGINAL safe engine and G04 workspace lease;
+ * - binary and unsupported image encodings: a typed fallback rather
  *   than decoding arbitrary bytes as text.
  *
  * Nothing here is a second document authority: the request only carries the
@@ -558,9 +560,30 @@ internal fun WorkspaceDocumentDestination(
                         )
                     }
                 }
+                WorkspaceDocumentSurface.ARCHIVE -> {
+                    // WSF-SAFE-EXTRACT: the real bounded browser over the
+                    // Application-owned controller and the ORIGINAL safe
+                    // engine/lease authority. A missing live native root
+                    // retires the request instead of rendering a dead
+                    // surface; formats the engine refuses (RAR) fail as an
+                    // honest typed state inside the browser, never as a
+                    // fake list.
+                    if (previewOwner != null) {
+                        WorkspaceArchiveDestination(
+                            controller = host.workspaceArchive,
+                            request = request,
+                            owner = previewOwner,
+                            onBackToFiles = backToFiles,
+                            onCloseTask = closeTask,
+                            onOpenFolder = onOpenFolder,
+                        )
+                    } else {
+                        LaunchedEffect(request.token) { onBackToFiles() }
+                    }
+                }
                 // Office is handled by its owned viewer Activity before this
                 // destination is raised; reaching here means the engine is
-                // unavailable. Archive/binary keep their honest typed cover.
+                // unavailable. Binary keeps its honest typed cover.
                 else -> WorkspaceTypedDocumentSurface(
                     request = request,
                     onBackToFiles = backToFiles,
@@ -607,15 +630,18 @@ internal fun WorkspaceDocumentDestination(
     DesignExportPickerEffect(application?.designUi?.exportDelivery)
 }
 
-/** The one document header shared by the real PDF/image preview and the
- * honest typed cover: Back to the owning file list, the exact file name and
- * Close. It adds no second navigation authority. */
+/** The one document header shared by the real PDF/image/archive surfaces
+ * and the honest typed cover: Back to the owning file list, the exact file
+ * name and Close. [onEdit] is a surface-owned primary action (image edit,
+ * archive extract/decompress) with its own label; it adds no second
+ * navigation authority. */
 @Composable
 internal fun WorkspaceDocumentHeader(
     fileName: String,
     onBackToFiles: () -> Unit,
     onCloseTask: () -> Unit,
     onEdit: (() -> Unit)? = null,
+    editLabel: Int = WorkbenchR.string.creative_edit_image,
 ) {
     Row(
         modifier = Modifier
@@ -641,7 +667,7 @@ internal fun WorkspaceDocumentHeader(
         )
         if (onEdit != null) {
             FloeCapsuleAction(
-                label = stringResource(WorkbenchR.string.creative_edit_image),
+                label = stringResource(editLabel),
                 onClick = onEdit,
             )
         }

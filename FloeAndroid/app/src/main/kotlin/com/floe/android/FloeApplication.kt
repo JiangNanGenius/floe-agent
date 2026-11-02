@@ -621,6 +621,20 @@ class FloeApplication : Application() {
             officePreviews.setApprovalNoticeLookup(host.conversations) { taskID ->
                 host.conversations.approvalNoticeFor(taskID)
             }
+            // OFC-SAVE-REOPEN (job-4c314431dd8348d4): the manual workspace original save
+            // pushes an attached provider original through the EXISTING journaled ladder
+            // on the headless runtime-owned lane — the same call the Core model path's
+            // pushOriginalViaHeadlessLane makes. Unbound source or an absent lane simply
+            // skips; the local commit answer is unaffected.
+            officePreviews.saveOriginalPushPort = { request ->
+                host.workspaceSourceHost?.headlessLaneFor(
+                    taskID = request.taskID,
+                    workspaceID = request.workspaceID,
+                    nativeEpoch = request.nativeEpoch,
+                    hostGeneration = request.hostGeneration,
+                    isCurrentOwner = request.ownerFence,
+                )?.savePathToProvider(request.logicalPath)
+            }
         }
         // G05-R3 Alpha14 (user requirement): GitHub full-channel App
         // self-update. Application-owned, data-only creation here; checks,

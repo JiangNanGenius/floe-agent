@@ -150,7 +150,8 @@ public enum C08WorkspaceFileTools {
                  isAvailable: isAvailable, into: registry)
         register(WorkspaceCopyFileTool(environment: environment),
                  isAvailable: isAvailable, into: registry)
-        register(WorkspaceArchiveTool(environment: environment),
+        register(WorkspaceArchiveTool(environment: environment,
+                                      compressedHandler: RARArchiveService.compressedHandler),
                  isAvailable: isAvailable, into: registry)
 
         return environment
