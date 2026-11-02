@@ -229,6 +229,19 @@ public extension FloeCADDocument {
                         } else {
                             row["editable"] = false
                         }
+                    case let .exactCurve(_, definition):
+                        row["kind"] = definition.sourceKind.rawValue
+                        row["exactCurve"] = true
+                        row["closed"] = definition.interval.periodic
+                        row["interval"] = ["lower": definition.interval.lower,
+                                           "upper": definition.interval.upper,
+                                           "periodic": definition.interval.periodic]
+                        row["derivedNormalOffset"] = definition.isDerivedNormalOffset
+                        row["editable"] = false
+                        if let data = try? JSONEncoder().encode(definition),
+                           let object = try? JSONSerialization.jsonObject(with: data) {
+                            row["definition"] = object
+                        }
                     }
                     row["constraint_count"] = sketch.constraints.filter {
                         $0.refs.contains(where: { $0.entityID == entity.id })

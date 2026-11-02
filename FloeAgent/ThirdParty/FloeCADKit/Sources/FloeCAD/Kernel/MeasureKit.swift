@@ -153,6 +153,9 @@ nonisolated enum MeasureKit {
             // Arc length of the tessellated curve — the same polyline the user
             // sees, so the readout matches the drawing.
             polylineLength(SketchEntity.splinePoints(points, closed: closed), closed: closed)
+        case let .exactCurve(_, definition):
+            let points = (try? definition.tessellatedPoints()) ?? []
+            return polylineLength(points, closed: definition.interval.periodic)
         }
     }
 

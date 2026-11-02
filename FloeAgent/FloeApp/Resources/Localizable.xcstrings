@@ -131585,6 +131585,38 @@
           }
         }
       }
+    },
+    "cad.sketch.curve.cusp": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The offset forms a cusp. Reduce the distance or change the source curve."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "偏移产生尖点。请减小距离或修改源曲线。"
+          }
+        }
+      }
+    },
+    "cad.sketch.curve.selfIntersection": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The offset intersects itself. Reduce the distance or change the source curve."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "偏移发生自交。请减小距离或修改源曲线。"
+          }
+        }
+      }
     }
   },
   "version": "1.0"

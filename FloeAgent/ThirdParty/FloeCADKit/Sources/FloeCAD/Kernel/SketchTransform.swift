@@ -37,6 +37,8 @@ nonisolated enum SketchTransform {
                          rotation: rotation)
             case let .spline(id, points, closed):
                 .spline(id: id, points: points.map { $0 + delta }, closed: closed)
+            case let .exactCurve(id, definition):
+                .exactCurve(id: id, definition: definition.translated(by: delta))
             }
         }
     }
@@ -101,6 +103,8 @@ nonisolated enum SketchTransform {
                 // A fit spline is defined purely by its points, so rotating
                 // them rotates the curve exactly — no angle parameter needed.
                 result.append(.spline(id: id, points: points.map(rotated), closed: closed))
+            case let .exactCurve(id, definition):
+                result.append(.exactCurve(id: id, definition: definition.rotated(about: pivot, angle: angle)))
             }
         }
         return result
@@ -143,7 +147,63 @@ nonisolated enum SketchTransform {
                          sides: sides, rotation: rotation + angleShift)
             case let .spline(id, points, closed):
                 .spline(id: id, points: points.map(scaled), closed: closed)
+            case let .exactCurve(id, definition):
+                .exactCurve(id: id, definition: definition.scaled(about: pivot, factor: factor))
             }
         }
+    }
+}
+
+nonisolated extension SketchCurveDefinition {
+    func translated(by delta: SIMD2<Double>) -> Self {
+        var result = self
+        switch support {
+        case let .line(a, b): result.support = .line(a: a + delta, b: b + delta)
+        case let .conic(c, rx, ry, rotation):
+            result.support = .conic(center: c + delta, radiusX: rx, radiusY: ry, rotation: rotation)
+        case let .fitSpline(points, closed):
+            result.support = .fitSpline(points: points.map { $0 + delta }, closed: closed)
+        case let .normalOffset(base, distance, convention):
+            result.support = .normalOffset(base: base.translated(by: delta), distance: distance, convention: convention)
+        }
+        return result
+    }
+
+    func rotated(about pivot: SIMD2<Double>, angle: Double) -> Self {
+        let c = cos(angle), s = sin(angle)
+        func rotate(_ p: SIMD2<Double>) -> SIMD2<Double> {
+            let d = p - pivot
+            return pivot + SIMD2(d.x * c - d.y * s, d.x * s + d.y * c)
+        }
+        var result = self
+        switch support {
+        case let .line(a, b): result.support = .line(a: rotate(a), b: rotate(b))
+        case let .conic(center, rx, ry, rotation):
+            result.support = .conic(center: rotate(center), radiusX: rx, radiusY: ry, rotation: rotation + angle)
+        case let .fitSpline(points, closed):
+            result.support = .fitSpline(points: points.map(rotate), closed: closed)
+        case let .normalOffset(base, distance, convention):
+            result.support = .normalOffset(base: base.rotated(about: pivot, angle: angle),
+                                           distance: distance, convention: convention)
+        }
+        return result
+    }
+
+    func scaled(about pivot: SIMD2<Double>, factor: Double) -> Self {
+        func scale(_ p: SIMD2<Double>) -> SIMD2<Double> { pivot + (p - pivot) * factor }
+        let radiusFactor = abs(factor), angleShift = factor < 0 ? Double.pi : 0
+        var result = self
+        switch support {
+        case let .line(a, b): result.support = .line(a: scale(a), b: scale(b))
+        case let .conic(center, rx, ry, rotation):
+            result.support = .conic(center: scale(center), radiusX: rx * radiusFactor,
+                                    radiusY: ry * radiusFactor, rotation: rotation + angleShift)
+        case let .fitSpline(points, closed):
+            result.support = .fitSpline(points: points.map(scale), closed: closed)
+        case let .normalOffset(base, distance, convention):
+            result.support = .normalOffset(base: base.scaled(about: pivot, factor: factor),
+                                           distance: distance * radiusFactor, convention: convention)
+        }
+        return result
     }
 }

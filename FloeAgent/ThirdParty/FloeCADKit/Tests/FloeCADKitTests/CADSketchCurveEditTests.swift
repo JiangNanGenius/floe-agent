@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
-// M03/M04 SAFE SUBCHAIN ONLY. Native OCCT + production service/session/store.
-// General noncircular ellipse / multi-point spline target materialization and
-// general normal offsets remain deliberately unsupported, never polyline fits.
+// M03/M04 exact native curves + production service/session/store.
+// General intervals and normal offsets remain exact definitions, never fits.
 import XCTest
 import simd
 @testable import FloeCAD
@@ -46,7 +45,7 @@ final class CADSketchCurveEditTests: XCTestCase {
         }
     }
 
-    func testVersionedDefinitionPreservesGeneralBasesWithoutMaterializingThem() throws {
+    func testVersionedDefinitionMaterializesGeneralBasesExactly() throws {
         for entity in [
             SketchEntity.ellipse(id: UUID(), center: SIMD2(2,3), radiusX: 7, radiusY: 3, rotation: 0.37),
             .spline(id: UUID(), points: [SIMD2(-10,-10),SIMD2(-5,0),SIMD2(5,0),SIMD2(10,10)], closed: false),
@@ -54,9 +53,16 @@ final class CADSketchCurveEditTests: XCTestCase {
             let definition = try SketchCurveDefinition(entity)
             let bytes = try JSONEncoder().encode(definition)
             XCTAssertEqual(try JSONDecoder().decode(SketchCurveDefinition.self, from: bytes), definition)
-            XCTAssertFalse(definition.canMaterializeInterval)
-            XCTAssertThrowsError(try definition.materialized(id: entity.id))
-            XCTAssertThrowsError(try definition.normalOffset(by: 1))
+            XCTAssertTrue(definition.canMaterializeInterval)
+            XCTAssertEqual(try definition.materialized(id: entity.id), entity)
+            let offset = try definition.normalOffset(by: 0.25)
+            XCTAssertTrue(offset.isDerivedNormalOffset)
+            guard case let .exactCurve(_, persisted) = try offset.materialized(id: UUID()) else {
+                return XCTFail("general offset was flattened")
+            }
+            XCTAssertEqual(persisted, offset)
+            XCTAssertEqual(try JSONDecoder().decode(SketchCurveDefinition.self,
+                from: JSONEncoder().encode(offset)), offset)
             var object = try XCTUnwrap(JSONSerialization.jsonObject(with: bytes) as? [String: Any])
             object["version"] = 99
             XCTAssertThrowsError(try JSONDecoder().decode(SketchCurveDefinition.self,
@@ -217,7 +223,8 @@ final class CADSketchCurveEditTests: XCTestCase {
             XCTAssertEqual(simd_length(delta), 2, accuracy: 1e-9)
         }
         let nearCircle = SketchEntity.ellipse(id: UUID(), center: .zero, radiusX: 5, radiusY: 5.000000000001, rotation: 0)
-        XCTAssertThrowsError(try SketchCurveDefinition(nearCircle).normalOffset(by: 1))
+        let exact = try SketchCurveDefinition(nearCircle).normalOffset(by: 1)
+        XCTAssertTrue(exact.isDerivedNormalOffset) // near-circle is NOT collapsed to a circle
         XCTAssertTrue(SketchOffset.offset(entities: [nearCircle], by: 1).isEmpty)
     }
 

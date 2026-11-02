@@ -42,6 +42,11 @@ nonisolated extension ProfileDetector {
                 guard !closed, let first = points.first, let last = points.last,
                       points.count >= 2 else { return [] }
                 return [first, last]
+            case let .exactCurve(_, definition):
+                guard !definition.interval.periodic,
+                      let first = try? definition.point(at: definition.interval.lower),
+                      let last = try? definition.point(at: definition.interval.upper) else { return [] }
+                return [first, last]
             case .rect, .circle, .ellipse, .polygon:
                 return [] // closed: no endpoints to chain through
             }

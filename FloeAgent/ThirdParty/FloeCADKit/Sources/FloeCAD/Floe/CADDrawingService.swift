@@ -4371,6 +4371,10 @@ public final class CADDrawingService {
         case let .spline(_, points, closed):
             let polyline = SketchEntity.splinePoints(points, closed: closed)
             return ProjectedEntity(shape: .polyline(points: polyline, closed: closed), layer: layer)
+        case let .exactCurve(_, definition):
+            let polyline = (try? definition.tessellatedPoints()) ?? []
+            return ProjectedEntity(shape: .polyline(points: polyline,
+                closed: definition.interval.periodic), layer: layer)
         }
     }
 

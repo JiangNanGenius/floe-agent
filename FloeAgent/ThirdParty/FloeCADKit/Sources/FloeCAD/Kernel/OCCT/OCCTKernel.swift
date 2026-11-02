@@ -1344,13 +1344,22 @@ nonisolated enum OCCTKernel {
     /// is 7 doubles — `kind (0 line / 1 arc), x1, y1, x2, y2, midX, midY` —
     /// and a spline is `kind (2 open / 3 closed), count, then count x,y
     /// control points` (docs/SPLINE_PROFILE_DESIGN.md), so lines and arcs are
-    /// byte-for-byte what they always were. Empty in, empty out: an all-
-    /// straight loop has nothing to say here that its polyline does not
-    /// already say exactly.
+    /// byte-for-byte what they always were. Kind 4 carries an exact versioned
+    /// curve record as `kind, recordDoubleCount, reversed/closed flags, record`;
+    /// no interval or normal offset is converted to fit points. Empty in, empty
+    /// out: an all-straight loop has no separate exact side channel.
     private static func packSegments(_ segments: [Profile.Segment]) -> Data {
         guard !segments.isEmpty else { return Data() }
         var flat = [Double](); flat.reserveCapacity(segments.count * 7)
         for s in segments {
+            if let curve = s.curve {
+                let record = curve.nativeRecord.withUnsafeBytes { Array($0.bindMemory(to: Double.self)) }
+                flat.append(4)
+                flat.append(Double(record.count))
+                flat.append(Double((s.reversed ? 1 : 0) + (s.closed ? 2 : 0)))
+                flat.append(contentsOf: record)
+                continue
+            }
             if let points = s.controlPoints {
                 flat.append(s.closed ? 3 : 2)
                 flat.append(Double(points.count))

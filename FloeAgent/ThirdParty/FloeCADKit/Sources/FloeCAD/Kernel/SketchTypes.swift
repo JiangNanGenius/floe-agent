@@ -54,12 +54,16 @@ nonisolated enum SketchEntity: Identifiable, Codable, Equatable, Sendable {
     /// `closed` joins the last point back to the first. Two points degenerate to
     /// a straight line, which is what the Shapr3D fit spline does too.
     case spline(id: UUID, points: [SIMD2<Double>], closed: Bool)
+    /// Exact arbitrary interval and/or normal-offset curve. The versioned
+    /// definition is authoritative; display/profile samples are derived only.
+    case exactCurve(id: UUID, definition: SketchCurveDefinition)
 
     var id: UUID {
         switch self {
         case let .line(id, _, _), let .rect(id, _, _), let .circle(id, _, _),
              let .arc(id, _, _, _, _), let .ellipse(id, _, _, _, _),
-             let .polygon(id, _, _, _, _), let .spline(id, _, _):
+             let .polygon(id, _, _, _, _), let .spline(id, _, _),
+             let .exactCurve(id, _):
             id
         }
     }

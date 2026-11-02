@@ -171,9 +171,9 @@ nonisolated enum LiveDimensionKit {
                               start: points[0], end: points[points.count - 1],
                               offset: .zero, arcCenter: center, arcPoints: points)]
 
-        case .spline:
-            // A fit spline has no single number that defines it; showing its
-            // polyline length would imply an editable dimension that is not.
+        case .spline, .exactCurve:
+            // A fit/exact curve has no single number that defines it; showing
+            // its polyline length would imply an editable dimension that is not.
             return []
         }
     }

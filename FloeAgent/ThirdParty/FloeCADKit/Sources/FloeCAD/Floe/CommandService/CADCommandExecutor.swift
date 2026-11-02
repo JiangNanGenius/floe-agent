@@ -1050,6 +1050,11 @@ final class CADCommandExecutor {
                     row["sides"] = sides; row["rotation"] = rot
                 case let .spline(_, points, closed):
                     row["kind"] = "spline"; row["points"] = points.map(v2); row["closed"] = closed
+                case let .exactCurve(_, definition):
+                    row["kind"] = definition.sourceKind.rawValue; row["exactCurve"] = true
+                    row["closed"] = definition.interval.periodic
+                    if let data = try? JSONEncoder().encode(definition),
+                       let object = try? JSONSerialization.jsonObject(with: data) { row["definition"] = object }
                 }
                 return row
             }

@@ -90,6 +90,12 @@ nonisolated enum DXFKit {
                     SketchEntity.splinePoints(points, closed: closed),
                     closed: closed, to: &out
                 )
+            case let .exactCurve(_, definition):
+                // DXF R12 export remains a documented tessellation, never a
+                // claim that the persisted exact curve is a polyline.
+                if let points = try? definition.tessellatedPoints() {
+                    appendPolyline(points, closed: definition.interval.periodic, to: &out)
+                }
             }
         }
         out += "0\nENDSEC\n0\nEOF\n"

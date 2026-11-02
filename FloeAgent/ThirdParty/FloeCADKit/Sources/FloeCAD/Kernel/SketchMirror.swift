@@ -88,6 +88,38 @@ nonisolated func mirroredSketchEntity(
         // order preserves the traversal direction after the mirror flips
         // orientation, matching how the arc case swaps its sweep endpoints.
         return .spline(id: newID, points: points.map(reflect).reversed(), closed: closed)
+
+    case let .exactCurve(_, definition):
+        return .exactCurve(id: newID, definition: definition.mirrored(acrossA: a, b: b))
+    }
+}
+
+nonisolated extension SketchCurveDefinition {
+    func mirrored(acrossA a: SIMD2<Double>, b: SIMD2<Double>) -> Self {
+        let axisAngle = atan2(b.y - a.y, b.x - a.x)
+        func reflect(_ p: SIMD2<Double>) -> SIMD2<Double> { reflectPoint(p, acrossA: a, b: b) }
+        var result = self
+        switch support {
+        case let .line(first, last):
+            result.support = .line(a: reflect(first), b: reflect(last))
+        case let .conic(center, rx, ry, rotation):
+            result.support = .conic(center: reflect(center), radiusX: rx, radiusY: ry,
+                                    rotation: 2 * axisAngle - rotation)
+            if !interval.periodic {
+                result.interval = try! SketchCurveParameterInterval(lower: -interval.upper, upper: -interval.lower)
+            }
+        case let .fitSpline(points, closed):
+            result.support = .fitSpline(points: points.map(reflect).reversed(), closed: closed)
+            if !interval.periodic {
+                result.interval = try! SketchCurveParameterInterval(lower: 1 - interval.upper, upper: 1 - interval.lower)
+            }
+        case let .normalOffset(base, distance, convention):
+            let mirroredBase = base.mirrored(acrossA: a, b: b)
+            result.support = .normalOffset(base: mirroredBase,
+                distance: convention == "left_of_travel" ? -distance : distance, convention: convention)
+            result.interval = mirroredBase.interval
+        }
+        return result
     }
 }
 
@@ -103,6 +135,7 @@ nonisolated extension SketchEntity {
         // An open spline exposes its ends, matching `mutableSlots`; a closed
         // one has no distinguished point pair to mirror.
         case let .spline(_, _, closed): return closed ? [] : [.endpointA, .endpointB]
+        case .exactCurve: return []
         }
     }
 

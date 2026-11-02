@@ -1483,6 +1483,7 @@ public final class CADParameterService {
         case .ellipse: "ellipse"
         case .polygon: "polygon"
         case .spline: "spline"
+        case let .exactCurve(_, definition): "\(definition.sourceKind.rawValue) exact curve"
         }
     }
 
@@ -4727,7 +4728,7 @@ public final class CADParameterService {
             applied["points"] = rows
             response["points"] = rows
             response["pointCount"] = points.count
-        case .polygon:
+        case .polygon, .exactCurve:
             break
         }
         return (applied, response)
@@ -4828,7 +4829,7 @@ public final class CADParameterService {
             return true
         case let .spline(_, _, closed):
             return !closed
-        case .circle, .arc, .ellipse, .polygon:
+        case .circle, .arc, .ellipse, .polygon, .exactCurve:
             return false
         }
     }
@@ -4860,6 +4861,8 @@ public final class CADParameterService {
         case let .spline(_, points, closed):
             guard !closed, let first = points.first, let last = points.last else { return [] }
             return [(.endpointA, first), (.endpointB, last)]
+        case .exactCurve:
+            return []
         }
     }
 

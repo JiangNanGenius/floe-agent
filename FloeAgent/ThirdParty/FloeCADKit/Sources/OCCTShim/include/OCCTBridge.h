@@ -77,6 +77,10 @@ typedef NS_ENUM(NSInteger, OCCTOpCode) {
     OCCTOpCodeMultiSolid = 4,
     /// The kernel declined the inputs or threw before producing a result.
     OCCTOpCodeKernelRefused = 5,
+    /// Exact planar normal-offset diagnostics; no partial curve is returned.
+    OCCTOpCodeCurveOffsetCusp = 6,
+    OCCTOpCodeCurveOffsetSelfIntersection = 7,
+    OCCTOpCodeCurveOffsetCollapse = 8,
 };
 
 @interface OCCTOpStatus : NSObject
@@ -477,15 +481,41 @@ typedef NS_ENUM(NSInteger, OCCTOpCode) {
 /// version, kind(0 line / 1 conic / 2 fit spline), lower, upper,
 /// flags(bit0 periodic range / bit1 closed spline basis),
 /// then [ax,ay,bx,by] / [cx,cy,rx,ry,rotation] / [count,x,y,...].
-/// Spline values are original fit points consumed by OS3DSplineEdge, NEVER
-/// samples. Output is packed x,y intersections; nil refuses overlapping or
-/// invalid curves atomically. Empty data means no cross intersection.
+/// v2 kind 3 is an exact normal offset: convention(0 left / 1 outward),
+/// distance, basis-double-count, then the recursive basis record. Spline values
+/// are original fit points consumed by OS3DSplineEdge, NEVER samples.
+/// extensionDirection is -1 (start), 0 (trim only), or +1 (end). Output rows
+/// are x,y,targetParameter; nil refuses overlap/invalid curves atomically.
 + (nullable NSData *)sketchCurveIntersectionsForTarget:(NSData *)target
                                             boundary:(NSData *)boundary
-                                        extendTarget:(BOOL)extendTarget
+                                  extensionDirection:(NSInteger)extensionDirection
                                            tolerance:(double)tolerance
                                               status:(nullable OCCTOpStatus *)status
-    NS_SWIFT_NAME(sketchCurveIntersections(target:boundary:extendTarget:tolerance:status:));
+    NS_SWIFT_NAME(sketchCurveIntersections(target:boundary:extensionDirection:tolerance:status:));
+
+/// Evaluate normalized definition parameters on the exact native curve. Input
+/// and output are packed doubles (parameters, then x,y pairs). No fit is made.
++ (nullable NSData *)sketchCurvePointsForDefinition:(NSData *)definition
+                                         parameters:(NSData *)parameters
+                                          tolerance:(double)tolerance
+                                             status:(nullable OCCTOpStatus *)status
+    NS_SWIFT_NAME(sketchCurvePoints(definition:parameters:tolerance:status:));
+
+/// Orthogonally project packed x,y onto the exact curve and return its normalized
+/// definition parameter. Extended projection may use exact B-spline extrapolation.
++ (nullable NSNumber *)sketchCurveParameterForPoint:(NSData *)point
+                                         definition:(NSData *)definition
+                                           extended:(BOOL)extended
+                                          tolerance:(double)tolerance
+                                             status:(nullable OCCTOpStatus *)status
+    NS_SWIFT_NAME(sketchCurveParameter(point:definition:extended:tolerance:status:));
+
+/// Validate a v2 exact normal offset. Returns packed length, maximum normal
+/// distance error and maximum absolute tangent dot residual. Nil + status 6/7/8
+/// reports cusp/self-intersection/collapse without emitting partial geometry.
++ (nullable NSData *)validateSketchNormalOffset:(NSData *)definition
+                                      tolerance:(double)tolerance
+                                         status:(nullable OCCTOpStatus *)status;
 
 /// Round the edges that pass near `worldPoints` to `radius`
 /// (`BRepFilletAPI_MakeFillet`). `worldPoints` is packed doubles (x,y,z triples)

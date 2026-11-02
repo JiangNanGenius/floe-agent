@@ -794,6 +794,7 @@
 		9BA3B9A6FA78531B9263C768 /* FloePDFExceptionGuard.mm in Sources */ = {isa = PBXBuildFile; fileRef = CF1B779164527F33E4275795 /* FloePDFExceptionGuard.mm */; };
 		9BF2BBB0FB396441E24AAA7D /* CADIGESSurfaceRoundTripTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B8DFAD810199F24D407CF795 /* CADIGESSurfaceRoundTripTests.swift */; };
 		9C448CA84007AF195349A9C1 /* RemoteImageCreationView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2D2970DE592A16AFA08AE6A2 /* RemoteImageCreationView.swift */; };
+		9C9585535FDE167827709557 /* CADExactCurveClosureTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B0CBCDF080EFC08AF181C5FE /* CADExactCurveClosureTests.swift */; };
 		9CA403FE63AC9D8E8329630E /* LinuxPortForwardCenter.swift in Sources */ = {isa = PBXBuildFile; fileRef = 47D0960D689C2D2C8BDACECF /* LinuxPortForwardCenter.swift */; };
 		9CBCAF14A029D5BAF1B3ADCA /* MarkdownRendererView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 680DDD4B4A4B0E26F99D2209 /* MarkdownRendererView.swift */; };
 		9CC17DEB2EAB22FAF8BECAE1 /* FloeSystemAlarmControlIntents.swift in Sources */ = {isa = PBXBuildFile; fileRef = C15BA49459BEF838E84E29DF /* FloeSystemAlarmControlIntents.swift */; };
@@ -2275,6 +2276,7 @@
 		B059791171B82A3139340721 /* FoldableLayoutTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FoldableLayoutTests.swift; sourceTree = "<group>"; };
 		B0766D5622BEA31E66BE2CBE /* SettingsCenter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsCenter.swift; sourceTree = "<group>"; };
 		B08D7F804AC733A0DBC93AA4 /* OrdinaryDocumentActionProfileTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OrdinaryDocumentActionProfileTests.swift; sourceTree = "<group>"; };
+		B0CBCDF080EFC08AF181C5FE /* CADExactCurveClosureTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CADExactCurveClosureTests.swift; sourceTree = "<group>"; };
 		B16F299F135E80635DDD9F14 /* ConversationSearchTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConversationSearchTests.swift; sourceTree = "<group>"; };
 		B1A2481C7D3BE4E1437EE73B /* TemporaryConversationUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TemporaryConversationUITests.swift; sourceTree = "<group>"; };
 		B1D731491F4941D328A12276 /* ProviderImageEvidenceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProviderImageEvidenceTests.swift; sourceTree = "<group>"; };
@@ -2786,6 +2788,7 @@
 				C61EF89A8C54D12331F1E49C /* CADDrawingMultiViewAssociativityTests.swift */,
 				A83F0C104F814890D2936D1E /* CADDrawingTests.swift */,
 				A948A38383E488B53AB3D4F9 /* CADEdgeBlendReferenceTests.swift */,
+				B0CBCDF080EFC08AF181C5FE /* CADExactCurveClosureTests.swift */,
 				DAAFB417BD938CD8A478D346 /* CADExactnessPreservationTests.swift */,
 				CB72E4F6E417E383D2DE0E85 /* CADExternalSketchProjectionTests.swift */,
 				1FF6957E16B56ECA64462B7D /* CADHoleFeatureTests.swift */,
@@ -5922,6 +5925,7 @@
 				D1C1C5BE343A8B45662D2C27 /* CADDrawingMultiViewAssociativityTests.swift in Sources */,
 				76C005A34D74130B3EC10DA8 /* CADDrawingTests.swift in Sources */,
 				20C6BE3BDE8D5EF000A62369 /* CADEdgeBlendReferenceTests.swift in Sources */,
+				9C9585535FDE167827709557 /* CADExactCurveClosureTests.swift in Sources */,
 				DD51D215C90C442BF1BB916B /* CADExactnessPreservationTests.swift in Sources */,
 				8969C79ADF8D5015FE806675 /* CADExternalSketchProjectionTests.swift in Sources */,
 				9D6D7B3F671DF807B753CC74 /* CADGLBExportCallerTests.swift in Sources */,

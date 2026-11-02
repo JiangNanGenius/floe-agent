@@ -103,6 +103,8 @@ nonisolated struct SweepPathDefinition: Codable, Hashable, Sendable {
                 segmentsPerTurn: SketchTessellator.circleSegments)
         case let .spline(_, points, closed):
             return closed ? nil : SketchEntity.splinePoints(points, closed: false)
+        case let .exactCurve(_, definition):
+            return definition.interval.periodic ? nil : try? definition.tessellatedPoints()
         case .rect, .circle, .ellipse, .polygon: return nil
         }
     }

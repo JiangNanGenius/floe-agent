@@ -67,6 +67,8 @@ nonisolated enum SymbolKit {
                 sum += points.isEmpty
                     ? .zero
                     : points.reduce(SIMD2<Double>.zero, +) / Double(points.count)
+            case let .exactCurve(_, definition):
+                sum += (try? definition.point(at: (definition.interval.lower + definition.interval.upper) / 2)) ?? .zero
             }
         }
         return sum / Double(entities.count)
@@ -111,6 +113,8 @@ nonisolated enum SymbolKit {
             .polygon(id: UUID(), center: center, radius: radius, sides: sides, rotation: rotation)
         case let .spline(_, points, closed):
             .spline(id: UUID(), points: points, closed: closed)
+        case let .exactCurve(_, definition):
+            .exactCurve(id: UUID(), definition: definition)
         }
     }
 }

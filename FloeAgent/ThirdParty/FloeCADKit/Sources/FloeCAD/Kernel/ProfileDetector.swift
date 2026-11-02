@@ -46,15 +46,24 @@ nonisolated struct Profile: Identifiable {
         /// spline (the curve returns to its first point; `start == end`).
         /// Nil for lines and arcs.
         var controlPoints: [SIMD2<Double>]? = nil
+        /// Exact arbitrary interval or normal-offset record. Native SegWire
+        /// consumes this definition directly; loop remains display/mesh-only.
+        var curve: SketchCurveDefinition? = nil
         var closed: Bool = false
+        /// Reverse only native edge orientation for this traversal; the shared
+        /// curve definition and its persisted parameter interval stay intact.
+        var reversed: Bool = false
 
         init(start: SIMD2<Double>, end: SIMD2<Double>, mid: SIMD2<Double>? = nil,
-             controlPoints: [SIMD2<Double>]? = nil, closed: Bool = false) {
+             controlPoints: [SIMD2<Double>]? = nil, curve: SketchCurveDefinition? = nil,
+             closed: Bool = false, reversed: Bool = false) {
             self.start = start
             self.end = end
             self.mid = mid
             self.controlPoints = controlPoints
+            self.curve = curve
             self.closed = closed
+            self.reversed = reversed
         }
     }
 
@@ -249,6 +258,22 @@ nonisolated enum ProfileDetector {
             }
         }
 
+        // Closed exact intervals/offsets are one native edge, just like a
+        // closed fit spline. Sampling only decides display winding and area;
+        // SegWire receives the unchanged exact definition and reverse flag.
+        for entity in entities {
+            guard case let .exactCurve(id, definition) = entity, definition.interval.periodic,
+                  var loop = try? definition.tessellatedPoints(), loop.count >= 3 else { continue }
+            var reversed = false
+            if Profile.signedArea(loop) < 0 { loop.reverse(); reversed = true }
+            guard Profile.signedArea(loop) > 1e-9, !isSelfIntersecting(loop) else { continue }
+            profiles.append(Profile(
+                loop: loop, kind: .polygonal, sourceEntityIDs: [id],
+                segments: [Profile.Segment(start: loop[0], end: loop[0], curve: definition,
+                                           closed: true, reversed: reversed)],
+                segmentEntityIDs: [id]))
+        }
+
         // Rects are closed by definition; emit directly (CCW).
         for entity in entities {
             if case let .rect(id, lo, hi) = entity {
@@ -338,7 +363,7 @@ nonisolated enum ProfileDetector {
 
     private static func hasUnsplitCurve(_ profile: Profile) -> Bool {
         if case .ellipse = profile.kind { return true }
-        return profile.segments.contains { $0.controlPoints != nil }
+        return profile.segments.contains { $0.controlPoints != nil || $0.curve != nil }
     }
 
     // MARK: - Loop walking over line segments
@@ -366,6 +391,8 @@ nonisolated enum ProfileDetector {
             /// An OPEN spline's control points, in the order of `points`, so a
             /// loop can carry it as one exact segment (one B-spline edge).
             var spline: [SIMD2<Double>]? = nil
+            /// Exact interval/offset definition for the whole open chain.
+            var curve: SketchCurveDefinition? = nil
             /// An arc's exact geometry (CCW from `start` through `sweep`), so a
             /// crossing can be found and the arc split without going through
             /// its tessellation.
@@ -398,6 +425,11 @@ nonisolated enum ProfileDetector {
                 if samples.count >= 2, simd_length(samples.last! - samples.first!) > 1e-9 {
                     chains.append(Chain(entityID: id, points: samples, isArc: false, spline: points))
                 }
+            case let .exactCurve(id, definition) where !definition.interval.periodic:
+                if let samples = try? definition.tessellatedPoints(), samples.count >= 2,
+                   simd_length(samples.last! - samples.first!) > 1e-9 {
+                    chains.append(Chain(entityID: id, points: samples, isArc: false, curve: definition))
+                }
             default:
                 break
             }
@@ -428,7 +460,7 @@ nonisolated enum ProfileDetector {
         // temporary graph: the original entities, constraints and boundary
         // ownership remain unchanged. Curves retain their analytic chains.
         let straightIndices = chains.indices.filter {
-            !chains[$0].isArc && chains[$0].spline == nil && chains[$0].points.count == 2
+            !chains[$0].isArc && chains[$0].spline == nil && chains[$0].curve == nil && chains[$0].points.count == 2
         }
         var cuts: [Int: [(t: Double, point: SIMD2<Double>)]] = [:]
         func cross(_ a: SIMD2<Double>, _ b: SIMD2<Double>) -> Double {
@@ -701,7 +733,12 @@ nonisolated enum ProfileDetector {
                 // An interior SAMPLE serves as the arc's third point: it is on
                 // the true arc by construction, whichever way the face
                 // traversal happened to walk this chain.
-                if let control = chain.spline {
+                if let curve = chain.curve {
+                    sawCurve = true
+                    segments.append(Profile.Segment(
+                        start: pts[0], end: pts[pts.count - 1], curve: curve,
+                        reversed: !half.forward))
+                } else if let control = chain.spline {
                     // The control points in THIS traversal's order: a reversed
                     // Catmull–Rom is the same curve walked backwards.
                     sawCurve = true

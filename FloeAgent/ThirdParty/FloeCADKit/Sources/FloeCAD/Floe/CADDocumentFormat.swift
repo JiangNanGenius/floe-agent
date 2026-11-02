@@ -239,7 +239,12 @@ nonisolated enum CADDocumentFormat {
         if document.sketches.contains(where: { $0.hasExternalReferences }) {
             required = max(required, externalSketchProjectionVersion)
         }
-        if document.sketches.contains(where: { !$0.curveOffsetLinks.isEmpty }) {
+        if document.sketches.contains(where: {
+            !$0.curveOffsetLinks.isEmpty || $0.entities.contains(where: {
+                if case .exactCurve = $0 { return true }
+                return false
+            })
+        }) {
             required = max(required, sketchCurveEditVersion)
         }
         return required
@@ -702,7 +707,11 @@ nonisolated enum CADDocumentFormat {
             for reference in sketch.externalReferences ?? [] { try reference.validate() }
             _ = try encoder.encode(sketch)
         }
-        for sketch in document.sketches where !sketch.curveOffsetLinks.isEmpty {
+        for sketch in document.sketches where !sketch.curveOffsetLinks.isEmpty
+            || sketch.entities.contains(where: {
+                if case .exactCurve = $0 { return true }
+                return false
+            }) {
             try SketchCurveOffsetKit.validateStored(sketch)
             _ = try encoder.encode(sketch)
         }
@@ -895,7 +904,16 @@ nonisolated enum CADDocumentFormat {
             let external = object["externalReferences"]
             let hasExternal = try externalProjectionIntent(in: object)
             let curveOffsets = try curveOffsetIntent(in: object)
-            guard hasSupport || hasExternal || curveOffsets.present else { continue }
+            let exactCurves = try exactCurveIntent(in: object)
+            guard hasSupport || hasExternal || curveOffsets.present || exactCurves.present else { continue }
+            if exactCurves.present {
+                result.requiredVersion = max(result.requiredVersion, sketchCurveEditVersion)
+                if exactCurves.future {
+                    _ = try cachedSketch(from: row.data)
+                    result.opaqueSketches.insert(row.blobID)
+                    continue
+                }
+            }
             if curveOffsets.present {
                 result.requiredVersion = max(result.requiredVersion, sketchCurveEditVersion)
                 if !curveOffsets.future {
@@ -923,7 +941,7 @@ nonisolated enum CADDocumentFormat {
                 hasExternal ? externalSketchProjectionVersion : associativeVersion)
             do {
                 let sketch = try JSONDecoder().decode(Sketch.self, from: row.data)
-                if curveOffsets.present { try SketchCurveOffsetKit.validateStored(sketch) }
+                if curveOffsets.present || exactCurves.present { try SketchCurveOffsetKit.validateStored(sketch) }
             } catch let error as SketchExternalReferenceError where error.requiresOpaqueReadOnlyDocument {
                 // A newer external-reference semantic contract: prove the
                 // cached display portion itself is readable, then open opaque
@@ -958,7 +976,8 @@ nonisolated enum CADDocumentFormat {
                     throw CADDocumentFormatError.malformedAssociation(
                         "sketch-external-reference")
                 }
-                throw CADDocumentFormatError.malformedAssociation("sketch-support")
+                throw CADDocumentFormatError.malformedAssociation(
+                    exactCurves.present ? "sketch-exact-curve" : "sketch-support")
             }
         }
         for row in features {
@@ -1306,12 +1325,82 @@ nonisolated enum CADDocumentFormat {
         try cachedValue(ConstructionPlane.self, data: data, removing: "definition")
     }
     static func cachedSketch(from data: Data) throws -> Sketch {
-        // The cached display portion must decode WITHOUT the association
-        // fields: a newer support case OR a newer external-reference contract
-        // both leave the readable geometry readable (the whole document then
-        // opens opaque and read-only around it).
-        try cachedValue(Sketch.self, data: data, removing: "support", "externalReferences", "curveOffsetLinks")
+        // The original row remains byte-for-byte intact. Only this disposable
+        // display copy drops exactCurve entities when their future definition
+        // cannot be evaluated by this build; no opaque curve is refit or guessed.
+        guard var object = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            throw CADDocumentFormatError.malformedAssociation("sketch-exact-curve")
+        }
+        object.removeValue(forKey: "support")
+        object.removeValue(forKey: "externalReferences")
+        object.removeValue(forKey: "curveOffsetLinks")
+        if let entities = object["entities"] as? [Any] {
+            object["entities"] = entities.filter {
+                guard let entity = $0 as? [String: Any] else { return true }
+                guard entity["exactCurve"] != nil else { return true }
+                // An unrelated future association must not hide a curve this
+                // build can still read. Only the uninterpretable entity is
+                // omitted from the disposable display copy, never the raw row.
+                guard let encoded = try? JSONSerialization.data(withJSONObject: entity),
+                      (try? JSONDecoder().decode(SketchEntity.self, from: encoded)) != nil else { return false }
+                return true
+            }
+        }
+        return try JSONDecoder().decode(Sketch.self,
+            from: JSONSerialization.data(withJSONObject: object))
     }
+    /// Inspect actual exactCurve entities even when no offset link exists.
+    /// Unknown support/source/convention or a newer semantic version is opaque;
+    /// malformed known records are corruption rather than plain old geometry.
+    private static func exactCurveIntent(in object: [String: Any]) throws -> (present: Bool, future: Bool) {
+        func malformed() -> CADDocumentFormatError { .malformedAssociation("sketch-exact-curve") }
+        func integer(_ raw: Any?) throws -> Int {
+            guard let number = raw as? NSNumber, CFGetTypeID(number) != CFBooleanGetTypeID(),
+                  number.doubleValue.isFinite, number.doubleValue.rounded() == number.doubleValue,
+                  number.doubleValue >= 1, number.doubleValue <= Double(Int.max) else { throw malformed() }
+            return number.intValue
+        }
+        func futureDefinition(_ definition: [String: Any], depth: Int = 0) throws -> Bool {
+            guard depth < 32 else { throw malformed() }
+            let version = try integer(definition["version"])
+            if version > SketchCurveDefinition.currentVersion { return true }
+            if let rawKind = definition["sourceKind"] as? String,
+               !["line", "circle", "arc", "ellipse", "spline"].contains(rawKind) { return true }
+            if let interval = definition["interval"] as? [String: Any],
+               try integer(interval["version"]) > 1 { return true }
+            guard let support = definition["support"] as? [String: Any], support.count == 1,
+                  let kind = support.keys.first else { throw malformed() }
+            if !["line", "conic", "fitSpline", "normalOffset"].contains(kind) { return true }
+            if kind == "normalOffset", let offset = support[kind] as? [String: Any] {
+                if let convention = offset["convention"] as? String,
+                   !["left_of_travel", "outward_conic"].contains(convention) { return true }
+                guard let base = offset["base"] as? [String: Any] else { throw malformed() }
+                return try futureDefinition(base, depth: depth + 1)
+            }
+            return false
+        }
+        guard let rawEntities = object["entities"] else { return (false, false) }
+        guard let entities = rawEntities as? [Any] else { throw malformed() }
+        var present = false, future = false
+        for value in entities {
+            guard let entity = value as? [String: Any], let raw = entity["exactCurve"] else { continue }
+            present = true
+            guard let payload = raw as? [String: Any],
+                  let definition = payload["definition"] as? [String: Any] else { throw malformed() }
+            if try futureDefinition(definition) {
+                future = true
+            } else {
+                // A future sibling cannot turn malformed known geometry into
+                // an accepted opaque document.
+                do {
+                    _ = try JSONDecoder().decode(SketchEntity.self,
+                        from: JSONSerialization.data(withJSONObject: entity))
+                } catch { throw malformed() }
+            }
+        }
+        return (present, future)
+    }
+
     /// Validate every known sibling before allowing future curve intent to
     /// remain opaque. Nothing is silently decoded away as an empty relation.
     private static func curveOffsetIntent(in object: [String: Any]) throws -> (present: Bool, future: Bool) {
@@ -1325,7 +1414,7 @@ nonisolated enum CADDocumentFormat {
                   CFGetTypeID(number) != CFBooleanGetTypeID(), number.doubleValue.isFinite,
                   number.doubleValue.rounded() == number.doubleValue, number.doubleValue >= 1 else { throw malformed() }
             let newer = number.doubleValue > 1
-                || ((row["sourceDefinitionVersion"] as? Int) ?? 1) > 1
+                || ((row["sourceDefinitionVersion"] as? Int) ?? 1) > SketchCurveDefinition.currentVersion
                 || (row["intervalPolicy"] as? String).map { $0 != "followSource" } == true
                 || (row["sourceKind"] as? String).map { !kinds.contains($0) } == true
                 || (row["convention"] as? String).map { !["left_of_travel", "outward_conic"].contains($0) } == true

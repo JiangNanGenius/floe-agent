@@ -168,6 +168,8 @@ nonisolated enum SketchHitTester {
             guard !closed, let a = points.first, let b = points.last,
                   points.count >= 2 else { return [] }
             return [(.endpointA, a), (.endpointB, b)]
+        case .exactCurve:
+            return [] // no legacy solver variables are invented for exact records
         }
     }
 
@@ -221,6 +223,8 @@ nonisolated enum SketchHitTester {
                 }
             }
             return handles
+        case .exactCurve:
+            return []
         }
     }
 
@@ -266,6 +270,16 @@ nonisolated enum SketchHitTester {
             }
             if closed { return distanceToLoop(p, curve) }
             // Open curve: nearest of the tessellated spans.
+            var best = Double.greatestFiniteMagnitude
+            for i in 0..<(curve.count - 1) {
+                best = min(best, distanceToSegment(p, a: curve[i], b: curve[i + 1]))
+            }
+            return best
+        case let .exactCurve(_, definition):
+            guard let curve = try? definition.tessellatedPoints(), curve.count >= 2 else {
+                return .greatestFiniteMagnitude
+            }
+            if definition.interval.periodic { return distanceToLoop(p, curve) }
             var best = Double.greatestFiniteMagnitude
             for i in 0..<(curve.count - 1) {
                 best = min(best, distanceToSegment(p, a: curve[i], b: curve[i + 1]))
@@ -400,6 +414,8 @@ nonisolated enum SketchHitTester {
             )
         case let .spline(id, points, closed):
             return .spline(id: id, points: points.map { $0 + delta }, closed: closed)
+        case let .exactCurve(id, definition):
+            return .exactCurve(id: id, definition: definition.translated(by: delta))
         }
     }
 

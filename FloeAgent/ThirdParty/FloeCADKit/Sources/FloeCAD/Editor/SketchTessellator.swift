@@ -83,6 +83,10 @@ nonisolated enum SketchTessellator {
                     SketchEntity.splinePoints(points, closed: closed),
                     closed: closed, plane, &out
                 )
+            case let .exactCurve(_, definition):
+                if let points = try? definition.tessellatedPoints() {
+                    appendPolyline(points, closed: definition.interval.periodic, plane, &out)
+                }
             }
         }
         return out

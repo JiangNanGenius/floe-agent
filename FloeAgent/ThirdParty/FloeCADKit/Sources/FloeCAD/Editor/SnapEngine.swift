@@ -236,6 +236,14 @@ nonisolated enum SnapEngine {
                 // Snap to the FIT points the user placed, not the tessellation —
                 // those are the notable points of a spline (spec §2.7).
                 for point in splinePoints { add(point, .endpoint) }
+            case let .exactCurve(_, definition):
+                if !definition.interval.periodic {
+                    if let first = try? definition.point(at: definition.interval.lower) { add(first, .endpoint) }
+                    if let last = try? definition.point(at: definition.interval.upper) { add(last, .endpoint) }
+                }
+                if let mid = try? definition.point(at: (definition.interval.lower + definition.interval.upper) / 2) {
+                    add(mid, .midpoint)
+                }
             }
         }
         return out

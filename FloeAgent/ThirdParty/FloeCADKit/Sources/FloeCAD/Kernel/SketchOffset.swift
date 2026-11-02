@@ -34,6 +34,7 @@ nonisolated enum SketchOffset {
             switch $0 {
             case let .ellipse(_, _, rx, ry, _): return rx != ry
             case .spline: return true // exact two-point subtype uses SketchCurveDefinition
+            case .exactCurve: return true // single-curve service owns exact normal offsets
             default: return false
             }
         }) else { return [] }
@@ -82,6 +83,8 @@ nonisolated enum SketchOffset {
                 // emit something geometrically wrong (spec §1.9 lists offset
                 // for lines/arcs/circles/rects/polygons).
                 break
+            case .exactCurve:
+                break // guarded above; never silently drop it from a chain
             case let .polygon(_, center, radius, sides, rotation):
                 guard sides >= 3 else { break }
                 // Edges move by `distance`, so the circumradius grows by the

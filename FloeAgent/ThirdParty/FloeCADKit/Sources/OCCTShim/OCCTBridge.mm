@@ -68,6 +68,11 @@
 #include <Geom_SurfaceOfRevolution.hxx>
 #include <Geom_RectangularTrimmedSurface.hxx>
 #include <Geom2d_Curve.hxx>
+#include <Geom2d_OffsetCurve.hxx>
+#include <Geom2d_TrimmedCurve.hxx>
+#include <Geom2dAdaptor_Curve.hxx>
+#include <Geom2dLProp_Curve2dTool.hxx>
+#include <Geom2dAPI_ProjectPointOnCurve.hxx>
 #include <GeomAPI.hxx>
 #include <Geom2dAPI_InterCurveCurve.hxx>
 #include <Geom_Line.hxx>
@@ -901,54 +906,195 @@ static bool OS3DSplineEdge(const double *xy, NSUInteger count, bool closed,
     return true;
 }
 
-/// Records are walked by KIND (see `packSegments`): a line or arc is 7
-/// doubles, a spline is `kind, count, count x,y pairs` and becomes ONE edge.
+/// Records are walked by KIND (see `packSegments`): line/arc and legacy spline
+/// bytes are unchanged; kind 4 carries one exact versioned curve record.
 // Versioned exact curve record shared with SketchCurveDefinition. Domain
 // conversion happens here once; no interpolated/tessellated boundary is used.
-static Handle(Geom_Curve) OS3DSketchCurveDefinition(NSData *record, bool extend) {
-    if (record.length % sizeof(double) != 0 || record.length < 9 * sizeof(double)
-        || record.length > (6 + 256 * 2) * sizeof(double)) return Handle(Geom_Curve)();
+static double OS3DDefinitionParameter(NSData *record, double value, bool toNative, int depth = 0);
+
+static Handle(Geom_Curve) OS3DSketchCurveDefinition(
+    NSData *record, bool extend, bool applyInterval = true,
+    double extensionLower = 0.0, double extensionUpper = 1.0, int depth = 0) {
+    if (depth > 32 || record.length % sizeof(double) != 0
+        || record.length < 9 * sizeof(double) || record.length > 131072 * sizeof(double)) {
+        return Handle(Geom_Curve)();
+    }
     const double *v = (const double *)record.bytes;
     const NSUInteger n = record.length / sizeof(double);
-    for (NSUInteger i = 0; i < n; ++i) if (!std::isfinite(v[i]) || std::abs(v[i]) > 1e12) return Handle(Geom_Curve)();
-    if (v[0] != 1 || v[3] - v[2] <= 1e-9 || (v[4] < 0 || v[4] > 3 || v[4] != std::floor(v[4]))) return Handle(Geom_Curve)();
+    for (NSUInteger i = 0; i < n; ++i) {
+        if (!std::isfinite(v[i]) || std::abs(v[i]) > 1e12) return Handle(Geom_Curve)();
+    }
+    if ((v[0] != 1 && v[0] != 2) || v[3] - v[2] <= 1e-9
+        || v[4] < 0 || v[4] > 3 || v[4] != std::floor(v[4])) return Handle(Geom_Curve)();
     Handle(Geom_Curve) curve;
     double first = v[2], last = v[3];
-    if (v[1] == 0 && n == 9) {
+    if (v[0] == 1 && v[1] == 0 && n == 9) {
         if (v[4] != 0) return Handle(Geom_Curve)();
         const gp_Pnt a(v[5], v[6], 0), b(v[7], v[8], 0);
         const double length = a.Distance(b);
         if (length <= 1e-8) return Handle(Geom_Curve)();
         curve = new Geom_Line(a, gp_Dir(gp_Vec(a, b)));
-        if (extend) return curve;
+        if (extend || !applyInterval) return curve;
         first *= length; last *= length;
-    } else if (v[1] == 1 && n == 10) {
+    } else if (v[0] == 1 && v[1] == 1 && n == 10) {
         const double rx = v[7], ry = v[8], rotation = v[9];
-        if (v[4] > 1 || rx <= 1e-8 || ry <= 1e-8 || last - first > 2 * M_PI + 1e-8) return Handle(Geom_Curve)();
+        if (v[4] > 1 || rx <= 1e-8 || ry <= 1e-8 || last - first > 2 * M_PI + 1e-8) {
+            return Handle(Geom_Curve)();
+        }
         const bool circle = rx == ry;
         const bool xMajor = rx >= ry;
         const double angle = rotation + (!circle && !xMajor ? M_PI_2 : 0);
-        const gp_Ax2 axis(gp_Pnt(v[5], v[6], 0), gp_Dir(0,0,1), gp_Dir(cos(angle),sin(angle),0));
+        const gp_Ax2 axis(gp_Pnt(v[5], v[6], 0), gp_Dir(0,0,1),
+                          gp_Dir(cos(angle),sin(angle),0));
         if (circle) curve = new Geom_Circle(axis, rx);
         else {
             curve = new Geom_Ellipse(axis, std::max(rx,ry), std::min(rx,ry));
             if (!xMajor) { first -= M_PI_2; last -= M_PI_2; }
         }
-        if (extend) return circle ? curve : Handle(Geom_Curve)();
-        if (v[4] == 1) return curve;
-    } else if (v[1] == 2 && n >= 12) {
-        if (extend || v[5] != std::floor(v[5]) || v[5] < 3 || v[5] > 256
-            || n != 6 + (NSUInteger)v[5] * 2 || first < 0 || last > 1) return Handle(Geom_Curve)();
+        if (extend || !applyInterval || v[4] == 1) return curve;
+    } else if (v[0] == 1 && v[1] == 2 && n >= 12) {
+        if (v[5] != std::floor(v[5]) || v[5] < 3 || v[5] > 256
+            || n != 6 + (NSUInteger)v[5] * 2) return Handle(Geom_Curve)();
         TopoDS_Edge edge;
-        if (!OS3DSplineEdge(v + 6, (NSUInteger)v[5], (((int)v[4]) & 2) != 0, 0, edge)) return Handle(Geom_Curve)();
+        if (!OS3DSplineEdge(v + 6, (NSUInteger)v[5], (((int)v[4]) & 2) != 0, 0, edge)) {
+            return Handle(Geom_Curve)();
+        }
         Standard_Real begin = 0, end = 0;
         curve = BRep_Tool::Curve(edge, begin, end);
-        if (curve.IsNull()) return curve;
-        first = begin + (end - begin) * v[2];
-        last = begin + (end - begin) * v[3];
+        if (curve.IsNull()) return Handle(Geom_Curve)();
+        Handle(Geom_BSplineCurve) bs = Handle(Geom_BSplineCurve)::DownCast(curve->Copy());
+        if (bs.IsNull() || !(end > begin)) return Handle(Geom_Curve)();
+        const bool closedBasis = (((int)v[4]) & 2) != 0;
+        if (closedBasis) {
+            // A closed fit spline has a unit periodic parameter even though the
+            // legacy edge builder stored a clamped, closed (non-periodic) basis.
+            // SetPeriodic changes only the knot/pole representation, never shape.
+            if (!bs->IsClosed()) return Handle(Geom_Curve)();
+            if (!bs->IsPeriodic()) bs->SetPeriodic();
+        }
+        auto mapped = [&](double u) { return begin + (end - begin) * u; };
+        double wantedFirst = begin, wantedLast = end;
+        if (applyInterval) {
+            wantedFirst = std::min(wantedFirst, mapped(v[2]));
+            wantedLast = std::max(wantedLast, mapped(v[3]));
+        }
+        if (extend || !applyInterval) {
+            wantedFirst = std::min(wantedFirst, mapped(extensionLower));
+            wantedLast = std::max(wantedLast, mapped(extensionUpper));
+        }
+        if (!std::isfinite(wantedFirst) || !std::isfinite(wantedLast)
+            || wantedLast - wantedFirst <= 1e-12) return Handle(Geom_Curve)();
+        // OCCT explicitly supports Segment outside the original B-spline
+        // bounds. This is exact polynomial extrapolation of the same basis,
+        // not a refit through new points.
+        if (!closedBasis && (wantedFirst < begin || wantedLast > end)) bs->Segment(wantedFirst, wantedLast);
+        if (extend || !applyInterval || ((((int)v[4]) & 1) != 0 && v[2] == 0 && v[3] == 1)) return bs;
+        first = mapped(v[2]); last = mapped(v[3]);
+        curve = bs;
+    } else if (v[0] == 2 && v[1] == 3 && n >= 17) {
+        const double basisCount = v[7];
+        if (v[4] > 1 || (v[5] != 0 && v[5] != 1) || !std::isfinite(v[6])
+            || std::abs(v[6]) <= 1e-8 || basisCount != std::floor(basisCount)
+            || basisCount < 9 || n != 8 + (NSUInteger)basisCount) return Handle(Geom_Curve)();
+        NSData *base = [NSData dataWithBytes:v + 8 length:(NSUInteger)basisCount * sizeof(double)];
+        Handle(Geom_Curve) basis = OS3DSketchCurveDefinition(
+            base, extend, false, extensionLower, extensionUpper, depth + 1);
+        if (basis.IsNull()) return Handle(Geom_Curve)();
+        const gp_Pln plane(gp_Pnt(0,0,0), gp_Dir(0,0,1));
+        Handle(Geom2d_Curve) basis2d = GeomAPI::To2d(basis, plane);
+        if (basis2d.IsNull()) return Handle(Geom_Curve)();
+        // Geom2d_OffsetCurve uses T^Z (right of travel). The product's public
+        // line/spline convention is left; outward_conic is right for CCW.
+        const double nativeOffset = v[5] == 0 ? -v[6] : v[6];
+        Handle(Geom2d_OffsetCurve) offset = new Geom2d_OffsetCurve(basis2d, nativeOffset);
+        curve = GeomAPI::To3d(offset, plane);
+        if (curve.IsNull() || extend || !applyInterval || v[4] == 1) return curve;
+        first = OS3DDefinitionParameter(record, v[2], true, depth);
+        last = OS3DDefinitionParameter(record, v[3], true, depth);
     } else return Handle(Geom_Curve)();
-    if (curve.IsNull()) return curve;
-    return new Geom_TrimmedCurve(curve, first, last);
+    if (curve.IsNull() || !std::isfinite(first) || !std::isfinite(last) || last <= first) {
+        return Handle(Geom_Curve)();
+    }
+    return new Geom_TrimmedCurve(curve, first, last, Standard_True, Standard_False);
+}
+
+/// Convert between the persisted normalized parameter and OCCT's native domain.
+/// Offset curves inherit their basis parameter, so v2 recurses without changing it.
+static double OS3DDefinitionParameter(NSData *record, double value, bool toNative, int depth) {
+    if (depth > 32 || record.length % sizeof(double) != 0
+        || record.length < 9 * sizeof(double)) return std::numeric_limits<double>::quiet_NaN();
+    const double *v = (const double *)record.bytes;
+    const NSUInteger n = record.length / sizeof(double);
+    if (v[0] == 1 && v[1] == 0 && n == 9) {
+        const double length = gp_Pnt(v[5],v[6],0).Distance(gp_Pnt(v[7],v[8],0));
+        return length > 1e-8 ? (toNative ? value * length : value / length)
+                             : std::numeric_limits<double>::quiet_NaN();
+    }
+    if (v[0] == 1 && v[1] == 1 && n == 10) {
+        const bool shift = v[7] != v[8] && v[7] < v[8];
+        return shift ? (toNative ? value - M_PI_2 : value + M_PI_2) : value;
+    }
+    if (v[0] == 1 && v[1] == 2 && n >= 12) {
+        if (v[5] != std::floor(v[5]) || v[5] < 3 || v[5] > 256
+            || n != 6 + (NSUInteger)v[5] * 2) return std::numeric_limits<double>::quiet_NaN();
+        TopoDS_Edge edge;
+        if (!OS3DSplineEdge(v + 6, (NSUInteger)v[5], (((int)v[4]) & 2) != 0, 0, edge)) {
+            return std::numeric_limits<double>::quiet_NaN();
+        }
+        Standard_Real first = 0, last = 0;
+        Handle(Geom_Curve) curve = BRep_Tool::Curve(edge, first, last);
+        if (curve.IsNull() || !(last > first)) return std::numeric_limits<double>::quiet_NaN();
+        return toNative ? first + (last - first) * value : (value - first) / (last - first);
+    }
+    if (v[0] == 2 && v[1] == 3 && n >= 17) {
+        NSData *base = [NSData dataWithBytes:v + 8 length:(NSUInteger)v[7] * sizeof(double)];
+        return OS3DDefinitionParameter(base, value, toNative, depth + 1);
+    }
+    return std::numeric_limits<double>::quiet_NaN();
+}
+
+static Handle(Geom2d_Curve) OS3DSketchCurve2d(
+    NSData *record, bool extend, double extensionLower = 0.0,
+    double extensionUpper = 1.0, bool applyInterval = true, int depth = 0) {
+    if (depth > 32 || record.length % sizeof(double) != 0
+        || record.length < 9 * sizeof(double)) return Handle(Geom2d_Curve)();
+    const double *v = (const double *)record.bytes;
+    const NSUInteger n = record.length / sizeof(double);
+    if (n >= 17 && v[0] == 2 && v[1] == 3) {
+        const double basisCount = v[7];
+        if (basisCount != std::floor(basisCount) || basisCount < 9
+            || n != 8 + (NSUInteger)basisCount || (v[5] != 0 && v[5] != 1)
+            || !std::isfinite(v[6]) || std::abs(v[6]) <= 1e-8) return Handle(Geom2d_Curve)();
+        // Keep every nested derived offset in 2D from construction through
+        // diagnostics; no 3D round trip or approximation is involved.
+        NSData *base = [NSData dataWithBytes:v + 8 length:(NSUInteger)basisCount * sizeof(double)];
+        Handle(Geom2d_Curve) basis2d = OS3DSketchCurve2d(
+            base, extend, extensionLower, extensionUpper, false, depth + 1);
+        if (basis2d.IsNull()) return Handle(Geom2d_Curve)();
+        const double nativeOffset = v[5] == 0 ? -v[6] : v[6];
+        Handle(Geom2d_OffsetCurve) offset = new Geom2d_OffsetCurve(basis2d, nativeOffset);
+        if (extend || !applyInterval || v[4] == 1) return offset;
+        const double first = OS3DDefinitionParameter(record, v[2], true);
+        const double last = OS3DDefinitionParameter(record, v[3], true);
+        if (!std::isfinite(first) || !std::isfinite(last) || last <= first) return Handle(Geom2d_Curve)();
+        return new Geom2d_TrimmedCurve(offset, first, last, Standard_True, Standard_False);
+    }
+    Handle(Geom_Curve) curve = OS3DSketchCurveDefinition(
+        record, extend, applyInterval, extensionLower, extensionUpper, depth);
+    if (curve.IsNull()) return Handle(Geom2d_Curve)();
+    return GeomAPI::To2d(curve, gp_Pln(gp_Pnt(0,0,0), gp_Dir(0,0,1)));
+}
+
+static bool OS3DRecordHasSpline(NSData *record, int depth = 0) {
+    if (depth > 32 || record.length < 6 * sizeof(double)
+        || record.length % sizeof(double) != 0) return false;
+    const double *v = (const double *)record.bytes;
+    if (v[0] == 1 && v[1] == 2) return true;
+    if (v[0] == 2 && v[1] == 3 && record.length >= 8 * sizeof(double) && v[7] >= 9) {
+        NSData *base = [NSData dataWithBytes:v + 8 length:(NSUInteger)v[7] * sizeof(double)];
+        return OS3DRecordHasSpline(base, depth + 1);
+    }
+    return false;
 }
 
 static TopoDS_Wire SegWire(NSData *segs, double z) {
@@ -983,7 +1129,7 @@ static TopoDS_Wire SegWire(NSData *segs, double z) {
                 mw.Add(me.Edge());
             }
             i += 7;
-        } else {
+        } else if (kind < 3.5) {
             if (i + 2 > total) return TopoDS_Wire();
             const NSUInteger count = (NSUInteger)p[i + 1];
             if (i + 2 + 2 * count > total) return TopoDS_Wire();
@@ -1033,7 +1179,26 @@ static TopoDS_Wire SegWire(NSData *segs, double z) {
             if (!split) mw.Add(edge);
             if (closed) closedSpline = true;
             i += 2 + 2 * count;
-        }
+        } else if (kind < 4.5) {
+            // kind 4: exact SketchCurveDefinition record. Flags are bit0
+            // reversed traversal, bit1 closed single-edge profile.
+            if (i + 3 > total) return TopoDS_Wire();
+            const double rawCount = p[i + 1], flags = p[i + 2];
+            if (rawCount != std::floor(rawCount) || rawCount < 9
+                || flags != std::floor(flags) || flags < 0 || flags > 3) return TopoDS_Wire();
+            const NSUInteger count = (NSUInteger)rawCount;
+            if (i + 3 + count > total) return TopoDS_Wire();
+            NSData *record = [NSData dataWithBytes:p + i + 3 length:count * sizeof(double)];
+            Handle(Geom_Curve) curve = OS3DSketchCurveDefinition(record, false);
+            if (curve.IsNull()) return TopoDS_Wire();
+            BRepBuilderAPI_MakeEdge me(curve);
+            if (!me.IsDone()) return TopoDS_Wire();
+            TopoDS_Edge edge = me.Edge();
+            if ((((int)flags) & 1) != 0) edge.Reverse();
+            mw.Add(edge);
+            if ((((int)flags) & 2) != 0) closedSpline = true;
+            i += 3 + count;
+        } else return TopoDS_Wire();
         ++records;
     }
     // A boundary needs at least two edges — unless it is one closed spline.
@@ -2575,39 +2740,282 @@ static std::set<Standard_Integer> OS3DNearestFaces(
 
 + (nullable NSData *)sketchCurveIntersectionsForTarget:(NSData *)target
                                             boundary:(NSData *)boundary
-                                        extendTarget:(BOOL)extendTarget
+                                  extensionDirection:(NSInteger)extensionDirection
                                            tolerance:(double)tolerance
                                               status:(nullable OCCTOpStatus *)status {
     OS3DSetStatus(status, OCCTOpCodeKernelRefused, @"invalid exact curve record");
-    if (!std::isfinite(tolerance) || tolerance < 1e-10 || tolerance > 1e-4) return nil;
+    if (!std::isfinite(tolerance) || tolerance < 1e-10 || tolerance > 1e-4
+        || extensionDirection < -1 || extensionDirection > 1
+        || target.length < 4 * sizeof(double)) return nil;
     OS3DSignalScope signalScope;
     try {
         OCC_CATCH_SIGNALS
-        Handle(Geom_Curve) a = OS3DSketchCurveDefinition(target, extendTarget);
-        Handle(Geom_Curve) b = OS3DSketchCurveDefinition(boundary, false);
-        if (a.IsNull() || b.IsNull()) return nil;
-        const gp_Pln plane(gp_Pnt(0,0,0), gp_Dir(0,0,1));
-        Handle(Geom2d_Curve) aa = GeomAPI::To2d(a, plane);
-        Handle(Geom2d_Curve) bb = GeomAPI::To2d(b, plane);
-        if (aa.IsNull() || bb.IsNull()) return nil;
-        Geom2dAPI_InterCurveCurve intersection(aa, bb, tolerance);
-        if (intersection.NbSegments() != 0 || intersection.NbPoints() > 1024) {
-            OS3DSetStatus(status, OCCTOpCodeKernelRefused, @"overlapping or excessive curve intersections");
-            return nil;
+        Handle(Geom2d_Curve) bb = OS3DSketchCurve2d(boundary, false);
+        if (bb.IsNull()) return nil;
+        const double *header = (const double *)target.bytes;
+        const double originalLower = header[2], originalUpper = header[3];
+        const bool expanding = extensionDirection != 0 && OS3DRecordHasSpline(target);
+        NSMutableData *latest = [NSMutableData data];
+        double extension = 1.0;
+        // Once the requested side has an intersection, a wider exact domain can
+        // only add farther intersections. Twenty doublings avoid an unbounded
+        // extrapolation/search on corrupt or unrelated geometry.
+        for (int iteration = 0; iteration < (expanding ? 21 : 1); ++iteration) {
+            const double lower = extensionDirection < 0 ? originalLower - extension : originalLower;
+            const double upper = extensionDirection > 0 ? originalUpper + extension : originalUpper;
+            Handle(Geom2d_Curve) aa = OS3DSketchCurve2d(
+                target, extensionDirection != 0, lower, upper);
+            if (aa.IsNull()) return nil;
+            Geom2dAPI_InterCurveCurve intersection(aa, bb, tolerance);
+            if (intersection.NbSegments() != 0 || intersection.NbPoints() > 1024) {
+                OS3DSetStatus(status, OCCTOpCodeKernelRefused,
+                              @"overlapping or excessive curve intersections");
+                return nil;
+            }
+            latest = [NSMutableData dataWithCapacity:intersection.NbPoints() * 3 * sizeof(double)];
+            bool foundRequestedExtension = false;
+            for (Standard_Integer i = 1; i <= intersection.NbPoints(); ++i) {
+                const gp_Pnt2d point = intersection.Point(i);
+                Geom2dAPI_ProjectPointOnCurve projection(point, aa);
+                if (projection.NbPoints() < 1
+                    || projection.LowerDistance() > tolerance * 10) {
+                    OS3DSetStatus(status, OCCTOpCodeInvalidResult,
+                                  @"an exact intersection did not project onto its target");
+                    return nil;
+                }
+                const double parameter = OS3DDefinitionParameter(
+                    target, projection.LowerDistanceParameter(), false);
+                const double row[3] = { point.X(), point.Y(), parameter };
+                if (!std::isfinite(row[0]) || !std::isfinite(row[1]) || !std::isfinite(row[2])) {
+                    return nil;
+                }
+                [latest appendBytes:row length:sizeof(row)];
+                if ((extensionDirection < 0 && parameter < originalLower - tolerance)
+                    || (extensionDirection > 0 && parameter > originalUpper + tolerance)) {
+                    foundRequestedExtension = true;
+                }
+            }
+            if (extensionDirection == 0 || foundRequestedExtension || !expanding) break;
+            extension *= 2.0;
         }
-        NSMutableData *result = [NSMutableData dataWithCapacity:intersection.NbPoints() * 2 * sizeof(double)];
-        for (Standard_Integer i = 1; i <= intersection.NbPoints(); ++i) {
-            const gp_Pnt2d point = intersection.Point(i);
-            const double xy[2] = { point.X(), point.Y() };
-            if (!std::isfinite(xy[0]) || !std::isfinite(xy[1])) return nil;
-            [result appendBytes:xy length:sizeof(xy)];
-        }
-        OS3DSetStatus(status, OCCTOpCodeOK, @"exact planar intersections");
-        return result;
+        OS3DSetStatus(status, OCCTOpCodeOK, @"exact planar intersections with target parameters");
+        return latest;
     } catch (Standard_Failure &failure) {
         OS3DSetStatus(status, OCCTOpCodeKernelRefused,
                       OS3DCrashMessage("Sketch curve intersection", failure.GetMessageString()));
     } catch (...) { OS3DSetStatus(status, OCCTOpCodeKernelRefused, @"curve intersection exception"); }
+    return nil;
+}
+
++ (nullable NSData *)sketchCurvePointsForDefinition:(NSData *)definition
+                                         parameters:(NSData *)parameters
+                                          tolerance:(double)tolerance
+                                             status:(nullable OCCTOpStatus *)status {
+    OS3DSetStatus(status, OCCTOpCodeKernelRefused, @"invalid exact curve evaluation");
+    const NSUInteger count = parameters.length / sizeof(double);
+    if (parameters.length != count * sizeof(double) || count == 0 || count > 4096
+        || !std::isfinite(tolerance) || tolerance <= 0) return nil;
+    OS3DSignalScope signalScope;
+    try {
+        OCC_CATCH_SIGNALS
+        Handle(Geom2d_Curve) curve = OS3DSketchCurve2d(definition, false);
+        if (curve.IsNull()) return nil;
+        const double *v = (const double *)definition.bytes;
+        const double *u = (const double *)parameters.bytes;
+        NSMutableData *out = [NSMutableData dataWithCapacity:count * 2 * sizeof(double)];
+        for (NSUInteger i = 0; i < count; ++i) {
+            if (!std::isfinite(u[i]) || u[i] < v[2] - tolerance || u[i] > v[3] + tolerance) return nil;
+            const double native = OS3DDefinitionParameter(definition, u[i], true);
+            if (!std::isfinite(native)) return nil;
+            const gp_Pnt2d point = curve->Value(native);
+            const double xy[2] = { point.X(), point.Y() };
+            if (!std::isfinite(xy[0]) || !std::isfinite(xy[1])
+                || std::abs(xy[0]) > 1e12 || std::abs(xy[1]) > 1e12) return nil;
+            [out appendBytes:xy length:sizeof(xy)];
+        }
+        OS3DSetStatus(status, OCCTOpCodeOK, @"exact curve evaluation");
+        return out;
+    } catch (Standard_Failure &failure) {
+        OS3DSetStatus(status, OCCTOpCodeKernelRefused,
+                      OS3DCrashMessage("Sketch curve evaluation", failure.GetMessageString()));
+    } catch (...) { OS3DSetStatus(status, OCCTOpCodeKernelRefused, @"curve evaluation exception"); }
+    return nil;
+}
+
++ (nullable NSNumber *)sketchCurveParameterForPoint:(NSData *)point
+                                         definition:(NSData *)definition
+                                           extended:(BOOL)extended
+                                          tolerance:(double)tolerance
+                                             status:(nullable OCCTOpStatus *)status {
+    OS3DSetStatus(status, OCCTOpCodeKernelRefused, @"invalid exact curve projection");
+    if (point.length != 2 * sizeof(double) || definition.length < 4 * sizeof(double)
+        || !std::isfinite(tolerance) || tolerance <= 0) return nil;
+    OS3DSignalScope signalScope;
+    try {
+        OCC_CATCH_SIGNALS
+        const double *xy = (const double *)point.bytes;
+        if (!std::isfinite(xy[0]) || !std::isfinite(xy[1])) return nil;
+        const gp_Pnt2d target(xy[0], xy[1]);
+        const double *header = (const double *)definition.bytes;
+        double bestParameter = 0, bestDistance = std::numeric_limits<double>::infinity();
+        double extension = 0.0;
+        const int iterations = extended && OS3DRecordHasSpline(definition) ? 21 : 1;
+        for (int iteration = 0; iteration < iterations; ++iteration) {
+            const double lower = extended ? std::min(header[2], 0.0) - extension : header[2];
+            const double upper = extended ? std::max(header[3], 1.0) + extension : header[3];
+            Handle(Geom2d_Curve) curve = OS3DSketchCurve2d(definition, extended, lower, upper);
+            if (curve.IsNull()) return nil;
+            Geom2dAPI_ProjectPointOnCurve projection(target, curve);
+            if (projection.NbPoints() > 0) {
+                const double distance = projection.LowerDistance();
+                if (distance < bestDistance) {
+                    bestDistance = distance;
+                    bestParameter = OS3DDefinitionParameter(
+                        definition, projection.LowerDistanceParameter(), false);
+                }
+            }
+            if (bestDistance <= tolerance * 10) break;
+            extension = iteration == 0 ? 1.0 : extension * 2.0;
+        }
+        // A cursor pick, or a point whose nearest parameter is requested for
+        // measurement, need not lie on the curve. The exact intersection path
+        // checks its own residual; projection returns the closest finite point.
+        if (!std::isfinite(bestParameter) || !std::isfinite(bestDistance)) return nil;
+        OS3DSetStatus(status, OCCTOpCodeOK, @"exact curve projection");
+        return [NSNumber numberWithDouble:bestParameter];
+    } catch (Standard_Failure &failure) {
+        OS3DSetStatus(status, OCCTOpCodeKernelRefused,
+                      OS3DCrashMessage("Sketch curve projection", failure.GetMessageString()));
+    } catch (...) { OS3DSetStatus(status, OCCTOpCodeKernelRefused, @"curve projection exception"); }
+    return nil;
+}
+
++ (nullable NSData *)validateSketchNormalOffset:(NSData *)definition
+                                      tolerance:(double)tolerance
+                                         status:(nullable OCCTOpStatus *)status {
+    OS3DSetStatus(status, OCCTOpCodeKernelRefused, @"invalid exact normal offset");
+    if (definition.length < 17 * sizeof(double) || !std::isfinite(tolerance)
+        || tolerance < 1e-10 || tolerance > 1e-4) return nil;
+    OS3DSignalScope signalScope;
+    try {
+        OCC_CATCH_SIGNALS
+        Handle(Geom2d_Curve) top = OS3DSketchCurve2d(definition, false);
+        Handle(Geom2d_TrimmedCurve) trimmed = Handle(Geom2d_TrimmedCurve)::DownCast(top);
+        if (!trimmed.IsNull()) top = trimmed->BasisCurve();
+        Handle(Geom2d_OffsetCurve) offset = Handle(Geom2d_OffsetCurve)::DownCast(top);
+        if (offset.IsNull()) return nil;
+        Handle(Geom2d_Curve) basis = offset->BasisCurve();
+        const double first = OS3DDefinitionParameter(
+            definition, ((const double *)definition.bytes)[2], true);
+        const double last = OS3DDefinitionParameter(
+            definition, ((const double *)definition.bytes)[3], true);
+        if (!std::isfinite(first) || !std::isfinite(last) || last <= first) return nil;
+        Geom2dAdaptor_Curve adaptor(offset, first, last);
+        const double length = GCPnts_AbscissaPoint::Length(adaptor, first, last, tolerance);
+        if (!std::isfinite(length)) return nil;
+        if (length <= tolerance) {
+            OS3DSetStatus(status, OCCTOpCodeCurveOffsetCollapse, @"the exact offset has zero length");
+            return nil;
+        }
+        const double signedOffset = offset->Offset();
+        double maximumNormalError = 0.0, maximumTangentResidual = 0.0;
+        double previousFactor = 0.0;
+        bool hasPreviousFactor = false, cusp = false;
+        const int samples = 1024;
+        for (int i = 0; i <= samples; ++i) {
+            const double u = first + (last - first) * (double)i / samples;
+            gp_Pnt2d basePoint, offsetPoint;
+            gp_Vec2d tangent, second;
+            // D1 is also an explicit tangent-singularity check at every sample.
+            Geom2dLProp_Curve2dTool::D1(basis, u, basePoint, tangent);
+            offset->D0(u, offsetPoint);
+            const double speed2 = tangent.SquareMagnitude();
+            if (!(speed2 > 1e-24) || !std::isfinite(speed2)) {
+                cusp = true; break;
+            }
+            const gp_Vec2d delta(basePoint, offsetPoint);
+            const double distance = delta.Magnitude();
+            if (!std::isfinite(distance)) return nil;
+            maximumNormalError = std::max(maximumNormalError,
+                                          std::abs(distance - std::abs(signedOffset)));
+            maximumTangentResidual = std::max(maximumTangentResidual,
+                                              std::abs(delta.Dot(tangent)) / std::sqrt(speed2));
+            try {
+                Geom2dLProp_Curve2dTool::D2(basis, u, basePoint, tangent, second);
+                const double curvature = (tangent.X() * second.Y() - tangent.Y() * second.X())
+                    / (speed2 * std::sqrt(speed2));
+                // Right-normal offset: O'=(1 + offset*k)C'. Its zero/sign
+                // reversal is a cusp, not a valid smooth offset segment.
+                const double factor = 1.0 + signedOffset * curvature;
+                if (std::abs(factor) <= 1e-10
+                    || (hasPreviousFactor && ((previousFactor < 0 && factor > 0)
+                                              || (previousFactor > 0 && factor < 0)))) {
+                    cusp = true; break;
+                }
+                if (std::isfinite(factor) && std::abs(factor) > 1e-12) {
+                    previousFactor = factor; hasPreviousFactor = true;
+                }
+            } catch (...) {
+                // A C1 (not C2) spline knot has no curvature there. D1 and the
+                // neighbouring curvature signs remain valid; do not invent one.
+            }
+        }
+        const double allowed = std::max(tolerance * 100, 1e-6);
+        if (maximumNormalError > allowed || maximumTangentResidual > allowed) {
+            OS3DSetStatus(status, OCCTOpCodeInvalidResult,
+                          @"the native offset failed its normal-distance verification");
+            return nil;
+        }
+        if (cusp) {
+            OS3DSetStatus(status, OCCTOpCodeCurveOffsetCusp,
+                          @"the exact offset derivative vanishes or reverses");
+            return nil;
+        }
+        // Ask OCCT's exact edge argument analyzer first, covering a loop wholly
+        // inside one of the diagnostic ranges as well as cross-range contact.
+        const gp_Pln plane(gp_Pnt(0,0,0), gp_Dir(0,0,1));
+        Handle(Geom_Curve) exact3d = GeomAPI::To3d(offset, plane);
+        BRepBuilderAPI_MakeEdge edgeBuilder(exact3d, first, last);
+        if (!edgeBuilder.IsDone()) return nil;
+        BOPAlgo_ArgumentAnalyzer argumentAnalyzer;
+        argumentAnalyzer.SetShape1(edgeBuilder.Edge());
+        argumentAnalyzer.SelfInterMode() = Standard_True;
+        argumentAnalyzer.StopOnFirstFaulty() = Standard_True;
+        argumentAnalyzer.Perform();
+        if (argumentAnalyzer.HasFaulty()) {
+            OS3DSetStatus(status, OCCTOpCodeCurveOffsetSelfIntersection,
+                          @"OCCT reports exact offset edge self-interference");
+            return nil;
+        }
+        // Exact non-adjacent pieces are intersected directly. Sampling is not
+        // used to decide self-intersection; overlaps are refused as well.
+        const int pieces = 16;
+        std::vector<Handle(Geom2d_Curve)> ranges;
+        ranges.reserve(pieces);
+        for (int i = 0; i < pieces; ++i) {
+            const double a = first + (last - first) * (double)i / pieces;
+            const double b = first + (last - first) * (double)(i + 1) / pieces;
+            ranges.push_back(new Geom2d_TrimmedCurve(offset, a, b, Standard_True, Standard_False));
+        }
+        const bool periodic = ((((const double *)definition.bytes)[4]) != 0);
+        for (int i = 0; i < pieces; ++i) {
+            for (int j = i + 2; j < pieces; ++j) {
+                if (periodic && i == 0 && j == pieces - 1) continue;
+                Geom2dAPI_InterCurveCurve intersection(ranges[i], ranges[j], tolerance);
+                if (intersection.NbPoints() > 0 || intersection.NbSegments() > 0) {
+                    OS3DSetStatus(status, OCCTOpCodeCurveOffsetSelfIntersection,
+                                  @"non-adjacent exact offset ranges intersect");
+                    return nil;
+                }
+            }
+        }
+        const double diagnostics[3] = { length, maximumNormalError, maximumTangentResidual };
+        OS3DSetStatus(status, OCCTOpCodeOK, @"validated exact normal offset");
+        return [NSData dataWithBytes:diagnostics length:sizeof(diagnostics)];
+    } catch (Standard_Failure &failure) {
+        OS3DSetStatus(status, OCCTOpCodeKernelRefused,
+                      OS3DCrashMessage("Sketch normal offset", failure.GetMessageString()));
+    } catch (...) { OS3DSetStatus(status, OCCTOpCodeKernelRefused, @"normal offset exception"); }
     return nil;
 }
 

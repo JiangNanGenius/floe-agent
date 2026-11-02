@@ -3,8 +3,8 @@ import Foundation
 import simd
 
 /// An explicit normal-offset relation. Geometry in entities is its validated
-/// cache, never the definition. Source intervals follow their source; future
-/// exact general-curve materializers can share this identity/lifecycle layer.
+/// cache, never the definition. Source intervals follow their source, including
+/// exact general ellipse/spline intervals and derived native offset entities.
 nonisolated struct SketchCurveOffsetLink: Identifiable, Codable, Equatable, Sendable {
     let id: UUID
     let version: Int
@@ -25,7 +25,8 @@ nonisolated struct SketchCurveOffsetLink: Identifiable, Codable, Equatable, Send
         try validate()
     }
     func validate() throws {
-        guard version == 1, sourceDefinitionVersion == 1, intervalPolicy == "followSource",
+        guard version == 1, (1...SketchCurveDefinition.currentVersion).contains(sourceDefinitionVersion),
+              intervalPolicy == "followSource",
               ["left_of_travel", "outward_conic"].contains(convention) else {
             throw SketchCurveEditFailure(code: "unsupported_curve_offset_version", message: "This offset relation needs a newer version.", linkIDs: [id])
         }
@@ -111,6 +112,7 @@ nonisolated enum SketchCurveOffsetKit {
     /// Resolve all links in dependency order. Failure returns no partial
     /// sketch and never removes a broken link or its user's constraints.
     static func resolve(_ sketch: Sketch) throws -> Sketch {
+        try validateExactCurves(in: sketch)
         guard !sketch.curveOffsetLinks.isEmpty else { return sketch }
         try validatePlane(sketch.plane)
         guard sketch.curveOffsetLinks.count <= 256 else {
@@ -173,5 +175,29 @@ nonisolated enum SketchCurveOffsetKit {
             throw SketchCurveEditFailure(code: "stale_curve_offset_cache", message: "The stored linked offset does not match its source.",
                 entityIDs: sketch.curveOffsetLinks.map(\.targetID))
         }
+    }
+
+    /// A standalone exact entity is a definition, not a sampled cache. Prove
+    /// its native materialization on admission/save; linked targets are then
+    /// recomputed from their actual source by resolve above.
+    static func validateExactCurves(in sketch: Sketch) throws {
+        var hasDerivedOffset = false
+        for entity in sketch.entities {
+            guard case let .exactCurve(id, definition) = entity else { continue }
+            do {
+                try definition.validate()
+                if definition.isDerivedNormalOffset {
+                    hasDerivedOffset = true
+                    try OCCTKernel.validateSketchNormalOffset(definition)
+                } else {
+                    _ = try OCCTKernel.sketchCurvePoints(
+                        definition, parameters: [(definition.interval.lower + definition.interval.upper) / 2])
+                }
+            } catch var failure as SketchCurveEditFailure {
+                if failure.entityIDs.isEmpty { failure.entityIDs = [id] }
+                throw failure
+            }
+        }
+        if hasDerivedOffset { try validatePlane(sketch.plane) }
     }
 }

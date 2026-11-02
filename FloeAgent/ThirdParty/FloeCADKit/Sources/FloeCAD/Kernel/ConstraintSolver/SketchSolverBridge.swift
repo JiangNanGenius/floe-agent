@@ -799,6 +799,8 @@ nonisolated enum SketchSolverBridge {
                 }
             }
             return slots
+        case .exactCurve:
+            return [] // exact derived/interval records are not legacy solver primitives
         }
     }
 
@@ -845,6 +847,10 @@ nonisolated enum SketchSolverBridge {
                 add(c); maxDiameter = Swift.max(maxDiameter, 2 * r)
             case let .spline(_, points, _):
                 for p in points { add(p) }
+            case let .exactCurve(_, definition):
+                if let points = try? definition.tessellatedPoints(sampleCount: 32) {
+                    for p in points { add(p) }
+                }
             }
         }
         let diagonal = simd_distance(lo, hi)
@@ -1606,6 +1612,8 @@ nonisolated enum SketchSolverBridge {
                     }
                 }
                 return .spline(id: id, points: moved, closed: closed)
+            case .exactCurve:
+                return e
             }
         }
     }

@@ -596,6 +596,8 @@ nonisolated extension SketchEntity {
             return [.center]
         case let .spline(_, points, closed):
             return !closed && points.count >= 2 ? [.endpointA, .endpointB] : []
+        case .exactCurve:
+            return []
         }
     }
 

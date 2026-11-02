@@ -193,6 +193,10 @@ nonisolated enum PatternKit {
             // Transforming the fit points transforms the curve exactly, for
             // rotation as well as translation — no explode needed.
             return [.spline(id: UUID(), points: points.map(t.apply), closed: closed)]
+        case let .exactCurve(_, definition):
+            let moved = definition.rotated(about: t.pivot, angle: t.rotation)
+                .translated(by: t.translation)
+            return [.exactCurve(id: UUID(), definition: moved)]
         }
     }
 

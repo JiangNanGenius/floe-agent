@@ -604,6 +604,7 @@ public final class CADDatumService {
         case .ellipse: return "ellipse"
         case .polygon: return "polygon"
         case .spline: return "spline"
+        case .exactCurve: return "exact curve"
         }
     }
     private func previewPlane(_ definition: ThreePointPlaneDefinition) throws -> SketchPlane {

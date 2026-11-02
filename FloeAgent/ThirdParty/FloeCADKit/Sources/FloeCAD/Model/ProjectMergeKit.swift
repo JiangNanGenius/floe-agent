@@ -870,6 +870,7 @@ nonisolated enum ProjectMergeKit {
             case let .polygon(_, c, r, n, rot):
                 .polygon(id: id, center: c, radius: r, sides: n, rotation: rot)
             case let .spline(_, pts, closed): .spline(id: id, points: pts, closed: closed)
+            case let .exactCurve(_, definition): .exactCurve(id: id, definition: definition)
             }
         }
     }

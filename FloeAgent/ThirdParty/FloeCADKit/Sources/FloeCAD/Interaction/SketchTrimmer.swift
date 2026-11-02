@@ -42,9 +42,9 @@ nonisolated enum SketchTrimmer {
                 center: center, radius: radius, sides: sides, rotation: rotation
             )
             return trimExplodedLoop(corners, at: p, obstacles: obstacles)
-        case .ellipse, .spline:
-            // No exact parameter split for these; trim is out of scope (a spline
-            // trim would have to re-fit the curve, changing its shape).
+        case .ellipse, .spline, .exactCurve:
+            // CADSketchCurveService owns these through the selected-boundary
+            // exact OCCT kernel; this legacy composite path never refits them.
             return nil
         }
     }
@@ -258,6 +258,13 @@ nonisolated enum SketchTrimmer {
                     appendLoop(curve, &out)
                 } else if curve.count >= 2 {
                     for i in 1..<curve.count { out.append((curve[i - 1], curve[i])) }
+                }
+            case let .exactCurve(_, definition):
+                if let curve = try? definition.tessellatedPoints() {
+                    if definition.interval.periodic { appendLoop(curve, &out) }
+                    else if curve.count >= 2 {
+                        for i in 1..<curve.count { out.append((curve[i - 1], curve[i])) }
+                    }
                 }
             }
         }

@@ -4144,6 +4144,8 @@ final class EditorViewModel {
         case let .spline(_, points, _):
             guard !points.isEmpty else { return .zero }
             return points.reduce(SIMD2<Double>.zero, +) / Double(points.count)
+        case let .exactCurve(_, definition):
+            return (try? definition.point(at: (definition.interval.lower + definition.interval.upper) / 2)) ?? .zero
         }
     }
 
@@ -12282,6 +12284,8 @@ final class EditorViewModel {
             points.isEmpty
                 ? .zero
                 : points.reduce(SIMD2<Double>.zero, +) / Double(points.count)
+        case let .exactCurve(_, definition):
+            (try? definition.point(at: (definition.interval.lower + definition.interval.upper) / 2)) ?? .zero
         }
     }
 
@@ -12786,6 +12790,10 @@ final class EditorViewModel {
             showNotice(FloeCADStrings.text("cad.sketch.curve.references", "Release the curve's constraints or links first. Nothing was removed."))
         case "curve_offset_collapse":
             showNotice(FloeCADStrings.text("cad.sketch.curve.collapse", "The offset collapses the curve. Reduce the inward distance."))
+        case "curve_offset_cusp":
+            showNotice(FloeCADStrings.text("cad.sketch.curve.cusp", "The offset forms a cusp. Reduce the distance or change the source curve."))
+        case "curve_offset_self_intersection":
+            showNotice(FloeCADStrings.text("cad.sketch.curve.selfIntersection", "The offset intersects itself. Reduce the distance or change the source curve."))
         case "revision_mismatch":
             showNotice(FloeCADStrings.text("cad.sketch.curve.changed", "The sketch changed. Select the curve again."))
         case "no_curve_intersection", "no_extension_intersection", "insufficient_curve_intersections", "curve_intersection_refused":

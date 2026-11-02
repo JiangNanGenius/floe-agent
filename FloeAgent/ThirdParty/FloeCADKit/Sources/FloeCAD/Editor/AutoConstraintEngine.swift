@@ -451,7 +451,7 @@ nonisolated enum AutoConstraintEngine {
             guard !closed, let a = points.first, let b = points.last,
                   points.count >= 2 else { return [] }
             return [(a, id, .endpointA), (b, id, .endpointB)]
-        case .rect:
+        case .rect, .exactCurve:
             return []
         }
     }
