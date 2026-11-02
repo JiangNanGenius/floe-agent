@@ -2334,14 +2334,18 @@ final class CADAdvancedBlendNativeFlowUITests: XCTestCase {
 final class CADBottomAccessoryFinishUITests: XCTestCase {
     func testIPadCopyFeedbackAndSettingsCenterAcrossOrientations() { check(compact: false) }
     func testCompactCopyFeedbackAndSettingsMenu() { check(compact: true) }
+    func testCompactLargeTextMeasurementsAndAccessoryControls() { check(compact: true, largeText: true) }
 
-    private func check(compact: Bool) {
+    private func check(compact: Bool, largeText: Bool = false) {
         continueAfterFailure = false
         XCUIDevice.shared.orientation = .landscapeLeft
         let app = XCUIApplication()
         app.launchArguments = ["-AppleLanguages", "(en)", "-AppleLocale", "en_US", "-ui-testing",
             "--ui-test-cad-fixture", "--ui-test-cad-uninstanced"]
         app.launchArguments += compact ? ["--ui-test-cad-compact"] : ["-ui-testing-ipad"]
+        if largeText {
+            app.launchArguments += ["-UIPreferredContentSizeCategoryName", "UICTContentSizeCategoryAccessibilityXL"]
+        }
         app.launch();defer { app.terminate();XCUIDevice.shared.orientation = .landscapeLeft }
         XCTAssertTrue(app.buttons["UndoButton"].waitForExistence(timeout: 60))
         func items() {
@@ -2354,7 +2358,17 @@ final class CADBottomAccessoryFinishUITests: XCTestCase {
         let copy=app.buttons["CopyBadge"]
         XCTAssertTrue(copy.waitForExistence(timeout: 15) && copy.isHittable)
         XCTAssertFalse(copy.isSelected);copy.tap();XCTAssertTrue(copy.isSelected)
-        capture(compact ? "Compact accessory selection and complete controls" : "iPad accessory selection and complete controls")
+        let info=app.descendants(matching:.any).matching(identifier:"SelectionInfoBar").firstMatch
+        XCTAssertTrue(info.waitForExistence(timeout:10))
+        for name in ["Volume","Bounds"] {
+            let value=app.staticTexts["SelectionMeasurement-\(name)"]
+            XCTAssertTrue(value.exists && value.isHittable,app.debugDescription)
+            XCTAssertGreaterThanOrEqual(value.frame.minX,info.frame.minX)
+            XCTAssertLessThanOrEqual(value.frame.maxX,info.frame.maxX)
+            XCTAssertLessThanOrEqual(value.frame.maxY,info.frame.maxY)
+        }
+        XCTAssertTrue(app.staticTexts["SelectionMeasurement-Bounds"].label.contains("60.00"))
+        capture(largeText ? "Compact large text complete measurement values and actions" : compact ? "Compact accessory selection and complete controls" : "iPad accessory selection and complete controls")
         copy.tap();XCTAssertFalse(copy.isSelected)
         for portrait in compact ? [false] : [false,true] {
             if portrait { XCUIDevice.shared.orientation = .portrait }

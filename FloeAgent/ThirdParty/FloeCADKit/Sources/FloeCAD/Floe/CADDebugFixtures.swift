@@ -216,14 +216,15 @@ public enum CADDebugFixtures {
             throw fixtureError(
                 "The face-rotation fixture must exercise the supported mesh-only path.")
         }
-        let table = document.session.naming.faceTable(
-            for: current, createdBy: source.id, scheme: .generic)
-        guard let top = table.entries.max(by: { $0.signature.normal.y < $1.signature.normal.y }),
-              top.signature.normal.y > 0.99 else {
+        guard let table = document.session.lastFaceTables[current.id],
+              let top = table.entries.max(by: { $0.signature.normal.y < $1.signature.normal.y }),
+              top.signature.normal.y > 0.99,
+              top.elementName?.isStableFaceIdentity == true else {
             throw fixtureError("The face-rotation fixture found no planar top face.")
         }
         let ref = FaceRef(body: BodyRef(producer: source.id, bodyID: current.id),
-                          creator: source.id, role: top.role, signature: top.signature)
+                          creator: source.id, role: top.role, signature: top.signature,
+                          elementName: top.elementName)
         let node = FeatureNode(
             name: "Rotate Face",
             kind: .rotateFace(face: ref,

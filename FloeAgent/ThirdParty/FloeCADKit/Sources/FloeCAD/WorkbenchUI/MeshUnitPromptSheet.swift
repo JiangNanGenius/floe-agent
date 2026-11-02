@@ -27,6 +27,13 @@ struct MeshUnitPromptSheet: View {
 
     private func importMeaning(_ code: String) -> String {
         switch code {
+        case "static_mesh": return FloeCADStrings.text("cad.import.mesh", "Static geometry")
+        case "object_placement": return FloeCADStrings.text("cad.import.placement", "Object placement")
+        case "part_names": return FloeCADStrings.text("cad.import.names", "Part names")
+        case "uv0": return FloeCADStrings.text("cad.import.textureCoordinates", "Texture coordinates")
+        case "base_color": return FloeCADStrings.text("cad.import.baseColor", "Base colors")
+        case "base_color_texture": return FloeCADStrings.text("cad.import.colorTextures", "Color textures")
+        case "supported_pbr_materials", "supported_static_materials": return FloeCADStrings.text("cad.import.materials", "Supported materials")
         case "parametric_history": return FloeCADStrings.text("cad.import.history", "Parametric history")
         case "editable_scene_hierarchy": return FloeCADStrings.text("cad.import.hierarchy", "Editable scene hierarchy")
         case "animations", "animation_rig_modifiers": return FloeCADStrings.text("cad.import.animation", "Animation, rigs and modifiers")
@@ -99,6 +106,11 @@ struct MeshUnitPromptSheet: View {
                     Section(FloeCADStrings.text("cad.import.coverage", "Import Details")) {
                         Text(FloeCADStrings.text("cad.import.staticOnly", "Imports static geometry, placement and supported materials."))
                         Text(FloeCADStrings.text("cad.import.originalKept", "Original source files are kept unchanged."))
+                        if !coverage.retained.isEmpty {
+                            DisclosureGroup(FloeCADStrings.text("cad.import.retained", "Retained")) {
+                                ForEach(coverage.retained, id: \.self) { item in Text(importMeaning(item)) }
+                            }
+                        }
                         if !coverage.discarded.isEmpty {
                             DisclosureGroup(FloeCADStrings.text("cad.import.notKept", "Not retained")) {
                                 ForEach(coverage.discarded, id: \.self) { item in Text(importMeaning(item)) }

@@ -323,6 +323,8 @@ final class CADFaceRotationParameterUITests: XCTestCase {
         let pad = CADSketchDiagnosisUI.any(app, "NumericKeypad")
         XCTAssertTrue(pad.waitForExistence(timeout: 10),
                       "tapping the real History value must open its keypad: \(app.debugDescription)")
+        CADSketchDiagnosisUI.snapshot("History numeric keypad — complete keys and native feedback",
+                                      in: app, test: self)
         app.buttons["KeypadDelete"].tap()
         app.buttons["KeypadDelete"].tap()
         app.buttons["Keypad-4"].tap()

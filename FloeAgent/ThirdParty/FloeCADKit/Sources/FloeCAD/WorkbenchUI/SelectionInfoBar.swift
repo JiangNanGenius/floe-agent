@@ -12,53 +12,55 @@ import SwiftUI
 struct SelectionInfoBar: View {
     @Bindable var viewModel: EditorViewModel
 
-    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
-
-    private var isCompact: Bool { horizontalSizeClass == .compact }
-
     var body: some View {
         let rows = viewModel.selectionMeasurements
         if !rows.isEmpty {
             strip(rows)
                 .padding(.horizontal, 16)
                 .padding(.vertical, 8)
-                // A capsule around a strip that has had to wrap looks broken;
-                // at compact width the strip scrolls instead, so it stays one
-                // line and the capsule still fits it.
-                .cadFloatingSurface(in: Capsule())
+                .cadFloatingSurface(in: RoundedRectangle(cornerRadius: 20, style: .continuous))
                 .accessibilityIdentifier("SelectionInfoBar")
         }
     }
 
     @ViewBuilder
     private func strip(_ rows: [EditorViewModel.MeasurementRow]) -> some View {
-        if isCompact {
-            // Without fixedSize a long value ("4.00 × 4.00 × 4.00 mm") is
-            // compressed and wraps mid-value — see
-            // marketing/bugs/iphone-primitive-bar-truncated.png.
-            ScrollView(.horizontal, showsIndicators: false) {
-                measurements(rows)
-                    .fixedSize(horizontal: true, vertical: false)
+        ViewThatFits(in: .horizontal) {
+            measurements(rows).fixedSize(horizontal: true, vertical: false)
+            VStack(alignment: .leading, spacing: 6) {
+                ForEach(rows) { row in
+                    ViewThatFits(in: .horizontal) {
+                        measurement(row).fixedSize(horizontal: true, vertical: false)
+                        VStack(alignment: .leading, spacing: 2) {
+                            label(row)
+                            value(row)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                    }
+                }
             }
-            .scrollBounceBehavior(.basedOnSize, axes: .horizontal)
-        } else {
-            measurements(rows)
         }
     }
 
     private func measurements(_ rows: [EditorViewModel.MeasurementRow]) -> some View {
         HStack(spacing: 20) {
             ForEach(rows) { row in
-                HStack(spacing: 6) {
-                    Text(row.label)
-                        .font(.caption)
-                        .foregroundStyle(.barLabel)
-                    Text(row.value)
-                        .font(.callout.weight(.medium))
-                        .monospacedDigit()
-                }
+                measurement(row)
             }
         }
-        .lineLimit(1)
+    }
+
+    private func measurement(_ row: EditorViewModel.MeasurementRow) -> some View {
+        HStack(spacing: 6) { label(row); value(row) }.lineLimit(1)
+    }
+
+    private func label(_ row: EditorViewModel.MeasurementRow) -> some View {
+        Text(row.label).font(.caption).foregroundStyle(.barLabel)
+    }
+
+    private func value(_ row: EditorViewModel.MeasurementRow) -> some View {
+        Text(row.value)
+            .font(.callout.weight(.medium)).monospacedDigit()
+            .accessibilityIdentifier("SelectionMeasurement-\(row.label)")
     }
 }
