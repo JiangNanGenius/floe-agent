@@ -519,14 +519,12 @@ public struct C02MCPSetupTemplateIdentity: Sendable, Equatable {
         "node-http/tsconfig.json": "aaa03b5ee9fbadcd0e73745e4ac6d01c2a3d153a1115bc9416eb8cda96f9b26c",
     ]
 
-    /// The App-owned guest entry. It is byte-identical to the reviewed
-    /// donor launcher. Importing `dist/server.js` does not run its CLI
-    /// branch; the exported service is started explicitly. `0.0.0.0` is
-    /// confined by the host allowlist to loopback names so a public
-    /// listener cannot be created by this template.
+    /// The App-owned guest entry. Importing `dist/server.js` does not run
+    /// its CLI branch; start the service explicitly on loopback. A Host-header
+    /// allowlist is not network-interface isolation.
     public static let launcher = """
     // Floe-owned guest entry. No public listener/host configuration is changed.
-    process.env.HOST = '0.0.0.0';
+    process.env.HOST = '127.0.0.1';
     process.env.FLOE_MCP_ALLOWED_HOSTS = '127.0.0.1,localhost,[::1]';
     // Importing server.js does not run its direct-entry CLI branch: argv[1]
     // names this owned launcher. Start its exported service explicitly.
@@ -1311,10 +1309,17 @@ public struct C02MCPSetupCommandResult: Sendable, Equatable {
 }
 
 public protocol C02MCPSetupCommandExecuting: Sendable {
+    func prepare(binding: C02MCPSetupBinding, expectedProjectRevision: String) async throws -> String?
+    func finish(recordID: UUID) async throws
     func submit(recordID: UUID, step: C02MCPSetupStep, payload: Data,
                 binding: C02MCPSetupBinding) async throws -> C02MCPSetupCommandHandle
     func state(_ handle: C02MCPSetupCommandHandle) async -> C02MCPSetupCommandResult
     func cancel(_ handle: C02MCPSetupCommandHandle) async throws
+}
+
+public extension C02MCPSetupCommandExecuting {
+    func prepare(binding: C02MCPSetupBinding, expectedProjectRevision: String) async throws -> String? { nil }
+    func finish(recordID: UUID) async throws {}
 }
 
 public struct C02MCPSetupServiceHandle: Codable, Sendable, Equatable {
@@ -1330,15 +1335,15 @@ public struct C02MCPSetupServiceHandle: Codable, Sendable, Equatable {
 }
 
 public enum C02MCPSetupServiceStatus: Sendable, Equatable {
+    case starting
     case running(URL)
     case stopped
     case failed(String)
 }
 
-/// The long-lived service lane is an explicit C01 capability. Android does
-/// not currently expose a long-lived `exec`/service target, so an absent
-/// implementation is an honest `serviceLaneUnavailable` — never an App
-/// subprocess, never an echoing PTY presented as a service.
+/// The long-lived service lane uses C01's owned durable job and actual
+/// listener proof. Missing composition is an unavailable port, not a claim
+/// that Android cannot host services. No App subprocess is used.
 public protocol C02MCPSetupServiceHosting: Sendable {
     func start(binding: C02MCPSetupBinding, recordID: UUID,
                projectRelativePath: String) async throws -> C02MCPSetupServiceHandle
@@ -2268,7 +2273,7 @@ public actor C02MCPSetupCenter {
               let endpointString = record.serviceEndpoint,
               let endpoint = URL(string: endpointString),
               let port = Int(record.draft.portText),
-              isLoopback(endpoint), endpoint.path == "/mcp", endpoint.port == port else {
+              isServiceBase(endpoint), endpoint.port == port else {
             throw C02MCPSetupFailure(.serviceNotRunning,
                                      message: "The MCP service is not running on its verified loopback endpoint.",
                                      retryable: true)
@@ -2282,6 +2287,9 @@ public actor C02MCPSetupCenter {
         let binding = try await resolveBinding(record)
         let handle = C02MCPSetupServiceHandle(id: serviceID, endpoint: endpoint)
         switch await serviceHost.status(handle, binding: binding) {
+        case .starting:
+            throw C02MCPSetupFailure(.serviceNotRunning,
+                message: "The service is still starting. Check again when it is ready.", retryable: true)
         case .running(let live):
             guard live == endpoint else {
                 markFailed(&record, code: .serviceEndpointMismatch,
@@ -2446,6 +2454,7 @@ public actor C02MCPSetupCenter {
             }
             record.serviceID = nil
             record.serviceEndpoint = nil
+            try await dependencies.commands.finish(recordID: record.id)
             try await saveRecord(&record)
             return record
         }
@@ -2504,6 +2513,7 @@ public actor C02MCPSetupCenter {
                         reusedCommittedDirectory: false),
                     removeCommitted: true)
             }
+            try await dependencies.commands.finish(recordID: record.id)
             await templateStore.remove(recordID: record.id)
             records.removeValue(forKey: record.id)
             try await dependencies.records?.remove(id: record.id)
@@ -2620,7 +2630,14 @@ public actor C02MCPSetupCenter {
                                      message: "The dependency step could not be prepared.",
                                      retryable: false)
         }
-        let binding = try await resolveBinding(record)
+        var binding = try await resolveBinding(record)
+        if let revision = try await dependencies.commands.prepare(
+            binding: binding, expectedProjectRevision: record.projectRevision ?? "") {
+            // Only the provider's own CAS assignment may advance this token.
+            // resolveBinding immediately checks the live project again.
+            record.projectRevision = revision
+            binding = try await resolveBinding(record)
+        }
         let handle = try await dependencies.commands.submit(
             recordID: record.id,
             step: record.steps[index],
@@ -2653,6 +2670,9 @@ public actor C02MCPSetupCenter {
     }
 
     private func saveRecord(_ record: inout C02MCPSetupRecord) async throws {
+        if record.phase == .stopped || record.phase == .failed || record.phase == .interrupted {
+            try await dependencies.commands.finish(recordID: record.id)
+        }
         record.revision &+= 1
         record.updatedAt = Date()
         records[record.id] = record

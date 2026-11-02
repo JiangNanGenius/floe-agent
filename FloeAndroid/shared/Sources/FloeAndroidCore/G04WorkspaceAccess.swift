@@ -15,12 +15,23 @@ struct G04WorkspaceOwnedOperation: Sendable {
     let conversationID: UUID
     let token: RuntimeOwnedWorkToken
     let cancellation: CancellationToken
+    /// Optional real native-maintenance run header. Ordinary terminal/file
+    /// operations remain run-less. The run control route proves the durable
+    /// record before it may cancel this exact operation.
+    let nativeRunID: UUID?
+
+    init(operationID: UUID, conversationID: UUID, token: RuntimeOwnedWorkToken,
+         cancellation: CancellationToken, nativeRunID: UUID? = nil) {
+        self.operationID = operationID; self.conversationID = conversationID
+        self.token = token; self.cancellation = cancellation; self.nativeRunID = nativeRunID
+    }
 }
 
 extension FacadeRunDomain {
     /// Same actor step as deletion/global admission fences. This is real
     /// conversation-owned work, not a fabricated model Run or P8 feed.
-    func beginG04WorkspaceOperation(conversationID: UUID, expectedEpoch: UInt64)
+    func beginG04WorkspaceOperation(conversationID: UUID, expectedEpoch: UInt64,
+                                    nativeRunID: UUID? = nil)
         -> G04WorkspaceOwnedOperation? {
         guard expectedEpoch == epoch, !retirementFenced, globalFence == nil,
               deleteGuards[conversationID] == nil else { return nil }
@@ -30,7 +41,7 @@ extension FacadeRunDomain {
             epoch: epoch, kind: .conversation, ownerID: ownerID) else { return nil }
         let operation = G04WorkspaceOwnedOperation(operationID: operationID,
                                                    conversationID: conversationID, token: token,
-                                                   cancellation: CancellationToken())
+                                                   cancellation: CancellationToken(), nativeRunID: nativeRunID)
         workspaceOperationLeases[conversationID, default: [:]][token.receipt] = operation
         return operation
     }
@@ -52,6 +63,14 @@ extension FacadeRunDomain {
         if workspaceOperationLeases[operation.conversationID]?.isEmpty == true {
             workspaceOperationLeases[operation.conversationID] = nil
         }
+    }
+
+    func requestG04NativeRunStop(runID: UUID, conversationID: UUID) -> Bool {
+        guard let operation = workspaceOperationLeases[conversationID]?.values.first(where: {
+            $0.nativeRunID == runID && RuntimeOwnedWorkRegistry.shared.isAttached($0.token)
+        }) else { return false }
+        operation.cancellation.cancel()
+        return true // Request only; the actual owner retains the token.
     }
 
     func cancelG04WorkspaceOperations(conversationID: UUID? = nil) {

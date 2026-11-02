@@ -54,6 +54,29 @@ final class G04WorkspaceOwnedLeaseTests: XCTestCase {
         _ = await lifecycle.abortDeletionFence(fence)
     }
 
+    func testNativeRunStopCannotCancelAnotherRunOrDetachItsOperation() async throws {
+        let domain = fixture.makeDomain()
+        let taskID = try await fixture.makeOrdinaryConversation()
+        let runID = UUID(), otherRunID = UUID()
+        let firstValue = await domain.beginG04WorkspaceOperation(conversationID: taskID,
+            expectedEpoch: fixture.epoch, nativeRunID: runID)
+        let otherValue = await domain.beginG04WorkspaceOperation(conversationID: taskID,
+            expectedEpoch: fixture.epoch, nativeRunID: otherRunID)
+        let first = try XCTUnwrap(firstValue), other = try XCTUnwrap(otherValue)
+        held.append((domain, first)); held.append((domain, other))
+        let foreign = await domain.requestG04NativeRunStop(runID: runID, conversationID: UUID())
+        XCTAssertFalse(foreign)
+        let accepted = await domain.requestG04NativeRunStop(runID: runID, conversationID: taskID)
+        XCTAssertTrue(accepted)
+        XCTAssertTrue(first.cancellation.isCancelled)
+        XCTAssertFalse(other.cancellation.isCancelled)
+        XCTAssertTrue(RuntimeOwnedWorkRegistry.shared.isAttached(first.token))
+        await domain.endG04WorkspaceOperation(first)
+        let settled = await domain.requestG04NativeRunStop(runID: runID, conversationID: taskID)
+        XCTAssertFalse(settled)
+        XCTAssertTrue(RuntimeOwnedWorkRegistry.shared.isAttached(other.token))
+    }
+
     func testGlobalFenceAndRootRetirementCancelButWaitForActualRelease() async throws {
         let domain = fixture.makeDomain()
         let conversationID = try await fixture.makeOrdinaryConversation()

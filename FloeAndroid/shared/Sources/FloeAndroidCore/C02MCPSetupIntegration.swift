@@ -56,7 +56,18 @@ public struct C02MCPSetupExecutionContext: Sendable {
 }
 
 public protocol C02MCPSetupExecutionContextProviding: Sendable {
+    func prepare(binding: C02MCPSetupBinding, expectedProjectRevision: String) async throws -> String?
     func context(for binding: C02MCPSetupBinding) async throws -> C02MCPSetupExecutionContext
+    func submissionStarted(recordID: UUID) async throws
+    func submissionFinished(recordID: UUID, jobID: UUID?) async
+    func finish(recordID: UUID) async throws
+}
+
+public extension C02MCPSetupExecutionContextProviding {
+    func prepare(binding: C02MCPSetupBinding, expectedProjectRevision: String) async throws -> String? { nil }
+    func submissionStarted(recordID: UUID) async throws {}
+    func submissionFinished(recordID: UUID, jobID: UUID?) async {}
+    func finish(recordID: UUID) async throws {}
 }
 
 // MARK: - Job-backed dependency executor
@@ -69,6 +80,14 @@ public struct C02MCPSetupJobCommandExecutor: C02MCPSetupCommandExecuting {
                 contexts: any C02MCPSetupExecutionContextProviding) {
         self.jobs = jobs
         self.contexts = contexts
+    }
+
+    public func prepare(binding: C02MCPSetupBinding, expectedProjectRevision: String) async throws -> String? {
+        try await contexts.prepare(binding: binding, expectedProjectRevision: expectedProjectRevision)
+    }
+
+    public func finish(recordID: UUID) async throws {
+        try await contexts.finish(recordID: recordID)
     }
 
     public func submit(recordID: UUID, step: C02MCPSetupStep, payload: Data,
@@ -90,6 +109,7 @@ public struct C02MCPSetupJobCommandExecutor: C02MCPSetupCommandExecuting {
                                      message: "The dependency command does not match the reviewed build step.",
                                      retryable: false)
         }
+        try await contexts.submissionStarted(recordID: recordID)
         let job: BackgroundJob
         do {
             job = try await jobs.submit(
@@ -105,10 +125,12 @@ public struct C02MCPSetupJobCommandExecutor: C02MCPSetupCommandExecuting {
                 submissionSource: .nativeService,
                 waitForCompletion: false)
         } catch {
+            await contexts.submissionFinished(recordID: recordID, jobID: nil)
             throw C02MCPSetupFailure(.buildStepFailed,
                                      message: "The Linux dependency job could not be submitted.",
                                      retryable: true)
         }
+        await contexts.submissionFinished(recordID: recordID, jobID: job.id)
         guard job.runID == context.runID,
               job.conversationID == context.conversationID,
               job.environmentID == context.environmentID,

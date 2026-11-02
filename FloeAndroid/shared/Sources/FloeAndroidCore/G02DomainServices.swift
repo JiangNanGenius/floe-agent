@@ -795,41 +795,6 @@ public final class G02InstalledComposition: @unchecked Sendable {
         // construction order cannot invent a second run domain.
         let projectLibrary = C01ProjectLibrary(epoch: epoch, cluster: cluster)
 
-        // C02 guided MCP service setup: install the one domain runtime for
-        // THIS generation. Every dependency below is the live original
-        // service graph: the project library, the durable job service, the
-        // MCP domain/factory/admission and the accepted root epoch. The two
-        // genuine C01 ports stay explicit and typed-unavailable until the
-        // Linux owner supplies them:
-        //   * serviceHost (long-lived Node service/port readiness), and
-        //   * stdioChannelProvider (separated stdin/stdout/stderr pipe).
-        // The App-owned setup run/conversation context is also not
-        // synthesized here; nil produces the typed buildStepFailed refusal.
-        if let backgroundJobs {
-            let setupInstallation = C02MCPSetupIntegration.makeInstallation(
-                epoch: epoch,
-                appSupportRoot: rootURL,
-                projectLibrary: projectLibrary,
-                storageRootPath: cluster.identity.root.path,
-                environmentRegistry: environmentRegistry,
-                runtimeEnvironments: C02MCPSetupRuntimeEnvironmentProvider(epoch: epoch),
-                jobs: backgroundJobs,
-                jobContexts: nil,
-                mcpDomain: mcpDomain,
-                mcpFactory: mcpFactory,
-                mcpAdmission: transportGate,
-                generation: nil,
-                serviceHost: nil,
-                stdioChannelProvider: stdioChannelProvider,
-                // The four reviewed template bytes are packaged by
-                // feature/integrations; the host re-verifies every byte
-                // before upload. A missing asset still fails typed.
-                templateAssetAvailable: true,
-                stdioLaneAvailable: true,
-                liveEpoch: { G02NativeRootEpoch.readback() ?? 0 })
-            C02MCPSetupIntegration.install(setupInstallation)
-        }
-
         // C02: durable task execution targets + explicit migration + the real
         // SSH adapter. It reuses the SAME database, the host-registered G07.3
         // environment snapshot (not a second registry), RemoteHostStore and
@@ -856,6 +821,36 @@ public final class G02InstalledComposition: @unchecked Sendable {
                 context: request.context
             ))
         }
+        // MCP setup runs reuse the original persisted task/run/job graph and
+        // conversation-owned cancellation leases without selecting a model.
+        if let backgroundJobs {
+            let setupContexts = C02MCPSetupOwnedRunContexts(epoch: epoch,
+                conversations: conversationDomain, library: projectLibrary,
+                runs: cluster.runStore, jobs: backgroundJobs, targets: executionTargets.domain)
+            let setupInstallation = C02MCPSetupIntegration.makeInstallation(
+                epoch: epoch,
+                appSupportRoot: rootURL,
+                projectLibrary: projectLibrary,
+                storageRootPath: cluster.identity.root.path,
+                environmentRegistry: environmentRegistry,
+                runtimeEnvironments: C02MCPSetupRuntimeEnvironmentProvider(epoch: epoch),
+                jobs: backgroundJobs,
+                jobContexts: setupContexts,
+                mcpDomain: mcpDomain,
+                mcpFactory: mcpFactory,
+                mcpAdmission: transportGate,
+                generation: nil,
+                serviceHost: C02MCPSetupJobServiceHost(jobs: backgroundJobs, contexts: setupContexts),
+                stdioChannelProvider: stdioChannelProvider,
+                // The four reviewed template bytes are packaged by
+                // feature/integrations; the host re-verifies every byte
+                // before upload. A missing asset still fails typed.
+                templateAssetAvailable: true,
+                stdioLaneAvailable: true,
+                liveEpoch: { G02NativeRootEpoch.readback() ?? 0 })
+            C02MCPSetupIntegration.install(setupInstallation)
+        }
+
         // C02 task continuity: recoverable storage pause and the canonical
         // question/approval wait identity over the SAME database/root and the
         // SAME live run services. Installed for this exact generation only;

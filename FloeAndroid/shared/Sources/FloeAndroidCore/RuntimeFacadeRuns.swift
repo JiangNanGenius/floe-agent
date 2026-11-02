@@ -2089,6 +2089,13 @@ public actor FacadeRunDomain {
         } catch {
             return RunDomainReply(.rejected(RunDomainError(.staleRevision, .revisionAbsent)))
         }
+        // Native maintenance work has a real durable header and the same
+        // conversation-owned operation lease as other native workspace work.
+        // The authoritative owner/state/revision checks above still apply.
+        if owners[query.runID] == nil,
+           requestG04NativeRunStop(runID: query.runID, conversationID: query.conversationID) {
+            return RunDomainReply(.mutationAccepted(detail: ["cancel": "stopping"]))
+        }
         // post-run stop wiring (Main review 2026-10-21): for an ordinary
         // COMPLETED goal-mode run, the ORIGINAL post-run review/continuation
         // lane is REAL owned work that outlives the service retirement as a
