@@ -56,6 +56,9 @@ final class CADMeshOperationFlowUITests: XCTestCase {
             app.launchArguments.removeAll { $0.hasPrefix("--ui-test-cad-face-rotation") || $0 == "--ui-test-cad-mesh-panel-flow" }
             app.launchArguments.append("--ui-test-cad-mesh-integrity")
         }
+        if name.contains("testSimplificationInspectionIsVisibleInPreviewAndAfterApply") {
+            app.launchArguments.removeAll { $0 == "--ui-test-cad-mesh-panel-flow" }
+        }
         app.launch()
     }
 
@@ -65,6 +68,26 @@ final class CADMeshOperationFlowUITests: XCTestCase {
     }
 
     // MARK: - Tests
+
+    func testSimplificationInspectionIsVisibleInPreviewAndAfterApply() throws {
+        guard openMeshPanel() else { return }
+        let simplify = app.buttons["Simplify"].firstMatch
+        guard reveal(simplify, defaultDirection:.towardBottom) else { fail("Simplify must be reachable"); return }
+        simplify.tap()
+        guard waitForPendingPreview(titled:"Simplify",timeout:20),
+              reveal(pendingApplyButton,defaultDirection:.towardBottom) else { return }
+        let deviation = app.staticTexts.matching(NSPredicate(format:"label BEGINSWITH %@", "Sampled surface deviation:")).firstMatch
+        XCTAssertTrue(deviation.exists, "Actual quality must accompany the preview")
+        snapshot("Simplification — preview includes measured deviation and seams")
+        pendingApplyButton.tap()
+        let details = app.descendants(matching:.any).matching(identifier:"CADMeshSimplificationDetails").firstMatch
+        guard require(details.waitForExistence(timeout:20), "Applied simplification keeps its measured quality"),
+              reveal(details,defaultDirection:.towardBottom) else { return }
+        app.buttons["Inspection details"].firstMatch.tap()
+        let seams = app.staticTexts["Texture seams and hard edges preserved"].firstMatch
+        guard reveal(seams,defaultDirection:.towardBottom) else { fail("Inspection must remain readable"); return }
+        snapshot("Simplification — applied inspection remains readable")
+    }
 
     func testCleanupInspectionIsVisibleBeforeAndAfterApply() throws {
         guard openMeshPanel() else { return }
@@ -83,8 +106,11 @@ final class CADMeshOperationFlowUITests: XCTestCase {
         let details = app.buttons["Inspection details"].firstMatch
         guard reveal(details, defaultDirection: .towardBottom) else { fail("Inspection details must be reachable"); return }
         details.tap()
-        XCTAssertTrue(app.descendants(matching: .any).matching(NSPredicate(
-            format: "label CONTAINS %@", "Self-intersections")).firstMatch.exists)
+        let intersections = app.descendants(matching: .any).matching(NSPredicate(
+            format: "label CONTAINS %@", "Self-intersections")).firstMatch
+        guard reveal(intersections, defaultDirection: .towardBottom) else {
+            fail("Actual remaining defects must be visible after opening inspection details"); return
+        }
         snapshot("Mesh inspection — applied cleanup shows actual remaining issues")
     }
 

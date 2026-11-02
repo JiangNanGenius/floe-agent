@@ -1086,7 +1086,9 @@ nonisolated enum CADInterferenceGeometry {
         return (p1 + d1 * s, p2 + d2 * t)
     }
 
-    private static func closestPointOnTriangle(
+    // Shared with simplification inspection; the BVH and distance predicate
+    // remain the same geometry used by interference queries.
+    static func closestPointOnTriangle(
         _ point: SIMD3<Double>,
         _ a: SIMD3<Double>, _ b: SIMD3<Double>, _ c: SIMD3<Double>
     ) -> SIMD3<Double> {

@@ -644,6 +644,125 @@ final class CADScriptAndMeshTests: XCTestCase {
         XCTAssertLessThan(after, before)
     }
 
+    @MainActor
+    func testSimplifyPreservesThinPerforatedTextureSeamsAndReportsMeasuredDeviation() async throws {
+        let document = try await makeDocument("ThinPerforated")
+        defer { if !document.isClosed { document.close() } }
+        let mesh = texturedAnnularSlab()
+        let body = addRenderBody(document, name: "Thin perforated texture", render: mesh)
+        var appearance = BodyMaterialSpec.default
+        appearance.baseColorTexture = try XCTUnwrap(Data(base64Encoded:
+            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+a2ioAAAAASUVORK5CYII="))
+        appearance.metallic = 0.7
+        appearance.roughness = 0.3
+        document.session.perform(SetMaterialCommand(bodyIDs: [body.id], material: appearance,
+                                                    document: document.session.document))
+        let changeBefore = document.session.changeCount
+        let service = CADMeshService(document: document)
+        let args: [String: Any] = ["bodyID":body.id.raw.uuidString,"ratio":0.75]
+        var previewArgs = args; previewArgs["preview"] = true
+        let preview = await service.handleAsync(action: "simplify", args: previewArgs)
+        XCTAssertEqual(preview["ok"] as? Bool, true, preview["message"] as? String ?? "")
+        XCTAssertEqual(document.session.changeCount, changeBefore)
+        let entry = try XCTUnwrap((preview["bodies"] as? [[String: Any]])?.first)
+        let quality = try XCTUnwrap(entry["quality"] as? [String: Any])
+        XCTAssertEqual(quality["topologyPreserved"] as? Bool, true)
+        XCTAssertEqual(quality["uvAndHardEdgeSeamsPreserved"] as? Bool, true)
+        XCTAssertEqual(quality["closedOrientedVolumes"] as? Bool, true)
+        XCTAssertEqual(quality["distanceIsExactHausdorff"] as? Bool, false)
+        XCTAssertEqual(quality["volumeIsValidatedSolid"] as? Bool, false)
+        XCTAssertLessThan(try XCTUnwrap(entry["afterTriangles"] as? Int), mesh.triangleCount)
+        XCTAssertEqual(try XCTUnwrap(quality["boundarySampledMaxDistanceMM"] as? Double), 0, accuracy: 1e-8)
+        let polygonVolume = Double(32) / 2 * sin(2 * Double.pi / 32) * (100-16) * 0.4
+        XCTAssertEqual(try XCTUnwrap(quality["signedVolumeBeforeMM3"] as? Double), polygonVolume, accuracy: 0.001)
+        XCTAssertEqual(try XCTUnwrap(quality["signedVolumeDeltaMM3"] as? Double), 0, accuracy: 0.01)
+        let measured = try XCTUnwrap(quality["surfaceSampledMaxDistanceMM"] as? Double)
+        XCTAssertGreaterThanOrEqual(try XCTUnwrap(quality["surfaceDistanceUpperBoundMM"] as? Double), measured)
+        var applyArgs = args
+        applyArgs["expectedPreviewHash"] = try XCTUnwrap(preview["previewHash"] as? String)
+        applyArgs["expectedChangeCount"] = changeBefore
+        let applied = await service.handleAsync(action: "simplify", args: applyArgs)
+        XCTAssertEqual(applied["ok"] as? Bool, true, applied["message"] as? String ?? "")
+        XCTAssertEqual(document.session.changeCount, changeBefore + 1)
+        let after = try XCTUnwrap(document.session.document.body(with: body.id))
+        XCTAssertNotNil(after.render.texcoords)
+        XCTAssertEqual(after.render.texcoords?.count, after.render.positions.count)
+        XCTAssertEqual(after.material, appearance)
+        document.session.undo()
+        XCTAssertEqual(document.session.document.body(with: body.id)?.render, mesh)
+        document.session.redo()
+        XCTAssertEqual(document.session.document.body(with: body.id)?.render, after.render)
+        try await document.save()
+        let url = document.url
+        document.close()
+        let reopened = try await FloeCADDocument.open(at: url)
+        defer { reopened.close() }
+        XCTAssertEqual(reopened.session.document.body(with: body.id)?.render, after.render)
+        XCTAssertEqual(reopened.session.document.body(with: body.id)?.material, appearance)
+        let attachment = XCTAttachment(data: try JSONSerialization.data(withJSONObject: quality, options: [.sortedKeys]),
+                                       uniformTypeIdentifier: "public.json")
+        attachment.name = "Thin perforated texture — actual simplification inspection"
+        attachment.lifetime = .keepAlways
+        add(attachment)
+    }
+
+    @MainActor
+    func testSimplificationMeasurementUsesActualSurfaceBoundaryAndScale() throws {
+        let first = RenderMesh(positions: [[0,0,0],[2,0,0],[2,2,0],[0,2,0]],
+                               normals: Array(repeating: [0,0,1], count:4), indices:[0,1,2,0,2,3])
+        var shifted = first
+        shifted.positions = first.positions.map { $0 + SIMD3<Float>(0,0,0.25) }
+        let protection = try XCTUnwrap(CADMeshSimplificationQuality.protection(first, shouldStop:{ false }))
+        let report = try XCTUnwrap(CADMeshSimplificationQuality.inspect(
+            before:first, after:shifted, protection:protection, scale:2, shouldStop:{ false }))
+        XCTAssertEqual(report.sampledDistanceMM, 0.5, accuracy:1e-8)
+        XCTAssertEqual(try XCTUnwrap(report.boundaryDistanceMM), 0.5, accuracy:1e-8)
+        XCTAssertGreaterThanOrEqual(report.distanceUpperBoundMM, report.sampledDistanceMM)
+        XCTAssertFalse(report.appearancePreserved, "Moving protected boundary vertices is detected")
+        XCTAssertFalse(report.closedOrientedVolumes)
+        XCTAssertNil(CADMeshSimplificationQuality.inspect(before:first, after:shifted,
+            protection:protection, shouldStop:{ true }), "An interrupted inspection is never a zero-error report")
+    }
+
+    @MainActor
+    private func texturedAnnularSlab() -> RenderMesh {
+        let sectors = 32, rings = 8
+        var p: [SIMD3<Float>] = [], n: [SIMD3<Float>] = [], uv: [SIMD2<Float>] = [], indices: [UInt32] = []
+        func point(_ radius:Double, _ j:Int, _ z:Double) -> SIMD3<Float> {
+            let angle = j == sectors ? 0 : Double(j)*2*Double.pi/Double(sectors)
+            return SIMD3(Float(radius*cos(angle)),Float(radius*sin(angle)),Float(z))
+        }
+        for top in [false,true] {
+            let base = p.count
+            for r in 0...rings {
+                for j in 0...sectors {
+                    p.append(point(4+6*Double(r)/Double(rings),j,top ? 0.4 : 0))
+                    n.append(SIMD3(0,0,top ? 1 : -1))
+                    uv.append(SIMD2(Float(j)/Float(sectors),Float(r)/Float(rings)))
+                }
+            }
+            for r in 0..<rings { for j in 0..<sectors {
+                let a = UInt32(base+r*(sectors+1)+j), b = a+UInt32(sectors+1)
+                let face: [UInt32] = top ? [a,b,b+1,a,b+1,a+1] : [a,b+1,b,a,a+1,b+1]
+                indices.append(contentsOf:face)
+            } }
+        }
+        for outer in [false,true] {
+            let base = p.count
+            for z in 0...1 { for j in 0...sectors {
+                let pos = point(outer ? 10 : 4,j,Double(z)*0.4)
+                p.append(pos)
+                n.append(simd_normalize(SIMD3(pos.x,pos.y,0)) * (outer ? 1 : -1))
+                uv.append(SIMD2(Float(j)/Float(sectors),Float(z)))
+            } }
+            for j in 0..<sectors {
+                let a = UInt32(base+j), b = a+UInt32(sectors+1)
+                indices.append(contentsOf:outer ? [a,a+1,b+1,a,b+1,b] : [a,b+1,a+1,a,b,b+1])
+            }
+        }
+        return RenderMesh(positions:p,normals:n,indices:indices,texcoords:uv)
+    }
+
     // MARK: 9. Combine / transform / material / image / text
 
     @MainActor

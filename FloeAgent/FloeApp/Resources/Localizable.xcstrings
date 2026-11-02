@@ -130874,6 +130874,70 @@
           }
         }
       }
+    },
+    "cad.mesh.sampledDeviation": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Sampled surface deviation: %.4f mm"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "采样表面偏差：%.4f mm"
+          }
+        }
+      }
+    },
+    "cad.mesh.boundaryDeviation": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Sampled boundary deviation: %.4f mm"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "采样边界偏差：%.4f mm"
+          }
+        }
+      }
+    },
+    "cad.mesh.signedVolumeChange": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Signed volume change: %.4f mm³"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "有向体积变化：%.4f mm³"
+          }
+        }
+      }
+    },
+    "cad.mesh.seamsPreserved": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Texture seams and hard edges preserved"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "已保留贴图接缝和硬边"
+          }
+        }
+      }
     }
   },
   "version": "1.0"

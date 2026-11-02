@@ -27,6 +27,7 @@ nonisolated enum CADMeshIntegrity {
              "degenerateTriangleCount": degenerateTriangles,
              "selfIntersectionPairCount": selfIntersectionPairs,
              "selfIntersectionWitnesses": witnesses,
+             "selfIntersectionWitnessesAreSampled": selfIntersectionPairs > witnesses.count,
              "complete": !unresolved]
         }
         func requiresUnsupportedRepair(_ request: CADMeshRepairRequest) -> Bool {

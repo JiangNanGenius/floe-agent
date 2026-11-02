@@ -424,6 +424,7 @@ struct CADMeshPanelView: View {
             let triangles = reply["triangleCount"] as? Int ?? 0
             lines.append(FloeCADStrings.format("cad.workbench.mesh.previewTriangles",
                                                "%@ triangles in the result", triangles))
+            lines.append(contentsOf: simplificationLines(reply))
             if reply["repairComplete"] as? Bool == false {
                 lines.append(FloeCADStrings.text("cad.mesh.cleanupIncomplete", "Unresolved mesh issues were found."))
             }
@@ -467,6 +468,30 @@ struct CADMeshPanelView: View {
                         needsOrientationReview ? "Needs review" : "No issue found"))
             }
         }
+        if !simplificationLines(outcome).isEmpty {
+            DisclosureGroup(FloeCADStrings.text("cad.mesh.inspectDetails", "Inspection details")) {
+                ForEach(simplificationLines(outcome), id: \.self) { Text($0).font(.callout) }
+            }
+            .accessibilityIdentifier("CADMeshSimplificationDetails")
+        }
+    }
+
+    private func simplificationLines(_ reply: [String: Any]) -> [String] {
+        let reports = (reply["bodies"] as? [[String: Any]] ?? []).compactMap { $0["quality"] as? [String: Any] }
+        guard !reports.isEmpty else { return [] }
+        var lines: [String] = []
+        if let distance = reports.compactMap({ $0["surfaceSampledMaxDistanceMM"] as? Double }).max() {
+            lines.append(FloeCADStrings.format("cad.mesh.sampledDeviation", "Sampled surface deviation: %.4f mm", distance))
+        }
+        if let boundary = reports.compactMap({ $0["boundarySampledMaxDistanceMM"] as? Double }).max() {
+            lines.append(FloeCADStrings.format("cad.mesh.boundaryDeviation", "Sampled boundary deviation: %.4f mm", boundary))
+        }
+        let volume = reports.compactMap { $0["signedVolumeDeltaMM3"] as? Double }.reduce(0,+)
+        lines.append(FloeCADStrings.format("cad.mesh.signedVolumeChange", "Signed volume change: %.4f mm³", volume))
+        if reports.allSatisfy({ $0["uvAndHardEdgeSeamsPreserved"] as? Bool == true }) {
+            lines.append(FloeCADStrings.text("cad.mesh.seamsPreserved", "Texture seams and hard edges preserved"))
+        }
+        return lines
     }
 
     private var repairReports: [[String: Any]] {

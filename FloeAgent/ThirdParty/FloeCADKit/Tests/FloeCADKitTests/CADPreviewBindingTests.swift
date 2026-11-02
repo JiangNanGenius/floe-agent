@@ -209,7 +209,14 @@ final class CADPreviewBindingTests: XCTestCase {
         XCTAssertEqual(CADDrawingPageEditorDefaults.scale(page: ["scale": 0.5]), "0.5000")
         XCTAssertEqual(CADDrawingPageEditorDefaults.scale(page: ["scale": 0.0]), "1",
                        "an invalid stored scale falls back to 1")
+        let originalLocalizer = FloeCADStrings.localizer
+        defer { FloeCADStrings.localizer = originalLocalizer }
+        FloeCADStrings.localizer = { _ in nil }
         XCTAssertEqual(CADDrawingPageEditorDefaults.name(page: nil), "Sheet")
+        FloeCADStrings.localizer = { key in
+            key == "cad.workbench.drawing.sheetDefault" ? "图纸" : nil
+        }
+        XCTAssertEqual(CADDrawingPageEditorDefaults.name(page: nil), "图纸")
         XCTAssertEqual(CADDrawingPageEditorDefaults.name(page: ["name": "Plate"]), "Plate")
     }
 

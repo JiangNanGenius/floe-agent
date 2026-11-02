@@ -1497,7 +1497,7 @@ public enum CadServiceOperationCatalog: Sendable {
                               arg("defect", "cleanup | holes | selfIntersections | orientation | nonManifold | all", note: "default cleanup preserves legacy weld/degenerate cleanup; specific repairs inspect first and explicitly refuse unsupported defects")],
                   examples: [#"{"bodyID":"<body uuid>","tolerance":0.01,"forceMesh":true}"#]),
         Operation(kind: "mesh", action: "simplify", mutating: true,
-                  summary: "Simplify a mesh body by ratio/tolerance.",
+                  summary: "Simplify by ratio/tolerance while preserving open boundaries, UV/hard-edge seams and body materials. Returns actual achieved ratio and quality in preview/apply: bidirectional sampled surface/boundary deviations, a conservative surface-distance upper bound and signed-volume change. Samples are not exact Hausdorff or validated solid volume. Refuses topology changes and unsupported face-material remapping without mutation.",
                   arguments: [arg("bodyIDs", "[uuid]", note: "alias bodyID"),
                               arg("ratio", "number"), arg("tolerance", "number"),
                               arg("forceMesh", "boolean")],

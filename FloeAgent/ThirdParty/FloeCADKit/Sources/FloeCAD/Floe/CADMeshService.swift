@@ -223,11 +223,14 @@ nonisolated struct CADMeshSimplifyEntry: Sendable {
     let targetTriangles: Int?
     let cellSize: Double?
     let tolerance: Double?
+    let quality: CADMeshSimplificationQuality.Report
 
     var payload: [String: Any] {
         var entry: [String: Any] = ["bodyID": bodyID.raw.uuidString,
                                     "beforeTriangles": beforeTriangles,
                                     "afterTriangles": afterTriangles]
+        entry["quality"] = quality.payload
+        entry["achievedRatio"] = Double(afterTriangles) / Double(max(1, beforeTriangles))
         if let tolerance { entry["tolerance"] = tolerance }
         if let targetTriangles { entry["targetTriangles"] = targetTriangles }
         if let cellSize { entry["cellSize"] = cellSize }
@@ -884,6 +887,12 @@ public final class CADMeshService {
         if let refusal = verifyMeshOnly(bodies, args: args, action: "simplify") {
             return .refusal(refusal)
         }
+        // Face-local materials rely on topology references. Never silently
+        // reassign them after clustering; body-level textures keep their UVs.
+        guard bodies.allSatisfy({ $0.materialFaceBindings.isEmpty }) else {
+            return .refusal(Self.fail("face_material_simplification_unavailable",
+                "Simplification cannot preserve face-local material references yet; nothing changed."))
+        }
         let ratio = args["ratio"].flatMap { Self.number($0) }
         let tolerance = args["tolerance"].flatMap { Self.number($0) }
         if tolerance == nil {
@@ -1325,9 +1334,10 @@ public final class CADMeshService {
                                triangleCount: previewTriangleCount,
                                revision: document.store.revision,
                                changeCount: document.session.changeCount,
-                               extra: repairEntries.isEmpty ? [:] : [
-                                "bodies": repairEntries.map(\.payload),
-                                "repairComplete": repairEntries.allSatisfy { !$0.afterIntegrity.unresolved }])
+                               extra: repairEntries.isEmpty
+                                ? ["bodies": simplifyEntries.map(\.payload)]
+                                : ["bodies": repairEntries.map(\.payload),
+                                   "repairComplete": repairEntries.allSatisfy { !$0.afterIntegrity.unresolved }])
         if let refusal = gate.refusal { return refusal }
         if let reply = gate.reply { return reply }
         if let fence = commitFence(plan, source: source, cancellation: cancellation) {
@@ -1730,13 +1740,18 @@ public final class CADMeshService {
                                     message: "Body '\(input.name)' has \(before) triangles; simplification "
                                            + "never goes below 4.")
                 }
+                guard let protection = CADMeshSimplificationQuality.protection(input.render, shouldStop: serviceCancel) else {
+                    return interrupted()
+                }
                 let simplified: RenderMesh
+                var targetCount: Int?, usedCell: Double?
                 if let tolerance {
                     // Tolerance takes precedence when both are given.
                     guard let welded = weldAndClean(input.render,
                                                     tolerance: tolerance,
                                                     clock: clock,
-                                                    isCancelled: serviceCancel) else {
+                                                    isCancelled: serviceCancel,
+                                                    protection: protection) else {
                         if serviceCancel() { return interrupted() }
                         return .refused(code: "invalid_mesh",
                                         message: "Body '\(input.name)' has non-finite coordinates; nothing changed.")
@@ -1747,18 +1762,15 @@ public final class CADMeshService {
                                                + "nothing changed.")
                     }
                     simplified = welded.mesh
-                    entries.append(CADMeshSimplifyEntry(bodyID: input.id,
-                                                        beforeTriangles: before,
-                                                        afterTriangles: welded.mesh.triangleCount,
-                                                        targetTriangles: nil,
-                                                        cellSize: nil,
-                                                        tolerance: tolerance))
+
                 } else {
                     guard let ratio else {
                         return .refused(code: "bad_request",
                                         message: "Provide 'ratio' in (0, 1) or 'tolerance'.")
                     }
                     let target = max(4, Int((Double(before) * ratio).rounded()))
+                    let originalTopology = CADInterferenceMeshGeometry.build(
+                        positions: input.render.positions, indices: input.render.indices).topology
                     var cell = max(diagonal(input.render) * 0.01, 1e-9)
                     var best: RenderMesh?
                     var bestCell = cell
@@ -1767,16 +1779,22 @@ public final class CADMeshService {
                         guard let welded = weldAndClean(input.render,
                                                         tolerance: cell,
                                                         clock: clock,
-                                                        isCancelled: serviceCancel) else {
+                                                        isCancelled: serviceCancel,
+                                                    protection: protection) else {
                             if serviceCancel() { return interrupted() }
                             return .refused(code: "invalid_mesh",
                                             message: "Body '\(input.name)' has non-finite coordinates; nothing changed.")
                         }
                         let candidate = welded.mesh
                         guard candidate.triangleCount >= 4 else { break }
-                        best = candidate
-                        bestCell = cell
-                        if candidate.triangleCount <= target { break }
+                        let candidateTopology = CADInterferenceMeshGeometry.build(
+                            positions: candidate.positions, indices: candidate.indices).topology
+                        if CADMeshSimplificationQuality.sameTopology(originalTopology, candidateTopology),
+                           candidate.triangleCount <= (best?.triangleCount ?? before) {
+                            best = candidate
+                            bestCell = cell
+                            if candidate.triangleCount <= target { break }
+                        }
                         cell *= 1.6
                     }
                     guard let simplifiedMesh = best else {
@@ -1784,13 +1802,23 @@ public final class CADMeshService {
                                         message: "No cluster size kept at least 4 triangles; nothing changed.")
                     }
                     simplified = simplifiedMesh
-                    entries.append(CADMeshSimplifyEntry(bodyID: input.id,
-                                                        beforeTriangles: before,
-                                                        afterTriangles: simplifiedMesh.triangleCount,
-                                                        targetTriangles: target,
-                                                        cellSize: bestCell,
-                                                        tolerance: nil))
+                    targetCount = target
+                    usedCell = bestCell
                 }
+                guard let quality = CADMeshSimplificationQuality.inspect(
+                    before: input.render, after: simplified, protection: protection, scale: input.transform.scale,
+                    shouldStop: serviceCancel) else {
+                    if serviceCancel() { return interrupted() }
+                    return .refused(code: "simplification_inspection_failed",
+                                    message: "Simplification inspection did not complete; nothing changed.")
+                }
+                guard quality.topologyPreserved && quality.appearancePreserved else {
+                    return .refused(code: "simplification_changes_features",
+                                    message: "That simplification would alter a boundary, shell or material seam; nothing changed. Use a smaller tolerance or a higher ratio.")
+                }
+                entries.append(CADMeshSimplifyEntry(bodyID: input.id,
+                    beforeTriangles: before, afterTriangles: simplified.triangleCount,
+                    targetTriangles: targetCount, cellSize: usedCell, tolerance: tolerance, quality: quality))
                 previewMeshes.append(simplified)
                 replacements.append(CADMeshReplacement(
                     id: input.id,
@@ -1837,7 +1865,8 @@ public final class CADMeshService {
         _ mesh: RenderMesh,
         tolerance: Double,
         clock: EvaluationDeadlineClock,
-        isCancelled: @escaping @Sendable () -> Bool
+        isCancelled: @escaping @Sendable () -> Bool,
+        protection: CADMeshSimplificationQuality.Protection? = nil
     ) -> (mesh: RenderMesh, weldedVertices: Int, removedTriangles: Int)? {
         for position in mesh.positions
         where !position.x.isFinite || !position.y.isFinite || !position.z.isFinite {
@@ -1849,10 +1878,14 @@ public final class CADMeshService {
         var sums = [SIMD3<Double>]()
         var normalSums = [SIMD3<Double>]()
         var counts = [Int]()
+        var representatives = [Int]()
+        var uvSums = [SIMD2<Double>]()
         var remap = [UInt32](repeating: 0, count: mesh.positions.count)
         for (index, position) in mesh.positions.enumerated() {
             if clock.isExpired() || isCancelled() { return nil }
-            let key = ClusterKey(position, cell: tolerance)
+            let key = ClusterKey(position, cell: tolerance,
+                                 protectedIndex: protection?.vertices.contains(index) == true ? index : nil,
+                                 normal: protection == nil ? nil : mesh.normals[index])
             let cluster: Int
             if let existing = lookup[key] {
                 cluster = existing
@@ -1862,7 +1895,10 @@ public final class CADMeshService {
                 sums.append(.zero)
                 normalSums.append(.zero)
                 counts.append(0)
+                representatives.append(index)
+                uvSums.append(.zero)
             }
+            if let uv = mesh.texcoords?[index] { uvSums[cluster] += SIMD2<Double>(uv) }
             sums[cluster] += SIMD3(Double(position.x), Double(position.y), Double(position.z))
             let normal = mesh.normals[index]
             normalSums[cluster] += SIMD3(Double(normal.x), Double(normal.y), Double(normal.z))
@@ -1880,7 +1916,9 @@ public final class CADMeshService {
                                    Float(sums[cluster].y / count),
                                    Float(sums[cluster].z / count)))
             let normal = normalSums[cluster]
-            if simd_length(normal) > 1e-12 {
+            if protection?.vertices.contains(representatives[cluster]) == true {
+                normals.append(mesh.normals[representatives[cluster]])
+            } else if simd_length(normal) > 1e-12 {
                 let unit = simd_normalize(normal)
                 normals.append(SIMD3(Float(unit.x), Float(unit.y), Float(unit.z)))
             } else {
@@ -1906,7 +1944,10 @@ public final class CADMeshService {
             }
             indices.append(contentsOf: [a, b, c])
         }
-        let cleaned = RenderMesh(positions: positions, normals: normals, indices: indices)
+        var cleaned = RenderMesh(positions: positions, normals: normals, indices: indices)
+        if protection != nil, mesh.texcoords != nil {
+            cleaned.texcoords = uvSums.indices.map { SIMD2<Float>(uvSums[$0] / Double(counts[$0])) }
+        }
         return (cleaned,
                 mesh.positions.count - sums.count,
                 removed)
@@ -1914,7 +1955,13 @@ public final class CADMeshService {
 
     private nonisolated struct ClusterKey: Hashable {
         let x, y, z: Int64
-        init(_ position: SIMD3<Float>, cell: Double) {
+        let protectedIndex: Int?
+        let nx, ny, nz: Int64
+        init(_ position: SIMD3<Float>, cell: Double, protectedIndex: Int? = nil, normal: SIMD3<Float>? = nil) {
+            self.protectedIndex = protectedIndex
+            nx = normal.map { MeshQuantize.key64(Double($0.x), inverseQuantum: 2) } ?? 0
+            ny = normal.map { MeshQuantize.key64(Double($0.y), inverseQuantum: 2) } ?? 0
+            nz = normal.map { MeshQuantize.key64(Double($0.z), inverseQuantum: 2) } ?? 0
             x = MeshQuantize.key64(Double(position.x), quantum: cell)
             y = MeshQuantize.key64(Double(position.y), quantum: cell)
             z = MeshQuantize.key64(Double(position.z), quantum: cell)
