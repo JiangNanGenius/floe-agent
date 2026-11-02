@@ -2012,7 +2012,7 @@ final class CADExternalProjectionNativeFlowUITests: XCTestCase {
         let result = XCTWaiter.wait(for: [expected], timeout: timeout)
         if result != .completed {
             capture("M05 live state failure")
-            let details = "state=\(state.exists ? state.label : "missing") camera=\(element(app, "CADProjectionCamera").label) edge=\(element(app, "CADProjectionEdgeScreen").label) line=\(element(app, "CADProjectionLineScreen").label)"
+            let details = "state=\(state.exists ? state.label : "missing") camera=\(element(app, "CADProjectionCamera").label) tree=\(element(app, "CADProjectionViewTree").label) edge=\(element(app, "CADProjectionEdgeScreen").label) line=\(element(app, "CADProjectionLineScreen").label)"
             let attachment = XCTAttachment(string: details + "\n" + app.debugDescription)
             attachment.name = "M05 actual camera and native hierarchy"
             attachment.lifetime = .keepAlways; add(attachment)

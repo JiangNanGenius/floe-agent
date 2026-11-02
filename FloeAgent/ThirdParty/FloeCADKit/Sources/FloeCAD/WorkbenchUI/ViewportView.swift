@@ -45,6 +45,9 @@ struct ViewportView: UIViewRepresentable {
     }
 
     func updateUIView(_ view: MTKView, context: Context) {
+        #if DEBUG
+        context.coordinator.projectionQualificationUpdatedView = view
+        #endif
         context.coordinator.sceneDidChange()
         context.coordinator.setPalette(frame: paletteFrame, onRight: paletteOnRight)
     }
@@ -129,10 +132,12 @@ final class ViewportCoordinator: NSObject, ViewportGestureDelegate, ViewportCame
     var pendingOpeningFit: TurntableCamera? { openingFit }
 
     #if DEBUG
+    weak var projectionQualificationUpdatedView: MTKView?
     var projectionQualificationState: String {
         let size = view?.bounds.size ?? .zero
+        let updatedSize = projectionQualificationUpdatedView?.bounds.size ?? .zero
         let camera = renderer?.camera
-        return "view=\(Int(size.width))x\(Int(size.height)) window=\(view?.window != nil) renderer=\(renderer != nil) distance=\(camera?.distance ?? -1) target=\(String(describing: camera?.target))"
+        return "view=\(Int(size.width))x\(Int(size.height)) window=\(view?.window != nil) renderer=\(renderer != nil) updated=\(Int(updatedSize.width))x\(Int(updatedSize.height)) same=\(projectionQualificationUpdatedView === view) distance=\(camera?.distance ?? -1) target=\(String(describing: camera?.target))"
     }
     #endif
 

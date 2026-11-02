@@ -4,6 +4,8 @@
 import Foundation
 import SwiftUI
 import simd
+import UIKit
+import MetalKit
 
 @MainActor
 public enum CADExternalProjectionUIFixture {
@@ -86,6 +88,7 @@ public struct CADExternalProjectionReadbackPanel: View {
                 row("CADProjectionLineScreen", screen(model.cameraControl?.worldToScreenPoint(SIMD3(50, -5, -60))))
                 row("CADProjectionError", model.errorMessage ?? "none")
                 row("CADProjectionCamera", (model.cameraControl as? ViewportCoordinator)?.projectionQualificationState ?? "camera=none")
+                row("CADProjectionViewTree", liveViewports(model))
             }
             .font(.system(size: 9, design: .monospaced))
             .padding(5)
@@ -109,6 +112,22 @@ public struct CADExternalProjectionReadbackPanel: View {
                 if Task.isCancelled { return }
             }
         }
+    }
+
+    private func liveViewports(_ model: EditorViewModel) -> String {
+        var results: [String] = []
+        func visit(_ view: UIView, depth: Int) {
+            guard depth < 50, results.count < 8 else { return }
+            if let viewport = view as? MTKView {
+                let owner = (viewport as? CADViewportMTKView)?.coordinator
+                results.append("\(Int(viewport.bounds.width))x\(Int(viewport.bounds.height)) win=\(viewport.window != nil) owner=\(owner === model.cameraControl) render=\(viewport.delegate != nil)")
+            }
+            for child in view.subviews { visit(child, depth: depth + 1) }
+        }
+        for scene in UIApplication.shared.connectedScenes.compactMap({ $0 as? UIWindowScene }) {
+            for window in scene.windows { visit(window, depth: 0) }
+        }
+        return results.isEmpty ? "MTKViews=none" : results.joined(separator: " | ")
     }
 
     private func screen(_ point: CGPoint?) -> String {
