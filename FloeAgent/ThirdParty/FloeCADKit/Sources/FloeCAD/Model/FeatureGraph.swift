@@ -631,6 +631,9 @@ nonisolated struct EvalResult: Sendable {
     /// Display caches only; the definition stays the source of truth.
     var resolvedAxisUpdates: [ConstructionAxisID: ResolvedAxisGeometry]
     var resolvedDatumPointUpdates: [DatumPointID: ResolvedDatumPointGeometry]
+    /// M05: re-projected external entities per sketch; applied set-by-id by
+    /// the rebuild transaction, never written mid-replay.
+    var resolvedSketchEntityUpdates: [SketchID: [SketchEntity]]
     var referenceErrors: [AssociativeReferenceKey: AssociativeReferenceError]
     /// Actual successful live PUT writers; independent of BodyRef provenance.
     var lastBodyWriters: [BodyID: FeatureID]
@@ -650,6 +653,7 @@ nonisolated struct EvalResult: Sendable {
         resolvedSketchSupportUpdates: [SketchID: SketchPlane] = [:],
         resolvedAxisUpdates: [ConstructionAxisID: ResolvedAxisGeometry] = [:],
         resolvedDatumPointUpdates: [DatumPointID: ResolvedDatumPointGeometry] = [:],
+        resolvedSketchEntityUpdates: [SketchID: [SketchEntity]] = [:],
         referenceErrors: [AssociativeReferenceKey: AssociativeReferenceError] = [:],
         lastBodyWriters: [BodyID: FeatureID] = [:],
         geometryVersions: [GeometryVersionRef: GeometryVersionSnapshot] = [:],
@@ -664,6 +668,7 @@ nonisolated struct EvalResult: Sendable {
         self.resolvedSketchSupportUpdates = resolvedSketchSupportUpdates
         self.resolvedAxisUpdates = resolvedAxisUpdates
         self.resolvedDatumPointUpdates = resolvedDatumPointUpdates
+        self.resolvedSketchEntityUpdates = resolvedSketchEntityUpdates
         self.referenceErrors = referenceErrors
         self.lastBodyWriters = lastBodyWriters
         self.geometryVersions = geometryVersions
@@ -820,6 +825,7 @@ nonisolated extension FeatureGraph {
             resolvedSketchSupportUpdates: state.associative.resolvedSketchSupportUpdates,
             resolvedAxisUpdates: state.associative.resolvedAxisUpdates,
             resolvedDatumPointUpdates: state.associative.resolvedDatumPointUpdates,
+            resolvedSketchEntityUpdates: state.associative.resolvedSketchEntityUpdates,
             referenceErrors: state.associative.referenceErrors,
             lastBodyWriters: state.associative.lastBodyWriters,
             geometryVersions: state.associative.snapshots,
@@ -3526,7 +3532,12 @@ private nonisolated struct EvalState {
 
     fileprivate mutating func sketch(_ id: SketchID) -> Sketch? {
         guard let record = sketches.first(where: { $0.id == id }) else { return nil }
-        if record.support != nil { return try? associative.sketch(id).sketch }
+        // M05: linked sketches resolve the same way supported ones do — the
+        // resolver re-projects external entities and stamps the result, so
+        // profile detection below sees current geometry, not a stale cache.
+        if record.support != nil || record.hasExternalReferences {
+            return try? associative.sketch(id).sketch
+        }
         return record
     }
 }

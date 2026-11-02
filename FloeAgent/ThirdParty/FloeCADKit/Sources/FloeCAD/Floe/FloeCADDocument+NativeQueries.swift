@@ -236,6 +236,31 @@ public extension FloeCADDocument {
                     row["dimension_ids"] = sketch.dimensions.filter {
                         $0.refs.contains(where: { $0.entityID == entity.id })
                     }.map { $0.id.uuidString }
+                    // M05: a linked projection is source-driven — the row is
+                    // honest that direct geometry edit is refused until the
+                    // caller detaches (the detach action is advertised on the
+                    // row), and reports the per-entity broken-reference state
+                    // after a source change/delete.
+                    if let reference = sketch.externalReference(forEntityID: entity.id) {
+                        row["external"] = true
+                        row["external_body_id"] = reference.source.body.bodyID.raw.uuidString
+                        // Source-driven geometry: the typed geometry edit is
+                        // refused until detached (the service answers
+                        // `external_reference` otherwise) — the catalog only
+                        // advertises what actually executes.
+                        row["editable"] = false
+                        row.removeValue(forKey: "update_action")
+                        row.removeValue(forKey: "update_fields")
+                        if let error = session.lastReferenceErrors[.external(sketch.id, entity.id)] {
+                            row["external_status"] = "broken"
+                            row["external_error"] = error.message
+                        } else {
+                            row["external_status"] = "linked"
+                        }
+                        if session.writeBlock == nil {
+                            row["detach_action"] = "detachExternalReferences"
+                        }
+                    }
                     // Explicit one-entity deletion is discoverable from the row
                     // itself. Reference ownership (shared refs / pattern links)
                     // is enforced by the service, not by dropping the action.
@@ -262,7 +287,24 @@ public extension FloeCADDocument {
                     "planeNormal": Self.vector(sketch.plane.normal),
                 ]
                 row["support"] = CADDatumService.supportJSON(sketch)
-                if session.writeBlock == nil { row["set_support_action"] = "sketch.setSupport" }
+                // M05: linked-projection summary at the sketch level, so the
+                // model can tell "this sketch follows another body's edges"
+                // without walking every entity row.
+                if let references = sketch.externalReferences, !references.isEmpty {
+                    row["externalReferences"] = references.count
+                    let broken = references.filter {
+                        session.lastReferenceErrors[.external(sketch.id, $0.entity)] != nil
+                    }.count
+                    row["externalBroken"] = broken
+                    row["external_status"] = broken == 0 ? "linked" : "broken"
+                }
+                if session.writeBlock == nil {
+                    row["set_support_action"] = "sketch.setSupport"
+                    // M05 review (R2): the sketch row advertises the typed
+                    // creation action; its inputs are the body rows from
+                    // query kind=edges (index + query_token/midpoints).
+                    row["project_edges_action"] = "projectExternalEdges"
+                }
                 if isReadOnly {
                     row["support_status"] = "read_only"
                     row["support_frame_status"] = "cached"
@@ -393,10 +435,48 @@ public extension FloeCADDocument {
                 if let brep = body.brep {
                     let midpoints = OCCTKernel.edgeMidpoints(brep)
                     row["kernelEdges"] = midpoints.count
+                    // M05 review (R2): the selected-edge projection identity
+                    // path. Each row carries the curve classification, the
+                    // exact endpoints and — while the applied rebuild's
+                    // naming is fresh — the stable crease name a projection
+                    // binds. `projectable` is honest: named + exactly
+                    // straight + finite. A stale naming generation reports
+                    // `naming_stale` instead of handing out unusable tokens.
+                    let curves = OCCTKernel.edgeCurves(brep)
+                    let namingFresh = session.lastNamingRevisions[body.id] == body.meshRevision
+                        && !(session.lastKernelNames[body.id] ?? [:]).isEmpty
+                    var names: [Int: EdgeName] = [:]
+                    if namingFresh {
+                        names = ElementNaming.edgeNames(
+                            adjacency: OCCTKernel.edgeFaceAdjacency(brep),
+                            names: session.lastKernelNames[body.id] ?? [:])
+                    }
+                    row["naming_stale"] = !namingFresh
                     row["edges"] = Array(midpoints.keys.sorted().prefix(512)).map { index in
-                        let midpoint = midpoints[index] ?? .zero
-                        return ["index": index,
-                                "midpoint": Self.vector(midpoint)]
+                        var edgeRow: [String: Any] = [
+                            "index": index,
+                            "midpoint": Self.vector(midpoints[index] ?? .zero),
+                        ]
+                        if let curve = curves[index] {
+                            edgeRow["curve"] = curve.isLine ? "line" : "curve"
+                            edgeRow["endpoints"] = [Self.vector(curve.start),
+                                                    Self.vector(curve.end)]
+                            let finite = curve.start.x.isFinite && curve.start.y.isFinite
+                                && curve.start.z.isFinite && curve.end.x.isFinite
+                                && curve.end.y.isFinite && curve.end.z.isFinite
+                            edgeRow["finite"] = finite
+                            edgeRow["projectable"] = curve.isLine && finite
+                                && names[index] != nil
+                        } else {
+                            edgeRow["curve"] = "degenerate"
+                            edgeRow["projectable"] = false
+                        }
+                        if let name = names[index],
+                           let data = try? JSONEncoder().encode(name),
+                           let object = try? JSONSerialization.jsonObject(with: data) {
+                            edgeRow["edge_name"] = object
+                        }
+                        return edgeRow
                     }
                 }
                 return row

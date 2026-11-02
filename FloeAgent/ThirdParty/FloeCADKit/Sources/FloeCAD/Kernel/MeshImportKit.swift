@@ -239,11 +239,11 @@ nonisolated enum MeshImportUnit: String, CaseIterable, Identifiable, Sendable {
 
     var label: String {
         switch self {
-        case .millimetres: return "Millimetres"
-        case .centimetres: return "Centimetres"
-        case .metres: return "Metres"
-        case .inches: return "Inches"
-        case .feet: return "Feet"
+        case .millimetres: return FloeCADStrings.text("cad.import.unit.mm", "Millimetres")
+        case .centimetres: return FloeCADStrings.text("cad.import.unit.cm", "Centimetres")
+        case .metres: return FloeCADStrings.text("cad.import.unit.m", "Metres")
+        case .inches: return FloeCADStrings.text("cad.import.unit.in", "Inches")
+        case .feet: return FloeCADStrings.text("cad.import.unit.ft", "Feet")
         }
     }
 
@@ -295,6 +295,7 @@ nonisolated struct MeshImportProbe: Identifiable, Sendable {
     let detectedScale: Double
     /// The format records its unit (glTF, USD, Blender); false for OBJ/STL.
     let unitIsDeclared: Bool
+    var coverage: CADMeshImportCoverage? = nil
 
     /// The prompt's preselection: the unit nearest `detectedScale`.
     var detectedUnit: MeshImportUnit { MeshImportUnit.nearest(toScale: detectedScale) }
@@ -316,9 +317,9 @@ nonisolated struct MeshImportProbe: Identifiable, Sendable {
     /// One sentence for the prompt about how sure the detection is.
     var unitNote: String {
         if unitIsDeclared {
-            return "\(format) files record their unit, and the detected choice matches the file. Change it only if you know the exporter got it wrong."
+            return FloeCADStrings.text("cad.import.declaredNote", "The file records its unit. Confirm it matches the source.")
         }
-        return "\(format) files don't record a unit. The detected choice is a guess from the model's size — pick the unit the file was made in."
+        return FloeCADStrings.text("cad.import.undeclaredNote", "The file has no declared unit. Choose the unit used by its author; the detected size is a hint.")
     }
 }
 
@@ -372,6 +373,9 @@ nonisolated enum MeshImportKit {
         try budget.checkCancellation()
         budget.checkpoint(phase: "start")
         let ext = (fileName as NSString).pathExtension.lowercased()
+        let siblings = try CADImportResources.rebased(siblings, primary: fileName)
+        var coverage = try CADMeshImportCoverage.inspect(data: data, fileName: fileName, resources: siblings)
+        try coverage.requireCompleteResources()
         let parts: [ImportedPart]
         let declaredScale: Double?
         let format: String
@@ -418,21 +422,31 @@ nonisolated enum MeshImportKit {
             let entries = try ZipReader.entries(in: data, budget: budget)
             // The archive's payload file, by preference: a self-contained
             // scene first, then the OBJ (its MTL/textures ride as siblings).
-            let order = ["glb", "gltf", "usdz", "obj", "blend", "stl"]
+            let order = ["glb", "gltf", "usdz", "usd", "usda", "usdc", "obj", "blend", "stl"]
+            let candidates = entries.filter {
+                order.contains(($0.key as NSString).pathExtension.lowercased())
+                    && !($0.key as NSString).lastPathComponent.hasPrefix(".")
+            }.sorted { $0.key < $1.key }
+            guard candidates.count <= 1 else {
+                throw CADDocumentError(code: "ambiguous_import_group",
+                    message: "The ZIP contains several model roots: \(candidates.map(\.key).joined(separator: ", ")). Select one complete model group; nothing was imported.")
+            }
             for wanted in order {
-                if let (path, bytes) = entries.first(where: {
+                if let (path, bytes) = candidates.first(where: {
                     ($0.key as NSString).pathExtension.lowercased() == wanted
-                        && !($0.key as NSString).lastPathComponent.hasPrefix(".")
                 }) {
                     // Bodies take the ARCHIVE's name, not the payload's
                     // ("Untitled_Scan…", not "textured_output").
                     let inner = try probe(data: bytes, fileName: path, siblings: entries,
                                           budget: budget)
+                    var innerCoverage = inner.coverage
+                    innerCoverage?.fileName = (fileName as NSString).lastPathComponent
+                    innerCoverage?.sourceSHA256 = CADImportResources.sha256(data)
                     return MeshImportProbe(
                         fileName: (fileName as NSString).lastPathComponent, format: inner.format,
                         parts: inner.parts, rawExtent: inner.rawExtent,
                         triangleCount: inner.triangleCount, detectedScale: inner.detectedScale,
-                        unitIsDeclared: inner.unitIsDeclared)
+                        unitIsDeclared: inner.unitIsDeclared, coverage: innerCoverage)
                 }
             }
             throw MeshImportError.unsupportedFormat("zip without a .glb, .gltf, .usdz, .obj, .blend or .stl inside")
@@ -441,6 +455,7 @@ nonisolated enum MeshImportKit {
         }
         try budget.checkCancellation()
         let live = parts.filter { $0.mesh.indices.count >= 3 }
+        try CADMeshImportService.validateParts(live)
         guard let extent = overallExtentVector(of: live) else { throw MeshImportError.empty }
         let longest = Double(max(extent.x, extent.y, extent.z))
         // No unit in OBJ/STL: a whole model under 10 units across is metres
@@ -448,10 +463,12 @@ nonisolated enum MeshImportKit {
         // object while this threshold was 2). The prompt lets the user
         // overrule the guess before anything is built.
         let detected = declaredScale ?? ((longest > 0 && longest < 10) ? 1000 : 1)
+        coverage.actualPartCount = live.count
+        coverage.actualTriangleCount = live.reduce(0) { $0 + $1.mesh.triangleCount }
         return MeshImportProbe(
             fileName: (fileName as NSString).lastPathComponent, format: format, parts: live,
             rawExtent: extent, triangleCount: live.reduce(0) { $0 + $1.mesh.triangleCount },
-            detectedScale: detected, unitIsDeclared: declaredScale != nil)
+            detectedScale: detected, unitIsDeclared: declaredScale != nil, coverage: coverage)
     }
 
     /// Every part's positions multiplied by `factor` (mm per file unit).
@@ -518,15 +535,10 @@ nonisolated enum MeshImportKit {
     /// Case-insensitive lookup of a referenced file among the siblings, by
     /// full relative path first, then by bare file name.
     static func sibling(_ reference: String, in siblings: [String: Data]) -> Data? {
-        let ref = reference.removingPercentEncoding ?? reference
-        let cleaned = ref.replacingOccurrences(of: "\\", with: "/")
-        if let hit = siblings.first(where: { $0.key.caseInsensitiveCompare(cleaned) == .orderedSame }) {
-            return hit.value
-        }
-        let base = (cleaned as NSString).lastPathComponent
-        return siblings.first {
-            ($0.key as NSString).lastPathComponent.caseInsensitiveCompare(base) == .orderedSame
-        }?.value
+        guard let key = CADImportResources.name(reference) else { return nil }
+        if let bytes = siblings[key] { return bytes }
+        let matches = siblings.filter { CADImportResources.name($0.key) == key }
+        return matches.count == 1 ? matches.first?.value : nil
     }
 
     /// Smooth per-vertex normals from the triangle list, for files that ship
@@ -901,10 +913,10 @@ nonisolated enum GLTFImporter {
         let nodes = (json["nodes"] as? [[String: Any]]) ?? []
 
         func viewBytes(_ index: Int) throws -> (Data, stride: Int) {
-            guard index < views.count else { throw MeshImportError.malformed("gltf: bufferView \(index)") }
+            guard index >= 0, index < views.count else { throw MeshImportError.malformed("gltf: bufferView \(index)") }
             let view = views[index]
             let b = view["buffer"] as? Int ?? 0
-            guard b < buffers.count else { throw MeshImportError.malformed("gltf: buffer \(b)") }
+            guard b >= 0, b < buffers.count else { throw MeshImportError.malformed("gltf: buffer \(b)") }
             let offset = view["byteOffset"] as? Int ?? 0
             let length = view["byteLength"] as? Int ?? 0
             guard offset >= 0, length >= 0,
@@ -918,7 +930,7 @@ nonisolated enum GLTFImporter {
         /// Accessor → floats (every component as Float, normalized types
         /// scaled to 0…1 / −1…1) plus the component count per element.
         func floats(_ index: Int) throws -> (values: [Float], components: Int, count: Int) {
-            guard index < accessors.count else { throw MeshImportError.malformed("gltf: accessor \(index)") }
+            guard index >= 0, index < accessors.count else { throw MeshImportError.malformed("gltf: accessor \(index)") }
             let acc = accessors[index]
             let count = acc["count"] as? Int ?? 0
             let type = acc["type"] as? String ?? "SCALAR"
@@ -993,7 +1005,7 @@ nonisolated enum GLTFImporter {
         }
 
         func indices(_ index: Int) throws -> [UInt32] {
-            guard index < accessors.count else { throw MeshImportError.malformed("gltf: index accessor \(index)") }
+            guard index >= 0, index < accessors.count else { throw MeshImportError.malformed("gltf: index accessor \(index)") }
             let acc = accessors[index]
             let count = acc["count"] as? Int ?? 0
             guard count >= 0 else {
@@ -1044,15 +1056,19 @@ nonisolated enum GLTFImporter {
         }
 
         func imageBytes(_ imageIndex: Int) throws -> Data? {
-            guard imageIndex >= 0, imageIndex < images.count else { return nil }
+            guard imageIndex >= 0, imageIndex < images.count else { throw MeshImportError.malformed("gltf: invalid referenced image index") }
             let image = images[imageIndex]
-            if let viewIndex = image["bufferView"] as? Int, let (bytes, _) = try? viewBytes(viewIndex) {
+            if let viewIndex = image["bufferView"] as? Int {
+                let (bytes, _) = try viewBytes(viewIndex)
+                if case .failure = CADExportImage.decode(bytes) { throw MeshImportError.malformed("gltf: unsupported or invalid embedded image \(imageIndex)") }
                 try budget.charge(bytes.count, "texture \(imageIndex)")
                 return bytes
             }
             if let uri = image["uri"] as? String {
                 let bytes = decodeDataURI(uri) ?? MeshImportKit.sibling(uri, in: siblings)
-                if let bytes { try budget.charge(bytes.count, "texture \(imageIndex)") }
+                guard let bytes else { throw CADDocumentError(code: "missing_import_resources", message: "Missing image \(uri). Nothing was imported.") }
+                if case .failure = CADExportImage.decode(bytes) { throw MeshImportError.malformed("gltf: unsupported or invalid image \(uri)") }
+                try budget.charge(bytes.count, "texture \(imageIndex)")
                 return bytes
             }
             return nil
@@ -1095,8 +1111,10 @@ nonisolated enum GLTFImporter {
             }
             func textureData(_ info: [String: Any]?) throws -> (data: Data,
                                                                orientation: MaterialTextureOrientation)? {
-                guard let info, let index = info["index"] as? Int,
-                      let data = try textureBytes(index) else { return nil }
+                guard let info else { return nil }
+                guard let index = info["index"] as? Int, let data = try textureBytes(index) else {
+                    throw MeshImportError.malformed("gltf: invalid or missing referenced material texture")
+                }
                 return (data, Self.textureOrientation(info))
             }
             if let base = try textureData(baseTexture) {
@@ -1178,17 +1196,17 @@ nonisolated enum GLTFImporter {
 
         var parts: [ImportedPart] = []
         func emit(meshIndex: Int, world: simd_double4x4, nodeName: String?) throws {
-            guard meshIndex < meshes.count else { return }
+            guard meshIndex >= 0, meshIndex < meshes.count else { throw MeshImportError.malformed("gltf: unknown mesh index") }
             let mesh = meshes[meshIndex]
             let meshName = mesh["name"] as? String
             let primitives = (mesh["primitives"] as? [[String: Any]]) ?? []
             for (pi, prim) in primitives.enumerated() {
                 let mode = prim["mode"] as? Int ?? 4
-                guard mode == 4 else { continue } // TRIANGLES only
+                guard mode == 4 else { throw MeshImportError.malformed("gltf: unsupported primitive mode \(mode)") }
                 guard let attributes = prim["attributes"] as? [String: Any],
-                      let positionAccessor = attributes["POSITION"] as? Int else { continue }
+                      let positionAccessor = attributes["POSITION"] as? Int else { throw MeshImportError.malformed("gltf: primitive has no POSITION accessor") }
                 let (p, pc, pcount) = try floats(positionAccessor)
-                guard pc == 3, pcount > 0 else { continue }
+                guard pc == 3, pcount > 0 else { throw MeshImportError.malformed("gltf: unusable POSITION accessor") }
                 var idx: [UInt32]
                 if let ia = prim["indices"] as? Int {
                     idx = try indices(ia)
@@ -1198,7 +1216,7 @@ nonisolated enum GLTFImporter {
                     }
                     idx = (0..<UInt32(pcount)).map { $0 }
                 }
-                guard idx.count >= 3, idx.allSatisfy({ Int($0) < pcount }) else { continue }
+                guard idx.count >= 3, idx.count % 3 == 0, idx.allSatisfy({ Int($0) < pcount }) else { throw MeshImportError.malformed("gltf: invalid triangle indices") }
                 try budget.charge(idx.count * MemoryLayout<UInt32>.stride, "glTF triangle indices")
                 idx = Array(idx.prefix(idx.count - idx.count % 3))
 
@@ -1264,6 +1282,9 @@ nonisolated enum GLTFImporter {
                     render.texcoords = (0..<pcount).map { SIMD2(t[$0 * 2], t[$0 * 2 + 1]) }
                 }
                 var spec = try material(prim["material"] as? Int)
+                if render.texcoords == nil, spec?.hasAnyTexture == true {
+                    throw CADDocumentError(code: "unsupported_import_content", message: "A textured glTF primitive has no supported TEXCOORD_0. Its texture cannot be retained; nothing was imported.")
+                }
                 if render.texcoords == nil {
                     spec?.baseColorTexture = nil
                     spec?.normalTexture = nil
@@ -1281,7 +1302,8 @@ nonisolated enum GLTFImporter {
             }
         }
         func visit(_ index: Int, parent: simd_double4x4, depth: Int) throws {
-            guard index < nodes.count, depth < 64 else { return }
+            guard index >= 0, index < nodes.count else { throw MeshImportError.malformed("gltf: invalid referenced node index") }
+            guard depth < 64 else { throw MeshImportError.overBudget("glTF hierarchy depth exceeds 64; no nodes were silently dropped") }
             try budget.checkCancellation()
             let node = nodes[index]
             let world = parent * localMatrix(node)
@@ -1294,6 +1316,7 @@ nonisolated enum GLTFImporter {
         }
         let scenes = (json["scenes"] as? [[String: Any]]) ?? []
         let sceneIndex = json["scene"] as? Int ?? 0
+        guard sceneIndex >= 0, scenes.isEmpty || sceneIndex < scenes.count else { throw MeshImportError.malformed("gltf: invalid selected scene") }
         var roots: [Int] = sceneIndex < scenes.count ? ((scenes[sceneIndex]["nodes"] as? [Int]) ?? []) : []
         if roots.isEmpty {
             // No scene: every node nobody lists as a child is a root.
@@ -1386,7 +1409,7 @@ nonisolated enum OBJTexturedImporter {
             case "mtllib":
                 for name in fields.dropFirst() {
                     if let bytes = MeshImportKit.sibling(name, in: siblings) {
-                        materials.merge(parseMTL(bytes)) { _, new in new }
+                        materials.merge(parseMTL(bytes, fileName: name)) { _, new in new }
                     }
                 }
             case "f" where fields.count >= 4:
@@ -1403,7 +1426,7 @@ nonisolated enum OBJTexturedImporter {
                     let v = resolve(parts.first, count: positions.count)
                     let t = resolve(parts.count > 1 ? parts[1] : nil, count: texcoords.count)
                     let n = resolve(parts.count > 2 ? parts[2] : nil, count: normals.count)
-                    guard v >= 0, v < positions.count else { continue }
+                    guard v >= 0, v < positions.count else { throw MeshImportError.malformed("obj: face references an invalid vertex") }
                     let corner = Corner(v: v, t: t, n: n)
                     if let existing = current.corners[corner] {
                         cornerIDs.append(existing)
@@ -1450,9 +1473,13 @@ nonisolated enum OBJTexturedImporter {
                                   normals: b.hasNormals ? b.normals.map { simd_length($0) > 1e-12 ? simd_normalize($0) : SIMD3(0, 1, 0) }
                                                         : MeshImportKit.computedNormals(positions: b.positions, indices: b.indices),
                                   indices: b.indices)
+            if b.hasTexcoords { mesh.texcoords = b.texcoords }
             var spec: BodyMaterialSpec?
             if let mname = b.materialName, let mtl = materials[mname] {
                 spec = BodyMaterialSpec(baseColor: mtl.color, metallic: 0, roughness: 0.5)
+                if mtl.texture != nil, !b.hasTexcoords {
+                    throw CADDocumentError(code: "unsupported_import_content", message: "OBJ material \(mname) references an image but this part has no supported UV mapping.")
+                }
                 if b.hasTexcoords, let texName = mtl.texture, let bytes = MeshImportKit.sibling(texName, in: siblings) {
                     try budget.charge(bytes.count, "OBJ texture '\(texName)'")
                     mesh.texcoords = b.texcoords
@@ -1471,7 +1498,7 @@ nonisolated enum OBJTexturedImporter {
         return parts
     }
 
-    private static func parseMTL(_ data: Data) -> [String: MTL] {
+    private static func parseMTL(_ data: Data, fileName: String) -> [String: MTL] {
         guard let text = String(data: data, encoding: .utf8) ?? String(data: data, encoding: .isoLatin1) else { return [:] }
         var out: [String: MTL] = [:]
         var name: String?
@@ -1489,7 +1516,7 @@ nonisolated enum OBJTexturedImporter {
                 if let name, let d = Double(fields[1]) { out[name]?.color.w = d }
             case "map_Kd":
                 // The file name is the last field; options (-s, -o …) precede it.
-                if let name, let file = fields.last, fields.count >= 2 { out[name]?.texture = file }
+                if let name, let file = fields.last, fields.count >= 2 { out[name]?.texture = CADImportResources.name(file, relativeTo: fileName) }
             default:
                 continue
             }

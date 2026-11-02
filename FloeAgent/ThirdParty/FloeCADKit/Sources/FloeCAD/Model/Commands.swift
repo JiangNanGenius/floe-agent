@@ -550,6 +550,101 @@ struct UpdateResolvedSketchPlaneCommand: DocumentCommand {
     func revert(in document: inout DesignDocument) { set(before, in: &document) }
 }
 
+/// M05: derived write-back of re-projected external entities. Like the
+/// support-plane update this touches ONLY the affected entities, set-by-id,
+/// so a leading command's edits to other fields/entities survive; undo
+/// restores the exact pre-projection geometry in the same step as the
+/// rebuild that moved it.
+struct UpdateProjectedSketchEntitiesCommand: DocumentCommand {
+    let title = "Update Projected Geometry"
+    let sketchID: SketchID
+    let before: [SketchEntity]
+    let after: [SketchEntity]
+
+    private func set(_ entities: [SketchEntity], in document: inout DesignDocument) {
+        guard let index = document.sketches.firstIndex(where: { $0.id == sketchID }) else { return }
+        var sketch = document.sketches[index]
+        for entity in entities {
+            guard let slot = sketch.entities.firstIndex(where: { $0.id == entity.id }) else { continue }
+            sketch.entities[slot] = entity
+        }
+        document.sketches[index] = sketch
+    }
+    func apply(to document: inout DesignDocument) { set(after, in: &document) }
+    func revert(in document: inout DesignDocument) { set(before, in: &document) }
+}
+
+/// M05: one undoable step that appends projected entities AND their external
+/// references (and optionally flags them as construction geometry). Revert
+/// removes exactly what apply added — entities, references and flags — so a
+/// refused or undone projection never leaves a half-linked sketch.
+struct AddProjectedSketchEntitiesCommand: DocumentCommand {
+    let title: String
+    let sketchID: SketchID
+    let entities: [SketchEntity]
+    let references: [SketchExternalReference]
+    let asConstruction: Bool
+
+    init(
+        sketchID: SketchID,
+        entities: [SketchEntity],
+        references: [SketchExternalReference],
+        title: String = "Project",
+        asConstruction: Bool = false
+    ) {
+        self.sketchID = sketchID
+        self.entities = entities
+        self.references = references
+        self.title = title
+        self.asConstruction = asConstruction
+    }
+
+    private func set(_ add: Bool, in document: inout DesignDocument) {
+        guard let index = document.sketches.firstIndex(where: { $0.id == sketchID }) else { return }
+        if add {
+            document.sketches[index].entities.append(contentsOf: entities)
+            document.sketches[index].externalReferences =
+                (document.sketches[index].externalReferences ?? []) + references
+            if asConstruction {
+                document.sketches[index].setConstruction(true, forEntityIDs: entities.map(\.id))
+            }
+        } else {
+            let ids = Set(entities.map(\.id))
+            document.sketches[index].entities.removeAll { ids.contains($0.id) }
+            document.sketches[index].detachExternalReferences(forEntityIDs: ids)
+            if asConstruction {
+                document.sketches[index].setConstruction(false, forEntityIDs: ids)
+            }
+        }
+    }
+    func apply(to document: inout DesignDocument) { set(true, in: &document) }
+    func revert(in document: inout DesignDocument) { set(false, in: &document) }
+}
+
+/// M05: Detach turns linked projected entities into independent geometry —
+/// the references go, the current entity geometry stays. One undo step.
+/// Only `entityIDs`' references are removed; any other references the sketch
+/// carries survive, and revert restores the exact prior reference list.
+struct DetachExternalReferencesCommand: DocumentCommand {
+    let title = "Detach Projection"
+    let sketchID: SketchID
+    let beforeReferences: [SketchExternalReference]
+    let entityIDs: [UUID]
+
+    private func set(_ detach: Bool, in document: inout DesignDocument) {
+        guard let index = document.sketches.firstIndex(where: { $0.id == sketchID }) else { return }
+        var sketch = document.sketches[index]
+        if detach {
+            sketch.detachExternalReferences(forEntityIDs: entityIDs)
+        } else {
+            sketch.externalReferences = beforeReferences
+        }
+        document.sketches[index] = sketch
+    }
+    func apply(to document: inout DesignDocument) { set(true, in: &document) }
+    func revert(in document: inout DesignDocument) { set(false, in: &document) }
+}
+
 /// Disconnect changes topology only; dimensions, geometry and unrelated
 /// relationships are deliberately outside this command's mutation scope.
 struct DisconnectSketchEndpointsCommand: DocumentCommand {
@@ -681,6 +776,10 @@ struct RemoveSketchEntitiesCommand: DocumentCommand {
     let removedRectangleAnchors: [UUID: RectangleSizingAnchor]
     let removedRectangleGroups: [UUID: [UUID]]
     let removedLineDimensionKinds: [UUID: DimensionKind]
+    /// M05: external projections owned by a removed entity die with it (and
+    /// come back with the same undo), exactly like the constraint residuals
+    /// above — a dangling reference must never outlive its entity.
+    let removedExternalReferences: [(index: Int, reference: SketchExternalReference)]
 
     init(ids: Set<UUID>, sketch: Sketch) {
         let affectedGroups = sketch.rotatedRectangleEdges.filter { !ids.isDisjoint(with: $0.value) }
@@ -692,6 +791,9 @@ struct RemoveSketchEntitiesCommand: DocumentCommand {
         removed = sketch.entities.enumerated()
             .filter { ids.contains($0.element.id) }
             .map { (index: $0.offset, entity: $0.element) }
+        removedExternalReferences = (sketch.externalReferences ?? []).enumerated()
+            .filter { ids.contains($0.element.entity) }
+            .map { (index: $0.offset, reference: $0.element) }
         removedConstraints = sketch.constraints.enumerated()
             .filter { $0.element.refs.contains { ids.contains($0.entityID) || ($0.role == .center && affectedGroups[$0.entityID] != nil) } }
             .map { (index: $0.offset, constraint: $0.element) }
@@ -714,6 +816,7 @@ struct RemoveSketchEntitiesCommand: DocumentCommand {
         sketch.rotatedRectangleEdges = sketch.rotatedRectangleEdges.filter { removedRectangleGroups[$0.key] == nil }
         sketch.disconnectedEndpoints.removeAll { ids.contains($0.entityID) }
         sketch.entities.removeAll { ids.contains($0.id) }
+        sketch.detachExternalReferences(forEntityIDs: ids)
         let constraintIDs = Set(removedConstraints.map(\.constraint.id))
         sketch.constraints.removeAll { constraintIDs.contains($0.id) }
         let dimensionIDs = Set(removedDimensions.map(\.dimension.id))
@@ -737,6 +840,13 @@ struct RemoveSketchEntitiesCommand: DocumentCommand {
         for entry in removedDimensions.sorted(by: { $0.index < $1.index }) {
             let at = min(entry.index, document.sketches[index].dimensions.count)
             document.sketches[index].dimensions.insert(entry.dimension, at: at)
+        }
+        for entry in removedExternalReferences.sorted(by: { $0.index < $1.index }) {
+            let at = min(entry.index, (document.sketches[index].externalReferences ?? []).count)
+            if document.sketches[index].externalReferences == nil {
+                document.sketches[index].externalReferences = []
+            }
+            document.sketches[index].externalReferences?.insert(entry.reference, at: at)
         }
     }
 }

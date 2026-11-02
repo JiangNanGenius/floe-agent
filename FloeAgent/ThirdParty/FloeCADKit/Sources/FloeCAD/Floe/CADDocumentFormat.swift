@@ -61,6 +61,10 @@ nonisolated enum CADDocumentFormat {
     static let exactRadialVersion = 7
     /// Only real body UV authoring records need this shared unreleased floor.
     static let uvAuthoringVersion = 7
+    /// Linked external sketch references share the coordinated unreleased
+    /// floor. Only actual reference intent raises a package; support-only
+    /// sketches retain their existing association floor.
+    static let externalSketchProjectionVersion = 7
     /// Coordinated package floor for a document that actually stores
     /// user-named versions. Ordinary documents keep their existing schema
     /// floor; only a package that gains a checkpoint is raised to this floor.
@@ -207,6 +211,13 @@ nonisolated enum CADDocumentFormat {
             }) {
             required = max(required, associativeVersion)
         }
+        // M05 review (R2): linked external projections persist inside the
+        // sketch row and are non-additive for older released readers. The
+        // unpublished format-7 batch coordinates this floor with M14/M15/M20;
+        // reusing associativeVersion(2) would permit silent loss on re-save.
+        if document.sketches.contains(where: { $0.hasExternalReferences }) {
+            required = max(required, externalSketchProjectionVersion)
+        }
         return required
     }
 
@@ -222,6 +233,9 @@ nonisolated enum CADDocumentFormat {
         }
         for point in document.datumPoints {
             if case let .edgePoint(definition)? = point.definition { references.append(definition.source) }
+        }
+        for sketch in document.sketches {
+            references.append(contentsOf: (sketch.externalReferences ?? []).map(\.source))
         }
         return references
     }
@@ -644,6 +658,13 @@ nonisolated enum CADDocumentFormat {
             }
         }
         for sketch in document.sketches where sketch.support != nil { _ = try encoder.encode(sketch) }
+        // M05: a linked projection is non-additive the same way a support is:
+        // it must survive the save verbatim or fail the transaction, never be
+        // silently dropped by a try?-encode row update.
+        for sketch in document.sketches where sketch.hasExternalReferences {
+            for reference in sketch.externalReferences ?? [] { try reference.validate() }
+            _ = try encoder.encode(sketch)
+        }
         // A hole is the first non-additive feature kind: its semantic version,
         // every stored scalar and the actual pilot relation are validated
         // before any commit. A non-encodable hole must FAIL the transaction,
@@ -798,20 +819,59 @@ nonisolated enum CADDocumentFormat {
         }
         let knownSupportCases: Set<String> = ["sketch", "construction", "ground", "explicit"]
         for row in sketches {
-            guard let object = try? JSONSerialization.jsonObject(with: row.data) as? [String: Any],
-                  let support = object["support"], !(support is NSNull) else { continue }
-            result.requiredVersion = max(result.requiredVersion, associativeVersion)
+            guard let object = try? JSONSerialization.jsonObject(with: row.data) as? [String: Any] else { continue }
+            let support = object["support"]
+            let hasSupport = support.map { !($0 is NSNull) } ?? false
+            // M05: a sketch row carrying linked external projections gets the
+            // same floor + inspection as a supported one, whether or not it
+            // also has a support.
+            let external = object["externalReferences"]
+            let hasExternal = try externalProjectionIntent(in: object)
+            guard hasSupport || hasExternal else { continue }
+            // M05 review (R2): the floors split — a support-only row stays on
+            // the M07 associative floor(2); a row carrying external references
+            // raises the coordinated projection floor so older released writers never open
+            // it (and therefore can never drop the field on re-save).
+            result.requiredVersion = max(
+                result.requiredVersion,
+                hasExternal ? externalSketchProjectionVersion : associativeVersion)
             do {
                 _ = try JSONDecoder().decode(Sketch.self, from: row.data)
-            } catch {
-                guard let support = support as? [String: Any],
-                      let source = support["source"] as? [String: Any], source.count == 1,
-                      let unknown = source.keys.first, !knownSupportCases.contains(unknown),
-                      source[unknown] is [String: Any] else {
-                    throw CADDocumentFormatError.malformedAssociation("sketch-support")
-                }
+            } catch let error as SketchExternalReferenceError where error.requiresOpaqueReadOnlyDocument {
+                // A newer external-reference semantic contract: prove the
+                // cached display portion itself is readable, then open opaque
+                // and read-only — never reinterpret it as plain geometry.
                 _ = try cachedSketch(from: row.data)
                 result.opaqueSketches.insert(row.blobID)
+            } catch {
+                // Unknown support source case stays the M07 opaque path.
+                if hasSupport, let support = support as? [String: Any],
+                   let source = support["source"] as? [String: Any], source.count == 1,
+                   let unknown = source.keys.first, !knownSupportCases.contains(unknown),
+                   source[unknown] is [String: Any] {
+                    _ = try cachedSketch(from: row.data)
+                    result.opaqueSketches.insert(row.blobID)
+                    continue
+                }
+                if hasExternal {
+                    // Distinguish a FUTURE external reference from a corrupt
+                    // known one: only an explicit newer semantic version is
+                    // opaque; a missing/wrong field at a supported version is
+                    // corruption, reported and preserved.
+                    if let rows = external as? [[String: Any]],
+                       rows.contains(where: {
+                           ($0["version"] as? Int).map {
+                               $0 > SketchExternalReference.supportedVersion
+                           } ?? false
+                       }) {
+                        _ = try cachedSketch(from: row.data)
+                        result.opaqueSketches.insert(row.blobID)
+                        continue
+                    }
+                    throw CADDocumentFormatError.malformedAssociation(
+                        "sketch-external-reference")
+                }
+                throw CADDocumentFormatError.malformedAssociation("sketch-support")
             }
         }
         for row in features {
@@ -1015,8 +1075,36 @@ nonisolated enum CADDocumentFormat {
         try cachedValue(ConstructionPlane.self, data: data, removing: "definition")
     }
     static func cachedSketch(from data: Data) throws -> Sketch {
-        try cachedValue(Sketch.self, data: data, removing: "support")
+        // The cached display portion must decode WITHOUT the association
+        // fields: a newer support case OR a newer external-reference contract
+        // both leave the readable geometry readable (the whole document then
+        // opens opaque and read-only around it).
+        try cachedValue(Sketch.self, data: data, removing: "support", "externalReferences")
     }
+    /// A PRESENT reference field must be a complete array. Validate every
+    /// known row before admitting any future row as opaque, so null, mixed
+    /// arrays or a corrupt known sibling can never turn into plain geometry.
+    private static func externalProjectionIntent(in object: [String: Any]) throws -> Bool {
+        guard object.keys.contains("externalReferences") else { return false }
+        func malformed() -> CADDocumentFormatError { .malformedAssociation("sketch-external-reference") }
+        guard let values = object["externalReferences"] as? [Any] else { throw malformed() }
+        for value in values {
+            guard let row = value as? [String: Any],
+                  let number = row["version"] as? NSNumber,
+                  CFGetTypeID(number) != CFBooleanGetTypeID(),
+                  number.doubleValue.isFinite, number.doubleValue.rounded() == number.doubleValue,
+                  number.doubleValue >= 1, number.doubleValue <= Double(Int.max) else { throw malformed() }
+            let version = number.intValue
+            if version <= SketchExternalReference.supportedVersion {
+                do {
+                    _ = try JSONDecoder().decode(SketchExternalReference.self,
+                        from: JSONSerialization.data(withJSONObject: row))
+                } catch { throw malformed() }
+            }
+        }
+        return !values.isEmpty
+    }
+
     /// Display-only copy of an unreadable associative axis: the cached line
     /// survives, the definition does not. The original row bytes stay intact
     /// and the document is read-only.
@@ -1026,11 +1114,11 @@ nonisolated enum CADDocumentFormat {
     static func cachedDatumPoint(from data: Data) throws -> DatumPoint {
         try cachedValue(DatumPoint.self, data: data, removing: "definition")
     }
-    private static func cachedValue<T: Decodable>(_ type: T.Type, data: Data, removing key: String) throws -> T {
+    private static func cachedValue<T: Decodable>(_ type: T.Type, data: Data, removing keys: String...) throws -> T {
         guard var object = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-            throw CADDocumentFormatError.malformedAssociation(key)
+            throw CADDocumentFormatError.malformedAssociation(keys.first ?? "association")
         }
-        object.removeValue(forKey: key)
+        for key in keys { object.removeValue(forKey: key) }
         return try JSONDecoder().decode(type, from: JSONSerialization.data(withJSONObject: object))
     }
 }

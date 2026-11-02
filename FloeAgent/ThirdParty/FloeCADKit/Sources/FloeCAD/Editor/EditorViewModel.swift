@@ -11985,6 +11985,16 @@ final class EditorViewModel {
         }
         var entities = sketch.entities.filter { selectedSketchEntityIDs.contains($0.id) }
         guard !entities.isEmpty else { return false }
+        // M05 review (R2): a move/rotate gizmo gesture that includes a linked
+        // projection requires modifying source-driven geometry — refuse the
+        // gesture and point at Detach rather than moving the local half and
+        // leaving an inconsistent step the rebuild would snap back.
+        if entities.contains(where: { sketch.externalReference(forEntityID: $0.id) != nil }) {
+            showNotice(FloeCADStrings.text(
+                "cad.project.detach_to_edit",
+                "This edge follows its source body. Detach it to edit the geometry here."))
+            return false
+        }
         guard beginSketchDragOwnership(sketchID: sketchID, title: kind == .move ? "Move" : "Rotate") else { return false }
 
         if kind == .rotate, !sketchCopyOnDrag, entities.count == 1,
@@ -12403,6 +12413,16 @@ final class EditorViewModel {
               let fragments = SketchTrimmer.trim(entity: hit.entity, at: raw, in: sketch),
               let index = sketch.entities.firstIndex(where: { $0.id == hit.entity.id })
         else { return }
+        // M05 review (R2): trimming a linked projection would replace the
+        // source-driven entity with fragments while its reference keeps
+        // re-projecting the original edge — geometry and ownership
+        // permanently disagreeing. Detach is the explicit escape hatch.
+        if sketch.externalReference(forEntityID: hit.entity.id) != nil {
+            showNotice(FloeCADStrings.text(
+                "cad.project.detach_to_edit",
+                "This edge follows its source body. Detach it to edit the geometry here."))
+            return
+        }
         selectedSketchEntityIDs.remove(hit.entity.id)
         // Phase D: trimming edits sketch geometry — the dependent-feature
         // rebuild lands in the SAME undo step (S6). The sketch-aware init
@@ -13278,6 +13298,20 @@ final class EditorViewModel {
             to: raw, in: sketch.entities, tolerance: entityPickTolerance
         ) : nil
         guard let entity = control?.entity ?? body?.entity else { return false }
+        // M05 review (R2): a linked projection is source-driven — starting a
+        // geometry drag on one would move it temporarily and let the next
+        // rebuild snap it back (an inconsistent undo step baked mid-gesture).
+        // Select it and offer the detach path instead; every edit entrypoint
+        // (service, gizmo, trim, solved drag) applies the same ownership.
+        if sketch.externalReference(forEntityID: entity.id) != nil {
+            if !selectedSketchEntityIDs.contains(entity.id) {
+                selectedSketchEntityIDs = [entity.id]
+            }
+            showNotice(FloeCADStrings.text(
+                "cad.project.detach_to_edit",
+                "This edge follows its source body. Detach it to edit the geometry here."))
+            return false
+        }
         guard beginSketchDragOwnership(sketchID: sketch.id, title: "Edit Sketch") else { return false }
         if case .rectCorner? = control?.kind,
            sketch.constraints.contains(where: { $0.kind == .fixed && $0.refs == [.init(entityID: entity.id, role: .center)] }),
@@ -13484,7 +13518,25 @@ final class EditorViewModel {
         }
         sketchSolveConflict = false
         if !sketchConflictAttribution.isEmpty { sketchConflictAttribution = .init() }
-        let (solved, dof) = (outcome.entities, outcome.dof)
+        var solved = outcome.entities
+        // M05 review (R2): the solver knows nothing about external
+        // references and may move a linked projection to satisfy the drag.
+        // Committing that would bake geometry the next rebuild immediately
+        // overwrites — an inconsistent step in the undo stack. Pin linked
+        // entities to the pre-drag baseline: the gesture then moves the
+        // local geometry as far as the system allows, exactly like a locked
+        // partner, and the committed command stays consistent with the
+        // source-driven truth.
+        if sketch.hasExternalReferences {
+            let pinned = Set((sketch.externalReferences ?? []).map(\.entity))
+            solved = solved.map { entity in
+                guard pinned.contains(entity.id),
+                      let baseline = drag.baseline.first(where: { $0.id == entity.id })
+                else { return entity }
+                return baseline
+            }
+        }
+        let dof = outcome.dof
         if drag.structuralDOF == nil {
             drag.structuralDOF = dof
             sketchEntityDrag = drag // remembered even when the sketch is rigid
@@ -15003,28 +15055,147 @@ final class EditorViewModel {
         }
     }
 
-    // MARK: - Project (plan §B8, spec §1.13 v1: unlinked body → sketch plane)
+    // MARK: - Project (plan §B8 → M05: linked external projection)
 
-    /// Project-tool tap: flatten the tapped body's feature edges onto the
-    /// active sketch plane as regular line entities (one undo step, so they
-    /// participate in profiles for the CNC flat-layout workflow).
+    /// Project-tool tap. Tapping a straight named crease of an analytic body
+    /// projects exactly that edge as a LINKED entity: one line bound to its
+    /// crease identity (`SketchExternalReference`), so a later source edit
+    /// re-projects it through the ordinary transactional rebuild. Tapping a
+    /// face or a curved rim asks for a supported straight edge. Mesh-only
+    /// bodies retain the existing static projection path.
     private func projectTappedBody(ray: Ray) {
         guard case .sketching(let sketchID, _) = mode,
               let sketch = activeSketch,
               let hit = HitTester.pickBody(ray: ray, in: scene),
               let body = session.document.body(with: hit.bodyID)
         else { return }
-        let entities = ProjectionKit.project(body: body, onto: sketch.plane)
-        guard !entities.isEmpty else {
-            errorMessage = "Nothing to project — the body has no edges to flatten onto this plane."
+
+        // M05 review (R2): projection is a SELECTED-EDGE operation — the
+        // original M05 contract is "投影选定实体边为外部引用". A tap that lands
+        // on a straight named crease projects exactly that edge as a linked
+        // reference (1:1 identity; coincident choices stay the user's own).
+        // An unsupported analytic pick must not silently project a different
+        // selection or downgrade the requested link to static geometry.
+        if body.brep != nil,
+           let edge = nearestStraightEdge(on: body, worldHit: hit.worldPoint),
+           let name = mintEdgeName(body: body, edge: edge),
+           let source = session.associativeSources(for: [body.id])[body.id] {
+            if sketch.externalReferences?.contains(where: {
+                $0.source.faceNames == name && $0.sourceVersion == source.version
+            }) == true {
+                errorMessage = FloeCADStrings.text(
+                    "cad.project.duplicate",
+                    "That edge is already projected in this sketch.")
+                return
+            }
+            let linked = ProjectionKit.linked(
+                snapshot: source.snapshot, version: source.version,
+                onto: sketch.plane, selected: [name])
+            if let entity = linked.entities.first, let reference = linked.references.first {
+                // One undo step, atomically with any dependent-feature
+                // rebuild — the same revision/undo/save engine as every
+                // other sketch edit.
+                let applied = session.performWithSketchRebuild(
+                    AddProjectedSketchEntitiesCommand(
+                        sketchID: sketchID,
+                        entities: [entity],
+                        references: [reference],
+                        title: "Project"),
+                    sketchID: sketchID)
+                if !applied {
+                    errorMessage = FloeCADStrings.text(
+                        "cad.project.rebuild_failed",
+                        "The projection conflicts with an existing feature. Check the sketch and try again.")
+                }
+                return
+            }
+            // The picked crease is named and straight but parallel to this
+            // plane's normal — say so instead of silently flattening a
+            // different thing than the user tapped.
+            errorMessage = FloeCADStrings.text(
+                "cad.project.skipped_degenerate_single",
+                "That edge is parallel to this plane — it projects to a point, not a line.")
             return
         }
-        session.perform(CompositeCommand(
-            title: "Project",
-            commands: [AddSketchEntitiesCommand(
-                sketchID: sketchID, entities: entities, title: "Project"
-            )]
-        ))
+
+        if body.brep != nil {
+            errorMessage = FloeCADStrings.text(
+                "cad.project.choose_straight_edge",
+                "Choose a straight edge to project.")
+            return
+        }
+        let entities = ProjectionKit.project(body: body, onto: sketch.plane)
+        guard !entities.isEmpty else {
+            errorMessage = FloeCADStrings.text(
+                "cad.project.empty",
+                "Nothing to project — the body has no edges to flatten onto this plane.")
+            return
+        }
+        // Mesh bodies keep the legacy static flatten: plain reference lines
+        // with no association claimed. Same rebuild engine as the linked
+        // path, so a consumed sketch stays atomic with its solid.
+        let applied = session.performWithSketchRebuild(
+            AddSketchEntitiesCommand(
+                sketchID: sketchID, entities: entities, title: "Project"),
+            sketchID: sketchID)
+        if !applied {
+            errorMessage = FloeCADStrings.text(
+                "cad.project.rebuild_failed",
+                "The projection conflicts with an existing feature. Check the sketch and try again.")
+        }
+    }
+
+    // MARK: - External projection detach (M05)
+
+    /// Selected sketch entities that are driven by a linked external
+    /// projection (the palette Detach button is enabled on these).
+    var selectionHasExternalReferences: Bool {
+        guard let sketch = activeSketch, !selectedSketchEntityIDs.isEmpty else { return false }
+        return selectedSketchEntityIDs.contains { sketch.externalReference(forEntityID: $0) != nil }
+    }
+
+    /// Detach the selection's external projections: the lines keep their
+    /// current geometry and become independent sketch geometry (one undo
+    /// step, through the same rebuild engine as the edit that created them).
+    func detachExternalReferencesOnSelection() {
+        guard case .sketching(let sketchID, _) = mode,
+              let sketch = activeSketch,
+              !selectedSketchEntityIDs.isEmpty
+        else { return }
+        let linked = selectedSketchEntityIDs.filter {
+            sketch.externalReference(forEntityID: $0) != nil
+        }
+        guard !linked.isEmpty else { return }
+        let applied = session.performWithSketchRebuild(
+            DetachExternalReferencesCommand(
+                sketchID: sketchID,
+                beforeReferences: sketch.externalReferences ?? [],
+                entityIDs: linked),
+            sketchID: sketchID)
+        if !applied {
+            errorMessage = FloeCADStrings.text(
+                "cad.detach.rebuild_failed",
+                "Couldn't detach the projection. Check the sketch's features and try again.")
+        }
+    }
+
+    var activeBrokenExternalReferenceCount: Int {
+        guard let sketch = activeSketch else { return 0 }
+        return brokenExternalReferenceCount(in: sketch)
+    }
+
+    func brokenExternalReferenceCount(in sketch: Sketch) -> Int {
+        (sketch.externalReferences ?? []).filter {
+            session.lastReferenceErrors[.external(sketch.id, $0.entity)] != nil
+        }.count
+    }
+
+    /// Per-entity broken-reference state for the current selection, surfaced
+    /// by the workbench chrome (a linked entity whose source no longer
+    /// resolves keeps its last geometry and is flagged here).
+    func externalReferenceError(forEntityID entityID: UUID) -> AssociativeReferenceError? {
+        guard case .sketching(let sketchID, _) = mode else { return nil }
+        return session.lastReferenceErrors[.external(sketchID, entityID)]
     }
 
     // MARK: - Symbols (plan §B16, spec §1.16)
@@ -18421,6 +18592,24 @@ final class EditorViewModel {
         // taps select, drags edit or orbit; arm a tool from the palette to draw.
         mode = .sketching(id, tool: nil)
         cameraControl?.moveCameraHeadOn(to: sketch.plane)
+        reportBrokenExternalReferences(in: sketch)
+    }
+
+    /// M05: entering a sketch that carries broken external projections names
+    /// them once, the same way a broken-sketch-support plane refuses with a
+    /// message instead of presenting stale geometry as live. The entities keep
+    /// their last geometry and stay selectable so Detach is the escape hatch.
+    private func reportBrokenExternalReferences(in sketch: Sketch) {
+        let references = sketch.externalReferences ?? []
+        guard !references.isEmpty else { return }
+        let broken = references.filter {
+            session.lastReferenceErrors[.external(sketch.id, $0.entity)] != nil
+        }
+        guard !broken.isEmpty else { return }
+        errorMessage = FloeCADStrings.format(
+            "cad.project.broken_reference",
+            "%d projected edge(s) lost their source. Detach them, or undo the source deletion.",
+            broken.count)
     }
 
     func setItemHidden(_ item: DocumentItemRef, hidden: Bool) {

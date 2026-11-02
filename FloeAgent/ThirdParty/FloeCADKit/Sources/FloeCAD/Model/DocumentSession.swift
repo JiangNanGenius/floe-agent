@@ -999,7 +999,10 @@ final class DocumentSession {
                 axes: document.axes, datumPoints: document.datumPoints,
                 featureDependencies: CADParameterService.bodyWriterDependencies(in: document.features.nodes))
             let beforeDependencies = captured.validationErrors(in: document.features)
-            var newReferences = plan.referenceErrors.filter { baseline.referenceErrors[$0.key] != $0.value }
+            var newReferences = plan.referenceErrors.filter {
+                baseline.referenceErrors[$0.key] != $0.value
+                    && !Self.isDeletedExternalProjection($0.key, error: $0.value, in: prospective)
+            }
             for (key, error) in captured.validationErrors(in: editedGraph)
             where beforeDependencies[key] != error { newReferences[key] = error }
             let newFeatures = plan.errors.filter { key, error in
@@ -1081,6 +1084,21 @@ final class DocumentSession {
         return receipt
     }
 
+    /// Only a typed external projection whose actual writer is absent may
+    /// preserve its cached line as broken. No generic missing datum, failed
+    /// feature, suppressed source or forward reference is exempted.
+    nonisolated static func isDeletedExternalProjection(
+        _ key: AssociativeReferenceKey, error: AssociativeReferenceError,
+        in document: DesignDocument
+    ) -> Bool {
+        guard case let .external(sketchID, entityID) = key,
+              case let .missingWriter(version) = error,
+              document.features.node(version.writer) == nil,
+              let reference = document.sketches.first(where: { $0.id == sketchID })?
+                .externalReference(forEntityID: entityID) else { return false }
+        return reference.sourceVersion == version
+    }
+
     /// Read-only source acquisition for the datum adapter. Two bounded memo
     /// replays discover the actual successful last PUT, then retain precisely
     /// that version. No live counters, naming upgrades, commands or caches are
@@ -1157,6 +1175,7 @@ final class DocumentSession {
             // broken reference must reject the edit that broke it, not silently
             // drop the pattern copies.
             || document.features.nodes.contains { !$0.referencedConstructionAxisIDs.isEmpty }
+            || document.sketches.contains { $0.hasExternalReferences }
     }
 
     /// Domain seam for definition/support edits. Semantic edits and all derived

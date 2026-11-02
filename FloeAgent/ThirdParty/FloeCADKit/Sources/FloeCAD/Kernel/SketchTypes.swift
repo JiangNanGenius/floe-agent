@@ -263,6 +263,13 @@ nonisolated struct Sketch: Identifiable, Codable, Equatable, Sendable {
     /// would form a recursive graph); decoding still preserves every existing
     /// `PlaneRef` case, and all support traversal still needs its cycle guard.
     var support: PlaneRef?
+    /// M05: associative external projections (linked source-body edges). Nil
+    /// or empty = every entity is ordinary local geometry. Optional and
+    /// omitted on encode when empty so legacy sketches keep their exact
+    /// stored shape; a present entry with an unknown semantic version throws
+    /// from its own decoder and is surfaced by the document format as an
+    /// opaque read-only document, never a silent drop to plain geometry.
+    var externalReferences: [SketchExternalReference]?
 
     init(
         id: SketchID = SketchID(),
@@ -279,7 +286,8 @@ nonisolated struct Sketch: Identifiable, Codable, Equatable, Sendable {
         disconnectedEndpoints: [ConstraintRef] = [],
         circleRadiusDirections: [UUID: SIMD2<Double>] = [:],
         lineDimensionKinds: [UUID: DimensionKind] = [:],
-        support: PlaneRef? = nil
+        support: PlaneRef? = nil,
+        externalReferences: [SketchExternalReference]? = nil
     ) {
         self.id = id
         self.name = name
@@ -296,13 +304,14 @@ nonisolated struct Sketch: Identifiable, Codable, Equatable, Sendable {
         self.circleRadiusDirections = circleRadiusDirections
         self.lineDimensionKinds = lineDimensionKinds
         self.support = support
+        self.externalReferences = externalReferences
     }
 
     private enum CodingKeys: String, CodingKey {
         case id, name, plane, entities, isHidden, constructionEntityIDs
         case constraints, dimensions, patternLinks, rectangleSizingAnchors
         case disconnectedEndpoints, rotatedRectangleEdges, circleRadiusDirections
-        case lineDimensionKinds, support
+        case lineDimensionKinds, support, externalReferences
     }
 
     /// `name`/`isHidden`/`constructionEntityIDs`/`constraints`/`dimensions`
@@ -333,6 +342,8 @@ nonisolated struct Sketch: Identifiable, Codable, Equatable, Sendable {
         lineDimensionKinds = try container.decodeIfPresent(
             [UUID: DimensionKind].self, forKey: .lineDimensionKinds) ?? [:]
         support = try container.decodeIfPresent(PlaneRef.self, forKey: .support)
+        externalReferences = try container.decodeIfPresent(
+            [SketchExternalReference].self, forKey: .externalReferences)
         RectangleConstruction.recoverLegacyGroups(in: &self)
     }
 
@@ -358,6 +369,7 @@ nonisolated struct Sketch: Identifiable, Codable, Equatable, Sendable {
         try container.encode(circleRadiusDirections, forKey: .circleRadiusDirections)
         try container.encode(lineDimensionKinds, forKey: .lineDimensionKinds)
         try container.encodeIfPresent(support, forKey: .support)
+        try container.encodeIfPresent(externalReferences, forKey: .externalReferences)
     }
 }
 
@@ -405,5 +417,30 @@ nonisolated extension Sketch {
         constructionEntityIDs.isEmpty
             ? entities
             : entities.filter { !constructionEntityIDs.contains($0.id) }
+    }
+}
+
+// MARK: - External references (M05)
+
+nonisolated extension Sketch {
+    /// True when at least one entity is driven by an associative external
+    /// projection. Derived rebuilds and query rows key off this the same way
+    /// the M07 support slice keys off `support != nil`.
+    var hasExternalReferences: Bool {
+        !(externalReferences?.isEmpty ?? true)
+    }
+
+    /// The external reference driving `entityID`, if any.
+    func externalReference(forEntityID entityID: UUID) -> SketchExternalReference? {
+        externalReferences?.first { $0.entity == entityID }
+    }
+
+    /// Detach the external references for a batch of entities, keeping each
+    /// entity's current geometry as independent sketch geometry. Entities
+    /// without a reference are ignored.
+    mutating func detachExternalReferences(forEntityIDs ids: some Sequence<UUID>) {
+        let dropping = Set(ids)
+        externalReferences = externalReferences?.filter { !dropping.contains($0.entity) }
+        if externalReferences?.isEmpty == true { externalReferences = nil }
     }
 }

@@ -1493,6 +1493,59 @@ actor CadDocumentCenter: CadDocumentHost {
         return payload
     }
 
+    /// Materializes only explicitly requested, individually guarded resources.
+    /// Parsed references never cause filesystem reads. Keys are logical aliases;
+    /// values are workspace path requests, not permission grants.
+    private func readImportResources(_ raw: Any?, resolved: Resolved,
+                                     cancellation: CancellationToken?, primaryBytes: Int)
+        async throws -> (paths: [String: String], bytes: [String: Data]) {
+        guard let raw else { return ([:], [:]) }
+        guard let values = raw as? [String: String], values.count <= MeshImportLimits.standard.maximumArchiveEntries else {
+            throw FloeError.validationFailed("resources must map unique logical names to workspace file paths")
+        }
+        var paths: [String: String] = [:], bytes: [String: Data] = [:]
+        var total = primaryBytes
+        for (name, input) in values.sorted(by: { $0.key < $1.key }) {
+            try cancellation?.throwIfCancelled()
+            guard let key = CADImportResources.name(name), paths[key] == nil else {
+                throw FloeError.validationFailed("The resource group has ambiguous names: \(name)")
+            }
+            var relative = input
+            if relative.hasPrefix("/") {
+                guard relative.hasPrefix(resolved.root.path + "/") else { throw FloeError.unauthorized }
+                relative = String(relative.dropFirst(resolved.root.path.count + 1))
+            }
+            let data = try await Self.readGuardedImportBytes(path: relative,
+                guardResolver: resolved.service.guardResolver, cancellation: cancellation)
+            guard data.count <= MeshImportLimits.standard.maximumExpandedBytes - total else {
+                throw FloeError.validationFailed("The selected import group exceeds the resource budget")
+            }
+            total += data.count
+            paths[key] = relative; bytes[key] = data
+        }
+        return (paths, bytes)
+    }
+
+    private nonisolated static func readGuardedImportBytes(path: String, guardResolver: WorkspacePathGuard,
+                                                          cancellation: CancellationToken?) async throws -> Data {
+        let worker = Task.detached(priority: .userInitiated) {
+            try cancellation?.throwIfCancelled()
+            if Task.isCancelled { throw FloeError.cancelled }
+            let url = try guardResolver.resolve(path)
+            var directory: ObjCBool = false
+            guard FileManager.default.fileExists(atPath: url.path, isDirectory: &directory), !directory.boolValue else {
+                throw FloeError.notFound("Import resource \(url.lastPathComponent)")
+            }
+            try guardResolver.assertReadableSize(url)
+            let data = try Data(contentsOf: url)
+            try cancellation?.throwIfCancelled()
+            if Task.isCancelled { throw FloeError.cancelled }
+            return data
+        }
+        return try await withTaskCancellationHandler { try await worker.value }
+        onCancel: { worker.cancel() }
+    }
+
     /// Native import as a PROPOSAL: the guarded workspace source is read,
     /// size-checked and hashed, the bridge drafts an import on a throwaway
     /// package copy, and the proposal is persisted exactly like a geometry
@@ -1525,10 +1578,14 @@ actor CadDocumentCenter: CadDocumentHost {
         }
         guard !isDirectory.boolValue else {
             throw FloeError.validationFailed(
-                "The import source \(inputURL.lastPathComponent) is a folder; select a single STEP/IGES/STL/OBJ/GLB/glTF file.")
+                "The import source \(inputURL.lastPathComponent) is a folder; select one model file or complete ZIP.")
         }
         try resolved.service.guardResolver.assertReadableSize(inputURL)
-        let bytes = try Data(contentsOf: inputURL)
+        let bytes = try await Self.readGuardedImportBytes(path: sourceRelative,
+            guardResolver: resolved.service.guardResolver, cancellation: cancellation)
+        let resources = try await readImportResources(payload["resources"], resolved: resolved,
+            cancellation: cancellation, primaryBytes: bytes.count)
+        let selectedScale = try CADImportUnits.resolve(units: payload["units"], scale: payload["unitScale"])
         try cancellation.throwIfCancelled()
         guard !bytes.isEmpty else {
             throw FloeError.validationFailed(
@@ -1539,7 +1596,7 @@ actor CadDocumentCenter: CadDocumentHost {
             ?? NativeCADPolicy.normalizedImportFormat(inferredExt)
         guard let format else {
             throw FloeError.validationFailed(
-                "Import supports STEP/STP, IGES/IGS, STL, OBJ, GLB/glTF files (got \(inferredExt.isEmpty ? "unknown" : inferredExt)).")
+                "Import supports STEP/STP, IGES/IGS and the native mesh import formats (got \(inferredExt.isEmpty ? "unknown" : inferredExt)).")
         }
         let packageCanonical = Self.canonicalDocumentPath(
             try resolved.service.guardResolver.resolve(resolved.id))
@@ -1580,8 +1637,9 @@ actor CadDocumentCenter: CadDocumentHost {
                 at: documentURL, sourceRelativePath: sourceRelative, data: bytes,
                 format: format,
                 fileName: explicitName ?? inputURL.lastPathComponent,
-                unitScale: payload["unitScale"] as? Double,
+                unitScale: selectedScale,
                 sourceSHA256: sourceSHA, summary: summary,
+                siblings: resources.bytes, resourcePaths: resources.paths,
                 cancellation: cancellation)
         } catch let error as CADDocumentError {
             let cancelled = error.code == "cancelled" || cancellation.isCancelled
@@ -2152,7 +2210,13 @@ actor CadDocumentCenter: CadDocumentHost {
                 "The import source \(sourceURL.lastPathComponent) is no longer available; re-read it and draft the import again.")
         }
         try resolved.service.guardResolver.assertReadableSize(sourceURL)
-        let bytes = try Data(contentsOf: sourceURL)
+        let bytes = try await Self.readGuardedImportBytes(path: sourceRelative,
+            guardResolver: resolved.service.guardResolver, cancellation: cancellation)
+        let resources = try await readImportResources(spec.resourcePaths, resolved: resolved,
+            cancellation: cancellation, primaryBytes: bytes.count)
+        guard try CADImportResources.hashes(resources.bytes) == spec.resourceSHA256 else {
+            throw FloeError.validationFailed("An import resource changed after preview; draft the full file group again.")
+        }
         let sourceSHA = FloeDigest.sha256Hex(bytes)
         guard sourceSHA.lowercased() == spec.sourceSHA256.lowercased() else {
             throw FloeError.validationFailed(
@@ -2162,6 +2226,7 @@ actor CadDocumentCenter: CadDocumentHost {
         do {
             return try await FloeCAD3DBridge.shared.performAuthorizedImport(
                 proposalID: proposalID, data: bytes, expectedSourceSHA256: sourceSHA,
+                siblings: resources.bytes,
                 cancellation: cancellation)
         } catch let error as CADDocumentError {
             throw Self.classifiedNativeError(error)

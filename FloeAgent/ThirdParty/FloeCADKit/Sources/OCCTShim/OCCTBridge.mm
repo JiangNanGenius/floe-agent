@@ -3137,6 +3137,41 @@ static double OS3DSpanExactArea(const TopoDS_Face &face) {
     }
 }
 
++ (nullable NSData *)edgeCurveDataOfShape:(OCCTShape *)shape {
+    if (shape == nil || shape->_shape.IsNull()) return nil;
+    try {
+        TopTools_IndexedMapOfShape edgeMap;
+        TopExp::MapShapes(shape->_shape, TopAbs_EDGE, edgeMap);
+        const double nan = std::numeric_limits<double>::quiet_NaN();
+        // Per edge: [index, kind, ax, ay, az, bx, by, bz].
+        std::vector<double> out((size_t)edgeMap.Extent() * 8, nan);
+        for (Standard_Integer e = 1; e <= edgeMap.Extent(); ++e) {
+            const TopoDS_Edge edge = TopoDS::Edge(edgeMap(e));
+            const size_t base = (size_t)(e - 1) * 8;
+            out[base] = (double)e;
+            if (BRep_Tool::Degenerated(edge)) continue;
+            try {
+                BRepAdaptor_Curve curve(edge);
+                const double first = curve.FirstParameter();
+                const double last = curve.LastParameter();
+                const bool isLine = curve.GetType() == GeomAbs_Line;
+                out[base + 1] = isLine ? 0.0 : 1.0;
+                const gp_Pnt a = curve.Value(first);
+                const gp_Pnt b = curve.Value(last);
+                out[base + 2] = a.X(); out[base + 3] = a.Y(); out[base + 4] = a.Z();
+                out[base + 5] = b.X(); out[base + 6] = b.Y(); out[base + 7] = b.Z();
+            } catch (Standard_Failure &) {
+                // Leave this edge's kind/endpoints NaN: it exists but has no
+                // evaluable curve, so it is not projectable.
+                continue;
+            }
+        }
+        return [NSData dataWithBytes:out.data() length:out.size() * sizeof(double)];
+    } catch (...) {
+        return nil;
+    }
+}
+
 + (nullable NSData *)edgeMidpointsOfShape:(OCCTShape *)shape {
     if (shape == nil || shape->_shape.IsNull()) return nil;
     try {

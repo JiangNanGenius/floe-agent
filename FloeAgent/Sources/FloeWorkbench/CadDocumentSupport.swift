@@ -290,6 +290,7 @@ public enum CadNativeEditActions {
     public static let parameters: Set<String> = [
         "list", "update", "updateSketchEntity", "deleteSketchEntity",
         "setSketchDimension", "removeSketchDimension",
+        "projectExternalEdges", "detachExternalReferences",
         "feature.suppress", "feature.delete", "feature.move",
         "variable.create", "variable.update", "variable.delete",
         "feature.setExpression",
@@ -529,6 +530,7 @@ public enum NativeCADPolicy: Sendable {
         case "obj": return "obj"
         case "glb": return "glb"
         case "gltf": return "gltf"
+        case "zip", "blend", "usd", "usda", "usdc", "usdz": return raw
         default: return nil
         }
     }

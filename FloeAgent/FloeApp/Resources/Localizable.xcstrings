@@ -128910,6 +128910,590 @@
           }
         }
       }
+    },
+    "cad.detach.rebuild_failed": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Couldn't detach the projection. Check the sketch's features and try again."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "无法断开关联，请检查草图相关特征后重试。"
+          }
+        }
+      }
+    },
+    "cad.project.broken_reference": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%d projected edge(s) lost their source. Detach them, or undo the source deletion."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "有 %d 条投影边失去了来源。可断开关联，或撤销源删除。"
+          }
+        }
+      }
+    },
+    "cad.project.detach_to_edit": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This edge follows its source body. Detach it to edit the geometry here."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "此边跟随其源实体，断开关联后即可在此编辑。"
+          }
+        }
+      }
+    },
+    "cad.project.duplicate": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "That edge is already projected in this sketch."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "该边已投影到此草图中。"
+          }
+        }
+      }
+    },
+    "cad.project.empty": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Nothing to project — the body has no edges to flatten onto this plane."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "没有可投影的内容——该实体没有能压平到此平面的边。"
+          }
+        }
+      }
+    },
+    "cad.project.rebuild_failed": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The projection conflicts with an existing feature. Check the sketch and try again."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "投影与现有特征冲突，请检查草图后重试。"
+          }
+        }
+      }
+    },
+    "cad.project.skipped_degenerate_single": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "That edge is parallel to this plane — it projects to a point, not a line."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "该边与此平面平行——投影结果是一个点而非线。"
+          }
+        }
+      }
+    },
+    "cad.ui.tool.detach_projection": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Detach"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "断开关联"
+          }
+        }
+      }
+    },
+    "cad.project.choose_straight_edge": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Choose a straight edge to project."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "请选择一条直边进行投影。"
+          }
+        }
+      }
+    },
+    "cad.project.broken_badge": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Broken link"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "来源丢失"
+          }
+        }
+      }
+    },
+    "cad.project.broken_help": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Select projected edges to detach them, or undo the source deletion."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "可选择投影边并断开关联，或撤销源删除。"
+          }
+        }
+      }
+    },
+    "cad.import.oneSource": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Select one source file for this import."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "请选择一个源文件。"
+          }
+        }
+      }
+    },
+    "cad.import.groupReadFailed": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Couldn't read the file group: %@"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "无法读取文件组：%@"
+          }
+        }
+      }
+    },
+    "cad.import.coverage": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Import Details"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "导入详情"
+          }
+        }
+      }
+    },
+    "cad.import.staticOnly": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Imports static geometry, placement and supported materials."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "导入静态几何、位置和受支持的材质。"
+          }
+        }
+      }
+    },
+    "cad.import.originalKept": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Original source files are kept unchanged."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "原始源文件保持不变。"
+          }
+        }
+      }
+    },
+    "cad.import.notKept": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Not retained"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "不保留"
+          }
+        }
+      }
+    },
+    "cad.import.chooseUnit": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Choose the file’s unit before importing."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "请先选择源文件的单位。"
+          }
+        }
+      }
+    },
+    "cad.import.history": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Parametric history"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "参数化历史"
+          }
+        }
+      }
+    },
+    "cad.import.hierarchy": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Editable scene hierarchy"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "可编辑场景层级"
+          }
+        }
+      }
+    },
+    "cad.import.animation": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Animation, rigs and modifiers"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "动画、骨骼和修改器"
+          }
+        }
+      }
+    },
+    "cad.import.deformation": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Skinning and morph targets"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "蒙皮和变形目标"
+          }
+        }
+      }
+    },
+    "cad.import.materialChannels": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Material channels other than base color"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "基本颜色以外的材质通道"
+          }
+        }
+      }
+    },
+    "cad.import.otherSceneData": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Other scene data not supported by this importer"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "导入器不支持的其他场景数据"
+          }
+        }
+      }
+    },
+    "cad.import.unit.mm": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Millimetres"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "毫米"
+          }
+        }
+      }
+    },
+    "cad.import.unit.cm": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Centimetres"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "厘米"
+          }
+        }
+      }
+    },
+    "cad.import.unit.m": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Metres"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "米"
+          }
+        }
+      }
+    },
+    "cad.import.unit.in": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Inches"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "英寸"
+          }
+        }
+      }
+    },
+    "cad.import.unit.ft": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Feet"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "英尺"
+          }
+        }
+      }
+    },
+    "cad.import.declaredNote": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The file records its unit. Confirm it matches the source."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "文件已记录单位，请确认与源模型一致。"
+          }
+        }
+      }
+    },
+    "cad.import.undeclaredNote": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The file has no declared unit. Choose the unit used by its author; the detected size is a hint."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "文件未记录单位，请选择制作时使用的单位；检测尺寸仅供参考。"
+          }
+        }
+      }
+    },
+    "cad.import.groupSelect": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Select one model and its referenced resource files, or one complete ZIP."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "请选择一个模型及其引用的资源文件，或一个完整 ZIP。"
+          }
+        }
+      }
+    },
+    "cad.import.groupBudget": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The selected files exceed the import limit or include a folder."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "所选文件超出导入限制，或包含文件夹。"
+          }
+        }
+      }
+    },
+    "cad.import.groupAmbiguous": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Some resource names conflict. Use a complete ZIP with unique paths."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "部分资源名称冲突，请使用路径唯一的完整 ZIP。"
+          }
+        }
+      }
+    },
+    "cad.import.groupUnreadable": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The selected model could not be read."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "无法读取所选模型。"
+          }
+        }
+      }
     }
   },
   "version": "1.0"

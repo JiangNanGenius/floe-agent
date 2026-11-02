@@ -868,6 +868,37 @@ nonisolated enum OCCTKernel {
         return index > 0 ? Int(index) : nil
     }
 
+    /// One kernel edge's curve classification: `.line` carries the EXACT
+    /// endpoints (analytic projection stays exact); any other curve kind is
+    /// reported as unsupported so associative projection refuses honestly
+    /// instead of tessellating a fake exact line.
+    nonisolated struct KernelEdgeCurve: Equatable, Sendable {
+        var isLine: Bool
+        /// Curve endpoints in body-local space. Exact segment ends only when
+        /// `isLine`; for other curve kinds these are the curve's first/last
+        /// points and are not used for projection.
+        var start: SIMD3<Double>
+        var end: SIMD3<Double>
+    }
+
+    /// Per kernel edge, its curve kind and endpoints, keyed by the shared
+    /// 1-based edge index. Degenerate or unevaluable edges are absent.
+    static func edgeCurves(_ handle: BRepHandle) -> [Int: KernelEdgeCurve] {
+        guard let data = OCCTBridge.edgeCurveData(of: handle.shape) else { return [:] }
+        let values: [Double] = data.withUnsafeBytes { Array($0.bindMemory(to: Double.self)) }
+        var out: [Int: KernelEdgeCurve] = [:]
+        for base in stride(from: 0, to: (values.count / 8) * 8, by: 8) {
+            let index = Int(values[base])
+            guard index > 0, values[base + 1].isFinite else { continue }
+            let a = SIMD3(values[base + 2], values[base + 3], values[base + 4])
+            let b = SIMD3(values[base + 5], values[base + 6], values[base + 7])
+            guard a.x.isFinite, a.y.isFinite, a.z.isFinite,
+                  b.x.isFinite, b.y.isFinite, b.z.isFinite else { continue }
+            out[index] = KernelEdgeCurve(isLine: values[base + 1] == 0, start: a, end: b)
+        }
+        return out
+    }
+
     /// Each kernel edge's point halfway along its curve by arc length, keyed
     /// by the shared 1-based edge index. Degenerate edges, and any whose
     /// length the kernel cannot compute, are absent.

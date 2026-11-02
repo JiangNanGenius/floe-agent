@@ -134,13 +134,15 @@ struct CADUVEditorView: View {
                         HStack {
                             Button(FloeCADStrings.text("cad.ui.common.undo","Undo")) { model.history(redo:false) }
                                 .disabled(!model.document.session.undoStack.canUndo)
+                                .accessibilityIdentifier("CADUVUndo")
                             Spacer()
                             Button(FloeCADStrings.text("cad.ui.common.redo","Redo")) { model.history(redo:true) }
                                 .disabled(!model.document.session.undoStack.canRedo)
+                                .accessibilityIdentifier("CADUVRedo")
                         }
                     }.disabled(model.isBusy)
                 } else { ProgressView() }
-                if let error=model.errorMessage { Section { Text(error).foregroundStyle(.red) } }
+                if let error=model.errorMessage { Section { Text(error).foregroundStyle(.red).accessibilityIdentifier("CADUVError") } }
                 if let detail=model.diagnostic {
                     DisclosureGroup(FloeCADStrings.text("cad.ui.common.details","Details")) { Text(detail).font(.caption).textSelection(.enabled) }
                 }
@@ -155,6 +157,7 @@ struct CADUVEditorView: View {
                 ToolbarItem(placement:.cancellationAction) {
                     if model.isBusy {
                         Button(FloeCADStrings.text("cad.ui.common.cancel","Cancel")) { model.stop() }
+                            .accessibilityIdentifier("CADUVOperationCancel")
                     }
                 }
             }
@@ -247,6 +250,7 @@ struct CADUVEditorView: View {
             Text(FloeCADStrings.text(key,title)).font(.caption).foregroundStyle(.secondary)
             TextField(FloeCADStrings.text(key,title),value:value,format:.number.precision(.fractionLength(0...4)))
                 .textFieldStyle(.roundedBorder).keyboardType(.numbersAndPunctuation)
+                .accessibilityIdentifier("CADUVField-\(key)")
         }
     }
     private func previewSection(_ state: CADUVViewSnapshot) -> some View {

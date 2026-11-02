@@ -2486,13 +2486,39 @@ struct FloeCADEditorView: View {
     /// entry opened the picker. Every kind shares the same OFF-MAIN read and
     /// keeps its own feature semantics once the bytes are in hand.
     private func handleImport(
-        _ result: Result<URL, Error>, viewModel: EditorViewModel
+        _ result: Result<[URL], Error>, viewModel: EditorViewModel
     ) {
-        guard case .success(let url) = result else {
+        guard case .success(let urls) = result, !urls.isEmpty else {
             viewModel.errorMessage = "Import failed — please try again."
             return
         }
-        beginImport(from: url, request: importRequest, viewModel: viewModel)
+        if importRequest == .mesh {
+            beginMeshGroupImport(urls: urls, viewModel: viewModel)
+        } else if urls.count == 1, let url = urls.first {
+            beginImport(from: url, request: importRequest, viewModel: viewModel)
+        } else {
+            viewModel.errorMessage = FloeCADStrings.text("cad.import.oneSource", "Select one source file for this import.")
+        }
+    }
+
+    private func beginMeshGroupImport(urls: [URL], viewModel: EditorViewModel) {
+        importTask?.cancel()
+        importTask = Task { @MainActor in
+            let operation = viewModel.beginManualImportOperation()
+            defer { viewModel.endManualImportOperation(operation) }
+            let result = await CADImportSourceReader.readGroup(urls: urls)
+            guard !Task.isCancelled, viewModel.isCurrentManualImport(operation) else { return }
+            switch result {
+            case .failure(.cancelled): return
+            case .failure(.unreadable(let detail)):
+                viewModel.errorMessage = FloeCADStrings.format("cad.import.groupReadFailed", "Couldn't read the file group: %@", detail)
+            case .success(let group):
+                if let prepared = await viewModel.probeMeshOffMainWithOperation(
+                    data: group.primary.data, fileName: group.primary.fileName, siblings: group.resources) {
+                    pendingMeshImport = PendingManualMeshImport(probe: prepared.probe, operation: prepared.operation)
+                }
+            }
+        }
     }
 
     /// E31-R3: the user-selected source is prepared on the Workbench's owned
@@ -2577,7 +2603,8 @@ struct FloeCADEditorView: View {
             // ONE importer for every Import-menu entry (see `ImportRequest`).
             .fileImporter(
                 isPresented: $showImporter,
-                allowedContentTypes: importRequest.contentTypes
+                allowedContentTypes: importRequest == .mesh ? [.data] : importRequest.contentTypes,
+                allowsMultipleSelection: importRequest == .mesh
             ) { result in
                 handleImport(result, viewModel: viewModel)
             }

@@ -153,6 +153,125 @@ nonisolated enum ProjectionKit {
         return mergedLineEntities(from: boundary)
     }
 
+    // MARK: - Linked projection (M05)
+
+    /// What `linked` produced for one body, and what it honestly skipped.
+    nonisolated struct LinkedProjection: Sendable {
+        /// Projected line entities (one per named straight source edge).
+        var entities: [SketchEntity] = []
+        /// The reference binding each entity to its source edge.
+        var references: [SketchExternalReference] = []
+        /// Named source edges whose curve is not a straight line (exact
+        /// projection of a curve is not supported in this slice).
+        var skippedCurved = 0
+        /// Straight source edges parallel to the plane normal (they project
+        /// to a point, not a line).
+        var skippedDegenerate = 0
+        /// Kernel edges with no stable crease identity (an adjacent face is
+        /// unnamed), which a linked reference could not re-resolve.
+        var skippedUnnamed = 0
+    }
+
+    /// Project the named straight feature edges of a frozen source version
+    /// onto `plane` as LINKED entities (M05): every emitted line carries a
+    /// `SketchExternalReference` binding it to the source edge's crease
+    /// identity, so a later source edit re-projects it through the ordinary
+    /// transactional rebuild. Only exactly-linear kernel edges participate —
+    /// curved edges are counted and skipped, never tessellated into fake
+    /// exact lines, and unnamed creases are counted and skipped rather than
+    /// bound by geometric resemblance.
+    ///
+    /// M05 review (R2): projection is a SELECTED-EDGE operation. `selected`
+    /// carries the exact crease names the caller picked (one UI tap = one
+    /// edge; the parameter service passes the validated set from the current
+    /// edge query). Each selected edge mints its own 1:1 entity+reference, so
+    /// reference identity is never merged, rebinding-silently or dropped.
+    /// Coincident projections of two genuinely different source edges (e.g.
+    /// the top and bottom rims of a plate projected onto a parallel plane)
+    /// stay two entities on purpose: each follows its own source, and the
+    /// profile detector dedupes coincident straight chains for region
+    /// detection (see CADExternalSketchProjectionTests, which extrudes the
+    /// detected profile through the real kernel). Pass nil only for
+    /// whole-body diagnostics, never from the creation paths.
+    static func linked(
+        snapshot: GeometryVersionSnapshot,
+        version: GeometryVersionRef,
+        onto plane: SketchPlane,
+        selected: Set<EdgeName>? = nil
+    ) -> LinkedProjection {
+        var result = LinkedProjection()
+        guard let brep = snapshot.body.brep else { return result }
+        let names = snapshot.kernelNames
+        guard !names.isEmpty else { return result }
+        let adjacency = OCCTKernel.edgeFaceAdjacency(brep)
+        let edgeNames = ElementNaming.edgeNames(adjacency: adjacency, names: names)
+        guard !edgeNames.isEmpty else { return result }
+        let curves = OCCTKernel.edgeCurves(brep)
+        let faces = OCCTKernel.faceInfo(brep)
+        let faceNormals = Dictionary(faces.map { ($0.index, $0.normal) }, uniquingKeysWith: { first, _ in first })
+        let transform = snapshot.body.transform
+        let producer = BodyRef(producer: version.writer, bodyID: version.bodyID)
+
+        // Deterministic mint order: ascending kernel edge index, so the same
+        // source always projects the same entity order.
+        for index in edgeNames.keys.sorted() {
+            guard let name = edgeNames[index] else { continue }
+            // M05 review (R2): an explicit selection never silently rebinds
+            // or drops — a requested name missing from THIS frozen version is
+            // the caller's stale-token case, refused by the service before
+            // any mutation, so here it simply does not mint.
+            if let selected, !selected.contains(name) { continue }
+            guard let triple = adjacency.first(where: { $0.edge == index }) else { continue }
+            guard let curve = curves[index] else {
+                // No evaluable curve (degenerate) — nothing exact to project.
+                result.skippedCurved += 1
+                continue
+            }
+            guard curve.isLine else {
+                result.skippedCurved += 1
+                continue
+            }
+            guard let normalA = faceNormals[triple.faceA],
+                  let normalB = faceNormals[triple.faceB] else {
+                result.skippedUnnamed += 1
+                continue
+            }
+            guard let worldA = Self.finite(transform.applying(to: curve.start)),
+                  let worldB = Self.finite(transform.applying(to: curve.end))
+            else {
+                result.skippedDegenerate += 1
+                continue
+            }
+            guard let (a, b) = ExternalSketchProjection.project(
+                worldA: worldA, worldB: worldB, onto: plane)
+            else {
+                // Normal-parallel (degenerate) projection — refuse the edge.
+                result.skippedDegenerate += 1
+                continue
+            }
+            let id = UUID()
+            let midpoint = (curve.start + curve.end) / 2
+            let direction = curve.end - curve.start
+            let length = simd_length(direction)
+            let signature = EdgeSignature(
+                midpoint: midpoint,
+                direction: length > 0 ? direction / length : SIMD3(0, 0, 1),
+                length: length,
+                normalA: normalA,
+                normalB: normalB)
+            result.entities.append(.line(id: id, a: a, b: b))
+            result.references.append(SketchExternalReference(
+                entity: id,
+                sourceVersion: version,
+                source: EdgeRef(body: producer, signature: signature, faceNames: name)))
+        }
+        return result
+    }
+
+    private static func finite(_ value: SIMD3<Double>) -> SIMD3<Double>? {
+        value.x.isFinite && value.y.isFinite && value.z.isFinite ? value : nil
+    }
+
     // MARK: Collinear merge
 
     private static func cross2(_ a: SIMD2<Double>, _ b: SIMD2<Double>) -> Double {

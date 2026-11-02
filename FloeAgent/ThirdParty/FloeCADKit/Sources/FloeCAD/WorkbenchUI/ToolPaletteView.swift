@@ -89,6 +89,17 @@ struct ToolPaletteView: View {
 
     private func paletteColumn(spacing: CGFloat, verticalPadding: CGFloat) -> some View {
         VStack(spacing: spacing) {
+            if viewModel.activeBrokenExternalReferenceCount > 0 {
+                Label(FloeCADStrings.text(
+                    "cad.project.broken_badge", "Broken link"),
+                    systemImage: "exclamationmark.triangle")
+                    .font(.caption2)
+                    .foregroundStyle(.orange)
+                    .labelStyle(.iconOnly)
+                    .help(FloeCADStrings.text(
+                        "cad.project.broken_help", "Select projected edges to detach them, or undo the source deletion."))
+                    .accessibilityIdentifier("CADExternalProjectionBrokenWarning")
+            }
             ForEach(entries) { entry in
                 switch entry {
                 case .item(let item): toolView(item)
@@ -123,6 +134,7 @@ struct ToolPaletteView: View {
            .group(constrainGroup),
            .group(symbolGroup),
            .item(constructItem),
+           .item(detachItem),
            .item(deleteItem)]
     }
 
@@ -310,12 +322,26 @@ struct ToolPaletteView: View {
                  run: { viewModel.toggleConstructionOnSelection() })
     }
 
+    /// M05: Detach turns the selection's linked projections into independent
+    /// geometry (the lines stay, the source association goes). Enabled only
+    /// when the selection actually carries external references, so the
+    /// palette never advertises a no-op.
+    private var detachItem: ToolItem {
+        ToolItem(id: "DetachProjection",
+                 label: FloeCADStrings.text("cad.ui.tool.detach_projection", "Detach"),
+                 icon: "link.badge.plus",
+                 enabled: viewModel.mode.isSketching && viewModel.selectionHasExternalReferences,
+                 accessibilityID: "DetachProjectionButton",
+                 run: { viewModel.detachExternalReferencesOnSelection() })
+    }
+
     private var deleteItem: ToolItem {
         ToolItem(id: "Delete", label: FloeCADStrings.text("cad.ui.common.delete", "Delete"),
                  icon: "trash",
                  enabled: viewModel.mode.isSketching
                     ? (!viewModel.selectedSketchEntityIDs.isEmpty || viewModel.hasSketchGlyphSelection)
                     : (!viewModel.selection.isEmpty || viewModel.selectedImage != nil
+
                        || !viewModel.selectedSketchEntityIDs.isEmpty),
                  accessibilityID: "DeleteButton", run: { viewModel.deleteSelection() })
     }

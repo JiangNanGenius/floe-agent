@@ -16,11 +16,24 @@ struct MeshUnitPromptSheet: View {
 
     @Environment(\.dismiss) private var dismiss
     @State private var unit: MeshImportUnit
+    @State private var confirmedUnit = false
 
     init(probe: MeshImportProbe, onImport: @escaping (MeshImportUnit) -> Void) {
         self.probe = probe
         self.onImport = onImport
         _unit = State(initialValue: probe.detectedUnit)
+        _confirmedUnit = State(initialValue: probe.unitIsDeclared)
+    }
+
+    private func importMeaning(_ code: String) -> String {
+        switch code {
+        case "parametric_history": return FloeCADStrings.text("cad.import.history", "Parametric history")
+        case "editable_scene_hierarchy": return FloeCADStrings.text("cad.import.hierarchy", "Editable scene hierarchy")
+        case "animations", "animation_rig_modifiers": return FloeCADStrings.text("cad.import.animation", "Animation, rigs and modifiers")
+        case "skins", "morph_targets": return FloeCADStrings.text("cad.import.deformation", "Skinning and morph targets")
+        case "material_channels_other_than_base_color": return FloeCADStrings.text("cad.import.materialChannels", "Material channels other than base color")
+        default: return FloeCADStrings.text("cad.import.otherSceneData", "Other scene data not supported by this importer")
+        }
     }
 
     var body: some View {
@@ -47,6 +60,7 @@ struct MeshUnitPromptSheet: View {
                     ForEach(MeshImportUnit.allCases) { candidate in
                         Button {
                             unit = candidate
+                            confirmedUnit = true
                         } label: {
                             HStack(spacing: 10) {
                                 VStack(alignment: .leading, spacing: 2) {
@@ -81,6 +95,21 @@ struct MeshUnitPromptSheet: View {
                         .accessibilityIdentifier("MeshUnitRow-\(candidate.rawValue)")
                     }
                 }
+                if let coverage = probe.coverage {
+                    Section(FloeCADStrings.text("cad.import.coverage", "Import Details")) {
+                        Text(FloeCADStrings.text("cad.import.staticOnly", "Imports static geometry, placement and supported materials."))
+                        Text(FloeCADStrings.text("cad.import.originalKept", "Original source files are kept unchanged."))
+                        if !coverage.discarded.isEmpty {
+                            DisclosureGroup(FloeCADStrings.text("cad.import.notKept", "Not retained")) {
+                                ForEach(coverage.discarded, id: \.self) { item in Text(importMeaning(item)) }
+                            }
+                        }
+                    }
+                }
+                if !probe.unitIsDeclared && !confirmedUnit {
+                    Text(FloeCADStrings.text("cad.import.chooseUnit", "Choose the file’s unit before importing."))
+                        .font(.footnote).foregroundStyle(.secondary)
+                }
             }
             .navigationTitle(FloeCADStrings.label("cad.ui.meshImport.title", "Import Units"))
             .onDisappear { MacWindowTitle.restore() }
@@ -95,6 +124,7 @@ struct MeshUnitPromptSheet: View {
                         onImport(unit)
                         dismiss()
                     }
+                    .disabled(!confirmedUnit)
                     .accessibilityIdentifier("MeshUnitImport")
                 }
             }

@@ -334,7 +334,9 @@ struct ItemsPanelView: View {
                 onToggleVisibility: { viewModel.setItemHidden(.sketch(id), hidden: !sketch.isHidden) },
                 onRename: { viewModel.renameItem(.sketch(id), to: $0) },
                 onZoom: { viewModel.zoomToItem(.sketch(id)) },
-                onDelete: { viewModel.deleteItem(.sketch(id)) })
+                onDelete: { viewModel.deleteItem(.sketch(id)) },
+                warning: viewModel.brokenExternalReferenceCount(in: sketch) > 0
+                    ? FloeCADStrings.text("cad.project.broken_badge", "Broken link") : nil)
         case .image(let id):
             guard let image = document.images.first(where: { $0.id == id }) else { return nil }
             return ItemRowView(
@@ -690,6 +692,7 @@ private struct ItemRowView: View {
     /// Stable identity for a row whose display name is a localized/positional
     /// label (associative planes). Nil keeps the historical name-based id.
     var stableIdentifier: String? = nil
+    var warning: String? = nil
 
     @State private var draft = ""
     @State private var isRenaming = false
@@ -724,6 +727,14 @@ private struct ItemRowView: View {
                 .font(.system(size: 15))
                 .frame(width: 24)
                 .foregroundStyle(isHidden ? Color.barLabelDim : Color.barLabel)
+            if let warning {
+                Image(systemName: "exclamationmark.triangle")
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+                    .accessibilityLabel(warning)
+                    .help(warning)
+                    .accessibilityIdentifier("CADExternalProjectionBroken-\(name)")
+            }
             if renameable && (!nameTapSelects || isRenaming) {
                 TextField(FloeCADStrings.text("cad.ui.common.name", "Name"), text: $draft)
                     .textFieldStyle(.plain)

@@ -602,6 +602,17 @@ typedef NS_ENUM(NSInteger, OCCTOpCode) {
 /// tessellation segment's midpoint used to be whichever came first.
 + (nullable NSData *)edgeMidpointsOfShape:(OCCTShape *)shape;
 
+/// Per-edge curve classification for the shared 1-based indexed-map order,
+/// as packed doubles: for edge i, entry i−1 is
+/// `[index, kind, ax, ay, az, bx, by, bz]`.
+/// `kind` is 0 when the edge's curve is exactly a LINE (then a/b are the
+/// line's exact endpoints, so a plane projection can stay analytic), 1 for
+/// any other curve kind (then a/b are the curve's own first/last points and
+/// carry no exact-endpoint promise), NaN-filled when the edge is degenerate
+/// or its curve cannot be evaluated. Used by associative sketch projection:
+/// only `kind == 0` edges are projectable as exact lines.
++ (nullable NSData *)edgeCurveDataOfShape:(OCCTShape *)shape;
+
 /// The largest fillet radius the edges near `worldPoints` can actually
 /// take, found by bisection over REAL (fully checked) `BRepFilletAPI`
 /// builds — so the drag clamp and the commit agree by construction, unlike

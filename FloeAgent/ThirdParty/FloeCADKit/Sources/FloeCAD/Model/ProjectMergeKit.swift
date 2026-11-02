@@ -55,13 +55,18 @@ nonisolated enum ProjectMergeKit {
         _ guest: DesignDocument, into host: DesignDocument,
         translation: SIMD3<Double> = .zero
     ) throws -> Insertion {
+        // Insertion re-mints every identity. Until its external-edge remap is
+        // supported, refusing is safer than binding a guest link to the host.
+        guard !guest.sketches.contains(where: \.hasExternalReferences) else {
+            throw MergeError.missingAssociativeReferences(["sketch-external-references"])
+        }
         let associative = guest.planes.contains { $0.definition != nil }
             || guest.sketches.contains { $0.support != nil }
             || guest.axes.contains { $0.definition != nil }
             || guest.datumPoints.contains { $0.definition != nil }
             || guest.features.nodes.contains { if case .baseSolid = $0.kind { return true }; return false }
         let hostAssociative = host.planes.contains { $0.definition != nil }
-            || host.sketches.contains { $0.support != nil }
+            || host.sketches.contains { $0.support != nil || $0.hasExternalReferences }
             || host.axes.contains { $0.definition != nil }
             || host.datumPoints.contains { $0.definition != nil }
             || host.features.nodes.contains { if case .baseSolid = $0.kind { return true }; return false }

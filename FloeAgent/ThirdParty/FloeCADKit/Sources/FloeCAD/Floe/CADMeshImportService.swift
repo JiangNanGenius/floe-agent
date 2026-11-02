@@ -38,6 +38,7 @@ public nonisolated struct CADMeshImportPlan: Sendable {
     /// True when the parse observed itself on a non-main thread (measurement
     /// witness; false for a direct synchronous call from the main actor).
     public let parsedOffMain: Bool
+    public var coverage: CADMeshImportCoverage? { probe.coverage }
 }
 
 /// One single-mesh STL/OBJ import prepared off the main actor. It preserves
@@ -53,26 +54,47 @@ public nonisolated struct CADSingleMeshImportPlan: Sendable {
 }
 
 public nonisolated enum CADMeshImportService {
+    static func validateParts(_ parts: [ImportedPart]) throws {
+        for part in parts {
+            let mesh = part.mesh
+            guard !mesh.indices.isEmpty, mesh.indices.count % 3 == 0,
+                  mesh.positions.count == mesh.normals.count,
+                  mesh.positions.allSatisfy({ $0.x.isFinite && $0.y.isFinite && $0.z.isFinite }),
+                  mesh.normals.allSatisfy({ $0.x.isFinite && $0.y.isFinite && $0.z.isFinite }),
+                  mesh.indices.allSatisfy({ Int($0) < mesh.positions.count }),
+                  mesh.texcoords == nil || (mesh.texcoords?.count == mesh.positions.count
+                    && mesh.texcoords!.allSatisfy({ $0.x.isFinite && $0.y.isFinite })) else {
+                throw CADDocumentError(code: "invalid_import_mesh", message: "An imported part has invalid or overflowing geometry/UV buffers: \(part.name). Nothing was imported.")
+            }
+        }
+    }
     /// Parse a mesh exchange (STL/OBJ/GLB/glTF/zip/Blender/USD) with the real
     /// kernel parsers under one budget and cancellation token.
     public static func parse(data: Data, fileName: String,
                              siblings: [String: Data] = [:],
                              unitScale: Double? = nil,
+                             requireExplicitUnits: Bool = false,
                              limits: MeshImportLimits = .standard,
                              cancellation: (any MeshImportCancellationChecking)? = nil)
         throws -> CADMeshImportPlan {
+        _ = try CADImportUnits.resolve(units: nil, scale: unitScale)
         let budget = MeshImportBudget(limits: limits, cancellation: cancellation,
                                       fileName: (fileName as NSString).lastPathComponent)
         do {
-            let probe = try MeshImportKit.probe(data: data, fileName: fileName,
+            var probe = try MeshImportKit.probe(data: data, fileName: fileName,
                                                 siblings: siblings, budget: budget)
             // Scaling copies every position. Charge it on the parse side so the
             // MainActor apply holds no unbudgeted second mesh copy.
             let positionCount = probe.parts.reduce(0) { $0 + $1.mesh.positions.count }
             try budget.charge(positionCount * MemoryLayout<SIMD3<Float>>.stride,
                               "unit-scaled positions")
+            if requireExplicitUnits, !probe.unitIsDeclared, unitScale == nil {
+                throw CADDocumentError(code: "import_units_required", message: "This file has no declared length unit. Choose units or a positive millimetres-per-unit scale before importing.")
+            }
             let scale = unitScale ?? probe.detectedScale
+            probe.coverage?.selectedScaleMM = scale
             let parts = MeshImportKit.scaled(probe.parts, by: scale)
+            try validateParts(parts)
             try budget.checkCancellation()
             return CADMeshImportPlan(probe: probe,
                                      parts: parts,
@@ -94,12 +116,13 @@ public nonisolated enum CADMeshImportService {
     public static func parseOffMain(data: Data, fileName: String,
                                     siblings: [String: Data] = [:],
                                     unitScale: Double? = nil,
+                                    requireExplicitUnits: Bool = false,
                                     limits: MeshImportLimits = .standard,
                                     cancellation: MeshImportCancellation)
         async throws -> CADMeshImportPlan {
         let worker = Task.detached(priority: .userInitiated) {
             try parse(data: data, fileName: fileName, siblings: siblings,
-                      unitScale: unitScale, limits: limits, cancellation: cancellation)
+                      unitScale: unitScale, requireExplicitUnits: requireExplicitUnits, limits: limits, cancellation: cancellation)
         }
         return try await withTaskCancellationHandler {
             try await worker.value
@@ -116,6 +139,7 @@ public nonisolated enum CADMeshImportService {
                                        limits: MeshImportLimits = .standard,
                                        cancellation: (any MeshImportCancellationChecking)? = nil)
         throws -> CADSingleMeshImportPlan {
+        _ = try CADImportUnits.resolve(units: nil, scale: unitScale)
         let budget = MeshImportBudget(limits: limits, cancellation: cancellation,
                                       fileName: (fileName as NSString).lastPathComponent)
         do {
@@ -214,7 +238,9 @@ public nonisolated enum CADMeshImportService {
             } catch let error as MeshImportError {
                 throw importError(error)
             }
-            return MeshImportKit.scaled(parts, by: factor)
+            let scaled = MeshImportKit.scaled(parts, by: factor)
+            try validateParts(scaled)
+            return scaled
         }
         return try await worker.value
     }
@@ -267,14 +293,16 @@ public nonisolated enum CADMeshImportService {
                 object: ["ok": false, "error": "empty_mesh",
                          "message": "The file produced no importable bodies; nothing was changed."])
         }
-        return FloeCADDocument.jsonOutcome(status: 200, object: [
+        var payload: [String: Any] = [
             "ok": true,
             "imported": added.map { body -> [String: Any] in
                 ["bodyID": body.id.raw.uuidString, "name": body.name, "analyticBRep": false]
             },
             "count": added.count,
             "mutated": true,
-        ])
+        ]
+        if let coverage = plan.coverage { payload["coverage"] = coverage.json; payload["note"] = coverage.summary }
+        return FloeCADDocument.jsonOutcome(status: 200, object: payload)
     }
 
     /// Apply the single-mesh plan with the exact `nativeImportData` STL/OBJ

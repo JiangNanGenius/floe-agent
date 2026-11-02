@@ -1728,4 +1728,149 @@ final class CADEditorAnimationExportRecoveryUITests: XCTestCase {
         return value == expected || value.contains(expected) || element.label.contains(expected)
     }
 }
+
+/// Drives shipped sheets and controls. Exact curved geometry, texture pixels,
+/// saved UVs and two-copy conflict/rollback semantics have separate native tests.
+@MainActor
+final class CADNativeUVAndCopyMergeFlowUITests: XCTestCase {
+    func testIPadUVEditorUnwrapTransformPackHistoryPreviewAndReturn() throws {
+        try checkUV(compact: false, edit: true)
+    }
+
+    func testCompactLargeTextUVEditorRemainsReachable() throws {
+        try checkUV(compact: true, edit: false)
+    }
+
+    func testIPadCopyMergeEntryUsesNativeSheetAndRequiresInputs() throws {
+        try checkMerge(compact: false)
+    }
+
+    func testCompactLargeTextCopyMergeEntryRemainsReachable() throws {
+        try checkMerge(compact: true)
+    }
+
+    private func launch(compact: Bool) -> XCUIApplication {
+        continueAfterFailure = false
+        XCUIDevice.shared.orientation = compact ? .portrait : .landscapeLeft
+        let app = XCUIApplication()
+        app.launchArguments = ["-AppleLanguages", "(en)", "-AppleLocale", "en_US",
+            "-ui-testing", "--ui-test-cad-fixture", "--ui-test-cad-uninstanced"]
+        app.launchArguments += compact
+            ? ["--ui-test-cad-compact", "--ui-test-cad-large-text"] : ["-ui-testing-ipad"]
+        app.launch()
+        XCTAssertTrue(app.buttons["UndoButton"].waitForExistence(timeout: 60))
+        return app
+    }
+
+    private func reveal(_ element: XCUIElement, sheet: String, app: XCUIApplication) {
+        CADSheetProbe.reveal(element, in: app, sheet: sheet, swipes: 14)
+        XCTAssertTrue(element.exists && element.isHittable, "The native control must be visible: \(element)")
+    }
+
+    private func ready(_ app: XCUIApplication) {
+        let running = app.buttons["CADUVOperationCancel"]
+        XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(
+            predicate: NSPredicate(format: "exists == false"), object: running)],
+            timeout: 30), .completed)
+        XCTAssertFalse(app.staticTexts["CADUVError"].exists, "A failed edit must not be accepted as ready")
+    }
+
+    private func snapshot(_ name: String) {
+        let attachment = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
+        attachment.name = name
+        attachment.lifetime = .keepAlways
+        add(attachment)
+    }
+
+    private func checkUV(compact: Bool, edit: Bool) throws {
+        let app = launch(compact: compact)
+        defer { app.terminate() }
+        app.segmentedControls["CADWorkbenchMode"].buttons["Present"].tap()
+        let material = app.buttons["CADPresentMaterial"]
+        XCTAssertTrue(material.waitForExistence(timeout: 30))
+        material.tap()
+        let open = app.buttons["CADMaterialOpenUVEditor"]
+        reveal(open, sheet: "Material", app: app)
+        open.tap()
+        let done = app.buttons["CADUVDone"]
+        XCTAssertTrue(done.waitForExistence(timeout: 20) && done.isHittable)
+        let seams = app.descendants(matching: .any).matching(identifier: "CADUVSeamCanvas").firstMatch
+        XCTAssertTrue(seams.waitForExistence(timeout: 20))
+        snapshot(compact ? "X09 compact large text native UV editor" : "X09 native UV seams and controls")
+        if edit {
+            let unwrap = app.buttons["CADUVUnwrap"]
+            reveal(unwrap, sheet: "UV Editor", app: app)
+            unwrap.tap()
+            let islands = app.descendants(matching: .any).matching(identifier: "CADUVIslandCanvas").firstMatch
+            XCTAssertTrue(islands.waitForExistence(timeout: 30))
+            ready(app)
+            reveal(islands, sheet: "UV Editor", app: app)
+            snapshot("X09 actual native UV islands after unwrap")
+            let move = app.textFields["CADUVField-cad.uv.moveU"]
+            reveal(move, sheet: "UV Editor", app: app)
+            move.tap()
+            let previous = move.value as? String ?? "0"
+            move.typeText(String(repeating: XCUIKeyboardKey.delete.rawValue, count: previous.count) + "0.25")
+            let hide = app.buttons["Hide keyboard"].firstMatch
+            if hide.exists && hide.isHittable { hide.tap() }
+            let apply = app.buttons["CADUVApplyTransform"]
+            reveal(apply, sheet: "UV Editor", app: app)
+            XCTAssertTrue(apply.isEnabled)
+            apply.tap()
+            ready(app)
+            let pack = app.buttons["Pack Islands"]
+            reveal(pack, sheet: "UV Editor", app: app)
+            pack.tap()
+            ready(app)
+            let undo = app.buttons["CADUVUndo"]
+            reveal(undo, sheet: "UV Editor", app: app)
+            XCTAssertTrue(undo.isEnabled)
+            undo.tap()
+            let redo = app.buttons["CADUVRedo"]
+            XCTAssertTrue(redo.waitForExistence(timeout: 10) && redo.isEnabled)
+            redo.tap()
+            ready(app)
+            let preview = app.buttons["Refresh 3D Preview"]
+            reveal(preview, sheet: "UV Editor", app: app)
+            preview.tap()
+            let image = app.descendants(matching: .any).matching(identifier: "CADUVActual3DPreview").firstMatch
+            XCTAssertTrue(image.waitForExistence(timeout: 20))
+            reveal(image, sheet: "UV Editor", app: app)
+            snapshot("X09 native UV editor actual 3D preview after transform pack and history")
+        }
+        done.tap()
+        XCTAssertTrue(app.buttons["CADMaterialCancel"].waitForExistence(timeout: 15))
+        app.buttons["CADMaterialCancel"].tap()
+        app.segmentedControls["CADWorkbenchMode"].buttons["Edit"].tap()
+        XCTAssertTrue(app.buttons["UndoButton"].waitForExistence(timeout: 15))
+    }
+
+    private func checkMerge(compact: Bool) throws {
+        let app = launch(compact: compact)
+        defer { app.terminate() }
+        let versions = app.buttons["CADVersionsButton"]
+        if !versions.exists {
+            let more = app.buttons["CADCompactMoreMenu"]
+            XCTAssertTrue(more.waitForExistence(timeout: 10))
+            more.tap()
+        }
+        XCTAssertTrue(versions.waitForExistence(timeout: 15))
+        versions.tap()
+        CADSheetProbe.expandSheet("Design Versions", in: app)
+        let merge = app.buttons["CADVersionsMergeCopiesButton"]
+        reveal(merge, sheet: "Design Versions", app: app)
+        merge.tap()
+        let cancel = app.buttons["CADMergeCancelButton"]
+        XCTAssertTrue(cancel.waitForExistence(timeout: 15) && cancel.isHittable)
+        XCTAssertTrue(app.buttons["CADMergeSourcePicker"].exists)
+        XCTAssertFalse(app.buttons["CADMergeCompareButton"].isEnabled)
+        XCTAssertFalse(app.buttons["CADMergeApplyButton"].isEnabled)
+        snapshot(compact ? "E35 compact large text native copy merge sheet" : "E35 native copy merge inputs")
+        cancel.tap()
+        let close = app.buttons["CADVersionsCloseButton"]
+        XCTAssertTrue(close.waitForExistence(timeout: 15) && close.isHittable)
+        close.tap()
+        XCTAssertTrue(app.buttons["UndoButton"].waitForExistence(timeout: 15))
+    }
+}
 #endif

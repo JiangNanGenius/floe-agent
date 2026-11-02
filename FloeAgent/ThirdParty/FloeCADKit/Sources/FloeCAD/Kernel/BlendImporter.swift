@@ -343,10 +343,11 @@ nonisolated enum BlendImporter {
 
         for ob in file.blocks where ob.code == "OB" && file.structName(of: ob) == "Object" {
             try budget.checkCancellation()
-            guard file.int(ob, "Object", "type") == objectTypeMesh,
-                  let me = file.deref(file.ptr(ob, "Object", "data")), file.structName(of: me) == "Mesh"
-            else { continue }
+            guard file.int(ob, "Object", "type") == objectTypeMesh else { continue }
             let name = file.idName(ob, "Object")
+            guard let me = file.deref(file.ptr(ob, "Object", "data")), file.structName(of: me) == "Mesh" else {
+                throw CADDocumentError(code: "missing_import_resources", message: "Blender mesh data is unavailable for object \(name). The whole import was refused; the source is unchanged.")
+            }
             // obmat[4][4]: obmat[i] is column i (Blender stores column vectors).
             let m = file.floats(ob, "Object", "obmat") ?? []
             var world = matrix_identity_double4x4
@@ -362,7 +363,9 @@ nonisolated enum BlendImporter {
                 SIMD3(world.columns.1.x, world.columns.1.y, world.columns.1.z),
                 SIMD3(world.columns.2.x, world.columns.2.y, world.columns.2.z)).determinant < 0
 
-            guard let geometry = try geometry(of: me, in: file, budget: budget) else { continue }
+            guard let geometry = try geometry(of: me, in: file, budget: budget) else {
+                throw CADDocumentError(code: "unsupported_import_content", message: "Unsupported Blender mesh layout for object \(name). The whole import was refused; the source is unchanged.")
+            }
             let (positionsLocal, polygons, uvs) = geometry
             guard !polygons.isEmpty else { continue }
 
@@ -378,7 +381,7 @@ nonisolated enum BlendImporter {
             if totcol > 0, let matBlock = file.deref(file.ptr(me, "Mesh", "mat")) {
                 for address in file.pointerArray(matBlock, count: totcol) {
                     if let cached = materialCache[address] { slotMaterials.append(cached); continue }
-                    let raw = file.deref(address).map { material($0, in: file, siblings: siblings) }
+                    let raw = try file.deref(address).map { try material($0, in: file, siblings: siblings) }
                     if let raw { materialCache[address] = raw }
                     slotMaterials.append(raw)
                 }
@@ -429,13 +432,14 @@ nonisolated enum BlendImporter {
                                       indices: outIndices)
                 if uvs != nil, outUVs.count == outPositions.count { mesh.texcoords = outUVs }
                 var spec: BodyMaterialSpec?
-                if slot < slotMaterials.count, let raw = slotMaterials[slot] {
+                if slot >= 0, slot < slotMaterials.count, let raw = slotMaterials[slot] {
                     spec = BodyMaterialSpec(baseColor: raw.color, metallic: 0, roughness: 0.5)
-                    if mesh.texcoords != nil {
-                        if let texture = raw.texture {
-                            try budget.charge(texture.count, "blend texture")
+                    if let texture = raw.texture {
+                        guard mesh.texcoords != nil else {
+                            throw CADDocumentError(code: "unsupported_import_content", message: "Blender material \(raw.name) has an image but object \(name) has no supported UV map.")
                         }
-                        spec?.baseColorTexture = raw.texture
+                        try budget.charge(texture.count, "blend texture")
+                        spec?.baseColorTexture = texture
                     }
                 }
                 let partName = usedSlots.count > 1
@@ -553,7 +557,7 @@ nonisolated enum BlendImporter {
     }
 
     /// Slot colour and base-colour image for a Material block.
-    private static func material(_ ma: Block, in file: BlendFile, siblings: [String: Data]) -> RawMaterial {
+    private static func material(_ ma: Block, in file: BlendFile, siblings: [String: Data]) throws -> RawMaterial {
         let name = file.idName(ma, "Material")
         let r = Double(file.floats(ma, "Material", "r")?.first ?? 0.8)
         let g = Double(file.floats(ma, "Material", "g")?.first ?? 0.8)
@@ -592,13 +596,17 @@ nonisolated enum BlendImporter {
             }
         }
         if let image {
-            raw.texture = imageData(image, in: file, siblings: siblings)
+            let bytes = try imageData(image, in: file, siblings: siblings)
+            if case .failure = CADExportImage.decode(bytes) {
+                throw CADDocumentError(code: "unsupported_import_content", message: "Unsupported or unreadable Blender image for material \(name). The source is unchanged.")
+            }
+            raw.texture = bytes
         }
         return raw
     }
 
     /// The image's bytes: packed inside the .blend, or a file that came along.
-    private static func imageData(_ ima: Block, in file: BlendFile, siblings: [String: Data]) -> Data? {
+    private static func imageData(_ ima: Block, in file: BlendFile, siblings: [String: Data]) throws -> Data {
         if let packed = file.deref(file.ptr(ima, "Image", "packedfile")),
            let size = file.int(packed, "PackedFile", "size"), size > 0,
            let data = file.deref(file.ptr(packed, "PackedFile", "data")), data.size >= size {
@@ -616,6 +624,12 @@ nonisolated enum BlendImporter {
         let path = (file.string(ima, "Image", "filepath") ?? file.string(ima, "Image", "name") ?? "")
             .replacingOccurrences(of: "\\", with: "/")
         let trimmed = path.hasPrefix("//") ? String(path.dropFirst(2)) : path
-        return trimmed.isEmpty ? nil : MeshImportKit.sibling(trimmed, in: siblings)
+        guard !trimmed.isEmpty else {
+            throw CADDocumentError(code: "unsupported_import_content", message: "Blender image \(file.idName(ima, "Image")) has no supported packed bytes or resource path.")
+        }
+        guard let bytes = MeshImportKit.sibling(trimmed, in: siblings) else {
+            throw CADDocumentError(code: "missing_import_resources", message: "Missing Blender image resource: \(trimmed). Select the image with the model; the source is unchanged.")
+        }
+        return bytes
     }
 }

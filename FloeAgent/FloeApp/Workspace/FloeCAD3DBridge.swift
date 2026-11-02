@@ -58,6 +58,14 @@ final class FloeCAD3DBridge {
         let fileName: String?
         let unitScale: Double?
         let sourceSHA256: String
+        let resourcePaths: [String: String]
+        let resourceSHA256: [String: String]
+        init(sourceRelativePath: String, format: String, fileName: String?, unitScale: Double?, sourceSHA256: String,
+             resourcePaths: [String: String] = [:], resourceSHA256: [String: String] = [:]) {
+            self.sourceRelativePath=sourceRelativePath; self.format=format; self.fileName=fileName
+            self.unitScale=unitScale; self.sourceSHA256=sourceSHA256
+            self.resourcePaths=resourcePaths; self.resourceSHA256=resourceSHA256
+        }
     }
     private var importSpecs: [UUID: ImportSpec] = [:]
 
@@ -891,7 +899,7 @@ final class FloeCAD3DBridge {
     private static let meshImportFormats: Set<String> = ["stl", "obj"]
     /// Mesh exchange formats only the command-vocabulary importer accepts
     /// (glTF/GLB reuse the kernel's `document.import` mesh path).
-    private static let commandImporterFormats: Set<String> = ["glb", "gltf"]
+    private static let commandImporterFormats: Set<String> = ["glb", "gltf", "zip", "blend", "usd", "usda", "usdc", "usdz"]
 
     /// Whether an import format yields render-only mesh bodies (no analytic
     /// B-rep, no parametric feature history).
@@ -993,14 +1001,15 @@ final class FloeCAD3DBridge {
     /// opens the workspace path. `sourceSHA256` binds the exact source bytes,
     /// so an apply after the source changed is refused and re-drafted.
     ///
-    /// STEP/IGES/STL/OBJ reuse `FloeCADDocument.nativeImportData`; GLB/glTF
-    /// reuse the kernel's `document.import` mesh importer against a staged
-    /// temp copy of the guarded bytes. No parser is implemented here, and no
+    /// STEP/IGES reuse `CADExactImportService`; all mesh formats reuse
+    /// `CADMeshImportService` with the same explicitly supplied resources
+    /// and units as the manual editor. No parser is implemented here, and no
     /// parametric feature history is synthesized for imported geometry.
     func proposeImport(at url: URL, sourceRelativePath: String, data: Data,
                        format rawFormat: String,
                        fileName: String?, unitScale: Double?,
                        sourceSHA256: String, summary: String,
+                       siblings: [String: Data] = [:], resourcePaths: [String: String] = [:],
                        cancellation: CancellationToken? = nil) async throws -> CADProposalRecord {
         var format = rawFormat.lowercased()
         if format == "igs" { format = "iges" }
@@ -1045,7 +1054,7 @@ final class FloeCAD3DBridge {
         defer { if !clone.isClosed { clone.close() } }
         try Self.checkImportCancellation(importToken)
         let outcome = try await Self.applyImport(document: clone, data: data, format: format,
-                                                 fileName: fileName, unitScale: unitScale,
+                                                 fileName: fileName, unitScale: unitScale, siblings: siblings,
                                                  cancellation: importToken)
         try Self.checkImportCancellation(importToken)
         guard outcome.isOK else {
@@ -1090,10 +1099,11 @@ final class FloeCAD3DBridge {
         let preview = try JSONDecoder().decode(CADProposalPreview.self, from: previewData)
 
         let operation: [String: Any] = [
-            "op": "document.import",
+            "op": Self.isMeshImportFormat(format) ? "document.importMeshGroup" : "document.import",
             "args": Self.importArgs(sourcePath: sourceRelativePath, format: format,
                                     fileName: fileName, unitScale: unitScale,
-                                    sourceSHA256: sourceSHA256, geometryClass: geometryClass),
+                                    sourceSHA256: sourceSHA256, geometryClass: geometryClass,
+                                    resourcePaths: resourcePaths, resourceSHA256: try CADImportResources.hashes(siblings)),
         ]
         let operationJSON = try jsonString(operation)
         // A draft that finished after the owner cancelled must not become a
@@ -1114,7 +1124,8 @@ final class FloeCAD3DBridge {
                                            format: format,
                                            fileName: fileName,
                                            unitScale: unitScale,
-                                           sourceSHA256: sourceSHA256)
+                                           sourceSHA256: sourceSHA256, resourcePaths: resourcePaths,
+                                           resourceSHA256: try CADImportResources.hashes(siblings))
         return record
     }
 
@@ -1126,6 +1137,7 @@ final class FloeCAD3DBridge {
     @discardableResult
     func performAuthorizedImport(proposalID: UUID, data: Data,
                                  expectedSourceSHA256: String,
+                                 siblings: [String: Data] = [:],
                                  cancellation: CancellationToken? = nil) async throws -> CADApplyReceipt {
         try cancellation?.throwIfCancelled()
         guard let url = proposalDocument[proposalID],
@@ -1137,6 +1149,9 @@ final class FloeCAD3DBridge {
             throw CADDocumentError(
                 code: "source_changed",
                 message: "The source file changed after this import was proposed; re-read it and draft the import again.")
+        }
+        guard try CADImportResources.hashes(siblings) == spec.resourceSHA256 else {
+            throw CADDocumentError(code: "source_changed", message: "An import resource changed after preview. Draft the complete group again; nothing was applied.")
         }
         // The apply re-parses off the MainActor under the same token. A
         // cancellation that arrives before the body command runs refuses with
@@ -1160,7 +1175,7 @@ final class FloeCAD3DBridge {
         let outcome = try await Self.applyImport(document: document, data: data,
                                                  format: spec.format,
                                                  fileName: spec.fileName,
-                                                 unitScale: spec.unitScale,
+                                                 unitScale: spec.unitScale, siblings: siblings,
                                                  cancellation: importToken)
         guard outcome.isOK else {
             throw CADDocumentError(code: outcome.errorCode ?? "import_failed",
@@ -1200,7 +1215,7 @@ final class FloeCAD3DBridge {
     /// document actor as ONE undo step. Mesh formats use the same scheduling
     /// split through `CADMeshImportService` under the same budget/token.
     private static func applyImport(document: FloeCADDocument, data: Data, format: String,
-                                    fileName: String?, unitScale: Double?,
+                                    fileName: String?, unitScale: Double?, siblings: [String: Data] = [:],
                                     cancellation: MeshImportCancellation) async throws -> CADCommandOutcome {
         do {
             if brepImportFormats.contains(format) {
@@ -1218,44 +1233,15 @@ final class FloeCAD3DBridge {
                     undoMode: .singleStep)
                 return application.outcome
             }
-            if meshImportFormats.contains(format) {
-                // Preserve `nativeImportData`'s exact single-body STL/OBJ
-                // result; only the parse moves off-main.
-                let name = fileName ?? "Imported.\(format)"
-                let plan = try await CADMeshImportService.parseSingleMeshOffMain(
-                    data: data, fileName: name, format: format,
-                    unitScale: unitScale, cancellation: cancellation)
-                return try CADMeshImportService.applySingleMesh(
-                    plan, to: document, cancellation: cancellation)
+            guard Self.isMeshImportFormat(format) else {
+                throw CADDocumentError(code: "unsupported_format", message: "Unsupported import format \(format).")
             }
-            // A JSON .gltf may be self-contained (every buffer/image URI is a
-            // data: URI, or the only buffer has no URI at all) or reference
-            // external .bin buffers/textures beside the file. The import has
-            // no sibling scan, so distinguish the two by inspecting the JSON
-            // buffer/image URIs: self-contained bytes are imported; external
-            // references get an explicit unsupported error (never a silent
-            // geometry drop, never an unguarded sibling scan).
-            if format == "gltf" {
-                switch Self.gltfResourceDependency(of: data) {
-                case .selfContained:
-                    break
-                case .externalReferences(let names):
-                    let list = names.joined(separator: ", ")
-                    throw CADDocumentError(
-                        code: "gltf_external_resources_unsupported",
-                        message: "A loose .gltf that references external resources (\(list)) is not imported by the tool in this build. Provide a self-contained .glb or a .gltf whose buffers/images are embedded data URIs.")
-                case .invalidJSON:
-                    throw CADDocumentError(
-                        code: "gltf_invalid_json",
-                        message: "The .gltf source is not valid JSON; the document was not changed.")
-                }
-            }
-            let name = fileName ?? "Imported.\(format)"
+            let displayName = (fileName ?? "Imported").components(separatedBy: "/").last ?? "Imported"
+            let name = displayName.lowercased().hasSuffix(".\(format)") ? displayName : displayName + "." + format
             let plan = try await CADMeshImportService.parseOffMain(
-                data: data, fileName: name, unitScale: unitScale,
-                cancellation: cancellation)
-            return try CADMeshImportService.apply(plan, to: document,
-                                                  cancellation: cancellation)
+                data: data, fileName: name, siblings: siblings, unitScale: unitScale,
+                requireExplicitUnits: true, cancellation: cancellation)
+            return try CADMeshImportService.apply(plan, to: document, cancellation: cancellation)
         } catch let error as CADDocumentError {
             throw error
         } catch is CancellationError {
@@ -1326,7 +1312,8 @@ final class FloeCAD3DBridge {
     /// decoded by `importSpec(from:)` to re-register it after a relaunch).
     static func importArgs(sourcePath: String, format: String, fileName: String?,
                             unitScale: Double?, sourceSHA256: String,
-                            geometryClass: String) -> [String: Any] {
+                            geometryClass: String, resourcePaths: [String: String] = [:],
+                            resourceSHA256: [String: String] = [:]) -> [String: Any] {
         var args: [String: Any] = [
             "sourcePath": sourcePath,
             "format": format,
@@ -1335,6 +1322,11 @@ final class FloeCAD3DBridge {
         ]
         if let fileName { args["fileName"] = fileName }
         if let unitScale { args["unitScale"] = unitScale }
+        if Self.isMeshImportFormat(format) {
+            args["groupVersion"] = 1
+            args["resourcePaths"] = resourcePaths
+            args["resourceSHA256"] = resourceSHA256
+        }
         return args
     }
 
@@ -1526,16 +1518,23 @@ final class FloeCAD3DBridge {
     static func importSpec(from proposal: CADProposalRecord) -> ImportSpec? {
         guard let data = proposal.operationJSON.data(using: .utf8),
               let operation = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
-              operation["op"] as? String == "document.import",
+              let op = operation["op"] as? String,
+              ["document.import", "document.importMeshGroup"].contains(op),
               let args = operation["args"] as? [String: Any],
               let format = args["format"] as? String,
               let sha = args["sourceSHA256"] as? String,
               let sourcePath = args["sourcePath"] as? String else { return nil }
+        let paths = args["resourcePaths"] as? [String: String] ?? [:]
+        let hashes = args["resourceSHA256"] as? [String: String] ?? [:]
+        if op == "document.importMeshGroup" {
+            guard args["groupVersion"] as? Int == 1, args["resourcePaths"] is [String: String],
+                  args["resourceSHA256"] is [String: String], Set(paths.keys) == Set(hashes.keys) else { return nil }
+        }
         return ImportSpec(sourceRelativePath: sourcePath,
                           format: format,
                           fileName: args["fileName"] as? String,
                           unitScale: args["unitScale"] as? Double,
-                          sourceSHA256: sha)
+                          sourceSHA256: sha, resourcePaths: paths, resourceSHA256: hashes)
     }
 
     /// Pending proposals for one document as the interactive banner shows

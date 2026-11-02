@@ -35,6 +35,8 @@ struct RebuildPlan {
     var resolvedSketchSupportUpdates: [SketchID: SketchPlane]
     var resolvedAxisUpdates: [ConstructionAxisID: ResolvedAxisGeometry]
     var resolvedDatumPointUpdates: [DatumPointID: ResolvedDatumPointGeometry]
+    /// M05: re-projected external entities per sketch (affected entities only).
+    var resolvedSketchEntityUpdates: [SketchID: [SketchEntity]]
     var referenceErrors: [AssociativeReferenceKey: AssociativeReferenceError]
     var lastBodyWriters: [BodyID: FeatureID]
 }
@@ -142,6 +144,27 @@ enum RebuildPlanner {
             commands.append(UpdateResolvedDatumPointCommand(
                 pointID: id, before: record.position, after: after.position))
         }
+        // M05: write re-projected external entities back set-by-id, in the
+        // same undo step as the rebuild that justified them. Sketches the
+        // leading commands touched (or that vanished) contribute no `before`
+        // rows; their entities are already authoritative. `before` is built
+        // in `after` order so the comparison is position-aligned.
+        for id in result.resolvedSketchEntityUpdates.keys.sorted(by: { $0.raw.uuidString < $1.raw.uuidString }) {
+            guard let after = result.resolvedSketchEntityUpdates[id], !after.isEmpty,
+                  let sketch = postLeading.sketches.first(where: { $0.id == id }) else { continue }
+            var before: [SketchEntity] = []
+            var complete = true
+            for entity in after {
+                guard let existing = sketch.entities.first(where: { $0.id == entity.id }) else {
+                    complete = false
+                    break
+                }
+                before.append(existing)
+            }
+            guard complete, zip(before, after).contains(where: { $0 != $1 }) else { continue }
+            commands.append(UpdateProjectedSketchEntitiesCommand(
+                sketchID: id, before: before, after: after))
+        }
 
         // Replace bodies that still exist; add ones the graph newly produced.
         // Preserve user-owned metadata the replay doesn't carry.
@@ -218,6 +241,7 @@ enum RebuildPlanner {
             resolvedSketchSupportUpdates: result.resolvedSketchSupportUpdates,
             resolvedAxisUpdates: result.resolvedAxisUpdates,
             resolvedDatumPointUpdates: result.resolvedDatumPointUpdates,
+            resolvedSketchEntityUpdates: result.resolvedSketchEntityUpdates,
             referenceErrors: result.referenceErrors,
             lastBodyWriters: result.lastBodyWriters)
     }

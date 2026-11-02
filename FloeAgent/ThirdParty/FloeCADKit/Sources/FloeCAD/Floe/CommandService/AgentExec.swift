@@ -269,16 +269,10 @@ nonisolated enum AgentExec {
         }
         // Optional units: "mm" | "cm" | "m" | "in" | "ft" (or a numeric
         // "unitScale" in mm per file unit). Absent → the detected unit.
-        var unitScale: Double?
-        if let units = a["units"] as? String {
-            guard let unit = MeshImportUnit.parse(units) else {
-                return .failure(.init(code: "bad_units",
-                                      message: "\"units\" must be one of mm, cm, m, in, ft."))
-            }
-            unitScale = unit.millimetresPerUnit
-        } else if let scale = a["unitScale"] as? Double, scale > 0 {
-            unitScale = scale
-        }
+        let unitScale: Double?
+        do { unitScale = try CADImportUnits.resolve(units: a["units"], scale: a["unitScale"]) }
+        catch let error as CADDocumentError { return .failure(.init(code: error.code, message: error.message)) }
+        catch { return .failure(.init(code: "bad_units", message: error.localizedDescription)) }
         return .success(.importFile(path: path, fileName: a["fileName"] as? String, unitScale: unitScale))
     }
 

@@ -18,6 +18,8 @@ nonisolated enum AssociativeReferenceKey: Codable, Hashable, Sendable {
     case axis(ConstructionAxisID)
     /// M08 associative datum point.
     case datumPoint(DatumPointID)
+    /// One soft external sketch reference, diagnosed per projected entity.
+    case external(SketchID, UUID)
 }
 
 nonisolated enum AssociativeReferenceError: Error, Codable, Equatable, Sendable {
@@ -38,6 +40,7 @@ nonisolated enum AssociativeReferenceError: Error, Codable, Equatable, Sendable 
     case unsupportedAnchorRole(sketch: SketchID, entity: UUID, role: String)
     case invalidHingeAxis(String)
     case degenerateAnchorPoints(String)
+    case externalBroken(SketchID, entity: UUID, reason: SketchExternalReferenceError)
     case invalidDefinition(String)
     case invalidFormula(String)
     // M08 construction axes / datum points.
@@ -103,6 +106,7 @@ nonisolated struct AssociativeDependencyGraph: Sendable {
     /// Writer version each DATUM freezes, regardless of kind. M07 planes and
     /// M08 axes/points share one map so the M26 writer validation is one walk.
     private var versionsByReference: [AssociativeReferenceKey: GeometryVersionRef] = [:]
+    private var versionsBySketch: [SketchID: Set<GeometryVersionRef>] = [:]
     private var definitionPlaneIDs: Set<ConstructionPlaneID> = []
     private var definitionAxisIDs: Set<ConstructionAxisID> = []
     private var definitionPointIDs: Set<DatumPointID> = []
@@ -124,12 +128,27 @@ nonisolated struct AssociativeDependencyGraph: Sendable {
         }
         for sketch in sketches {
             sketchIDs.insert(sketch.id)
-            guard let support = sketch.support else { continue }
-            switch support.source {
-            case let .construction(id): edges[.sketch(sketch.id)] = [.plane(id)]
-            case let .sketch(id): edges[.sketch(sketch.id)] = [.sketch(id)]
-            case .ground, .explicit: break
+            var dependencies: Set<AssociativeReferenceKey> = []
+            if let support = sketch.support {
+                switch support.source {
+                case let .construction(id): dependencies.insert(.plane(id))
+                case let .sketch(id): dependencies.insert(.sketch(id))
+                case .ground, .explicit: break
+                }
             }
+            // M05: a linked projection keeps resolving its frozen source
+            // writer even when nothing consumes the sketch, so deleting or
+            // reordering that writer is diagnosed here exactly like a datum
+            // source (the sketch itself joins the roots in `validationErrors`).
+            if let references = sketch.externalReferences {
+                var versions: Set<GeometryVersionRef> = []
+                for reference in references {
+                    versions.insert(reference.sourceVersion)
+                    dependencies.insert(.feature(reference.sourceVersion.writer))
+                }
+                if !versions.isEmpty { versionsBySketch[sketch.id] = versions }
+            }
+            if !dependencies.isEmpty { edges[.sketch(sketch.id)] = dependencies }
         }
         for plane in planes {
             planeIDs.insert(plane.id)
@@ -230,7 +249,7 @@ nonisolated struct AssociativeDependencyGraph: Sendable {
         edges[.feature(feature), default: []].formUnion(writers.map { .feature($0) })
     }
 
-    func sourceVersions(reachableFrom start: AssociativeReferenceKey) throws -> Set<GeometryVersionRef> {
+    func sourceVersions(reachableFrom start: AssociativeReferenceKey, includingExternal: Bool = true) throws -> Set<GeometryVersionRef> {
         var path: [AssociativeReferenceKey] = []
         var visiting: Set<AssociativeReferenceKey> = []
         var visited: Set<AssociativeReferenceKey> = []
@@ -247,12 +266,22 @@ nonisolated struct AssociativeDependencyGraph: Sendable {
                 guard axisIDs.contains(id) else { throw AssociativeReferenceError.missingAxis(id) }
             case let .datumPoint(id):
                 guard pointIDs.contains(id) else { throw AssociativeReferenceError.missingDatumPoint(id) }
-            case .feature: break
+            case .feature, .external: break
             }
             visiting.insert(key)
             path.append(key)
             if let version = versionsByReference[key] { versions.insert(version) }
-            for next in dependencies(of: key) { try walk(next) }
+            if includingExternal, case let .sketch(id) = key, let refs = versionsBySketch[id] {
+                versions.formUnion(refs)
+            }
+            for next in dependencies(of: key) {
+                if !includingExternal, case let .sketch(id) = key,
+                   case let .feature(writer) = next,
+                   versionsBySketch[id]?.contains(where: { $0.writer == writer }) == true {
+                    continue
+                }
+                try walk(next)
+            }
             path.removeLast()
             visiting.remove(key)
             visited.insert(key)
@@ -275,6 +304,7 @@ nonisolated struct AssociativeDependencyGraph: Sendable {
             .union(definitionPlaneIDs.map { .plane($0) })
             .union(definitionAxisIDs.map { .axis($0) })
             .union(definitionPointIDs.map { .datumPoint($0) })
+            .union(versionsBySketch.keys.map { .sketch($0) })
         for root in roots.sorted(by: { Self.order($0) < Self.order($1) }) {
             var consumerIndex: Int?
             if case let .feature(id) = root {
@@ -287,8 +317,17 @@ nonisolated struct AssociativeDependencyGraph: Sendable {
                     if $0.writer != $1.writer { return $0.writer.raw.uuidString < $1.writer.raw.uuidString }
                     return $0.bodyID.raw.uuidString < $1.bodyID.raw.uuidString
                 }
+                let hardVersions = try sourceVersions(reachableFrom: root, includingExternal: false)
+                let externalVersions = Set(versionsBySketch.values.flatMap { Array($0) })
                 for version in versions {
                     guard let index = indices[version.writer] else {
+                        // M05 external projections are recoverable soft links:
+                        // a genuinely deleted writer leaves frozen entities
+                        // plus per-entity missingWriter diagnostics. A datum or
+                        // any other hard dependency on the same version still
+                        // refuses. Suppression/rollback/order guards below are
+                        // unchanged; hiding a source is not source deletion.
+                        if externalVersions.contains(version), !hardVersions.contains(version) { continue }
                         errors[root] = .missingWriter(version); break
                     }
                     if candidate.nodes[index].suppressed {
@@ -314,6 +353,7 @@ nonisolated struct AssociativeDependencyGraph: Sendable {
         case let .feature(id): return "f:" + id.raw.uuidString
         case let .axis(id): return "a:" + id.raw.uuidString
         case let .datumPoint(id): return "p:" + id.raw.uuidString
+        case let .external(id, entity): return "x:" + id.raw.uuidString + ":" + entity.uuidString
         }
     }
 }
@@ -344,6 +384,7 @@ nonisolated struct AssociativeGeometryResolver: Sendable {
     private(set) var resolvedSketchSupportUpdates: [SketchID: SketchPlane] = [:]
     private(set) var resolvedAxisUpdates: [ConstructionAxisID: ResolvedAxisGeometry] = [:]
     private(set) var resolvedDatumPointUpdates: [DatumPointID: ResolvedDatumPointGeometry] = [:]
+    private(set) var resolvedSketchEntityUpdates: [SketchID: [SketchEntity]] = [:]
     private(set) var referenceErrors: [AssociativeReferenceKey: AssociativeReferenceError] = [:]
 
     init(graph: FeatureGraph, sketches: [Sketch], planes: [ConstructionPlane],
@@ -378,6 +419,11 @@ nonisolated struct AssociativeGeometryResolver: Sendable {
         }
         for point in datumPoints {
             if let version = point.definition?.writerVersion { requested.insert(version) }
+        }
+        for sketch in sketches {
+            for reference in sketch.externalReferences ?? [] {
+                requested.insert(reference.sourceVersion)
+            }
         }
         self.requestedVersions = requested
     }
@@ -428,7 +474,10 @@ nonisolated struct AssociativeGeometryResolver: Sendable {
         var axisHashes: [ConstructionAxisID: UInt64] = [:]
         var firstError: AssociativeReferenceError?
         for id in node.referencedSketchIDs.sorted(by: { $0.raw.uuidString < $1.raw.uuidString }) {
-            guard sketches[id]?.support != nil else { continue }
+            // M05: linked sketches hash through resolution exactly like
+            // supported ones, so a source edit re-runs the consumer.
+            guard sketches[id]?.support != nil || (sketches[id]?.hasExternalReferences ?? false)
+            else { continue }
             do { sketchHashes[id] = try sketch(id).stamp }
             catch {
                 let error = typed(error)
@@ -561,24 +610,71 @@ nonisolated struct AssociativeGeometryResolver: Sendable {
         do {
             try dependencyGraph.checkCycle(from: .sketch(id))
             guard var record = sketches[id] else { throw AssociativeReferenceError.missingSketch(id) }
-            guard let support = record.support else {
-                return ResolvedAssociativeSketch(sketch: record, stamp: EvalFingerprint.hash(record))
+            var resolvedPlaneStamp: UInt64?
+            let hadSupport = record.support != nil
+            if let support = record.support {
+                // Only construction-plane support is a supported creation contract.
+                // Cycle checking happens first, including malformed legacy chains.
+                guard case .construction = support.source else {
+                    throw AssociativeReferenceError.unsupportedSketchSupport(id)
+                }
+                let resolved = try plane(support)
+                record.plane = resolved.plane
+                resolvedPlaneStamp = resolved.stamp
             }
-            // Only construction-plane support is a supported creation contract.
-            // Cycle checking happens first, including malformed legacy chains.
-            guard case .construction = support.source else {
-                throw AssociativeReferenceError.unsupportedSketchSupport(id)
+            // M05: re-project linked external entities against the frozen
+            // source versions and the (possibly resolved) plane. A broken
+            // reference keeps its last entity geometry and is flagged at
+            // `.external(id, entity)`; the other entities still resolve.
+            var externalStamps: [UInt64] = []
+            var updatedEntities: [SketchEntity] = []
+            if let references = record.externalReferences, !references.isEmpty {
+                for reference in references.sorted(by: { $0.entity.uuidString < $1.entity.uuidString }) {
+                    guard record.entities.contains(where: { $0.id == reference.entity }) else { continue }
+                    do {
+                        let snapshot = try version(reference.sourceVersion)
+                        let entity = try Self.projectedEntity(
+                            reference, snapshot: snapshot, plane: record.plane)
+                        externalStamps.append(snapshot.stamp)
+                        if let index = record.entities.firstIndex(where: { $0.id == reference.entity }) {
+                            record.entities[index] = entity
+                        }
+                        updatedEntities.append(entity)
+                    } catch let error as AssociativeReferenceError {
+                        // Version-level failures (missing/suppressed/rolled-
+                        // back/failed writer, forward source) are remembered
+                        // per entity, so one broken projection never hides
+                        // the state of the others.
+                        remember(error, at: .external(id, reference.entity))
+                        externalStamps.append(failureStamp(
+                            key: .external(id, reference.entity), error: error))
+                    } catch {
+                        let reason = (error as? SketchExternalReferenceError)
+                            ?? .nonFiniteValue(error.localizedDescription)
+                        let broken = AssociativeReferenceError.externalBroken(id, entity: reference.entity, reason: reason)
+                        remember(broken, at: .external(id, reference.entity))
+                        // The fingerprint must change when the failure reason
+                        // changes, so a later fix re-runs consumers; the
+                        // entity itself keeps its frozen geometry.
+                        externalStamps.append(failureStamp(key: .external(id, reference.entity), error: broken))
+                    }
+                }
+                if !updatedEntities.isEmpty {
+                    resolvedSketchEntityUpdates[id] = updatedEntities
+                }
             }
-            let resolved = try plane(support)
-            record.plane = resolved.plane
             var f = EvalFingerprint()
-            // Includes local entities/constraints/support but NEVER the stale
+            // Includes local entities/constraints/support (with re-projected
+            // entities replacing the persisted cache) but NEVER a stale
             // persisted cache plane. Replacing it above makes cold/hot equal.
             f.combine(EvalFingerprint.hash(record))
-            f.combine(resolved.stamp)
+            if let resolvedPlaneStamp { f.combine(resolvedPlaneStamp) }
+            for stamp in externalStamps.sorted() { f.combine(stamp) }
             let value = ResolvedAssociativeSketch(sketch: record, stamp: f.value)
             sketchMemo[id] = value
-            resolvedSketchSupportUpdates[id] = resolved.plane
+            if hadSupport {
+                resolvedSketchSupportUpdates[id] = record.plane
+            }
             return value
         } catch {
             let error = typed(error)
@@ -815,7 +911,7 @@ nonisolated struct AssociativeGeometryResolver: Sendable {
             _ = try? plane(PlaneRef(source: .construction(id)))
         }
         for id in sketches.keys.sorted(by: { $0.raw.uuidString < $1.raw.uuidString })
-        where sketches[id]?.support != nil {
+        where sketches[id]?.support != nil || (sketches[id]?.hasExternalReferences ?? false) {
             _ = try? sketch(id)
         }
         for id in axes.keys.sorted(by: { $0.raw.uuidString < $1.raw.uuidString })
@@ -976,6 +1072,53 @@ nonisolated struct AssociativeGeometryResolver: Sendable {
         }
         return SourceAxisGeometry.alongEdge(
             bodyID: version.bodyID, start: d(resolved.start), end: d(resolved.end))
+    }
+
+    /// M05: re-project one linked entity from its frozen source version onto
+    /// the sketch plane. IDENTITY-ONLY: the stored crease name must hit
+    /// exactly one kernel edge of the frozen version — there is deliberately
+    /// no signature/nearest fallback that could silently re-bind the
+    /// projection to a lookalike edge after a topology change.
+    private static func projectedEntity(
+        _ reference: SketchExternalReference,
+        snapshot: GeometryVersionSnapshot,
+        plane: SketchPlane
+    ) throws -> SketchEntity {
+        try reference.validate()
+        let version = reference.sourceVersion
+        guard let brep = snapshot.body.brep else {
+            throw SketchExternalReferenceError.sourceNotExact(version)
+        }
+        guard let name = reference.source.faceNames else {
+            throw SketchExternalReferenceError.missingNamedEdge(version)
+        }
+        // Names resolve in the KERNEL map (the same derivation mint used), so
+        // mint and resolve agree on occurrence ordinals by construction.
+        let adjacency = OCCTKernel.edgeFaceAdjacency(brep)
+        let edgeNames = ElementNaming.edgeNames(adjacency: adjacency, names: snapshot.kernelNames)
+        let matches = edgeNames.filter { $0.value == name }
+        guard matches.count == 1, let index = matches.first?.key else {
+            throw SketchExternalReferenceError.missingNamedEdge(version)
+        }
+        let curves = OCCTKernel.edgeCurves(brep)
+        guard let curve = curves[index], curve.isLine else {
+            throw SketchExternalReferenceError.sourceCurveUnsupported(version)
+        }
+        let transform = snapshot.body.transform
+        guard transform.scale.isFinite, transform.scale > 0 else {
+            throw SketchExternalReferenceError.nonFiniteValue("source body transform")
+        }
+        let worldA = transform.applying(to: curve.start)
+        let worldB = transform.applying(to: curve.end)
+        guard worldA.x.isFinite, worldA.y.isFinite, worldA.z.isFinite,
+              worldB.x.isFinite, worldB.y.isFinite, worldB.z.isFinite else {
+            throw SketchExternalReferenceError.nonFiniteValue("source edge endpoints")
+        }
+        guard let (a, b) = ExternalSketchProjection.project(
+            worldA: worldA, worldB: worldB, onto: plane) else {
+            throw SketchExternalReferenceError.degenerateProjection(version)
+        }
+        return .line(id: reference.entity, a: a, b: b)
     }
 
     private func typed(_ error: Error) -> AssociativeReferenceError {

@@ -34,6 +34,7 @@ public final class CADParameterService {
     public static let actions: [String] = [
         "list", "update", "updateSketchEntity", "deleteSketchEntity",
         "setSketchDimension", "removeSketchDimension",
+        "projectExternalEdges", "detachExternalReferences",
         "feature.suppress", "feature.delete", "feature.move",
         "variable.create", "variable.update", "variable.delete",
         "feature.setExpression",
@@ -70,8 +71,10 @@ public final class CADParameterService {
         case "update": return update(args)
         case "updateSketchEntity": return updateSketchEntity(args)
         case "deleteSketchEntity": return deleteSketchEntity(args)
+        case "detachExternalReferences": return detachExternalReferences(args)
         case "setSketchDimension": return setSketchDimension(args)
         case "removeSketchDimension": return removeSketchDimension(args)
+        case "projectExternalEdges": return projectExternalEdges(args)
         case "feature.suppress": return featureSuppress(args)
         case "feature.delete": return featureDelete(args)
         case "feature.move": return featureMove(args)
@@ -743,6 +746,16 @@ public final class CADParameterService {
                              "Sketch '\(sketch.name)' has no entity \(rawEntity). Query kind=sketches first.")
         }
         let before = sketch.entities[entityIndex]
+        // M05: a linked projection is driven by its source edge — a direct
+        // geometry edit would be overwritten by the next rebuild (or, worse,
+        // bake a lie into the saved sketch). Detach first, then edit.
+        if sketch.externalReference(forEntityID: entityUUID) != nil {
+            return Self.fail(
+                "external_reference",
+                "The \(Self.entityKindName(before)) \(rawEntity) is a linked projection of a "
+                    + "source body edge; its geometry follows the source. Nothing was changed. "
+                    + "Detach it first (detachExternalReferences), then edit the independent geometry.")
+        }
         if let failure = Self.editReferenceFailure(
             entity: before, entityID: entityUUID, sketch: sketch) {
             return Self.fail(failure.code, failure.message)
@@ -841,6 +854,21 @@ public final class CADParameterService {
         }
         let movedEntities = zip(sketch.entities, entitiesToCommit).compactMap { before, after in
             before == after ? nil : (before: before, after: after)
+        }
+        // M05 review (R2): a linked projection is source-driven. If the solved
+        // system can only be satisfied by moving one, the edit is refused —
+        // committing the solver's position would bake geometry the next
+        // rebuild immediately overwrites (an inconsistent undo step). This is
+        // a precise per-entity refusal, not a blanket lock: unrelated local
+        // entities move exactly as the solver requires.
+        if let blocked = movedEntities.first(where: {
+            sketch.externalReference(forEntityID: $0.before.id) != nil
+        }) {
+            return Self.fail(
+                "external_reference",
+                "Satisfying this edit would move \(blocked.before.id.uuidString), a linked projection "
+                    + "driven by its source body edge. Nothing was changed. Detach it first "
+                    + "(detachExternalReferences) if it should become independent geometry.")
         }
         guard !movedEntities.isEmpty || !plan.dimensionUpdates.isEmpty else {
             return Self.fail("no_change",
@@ -1065,6 +1093,342 @@ public final class CADParameterService {
             "shared_references_removed": !sharedConstraints.isEmpty || !sharedDimensions.isEmpty,
             "pattern_link_removed": removedPatternLink.map { $0 as Any } ?? NSNull(),
             "dependent_feature_ids": dependents,
+            "revision": document.revision,
+            "change_count": document.session.changeCount,
+            "can_undo": document.session.undoStack.canUndo,
+            "can_redo": document.session.undoStack.canRedo,
+        ])
+    }
+
+    // MARK: - External projection creation (M05 review R2)
+
+    /// Project explicitly selected CURRENT body edges into a sketch as linked
+    /// external references — the same `AddProjectedSketchEntitiesCommand`
+    /// transaction the Project tool commits, so the model and the UI cannot
+    /// disagree about what a projection is. Edge identity comes from the
+    /// caller's `kind=edges` query: pass its `query_token` (a generation
+    /// proof, never permission) or the rows' current midpoints; an index
+    /// alone is not identity and is refused with `requery_required`.
+    ///
+    /// Every requested edge is validated against the CURRENT frozen source
+    /// snapshot BEFORE any mutation: unknown/unnamed/curved/degenerate edges
+    /// refuse the whole call with a typed code, so an invalid or stale source
+    /// never produces a half-projected sketch. The minted references bind the
+    /// crease NAME (stable across rebuilds), never the positional index.
+    private func projectExternalEdges(_ args: [String: Any]) -> [String: Any] {
+        let allowed: Set<String> = [
+            "action", "revision", "expected_revision",
+            "sketch_id", "sketchID", "sketch",
+            "body_id", "bodyID", "body",
+            "edge_index", "edge_indexes", "edgeIndexes",
+            "query_token", "query_generation_token",
+            "edge_midpoints",
+        ]
+        let unknown = args.keys.filter { !allowed.contains($0) }.sorted()
+        guard unknown.isEmpty else {
+            return Self.fail("unknown_argument",
+                             "Unknown argument(s) \(unknown.joined(separator: ", ")). Allowed: "
+                                + allowed.sorted().joined(separator: ", ") + ".")
+        }
+        guard let rawSketch = CADMaterialService.string(args["sketch_id"])
+            ?? CADMaterialService.string(args["sketchID"])
+            ?? CADMaterialService.string(args["sketch"]),
+              let sketchUUID = UUID(uuidString: rawSketch) else {
+            return Self.fail("missing_sketch",
+                             "projectExternalEdges needs sketch_id (the UUID query kind=sketches returned).")
+        }
+        let sketchID = SketchID(raw: sketchUUID)
+        guard let sketch = document.session.document.sketches.first(where: { $0.id == sketchID }) else {
+            return Self.fail("unknown_sketch", "No sketch \(rawSketch) in this document.")
+        }
+        guard let rawBody = CADMaterialService.string(args["body_id"])
+            ?? CADMaterialService.string(args["bodyID"])
+            ?? CADMaterialService.string(args["body"]),
+              let bodyUUID = UUID(uuidString: rawBody) else {
+            return Self.fail("missing_body",
+                             "projectExternalEdges needs body_id (the UUID query kind=bodies returned).")
+        }
+        // Declared document ownership: only a body the CURRENT document
+        // produced can be a projection source; nothing is borrowed from
+        // another document or invented by the caller.
+        guard let body = document.session.document.bodies.first(where: { $0.id.raw == bodyUUID }) else {
+            return Self.fail("unknown_body",
+                             "No body \(rawBody) in this document. Query kind=bodies first.")
+        }
+
+        // Generation proof (never permission): same convention as
+        // CADStaleReferenceGuard — a current query_token, or the rows'
+        // current midpoints, must prove the indexes still mean what the
+        // caller read. A rebuilt body that reused an index for a different
+        // edge is rejected here, before any snapshot work.
+        let suppliedMidpoints: [[Double]]
+        if let rows = args["edge_midpoints"] as? [[Double]] {
+            suppliedMidpoints = rows
+        } else if let rows = args["edge_midpoints"] as? [[NSNumber]] {
+            suppliedMidpoints = rows.map { $0.map(\.doubleValue) }
+        } else {
+            suppliedMidpoints = []
+        }
+        var generationProof = false
+        if let raw = CADMaterialService.string(args["query_token"])
+            ?? CADMaterialService.string(args["query_generation_token"]), !raw.isEmpty {
+            if let generation = CADGeometryQueryGeneration.parse(raw),
+               generation.scope == "edges",
+               generation.matches(documentRevision: document.revision,
+                                  changeCount: document.session.changeCount,
+                                  bodyID: body.id.raw,
+                                  meshRevision: body.meshRevision) {
+                generationProof = true
+            } else if suppliedMidpoints.isEmpty {
+                return Self.fail(
+                    "requery_required",
+                    "The edges query generation is stale or malformed. Re-query query kind=edges "
+                        + "and pass its current query_token, or pass the rows' current midpoints. "
+                        + "Current change_count \(document.session.changeCount), "
+                        + "mesh_revision \(body.meshRevision).")
+            }
+        }
+        // Index existence alone is not identity (same rule as
+        // CADStaleReferenceGuard): without a current token the caller must
+        // prove each row geometrically with its current midpoint.
+        guard generationProof || !suppliedMidpoints.isEmpty else {
+            return Self.fail(
+                "requery_required",
+                "An index-based projection needs the query generation or the rows' current midpoints. "
+                    + "Re-query query kind=edges, then pass query_token with the current indexes, "
+                    + "or pass edge_midpoints. Index existence alone is not a stable identity.")
+        }
+
+        var indexes: [Int] = []
+        func appendIndex(_ raw: Any?) -> Bool {
+            let value: Int
+            if let text = raw as? String, let parsed = Int(text) { value = parsed }
+            else if let number = raw as? NSNumber,
+                    CFGetTypeID(number) != CFBooleanGetTypeID(),
+                    number.doubleValue.isFinite,
+                    number.doubleValue.rounded() == number.doubleValue,
+                    let exact = Int(exactly: number.doubleValue) { value = exact }
+            else { return false }
+            guard value >= 1 else { return false }
+            indexes.append(value)
+            return true
+        }
+        if let list = args["edge_indexes"] ?? args["edgeIndexes"] {
+            guard let raws = list as? [Any], !raws.isEmpty else {
+                return Self.fail("bad_edge_indexes", "edge_indexes must be a non-empty array of 1-based indices.")
+            }
+            for raw in raws where !appendIndex(raw) {
+                return Self.fail("bad_edge_indexes",
+                                 "edge_indexes must contain 1-based kernel edge indices from query kind=edges.")
+            }
+        } else if args["edge_index"] != nil {
+            guard appendIndex(args["edge_index"]) else {
+                return Self.fail("bad_edge_indexes",
+                                 "edge_index must be a 1-based kernel edge index from query kind=edges.")
+            }
+        } else {
+            return Self.fail("missing_edges",
+                             "projectExternalEdges needs edge_index or edge_indexes from query kind=edges.")
+        }
+        guard Set(indexes).count == indexes.count else {
+            return Self.fail("bad_edge_indexes", "Choose each source edge once.")
+        }
+        // Preserve caller order so every midpoint proves its own edge index.
+        let requested = indexes
+
+        // Current frozen proof: the same two-replay snapshot the UI projects
+        // from. Absent means the body has no evaluable analytic writer in the
+        // current document (or the document is read-only) — no source, no
+        // projection, and the caller is told rather than guessed at.
+        guard let source = document.session.associativeSources(for: [body.id])[body.id] else {
+            return Self.fail("source_unavailable",
+                             "Body '\(body.name)' has no evaluable analytic source in the current document; "
+                                + "only feature-produced exact bodies can be projected. Nothing was changed.")
+        }
+        let snapshot = source.snapshot
+        guard let brep = snapshot.body.brep, !snapshot.kernelNames.isEmpty else {
+            return Self.fail("source_not_exact",
+                             "Body '\(body.name)' has no analytic named geometry to project from.")
+        }
+        let adjacency = OCCTKernel.edgeFaceAdjacency(brep)
+        let edgeNames = ElementNaming.edgeNames(adjacency: adjacency, names: snapshot.kernelNames)
+        let curves = OCCTKernel.edgeCurves(brep)
+
+        // Midpoint geometric proof (only reached when the token was absent
+        // or stale): the CURRENT world midpoints must match the caller's.
+        if !generationProof {
+            guard suppliedMidpoints.count == requested.count,
+                  suppliedMidpoints.allSatisfy({ $0.count == 3 && $0.allSatisfy(\.isFinite) }) else {
+                return Self.fail("stale_edge_ref", "Re-query the selected edges before projecting them.")
+            }
+            let currentMidpoints = OCCTKernel.edgeMidpoints(brep)
+            let tolerance = 0.05
+            for (offset, index) in requested.enumerated() {
+                guard let actual = currentMidpoints[index],
+                      actual.x.isFinite, actual.y.isFinite, actual.z.isFinite else {
+                    return Self.fail("stale_edge_ref", "Re-query the selected edges before projecting them.")
+                }
+                let expected = SIMD3(suppliedMidpoints[offset][0],
+                                     suppliedMidpoints[offset][1],
+                                     suppliedMidpoints[offset][2])
+                if simd_length(actual - expected) > max(tolerance, 1e-4) {
+                    return Self.fail(
+                        "stale_edge_ref",
+                        "Edge \(index) on '\(body.name)' no longer matches the supplied midpoint. "
+                            + "Re-query query kind=edges and use the current index/token.")
+                }
+            }
+        }
+
+        // Validate every requested edge BEFORE any mutation: a named straight
+        // crease that projects finitely onto the sketch plane. Refusals name
+        // the exact edge so the caller can re-query and retry.
+        var selected = Set<EdgeName>()
+        for index in requested {
+            guard let name = edgeNames[index] else {
+                return Self.fail("unknown_edge",
+                                 "Body '\(body.name)' has no named crease at edge index \(index) in the "
+                                    + "current source. Re-query query kind=edges and use current indexes.")
+            }
+            guard sketch.externalReferences?.contains(where: {
+                $0.source.faceNames == name && $0.sourceVersion == source.version
+            }) != true else {
+                return Self.fail("duplicate_projection",
+                                 "Edge \(index) of '\(body.name)' is already projected in sketch '\(sketch.name)'. "
+                                    + "Nothing was changed.")
+            }
+            guard let curve = curves[index], curve.isLine else {
+                return Self.fail("unsupported_curve",
+                                 "Edge \(index) of '\(body.name)' is not a straight line; only exact straight "
+                                    + "creases can be projected as linked references. Nothing was changed.")
+            }
+            let transform = snapshot.body.transform
+            let worldA = transform.applying(to: curve.start)
+            let worldB = transform.applying(to: curve.end)
+            guard worldA.x.isFinite, worldA.y.isFinite, worldA.z.isFinite,
+                  worldB.x.isFinite, worldB.y.isFinite, worldB.z.isFinite,
+                  ExternalSketchProjection.project(worldA: worldA, worldB: worldB,
+                                                   onto: sketch.plane) != nil else {
+                return Self.fail("degenerate_projection",
+                                 "Edge \(index) of '\(body.name)' projects to a point on this sketch plane "
+                                    + "(it is parallel to the plane normal). Nothing was changed.")
+            }
+            selected.insert(name)
+        }
+
+        let linked = ProjectionKit.linked(
+            snapshot: snapshot, version: source.version,
+            onto: sketch.plane, selected: selected)
+        guard linked.entities.count == selected.count else {
+            return Self.fail("internal_mismatch",
+                             "The projection mint did not bind every validated edge; nothing was committed.")
+        }
+        let beforeChangeCount = document.session.changeCount
+        let applied = document.session.performWithSketchRebuild(
+            AddProjectedSketchEntitiesCommand(
+                sketchID: sketchID,
+                entities: linked.entities,
+                references: linked.references,
+                title: "Project"),
+            sketchID: sketchID)
+        guard applied else {
+            return Self.fail("rebuild_refused",
+                             "The projection conflicts with an existing feature; nothing was committed.")
+        }
+        guard document.session.changeCount != beforeChangeCount else {
+            return Self.fail("no_change", "The projection produced no document change.")
+        }
+        return Self.ok([
+            "action": "projectExternalEdges",
+            "mutated": true,
+            "sketch": ["id": sketchID.raw.uuidString, "name": sketch.name],
+            "body": ["id": body.id.raw.uuidString, "name": body.name],
+            "created_entity_ids": linked.entities.map(\.id.uuidString),
+            "external_references": linked.references.count,
+            "revision": document.revision,
+            "change_count": document.session.changeCount,
+            "can_undo": document.session.undoStack.canUndo,
+            "can_redo": document.session.undoStack.canRedo,
+        ])
+    }
+
+    // MARK: - External projection detach (M05)
+
+    /// Detach one or more linked projections by entity id: the lines keep
+    /// their current geometry and become independent sketch geometry. The
+    /// explicit "断开关联" half of the M05 contract — the other half is the
+    /// `external_reference` refusal on `updateSketchEntity` until detached.
+    private func detachExternalReferences(_ args: [String: Any]) -> [String: Any] {
+        let allowed: Set<String> = [
+            "action", "revision", "expected_revision",
+            "sketch_id", "sketchID", "sketch",
+            "entity_id", "entityID", "id", "entity_ids", "entityIDs",
+        ]
+        let unknown = args.keys.filter { !allowed.contains($0) }.sorted()
+        guard unknown.isEmpty else {
+            return Self.fail("unknown_argument",
+                             "Unknown argument(s) \(unknown.joined(separator: ", ")). Allowed: "
+                                + allowed.sorted().joined(separator: ", ") + ".")
+        }
+        guard let rawSketch = CADMaterialService.string(args["sketch_id"])
+            ?? CADMaterialService.string(args["sketchID"])
+            ?? CADMaterialService.string(args["sketch"]),
+              let sketchUUID = UUID(uuidString: rawSketch) else {
+            return Self.fail("missing_sketch",
+                             "detachExternalReferences needs sketch_id (the UUID query kind=sketches returned).")
+        }
+        let sketchID = SketchID(raw: sketchUUID)
+        guard let sketch = document.session.document.sketches.first(where: { $0.id == sketchID }) else {
+            return Self.fail("unknown_sketch",
+                             "No sketch \(rawSketch) in this document. Query kind=sketches first.")
+        }
+        let rawIDs: [String]
+        if let list = args["entity_ids"] as? [String] {
+            rawIDs = list
+        } else if let list = args["entityIDs"] as? [String] {
+            rawIDs = list
+        } else if let single = CADMaterialService.string(args["entity_id"])
+            ?? CADMaterialService.string(args["entityID"])
+            ?? CADMaterialService.string(args["id"]) {
+            rawIDs = [single]
+        } else {
+            rawIDs = []
+        }
+        guard !rawIDs.isEmpty else {
+            return Self.fail("missing_entity",
+                             "detachExternalReferences needs entity_id (or entity_ids) — the linked entity "
+                                + "query kind=sketches returned with external:true.")
+        }
+        var ids: [UUID] = []
+        for raw in rawIDs {
+            guard let uuid = UUID(uuidString: raw) else {
+                return Self.fail("bad_entity", "Entity id '\(raw)' is not a UUID.")
+            }
+            ids.append(uuid)
+        }
+        let linked = ids.filter { sketch.externalReference(forEntityID: $0) != nil }
+        guard !linked.isEmpty else {
+            return Self.fail("no_external_reference",
+                             "None of the given entities is a linked projection in sketch '\(sketch.name)'. "
+                                + "Query kind=sketches lists projected entities with external:true.")
+        }
+        let beforeChangeCount = document.session.changeCount
+        document.session.performWithSketchRebuild(
+            DetachExternalReferencesCommand(
+                sketchID: sketchID,
+                beforeReferences: sketch.externalReferences ?? [],
+                entityIDs: linked),
+            sketchID: sketchID)
+        guard document.session.changeCount != beforeChangeCount else {
+            return Self.fail("no_change", "Detaching the projection produced no document change.")
+        }
+        return Self.ok([
+            "action": "detachExternalReferences",
+            "mutated": true,
+            "sketch": ["id": sketchID.raw.uuidString, "name": sketch.name],
+            "detached_entity_ids": linked.map(\.uuidString),
+            "remaining_external_references": (document.session.document.sketches
+                .first(where: { $0.id == sketchID })?.externalReferences ?? []).count,
             "revision": document.revision,
             "change_count": document.session.changeCount,
             "can_undo": document.session.undoStack.canUndo,
@@ -2586,6 +2950,20 @@ public final class CADParameterService {
         }
         let changedEntities = zip(sketch.entities, solved.entities).compactMap { before, after in
             before == after ? nil : (before: before, after: after)
+        }
+        // M05 review (R2): same source-driven ownership as updateSketchEntity
+        // — a driving dimension whose satisfaction requires moving a linked
+        // projection is refused until that entity is detached. Measuring a
+        // linked entity (a dimension that drives its LOCAL partner) is
+        // ordinary and stays legal: the solver then moves only local geometry.
+        if let blocked = changedEntities.first(where: {
+            sketch.externalReference(forEntityID: $0.before.id) != nil
+        }) {
+            return Self.fail(
+                "external_reference",
+                "The driving \(requestedKind) can only be satisfied by moving \(blocked.before.id.uuidString), "
+                    + "a linked projection driven by its source body edge. Nothing was changed. Detach it "
+                    + "first (detachExternalReferences), or dimension the independent partner.")
         }
 
         let beforeErrors = document.session.lastEvalErrors
@@ -4127,6 +4505,8 @@ public final class CADParameterService {
             case let .feature(id): row["feature_id"] = id.raw.uuidString
             case let .axis(id): row["axis_id"] = id.raw.uuidString
             case let .datumPoint(id): row["point_id"] = id.raw.uuidString
+            case let .external(sketch, entity):
+                row["sketch_id"] = sketch.raw.uuidString; row["entity_id"] = entity.uuidString
             }
             return row
         }

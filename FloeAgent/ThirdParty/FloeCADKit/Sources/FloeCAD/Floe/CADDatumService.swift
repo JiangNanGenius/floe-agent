@@ -390,6 +390,8 @@ public final class CADDatumService {
                 case let .feature(id): row["feature_id"] = id.raw.uuidString
                 case let .axis(id): row["axis_id"] = id.raw.uuidString
                 case let .datumPoint(id): row["point_id"] = id.raw.uuidString
+                case let .external(sketch, entity):
+                    row["sketch_id"] = sketch.raw.uuidString; row["entity_id"] = entity.uuidString
                 }
                 return row
             }
