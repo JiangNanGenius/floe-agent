@@ -15,6 +15,8 @@
 
 import Foundation
 import FloeCore
+import FloeWorkspace
+import FloeAndroidWorkspaceTools
 import FloeModels
 import FloeTools
 import FloeSSH
@@ -205,13 +207,15 @@ public enum C05SFTPBridge {
                 let owner = try owner(object["owner"])
                 let laneID = try requiredUUID(object["laneID"])
                 let path = boundedString(object["path"], C05SFTPWire.maximumPathBytes) ?? ""
+                let offset = int(object["offset"]) ?? 0
+                let limit = clampedInt(object["limit"], 1...C05SFTPWire.maximumPageEntries,
+                                          default: 100)
                 return block(seconds: 30, operation: operation) {
                     try await C05SFTPDomain.shared.list(
                         laneID: laneID,
                         path: path,
-                        offset: int(object["offset"]) ?? 0,
-                        limit: clampedInt(object["limit"], 1...C05SFTPWire.maximumPageEntries,
-                                          default: 100),
+                        offset: offset,
+                        limit: limit,
                         owner: owner
                     )
                 }.map { page in
@@ -250,11 +254,12 @@ public enum C05SFTPBridge {
                 let owner = try owner(object["owner"])
                 let laneID = try requiredUUID(object["laneID"])
                 let path = try requiredString(object["path"], C05SFTPWire.maximumPathBytes)
+                let hashContent = bool(object["hashContent"]) ?? true
                 return block(seconds: 60, operation: operation) {
                     try await C05SFTPDomain.shared.remoteRevision(
                         laneID: laneID,
                         path: path,
-                        hashContent: bool(object["hashContent"]) ?? true,
+                        hashContent: hashContent,
                         owner: owner
                     )
                 }.map { entry in ["entry": entryJSON(entry)] }
@@ -339,13 +344,15 @@ public enum C05SFTPBridge {
                 let laneID = try requiredUUID(object["laneID"])
                 let remotePath = try requiredString(object["remotePath"], C05SFTPWire.maximumPathBytes)
                 let destination = try ownedTarget(object["destination"])
+                let overwrite = bool(object["overwrite"]) ?? false
+                let expectedRevision = boundedString(object["expectedRevision"], 256)
                 return block(seconds: 30, operation: operation) {
                     try await C05SFTPDomain.shared.startDownload(
                         laneID: laneID,
                         remotePath: remotePath,
                         destination: destination,
-                        overwrite: bool(object["overwrite"]) ?? false,
-                        expectedRevision: boundedString(object["expectedRevision"], 256),
+                        overwrite: overwrite,
+                        expectedRevision: expectedRevision,
                         owner: owner
                     )
                 }.map { transfer in ["transfer": transferJSON(transfer)] }
@@ -364,15 +371,19 @@ public enum C05SFTPBridge {
                       total <= Int64(C05SFTPWire.maximumUploadBytes) else {
                     throw C05SFTPError(.fileTooLarge, "invalidUploadSize")
                 }
+                let displayName = boundedString(object["displayName"], 120) ?? "upload"
+                let sha256 = boundedString(object["sha256"], 80)
+                let overwrite = bool(object["overwrite"]) ?? false
+                let expectedRevision = boundedString(object["expectedRevision"], 256)
                 return block(seconds: 20, operation: operation) {
                     try await C05SFTPDomain.shared.startUpload(
                         laneID: laneID,
                         remotePath: remotePath,
-                        displayName: boundedString(object["displayName"], 120) ?? "upload",
+                        displayName: displayName,
                         totalBytes: total,
-                        sha256: boundedString(object["sha256"], 80),
-                        overwrite: bool(object["overwrite"]) ?? false,
-                        expectedRevision: boundedString(object["expectedRevision"], 256),
+                        sha256: sha256,
+                        overwrite: overwrite,
+                        expectedRevision: expectedRevision,
                         owner: owner
                     )
                 }.map { transfer in ["transfer": transferJSON(transfer)] }
@@ -406,10 +417,11 @@ public enum C05SFTPBridge {
             do {
                 let owner = try owner(object["owner"])
                 let transferID = try requiredUUID(object["transferID"])
+                let declaredSHA256 = boundedString(object["sha256"], 80)
                 return block(seconds: 60, operation: operation) {
                     try await C05SFTPDomain.shared.finishUpload(
                         transferID: transferID,
-                        declaredSHA256: boundedString(object["sha256"], 80),
+                        declaredSHA256: declaredSHA256,
                         owner: owner
                     )
                 }.map { transfer in ["transfer": transferJSON(transfer)] }
@@ -746,8 +758,8 @@ public enum C05SFTPBridge {
         return number.intValue
     }
 
-    private static func clampedInt(_ value: Any?, _ range: ClosedRange<Int>, default value: Int) -> Int {
-        guard let number = exactInt(value) else { return value }
+    private static func clampedInt(_ value: Any?, _ range: ClosedRange<Int>, default defaultValue: Int) -> Int {
+        guard let number = exactInt(value) else { return defaultValue }
         return min(range.upperBound, max(range.lowerBound, number))
     }
 

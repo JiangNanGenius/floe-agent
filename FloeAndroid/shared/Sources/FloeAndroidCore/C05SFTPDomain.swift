@@ -1443,7 +1443,7 @@ public actor C05SFTPDomain {
             var hasher = SHA256()
             let total = UInt64(max(Int64(0), transfer.snapshot.totalBytes))
             while offset < total {
-                if Task.isCancelled || transfer.isCancelled { throw C05SFTPError.cancelled }
+                if Task.isCancelled || transfer.isCancelled { throw C05SFTPError(.cancelled) }
                 guard let lane = lanes[laneID], lane.channel.isActive else {
                     throw C05SFTPError(.laneUnavailable, "sftpLaneNotConnected")
                 }

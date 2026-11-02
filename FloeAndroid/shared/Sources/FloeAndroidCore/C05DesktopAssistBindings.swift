@@ -11,6 +11,7 @@
 // on the ordinary `vnc.typeCredential` / `rdp.typeCredential` tool path.
 
 import Foundation
+import CoreFoundation
 import FloeCore
 import FloeModels
 import FloePersistence

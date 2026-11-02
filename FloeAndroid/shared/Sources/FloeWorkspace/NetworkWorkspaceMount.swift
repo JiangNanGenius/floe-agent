@@ -119,6 +119,15 @@ public struct NetworkWorkspaceEntry: Codable, Hashable, Sendable {
     public var byteCount: Int64
     public var modifiedAt: Date?
     public var entityTag: String?
+    public init(name: String, path: String, isDirectory: Bool, byteCount: Int64, modifiedAt: Date?, entityTag: String?) {
+        self.name = name
+        self.path = path
+        self.isDirectory = isDirectory
+        self.byteCount = byteCount
+        self.modifiedAt = modifiedAt
+        self.entityTag = entityTag
+    }
+
 }
 
 public struct NetworkWorkspaceFileMetadata: Codable, Hashable, Sendable {
@@ -127,6 +136,14 @@ public struct NetworkWorkspaceFileMetadata: Codable, Hashable, Sendable {
     public var byteCount: Int64
     public var modifiedAt: Date?
     public var entityTag: String?
+    public init(path: String, isDirectory: Bool, byteCount: Int64, modifiedAt: Date?, entityTag: String?) {
+        self.path = path
+        self.isDirectory = isDirectory
+        self.byteCount = byteCount
+        self.modifiedAt = modifiedAt
+        self.entityTag = entityTag
+    }
+
 }
 
 public enum NetworkWorkspaceErrorCode: String, Codable, Sendable {

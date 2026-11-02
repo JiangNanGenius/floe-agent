@@ -84,7 +84,7 @@ public enum C04FloecadPackage {
     /// Strict native-manifest parser. Unknown keys are ignored so a newer
     /// schema opens read-only; malformed required identities fail closed.
     public static func parseManifest(_ data: Data) throws -> Manifest {
-        guard data.count in 1...C04FloecadPackageLimits.maximumManifestBytes,
+        guard (1...C04FloecadPackageLimits.maximumManifestBytes).contains(data.count),
               let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
               let schema = c04Int(object["schemaVersion"]), schema >= 1, schema <= 1_000,
               let revision = c04Int(object["revision"]), revision >= 0,
@@ -119,7 +119,7 @@ public enum C04FloecadPackage {
     }
 
     public static func parseDocumentHeader(_ data: Data) throws -> DocumentHeader {
-        guard data.count in 1...C04FloecadPackageLimits.maximumDocumentBytes,
+        guard (1...C04FloecadPackageLimits.maximumDocumentBytes).contains(data.count),
               let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
               let bodies = object["bodies"] as? [Any],
               bodies.count <= C04FloecadPackageLimits.maximumBodies else {

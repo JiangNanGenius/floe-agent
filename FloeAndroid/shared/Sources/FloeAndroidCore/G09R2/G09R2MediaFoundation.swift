@@ -18,6 +18,9 @@
 // the bridge answers them with typed `generationUnavailable` /
 // `designTargetUnavailable`, never a fabricated result.
 import Foundation
+#if canImport(Android)
+import Android
+#endif
 import FloeCore
 import FloeAndroidWorkbench
 #if canImport(Darwin)

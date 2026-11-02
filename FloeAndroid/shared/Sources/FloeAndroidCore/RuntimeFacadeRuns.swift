@@ -264,6 +264,8 @@ public struct RunDomainComponents: Sendable {
     /// never permission: the ceiling, runtime authority and native binding
     /// CAS are unchanged. nil keeps every previous launch byte-identical.
     public var mediaTaskContext: (@Sendable (UUID) async -> [String])?
+    /// The generation's original execution target domain, shared with settings and shell routing.
+    public var executionTargets: C02ExecutionTargetProduction.Components?
 
     public init(context: RunIngressContext,
                 durable: RunPersistenceBundle,
@@ -289,7 +291,8 @@ public struct RunDomainComponents: Sendable {
                 notesRuntime: (any NotesRunRuntimeProviding)? = nil,
                 scheduleCompletion: (any G073ScheduleCompletionRecording)? = nil,
                 artifactRootURL: URL? = nil,
-                mediaTaskContext: (@Sendable (UUID) async -> [String])? = nil) {
+                mediaTaskContext: (@Sendable (UUID) async -> [String])? = nil,
+                executionTargets: C02ExecutionTargetProduction.Components? = nil) {
         self.context = context
         self.durable = durable
         self.checkpoints = checkpoints
@@ -313,6 +316,7 @@ public struct RunDomainComponents: Sendable {
         self.scheduleCompletion = scheduleCompletion
         self.artifactRootURL = artifactRootURL
         self.mediaTaskContext = mediaTaskContext
+        self.executionTargets = executionTargets
     }
 }
 

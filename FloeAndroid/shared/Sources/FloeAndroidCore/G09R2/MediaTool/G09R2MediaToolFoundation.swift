@@ -22,6 +22,9 @@
 // legitimate trusted roots derived from the accepted root; a mismatch is a
 // typed refusal, never a guessed storage layer.
 import Foundation
+#if canImport(Android)
+import Android
+#endif
 import FloeCore
 import FloeModels
 import FloePersistence

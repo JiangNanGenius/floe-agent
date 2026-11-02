@@ -288,15 +288,15 @@ public struct CatalogToolExecutor: ToolExecutor {
                 // foreign ownership into this run. Ordinary tools keep the
                 // empty default.
                 outputFiles: output.outputFiles,
-                capturedOutput: output.capturedOutput,
-                capturedOutputTruncated: output.capturedOutputTruncated,
                 // These tools enforce their own bounded JSON pages. A second 4K
                 // cut here destroys the JSON and its continuation cursor.
                 maximumSummaryCharacters: call.toolName == ToolResultPagingTool.name
                     ? ToolResultPagingTool.maximumRenderedBytes :
                     (["notes.read", "notes.search"].contains(call.toolName) ? 196_608 :
                         (["skill.read", "skill.list", "skill.search", "checklist.readPlan", "checklist.updatePlan", "image.models"].contains(call.toolName) ? 262_144 :
-                            (["conversation.search", "conversation.read"].contains(call.toolName) ? 98_304 : 4096)))
+                            (["conversation.search", "conversation.read"].contains(call.toolName) ? 98_304 : 4096))),
+                capturedOutput: output.capturedOutput,
+                capturedOutputTruncated: output.capturedOutputTruncated,
             )
         } catch let error as FloeError where error == .cancelled {
             return ToolResult(callID: call.id, status: .cancelled, outputSummary: "Cancelled", outputDigest: "")

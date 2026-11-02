@@ -919,11 +919,13 @@ public final class G09R2LargeImportService: @unchecked Sendable {
     /// refusal or a fake success.
     nonisolated static func availableBytes(path: String) -> Int64? {
         var best: Int64?
+        #if canImport(Darwin)
         if let values = try? URL(fileURLWithPath: path, isDirectory: true)
             .resourceValues(forKeys: [.volumeAvailableCapacityForImportantUsageKey]),
            let capacity = values.volumeAvailableCapacityForImportantUsage {
             best = capacity
         }
+        #endif
         if let attributes = try? FileManager.default.attributesOfFileSystem(
             forPath: path),
            let free = attributes[.systemFreeSize] as? NSNumber {

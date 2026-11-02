@@ -817,7 +817,7 @@ public actor C02RuntimeOwnedWorkDrainAdapter: C02ExecutionTargetDraining {
         let runs = try await runStore.runs(conversationID: taskID)
             .filter { !terminal.contains($0.state) }.count
         let children = try await childStore.children(conversationID: taskID)
-            .filter { !["completed", "cancelled"].contains($0.state) }.count
+            .filter { !["completed", "cancelled"].contains($0.state.rawValue) }.count
         let jobs = try await jobStore.jobs(conversationID: taskID, limit: 200)
             .filter { $0.state == .queued || $0.state == .running }
         let serviceJobs = jobs.filter { $0.targetTool == "exec.localService" }.count
@@ -1158,17 +1158,6 @@ public enum C02ExecutionTargetProduction {
                 try await C02RuntimeEnvironmentCatalog.read(ownership: ownership)
             })
         let trust = C02RemoteHostTrustAdapter(store: hosts)
-        // The drain adapter needs the remote adapter for session close; build
-        // the adapter first with a mutable holder, then inject it.
-        let holder = C02RemoteAdapterHolder()
-        let drain = C02RuntimeOwnedWorkDrainAdapter(
-            epoch: epoch,
-            database: database,
-            lifecycle: lifecycle,
-            shellSessions: shellSessions,
-            jobOwner: jobOwner,
-            remoteSessions: { await holder.value }
-        )
         let adapter = C02SSHExecutionAdapter(
             hostStore: hosts,
             connectorFactory: { _ in SSHConnectionService(hostStore: hosts) },
@@ -1177,7 +1166,14 @@ public enum C02ExecutionTargetProduction {
             receipts: store,
             liveEpoch: { G02NativeRootEpoch.readback() }
         )
-        holder.value = adapter
+        let drain = C02RuntimeOwnedWorkDrainAdapter(
+            epoch: epoch,
+            database: database,
+            lifecycle: lifecycle,
+            shellSessions: shellSessions,
+            jobOwner: jobOwner,
+            remoteSessions: { adapter }
+        )
         let domain = C02ExecutionTargetDomain(
             epoch: epoch,
             store: store,
@@ -1194,9 +1190,4 @@ public enum C02ExecutionTargetProduction {
         return Components(
             domain: domain, adapter: adapter, bridge: bridge, shellBridge: shellBridge)
     }
-}
-
-private actor C02RemoteAdapterHolder {
-    var value: C02SSHExecutionAdapter?
-    func set(_ adapter: C02SSHExecutionAdapter) { value = adapter }
 }

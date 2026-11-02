@@ -56,6 +56,7 @@ public enum C02ToolResultBridge {
             return failure(.invalidRequest("request"), operation: nil)
         }
         requestID = boundedString(object["requestID"], 256) ?? requestID
+        let responseRequestID = requestID
         let temporary = (object["temporary"] as? Bool) ?? false
         let request = C02ResultRequest(object)
 
@@ -167,7 +168,7 @@ public enum C02ToolResultBridge {
                         message: "The requested offset is outside the retained result.",
                         retryable: false,
                         operation: operation,
-                        requestID: requestID,
+                        requestID: responseRequestID,
                         extra: ["identity": identity, "totalBytes": totalBytes]
                     )
                 case .changed(let identity, let expectedDigest, let actualDigest):
@@ -176,7 +177,7 @@ public enum C02ToolResultBridge {
                         message: "The retained result changed after the first page; restart at offset 0.",
                         retryable: true,
                         operation: operation,
-                        requestID: requestID,
+                        requestID: responseRequestID,
                         extra: [
                             "identity": identity,
                             "expectedSHA256": expectedDigest,
@@ -189,7 +190,7 @@ public enum C02ToolResultBridge {
                         message: reason,
                         retryable: false,
                         operation: operation,
-                        requestID: requestID,
+                        requestID: responseRequestID,
                         extra: ["identity": identity]
                     )
                 }

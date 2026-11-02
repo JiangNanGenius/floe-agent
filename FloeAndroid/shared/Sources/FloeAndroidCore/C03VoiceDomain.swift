@@ -331,7 +331,8 @@ enum C03SpeechEndpoint {
         components.scheme = "https"
         components.host = host
         components.port = base.port
-        var value = base.percentEncodedPath
+        guard let baseComponents = URLComponents(url: base, resolvingAgainstBaseURL: false) else { return nil }
+        var value = baseComponents.percentEncodedPath
         while value.hasSuffix("/") { value.removeLast() }
         if value.hasSuffix(path) {
             components.percentEncodedPath = value
@@ -511,13 +512,13 @@ struct C03CloudASRClient: Sendable {
         }
         let boundary = "floe-c03-\(UUID().uuidString.lowercased())"
         var body = Data()
-        appendField("model", route.remoteModelID, boundary: boundary, to: &body)
+        Self.appendField("model", route.remoteModelID, boundary: boundary, to: &body)
         if let language, !language.isEmpty {
-            appendField("language", String(language.prefix(64)), boundary: boundary, to: &body)
+            Self.appendField("language", String(language.prefix(64)), boundary: boundary, to: &body)
         }
-        appendField("response_format", "verbose_json", boundary: boundary, to: &body)
-        appendField("timestamp_granularities[]", "segment", boundary: boundary, to: &body)
-        appendFile(
+        Self.appendField("response_format", "verbose_json", boundary: boundary, to: &body)
+        Self.appendField("timestamp_granularities[]", "segment", boundary: boundary, to: &body)
+        Self.appendFile(
             field: "file",
             filename: C03CloudASRClient.safeFilename(file.filename),
             mimeType: C03CloudASRClient.safeMimeType(file.mimeType),
@@ -2115,9 +2116,9 @@ public actor C03VoiceDomain {
             operationID: id,
             sourcePath: descriptor.url.path,
             stagingPath: staging.path,
-            sourceBytes: descriptor.byteSize,
+            sourceBytes: Int64(descriptor.byteSize),
             durationSeconds: descriptor.durationSeconds ?? 0,
-            chunkLimitBytes: C03VoiceDomain.maxChunkBytes,
+            chunkLimitBytes: Int64(C03VoiceDomain.maxChunkBytes),
             estimatedChunks: estimated)
     }
 

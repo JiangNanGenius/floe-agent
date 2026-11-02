@@ -299,3 +299,13 @@ Actual production download-source host tests passed 69 cases, including corrupt-
 Full production Kotlin and all Full test sources now compile; the targeted Full updater suite passed 89 tests with zero failures/skips. Play production Kotlin also compiled. Batch corrections align remote/desktop/SFTP DTOs, Notes resource identities, media state/actions, calendar/NFC types, Office recovery/result types and localized resource references with their real services. No assertions were removed to make tests compile.
 
 The resolver regenerated 22 changed lockfiles and additive verification metadata. All 140 newly recorded artifacts were independently read back from their official Google Maven, Maven Central or explicitly allowlisted JitPack origin and matched the candidate hashes; all 873 previously trusted entries were preserved. This is dependency/source evidence, not binary/channel/device acceptance. OpenSSL ARM64 static production has completed; FreeRDP/core native production and the remaining code gaps still block qualified APK delivery.
+
+## 2026-11-02：ARM64 原生集成检查点
+
+主 Core 和 Linux 权限组件现已通过 Swift 6.4.1、Android API 28 的 release 对象编译与链接，保存了实际产物、摘要、精确输入清单和原始编译故障。主 Core 的 LOAD 段对齐为 16 KiB；此结论不代替整个 APK 的所有原生库与安装验收。
+
+修正了共享接口、执行目标的真实组合接线、迁移回执类型、任务取消、平台文件系统接口、日历锁范围及邮件／待办／备份的跨任务值传递。Hub 投影通过序列化字节生成独立返回值，保留原有分页及字节限制。导入文档的复制结果重新核对源摘要，不接受验证后被替换的同尺寸内容。没有通过取消 Swift 并发检查、放宽授权或数据库事务来消除错误。
+
+固定版 OpenSSL／FreeRDP 已生产为实际 ARM64 静态库，检查了全部归档成员架构及真实定义符号。修正构建脚本的编译器路径、版本标记、版本化头文件目录、PIC 和嵌入库符号可见性，保留原始来源与摘要。
+
+当前仍不是全代码收口：新环境的 MCP 依赖自动准备、活动 Linux 环境的新输入传递、手记封面／阅读模式与剩余操作台账尚待完成。实际 APK、三星／平板及公开更新链路尚未验收；没有发布新 Release。

@@ -332,7 +332,7 @@ public enum C05RemoteBridge {
                 let execs = try await C05RemoteDomain.shared.listExecs(sessionID: id, owner: owner)
                 let tunnels = try await C05RemoteDomain.shared.listTunnels(sessionID: id, owner: owner)
                 return SessionStatusBundle(session: session, ptys: ptys, execs: execs, tunnels: tunnels)
-            }.map { value in
+            }.map { (value: SessionStatusBundle) -> [String: Any] in
                 [
                     "session": sessionJSON(value.session),
                     "ptys": value.ptys.map(ptyJSON),
@@ -446,11 +446,13 @@ public enum C05RemoteBridge {
         do {
             let owner = try owner(object["owner"])
             let ptyID = try requiredUUID(object["ptyID"])
+            let cursor = int64(object["cursor"]) ?? 0
+            let maximum = clampedInt(object["maxBytes"], 1...C05RemoteWire.maximumReadBytes, default: 32 * 1_024)
             return block(seconds: 10, operation: operation) {
                 try await C05RemoteDomain.shared.readPTY(
                     ptyID: ptyID,
-                    cursor: int64(object["cursor"]) ?? 0,
-                    maxBytes: clampedInt(object["maxBytes"], 1...C05RemoteWire.maximumReadBytes, default: 32 * 1_024),
+                    cursor: cursor,
+                    maxBytes: maximum,
                     owner: owner
                 )
             }.map { read in
@@ -576,11 +578,13 @@ public enum C05RemoteBridge {
         do {
             let owner = try owner(object["owner"])
             let execID = try requiredUUID(object["execID"])
+            let cursor = int64(object["cursor"]) ?? 0
+            let maximum = clampedInt(object["maxBytes"], 1...C05RemoteWire.maximumReadBytes, default: 32 * 1_024)
             return block(seconds: 10, operation: operation) {
                 try await C05RemoteDomain.shared.readExec(
                     execID: execID,
-                    cursor: int64(object["cursor"]) ?? 0,
-                    maxBytes: clampedInt(object["maxBytes"], 1...C05RemoteWire.maximumReadBytes, default: 32 * 1_024),
+                    cursor: cursor,
+                    maxBytes: maximum,
                     owner: owner
                 )
             }.map { read in
@@ -1092,8 +1096,8 @@ public enum C05RemoteBridge {
         return number.intValue
     }
 
-    private static func clampedInt(_ value: Any?, _ range: ClosedRange<Int>, default value: Int) -> Int {
-        guard let number = exactInt(value) else { return value }
+    private static func clampedInt(_ value: Any?, _ range: ClosedRange<Int>, default defaultValue: Int) -> Int {
+        guard let number = exactInt(value) else { return defaultValue }
         return min(range.upperBound, max(range.lowerBound, number))
     }
 

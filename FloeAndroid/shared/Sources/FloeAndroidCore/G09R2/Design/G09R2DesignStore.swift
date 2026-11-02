@@ -9,6 +9,9 @@
 // decision outbox are the same physical authority the rest of the creative
 // runtime uses.
 import Foundation
+#if canImport(Android)
+import Android
+#endif
 import FloeCore
 #if canImport(Darwin)
 import Darwin

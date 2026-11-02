@@ -717,6 +717,12 @@ let package = Package(
                     "-L", floeRDPPrefix + "/lib",
                     "-L", floeRDPPrefix + "/openssl/lib",
                 ], .when(platforms: [.android])),
+                // These are embedded implementation archives, not a second
+                // public OpenSSL/FreeRDP ABI. Hide their symbols so ARM64
+                // assembly's direct local references remain non-interposable.
+                .unsafeFlags([
+                    "-Xlinker", "--exclude-libs=libcrypto.a:libssl.a:libfreerdp3.a:libwinpr3.a",
+                ], .when(platforms: [.android])),
                 .linkedLibrary("freerdp3", .when(platforms: [.android])),
                 .linkedLibrary("winpr3", .when(platforms: [.android])),
                 .linkedLibrary("ssl", .when(platforms: [.android])),

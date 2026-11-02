@@ -92,7 +92,7 @@ public final class C02TaskContinuityBridge: @unchecked Sendable {
 
         switch operation {
         case "handshake", "continuity.capabilities":
-            return awaitResult(requestID: requestID) {
+            return Self.awaitResult(requestID: requestID) {
                 let storage = await self.storageStatus()
                 return Self.payload([
                     "coreReady": self.epoch > 0,
@@ -112,7 +112,7 @@ public final class C02TaskContinuityBridge: @unchecked Sendable {
                 return failure(.invalidRequest("snapshotRequest"))
             }
             let runID = request.uuid("runID")
-            return awaitResult(requestID: requestID) {
+            return Self.awaitResult(requestID: requestID) {
                 let snapshot = try await self.coordinator.snapshot(
                     taskID: taskID, runID: runID)
                 return Self.snapshotJSON(snapshot)
@@ -124,7 +124,7 @@ public final class C02TaskContinuityBridge: @unchecked Sendable {
                   let runID = request.uuid("runID") else {
                 return failure(.invalidRequest("storageCheckRequest"))
             }
-            return awaitResult(requestID: requestID) {
+            return Self.awaitResult(requestID: requestID) {
                 if let receipt = try await self.coordinator.checkStorage(
                     taskID: taskID, runID: runID) {
                     let snapshot = try await self.coordinator.snapshot(
@@ -158,7 +158,7 @@ public final class C02TaskContinuityBridge: @unchecked Sendable {
                 reason = nil
             }
             let detailCode = request.string("detailCode", maxBytes: 64)
-            return awaitResult(requestID: requestID) {
+            return Self.awaitResult(requestID: requestID) {
                 let receipt: TaskContinuityPauseReceipt
                 if let reason {
                     receipt = try await self.coordinator.pause(
@@ -207,7 +207,7 @@ public final class C02TaskContinuityBridge: @unchecked Sendable {
                 expectedRootEpoch: expectedRootEpoch,
                 expectedTargetRevision: expectedTargetRevision,
                 explicitUserAction: true)
-            return awaitResult(requestID: requestID) {
+            return Self.awaitResult(requestID: requestID) {
                 let outcome = try await self.coordinator.resume(resume)
                 switch outcome {
                 case .accepted(let result, let marker):
@@ -548,9 +548,7 @@ public enum C02TaskContinuityRuntimeHost {
         requestData: Data,
         fallbackRequestID: String?
     ) -> [String: Any] {
-        lock.lock()
-        let value = installed
-        lock.unlock()
+        let value = lock.withLock { installed }
         guard let value else {
             var response: [String: Any] = [
                 "ok": false,
@@ -575,9 +573,7 @@ public enum C02TaskContinuityRuntimeHost {
         runID: UUID?,
         operation: TaskContinuityAdmissionOperation
     ) async -> TaskContinuityAdmission? {
-        lock.lock()
-        let value = installed
-        lock.unlock()
+        let value = lock.withLock { installed }
         guard let value else { return nil }
         return await value.coordinator.admissionDecision(
             taskID: taskID, runID: runID, operation: operation)
@@ -592,9 +588,7 @@ public enum C02TaskContinuityRuntimeHost {
         error: Error
     ) async -> TaskContinuityPauseReceipt? {
         guard let taskID else { return nil }
-        lock.lock()
-        let value = installed
-        lock.unlock()
+        let value = lock.withLock { installed }
         guard let value else { return nil }
         return try? await value.coordinator.noteStorageFailure(
             taskID: taskID, runID: runID, error: error)
@@ -609,9 +603,7 @@ public enum C02TaskContinuityRuntimeHost {
         runID: UUID
     ) async -> TaskContinuityPauseReceipt? {
         guard let taskID else { return nil }
-        lock.lock()
-        let value = installed
-        lock.unlock()
+        let value = lock.withLock { installed }
         guard let value else { return nil }
         return try? await value.coordinator.pause(
             taskID: taskID,

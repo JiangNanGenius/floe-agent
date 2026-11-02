@@ -14,6 +14,9 @@
 // journaled as an idempotent receipt before the response is returned, so a
 // lost reply can be retried without applying the edit twice.
 import Foundation
+#if canImport(Android)
+import Android
+#endif
 import FloeCore
 #if canImport(Darwin)
 import Darwin

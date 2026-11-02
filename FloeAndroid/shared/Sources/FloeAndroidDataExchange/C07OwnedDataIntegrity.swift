@@ -559,7 +559,7 @@ public struct C07MCPServerDefinition: Codable, Sendable, Equatable {
     public func validate() throws {
         guard !displayName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
               displayName.utf8.count <= 256,
-              authenticationMethods.contains(authentication),
+              Self.authenticationMethods.contains(authentication),
               (5.0...120.0).contains(timeoutSeconds) else {
             throw C07DataExchangeError.invalidManifest("mcpDefinition")
         }
@@ -595,14 +595,14 @@ public struct C07MCPServerDefinition: Codable, Sendable, Equatable {
             guard let command, !command.isEmpty, command.utf8.count <= 512,
                   !command.contains("\0"), !command.contains("\n"),
                   !command.contains("\r"),
-                  !containsSecretLike(command) else {
+                  !Self.containsSecretLike(command) else {
                 throw C07DataExchangeError.invalidManifest("mcpCommand")
             }
             guard arguments.count <= 64,
                   arguments.allSatisfy({ $0.utf8.count <= 4_096
                       && !$0.contains("\0") && !$0.contains("\n")
                       && !$0.contains("\r")
-                      && !containsSecretLike($0) }) else {
+                      && !Self.containsSecretLike($0) }) else {
                 throw C07DataExchangeError.invalidManifest("mcpArguments")
             }
             if let workingDirectory {
@@ -612,7 +612,7 @@ public struct C07MCPServerDefinition: Codable, Sendable, Equatable {
                       !workingDirectory.contains("\0"),
                       !workingDirectory.contains("\n"),
                       !workingDirectory.contains("\r"),
-                      !containsSecretLike(workingDirectory) else {
+                      !Self.containsSecretLike(workingDirectory) else {
                     throw C07DataExchangeError.invalidManifest(
                         "mcpWorkingDirectory")
                 }

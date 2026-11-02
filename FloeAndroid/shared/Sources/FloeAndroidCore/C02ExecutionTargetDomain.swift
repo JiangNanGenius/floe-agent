@@ -639,7 +639,7 @@ public protocol C02RemoteHostTrusting: Sendable {
 
 // MARK: - Owned work drain
 
-public struct C02OwnedWorkSummary: Sendable, Equatable, Codable {
+public struct C02OwnedWorkSummary: Sendable, Hashable, Codable {
     public var liveRuns: Int
     public var liveChildRuns: Int
     public var activeJobs: Int
@@ -699,7 +699,7 @@ public struct C02OwnedWorkFence: Sendable, Equatable {
     }
 }
 
-public struct C02DrainReceipt: Sendable, Equatable, Codable {
+public struct C02DrainReceipt: Sendable, Hashable, Codable {
     public var complete: Bool
     public var timedOut: Bool
     public var stoppedRuns: Int

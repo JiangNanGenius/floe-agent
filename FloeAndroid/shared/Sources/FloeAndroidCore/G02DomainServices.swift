@@ -570,6 +570,17 @@ public final class G02InstalledComposition: @unchecked Sendable {
                 }),
             )
 
+        let executionTargets = C02ExecutionTargetProduction.make(
+            epoch: epoch,
+            database: database,
+            storageRoot: URL(fileURLWithPath: cluster.identity.root.path, isDirectory: true),
+            metadata: C02ScheduleMetadataSource(ownership: environmentOwnership),
+            hosts: RemoteHostStore(database: database),
+            credentialResolver: { reference in
+                try await C05ProductionWiring.readCredential(reference)
+            }
+        )
+
         let runComponents = RunDomainComponents(
             context: RunIngressContext(
                 epoch: epoch,
@@ -624,7 +635,8 @@ public final class G02InstalledComposition: @unchecked Sendable {
             // authorizes every call.
             mediaTaskContext: { taskID in
                 await BridgeV5.service.r2MediaTaskContext(taskID: taskID)
-            })
+            },
+            executionTargets: executionTargets)
         RunDomainFacade.install(components: runComponents, registry: gen.registry)
         G073TaskScheduleFacade.install(epoch: epoch, service: scheduleService)
         // Cold-start ordering is enforced by the service: settle occurrences
@@ -800,16 +812,6 @@ public final class G02InstalledComposition: @unchecked Sendable {
         // environment snapshot (not a second registry), RemoteHostStore and
         // the ordinary run-domain deletion/drain lifecycle as a migration
         // fence. The coordinated schema registration is Main-owned.
-        let executionTargets = C02ExecutionTargetProduction.make(
-            epoch: epoch,
-            database: database,
-            storageRoot: URL(fileURLWithPath: cluster.identity.root.path, isDirectory: true),
-            metadata: C02ScheduleMetadataSource(ownership: environmentOwnership),
-            hosts: RemoteHostStore(database: database),
-            credentialResolver: { reference in
-                try await C05ProductionWiring.readCredential(reference)
-            }
-        )
         C02RemoteShellRouting.shared.configure(epoch: epoch) { request in
             await executionTargets.shellBridge.execute(C02RemoteShellRequest(
                 command: request.command,

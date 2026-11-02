@@ -337,7 +337,7 @@ public final class C01ManagedServiceDomain: C01ManagedServiceJobHosting, @unchec
             // An uncertain start may have produced a claimed engine receipt;
             // request its owned stop but never claim it settled here.
             await components.backend.requestStopForSettlement(sessionID: sessionID)
-            if let failed = withSnapshot(jobID: jobID, { snapshot in
+            if let failed = withSnapshot( jobID, { snapshot in
                 snapshot.state = .failed
                 snapshot.detail = "the engine refused the service start"
             }) { await report(context, snapshot: failed) }
@@ -346,7 +346,7 @@ public final class C01ManagedServiceDomain: C01ManagedServiceJobHosting, @unchec
         guard opened.alive else {
             Self.releasePort(port); reserved = false
             await components.backend.closeSession(sessionID: sessionID)
-            if let stopped = withSnapshot(jobID: jobID, { snapshot in
+            if let stopped = withSnapshot( jobID, { snapshot in
                 snapshot.state = .failed
                 snapshot.detail = "the service process exited immediately"
             }) { await report(context, snapshot: stopped) }
@@ -372,7 +372,7 @@ public final class C01ManagedServiceDomain: C01ManagedServiceJobHosting, @unchec
                         stopDeadline = DispatchTime.now().uptimeNanoseconds &+ 90 * 1_000_000_000
                         markStopping(jobID: jobID)
                         await components.backend.requestStopForSettlement(sessionID: sessionID)
-                        if let snapshot = withSnapshot(jobID: jobID, { _ in }) {
+                        if let snapshot = withSnapshot( jobID, { _ in }) {
                             await report(context, snapshot: snapshot)
                         }
                     }
@@ -404,7 +404,7 @@ public final class C01ManagedServiceDomain: C01ManagedServiceJobHosting, @unchec
                 if !result.output.isEmpty {
                     output = Self.boundedTail(output + result.output, cap: outputCap)
                     updateTail(jobID: jobID, output: output)
-                    if let snapshot = withSnapshot(jobID: jobID, { _ in }) {
+                    if let snapshot = withSnapshot( jobID, { _ in }) {
                         await report(context, snapshot: snapshot)
                     }
                 }
@@ -413,7 +413,7 @@ public final class C01ManagedServiceDomain: C01ManagedServiceJobHosting, @unchec
                     await components.backend.closeSession(sessionID: sessionID)
                     revokePreview(jobID: jobID)
                     let neverReady = !becameReady && !stopSent
-                    if let terminal = withSnapshot(jobID: jobID, { snapshot in
+                    if let terminal = withSnapshot( jobID, { snapshot in
                         snapshot.state = neverReady ? .failed : .stopped
                         snapshot.previewURL = nil
                         snapshot.detail = neverReady
@@ -448,7 +448,7 @@ public final class C01ManagedServiceDomain: C01ManagedServiceJobHosting, @unchec
                                 let reporter = readyReporterSnapshot()
                                 await reporter?(jobID, "The managed service is ready at \(url); it keeps running after this reply.")
                             }
-                            if let ready = withSnapshot(jobID: jobID, { snapshot in
+                            if let ready = withSnapshot( jobID, { snapshot in
                                 snapshot.state = .ready
                                 snapshot.previewURL = authorized ? url : nil
                                 snapshot.detail = authorized
@@ -461,7 +461,7 @@ public final class C01ManagedServiceDomain: C01ManagedServiceJobHosting, @unchec
                             lastPreview = nil
                             revokePreview(jobID: jobID)
                         }
-                        if let starting = withSnapshot(jobID: jobID, { snapshot in
+                        if let starting = withSnapshot( jobID, { snapshot in
                             snapshot.state = .running
                             snapshot.previewURL = nil
                             snapshot.detail = "process is running; the owned listener is not proven yet"
@@ -471,7 +471,7 @@ public final class C01ManagedServiceDomain: C01ManagedServiceJobHosting, @unchec
                             lastPreview = nil
                             revokePreview(jobID: jobID)
                         }
-                        if let unknown = withSnapshot(jobID: jobID, { snapshot in
+                        if let unknown = withSnapshot( jobID, { snapshot in
                             snapshot.state = .running
                             snapshot.previewURL = nil
                             snapshot.detail = "readiness unverified: \(detail)"
@@ -492,7 +492,7 @@ public final class C01ManagedServiceDomain: C01ManagedServiceJobHosting, @unchec
             // session is proven gone, so the probe will refuse it next time.
             if reserved { Self.releasePort(port); reserved = false }
             revokePreview(jobID: jobID)
-            if let failed = withSnapshot(jobID: jobID, { snapshot in
+            if let failed = withSnapshot( jobID, { snapshot in
                 snapshot.state = .failed
                 snapshot.previewURL = nil
                 snapshot.detail = "service processor ended without a clean terminal"

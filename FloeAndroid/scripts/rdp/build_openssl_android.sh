@@ -43,7 +43,7 @@ export ANDROID_NDK_HOME="$ndk"
   cd "$source_dir"
   export PATH="$ndk/toolchains/llvm/prebuilt/$(uname -s | tr '[:upper:]' '[:lower:]')-x86_64/bin:$PATH"
   ./Configure "$host_tag" \
-      -D__ANDROID_API__=28 \
+      -D__ANDROID_API__=28 -fPIC \
       no-shared no-tests no-apps no-docs no-module \
       --prefix="$prefix" \
       --openssldir="$prefix/ssl"

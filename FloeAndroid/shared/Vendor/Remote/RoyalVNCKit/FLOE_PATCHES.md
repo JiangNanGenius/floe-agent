@@ -27,6 +27,7 @@ All remaining sources are compiled in Swift 5 language mode. Android uses
    * bounded non-blocking connect (`poll` + `SO_ERROR`, 15 s) so a
      black-holed LAN endpoint returns `timedOut` instead of the OS connect
      timeout;
+   * import full Foundation for the lifecycle lock on Android;
    * one-shot `shutdown()`/`closeSocket()` used by cancel, avoiding a double
      close and interrupting a blocked `recv()`.
 2. `Network/SocketNetworkConnection.swift`
@@ -36,7 +37,8 @@ All remaining sources are compiled in Swift 5 language mode. Android uses
      non-negative count as complete);
    * real `cancel()` that marks cancelled, shuts down the socket and posts
      `.cancelled`;
-   * lock-protected status/handler and checked socket lifetime.
+   * lock-protected status/handler and checked socket lifetime;
+   * import full Foundation because FoundationEssentials does not export NSLock.
 3. `SDK/Connection/VNCConnection+Handshake.swift`
    * security-type preference is `.none` → `.vnc` → `.tight` →
      `.diffieHellman` → `.ultraVNCMSLogonII`. Apple Remote Desktop asks for

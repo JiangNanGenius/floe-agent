@@ -15,6 +15,9 @@
 // commit through `addAsset` + the existing command path.
 
 import Foundation
+#if canImport(Android)
+import Android
+#endif
 import FloeCore
 import FloeAndroidWorkbench
 #if canImport(Darwin)
@@ -90,12 +93,12 @@ public enum C03LayerOperationPlanner {
             }
             let command = MediaEditCommand.fillSelection(
                 colorHex: colorHex, opacity: opacity, name: name)
-            try validate(command, in: project)
+            try validate([command], in: project)
             return C03PlannedLayerOperation(commands: [command])
 
         case .cutSelection(let layerID):
             let command = MediaEditCommand.cutSelection(layerID: layerID)
-            try validate(command, in: project)
+            try validate([command], in: project)
             return C03PlannedLayerOperation(commands: [command])
 
         case .copySelection(let sourceLayerID, let name):

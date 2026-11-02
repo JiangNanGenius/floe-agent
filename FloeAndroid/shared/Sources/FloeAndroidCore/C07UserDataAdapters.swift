@@ -223,7 +223,7 @@ public enum C07UserDataAdapters {
                 WHERE kind = ? AND workspace_id IS ?
                 """,
             arguments: [
-                DatabaseValue(string: kind),
+                DatabaseValue(value: kind),
                 c07DatabaseValue(workspaceValue),
             ]) ?? 0
         var stored = values
@@ -236,7 +236,7 @@ public enum C07UserDataAdapters {
                     WHERE kind = ? AND workspace_id IS ? AND is_active = 1
                     """,
                 arguments: [
-                    DatabaseValue(string: kind),
+                    DatabaseValue(value: kind),
                     c07DatabaseValue(workspaceValue),
                 ]) ?? 0
             if activeCount > 0 {

@@ -785,9 +785,9 @@ final class C05Exec: @unchecked Sendable {
                 for try await event in handle.events {
                     switch event {
                     case .stdout(let data):
-                        self?.note(.stdout, data, ring: ring)
+                        self?.note("stdout", data, ring: ring)
                     case .stderr(let data):
-                        self?.note(.stderr, data, ring: ring)
+                        self?.note("stderr", data, ring: ring)
                     case .exited(let code):
                         self?.noteExit(code)
                         self?.finish(.exited, exitCode: code)
@@ -916,9 +916,7 @@ final class C05Tunnel: @unchecked Sendable {
     func close() async {
         beginClose()
         _ = await closeTask?.value
-        stateLock.lock()
-        state = .closed
-        stateLock.unlock()
+        stateLock.withLock { state = .closed }
     }
 
     var snapshot: C05TunnelSnapshot {

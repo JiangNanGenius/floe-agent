@@ -339,10 +339,14 @@ public actor C06TodoStore: C06TodoStoring {
 
     public init(database: DatabaseManager) {
         self.database = database
-        let formatter = ISO8601DateFormatter()
-        formatter.formatOptions = [.withInternetDateTime]
-        formatter.timeZone = TimeZone(secondsFromGMT: 0)
-        self.formatter = formatter
+        self.formatter = Self.makeFormatter()
+    }
+
+    private nonisolated static func makeFormatter() -> ISO8601DateFormatter {
+        let value = ISO8601DateFormatter()
+        value.formatOptions = [.withInternetDateTime]
+        value.timeZone = TimeZone(secondsFromGMT: 0)
+        return value
     }
 
     public func schemaReady() async throws -> Bool {
@@ -370,7 +374,7 @@ public actor C06TodoStore: C06TodoStoring {
                     LIMIT ? OFFSET ?
                     """,
                 arguments: [includeCompleted ? 1 : 0, boundedLimit, boundedOffset]
-            ).map { try Self.decode($0, formatter: formatter) }
+            ).map { try Self.decode($0, formatter: Self.makeFormatter()) }
             return (rows, total)
         }
     }
@@ -382,7 +386,7 @@ public actor C06TodoStore: C06TodoStoring {
                 sql: "SELECT * FROM \(C06TodoWire.table) WHERE id = ?",
                 arguments: [id.uuidString.lowercased()]
             ) else { return nil }
-            return try Self.decode(row, formatter: formatter)
+            return try Self.decode(row, formatter: Self.makeFormatter())
         }
     }
 
@@ -399,7 +403,7 @@ public actor C06TodoStore: C06TodoStoring {
                         created_at, updated_at
                     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
-                arguments: StatementArguments(Self.arguments(record, formatter: formatter))
+                arguments: StatementArguments(Self.arguments(record, formatter: Self.makeFormatter()))
             )
         }
     }
@@ -434,6 +438,7 @@ public actor C06TodoStore: C06TodoStoring {
             updated.id.uuidString.lowercased(),
             expectedRevision,
         ]
+        let sqlArguments = StatementArguments(values)
         let changed = try await database.writer { db -> Int in
             try db.execute(
                 sql: """
@@ -447,7 +452,7 @@ public actor C06TodoStore: C06TodoStoring {
                         created_at = ?, updated_at = ?
                     WHERE id = ? AND revision = ?
                     """,
-                arguments: StatementArguments(values)
+                arguments: sqlArguments
             )
             return db.changesCount
         }
@@ -464,6 +469,7 @@ public actor C06TodoStore: C06TodoStoring {
             id.uuidString.lowercased(),
             expectedRevision,
         ]
+        let sqlArguments = StatementArguments(values)
         let changed = try await database.writer { db -> Int in
             try db.execute(
                 sql: """
@@ -471,7 +477,7 @@ public actor C06TodoStore: C06TodoStoring {
                         completed = ?, completed_at = ?, revision = revision + 1, updated_at = ?
                     WHERE id = ? AND revision = ?
                     """,
-                arguments: StatementArguments(values)
+                arguments: sqlArguments
             )
             return db.changesCount
         }
@@ -507,13 +513,14 @@ public actor C06TodoStore: C06TodoStoring {
                     LIMIT ?
                     """,
                 arguments: [bounded]
-            ).map { try Self.decode($0, formatter: formatter) }
+            ).map { try Self.decode($0, formatter: Self.makeFormatter()) }
         }
     }
 
     /// Idempotent occurrence stamp. A second delivery for the same occurrence
     /// changes zero rows and is reported as already shown.
     public func markReminderShown(id: UUID, occurrenceKey: String, at: Date) async throws -> Bool {
+        let timestamp = formatter.string(from: at)
         let changed = try await database.writer { db -> Int in
             try db.execute(
                 sql: """
@@ -522,7 +529,7 @@ public actor C06TodoStore: C06TodoStoring {
                     WHERE id = ?
                       AND (last_reminder_occurrence IS NULL OR last_reminder_occurrence <> ?)
                     """,
-                arguments: [formatter.string(from: at), occurrenceKey,
+                arguments: [timestamp, occurrenceKey,
                             id.uuidString.lowercased(), occurrenceKey]
             )
             return db.changesCount

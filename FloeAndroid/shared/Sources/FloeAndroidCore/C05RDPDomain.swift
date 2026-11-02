@@ -722,7 +722,7 @@ public actor C05RDPDomain {
         do {
             detail = try await profiles.profileDetail(id: profileID, owner: owner)
         } catch let error as C05RemoteError {
-            throw map(error)
+            throw Self.map(error)
         }
         let stored = try store(epoch: owner.nativeEpoch).load()
             .filter { $0.profileID == profileID }
@@ -758,7 +758,7 @@ public actor C05RDPDomain {
             do {
                 original = try await profiles.profileDetail(id: requested, owner: owner)
             } catch let error as C05RemoteError {
-                throw map(error)
+                throw Self.map(error)
             }
             profileID = requested
         } else {
@@ -780,7 +780,7 @@ public actor C05RDPDomain {
             do {
                 original = try await profiles.saveProfile(created, owner: owner)
             } catch let error as C05RemoteError {
-                throw map(error)
+                throw Self.map(error)
             }
             profileID = created.id
         }
@@ -867,7 +867,7 @@ public actor C05RDPDomain {
         do {
             detail = try await profiles.profileDetail(id: profileID, owner: owner)
         } catch let error as C05RemoteError {
-            throw map(error)
+            throw Self.map(error)
         }
         guard detail.summary.auth.kind == "none",
               detail.vncEndpoints.isEmpty,
@@ -900,7 +900,7 @@ public actor C05RDPDomain {
         do {
             try await credentialWriter(opaque, mutable)
         } catch let error as C05RemoteError {
-            throw map(error)
+            throw Self.map(error)
         } catch {
             throw C05RDPError(.gatewayUnavailable, "credentialWriteFailed", retryable: true)
         }
@@ -919,7 +919,7 @@ public actor C05RDPDomain {
         do {
             return try await credentialReader(opaque) != nil
         } catch let error as C05RemoteError {
-            throw map(error)
+            throw Self.map(error)
         } catch {
             throw C05RDPError(.gatewayUnavailable, "credentialReadFailed", retryable: true)
         }
@@ -934,7 +934,7 @@ public actor C05RDPDomain {
         do {
             try await credentialDeleter(opaque)
         } catch let error as C05RemoteError {
-            throw map(error)
+            throw Self.map(error)
         } catch {
             throw C05RDPError(.gatewayUnavailable, "credentialDeleteFailed", retryable: true)
         }
@@ -1041,7 +1041,7 @@ public actor C05RDPDomain {
         do {
             detail = try await profiles.profileDetail(id: profileID, owner: owner)
         } catch let error as C05RemoteError {
-            throw map(error)
+            throw Self.map(error)
         }
         guard (1...65535).contains(endpoint.port) else {
             throw C05RDPError(.invalidProfile, "invalidRDPPort")
@@ -1337,7 +1337,7 @@ public actor C05RDPDomain {
         do {
             data = try await credentialReader(opaque)
         } catch let error as C05RemoteError {
-            throw map(error)
+            throw Self.map(error)
         } catch {
             throw C05RDPError(.gatewayUnavailable, "credentialReadFailed", retryable: true)
         }
@@ -1615,7 +1615,7 @@ public actor C05RDPDomain {
         let code: C05RDPErrorCode
         switch failure.category {
         case .configurationMissing, .runtimeUnavailable: code = .runtimeUnavailable
-        case .credentialMissing, .credentialInvalid: code = .credentialMissing
+        case .credentialMissing: code = .credentialMissing
         case .authenticationFailed: code = .authenticationFailed
         case .certificateRequired, .certificateRejected: code = .certificateConfirmationRequired
         case .networkUnreachable: code = .networkUnreachable

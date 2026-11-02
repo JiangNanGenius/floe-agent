@@ -448,7 +448,7 @@ public enum C05RDPBridge {
             }
             var secret = data
             defer { secret.resetBytes(in: 0..<secret.count) }
-            return run(seconds: 20, operation: operation) {
+            return run(seconds: 20, operation: operation) { [secret] in
                 try await C05RDPDomain.shared.saveCredential(
                     account: reference.keychainAccount,
                     synchronizable: reference.synchronizable,
@@ -750,11 +750,11 @@ public enum C05RDPBridge {
     private static func profileDraft(_ value: Any?) throws -> C05RDPProfileDraft {
         guard let object = value as? [String: Any],
               let displayName = boundedString(object["displayName"], 128),
-              let deviceKind = boundedString(object["deviceKind"], 32) ?? "unspecified",
               let rawEndpoints = object["endpoints"] as? [Any],
               (1...C05RDPWire.maximumEndpointsPerProfile).contains(rawEndpoints.count) else {
             throw C05RDPError(.invalidProfile, "invalidProfile")
         }
+        let deviceKind = boundedString(object["deviceKind"], 32) ?? "unspecified"
         let id = try optionalUUID(object["id"])
         var endpoints: [C05RDPEndpointDraft] = []
         endpoints.reserveCapacity(rawEndpoints.count)

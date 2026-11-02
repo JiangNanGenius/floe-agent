@@ -667,10 +667,12 @@ public final class SSHSessionHandle: SSHSessionTransport, @unchecked Sendable {
     }
 
     public func close() async {
-        closeLock.lock()
-        guard !closed else { closeLock.unlock(); return }
-        closed = true
-        closeLock.unlock()
+        let shouldClose = closeLock.withLock {
+            guard !closed else { return false }
+            closed = true
+            return true
+        }
+        guard shouldClose else { return }
         for client in clients.reversed() {
             try? await client.close()
         }
@@ -808,10 +810,12 @@ public final class SSHByteChannel: SSHSessionByteChannel, @unchecked Sendable {
     }
 
     public func close() async {
-        lock.lock()
-        guard !closed else { lock.unlock(); return }
-        closed = true
-        lock.unlock()
+        let shouldClose = lock.withLock {
+            guard !closed else { return false }
+            closed = true
+            return true
+        }
+        guard shouldClose else { return }
         try? await channel.close()
         continuation.finish()
     }

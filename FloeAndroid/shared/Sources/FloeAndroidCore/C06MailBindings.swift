@@ -40,13 +40,13 @@ private final class C06MailBridgeDomainBox: @unchecked Sendable {
 
 // MARK: - Small JSON helpers
 
-private func c06String(_ value: Any?, maxBytes: Int) -> String? {
+private func c06MailString(_ value: Any?, maxBytes: Int) -> String? {
     guard let text = value as? String, !text.isEmpty,
           text.utf8.count <= maxBytes else { return nil }
     return text
 }
 
-private func c06Int(_ value: Any?) -> Int? {
+private func c06MailInt(_ value: Any?) -> Int? {
     guard let number = value as? NSNumber else { return nil }
     let double = number.doubleValue
     guard double.isFinite, double.rounded(.towardZero) == double,
@@ -224,12 +224,12 @@ public enum C06MailBridge {
             return fail(C06MailError(.invalidRequest, "requestTooLarge"), operation: nil)
         }
         guard let object = (try? JSONSerialization.jsonObject(with: requestData)) as? [String: Any],
-              let version = c06Int(object["version"]),
+              let version = c06MailInt(object["version"]),
               version == BridgeV12.version,
-              let operation = c06String(object["operation"], maxBytes: 64) else {
+              let operation = c06MailString(object["operation"], maxBytes: 64) else {
             return fail(C06MailError(.invalidRequest, "invalidRequest"), operation: nil)
         }
-        requestID = c06String(object["requestID"], maxBytes: 256) ?? requestID
+        requestID = c06MailString(object["requestID"], maxBytes: 256) ?? requestID
 
         do {
             switch operation {
@@ -324,10 +324,10 @@ public enum C06MailBridge {
                 guard let id = c06UUID(object["accountID"]) else {
                     throw C06MailError(.invalidRequest, "invalidAccountID")
                 }
-                let folder = c06String(object["folder"], maxBytes: 1024) ?? "INBOX"
+                let folder = c06MailString(object["folder"], maxBytes: 1024) ?? "INBOX"
                 let afterUID = c06UInt32(object["afterUID"]) ?? 0
-                let limit = c06Int(object["limit"]) ?? 20
-                let before = c06String(object["beforeMessageID"], maxBytes: 70)
+                let limit = c06MailInt(object["limit"]) ?? 20
+                let before = c06MailString(object["beforeMessageID"], maxBytes: 70)
                 let result = block(seconds: 60, operation: operation) {
                     try await domain.list(
                         accountID: id,
@@ -346,18 +346,18 @@ public enum C06MailBridge {
                     throw C06MailError(.invalidRequest, "invalidAccountID")
                 }
                 let criteria = MailSearchCriteria(
-                    from: c06String(object["from"], maxBytes: 256),
-                    to: c06String(object["to"], maxBytes: 256),
-                    subject: c06String(object["subject"], maxBytes: 256),
-                    text: c06String(object["text"], maxBytes: 256),
+                    from: c06MailString(object["from"], maxBytes: 256),
+                    to: c06MailString(object["to"], maxBytes: 256),
+                    subject: c06MailString(object["subject"], maxBytes: 256),
+                    text: c06MailString(object["text"], maxBytes: 256),
                     seen: c06Bool(object["seen"]),
                     flagged: c06Bool(object["flagged"]),
                     since: try c06Date(object["since"]),
                     until: try c06Date(object["before"])
                 )
-                let folder = c06String(object["folder"], maxBytes: 1024) ?? "INBOX"
-                let limit = c06Int(object["limit"]) ?? 20
-                let cursor = c06String(object["cursor"], maxBytes: 2048)
+                let folder = c06MailString(object["folder"], maxBytes: 1024) ?? "INBOX"
+                let limit = c06MailInt(object["limit"]) ?? 20
+                let cursor = c06MailString(object["cursor"], maxBytes: 2048)
                 let result = block(seconds: 60, operation: operation) {
                     try await domain.search(
                         accountID: id,
@@ -375,12 +375,12 @@ public enum C06MailBridge {
             case "c06.message":
                 let owner = try parseOwner(object)
                 guard let id = c06UUID(object["accountID"]),
-                      let messageID = c06String(object["messageID"], maxBytes: 70) else {
+                      let messageID = c06MailString(object["messageID"], maxBytes: 70) else {
                     throw C06MailError(.invalidRequest, "invalidMessageArguments")
                 }
-                let folder = c06String(object["folder"], maxBytes: 1024) ?? "INBOX"
-                let version = c06String(object["mailboxVersion"], maxBytes: 70)
-                let cursor = c06String(object["bodyCursor"], maxBytes: 2048)
+                let folder = c06MailString(object["folder"], maxBytes: 1024) ?? "INBOX"
+                let version = c06MailString(object["mailboxVersion"], maxBytes: 70)
+                let cursor = c06MailString(object["bodyCursor"], maxBytes: 2048)
                 let result = block(seconds: 60, operation: operation) {
                     try await domain.messagePage(
                         accountID: id,
@@ -398,17 +398,19 @@ public enum C06MailBridge {
             case "c06.attachment.open":
                 let owner = try parseOwner(object)
                 guard let id = c06UUID(object["accountID"]),
-                      let messageID = c06String(object["messageID"], maxBytes: 70),
-                      let sha = c06String(object["messageSHA256"], maxBytes: 64),
-                      let index = c06Int(object["attachmentIndex"]) else {
+                      let messageID = c06MailString(object["messageID"], maxBytes: 70),
+                      let sha = c06MailString(object["messageSHA256"], maxBytes: 64),
+                      let index = c06MailInt(object["attachmentIndex"]) else {
                     throw C06MailError(.invalidRequest, "invalidAttachmentArguments")
                 }
+                let folder = c06MailString(object["folder"], maxBytes: 1024) ?? "INBOX"
+                let mailboxVersion = c06MailString(object["mailboxVersion"], maxBytes: 70)
                 let result = block(seconds: 60, operation: operation) {
                     try await domain.openAttachment(
                         accountID: id,
-                        folder: c06String(object["folder"], maxBytes: 1024) ?? "INBOX",
+                        folder: folder,
                         messageID: messageID,
-                        mailboxVersion: c06String(object["mailboxVersion"], maxBytes: 70),
+                        mailboxVersion: mailboxVersion,
                         messageSHA256: sha,
                         attachmentIndex: index,
                         owner: owner
@@ -425,9 +427,9 @@ public enum C06MailBridge {
 
             case "c06.attachment.read":
                 let owner = try parseOwner(object)
-                guard let handle = c06String(object["handle"], maxBytes: 64),
-                      let offset = c06Int(object["offset"]),
-                      let length = c06Int(object["length"]) else {
+                guard let handle = c06MailString(object["handle"], maxBytes: 64),
+                      let offset = c06MailInt(object["offset"]),
+                      let length = c06MailInt(object["length"]) else {
                     throw C06MailError(.invalidRequest, "invalidAttachmentChunk")
                 }
                 let result = block(seconds: 15, operation: operation) {
@@ -453,7 +455,7 @@ public enum C06MailBridge {
 
             case "c06.attachment.close":
                 let owner = try parseOwner(object)
-                guard let handle = c06String(object["handle"], maxBytes: 64) else {
+                guard let handle = c06MailString(object["handle"], maxBytes: 64) else {
                     throw C06MailError(.invalidRequest, "invalidAttachmentHandle")
                 }
                 let result = block(seconds: 5, operation: operation) {
@@ -465,9 +467,9 @@ public enum C06MailBridge {
             case "c06.draft.begin":
                 let owner = try parseOwner(object)
                 guard let accountID = c06UUID(object["accountID"]),
-                      let filename = c06String(object["filename"], maxBytes: 180),
-                      let byteCount = c06Int(object["byteCount"]),
-                      let sha = c06String(object["sha256"], maxBytes: 64) else {
+                      let filename = c06MailString(object["filename"], maxBytes: 180),
+                      let byteCount = c06MailInt(object["byteCount"]),
+                      let sha = c06MailString(object["sha256"], maxBytes: 64) else {
                     throw C06MailError(.invalidRequest, "invalidDraftAttachment")
                 }
                 let result = block(seconds: 10, operation: operation) {
@@ -490,9 +492,9 @@ public enum C06MailBridge {
 
             case "c06.draft.write":
                 let owner = try parseOwner(object)
-                guard let handle = c06String(object["handle"], maxBytes: 64),
-                      let offset = c06Int(object["offset"]),
-                      let encoded = c06String(object["dataBase64"], maxBytes: 40_000),
+                guard let handle = c06MailString(object["handle"], maxBytes: 64),
+                      let offset = c06MailInt(object["offset"]),
+                      let encoded = c06MailString(object["dataBase64"], maxBytes: 40_000),
                       let data = Data(base64Encoded: encoded),
                       data.count <= C06MailWire.maximumChunkBytes else {
                     throw C06MailError(.invalidRequest, "invalidDraftChunk")
@@ -510,7 +512,7 @@ public enum C06MailBridge {
 
             case "c06.draft.finish":
                 let owner = try parseOwner(object)
-                guard let handle = c06String(object["handle"], maxBytes: 64) else {
+                guard let handle = c06MailString(object["handle"], maxBytes: 64) else {
                     throw C06MailError(.invalidRequest, "invalidDraftHandle")
                 }
                 let result = block(seconds: 15, operation: operation) {
@@ -527,7 +529,7 @@ public enum C06MailBridge {
 
             case "c06.draft.discard":
                 let owner = try parseOwner(object)
-                guard let handle = c06String(object["handle"], maxBytes: 64) else {
+                guard let handle = c06MailString(object["handle"], maxBytes: 64) else {
                     throw C06MailError(.invalidRequest, "invalidDraftHandle")
                 }
                 let result = block(seconds: 5, operation: operation) {
@@ -539,9 +541,9 @@ public enum C06MailBridge {
             case "c06.setRead":
                 let owner = try parseOwner(object)
                 guard let id = c06UUID(object["accountID"]),
-                      let messageID = c06String(object["messageID"], maxBytes: 70),
-                      let folder = c06String(object["folder"], maxBytes: 1024),
-                      let version = c06String(object["mailboxVersion"], maxBytes: 70),
+                      let messageID = c06MailString(object["messageID"], maxBytes: 70),
+                      let folder = c06MailString(object["folder"], maxBytes: 1024),
+                      let version = c06MailString(object["mailboxVersion"], maxBytes: 70),
                       let read = c06Bool(object["read"]) else {
                     throw C06MailError(.invalidRequest, "invalidSetReadArguments")
                 }
@@ -564,13 +566,13 @@ public enum C06MailBridge {
                 let owner = try parseOwner(object)
                 guard let id = c06UUID(object["accountID"]),
                       let request = c06UUID(object["requestID"]),
-                      let messageID = c06String(object["messageID"], maxBytes: 70),
-                      let folder = c06String(object["folder"], maxBytes: 1024),
-                      let version = c06String(object["mailboxVersion"], maxBytes: 70),
-                      let action = c06String(object["action"], maxBytes: 16) else {
+                      let messageID = c06MailString(object["messageID"], maxBytes: 70),
+                      let folder = c06MailString(object["folder"], maxBytes: 1024),
+                      let version = c06MailString(object["mailboxVersion"], maxBytes: 70),
+                      let action = c06MailString(object["action"], maxBytes: 16) else {
                     throw C06MailError(.invalidRequest, "invalidMoveArguments")
                 }
-                let destination = c06String(object["destination"], maxBytes: 1024)
+                let destination = c06MailString(object["destination"], maxBytes: 1024)
                 let result = block(seconds: 60, operation: operation) {
                     try await domain.move(
                         accountID: id,
@@ -591,13 +593,13 @@ public enum C06MailBridge {
                       let request = c06UUID(object["requestID"]),
                       let recipients = object["to"] as? [String],
                       !recipients.isEmpty,
-                      let subject = c06String(object["subject"], maxBytes: 2048),
+                      let subject = c06MailString(object["subject"], maxBytes: 2048),
                       let body = object["body"] as? String,
                       body.utf8.count <= 1_000_000 else {
                     throw C06MailError(.invalidRequest, "invalidSendArguments")
                 }
                 let rawHandles = object["draftHandles"] as? [String] ?? []
-                let handles = rawHandles.compactMap { c06String($0, maxBytes: 64) }
+                let handles = rawHandles.compactMap { c06MailString($0, maxBytes: 64) }
                 guard handles.count == rawHandles.count,
                       handles.count <= C06MailWire.maximumDraftAttachments else {
                     throw C06MailError(.invalidRequest, "invalidDraftHandles")
@@ -758,7 +760,7 @@ public enum C06MailBridge {
 
     private static func parseOwner(_ object: [String: Any]) throws -> C06MailOwner {
         guard let owner = object["owner"] as? [String: Any],
-              let token = c06String(owner["token"], maxBytes: 128),
+              let token = c06MailString(owner["token"], maxBytes: 128),
               let epoch = c06UInt64(owner["nativeEpoch"]) else {
             throw C06MailError(.invalidOwner, "invalidOwner")
         }
@@ -774,14 +776,14 @@ public enum C06MailBridge {
 
     private static func parseAccountDraft(_ value: Any?) throws -> C06MailAccountDraft {
         guard let object = value as? [String: Any],
-              let address = c06String(object["address"], maxBytes: 254),
-              let protocolRaw = c06String(object["incomingProtocol"], maxBytes: 8),
+              let address = c06MailString(object["address"], maxBytes: 254),
+              let protocolRaw = c06MailString(object["incomingProtocol"], maxBytes: 8),
               let protocolValue = MailIncomingProtocol(rawValue: protocolRaw),
               let incomingObject = object["incoming"] as? [String: Any],
               let outgoingObject = object["outgoing"] as? [String: Any] else {
             throw C06MailError(.invalidRequest, "invalidAccount")
         }
-        let displayName = c06String(object["displayName"], maxBytes: 240) ?? address
+        let displayName = c06MailString(object["displayName"], maxBytes: 240) ?? address
         let incoming = try parseServer(incomingObject, defaultPort: protocolValue == .imap ? 993 : 995)
         let outgoing = try parseServer(outgoingObject, defaultPort: 465)
         let incomingSecret = try parseSecret(object["incomingSecretBase64"])
@@ -799,12 +801,12 @@ public enum C06MailBridge {
     }
 
     private static func parseServer(_ object: [String: Any], defaultPort: Int) throws -> MailServer {
-        guard let host = c06String(object["host"], maxBytes: 253),
-              let username = c06String(object["username"], maxBytes: 320) else {
+        guard let host = c06MailString(object["host"], maxBytes: 253),
+              let username = c06MailString(object["username"], maxBytes: 320) else {
             throw C06MailError(.invalidRequest, "invalidServer")
         }
-        let port = c06Int(object["port"]) ?? defaultPort
-        let tlsRaw = c06String(object["tls"], maxBytes: 16) ?? MailTLSMode.implicitTLS.rawValue
+        let port = c06MailInt(object["port"]) ?? defaultPort
+        let tlsRaw = c06MailString(object["tls"], maxBytes: 16) ?? MailTLSMode.implicitTLS.rawValue
         guard let tls = MailTLSMode(rawValue: tlsRaw) else {
             throw C06MailError(.invalidRequest, "invalidTLSMode")
         }
@@ -1047,7 +1049,7 @@ public struct C06MailReadTool: AgentTool {
                 while true {
                     let trimmed = rows.count < allRows.count
                     let before = trimmed
-                        ? rows.last?["id"]
+                        ? (rows.last?["id"] as? String)
                         : listing.nextBeforeMessageID
                     let candidate: [String: Any] = [
                         "folder": listing.folder,
@@ -1465,6 +1467,7 @@ public struct C06MailSendTool: AgentTool {
             }
             attachments.append(MailAttachment(filename: url.lastPathComponent, data: data))
         }
+        let sendAttachments = attachments
         do {
             let result = try await c06Run(domain: environment.domain, owner: owner, context: context) {
                 try await environment.domain.send(
@@ -1473,7 +1476,7 @@ public struct C06MailSendTool: AgentTool {
                     recipients: args.to,
                     subject: args.subject,
                     body: args.body,
-                    attachments: attachments,
+                    attachments: sendAttachments,
                     draftHandles: [],
                     owner: owner
                 )

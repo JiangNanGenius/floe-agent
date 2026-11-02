@@ -61,6 +61,7 @@
 import Foundation
 import Crypto
 import FloeCore
+import FloeTools
 import FloeNotes
 
 // MARK: - Selection / receipt models
@@ -513,7 +514,7 @@ public enum C08NotesTaskLaunch {
     /// Called from the ORIGINAL `NotesDomainService.handle` Main patch. It
     /// uses the SAME Notes authority reader as the staging service, never a
     /// second store.
-    public static func handle(
+    static func handle(
         epoch: UInt64,
         action: String,
         payload: NotesJSONValue?
@@ -870,6 +871,8 @@ public enum C08NotesTaskLaunch {
             return C08NotesTaskLaunchError(.resourceUnavailable)
         case .conflict:
             return C08NotesTaskLaunchError(.documentRevisionMismatch)
+        case .invalidOperation:
+            return C08NotesTaskLaunchError(.stagingFailed)
         case .storageUnavailable, .invalidDocument:
             return C08NotesTaskLaunchError(.notesReadFailed)
         }

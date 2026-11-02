@@ -33,6 +33,7 @@
 //     owns no processor/state machine.
 import Foundation
 import FloeCore
+import FloeTools
 import FloePersistence
 import FloeSSH
 
@@ -136,6 +137,13 @@ public struct C02SSHExecutionRequest: Sendable, Equatable {
     public var timeout: TimeInterval
     public var maxOutputBytes: Int
     public var cancellation: CancellationToken
+
+    public static func == (lhs: Self, rhs: Self) -> Bool {
+        lhs.operationID == rhs.operationID && lhs.authorization == rhs.authorization &&
+        lhs.command == rhs.command && lhs.cwd == rhs.cwd && lhs.environment == rhs.environment &&
+        lhs.stdin == rhs.stdin && lhs.timeout == rhs.timeout &&
+        lhs.maxOutputBytes == rhs.maxOutputBytes && lhs.cancellation === rhs.cancellation
+    }
 
     public init(
         operationID: String,
@@ -652,7 +660,7 @@ public actor C02SSHExecutionAdapter: C02RemoteTargetProbing {
             authorization: authorization,
             expectedFingerprint: expectedFingerprint
         )
-        defer { Task { await session.transport.close() } }
+        defer { Task { await session.close() } }
         let command = """
         printf 'FLOE_SYSTEM='; uname -s; \
         printf 'FLOE_ARCH='; uname -m; \
@@ -661,13 +669,13 @@ public actor C02SSHExecutionAdapter: C02RemoteTargetProbing {
         printf 'FLOE_BOOT='; (cat /proc/sys/kernel/random/boot_id 2>/dev/null || sysctl -n kern.boottime 2>/dev/null || true)
         """
         let result = await runOnce(
-            transport: session.transport,
+            transport: session,
             command: command,
             timeout: 15,
             maxOutputBytes: 64 * 1_024,
             cancellation: CancellationToken()
         )
-        guard result.state.isExited, result.exitStatus == 0, !result.truncated else {
+        guard result.state.isExited, result.state.exitStatus == 0, !result.truncated else {
             throw C02SSHAdapterError.connectionFailed("probeFailed")
         }
         var values: [String: String] = [:]

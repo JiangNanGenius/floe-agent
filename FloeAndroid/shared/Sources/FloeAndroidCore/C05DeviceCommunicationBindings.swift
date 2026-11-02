@@ -110,7 +110,7 @@ public enum C05DeviceBridge {
         switch operation {
         case "handshake", "c05.device.capabilities":
             return block(seconds: 5, operation: operation) {
-                C05DeviceDomain.shared.capabilities()
+                await C05DeviceDomain.shared.capabilities()
             }.map { capabilities in
                 [
                     "coreReady": capabilities.coreReady,

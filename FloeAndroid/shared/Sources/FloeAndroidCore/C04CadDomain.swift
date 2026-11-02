@@ -369,7 +369,7 @@ public struct C04CadResourceDescriptor: Sendable, Equatable {
             throw C04CadError.resourceTooLarge
         }
         guard C04CadHex.isSHA256(sha256) else { throw C04CadError.invalidDigest }
-        guard mediaType.utf8.count in 1...128,
+        guard (1...128).contains(mediaType.utf8.count),
               !mediaType.unicodeScalars.contains(where: { $0.value < 32 || $0.value == 127 }),
               mediaType.contains("/") else {
             throw C04CadError.invalidMediaType
@@ -917,7 +917,7 @@ public enum C04CadPackageValidator {
                   let digest = c04String(object["sha256"], maxBytes: 64),
                   C04CadHex.isSHA256(digest),
                   let mediaType = c04String(object["mediaType"], maxBytes: 128),
-                  mediaType.utf8.count in 1...128 else {
+                  (1...128).contains(mediaType.utf8.count) else {
                 throw C04CadError.invalidPackage
             }
             guard resourceByID[id] == nil, resourcePaths.insert(path).inserted else {

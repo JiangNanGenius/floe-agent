@@ -12,6 +12,9 @@
 // Physical reclamation is deferred: this package never deletes Materials
 // bytes. Reference operations only change durable reference counts.
 import Foundation
+#if canImport(Android)
+import Android
+#endif
 import Crypto
 import FloeCore
 import FloePersistence

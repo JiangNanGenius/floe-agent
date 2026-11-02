@@ -3832,7 +3832,7 @@ extension C07LiveRestoreSink {
             })
         }
         if let cursorTable = staged.tables.first(where: {
-            $0.name == "personalization_update_cursors"
+            $0.record.name == "personalization_update_cursors"
         }) {
             try C07RowStream.rows(
                 in: cursorTable.url, table: "personalization_update_cursors"
@@ -4607,6 +4607,7 @@ extension C07LiveRestoreSink {
             mcpDefinitions = document.servers
         }
 
+        let definitionsToRestore = mcpDefinitions
         let outcome: (C07OwnedDataCommitReceipt, [String])
         outcome = try await context.database.writer {
             db -> (C07OwnedDataCommitReceipt, [String]) in
@@ -4615,9 +4616,9 @@ extension C07LiveRestoreSink {
             // 0. MCP definitions: fresh IDs, disabled, unbound. This is the
             //    ORIGINAL `floe.mcp.remoteServers.v1` row, never a parallel
             //    store. Only the exact inserted definitions change.
-            if !mcpDefinitions.isEmpty {
+            if !definitionsToRestore.isEmpty {
                 guard let identities = plan.mcpServerIDs,
-                      identities.count == mcpDefinitions.count else {
+                      identities.count == definitionsToRestore.count else {
                     throw C07DataExchangeError.referenceMissing(
                         "mcpServerIdentities")
                 }
@@ -4628,7 +4629,7 @@ extension C07LiveRestoreSink {
                     arguments: [key])
                 let merged = try C07MCPConfigurationExchange.merge(
                     currentRaw: currentRaw,
-                    definitions: mcpDefinitions,
+                    definitions: definitionsToRestore,
                     newIDs: identities)
                 guard let newRaw = merged.raw else {
                     throw C07DataExchangeError.invalidManifest("mcpMerge")
@@ -4642,18 +4643,18 @@ extension C07LiveRestoreSink {
                             updated_at = excluded.updated_at
                         """,
                     arguments: [key, newRaw, now])
-                receipt.mcpDefinitions = mcpDefinitions.count
-                if mcpDefinitions.contains(where: {
+                receipt.mcpDefinitions = definitionsToRestore.count
+                if definitionsToRestore.contains(where: {
                     $0.requiresEndpointReconfiguration
                 }) {
                     warnings.append("mcpDefinitionEndpointSanitized")
                 }
-                if mcpDefinitions.contains(where: {
+                if definitionsToRestore.contains(where: {
                     $0.transport == .stdio
                 }) {
                     warnings.append("mcpDefinitionsRequireEnvironmentBinding")
                 }
-                if mcpDefinitions.contains(where: {
+                if definitionsToRestore.contains(where: {
                     $0.authentication != "none"
                 }) {
                     warnings.append("mcpDefinitionsRequireCredentials")
@@ -5390,9 +5391,15 @@ extension C07DataExchangeDomain {
                     fileURL: uploadURL, displayName: displayName)
                 let stagedURL = planRoot.appendingPathComponent(
                     c07SafeArtifactName(validated.displayName))
-                try C07FileSystem.copyVerified(
-                    source: uploadURL, destination: stagedURL,
+                let copiedDocument = try C07FileSystem.copyVerified(
+                    sourceRoot: uploadURL.deletingLastPathComponent(),
+                    sourceRelativePath: uploadURL.lastPathComponent,
+                    destinationRoot: planRoot,
+                    destinationRelativePath: stagedURL.lastPathComponent,
                     expectedSize: validated.byteCount)
+                guard copiedDocument.sha256 == validated.sha256 else {
+                    throw C07DataExchangeError.documentPackage("sourceChangedDuringCopy")
+                }
                 let record = C07ProjectRecord(
                     projectID: UUID(),
                     name: "Imported \(validated.displayName)",

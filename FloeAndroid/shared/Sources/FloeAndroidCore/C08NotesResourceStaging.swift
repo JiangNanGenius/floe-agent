@@ -56,6 +56,8 @@
 import Foundation
 import Crypto
 import FloeCore
+import FloeWorkspace
+import FloeTools
 import FloeNotes
 
 // MARK: - Typed seam
@@ -358,7 +360,9 @@ public struct NotesDomainResourceReader: NotesResourceReading {
                 return NotesResourceStagingError(.documentNotFound)
             case .conflict:
                 return NotesResourceStagingError(.documentRevisionMismatch)
-            case .storageUnavailable, .invalidDocument:
+            case .invalidOperation:
+            return NotesResourceStagingError(.invalidRequest)
+        case .storageUnavailable, .invalidDocument:
                 return NotesResourceStagingError(.notesReadFailed)
             }
         }
@@ -859,6 +863,8 @@ public struct NotesResourceStagingService: Sendable {
             return NotesResourceStagingError(.documentNotFound)
         case .conflict:
             return NotesResourceStagingError(.documentRevisionMismatch)
+        case .invalidOperation:
+            return NotesResourceStagingError(.invalidRequest)
         case .storageUnavailable, .invalidDocument:
             return NotesResourceStagingError(.notesReadFailed)
         }
@@ -934,7 +940,7 @@ public struct NotesResourceStagingService: Sendable {
             var truncated = String()
             var bytes = 0
             for scalar in stem.unicodeScalars {
-                let width = Utf8Encoding.width(scalar)
+                let width = C08NotesUtf8Encoding.width(scalar)
                 if bytes + width > budget { break }
                 truncated.unicodeScalars.append(scalar)
                 bytes += width
@@ -989,7 +995,7 @@ public struct NotesResourceStagingService: Sendable {
 
 /// UTF-8 width helper for the bounded name sanitizer (no reliance on
 /// platform-specific String length semantics).
-private enum Utf8Encoding {
+private enum C08NotesUtf8Encoding {
     static func width(_ scalar: Unicode.Scalar) -> Int {
         switch scalar.value {
         case 0...0x7F: return 1

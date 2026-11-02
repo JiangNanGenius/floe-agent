@@ -1031,7 +1031,16 @@ public actor SkillsDomain {
               encoded.count <= ConfigPageBudget.maximumPageItemsBytes else {
             throw ConfigDomainError(code: .payloadTooLarge, reason: "curatedDetailTooLarge")
         }
-        return result
+        return try Self.transferredJSON(encoded)
+    }
+
+    /// Reconstruct an owned wire value from Sendable bytes before leaving the
+    /// actor. Projection dictionaries may contain actor-retained nested values.
+    private nonisolated static func transferredJSON(_ data: Data) throws -> sending [String: Any] {
+        guard let value = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            throw ConfigDomainError(code: .invalidEnvelope, reason: "invalidCuratedProjection")
+        }
+        return value
     }
 
     /// Bounded full-catalog page. This is the ONLY transport for the complete
@@ -1075,10 +1084,14 @@ public actor SkillsDomain {
                 visible.removeValue(forKey: "searchText")
                 return visible
             }
-        return try C02CuratedSearchPage.make(
+        let page = try C02CuratedSearchPage.make(
             cards: cards, query: query,
             catalogSHA256: cache.publication.verifiedFeed.catalogSHA256,
             pageToken: pageToken)
+        guard let encoded = ConfigJSON.canonicalData(page) else {
+            throw ConfigDomainError(code: .invalidEnvelope, reason: "invalidCuratedProjection")
+        }
+        return try Self.transferredJSON(encoded)
     }
 
     // MARK: Curated install / upgrade routing
@@ -1316,8 +1329,8 @@ public actor SkillsDomain {
             "minimumAppVersion": entry.minimumAppVersion ?? NSNull(),
             "installPlatforms": entry.runtime.installPlatforms.map(\.rawValue),
             "scriptRuntime": entry.runtime.scriptRuntime.rawValue,
-            "execution": ["os": entry.runtime.execution.os ?? NSNull(),
-                          "arch": entry.runtime.execution.arch ?? NSNull(),
+            "execution": ["os": entry.runtime.execution.os as Any? ?? NSNull(),
+                          "arch": entry.runtime.execution.arch as Any? ?? NSNull(),
                           "evidence": entry.runtime.execution.evidence.rawValue],
             "containsScripts": entry.package?.containsScripts ?? false,
             "offer": offerName,
@@ -1351,8 +1364,8 @@ public actor SkillsDomain {
                 "tools": entry.runtime.tools,
                 "installPlatforms": entry.runtime.installPlatforms.map(\.rawValue),
                 "pythonPackagesPlan": entry.runtime.pythonPackagesPlan,
-                "execution": ["os": entry.runtime.execution.os ?? NSNull(),
-                              "arch": entry.runtime.execution.arch ?? NSNull(),
+                "execution": ["os": entry.runtime.execution.os as Any? ?? NSNull(),
+                              "arch": entry.runtime.execution.arch as Any? ?? NSNull(),
                               "evidence": entry.runtime.execution.evidence.rawValue],
             ],
             "status": [

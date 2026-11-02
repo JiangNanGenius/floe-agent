@@ -878,7 +878,7 @@ public actor C06MailDomain {
         } catch {
             if wroteIncoming { try? await deleteSecret(account: incomingReference) }
             if wroteOutgoing { try? await deleteSecret(account: outgoingReference) }
-            throw mapped(error)
+            throw Self.mapped(error)
         }
     }
 
@@ -900,7 +900,7 @@ public actor C06MailDomain {
         } catch {
             // Keep the row when its secrets could not be removed, so the user
             // can retry rather than leaving unreachable credentials.
-            throw mapped(error)
+            throw Self.mapped(error)
         }
         do {
             try await context.store.delete(id: id)
@@ -974,7 +974,7 @@ public actor C06MailDomain {
                 password: incoming
             )
         } catch {
-            throw mapped(error, stage: "incoming")
+            throw Self.mapped(error, stage: "incoming")
         }
         do {
             try await context.transport.test(
@@ -983,7 +983,7 @@ public actor C06MailDomain {
                 password: outgoing
             )
         } catch {
-            throw mapped(error, stage: "outgoing")
+            throw Self.mapped(error, stage: "outgoing")
         }
         return C06MailTestReport(incoming: "authenticated", outgoing: "authenticated")
     }
@@ -1398,6 +1398,7 @@ public actor C06MailDomain {
                         replayed: false,
                         reconciled: false,
                         receiptPersisted: persisted,
+                        reason: nil,
                         warning: persisted ? nil : Self.receiptWriteWarning
                     )
                 case .replay(let state):
@@ -1414,6 +1415,7 @@ public actor C06MailDomain {
                         replayed: true,
                         reconciled: false,
                         receiptPersisted: state == .completed,
+                        reason: nil,
                         warning: nil
                     )
                 case .reconciledCompleted(let destinationUID, let destinationVersion, let persisted):
@@ -1430,6 +1432,7 @@ public actor C06MailDomain {
                         replayed: false,
                         reconciled: true,
                         receiptPersisted: persisted,
+                        reason: nil,
                         warning: persisted ? nil : Self.receiptWriteWarning
                     )
                 case .uncertain(let reason):

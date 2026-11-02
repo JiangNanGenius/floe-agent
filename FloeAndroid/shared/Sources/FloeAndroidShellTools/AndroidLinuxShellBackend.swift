@@ -751,14 +751,11 @@ public actor AndroidLinuxShellBackend: LocalShellBackend {
             timeoutSeconds: role == .service
                 ? configuration.serviceEngineDeadline
                 : configuration.interactiveEngineDeadline,
-            // G04-R2: the trusted UI operation lease identity (interactive
-            // terminal / LSP opens mint their workspace grant against it).
-            // nil for every other open — payload stays byte-for-byte.
-            hostOperationID: request.workspaceOperationID?.uuidString,
-            // C01: the trusted runtime-issued call identity. Only the durable
-            // job shape (`jobs.<uuid>`) takes the job grant mint; ordinary
-            // model sessions keep the existing run grant route unchanged.
+            // C01: runtime-issued durable-job identity; model sessions keep
+            // the original run-grant route.
             hostToolCallID: request.hostToolCallID,
+            // G04-R2: trusted interactive-terminal/LSP workspace lease.
+            hostOperationID: request.workspaceOperationID?.uuidString,
             // stdinDelivery intentionally UNSET: an interactive session
             // rides the legacy PTY input path (engine default "pty"). The
             // wire key is omitted entirely (never null), so canonical

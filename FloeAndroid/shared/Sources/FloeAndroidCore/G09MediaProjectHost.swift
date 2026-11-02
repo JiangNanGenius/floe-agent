@@ -18,6 +18,9 @@
 //   byte-for-byte and the project becomes read-only until explicitly
 //   repaired; it is never normalized by an ordinary save.
 import Foundation
+#if canImport(Android)
+import Android
+#endif
 import FloeCore
 import FloeModels
 import FloePersistence

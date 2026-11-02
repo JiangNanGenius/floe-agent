@@ -54,6 +54,12 @@ import FloeAndroidWorkspaceTools
 /// Linux workspace authority and the G04 file/editor graph. Nothing here
 /// guesses a first project, follows a symlink, accepts a SAF URI as POSIX,
 /// or creates a missing project leaf after creation.
+public enum C01ProjectRootRemoval: Sendable, Equatable {
+    case removed
+    case absent
+    case failed(String)
+}
+
 public enum C01ProjectRootLayout {
     public static let projectsComponent = "Projects"
     public static let maximumProjectNameBytes = 240
@@ -948,8 +954,8 @@ public actor C01ProjectLibrary {
                     }
                 }
             } else if await hasLiveOwnedWork(conversations) {
-                for fence in fences {
-                    _ = await lifecycle.abortDeletionFence(fence)
+                if let lifecycle {
+                    for fence in fences { _ = await lifecycle.abortDeletionFence(fence) }
                 }
                 throw C01ProjectError.projectBusy
             }
@@ -1184,7 +1190,7 @@ public actor C01ProjectLibrary {
         let name = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !name.isEmpty,
               name.count <= maximumNameCharacters,
-              name.utf8.count <= maximumProjectNameBytes,
+              name.utf8.count <= C01ProjectRootLayout.maximumProjectNameBytes,
               !name.unicodeScalars.contains(where: { $0.value == 0 || $0.value < 0x20 }),
               !name.contains("/"), !name.contains("\\") else {
             throw C01ProjectError.invalidName

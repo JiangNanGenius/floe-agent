@@ -329,70 +329,74 @@ public final class C06CalendarHostMailbox: @unchecked Sendable {
         fields: [String: Any],
         timeout: TimeInterval
     ) async throws -> [String: Any] {
-        condition.lock()
         let deadline = Date().addingTimeInterval(max(0.2, min(timeout, 60)))
-        let claim: Int64
+        let (claim, epoch) = try enqueueRequest(operation: operation, fields: fields, deadline: deadline)
         do {
-            claim = try enqueueLocked(operation: operation, fields: fields, deadline: deadline)
+            while true {
+                try Task.checkCancellation()
+                if let result = try settledReply(claim: claim, epoch: epoch, deadline: deadline) {
+                    guard let object = (try? JSONSerialization.jsonObject(with: result)) as? [String: Any] else {
+                        throw C06CalendarError(.internalFailure, "invalidHostReply")
+                    }
+                    if c06CalBool(object["ok"]) == false { throw Self.providerError(object) }
+                    return object
+                }
+                try await Task.sleep(nanoseconds: 8_000_000)
+            }
         } catch {
-            condition.unlock()
+            cancelRequest(claim)
             throw error
         }
-        let epoch = boundEpoch
-        condition.unlock()
+    }
 
-        while true {
-            if Task.isCancelled {
-                condition.lock()
-                if let ticket = tickets[claim], !ticket.settled {
-                    ticket.settled = true
-                    ticket.status = C06CalendarHostStatus.cancelled
-                }
-                tickets.removeValue(forKey: claim)
-                queue.removeAll { $0 == claim }
-                condition.unlock()
-                throw CancellationError()
-            }
-            condition.lock()
-            if let ticket = tickets[claim], ticket.settled {
-                let status = ticket.status
-                let result = ticket.result
-                tickets.removeValue(forKey: claim)
-                condition.unlock()
-                if status != C06CalendarHostStatus.ok {
-                    throw C06CalendarError(
-                        status == C06CalendarHostStatus.cancelled ? .cancelled : .hostUnavailable,
-                        "calendarHostOperationStopped"
-                    )
-                }
-                guard let object = (try? JSONSerialization.jsonObject(with: result)) as? [String: Any] else {
-                    throw C06CalendarError(.internalFailure, "invalidHostReply")
-                }
-                if c06CalBool(object["ok"]) == false {
-                    throw Self.providerError(object)
-                }
-                return object
-            }
-            let now = Date()
-            if closed || now >= deadline || (bound && boundEpoch != epoch) {
-                let timedOut = now >= deadline
-                if let ticket = tickets[claim], !ticket.settled {
-                    ticket.settled = true
-                    ticket.status = timedOut ? C06CalendarHostStatus.cancelled : C06CalendarHostStatus.generationFenced
-                }
-                tickets.removeValue(forKey: claim)
-                queue.removeAll { $0 == claim }
-                if timedOut { counters.timeouts += 1 }
-                condition.unlock()
-                if timedOut {
-                    throw C06CalendarError(.timedOut, "calendarHostTimedOut", retryable: false)
-                }
-                throw C06CalendarError(.hostUnavailable, "calendarHostUnavailable",
-                                       retryable: true)
-            }
-            condition.unlock()
-            try await Task.sleep(nanoseconds: 8_000_000)
+    private func enqueueRequest(operation: String, fields: [String: Any], deadline: Date) throws -> (Int64, UInt64) {
+        condition.lock()
+        defer { condition.unlock() }
+        let claim = try enqueueLocked(operation: operation, fields: fields, deadline: deadline)
+        return (claim, boundEpoch)
+    }
+
+    private func cancelRequest(_ claim: Int64) {
+        condition.lock()
+        defer { condition.unlock() }
+        if let ticket = tickets[claim], !ticket.settled {
+            ticket.settled = true
+            ticket.status = C06CalendarHostStatus.cancelled
         }
+        tickets.removeValue(forKey: claim)
+        queue.removeAll { $0 == claim }
+    }
+
+    private func settledReply(claim: Int64, epoch: UInt64, deadline: Date) throws -> Data? {
+        condition.lock()
+        defer { condition.unlock() }
+        if let ticket = tickets[claim], ticket.settled {
+            let status = ticket.status
+            let result = ticket.result
+            tickets.removeValue(forKey: claim)
+            if status != C06CalendarHostStatus.ok {
+                throw C06CalendarError(
+                    status == C06CalendarHostStatus.cancelled ? .cancelled : .hostUnavailable,
+                    "calendarHostOperationStopped")
+            }
+            return result
+        }
+        let now = Date()
+        if closed || now >= deadline || (bound && boundEpoch != epoch) {
+            let timedOut = now >= deadline
+            if let ticket = tickets[claim], !ticket.settled {
+                ticket.settled = true
+                ticket.status = timedOut ? C06CalendarHostStatus.cancelled : C06CalendarHostStatus.generationFenced
+            }
+            tickets.removeValue(forKey: claim)
+            queue.removeAll { $0 == claim }
+            if timedOut {
+                counters.timeouts += 1
+                throw C06CalendarError(.timedOut, "calendarHostTimedOut", retryable: false)
+            }
+            throw C06CalendarError(.hostUnavailable, "calendarHostUnavailable", retryable: true)
+        }
+        return nil
     }
 
     private static func providerError(_ object: [String: Any]) -> C06CalendarError {

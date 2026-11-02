@@ -279,13 +279,8 @@ public struct TaskContinuityRootStorageProbe: TaskContinuityStorageProbing {
                     checkedAt: now,
                     detailCode: "rootReadOnly")
             }
-            let values = try? rootURL.resourceValues(forKeys: [
-                .volumeAvailableCapacityForImportantUsageKey,
-                .volumeAvailableCapacityKey,
-            ])
-            let important = values?.volumeAvailableCapacityForImportantUsage
-            let plain = values?.volumeAvailableCapacity.map(Int64.init)
-            let available = important ?? plain
+            let attributes = try? manager.attributesOfFileSystem(forPath: rootURL.path)
+            let available = (attributes?[.systemFreeSize] as? NSNumber)?.int64Value
             if let available, available >= 0, available < minimumFreeBytes {
                 return TaskContinuityStorageStatus(
                     condition: .volumeFull,

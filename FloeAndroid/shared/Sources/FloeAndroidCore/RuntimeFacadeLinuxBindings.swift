@@ -267,7 +267,7 @@ public final class RuntimeFacadeLinuxBindings: @unchecked Sendable {
         )
         let sessions = ShellSessionCenter(
             backend: backend,
-            ownershipHook: LinuxShellSessionTrackingHook { [weak self] request in
+            ownershipHook: { [weak self] request in
                 guard let self else { return nil }
                 return await self.beginSessionLedgerWorker(for: request)
             })

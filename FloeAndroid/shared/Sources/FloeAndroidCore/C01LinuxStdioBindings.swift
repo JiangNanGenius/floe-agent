@@ -24,6 +24,7 @@
 import Foundation
 import CoreFoundation
 import FloeCore
+import FloeAndroidShellTools
 import FloeTools
 
 // MARK: - Typed failures
