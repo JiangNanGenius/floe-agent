@@ -117,7 +117,7 @@ internal class NotesLibraryController(
         private set
 
     private var searchJob: Job? = null
-    private var coverJob: Job? = null
+    private val coverJobs = mutableMapOf<String, Job>()
     private var disposed = false
 
     fun visibleDocuments(): List<NoteDocumentSummary> = filterAndSortDocuments(
@@ -450,27 +450,54 @@ internal class NotesLibraryController(
     /* ------------------------------- cover -------------------------------- */
 
     fun ensureCover(summary: NoteDocumentSummary) {
-        val resourceID = summary.coverResourceID ?: return
+        if (disposed) return
+        val resourceID = summary.coverResourceID
+        if (resourceID == null && summary.kind != NoteDocumentKind.ENGINEERING) return
         val key = coverKey(summary, resourceID)
-        if (coverBytes.containsKey(key) || key in coverFailures) return
-        coverJob = scope.launch {
+        if (coverBytes.containsKey(key) || key in coverFailures || key in coverJobs || coverJobs.size >= 16) return
+        val job = scope.launch(start = kotlinx.coroutines.CoroutineStart.LAZY) {
             try {
-                val bytes = resources.readAll(resourceID, maxBytes = 8L * 1024L * 1024L)
-                coverBytes = coverBytes + (key to bytes)
+                val bytes = if (resourceID != null) {
+                    resources.readAll(resourceID, maxBytes = 8L * 1024L * 1024L)
+                } else {
+                    val document = service.document(summary.id)
+                    if (document.revision != summary.revision) return@launch
+                    val sourceID = document.engineeringResourceID ?: return@launch
+                    val sourceName = document.engineeringFileName ?: return@launch
+                    val source = resources.readAll(sourceID, maxBytes = 8L * 1024L * 1024L)
+                    ports.media.engineeringCover(
+                        com.floe.android.feature.notes.ui.api.NotesEngineeringCoverRequest(
+                            document.id, sourceID, sourceName, source),
+                    ) ?: throw NotesException("resourceUnavailable", "engineeringCoverUnavailable")
+                }
+                if (disposed) return@launch
+                val current = service.documentSummary(summary.id)
+                if (coverKey(current, current.coverResourceID) != key) return@launch
+                val cache = LinkedHashMap(coverBytes)
+                cache[key] = bytes
+                while (cache.size > 32 || cache.values.sumOf { it.size.toLong() } > 16L * 1024L * 1024L) {
+                    cache.remove(cache.keys.first())
+                }
+                coverBytes = cache
                 coverFailures = coverFailures - key
             } catch (cancelled: CancellationException) {
                 throw cancelled
             } catch (_: Throwable) {
-                coverFailures = coverFailures + key
+                if (!disposed) coverFailures = (coverFailures + key).toList().takeLast(128).toSet()
+            } finally {
+                coverJobs.remove(key)
             }
         }
+        coverJobs[key] = job
+        job.start()
     }
 
     fun coverFor(summary: NoteDocumentSummary): ByteArray? =
-        summary.coverResourceID?.let { coverBytes[coverKey(summary, it)] }
+        coverBytes[coverKey(summary, summary.coverResourceID)]
 
-    private fun coverKey(summary: NoteDocumentSummary, resourceID: String): String =
-        "${summary.id}:${summary.coverRevision ?: 0}:$resourceID"
+    private fun coverKey(summary: NoteDocumentSummary, resourceID: String?): String =
+        if (resourceID != null) "${summary.id}:${summary.coverRevision ?: 0}:$resourceID"
+        else "${summary.id}:${summary.revision}:engineering"
 
     suspend fun setCover(summary: NoteDocumentSummary): Boolean {
         busy = true
@@ -958,6 +985,9 @@ internal class NotesLibraryController(
     fun dispose() {
         disposed = true
         searchJob?.cancel()
-        coverJob?.cancel()
+        coverJobs.values.toList().forEach { it.cancel() }
+        coverJobs.clear()
+        coverBytes = emptyMap()
+        coverFailures = emptySet()
     }
 }

@@ -146,10 +146,19 @@ internal class NotesMediaEffects(
     private val ioDispatcher: CoroutineDispatcher = Dispatchers.IO,
     private val stagingRoot: File,
     private val passwordProvider: NotesPdfPasswordProvider? = null,
+    private val activityBroker: NotesPlatformActivityBroker = NotesPlatformActivityBroker(),
 ) : NotesMediaPort, AutoCloseable {
 
     private val workRoot = File(stagingRoot, "media")
     private val closed = AtomicBoolean(false)
+    private val engineeringCovers = NotesEngineeringCoverRenderer(activityBroker, workRoot)
+
+    override suspend fun engineeringCover(
+        request: com.floe.android.feature.notes.ui.api.NotesEngineeringCoverRequest,
+    ): ByteArray? {
+        check(!closed.get())
+        return engineeringCovers.render(request)
+    }
 
     /** One shared renderer binding; released by the host owner. */
     private val gateway: OfficePdfRenderGateway by lazy(LazyThreadSafetyMode.SYNCHRONIZED) {
@@ -856,6 +865,7 @@ internal class NotesMediaEffects(
 
     override fun close() {
         if (!closed.compareAndSet(false, true)) return
+        engineeringCovers.close()
         val sessions = synchronized(printSessions) { printSessions.toList() }
         sessions.forEach { runCatching { it.close() } }
         printSessions.clear()

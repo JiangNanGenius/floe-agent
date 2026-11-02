@@ -189,6 +189,7 @@ suspend fun createNotesPlatformHost(
         ioDispatcher = ioDispatcher,
         stagingRoot = cacheRoot,
         passwordProvider = passwordProvider,
+        activityBroker = activityBroker,
     )
     val office = NotesOfficeEffects(
         context = application,

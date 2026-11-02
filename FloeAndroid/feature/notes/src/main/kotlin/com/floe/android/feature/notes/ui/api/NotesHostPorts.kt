@@ -491,7 +491,16 @@ public data class NotesPreparedImage(
     public val height: Int,
 )
 
+public data class NotesEngineeringCoverRequest(
+    public val documentID: String,
+    public val resourceID: String,
+    public val fileName: String,
+    public val bytes: ByteArray,
+)
+
 public interface NotesMediaPort {
+    /** Actual offline CAD viewport pixels, or null when rendering fails. */
+    public suspend fun engineeringCover(request: NotesEngineeringCoverRequest): ByteArray? = null
     public fun capabilities(): NotesMediaCapabilities
     /** Bounded image bounds probe; null when the bytes are not a decodable image. */
     public suspend fun probeImage(request: NotesImageProbeRequest): NotesImageInfo?
