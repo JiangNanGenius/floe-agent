@@ -306,8 +306,9 @@ nonisolated struct SignatureNaming: TopoNaming {
                 // signatures. An unchanged legacy face may prove either, but
                 // only at the SAME uniquely named/channel-mapped candidate.
                 guard let brep = body.brep,
-                      let index = ElementNaming.kernelFace(of: entry,
-                        channel: OCCTKernel.renderMeshFaceChannel(from: brep)),
+                      table.nativeBodyID == body.id, table.nativeMeshRevision == body.meshRevision,
+                      let channel = table.nativeFaceChannel, channel.count == body.render.triangleCount,
+                      let index = ElementNaming.kernelFace(of: entry, channel: channel),
                       let signature = OCCTKernel.faceInfo(brep).first(where: { $0.index == index })?.signature,
                       Self.exactSignature(signature, ref.signature) else { return nil }
             }
@@ -343,20 +344,20 @@ nonisolated struct SignatureNaming: TopoNaming {
         // An unqualified fingerprint needs exactly one full current match.
         // A body-scaled score would bind a deleted cap to a nearby survivor.
         var nativeSignatures: [Int: FaceSignature]?
-        var channel: [UInt32]?
         let matches = faces.indices.filter { index in
             let face = faces[index]
             if Self.exactSignature(face.signature, ref.signature) { return true }
             guard let table, index < table.entries.count,
                   table.entries[index].triangles == face.triangles,
+                  table.nativeBodyID == body.id, table.nativeMeshRevision == body.meshRevision,
+                  let channel = table.nativeFaceChannel, channel.count == body.render.triangleCount,
                   let brep = body.brep else { return false }
             if nativeSignatures == nil {
                 nativeSignatures = Dictionary(uniqueKeysWithValues: OCCTKernel.faceInfo(brep).compactMap {
                     info in info.signature.map { (info.index, $0) }
                 })
-                channel = OCCTKernel.renderMeshFaceChannel(from: brep)
             }
-            guard let native = ElementNaming.kernelFace(of: table.entries[index], channel: channel ?? []),
+            guard let native = ElementNaming.kernelFace(of: table.entries[index], channel: channel),
                   let signature = nativeSignatures?[native] else { return false }
             return Self.exactSignature(signature, ref.signature)
         }

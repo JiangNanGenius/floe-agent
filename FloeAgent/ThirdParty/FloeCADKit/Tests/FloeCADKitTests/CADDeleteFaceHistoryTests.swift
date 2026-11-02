@@ -264,6 +264,13 @@ final class CADDeleteFaceHistoryTests: XCTestCase {
         }
         XCTAssertTrue(a.errors.isEmpty && b.errors.isEmpty)
         var before = try XCTUnwrap(a.bodies.first), after = try XCTUnwrap(b.bodies.first)
+        let displayTable = try XCTUnwrap(b.faceTables[bodyID])
+        let displayTop = try XCTUnwrap(displayTable.entries.first { $0.signature.normal.y > 0.99 })
+        let displayRef = FaceRef(body: BodyRef(producer: source.id, bodyID: bodyID), creator: source.id,
+            role: .derived(index: 0), signature: displayTop.signature)
+        XCTAssertNotNil(SignatureNaming().resolve(displayRef, in: after, table: displayTable),
+                        "A current display pick cannot borrow another tessellation's native face channel")
+        XCTAssertNil(SignatureNaming().resolvePersisted(displayRef, in: after, table: displayTable))
         // Primitive display meshes are independent of the OCCT tessellation.
         // This fixture needs the actual adopted native channel, not a guessed
         // correspondence between Euclid triangles and native face indices.

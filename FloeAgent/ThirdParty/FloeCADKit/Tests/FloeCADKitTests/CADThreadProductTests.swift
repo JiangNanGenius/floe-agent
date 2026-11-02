@@ -169,7 +169,27 @@ final class CADThreadProductTests: XCTestCase {
         healthy(try shape(f)); axialEvidence(try shape(f), f: f, spec: try spec(f.document, id))
     }
     func testInternalRightHandAxialProfileAtZeroPhase() async throws {
-        let f = try await fixture(.internal); let id = try create(f)
+        let f = try await fixture(.internal)
+        let stock = try shape(f)
+        let id = try create(f)
+        let s = try spec(f.document, id)
+        var stages: [[String: Any]] = []
+        _ = try ThreadKit.apply(s, cylinder: f.cylinder, target: stock, targetNames: [:], operation: FeatureID()) { name, shape in
+            let sections = OCCTKernel.sectionPolylines(shape, origin: f.cylinder.origin,
+                normal: simd_cross(f.cylinder.axis, f.cylinder.radial), deflection: 0.00001)
+            stages.append(["stage": name, "volume": OCCTKernel.volume(shape),
+                "section": sections.map { $0.map { [$0.x, $0.y, $0.z] } }])
+        }
+        let evidence: [String: Any] = ["stages": stages,
+            "origin": [f.cylinder.origin.x, f.cylinder.origin.y, f.cylinder.origin.z],
+            "axis": [f.cylinder.axis.x, f.cylinder.axis.y, f.cylinder.axis.z],
+            "radial": [f.cylinder.radial.x, f.cylinder.radial.y, f.cylinder.radial.z],
+            "lower": f.cylinder.lower, "upper": f.cylinder.upper]
+        let attachment = XCTAttachment(data: try JSONSerialization.data(withJSONObject: evidence, options: [.sortedKeys]),
+                                       uniformTypeIdentifier: "public.json")
+        attachment.name = "M13 actual internal thread intermediate sections.json"
+        attachment.lifetime = .keepAlways
+        add(attachment)
         healthy(try shape(f)); axialEvidence(try shape(f), f: f, spec: try spec(f.document, id))
     }
     func testInternalLeftHandAxialProfileAtZeroPhase() async throws {

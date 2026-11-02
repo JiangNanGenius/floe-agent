@@ -26,7 +26,8 @@ nonisolated enum ThreadKit {
 
     static func apply(_ spec: ThreadSpec, cylinder: OCCTKernel.ThreadCylinder,
                       target: BRepHandle, targetNames: [Int: ElementName],
-                      operation: FeatureID) throws -> Result {
+                      operation: FeatureID,
+                      recordStep: ((String, BRepHandle) -> Void)? = nil) throws -> Result {
         try spec.validate()
         let p = spec.pitch.value, length = spec.effectiveLength.value
         guard cylinder.isInternal == (spec.side == .internal) else {
@@ -81,6 +82,7 @@ nonisolated enum ThreadKit {
             }
         }
         var work = target, names = targetNames
+        recordStep?("stock", work)
         func subtract(_ tool: BRepHandle) throws {
             let (next, ancestry) = try boolean(work, tool, .subtract)
             names = ElementNaming.composeNames(operation: operation, ancestry: ancestry,
@@ -95,6 +97,7 @@ nonisolated enum ThreadKit {
         } else if spec.side == .internal, spec.minorRadius > cylinder.radius + 1e-7 {
             try subtract(cylinderTool(spec.minorRadius))
         }
+        recordStep?("prepared-stock", work)
         let positive = spec.hand == .right
         let lead = p
         let z = positive ? -lead : length + lead
@@ -116,10 +119,13 @@ nonisolated enum ThreadKit {
             throw CADThreadError.invalid("The axial thread profile could not be swept.")
         }
         try healthy(swept)
+        recordStep?("swept-cutter", swept)
         let envelope = try cylinderTool(max(cylinder.radius, spec.majorRadius) + epsilon * 2)
         let (trimmed, _) = try boolean(swept, envelope, .intersect)
+        recordStep?("trimmed-cutter", trimmed)
         let before = OCCTKernel.volume(target)
         try subtract(trimmed)
+        recordStep?("result", work)
         let after = OCCTKernel.volume(work)
         guard before.isFinite, after.isFinite, before > after + max(1e-7, before * 1e-10), after > 0 else {
             throw CADThreadError.invalid("The thread removes no material from this stock.")
