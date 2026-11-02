@@ -1934,7 +1934,9 @@ final class CADThreadOptionsNativeFlowUITests: XCTestCase {
     func testNativeThreadOptionsAndCancel() { checkOptions(compact: false) }
     func testCompactLargeTextThreadOptionsAndCancel() { checkOptions(compact: true) }
 
-    private func checkOptions(compact: Bool) {
+    func testNativeThreadAppliesCompatibleBoreDimensions() { checkOptions(compact: false, applyChanges: true) }
+
+    private func checkOptions(compact: Bool, applyChanges: Bool = false) {
         let app = XCUIApplication()
         app.launchArguments = ["-AppleLanguages", "(en)", "-AppleLocale", "en_US",
             "-ui-testing", "--ui-test-cad-fixture", "--ui-test-cad-uninstanced"]
@@ -1961,7 +1963,12 @@ final class CADThreadOptionsNativeFlowUITests: XCTestCase {
         image.name = compact ? "M13 native thread options compact large text" : "M13 native metric thread options"
         image.lifetime = .keepAlways
         add(image)
-        cancel.tap()
+        if applyChanges {
+            apply.tap()
+            let closed = NSPredicate(format: "exists == false")
+            expectation(for: closed, evaluatedWith: cancel)
+            waitForExpectations(timeout: 90)
+        } else { cancel.tap() }
         XCTAssertFalse(app.buttons["CADThreadCancel"].waitForExistence(timeout: 2))
         XCTAssertTrue(app.buttons["UndoButton"].waitForExistence(timeout: 15))
     }

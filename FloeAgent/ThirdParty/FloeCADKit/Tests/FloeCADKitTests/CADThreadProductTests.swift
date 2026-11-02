@@ -26,13 +26,13 @@ final class CADThreadProductTests: XCTestCase {
         var source: [String: Any]
         var cylinder: OCCTKernel.ThreadCylinder
     }
-    private func fixture(_ side: ThreadSpec.Side, oblique: Bool = false) async throws -> Fixture {
+    private func fixture(_ side: ThreadSpec.Side, oblique: Bool = false, boreRadius: Double = 3) async throws -> Fixture {
         let url = directory.appendingPathComponent("\(UUID()).floecad")
         let document = try await FloeCADDocument.create(at: url, name: "Metric thread stock")
         documents.append(document)
         let outerID = UUID(), innerID = UUID()
         var entities: [SketchEntity] = [.circle(id: outerID, center: .zero, radius: side == .external ? 4 : 6)]
-        if side == .internal { entities.append(.circle(id: innerID, center: .zero, radius: 3)) }
+        if side == .internal { entities.append(.circle(id: innerID, center: .zero, radius: boreRadius)) }
         let sketch = Sketch(name: "Stock", plane: .ground, entities: entities)
         let bodyID = BodyID()
         let feature = FeatureNode(name: "Stock", kind: .extrude(
@@ -191,6 +191,14 @@ final class CADThreadProductTests: XCTestCase {
         attachment.lifetime = .keepAlways
         add(attachment)
         healthy(try shape(f)); axialEvidence(try shape(f), f: f, spec: try spec(f.document, id))
+    }
+    func testAlreadySizedBoreAndQuarterTurnPhaseHaveActualGrooves() async throws {
+        for phase in [0.0, 90.0] {
+            let f = try await fixture(.internal, boreRadius: 3.323417653293407)
+            let id = try create(f, phase: phase)
+            healthy(try shape(f))
+            axialEvidence(try shape(f), f: f, spec: try spec(f.document, id))
+        }
     }
     func testInternalLeftHandAxialProfileAtZeroPhase() async throws {
         let f = try await fixture(.internal); let id = try create(f, hand: .left)

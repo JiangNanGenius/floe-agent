@@ -18,6 +18,44 @@ struct ThreadOptionsSheet: View {
 
     private func text(_ key: String, _ fallback: String) -> String { FloeCADStrings.text(key, fallback) }
     private var selectedSource: [String: Any]? { sourceRows.first { $0["id"] as? String == sourceID } }
+    private var availableDiameters: [Double] {
+        guard editingID == nil, let stock = selectedSource?["stock_diameter"] as? Double else {
+            return ThreadCatalog.diameters
+        }
+        return ThreadCatalog.diameters.filter { !availablePitches(for: $0, stock: stock).isEmpty }
+    }
+    private func availablePitches(for diameter: Double, stock: Double? = nil) -> [Double] {
+        guard editingID == nil, let stock = stock ?? (selectedSource?["stock_diameter"] as? Double) else {
+            return ThreadCatalog.pitches(for: diameter)
+        }
+        let internalFace = selectedSource?["side"] as? String == "internal"
+        return ThreadCatalog.pitches(for: diameter).filter { pitch in
+            internalFace ? diameter - 5 * sqrt(3) * pitch / 8 >= stock - 1e-7
+                : diameter <= stock + 1e-7
+        }
+    }
+    private var settingsAreValid: Bool {
+        guard let value = Double(length)
+                ?? ExpressionEvaluator.evaluate(length, variables: document.session.variableValues()),
+              value.isFinite, value >= 2 * pitch, value <= 32 * pitch, value <= 100,
+              availablePitches(for: diameter).contains(pitch) else { return false }
+        if editingID == nil {
+            guard selectedSource != nil,
+                  let available = selectedSource?["available_length"] as? Double else { return false }
+            return value + (ends == .onePitchSetback ? 2 * pitch : 0) <= available + 1e-7
+        }
+        return true
+    }
+    private func selectCompatibleDefaults() {
+        guard editingID == nil, selectedSource != nil else { return }
+        if !availableDiameters.contains(diameter) {
+            let internalFace = selectedSource?["side"] as? String == "internal"
+            diameter = (internalFace ? availableDiameters.first : availableDiameters.last) ?? diameter
+        }
+        if !availablePitches(for: diameter).contains(pitch), let first = availablePitches(for: diameter).first {
+            pitch = first
+        }
+    }
     var body: some View {
         NavigationStack {
             Form {
@@ -35,18 +73,21 @@ struct ThreadOptionsSheet: View {
                         (initial?.side == .internal || selectedSource?["side"] as? String == "internal")
                             ? text("cad.thread.internal", "Internal") : text("cad.thread.external", "External"))
                     Picker(text("cad.thread.size", "Size"), selection: $diameter) {
-                        ForEach(ThreadCatalog.diameters, id: \.self) { Text(String(format: "M%.0f", $0)).tag($0) }
+                        ForEach(availableDiameters, id: \.self) { Text(String(format: "M%.0f", $0)).tag($0) }
                     }
                     .accessibilityIdentifier("CADThreadSize")
                     .onChange(of: diameter) { _, value in
-                        if !ThreadCatalog.pitches(for: value).contains(pitch) { pitch = ThreadCatalog.pitches(for: value).first ?? 1 }
+                        if !availablePitches(for: value).contains(pitch) { pitch = availablePitches(for: value).first ?? pitch }
                     }
                     Picker(text("cad.thread.pitch", "Pitch"), selection: $pitch) {
-                        ForEach(ThreadCatalog.pitches(for: diameter), id: \.self) { Text(String(format: "%.3g mm", $0)).tag($0) }
+                        ForEach(availablePitches(for: diameter), id: \.self) { Text(String(format: "%.3g mm", $0)).tag($0) }
                     }
                     .accessibilityIdentifier("CADThreadPitch")
-                    TextField(text("cad.thread.length", "Effective length (mm)"), text: $length)
-                        .accessibilityIdentifier("CADThreadLength")
+                    LabeledContent(text("cad.thread.length", "Effective length (mm)")) {
+                        TextField(text("cad.thread.length", "Effective length (mm)"), text: $length)
+                            .multilineTextAlignment(.trailing)
+                            .accessibilityIdentifier("CADThreadLength")
+                    }
                     Picker(text("cad.thread.hand", "Hand"), selection: $hand) {
                         Text(text("cad.thread.right", "Right-hand")).tag(ThreadSpec.Hand.right)
                         Text(text("cad.thread.left", "Left-hand")).tag(ThreadSpec.Hand.left)
@@ -81,12 +122,13 @@ struct ThreadOptionsSheet: View {
                 }
                 ToolbarItem(placement: .confirmationAction) {
                     Button(text("cad.thread.apply", "Apply"), action: apply)
-                        .disabled(editingID == nil && selectedSource == nil)
+                        .disabled(!settingsAreValid)
                         .accessibilityIdentifier("CADThreadApply")
                 }
             }
         }
         .onAppear(perform: load)
+        .onChange(of: sourceID) { _, _ in selectCompatibleDefaults() }
         .presentationDetents([.large])
     }
     private func sourceLabel(_ row: [String: Any]) -> String {
@@ -107,6 +149,7 @@ struct ThreadOptionsSheet: View {
             let reply = CADParameterService(document: document).handle(action: "thread.sources", args: [:])
             sourceRows = reply["rows"] as? [[String: Any]] ?? []
             sourceID = sourceRows.first?["id"] as? String ?? ""
+            selectCompatibleDefaults()
         }
     }
     private func apply() {
