@@ -333,6 +333,123 @@ nonisolated enum BlendImporter {
         var texture: Data?
     }
 
+    /// New Blender files persist TRS and parenting, while the evaluated world
+    /// matrix lives only in runtime memory. Reconstruct stored static object
+    /// transforms; never silently replace an unavailable placement by identity.
+    private final class StoredWorldTransforms {
+        let file: BlendFile
+        let budget: MeshImportBudget
+        var cache: [UInt64: simd_double4x4] = [:]
+        var visiting: Set<UInt64> = []
+
+        init(file: BlendFile, budget: MeshImportBudget) {
+            self.file = file
+            self.budget = budget
+        }
+
+        private func refused(_ reason: String) -> CADDocumentError {
+            CADDocumentError(code: "unsupported_import_content",
+                message: "Blender object placement cannot be retained: \(reason). Export a static glTF or apply the evaluated transforms in Blender. Nothing was imported; the source is unchanged.")
+        }
+
+        private func matrix(_ ob: Block, _ name: String) throws -> simd_double4x4? {
+            guard let values = file.floats(ob, "Object", name) else { return nil }
+            guard values.count == 16, values.allSatisfy(\.isFinite),
+                  abs(values[3]) < 1e-6, abs(values[7]) < 1e-6,
+                  abs(values[11]) < 1e-6, abs(values[15] - 1) < 1e-6 else {
+                throw refused("invalid \(name) transform")
+            }
+            return simd_double4x4(columns: (
+                SIMD4(Double(values[0]), Double(values[1]), Double(values[2]), Double(values[3])),
+                SIMD4(Double(values[4]), Double(values[5]), Double(values[6]), Double(values[7])),
+                SIMD4(Double(values[8]), Double(values[9]), Double(values[10]), Double(values[11])),
+                SIMD4(Double(values[12]), Double(values[13]), Double(values[14]), Double(values[15]))))
+        }
+
+        private func vector(_ ob: Block, _ name: String, fallback: SIMD3<Double>? = nil) throws -> SIMD3<Double> {
+            guard let values = file.floats(ob, "Object", name) else {
+                if let fallback { return fallback }
+                throw refused("missing \(name)")
+            }
+            guard values.count == 3, values.allSatisfy(\.isFinite) else { throw refused("invalid \(name)") }
+            return SIMD3(Double(values[0]), Double(values[1]), Double(values[2]))
+        }
+
+        private func rotation(_ ob: Block, delta: Bool) throws -> simd_double4x4 {
+            let mode = file.int(ob, "Object", "rotmode") ?? 1
+            let prefix = delta ? "d" : ""
+            if mode == 0 {
+                guard let values = file.floats(ob, "Object", prefix + "quat"), values.count == 4,
+                      values.allSatisfy(\.isFinite) else { throw refused("invalid quaternion") }
+                let q = SIMD4(Double(values[1]), Double(values[2]), Double(values[3]), Double(values[0]))
+                return simd_length_squared(q) > 1e-20
+                    ? simd_double4x4(simd_quatd(vector: simd_normalize(q))) : matrix_identity_double4x4
+            }
+            if mode == -1 {
+                let angle = Double(file.floats(ob, "Object", prefix + "rotAngle")?.first ?? 0)
+                let axis = try vector(ob, prefix + "rotAxis", fallback: SIMD3(0, 1, 0))
+                guard angle.isFinite else { throw refused("invalid axis angle") }
+                if abs(angle) < 1e-14 { return matrix_identity_double4x4 }
+                guard simd_length_squared(axis) > 1e-20 else { throw refused("zero rotation axis") }
+                return simd_double4x4(simd_quatd(angle: angle, axis: simd_normalize(axis)))
+            }
+            let orders = [[0, 1, 2], [0, 2, 1], [1, 0, 2], [1, 2, 0], [2, 0, 1], [2, 1, 0]]
+            guard (1...orders.count).contains(mode) else { throw refused("unknown Euler order") }
+            let angles = try vector(ob, prefix + "rot", fallback: delta ? .zero : nil)
+            var result = matrix_identity_double4x4
+            for index in orders[mode - 1] {
+                var axis = SIMD3<Double>.zero; axis[index] = 1
+                result = simd_double4x4(simd_quatd(angle: angles[index], axis: axis)) * result
+            }
+            return result
+        }
+
+        func world(_ ob: Block) throws -> simd_double4x4 {
+            try budget.checkCancellation()
+            if let cached = cache[ob.oldAddress] { return cached }
+            guard visiting.count < 128, visiting.insert(ob.oldAddress).inserted else {
+                throw refused("cyclic or excessively deep object hierarchy")
+            }
+            defer { visiting.remove(ob.oldAddress) }
+            let world: simd_double4x4
+            if let baked = try matrix(ob, "obmat") {
+                world = baked
+            } else {
+                if let at = file.fieldOffset(ob, "Object", "constraints"),
+                   let first = file.structDef("ListBase")?.byName["first"], file.pointer(at + first.offset) != 0 {
+                    throw refused("evaluated constraints are not stored as a world transform")
+                }
+                let location = try vector(ob, "loc") + vector(ob, "dloc", fallback: .zero)
+                // Base scale persists under the historical size spelling;
+                // dscale is the live delta scale. The separate dsize member
+                // in current DNA is obsolete and may be all zeroes.
+                let fields = file.structDef("Object")?.byName ?? [:]
+                let scale = try vector(ob, fields["scale"] == nil ? "size" : "scale")
+                    * vector(ob, "dscale", fallback: SIMD3(repeating: 1))
+                var local = try rotation(ob, delta: true) * rotation(ob, delta: false)
+                    * simd_double4x4(diagonal: SIMD4(scale, 1))
+                local.columns.3 = SIMD4(location, 1)
+                if let address = file.ptr(ob, "Object", "parent"), address != 0 {
+                    guard let parent = file.deref(address), file.structName(of: parent) == "Object",
+                          (file.int(ob, "Object", "partype") ?? 0) & 0xF == 0,
+                          file.int(parent, "Object", "type") != 2,
+                          let inverse = try matrix(ob, "parentinv") else {
+                        throw refused("unavailable or evaluated parenting")
+                    }
+                    world = try self.world(parent) * inverse * local
+                } else {
+                    world = local
+                }
+            }
+            guard (0..<4).allSatisfy({ c in (0..<4).allSatisfy { world[c][$0].isFinite } }) else {
+                throw refused("non-finite world transform")
+            }
+            try budget.charge(MemoryLayout<simd_double4x4>.stride, "Blender object transforms")
+            cache[ob.oldAddress] = world
+            return world
+        }
+    }
+
     private static func extract(_ file: BlendFile, siblings: [String: Data], unitScale: Double,
                                 budget: MeshImportBudget) throws -> [ImportedPart] {
         guard file.structDef("Object") != nil, file.structDef("Mesh") != nil else {
@@ -340,6 +457,7 @@ nonisolated enum BlendImporter {
         }
         var parts: [ImportedPart] = []
         var materialCache: [UInt64: RawMaterial] = [:]
+        let transforms = StoredWorldTransforms(file: file, budget: budget)
 
         for ob in file.blocks where ob.code == "OB" && file.structName(of: ob) == "Object" {
             try budget.checkCancellation()
@@ -348,16 +466,7 @@ nonisolated enum BlendImporter {
             guard let me = file.deref(file.ptr(ob, "Object", "data")), file.structName(of: me) == "Mesh" else {
                 throw CADDocumentError(code: "missing_import_resources", message: "Blender mesh data is unavailable for object \(name). The whole import was refused; the source is unchanged.")
             }
-            // obmat[4][4]: obmat[i] is column i (Blender stores column vectors).
-            let m = file.floats(ob, "Object", "obmat") ?? []
-            var world = matrix_identity_double4x4
-            if m.count == 16 {
-                world = simd_double4x4(columns: (
-                    SIMD4(Double(m[0]), Double(m[1]), Double(m[2]), Double(m[3])),
-                    SIMD4(Double(m[4]), Double(m[5]), Double(m[6]), Double(m[7])),
-                    SIMD4(Double(m[8]), Double(m[9]), Double(m[10]), Double(m[11])),
-                    SIMD4(Double(m[12]), Double(m[13]), Double(m[14]), Double(m[15]))))
-            }
+            let world = try transforms.world(ob)
             let mirrored = simd_double3x3(
                 SIMD3(world.columns.0.x, world.columns.0.y, world.columns.0.z),
                 SIMD3(world.columns.1.x, world.columns.1.y, world.columns.1.z),

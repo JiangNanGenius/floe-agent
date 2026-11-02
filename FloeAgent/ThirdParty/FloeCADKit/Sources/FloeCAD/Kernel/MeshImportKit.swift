@@ -350,7 +350,20 @@ nonisolated enum MeshImportKit {
         throws -> [ImportedPart] {
         let probe = try probe(data: data, fileName: fileName, siblings: siblings,
                               limits: limits, cancellation: cancellation)
+        try requireSelectedUnits(probe, selectedScale: unitScale)
         return scaled(probe.parts, by: unitScale ?? probe.detectedScale)
+    }
+
+    /// A binary USD layer may declare units that Model I/O does not expose.
+    /// Unknown is not the same as the USD default: keep the ordinary preview
+    /// and unit picker, but require a choice before a silent/tool import.
+    static func requireSelectedUnits(_ probe: MeshImportProbe, selectedScale: Double?, required: Bool = false) throws {
+        if selectedScale == nil, !probe.unitIsDeclared,
+           required || probe.format == "USD" || probe.format == "USDZ" {
+            throw CADDocumentError(code: "import_units_required",
+                message: FloeCADStrings.text("cad.import.chooseUnit",
+                    "Choose the file’s unit before importing."))
+        }
     }
 
     /// Parse without applying units (see `MeshImportProbe`).
@@ -390,7 +403,7 @@ nonisolated enum MeshImportKit {
             // expands it; the unit probe is a bounded second read.
             parts = try USDImporter.parts(from: data, fileName: fileName, unitScale: 1,
                                           budget: budget)
-            declaredScale = USDImporter.unitScale(of: data, ext: ext)
+            declaredScale = try USDImporter.unitScale(of: data, ext: ext)
             format = ext == "usdz" ? "USDZ" : "USD"
         case "obj":
             parts = try OBJTexturedImporter.parts(from: data, siblings: siblings, unitScale: 1,
@@ -1528,20 +1541,50 @@ nonisolated enum OBJTexturedImporter {
 // MARK: - USD / USDZ through Model I/O
 
 nonisolated enum USDImporter {
-    /// USD's `metersPerUnit` (default 0.01 = centimetres) → millimetres.
-    static func unitScale(of data: Data, ext: String) -> Double {
-        var metersPerUnit = 0.01
-        // A text layer (or a text layer inside the archive) states it plainly.
-        let haystack: String? = ext == "usda"
-            ? String(data: data, encoding: .utf8)
-            : (try? ZipReader.entries(in: data))?.first { ($0.key as NSString).pathExtension == "usda" }
-                .flatMap { String(data: $0.value, encoding: .utf8) }
-        if let haystack, let range = haystack.range(of: "metersPerUnit") {
-            let tail = haystack[range.upperBound...].prefix(40)
-            let digits = tail.drop { !($0.isNumber || $0 == ".") }.prefix { $0.isNumber || $0 == "." || $0 == "e" || $0 == "-" }
-            if let v = Double(digits), v > 0 { metersPerUnit = v }
+    /// Only a readable root layer can establish the authored unit (or its
+    /// absent-metadata default). Binary crate metadata is not exposed by
+    /// Model I/O; return unknown instead of silently assuming centimetres.
+    static func unitScale(of data: Data, ext: String) throws -> Double? {
+        let maximumHeader = 64 * 1024
+        let prefix: Data
+        let truncated: Bool
+        if ext == "usdz" {
+            // USDZ stores its root first and without compression. Read only a
+            // bounded prefix; do not inflate textures a second time merely
+            // to discover stage metadata. Model I/O's container expansion
+            // already passed the caller's budget before this metadata probe.
+            guard data.count >= 30 else { throw MeshImportError.malformed("usdz: missing root layer") }
+            func u16(_ at: Int) -> Int { data.withUnsafeBytes { Int(UInt16(littleEndian: $0.loadUnaligned(fromByteOffset: at, as: UInt16.self))) } }
+            func u32(_ at: Int) -> Int { data.withUnsafeBytes { Int(UInt32(littleEndian: $0.loadUnaligned(fromByteOffset: at, as: UInt32.self))) } }
+            guard u32(0) == 0x04034b50 else { throw MeshImportError.malformed("usdz: missing root layer") }
+            guard u16(8) == 0, u16(6) & 0x08 == 0 else { return nil }
+            let start = 30 + u16(26) + u16(28), count = u32(18)
+            guard start <= data.count, count <= data.count - start else { throw MeshImportError.malformed("usdz: truncated root layer") }
+            prefix = data.subdata(in: start..<start+min(count, maximumHeader))
+            truncated = count > maximumHeader
+        } else {
+            prefix = Data(data.prefix(maximumHeader))
+            truncated = data.count > maximumHeader
         }
-        return metersPerUnit * 1000
+        guard let text = String(data: prefix, encoding: .utf8),
+              text.trimmingCharacters(in: .whitespacesAndNewlines).hasPrefix("#usda") else { return nil }
+        // Only stage metadata, never an identically named attribute on a prim.
+        let definition = try NSRegularExpression(pattern: "(?m)^\\s*(?:def|over|class)\\s")
+        let range = NSRange(text.startIndex..<text.endIndex, in: text)
+        let firstDefinition = definition.firstMatch(in: text, range: range)?.range.location
+        let headerEnd = try NSRegularExpression(pattern: "(?m)^\\s*\\)").firstMatch(in: text, range: range)?.range.location
+        if truncated && firstDefinition == nil && headerEnd == nil { return nil }
+        let limit = firstDefinition ?? (text as NSString).length
+        let header = (text as NSString).substring(to: limit)
+        // Do not mistake a property-looking line inside a multiline document
+        // string for stage metadata; that uncommon header needs a unit choice.
+        if header.contains("\"\"\"") || header.contains("'''") { return nil }
+        let declaration = try NSRegularExpression(pattern: "(?m)^\\s*metersPerUnit\\s*=\\s*([^\\s#)]+)")
+        guard let match = declaration.firstMatch(in: header, range: NSRange(location: 0, length: (header as NSString).length)) else { return 10 }
+        let raw = (header as NSString).substring(with: match.range(at: 1))
+        guard let metres = Double(raw), metres.isFinite, metres > 0,
+              (metres * 1000).isFinite else { throw MeshImportError.malformed("usd: invalid length unit") }
+        return metres * 1000
     }
 
     static func parts(from data: Data, fileName: String, unitScale: Double,

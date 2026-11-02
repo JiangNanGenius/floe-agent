@@ -182,7 +182,10 @@ public nonisolated struct CADMeshImportCoverage: Codable,Sendable,Equatable {
                     if (primitive["mode"] as? Int ?? 4) != 4 { report.unsupported.append("glTF primitive mode \(primitive["mode"] ?? "unknown")") }
                 }
             }
-        case "usd","usda","usdc","usdz","blend":
+        case "blend":
+            report.retained += ["part_names","uv0","base_color","base_color_texture"]
+            report.discarded += ["material_channels_other_than_base_color","editable_scene_hierarchy","animation_rig_modifiers","unverified_scene_data"]
+        case "usd","usda","usdc","usdz":
             report.retained += ["supported_static_materials"]
             report.discarded += ["editable_scene_hierarchy","animation_rig_modifiers","unverified_scene_data"]
             if ext != "usdz",ext != "blend",let text=String(data:data,encoding:.utf8),

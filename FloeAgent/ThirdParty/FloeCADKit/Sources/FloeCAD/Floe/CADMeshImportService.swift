@@ -88,9 +88,7 @@ public nonisolated enum CADMeshImportService {
             let positionCount = probe.parts.reduce(0) { $0 + $1.mesh.positions.count }
             try budget.charge(positionCount * MemoryLayout<SIMD3<Float>>.stride,
                               "unit-scaled positions")
-            if requireExplicitUnits, !probe.unitIsDeclared, unitScale == nil {
-                throw CADDocumentError(code: "import_units_required", message: "This file has no declared length unit. Choose units or a positive millimetres-per-unit scale before importing.")
-            }
+            try MeshImportKit.requireSelectedUnits(probe, selectedScale: unitScale, required: requireExplicitUnits)
             let scale = unitScale ?? probe.detectedScale
             probe.coverage?.selectedScaleMM = scale
             let parts = MeshImportKit.scaled(probe.parts, by: scale)

@@ -145,7 +145,7 @@ final class NativeCADImportParityTests: XCTestCase {
         try await assertIndependentStaticScene("nested-static.blend")
     }
 
-    func testUSDZNestedStaticSceneKeepsIndependentPlacementAndDeclaredUnits() async throws {
+    func testUSDZNestedStaticSceneRequiresExplicitUnitsAndKeepsIndependentPlacement() async throws {
         try await assertIndependentStaticScene("nested-static.usdz")
     }
 
@@ -161,20 +161,34 @@ final class NativeCADImportParityTests: XCTestCase {
         XCTAssertEqual(CADImportResources.sha256(bytes),files[fileName]?["sha256"] as? String)
         let expected=try XCTUnwrap(manifest["expected"] as? [[String:Any]])
         let source=try put(fileName,bytes)
-        // This is the same pre-commit report and unit detection used by both
-        // entry points. No explicit scale may mask broken native detection.
-        let plan=try CADMeshImportService.parse(data:bytes,fileName:fileName)
+        // Binary USD metadata is not exposed by Model I/O. Explicitly require
+        // a choice instead of treating unknown as the centimetre default.
+        // The original269 wrong10mm detection failure is retained separately.
+        let binaryUSD=fileName.hasSuffix(".usdz")
+        if binaryUSD {
+            let probe=try CADMeshImportService.parseProbe(data:bytes,fileName:fileName)
+            XCTAssertFalse(probe.unitIsDeclared)
+            XCTAssertThrowsError(try CADMeshImportService.parse(data:bytes,fileName:fileName))
+            XCTAssertThrowsError(try MeshImportKit.parts(from:bytes,fileName:fileName))
+        }
+        let plan=try CADMeshImportService.parse(data:bytes,fileName:fileName,unitScale:binaryUSD ? 1000:nil)
         let report=try XCTUnwrap(plan.coverage)
         XCTAssertTrue(report.retained.contains("object_placement"))
         XCTAssertTrue(report.discarded.contains("editable_scene_hierarchy"))
         XCTAssertTrue(report.discarded.contains("animation_rig_modifiers"))
         XCTAssertTrue(report.sourceRetained)
-        XCTAssertEqual(plan.detectedScale,1000,accuracy:1e-8)
+        XCTAssertEqual(try XCTUnwrap(report.selectedScaleMM),1000,accuracy:1e-8)
+        if !binaryUSD { XCTAssertEqual(plan.detectedScale,1000,accuracy:1e-8) }
         keep(try JSONSerialization.data(withJSONObject:report.json,options:[.sortedKeys]),name:"E27 \(fileName) pre-import report.json")
         let group=try await CADImportSourceReader.readGroup(urls:[source]).get()
-        let ui=try await manual(group,name:"Manual-\(fileName).floecad");defer{ui.close()}
+        let ui=try await manual(group,unit:binaryUSD ? .metres:nil,name:"Manual-\(fileName).floecad");defer{ui.close()}
         let aiName="Agent-\(fileName).floecad",aiURL=try await target(aiName)
-        let proposal=try await propose(target:aiName,source:fileName)
+        if binaryUSD {
+            do { _=try await propose(target:aiName,source:fileName);XCTFail("Unknown USD units must not create a silent wrongly scaled proposal") }
+            catch { XCTAssertTrue(error.localizedDescription.lowercased().contains("unit"),"\(error)") }
+            XCTAssertTrue(FloeCAD3DBridge.shared.pendingProposals(for:aiURL).isEmpty)
+        }
+        let proposal=try await propose(target:aiName,source:fileName,units:binaryUSD ? "m":nil)
         try await apply(proposal)
         let ai=try await FloeCAD3DBridge.shared.openDocument(at:aiURL)
         equalBodies(ui,ai)
@@ -190,6 +204,12 @@ final class NativeCADImportParityTests: XCTestCase {
             for axis in 0..<3 { XCTAssertEqual(lo[axis],minimum[axis],accuracy:1e-3,"\(fileName) \(body.name) minimum");XCTAssertEqual(hi[axis],maximum[axis],accuracy:1e-3,"\(fileName) \(body.name) maximum") }
             let color=try XCTUnwrap(row["baseColor"] as? [Double]),material=try XCTUnwrap(body.material)
             for channel in 0..<4 { XCTAssertEqual(material.baseColor[channel],color[channel],accuracy:1e-4) }
+            if binaryUSD {
+                XCTAssertEqual(material.metallic,0.2,accuracy:1e-5)
+                XCTAssertEqual(material.roughness,0.6,accuracy:1e-5)
+            } else {
+                XCTAssertTrue(report.discarded.contains("material_channels_other_than_base_color"))
+            }
         }
         XCTAssertTrue(unused.isEmpty)
         let glb=GLBExporter.glb(bodies:ai.session.document.bodies)
@@ -204,6 +224,50 @@ final class NativeCADImportParityTests: XCTestCase {
         let url=ui.url;ui.close();let reopened=try await FloeCADDocument.open(at:url);defer{reopened.close()}
         equalBodies(reopened,ai)
         XCTAssertEqual(try Data(contentsOf:source),bytes)
+    }
+
+    func testBlenderAllStoredRotationModesParentInverseAndDeltaScaleMatchIndependentWorldBounds() async throws {
+        let bytes=try fixture("world-transforms.blend")
+        let manifest=try XCTUnwrap(JSONSerialization.jsonObject(with:fixture("expected-world-transforms.json")) as? [String:Any])
+        let expected=try XCTUnwrap(manifest["expected"] as? [[String:Any]])
+        XCTAssertEqual(CADImportResources.sha256(bytes),(manifest["file"] as? [String:Any])?["sha256"] as? String)
+        let plan=try CADMeshImportService.parse(data:bytes,fileName:"world-transforms.blend")
+        XCTAssertEqual(plan.partCount,8)
+        let url=try await target("Transforms.floecad"),doc=try await FloeCADDocument.open(at:url);defer{doc.close()}
+        _=try CADMeshImportService.apply(plan,to:doc)
+        XCTAssertEqual(doc.summary().bodyCount,8)
+        for body in doc.session.document.bodies {
+            let row=try XCTUnwrap(expected.first{$0["name"] as? String==body.name})
+            let lo=try XCTUnwrap(row["minimum"] as? [Double]),hi=try XCTUnwrap(row["maximum"] as? [Double])
+            let (actualLo,actualHi)=worldBounds(body)
+            for axis in 0..<3 { XCTAssertEqual(actualLo[axis],lo[axis],accuracy:1e-3,"\(body.name)");XCTAssertEqual(actualHi[axis],hi[axis],accuracy:1e-3,"\(body.name)") }
+        }
+        doc.session.undo();XCTAssertEqual(doc.summary().bodyCount,0)
+        doc.session.redo();XCTAssertEqual(doc.summary().bodyCount,8)
+    }
+
+    func testBlenderCyclicParentRefusesWithoutChangingSourceOrTarget() async throws {
+        var bytes=try fixture("nested-static.blend")
+        let file=try BlendImporter.BlendFile(bytes,budget:MeshImportBudget.fresh(fileName:"cycle"))
+        let ob=try XCTUnwrap(file.blocks.first{$0.code=="OB" && file.int($0,"Object","type")==1})
+        let at=try XCTUnwrap(file.fieldOffset(ob,"Object","parent"))
+        for n in 0..<file.pointerSize { bytes[at+n]=UInt8(truncatingIfNeeded:ob.oldAddress >> (8*(file.littleEndian ? n:file.pointerSize-1-n))) }
+        let source=try put("cyclic.blend",bytes),url=try await target("Cyclic.floecad")
+        do { _=try await propose(target:"Cyclic.floecad",source:"cyclic.blend");XCTFail("Cyclic placement cannot become an identity-placed successful import") } catch {}
+        let doc=try await FloeCAD3DBridge.shared.openDocument(at:url)
+        XCTAssertEqual(doc.summary().bodyCount,0)
+        XCTAssertTrue(FloeCAD3DBridge.shared.pendingProposals(for:url).isEmpty)
+        XCTAssertEqual(try Data(contentsOf:source),bytes)
+    }
+
+    func testUSDRootUnitMetadataIsBoundedAndDoesNotReadPrimAttributes() throws {
+        func data(_ metadata:String,_ body:String="def Xform \"Root\" {}") -> Data { Data(("#usda 1.0\n(\n"+metadata+"\n)\n"+body).utf8) }
+        XCTAssertEqual(try USDImporter.unitScale(of:data("metersPerUnit = 1e-3"),ext:"usda"),1)
+        XCTAssertEqual(try USDImporter.unitScale(of:data("metersPerUnit = 2.5e-2"),ext:"usd"),25)
+        XCTAssertEqual(try USDImporter.unitScale(of:data("", "def Xform \"Root\" {\n double metersPerUnit = 1\n}"),ext:"usd"),10)
+        for raw in ["0","-1","nan","inf","1e309"] { XCTAssertThrowsError(try USDImporter.unitScale(of:data("metersPerUnit = \(raw)"),ext:"usda")) }
+        XCTAssertNil(try USDImporter.unitScale(of:Data("PXR-USDC".utf8),ext:"usdc"))
+        XCTAssertNil(try USDImporter.unitScale(of:Data(("#usda 1.0\n(\n"+String(repeating:" ",count:70_000)+"metersPerUnit = 1\n)\n").utf8),ext:"usda"))
     }
 
     func testExplicitTwoMillimetresAndTwoMetresAgreeAcrossManualAgentAndIndependentExport() async throws {
