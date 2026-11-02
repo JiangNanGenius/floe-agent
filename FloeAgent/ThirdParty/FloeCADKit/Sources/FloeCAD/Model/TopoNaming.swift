@@ -86,6 +86,21 @@ nonisolated enum TopoOp: Sendable {
     case pushPull
 }
 
+/// Issued by the resolver's actual branch, never inferred from confidence or
+/// from the name that happens to be on today's matching geometry.
+nonisolated enum FaceIdentityProof: Sendable {
+    case currentGeometry
+    case recordedQualifiedName
+    case recordedSemanticRole
+
+    var permitsPersistentReplay: Bool {
+        switch self {
+        case .currentGeometry: return false
+        case .recordedQualifiedName, .recordedSemanticRole: return true
+        }
+    }
+}
+
 /// The concrete face a `FaceRef` resolved to, plus the match confidence [0,1].
 nonisolated struct ResolvedFace: Sendable {
     var planar: FaceTopology.PlanarFace?
@@ -100,6 +115,7 @@ nonisolated struct ResolvedFace: Sendable {
     /// was no other candidate. Upgrades require a clear margin — pinning a
     /// name onto a near-tie would bake in a coin flip.
     var margin: Double? = nil
+    var identityProof: FaceIdentityProof = .currentGeometry
 }
 
 /// Swappable topological-naming strategy. Tranche 1 = `SignatureNaming`.
@@ -113,6 +129,16 @@ nonisolated protocol TopoNaming: Sendable {
     /// boosted by a `table`'s roles). Named refs require their recorded identity;
     /// unnamed legacy refs return a matching face above threshold, else nil.
     func resolve(_ ref: FaceRef, in body: Body, table: FaceTable?) -> ResolvedFace?
+}
+
+nonisolated extension TopoNaming {
+    /// History replay must prove the recorded intent. Fresh picking keeps
+    /// using resolve so an unqualified current face remains selectable.
+    func resolvePersisted(_ ref: FaceRef, in body: Body, table: FaceTable?) -> ResolvedFace? {
+        guard let face = resolve(ref, in: body, table: table),
+              face.identityProof.permitsPersistentReplay else { return nil }
+        return face
+    }
 }
 
 // MARK: - SignatureNaming (tranche 1)
@@ -271,7 +297,8 @@ nonisolated struct SignatureNaming: TopoNaming {
                       Self.exactSignature(signature, ref.signature) else { return nil }
             }
             return ResolvedFace(planar: face.planar, cylinder: face.cylinder,
-                                confidence: 1, elementName: name)
+                                confidence: 1, elementName: name,
+                                identityProof: name.isStableFaceIdentity ? .recordedQualifiedName : .currentGeometry)
         }
 
         // Some old refs already contain an author-owned primitive/cap role.
@@ -293,7 +320,8 @@ nonisolated struct SignatureNaming: TopoNaming {
                 if face.triangles == match.element.triangles,
                    Self.kindCompatible(face.signature.kind, ref.signature.kind) {
                     return ResolvedFace(planar: face.planar, cylinder: face.cylinder,
-                        confidence: 1, elementName: name, margin: .infinity)
+                        confidence: 1, elementName: name, margin: .infinity,
+                        identityProof: .recordedSemanticRole)
                 }
             }
         }
@@ -367,7 +395,9 @@ nonisolated struct SignatureNaming: TopoNaming {
             face.cylinder = cylinder
         }
         return ResolvedFace(planar: face.planar, cylinder: face.cylinder,
-                            confidence: 1, elementName: ref.elementName)
+                            confidence: 1, elementName: ref.elementName,
+                            identityProof: ref.elementName?.isStableFaceIdentity == true
+                                ? .recordedQualifiedName : .currentGeometry)
     }
 
     // MARK: Scoring

@@ -104,6 +104,12 @@ nonisolated struct ElementName: Codable, Hashable, Sendable {
         default: return true
         }
     }
+
+    /// An identity that may survive a rebuild. A result ordinal and even a
+    /// unique partial signature describe a current pick, not its old intent.
+    var isStableFaceIdentity: Bool {
+        !requiresExactSignature && hasSupportedOperationIdentity
+    }
 }
 
 /// One crease between two uniquely named faces. A pair that meets at several
@@ -538,7 +544,8 @@ nonisolated enum ElementNaming {
     static func upgraded(_ ref: FaceRef, from resolved: ResolvedFace) -> FaceRef? {
         guard ref.elementName == nil,
               let name = resolved.elementName,
-              !name.requiresExactSignature,
+              name.isStableFaceIdentity,
+              resolved.identityProof.permitsPersistentReplay,
               resolved.confidence >= SignatureNaming.upgradeConfidence,
               (resolved.margin ?? .infinity) >= SignatureNaming.nameMissMargin
         else { return nil }

@@ -187,7 +187,11 @@ final class CADDeleteFaceHistoryTests: XCTestCase {
         try await assertRemovedFaceRegionDoesNotRebind(compoundCutter: true)
     }
 
-    func testFailedLegacyFaceEditCannotPersistAnUpgradeBeforeTheKernelSucceeds() async throws {
+    // Compatibility change: a nil name plus derived ordinal never recorded
+    // the selected face's identity. Keep it unresolved, even when today's
+    // matching face has a qualified name. The original positive expectation
+    // and source are retained in the primary proof-gate decision record.
+    func testUnprovenLegacyFaceEditCannotPersistAnUpgrade() async throws {
         let f = try await fixture()
         let body = try XCTUnwrap(f.document.session.document.body(with: f.body))
         let brep = try XCTUnwrap(body.brep)
@@ -204,16 +208,93 @@ final class CADDeleteFaceHistoryTests: XCTestCase {
                 revision += 1
                 return revision
             }
+            XCTAssertNotNil(result.errors[node.id], "Unrecorded identity cannot authorize a persistent edit")
+            XCTAssertNil(result.proposedUpgrades[node.id], "Today's name is not proof of yesterday's selection")
+            XCTAssertEqual(abs(OCCTKernel.volume(try XCTUnwrap(result.bodies.first { $0.id == f.body }?.brep))), originalVolume, accuracy: 1e-4)
+            guard case let .pushPull(saved, _, _) = graph.nodes.last?.kind else {
+                return XCTFail("Legacy operand was lost")
+            }
+            XCTAssertEqual(saved, ref, "Refusal must retain the original reference without inventing provenance")
+        }
+    }
+
+    func testRecordedSemanticLegacyUpgradeRemainsAtomicAcrossKernelFailure() throws {
+        let bodyID = BodyID()
+        let source = FeatureNode(name: "Box", kind: .primitive(
+            spec: .box(width: 40, depth: 30, height: 10), placement: .identity), outputBodyIDs: [bodyID])
+        var revision: UInt64 = 0
+        let original = FeatureGraph(nodes: [source]).evaluate(sketches: [], planes: [], naming: SignatureNaming()) {
+            revision += 1; return revision
+        }
+        let body = try XCTUnwrap(original.bodies.first)
+        let brep = try XCTUnwrap(body.brep)
+        let top = try XCTUnwrap(OCCTKernel.faceInfo(brep).first { $0.normal.y > 0.99 })
+        let ref = FaceRef(body: BodyRef(producer: source.id, bodyID: bodyID), creator: source.id,
+            role: .boxFace(.py), signature: try XCTUnwrap(top.signature), elementName: nil)
+        let originalVolume = abs(OCCTKernel.volume(brep))
+        for distance in [1.0, -10.0] {
+            let node = FeatureNode(name: "Semantic legacy push", kind: .pushPull(face: ref,
+                distance: Expr(value: distance), mode: .planarAxial), outputBodyIDs: [bodyID])
+            let result = FeatureGraph(nodes: [source, node]).evaluate(sketches: [], planes: [], naming: SignatureNaming()) {
+                revision += 1; return revision
+            }
             if distance > 0 {
                 XCTAssertTrue(result.errors.isEmpty, "\(result.errors)")
-                XCTAssertNotNil(result.proposedUpgrades[node.id], "A successful stable named cap may upgrade the legacy operand")
-                XCTAssertGreaterThan(abs(OCCTKernel.volume(try XCTUnwrap(result.bodies.first { $0.id == f.body }?.brep))), originalVolume)
+                XCTAssertNotNil(result.proposedUpgrades[node.id], "Recorded primitive role is a legitimate legacy identity")
+                XCTAssertGreaterThan(abs(OCCTKernel.volume(try XCTUnwrap(result.bodies.first?.brep))), originalVolume)
             } else {
-                XCTAssertNotNil(result.errors[node.id], "Collapsing the full thickness must fail")
-                XCTAssertNil(result.proposedUpgrades[node.id], "Kernel failure must not persist the proposed identity")
-                XCTAssertEqual(abs(OCCTKernel.volume(try XCTUnwrap(result.bodies.first { $0.id == f.body }?.brep))), originalVolume, accuracy: 1e-4)
+                XCTAssertNotNil(result.errors[node.id])
+                XCTAssertNil(result.proposedUpgrades[node.id], "Kernel failure must not persist a proposed identity")
+                XCTAssertEqual(abs(OCCTKernel.volume(try XCTUnwrap(result.bodies.first?.brep))), originalVolume, accuracy: 1e-4)
             }
         }
+    }
+
+    func testPartialSignatureCollisionCannotAuthorizePersistentReplayOrUpgrade() throws {
+        let bodyID = BodyID()
+        var source = FeatureNode(name: "Source", kind: .primitive(
+            spec: .box(width: 2, depth: 2, height: 1), placement: .identity), outputBodyIDs: [bodyID])
+        var revision: UInt64 = 0
+        let a = FeatureGraph(nodes: [source]).evaluate(sketches: [], planes: [], naming: SignatureNaming()) {
+            revision += 1; return revision
+        }
+        source.kind = .primitive(spec: .box(width: 4, depth: 1, height: 1), placement: .identity)
+        let b = FeatureGraph(nodes: [source]).evaluate(sketches: [], planes: [], naming: SignatureNaming()) {
+            revision += 1; return revision
+        }
+        XCTAssertTrue(a.errors.isEmpty && b.errors.isEmpty)
+        let before = try XCTUnwrap(a.bodies.first), after = try XCTUnwrap(b.bodies.first)
+        let topA = try XCTUnwrap(OCCTKernel.faceInfo(try XCTUnwrap(before.brep)).first { $0.normal.y > 0.99 })
+        let topB = try XCTUnwrap(OCCTKernel.faceInfo(try XCTUnwrap(after.brep)).first { $0.normal.y > 0.99 })
+        let signatureA = try XCTUnwrap(topA.signature), signatureB = try XCTUnwrap(topB.signature)
+        XCTAssertTrue(SignatureNaming.exactSignature(signatureA, signatureB),
+                      "Different 2x2 and 4x1 boundaries really collide under the old partial fingerprint")
+        let naming = SignatureNaming()
+        var ref = FaceRef(body: BodyRef(producer: source.id, bodyID: bodyID), creator: source.id,
+                          role: .derived(index: 0), signature: signatureA)
+        let table = try XCTUnwrap(b.faceTables[bodyID])
+        let pick = try XCTUnwrap(naming.resolve(ref, in: after, table: table),
+                                "Current selection geometry must remain available")
+        XCTAssertNotNil(pick.elementName, "Today's semantic name must not become an old unrecorded intent")
+        XCTAssertFalse(pick.identityProof.permitsPersistentReplay)
+        XCTAssertNil(ElementNaming.upgraded(ref, from: pick))
+        XCTAssertNil(naming.resolvePersisted(ref, in: after, table: table))
+        // A still-present result ordinal is no stronger than the nil name.
+        for sourceName in [ElementName.Source.kernelFace(index: topB.index),
+                           .opFace(operation: source.id, parents: [], index: topB.index)] {
+            let name = ElementName(creator: source.id, source: sourceName)
+            ref.elementName = name
+            var ordinalTable = table
+            ordinalTable.nativeFaceNames?[topB.index] = name
+            for index in ordinalTable.entries.indices where ordinalTable.entries[index].elementName == pick.elementName {
+                ordinalTable.entries[index].elementName = name
+            }
+            XCTAssertNotNil(naming.resolve(ref, in: after, table: ordinalTable))
+            XCTAssertNil(naming.resolvePersisted(ref, in: after, table: ordinalTable))
+        }
+        ref.elementName = pick.elementName
+        XCTAssertNotNil(naming.resolvePersisted(ref, in: after, table: table),
+                        "An actually recorded qualified identity may follow its intended top face")
     }
 
     private func assertRemovedFaceRegionDoesNotRebind(compoundCutter: Bool) async throws {

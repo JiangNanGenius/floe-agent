@@ -126,7 +126,8 @@ nonisolated struct FaceSignature: Codable, Hashable, Sendable {
 /// so documents written before the field exist load unchanged and legacy
 /// refs stay byte-identical on disk. Resolution: a compatible name hit wins;
 /// a missing named identity reports a broken reference rather than binding a
-/// replacement by resemblance. Unnamed legacy refs keep signature matching.
+/// replacement by resemblance. Unnamed legacy refs retain current geometric
+/// picking; persisted replay also requires an already-recorded semantic role.
 nonisolated struct FaceRef: Codable, Hashable, Sendable {
     var body: BodyRef
     var creator: FeatureID

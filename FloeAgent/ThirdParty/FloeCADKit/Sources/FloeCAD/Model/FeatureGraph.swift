@@ -1624,7 +1624,7 @@ nonisolated extension FeatureGraph {
         // geometry after an upstream edit.
         let table = state.faceTables[body.id]
         if mode == .cylinderRadial {
-            guard let resolved = state.naming.resolve(face, in: body, table: table),
+            guard let resolved = state.naming.resolvePersisted(face, in: body, table: table),
                   let cylinder = resolved.cylinder else {
                 state.errors[node.id] = .brokenRef("The original cylindrical face no longer resolves.")
                 return
@@ -1650,7 +1650,7 @@ nonisolated extension FeatureGraph {
             }
             return
         }
-        guard let resolved = state.naming.resolve(face, in: body, table: table),
+        guard let resolved = state.naming.resolvePersisted(face, in: body, table: table),
               let planar = resolved.planar else {
             state.errors[node.id] = .brokenRef("pushPull face did not resolve")
             return
@@ -1706,7 +1706,7 @@ nonisolated extension FeatureGraph {
         }
         if refuseExactSurface(node, "Move Face", body: body, into: &state) { return }
         let table = state.faceTables[body.id]
-        guard let resolved = state.naming.resolve(face, in: body, table: table),
+        guard let resolved = state.naming.resolvePersisted(face, in: body, table: table),
               let planar = resolved.planar else {
             state.errors[node.id] = .brokenRef("moveFace face did not resolve")
             return
@@ -1773,7 +1773,7 @@ nonisolated extension FeatureGraph {
             return
         }
         let table = state.faceTables[body.id]
-        guard let resolved = state.naming.resolve(face, in: body, table: table),
+        guard let resolved = state.naming.resolvePersisted(face, in: body, table: table),
               let planar = resolved.planar else {
             state.errors[node.id] = .brokenRef("scaleFace face did not resolve")
             return
@@ -1821,7 +1821,7 @@ nonisolated extension FeatureGraph {
             return
         }
         let table = state.faceTables[body.id]
-        guard let resolved = state.naming.resolve(face, in: body, table: table),
+        guard let resolved = state.naming.resolvePersisted(face, in: body, table: table),
               let planar = resolved.planar else {
             state.errors[node.id] = .brokenRef("rotateFace face did not resolve")
             return
@@ -1872,7 +1872,7 @@ nonisolated extension FeatureGraph {
         }
         if refuseExactSurface(node, "Draft Face", body: body, into: &state) { return }
         let table = state.faceTables[body.id]
-        guard let resolved = state.naming.resolve(face, in: body, table: table),
+        guard let resolved = state.naming.resolvePersisted(face, in: body, table: table),
               resolved.planar != nil || resolved.cylinder != nil else {
             state.errors[node.id] = .brokenRef("draftFace face did not resolve")
             return
@@ -2165,7 +2165,7 @@ nonisolated extension FeatureGraph {
         var upgrades = [(FaceRef, ResolvedFace)]()
         for ref in openFaceRefs {
             guard ref.body.bodyID == bodyRef.bodyID,
-                  let resolved = state.naming.resolve(ref, in: body, table: table),
+                  let resolved = state.naming.resolvePersisted(ref, in: body, table: table),
                   !resolved.triangles.isEmpty else {
                 state.errors[node.id] = .brokenRef("shell open face did not resolve")
                 return
@@ -2293,7 +2293,7 @@ nonisolated extension FeatureGraph {
         var upgrades = [(FaceRef, ResolvedFace)]()
         for ref in faceRefs {
             guard ref.body.bodyID == bodyRef.bodyID,
-                  let resolved = state.naming.resolve(ref, in: body, table: table),
+                  let resolved = state.naming.resolvePersisted(ref, in: body, table: table),
                   let point = Self.pointOnFace(resolved, mesh: body.render) else {
                 state.errors[node.id] = .brokenRef("delete-face target did not resolve")
                 return
@@ -2366,7 +2366,7 @@ nonisolated extension FeatureGraph {
         }
         if refuseExactSurface(node, "Replace Face", body: body, into: &state) { return }
         let table = state.faceTables[body.id]
-        guard let resolved = state.naming.resolve(faceRef, in: body, table: table),
+        guard let resolved = state.naming.resolvePersisted(faceRef, in: body, table: table),
               let planar = resolved.planar else {
             state.errors[node.id] = .brokenRef("replace-face target did not resolve")
             return

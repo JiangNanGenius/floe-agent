@@ -5735,7 +5735,7 @@ final class EditorViewModel {
         if refuseExactSurface(source, operation: "Shell") { return false }
         let naming = SignatureNaming()
         let resolved = openFaces.compactMap {
-            naming.resolve($0, in: source, table: input.faceTables[bodyRef.bodyID])
+            naming.resolvePersisted($0, in: source, table: input.faceTables[bodyRef.bodyID])
         }
         guard resolved.count == openFaces.count else {
             errorMessage = FloeCADStrings.text("cad.error.shellOpeningMissing", "An opening has changed. Select its face again.")
@@ -6068,7 +6068,7 @@ final class EditorViewModel {
         let naming = SignatureNaming()
         let targets = faces.compactMap { ref -> DeleteFaceKit.Target? in
             guard ref.body.bodyID == bodyRef.bodyID,
-                  let resolved = naming.resolve(ref, in: source, table: input.faceTables[bodyRef.bodyID]),
+                  let resolved = naming.resolvePersisted(ref, in: source, table: input.faceTables[bodyRef.bodyID]),
                   var target = DeleteFaceKit.target(resolved: resolved, mesh: source.render)
             else { return nil }
             target.sourceReference = ref

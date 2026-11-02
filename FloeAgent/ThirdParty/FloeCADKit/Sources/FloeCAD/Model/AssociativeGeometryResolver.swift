@@ -994,7 +994,8 @@ nonisolated struct AssociativeGeometryResolver: Sendable {
               let signature = face.signature, case .planar = signature.kind else {
             throw AssociativeReferenceError.exactNamedPlaneRequired(version)
         }
-        guard SignatureNaming.acceptsNamedSignature(name, current: signature, reference: source.signature) else {
+        guard name.isStableFaceIdentity,
+              SignatureNaming.acceptsNamedSignature(name, current: signature, reference: source.signature) else {
             throw AssociativeReferenceError.missingNamedFace(version)
         }
         return (SourceFaceGeometry(bodyID: version.bodyID, centroid: face.centroid,
@@ -1037,7 +1038,8 @@ nonisolated struct AssociativeGeometryResolver: Sendable {
               let axisPoint = face.axisPoint else {
             throw AssociativeReferenceError.exactNamedCylinderRequired(version)
         }
-        guard SignatureNaming.acceptsNamedSignature(name, current: signature, reference: source.signature) else {
+        guard name.isStableFaceIdentity,
+              SignatureNaming.acceptsNamedSignature(name, current: signature, reference: source.signature) else {
             throw AssociativeReferenceError.missingNamedFace(version)
         }
         // Display-only axial size: a cylinder face's own bounded extent is not
