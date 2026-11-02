@@ -241,6 +241,7 @@ fun IntegrationsMcpSyntheticPreview(modifier: Modifier = Modifier) {
             holder = remember { IntegrationsFlowHolder(NoopHost) },
             onBack = {},
             onAdd = {},
+            onCreateService = {},
         )
     }
 }

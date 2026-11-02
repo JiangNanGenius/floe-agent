@@ -59,6 +59,7 @@ fun McpServersPage(
     holder: IntegrationsFlowHolder,
     onBack: () -> Unit,
     onAdd: () -> Unit,
+    onCreateService: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     var deleteCandidate by remember { mutableStateOf<McpServerRowUi?>(null) }
@@ -110,6 +111,29 @@ fun McpServersPage(
             }
         }
         IntegrationSectionFooter(stringResource(R.string.mcp_footer))
+
+        FloeSettingsSectionCard(title = null) {
+            FloeSectionRow(
+                onClick = onCreateService,
+                title = {
+                    Column {
+                        FloeText(
+                            stringResource(R.string.mcp_create_service),
+                            style = Floe.typography.body,
+                            color = Floe.colors.label,
+                        )
+                        FloeText(
+                            stringResource(R.string.mcp_create_service_detail),
+                            style = Floe.typography.metadata,
+                            color = Floe.colors.secondaryLabel,
+                            maxLines = 2,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    }
+                },
+                modifier = Modifier.testTag("mcp.createService"),
+            )
+        }
 
         mcp.errorMessage?.let {
             IntegrationIssueLine(it, modifier = Modifier.testTag("mcp.errorMessage"))
@@ -258,6 +282,14 @@ private fun SectionScope.McpServerRow(
                         label = stringResource(R.string.mcp_cancel_refresh),
                         tag = "mcp.cancelRefresh",
                         onClick = { holder.cancelMcpRefresh(row) },
+                    )
+                } else if (row.enabled) {
+                    CardActionLink(
+                        label = stringResource(
+                            if (badge is McpConnectionBadge.Ready) R.string.mcp_refresh_tools
+                            else R.string.mcp_reconnect),
+                        tag = "mcp.reconnect",
+                        onClick = { holder.refreshMcpServer(row.serverId) },
                     )
                 }
             }

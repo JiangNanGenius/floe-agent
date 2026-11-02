@@ -76,6 +76,39 @@ interface IntegrationUiCallbacks {
     /** Continue after the automatic page budget on explicit user demand. */
     fun loadMoreCatalog(): Boolean = false
 
+    /* -------------------------- MCP guided service -------------------------- */
+
+    /** Read the explicit projects and eligible Linux environments for the
+     * guided setup. The host publishes [McpSetupUiState.options]; no first
+     * project or temp directory is guessed. */
+    fun loadMcpSetup(projectId: String? = null): Boolean = false
+
+    /** Read the environments for one explicit project. */
+    fun loadMcpSetupEnvironments(projectId: String): Boolean = false
+
+    /** Start one user-initiated setup. True = the host accepted the request
+     * and will publish every real phase through [McpSetupUiState]. */
+    fun startMcpSetup(request: McpSetupStartRequestUi): Boolean = false
+
+    /** Stop/cancel the record's owned build/service. The terminal state
+     * arrives through the projection; nothing is dismissed silently. */
+    fun cancelMcpSetup(recordId: String, revision: Long): Boolean = false
+
+    /** Remove an unfinished record and its staging/service directory. The
+     * existing MCP connection/config is never touched. */
+    fun discardMcpSetup(recordId: String, revision: Long): Boolean = false
+
+    fun clearMcpSetupError() {}
+
+    /** Retry only the verified connection commit (the service/receipt are
+     * already real). True = the host accepted the retry. */
+    fun retryMcpSetupCommit(recordId: String, revision: Long): Boolean = false
+
+    /** Leave the guided surface. An in-flight record is cancelled through
+     * its owned build/service lanes; a terminal record is preserved for
+     * review/removal. Never deletes a saved MCP connection. */
+    fun closeMcpSetup() {}
+
     /* -------------------------------- skills -------------------------------- */
 
     /** Official hub install (⇄ installOfficialSkill). True = started. */

@@ -1,0 +1,9 @@
+{
+  "templateID": "floe.mcp.node-http",
+  "version": "1.0.3",
+  "sourceRepository": "https://github.com/JiangNanGenius/floe-skill-hub",
+  "sourceCommit": "8ced65973986fa184c7e0792584373a685dcec72",
+  "archiveSHA256": "d484b1511e55777e57a06d6f6189e20d71dbeffdec808f56b3f54a66867e2651",
+  "contractSHA256": "425829d625212d4d843cfb3b11ccd0d126cd498c3f261dfb182d2bf1e33f229c",
+  "qualification": "Source integrity and syntax checked; guest and native client qualification is recorded separately in App release evidence."
+}

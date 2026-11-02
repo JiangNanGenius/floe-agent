@@ -17,8 +17,10 @@
 //     provider/model use answer the frozen typed `transportUnavailable`;
 //   * `MCPTransportAdmitting.admitsMCPNetwork` == false -> MCP HTTP/SSE/
 //     streamable servers report the same typed unavailability;
-//   * MCP stdio/SSH transports remain honestly PendingEnvironment until G03
-//     (the MCP domain admits no local process/SSH environment in G02).
+//   * MCP stdio has a SEPARATE default-closed `admitsMCPStdio` flag. The
+//     original factory/domain can consume the C02 adapter, but a live pipe
+//     and its admission remain a C01 qualification; SSH/Linux execution
+//     transports stay PendingEnvironment.
 // The ordinary AI launch gate (`RunGateAdmission`) is unaffected: a missing
 // model/secret still answers typed `needsConfiguration`/`credentialUnavailable`
 // regardless of transport state — readiness is never manufactured to enable
@@ -37,6 +39,10 @@ public final class G02QualifiedTransportGate: @unchecked Sendable,
 
     private let lock = NSLock()
     private var admitted: Bool
+    /// The C01 separated stdio pipe has its own admission. It is never
+    /// derived from the cloud/HTTP flag: a local pipe can be qualified while
+    /// the network transport is closed, and vice versa.
+    private var stdioAdmitted: Bool
     private var admissionListener: (@Sendable (Bool) -> Void)?
     /// The typed refusal reason from the last REAL startup admission
     /// evaluation (nil while admitted). Diagnostics only; never a wire
@@ -47,8 +53,9 @@ public final class G02QualifiedTransportGate: @unchecked Sendable,
     /// transport/TLS qualification is Main-gated, so the default is false.
     /// Main flips this exactly once per qualification acceptance; tests may
     /// inject either value without touching global state.
-    public init(qualified: Bool = false) {
+    public init(qualified: Bool = false, stdioQualified: Bool = false) {
         self.admitted = qualified
+        self.stdioAdmitted = stdioQualified
     }
 
     /// THE PRODUCT STARTUP PATH (MAIN_PRODUCT_TRANSPORT_STARTUP_ADMISSION_
@@ -104,6 +111,18 @@ public final class G02QualifiedTransportGate: @unchecked Sendable,
 
     public var admitsMCPNetwork: Bool {
         lock.withLock { admitted }
+    }
+
+    /// Qualified only after the trusted C01 pipe lane is installed and
+    /// qualified for this process generation. The default is closed.
+    public var admitsMCPStdio: Bool {
+        lock.withLock { stdioAdmitted }
+    }
+
+    /// Main's accepted C01 qualification flip. It is not reachable from a
+    /// model envelope, command payload or feature UI.
+    public func markMCPStdioQualified(_ value: Bool) {
+        lock.withLock { stdioAdmitted = value }
     }
 }
 

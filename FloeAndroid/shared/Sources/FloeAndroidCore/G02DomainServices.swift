@@ -36,6 +36,8 @@ import FloeModels
 import FloeProviders
 import FloeAndroidWebTools
 import FloeAndroidShellTools
+import FloeAndroidJobTools
+import FloeEnvironments
 
 /// One generation's installed G02 ordinary service graph. Immutable after
 /// build (except the truthful transport-admission propagation); retired as a
@@ -201,7 +203,8 @@ public final class G02InstalledComposition: @unchecked Sendable {
                       cluster: G02OwnedStoreCluster,
                       transportGate: G02QualifiedTransportGate,
                       routeContext: G02HostRouteContextProvider,
-                      catalogBytes: Data?) async -> G02InstalledComposition? {
+                      catalogBytes: Data?,
+                      environmentRegistry: EnvironmentRegistry? = nil) async -> G02InstalledComposition? {
         let epoch = gen.epoch
         let database = cluster.database
         let rootURL = URL(fileURLWithPath: cluster.identity.root.path)
@@ -301,6 +304,7 @@ public final class G02InstalledComposition: @unchecked Sendable {
             coordinator: toolWork,
             rootProvider: { nil },
             readiness: LinuxShellLiveReadiness.makeInjected())
+        var backgroundJobs: BackgroundJobService?
         if let shell = RuntimeFacadeLinuxBindings.shared.components,
            let spool = BackgroundJobOutputSpoolRoot.url() {
             let owner = G03JobLifecycle(epoch: epoch)
@@ -310,6 +314,7 @@ public final class G02InstalledComposition: @unchecked Sendable {
                 let jobs = RuntimeFacadeJobBindings.shared.register() else { return nil }
             owner.bind(jobs)
             G03JobLifecycle.install(owner)
+            backgroundJobs = jobs
             do { _ = try await RuntimeFacadeJobBindings.shared.reconcileInterruptedOnLaunch() }
             catch { return nil }
         }
@@ -339,12 +344,18 @@ public final class G02InstalledComposition: @unchecked Sendable {
             trustedKeys: nil)) else {
             return nil
         }
+        // C02: the ONE original MCP client factory now has a transport
+        // discriminator. The stdio maker is wired here with the C01 pipe
+        // port left explicit (nil until C01 installs/qualifies it); the
+        // HTTP/SSE construction and every existing command stay unchanged.
+        let mcpFactory = OriginalMCPClientFactory(
+            stdio: C02MCPSetupStdioClientFactory(epoch: epoch, provider: nil))
         let mcpDomain = MCPDomain(services: MCPDomain.Services(
             database: database,
             gateway: SecretGatewayRegistry.shared,
             routeContext: routeContext,
             transportAdmission: transportGate,
-            clientFactory: OriginalMCPClientFactory(),
+            clientFactory: mcpFactory,
             ownedWork: ownedWorkLifecycle,
             toolWork: toolWork,
             registry: .shared,
@@ -760,6 +771,40 @@ public final class G02InstalledComposition: @unchecked Sendable {
         // lifecycle provider resolves the run deletion lifecycle lazily, so
         // construction order cannot invent a second run domain.
         let projectLibrary = C01ProjectLibrary(epoch: epoch, cluster: cluster)
+
+        // C02 guided MCP service setup: install the one domain runtime for
+        // THIS generation. Every dependency below is the live original
+        // service graph: the project library, the durable job service, the
+        // MCP domain/factory/admission and the accepted root epoch. The two
+        // genuine C01 ports stay explicit and typed-unavailable until the
+        // Linux owner supplies them:
+        //   * serviceHost (long-lived Node service/port readiness), and
+        //   * stdioChannelProvider (separated stdin/stdout/stderr pipe).
+        // The App-owned setup run/conversation context is also not
+        // synthesized here; nil produces the typed buildStepFailed refusal.
+        if let backgroundJobs {
+            let setupInstallation = C02MCPSetupIntegration.makeInstallation(
+                epoch: epoch,
+                appSupportRoot: rootURL,
+                projectLibrary: projectLibrary,
+                storageRootPath: cluster.identity.root.path,
+                environmentRegistry: environmentRegistry,
+                jobs: backgroundJobs,
+                jobContexts: nil,
+                mcpDomain: mcpDomain,
+                mcpFactory: mcpFactory,
+                mcpAdmission: transportGate,
+                generation: nil,
+                serviceHost: nil,
+                stdioChannelProvider: nil,
+                // The four reviewed template bytes are packaged by
+                // feature/integrations; the host re-verifies every byte
+                // before upload. A missing asset still fails typed.
+                templateAssetAvailable: true,
+                stdioLaneAvailable: false,
+                liveEpoch: { G02NativeRootEpoch.readback() ?? 0 })
+            C02MCPSetupIntegration.install(setupInstallation)
+        }
 
         // C02: durable task execution targets + explicit migration + the real
         // SSH adapter. It reuses the SAME database, the host-registered G07.3

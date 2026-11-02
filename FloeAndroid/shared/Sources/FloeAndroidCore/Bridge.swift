@@ -48,7 +48,8 @@ public enum AndroidBridge {
                 || requestVersion == BridgeV18.version
                 || requestVersion == BridgeV22.version
                 || requestVersion == BridgeV21.version
-                || requestVersion == BridgeV24.version else {
+                || requestVersion == BridgeV24.version
+                || requestVersion == BridgeV23.version else {
             return response(["ok": false, "error": "unsupportedVersion"])
         }
         if requestVersion == BridgeV2.version {
@@ -335,6 +336,30 @@ public enum AndroidBridge {
                                 stampVersion: BridgeV17.version)
             }
             return response(object, stampVersion: BridgeV17.version)
+        }
+        if requestVersion == BridgeV23.version {
+            // Additive C02 host-only MCP guided-setup channel. It exposes
+            // explicit project/environment facts, template staging, bounded
+            // dependency jobs, the C01 service lane and the ORIGINAL MCP
+            // client/domain verification/save. No model tool, credential,
+            // raw path or absolute workspace path crosses this ABI. V1-V18
+            // branches above remain byte-identical.
+            guard let runtime = C02MCPSetupIntegration.current else {
+                return response(["ok": false, "error": "mcpSetupUnavailable"],
+                                stampVersion: BridgeV23.version)
+            }
+            let object = C02MCPSetupBridge.handle(
+                requestData: data,
+                fallbackRequestID: requestID,
+                runtime: runtime.bridge)
+            let encoded = (try? JSONSerialization.data(withJSONObject: object,
+                                                       options: [.sortedKeys]))
+                ?? Data(#"{"ok":false,"error":"encoding"}"#.utf8)
+            guard encoded.count <= BridgeV23.maximumResponseBytes else {
+                return response(["ok": false, "error": "responseTooLarge"],
+                                stampVersion: BridgeV23.version)
+            }
+            return response(object, stampVersion: BridgeV23.version)
         }
         if requestVersion == BridgeV18.version {
             // Additive C05 host-only SFTP channel: real remote directory

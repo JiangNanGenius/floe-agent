@@ -25,6 +25,9 @@ enum class IntegrationsPane {
     /** MCP add/edit form sheet (⇄ MCPServerEditor). Key = editorId. */
     MCP_EDITOR,
 
+    /** Guided Linux-owned MCP service creation (C02). Key = record/editor id. */
+    MCP_SETUP,
+
     /** Skill Creator sheet (⇄ SkillCreatorSheet). Key = formId. */
     SKILL_CREATOR,
 

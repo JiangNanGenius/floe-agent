@@ -195,11 +195,13 @@ public enum MCPCredentialIdentity {
     public static let serviceNamespace = "org.floeagent.ios.mcp"
 
     public static func account(for configuration: MCPServerConfiguration) -> String? {
-        guard configuration.authentication != .none,
-              let host = configuration.endpoint.host?.lowercased(), !host.isEmpty
+        guard configuration.transport == .streamableHTTP,
+              configuration.authentication != .none,
+              let endpoint = configuration.endpoint,
+              let host = endpoint.host?.lowercased(), !host.isEmpty
         else { return nil }
-        let scheme = configuration.endpoint.scheme?.lowercased() ?? "https"
-        let port = configuration.endpoint.port ?? (scheme == "https" ? 443 : 80)
+        let scheme = endpoint.scheme?.lowercased() ?? "https"
+        let port = endpoint.port ?? (scheme == "https" ? 443 : 80)
         return "mcp.\(configuration.id.uuidString).\(scheme).\(host).\(port)"
     }
 

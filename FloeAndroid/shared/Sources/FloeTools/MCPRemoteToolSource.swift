@@ -21,9 +21,87 @@ public struct MCPServerConfiguration: Codable, Identifiable, Sendable, Hashable 
         case customHeader
     }
 
+    /// Transport discriminator. Existing persisted rows decode as
+    /// `.streamableHTTP` because the key was absent before this extension;
+    /// no saved HTTP server is reinterpreted by the new stdio branch.
+    public enum Transport: String, Codable, Sendable, CaseIterable {
+        case streamableHTTP
+        case stdio
+    }
+
+    /// Secret-free binding for the C01-owned separated stdio pipe. The
+    /// process itself is started and owned by the Linux session lane; this
+    /// value only names the exact project/environment/root/task revision the
+    /// pipe must belong to. It is never an executable authority by itself.
+    public struct StdioBinding: Codable, Sendable, Hashable {
+        public var projectID: UUID
+        public var environmentID: String
+        public var rootIdentity: String
+        public var taskID: UUID?
+        public var revision: UInt64
+        public var command: String
+        public var arguments: [String]
+        public var workingDirectory: String
+
+        public init(projectID: UUID,
+                    environmentID: String,
+                    rootIdentity: String,
+                    taskID: UUID? = nil,
+                    revision: UInt64 = 0,
+                    command: String,
+                    arguments: [String] = [],
+                    workingDirectory: String = "") {
+            self.projectID = projectID
+            self.environmentID = environmentID
+            self.rootIdentity = rootIdentity
+            self.taskID = taskID
+            self.revision = revision
+            self.command = command
+            self.arguments = arguments
+            self.workingDirectory = workingDirectory
+        }
+
+        public func validate() throws {
+            guard !environmentID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                  environmentID.utf8.count <= 256,
+                  !environmentID.contains(where: { $0 == "\0" || $0 == "\n" || $0 == "\r" }) else {
+                throw FloeError.invalidConfiguration("MCP stdio environment identity is invalid")
+            }
+            guard rootIdentity.count == 64,
+                  rootIdentity.allSatisfy({ $0.isHexDigit }) else {
+                throw FloeError.invalidConfiguration("MCP stdio project root identity is invalid")
+            }
+            guard !command.isEmpty, command.utf8.count <= 512,
+                  !command.contains("\0"), !command.contains("\n"), !command.contains("\r") else {
+                throw FloeError.invalidConfiguration("MCP stdio command is invalid")
+            }
+            guard arguments.count <= 64,
+                  arguments.allSatisfy({ $0.utf8.count <= 4_096
+                      && !$0.contains("\0") && !$0.contains("\n") && !$0.contains("\r") }) else {
+                throw FloeError.invalidConfiguration("MCP stdio arguments exceed the supported bounds")
+            }
+            guard workingDirectory.utf8.count <= 512,
+                  !workingDirectory.hasPrefix("/"),
+                  !workingDirectory.contains("\\"),
+                  !workingDirectory.contains("\0"),
+                  !workingDirectory.contains("\n"),
+                  !workingDirectory.contains("\r") else {
+                throw FloeError.invalidConfiguration("MCP stdio working directory must be relative")
+            }
+            let components = workingDirectory.split(separator: "/", omittingEmptySubsequences: true)
+            guard !components.contains(".."), !components.contains(".") else {
+                throw FloeError.invalidConfiguration("MCP stdio working directory escapes the project")
+            }
+        }
+    }
+
     public var id: UUID
     public var displayName: String
-    public var endpoint: URL
+    /// Present for `.streamableHTTP`; absent for `.stdio`. Nil is a real
+    /// state, not an empty-string endpoint.
+    public var endpoint: URL?
+    public var transport: Transport
+    public var stdioBinding: StdioBinding?
     public var enabled: Bool
     /// Canvas is intentionally isolated by default. Ordinary Agent runs may
     /// use enabled servers; Canvas must receive an explicit per-server grant.
@@ -37,7 +115,9 @@ public struct MCPServerConfiguration: Codable, Identifiable, Sendable, Hashable 
     public init(
         id: UUID = UUID(),
         displayName: String,
-        endpoint: URL,
+        endpoint: URL? = nil,
+        transport: Transport = .streamableHTTP,
+        stdioBinding: StdioBinding? = nil,
         enabled: Bool = true,
         allowInCanvas: Bool = false,
         allowInsecureHTTP: Bool = false,
@@ -49,6 +129,8 @@ public struct MCPServerConfiguration: Codable, Identifiable, Sendable, Hashable 
         self.id = id
         self.displayName = displayName
         self.endpoint = endpoint
+        self.transport = transport
+        self.stdioBinding = stdioBinding
         self.enabled = enabled
         self.allowInCanvas = allowInCanvas
         self.allowInsecureHTTP = allowInsecureHTTP
@@ -56,6 +138,47 @@ public struct MCPServerConfiguration: Codable, Identifiable, Sendable, Hashable 
         self.credentialHeaderName = credentialHeaderName
         self.timeoutSeconds = min(max(timeoutSeconds, 5), 120)
         self.disabledRemoteToolNames = disabledRemoteToolNames
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case id, displayName, endpoint, transport, stdioBinding, enabled,
+             allowInCanvas, allowInsecureHTTP, authentication,
+             credentialHeaderName, timeoutSeconds, disabledRemoteToolNames
+    }
+
+    /// Backward-compatible decode: a row persisted before the transport
+    /// extension has no `transport`/`stdioBinding` key and remains HTTP.
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(UUID.self, forKey: .id)
+        displayName = try container.decode(String.self, forKey: .displayName)
+        endpoint = try container.decodeIfPresent(URL.self, forKey: .endpoint)
+        let rawTransport = try container.decodeIfPresent(String.self, forKey: .transport)
+        transport = rawTransport.flatMap(Transport.init(rawValue:)) ?? .streamableHTTP
+        stdioBinding = try container.decodeIfPresent(StdioBinding.self, forKey: .stdioBinding)
+        enabled = try container.decodeIfPresent(Bool.self, forKey: .enabled) ?? true
+        allowInCanvas = try container.decodeIfPresent(Bool.self, forKey: .allowInCanvas) ?? false
+        allowInsecureHTTP = try container.decodeIfPresent(Bool.self, forKey: .allowInsecureHTTP) ?? false
+        authentication = try container.decodeIfPresent(Authentication.self, forKey: .authentication) ?? .none
+        credentialHeaderName = try container.decodeIfPresent(String.self, forKey: .credentialHeaderName) ?? "Authorization"
+        timeoutSeconds = min(max(try container.decodeIfPresent(Double.self, forKey: .timeoutSeconds) ?? 30, 5), 120)
+        disabledRemoteToolNames = try container.decodeIfPresent(Set<String>.self, forKey: .disabledRemoteToolNames) ?? []
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(id, forKey: .id)
+        try container.encode(displayName, forKey: .displayName)
+        try container.encodeIfPresent(endpoint, forKey: .endpoint)
+        try container.encode(transport, forKey: .transport)
+        try container.encodeIfPresent(stdioBinding, forKey: .stdioBinding)
+        try container.encode(enabled, forKey: .enabled)
+        try container.encode(allowInCanvas, forKey: .allowInCanvas)
+        try container.encode(allowInsecureHTTP, forKey: .allowInsecureHTTP)
+        try container.encode(authentication, forKey: .authentication)
+        try container.encode(credentialHeaderName, forKey: .credentialHeaderName)
+        try container.encode(timeoutSeconds, forKey: .timeoutSeconds)
+        try container.encode(disabledRemoteToolNames, forKey: .disabledRemoteToolNames)
     }
 
     public var namespacePrefix: String {
@@ -66,36 +189,60 @@ public struct MCPServerConfiguration: Codable, Identifiable, Sendable, Hashable 
         guard !displayName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             throw FloeError.invalidConfiguration("MCP server name is empty")
         }
-        guard let scheme = endpoint.scheme?.lowercased(), ["https", "http"].contains(scheme),
-              endpoint.host != nil else {
-            throw FloeError.invalidConfiguration("MCP endpoint must be an HTTP(S) URL")
-        }
-        guard endpoint.user == nil, endpoint.password == nil else {
-            throw FloeError.invalidConfiguration(
-                "MCP credentials must be stored in Keychain, not embedded in the endpoint URL"
-            )
-        }
-        if scheme == "http" && !allowInsecureHTTP {
-            throw FloeError.invalidConfiguration(
-                "Plain HTTP is disabled. Enable it only for a trusted local development server."
-            )
-        }
-        if authentication == .customHeader {
-            let name = credentialHeaderName.trimmingCharacters(in: .whitespacesAndNewlines)
-            let tokenCharacters = CharacterSet(
-                charactersIn: "!#$%&'*+-.^_`|~0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
-            )
-            let lowercased = name.lowercased()
-            let reserved = Set([
-                "accept", "connection", "content-length", "content-type", "host",
-                "mcp-method", "mcp-name", "mcp-protocol-version", "mcp-session-id",
-                "transfer-encoding"
-            ])
-            guard !name.isEmpty,
-                  name.unicodeScalars.allSatisfy({ tokenCharacters.contains($0) }),
-                  !reserved.contains(lowercased),
-                  !lowercased.hasPrefix("mcp-param-") else {
-                throw FloeError.invalidConfiguration("Invalid MCP credential header name")
+        switch transport {
+        case .stdio:
+            guard let stdioBinding else {
+                throw FloeError.invalidConfiguration("MCP stdio binding is missing")
+            }
+            guard authentication == .none else {
+                throw FloeError.invalidConfiguration(
+                    "MCP stdio servers do not accept transport credentials")
+            }
+            guard endpoint == nil else {
+                throw FloeError.invalidConfiguration(
+                    "An MCP stdio server does not have an HTTP endpoint")
+            }
+            try stdioBinding.validate()
+            return
+        case .streamableHTTP:
+            guard stdioBinding == nil else {
+                throw FloeError.invalidConfiguration(
+                    "An HTTP MCP server does not have a stdio binding")
+            }
+            guard let endpoint else {
+                throw FloeError.invalidConfiguration("MCP endpoint must be an HTTP(S) URL")
+            }
+            guard let scheme = endpoint.scheme?.lowercased(), ["https", "http"].contains(scheme),
+                  endpoint.host != nil else {
+                throw FloeError.invalidConfiguration("MCP endpoint must be an HTTP(S) URL")
+            }
+            guard endpoint.user == nil, endpoint.password == nil else {
+                throw FloeError.invalidConfiguration(
+                    "MCP credentials must be stored in Keychain, not embedded in the endpoint URL"
+                )
+            }
+            if scheme == "http" && !allowInsecureHTTP {
+                throw FloeError.invalidConfiguration(
+                    "Plain HTTP is disabled. Enable it only for a trusted local development server."
+                )
+            }
+            if authentication == .customHeader {
+                let name = credentialHeaderName.trimmingCharacters(in: .whitespacesAndNewlines)
+                let tokenCharacters = CharacterSet(
+                    charactersIn: "!#$%&'*+-.^_`|~0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
+                )
+                let lowercased = name.lowercased()
+                let reserved = Set([
+                    "accept", "connection", "content-length", "content-type", "host",
+                    "mcp-method", "mcp-name", "mcp-protocol-version", "mcp-session-id",
+                    "transfer-encoding"
+                ])
+                guard !name.isEmpty,
+                      name.unicodeScalars.allSatisfy({ tokenCharacters.contains($0) }),
+                      !reserved.contains(lowercased),
+                      !lowercased.hasPrefix("mcp-param-") else {
+                    throw FloeError.invalidConfiguration("Invalid MCP credential header name")
+                }
             }
         }
     }
@@ -126,6 +273,18 @@ public struct MCPDiscoveredTool: Sendable, Hashable {
     }
 }
 
+/// Transport-neutral client surface consumed by the ORIGINAL MCP domain and
+/// tool registration lifecycle. `MCPRemoteClient` is the Streamable HTTP
+/// implementation; the C02/C01 separated stdio pipe adapter implements the
+/// same three operations. Keeping the surface here (instead of a second
+/// client/domain) is what makes discovery, tools/call and cancel transport
+/// agnostic without duplicating the original connection bookkeeping.
+public protocol MCPClientTransporting: AnyObject, Sendable {
+    func discoverTools() async throws -> [MCPDiscoveredTool]
+    func callTool(name: String, argumentsJSON: Data) async throws -> ToolExecutionOutput
+    func disconnectTransport() async
+}
+
 public enum MCPClientError: Error, LocalizedError, Sendable {
     case invalidResponse(String)
     case httpError(status: Int, body: String)
@@ -139,6 +298,9 @@ public enum MCPClientError: Error, LocalizedError, Sendable {
     /// The request timed out. `phase` is one of `connect`, `discover`, `initialize`
     /// or `call` so callers can tell a first-response failure from a stall.
     case timedOut(phase: String)
+    /// The configured transport has no live lane in this build (for example
+    /// a stdio server without the C01 separated-pipe port).
+    case transportUnavailable(String)
 
     public var errorDescription: String? {
         switch self {
@@ -159,6 +321,8 @@ public enum MCPClientError: Error, LocalizedError, Sendable {
             "MCP request was cancelled"
         case .timedOut(let phase):
             "MCP request timed out during \(phase)"
+        case .transportUnavailable(let detail):
+            "MCP transport unavailable: \(SecretRedactor.redact(detail))"
         }
     }
 }
@@ -253,6 +417,9 @@ public actor MCPRemoteClient {
     }
 
     private let configuration: MCPServerConfiguration
+    /// The endpoint was validated and unwrapped once at construction. The
+    /// actor never re-reads an optional in the request path.
+    private let endpoint: URL
     private let credential: String?
     private let session: URLSession
     private let sessionDelegate: MCPNoRedirectSessionDelegate?
@@ -280,6 +447,11 @@ public actor MCPRemoteClient {
         artifactRootProvider: @escaping @Sendable () throws -> URL = { try FloeArtifactStore.root() }
     ) throws {
         try configuration.validate()
+        guard configuration.transport == .streamableHTTP,
+              let endpoint = configuration.endpoint else {
+            throw FloeError.invalidConfiguration(
+                "The HTTP MCP client requires a Streamable HTTP configuration")
+        }
         if configuration.authentication != .none,
            credential?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty != false {
             throw MCPClientError.authenticationRequired
@@ -291,6 +463,7 @@ public actor MCPRemoteClient {
             }
         }
         self.configuration = configuration
+        self.endpoint = endpoint
         self.credential = credential
         self.artifactRootProvider = artifactRootProvider
         if let session {
@@ -747,7 +920,7 @@ public actor MCPRemoteClient {
         inFlightRequestCount += 1
         defer { inFlightRequestCount -= 1 }
         try Task.checkCancellation()
-        var request = URLRequest(url: configuration.endpoint)
+        var request = URLRequest(url: endpoint)
         request.httpMethod = "POST"
         request.httpBody = try JSONSerialization.data(withJSONObject: payload, options: [.sortedKeys])
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
@@ -1045,6 +1218,12 @@ public actor MCPRemoteClient {
     }
 }
 
+extension MCPRemoteClient: MCPClientTransporting {
+    public func disconnectTransport() async {
+        disconnect()
+    }
+}
+
 /// Converts one discovered MCP server into namespaced executable tools.
 /// Server annotations are display metadata only. They never reduce Floe's
 /// local risk classification: a configured remote server can perform work
@@ -1052,7 +1231,7 @@ public actor MCPRemoteClient {
 public enum MCPRemoteToolSource {
     public static func register(
         configuration: MCPServerConfiguration,
-        client: MCPRemoteClient,
+        client: any MCPClientTransporting,
         tools: [MCPDiscoveredTool],
         registry: ToolRunnerRegistry = .shared
     ) {

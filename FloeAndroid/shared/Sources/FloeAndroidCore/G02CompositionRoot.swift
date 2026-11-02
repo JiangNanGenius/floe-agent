@@ -473,6 +473,9 @@ public final class G02RuntimeComposition: @unchecked Sendable {
         // G08: a failed build must not leave the artifact-root binding live
         // for an epoch that never published composition.
         PlatformToolHostMailbox.shared.retireArtifactRoot(epoch: epoch)
+        // C02: a failed build must not leave a guided-setup bridge for an
+        // epoch that never published composition. Epoch-guarded.
+        C02MCPSetupIntegration.uninstall(epoch: epoch)
         // Capture the exact owned instance before any await.
         let ownedRunDomain: FacadeRunDomain? =
             RunDomainFacade.current(epoch: epoch)?.0
@@ -569,6 +572,9 @@ public final class G02RuntimeComposition: @unchecked Sendable {
         // retained bytes stay under the task's owned root for ordinary
         // restart/deletion handling.
         C02ToolResultIntegration.uninstall(epoch: epoch)
+        // C02 guided MCP setup: retire only the exact generation's bridge.
+        // A stale epoch is a no-op and can never clear a newer installation.
+        C02MCPSetupIntegration.uninstall(epoch: epoch)
 
         // 3. Cancel owned services. The run facade's retirement cascade is
         //    epoch-guarded; the process-lane uninstall runs ONLY for the

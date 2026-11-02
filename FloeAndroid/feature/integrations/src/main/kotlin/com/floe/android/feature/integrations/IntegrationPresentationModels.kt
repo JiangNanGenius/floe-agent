@@ -898,6 +898,93 @@ data class SkillsHubUiState(
     val installedIds: Set<String> get() = installed.mapTo(HashSet()) { it.skillId }
 }
 
+/* ---------------------------- MCP service setup ---------------------------- */
+
+data class McpSetupProjectUi(val id: String, val name: String)
+
+data class McpSetupEnvironmentUi(
+    val id: String,
+    val label: String,
+    val backend: String,
+)
+
+data class McpSetupOptionsUi(
+    val loading: Boolean = false,
+    val projects: List<McpSetupProjectUi> = emptyList(),
+    val environments: List<McpSetupEnvironmentUi> = emptyList(),
+    val selectedProjectId: String? = null,
+    val templateAvailable: Boolean = false,
+    /** C01 long-lived Linux service lane. Absent = honest unavailable. */
+    val serviceLaneAvailable: Boolean = false,
+    /** Custom tool generation seam. Absent = fixed template only. */
+    val generationAvailable: Boolean = false,
+    val stdioAvailable: Boolean = false,
+    val errorMessage: String? = null,
+)
+
+data class McpSetupStepUi(
+    val name: String,
+    val state: String,
+    val exitCode: Int?,
+    val errorCode: String?,
+)
+
+data class McpSetupReceiptUi(
+    val endpoint: String,
+    val smokeDigest: String,
+    val verifiedTools: List<String>,
+    val serverId: String?,
+)
+
+data class McpSetupRecordUi(
+    val id: String,
+    val revision: Long,
+    val phase: String,
+    val busy: Boolean,
+    val displayName: String,
+    val projectName: String,
+    val environmentLabel: String,
+    val port: Int,
+    val serviceEndpoint: String?,
+    val errorCode: String?,
+    val errorMessage: String?,
+    val steps: List<McpSetupStepUi>,
+    val receipt: McpSetupReceiptUi?,
+)
+
+/**
+ * Guided Linux-owned MCP service setup. The module never starts a service
+ * itself; every phase is the host's real native projection. A missing
+ * `serviceLaneAvailable` is shown as temporarily unavailable, never as a
+ * fake success.
+ */
+data class McpSetupUiState(
+    val options: McpSetupOptionsUi = McpSetupOptionsUi(),
+    val record: McpSetupRecordUi? = null,
+    val busy: Boolean = false,
+    val errorCode: String? = null,
+    val errorMessage: String? = null,
+)
+
+/** What the form asks the host to create. The native side re-validates. */
+data class McpSetupStartRequestUi(
+    val displayName: String,
+    val projectId: String,
+    val environmentId: String,
+    val portText: String,
+    val details: String,
+    val allowInCanvas: Boolean,
+)
+
+data class McpSetupDraftUi(
+    val displayName: String = "",
+    val projectId: String? = null,
+    val environmentId: String? = null,
+    val portText: String = "8080",
+    val details: String = "",
+    val allowInCanvas: Boolean = false,
+)
+
 /** Everything the destination renders for one moment in time. */
 data class IntegrationsDestinationState(
     val skills: SkillsHubUiState,
@@ -914,4 +1001,6 @@ data class IntegrationsDestinationState(
     /** Open full-catalog detail sheet; ignored unless its skill id matches
      * the pane key (stale-root/request fence). */
     val skillDetail: SkillDetailUi? = null,
+    /** Guided MCP service setup projection; null until opened. */
+    val mcpSetup: McpSetupUiState? = null,
 )

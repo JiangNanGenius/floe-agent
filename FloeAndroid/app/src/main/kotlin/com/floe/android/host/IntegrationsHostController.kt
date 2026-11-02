@@ -48,6 +48,9 @@ import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicLong
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.launch
+import com.floe.android.feature.integrations.McpSetupStartRequestUi
+import com.floe.android.host.mcpsetup.McpSetupHostController
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
@@ -80,6 +83,21 @@ class IntegrationsHostController internal constructor(
 ) : IntegrationUiCallbacks {
 
     val flowHolder = IntegrationsFlowHolder(this)
+
+    private var mcpSetupHostStorage: McpSetupHostController? = null
+    private val mcpSetupHost: McpSetupHostController
+        get() = mcpSetupHostStorage ?: McpSetupHostController(
+            scope = host.scope,
+            assetOpen = { path -> host.appContext.assets.open(path).readBytes() },
+            onCommitted = { refreshMcpServers() },
+        ).also { created ->
+            mcpSetupHostStorage = created
+            host.scope.launch {
+                created.state.collect { value ->
+                    updateDestination { it.copy(mcpSetup = value) }
+                }
+            }
+        }
 
     /**
      * The RB7 Skills folder-staging owner (S11). A SEPARATELY owned SAF
@@ -269,6 +287,9 @@ class IntegrationsHostController internal constructor(
         skillsSettingsRevision = null
         folderStaging.invalidate()
         localNetwork.invalidate()
+        mcpSetupHostStorage?.close()
+        mcpSetupHostStorage = null
+        updateDestination { it.copy(mcpSetup = null) }
         synchronized(mcpPermissionMessageLock) { mcpPermissionDenial = null }
     }
 
@@ -982,6 +1003,47 @@ class IntegrationsHostController internal constructor(
         refreshToolSources()
     }
 
+    override fun loadMcpSetup(projectId: String?): Boolean {
+        if (!admitted()) return false
+        mcpSetupHost.load(projectId)
+        return true
+    }
+
+    override fun loadMcpSetupEnvironments(projectId: String): Boolean {
+        if (!admitted()) return false
+        mcpSetupHost.loadEnvironments(projectId)
+        return true
+    }
+
+    override fun startMcpSetup(request: McpSetupStartRequestUi): Boolean {
+        if (!admitted()) return false
+        return mcpSetupHost.start(request)
+    }
+
+    override fun cancelMcpSetup(recordId: String, revision: Long): Boolean {
+        if (!admitted()) return false
+        mcpSetupHost.cancel(recordId, revision)
+        return true
+    }
+
+    override fun discardMcpSetup(recordId: String, revision: Long): Boolean {
+        if (!admitted()) return false
+        mcpSetupHost.discard(recordId, revision)
+        return true
+    }
+
+    override fun clearMcpSetupError() = mcpSetupHost.clearError()
+
+    override fun retryMcpSetupCommit(recordId: String, revision: Long): Boolean {
+        if (!admitted()) return false
+        mcpSetupHost.retryCommit(recordId, revision)
+        return true
+    }
+
+    override fun closeMcpSetup() {
+        mcpSetupHostStorage?.close()
+    }
+
     override fun closeAll() {
         // Holder-owned UI retirement; projections stay for the next open.
         // An un-presented picker request is dropped (nothing was launched);
@@ -998,6 +1060,7 @@ class IntegrationsHostController internal constructor(
             catalogHasMore = false, catalogPagingBusy = false)) }
         detailGate.invalidate()
         updateDestination { it.copy(skillDetail = null) }
+        mcpSetupHostStorage?.close()
     }
 
     /**

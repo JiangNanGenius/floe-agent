@@ -913,7 +913,7 @@ public enum RuntimeFacadeCapabilitiesBindings {
                 command: "mcp.servers.list", configurationScope: "mcp",
                 revisionRequired: false, allowsCreateIntent: false,
                 serviceMethod: "MCPCommandRouter.handle",
-                integrationNote: "servers+tool inventory+per-server connection truth+ credential STATUS (canonical ref, never bytes)+cleanupPending+transports inventory (streamable HTTP/SSE real; stdio/SSH/linux NOT_IMPLEMENTED G03, retained not dropped)."),
+                integrationNote: "servers+tool inventory+per-server connection truth+ credential STATUS (canonical ref, never bytes)+cleanupPending+transports inventory (streamable HTTP/SSE real; stdio adapter source-wired through the original factory/domain, C01 pipe/admission closed until qualified; SSH/Linux execution transports NOT_IMPLEMENTED)."),
         Binding(handlerKey: CapabilityDomainCommand.mcpConnect.bridgeV3HandlerKey,
                 command: "mcp.connect", configurationScope: "mcp",
                 revisionRequired: true, allowsCreateIntent: true,
