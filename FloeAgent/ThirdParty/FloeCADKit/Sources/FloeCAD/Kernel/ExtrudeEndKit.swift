@@ -20,7 +20,7 @@
 import Foundation
 import simd
 
-nonisolated enum ExtrudeEnd: String, Codable, CaseIterable, Sendable {
+nonisolated enum ExtrudeEnd: String, Codable, CaseIterable, Sendable, Hashable {
     case blind
     case throughAll
     case upToNext
@@ -31,6 +31,124 @@ nonisolated enum ExtrudeEnd: String, Codable, CaseIterable, Sendable {
         case .throughAll: "Through All"
         case .upToNext: "Up To Next"
         }
+    }
+}
+
+/// The end's source identity is part of the feature, rather than an initial
+/// numeric distance. In particular Up To Next follows ONE selected face; it
+/// must not pick a different closer face when that source changes or vanishes.
+nonisolated struct ExtrudeEndDefinition: Codable, Hashable, Sendable {
+    static let supportedVersion = 1
+    var version: Int = Self.supportedVersion
+    var mode: ExtrudeEnd
+    var targets: [BodyRef]
+    var nextFace: FaceRef?
+    var reversed: Bool
+
+    nonisolated struct Input: Sendable {
+        var body: Body
+        var reference: BodyRef
+        var table: FaceTable?
+    }
+    nonisolated struct Failure: Error, LocalizedError {
+        var message: String
+        var errorDescription: String? { message }
+    }
+
+    func validate() throws {
+        guard version == Self.supportedVersion, mode != .blind,
+              !targets.isEmpty, targets.count <= 128,
+              Set(targets.map(\.bodyID)).count == targets.count,
+              (mode == .upToNext) == (nextFace != nil) else {
+            throw Failure(message: "The extrusion end definition is invalid or unsupported.")
+        }
+        if let nextFace {
+            guard targets.contains(nextFace.body), case .planar = nextFace.signature.kind else {
+                throw Failure(message: "The extrusion end face must belong to its selected source.")
+            }
+        }
+    }
+
+    static func bind(_ mode: ExtrudeEnd, plane: SketchPlane, seed: SIMD2<Double>,
+                     reversed: Bool, inputs: [Input]) throws -> Self {
+        guard mode != .blind, !inputs.isEmpty else {
+            throw Failure(message: "Select a body for the extrusion to end at.")
+        }
+        var definition = Self(mode: mode, targets: inputs.map(\.reference), reversed: reversed)
+        if mode == .upToNext {
+            let start = plane.toWorld(seed), direction = reversed ? -plane.normal : plane.normal
+            var best: (Input, Int, Double)?
+            for input in inputs {
+                for (index, triangle) in ExtrudeEndKit.worldTriangles(of: input.body).enumerated() {
+                    if let distance = ExtrudeEndKit.rayTriangle(origin: start, direction: direction,
+                        a: triangle.0, b: triangle.1, c: triangle.2),
+                       distance > ExtrudeEndKit.upToNextSkip,
+                       best == nil || distance < best!.2 {
+                        best = (input, index, distance)
+                    }
+                }
+            }
+            guard let (input, triangle, _) = best,
+                  let table = input.table,
+                  let entry = table.entries.first(where: { $0.triangles.contains(triangle) }) else {
+                throw Failure(message: "No identifiable face lies ahead of the extrusion.")
+            }
+            var signature = entry.signature
+            var name = entry.elementName
+            if table.nativeBodyID == input.body.id, table.nativeMeshRevision == input.body.meshRevision,
+               let channel = table.nativeFaceChannel, triangle < channel.count,
+               let solid = input.body.brep {
+                let index = Int(channel[triangle])
+                if let actual = OCCTKernel.faceInfo(solid).first(where: { $0.index == index })?.signature {
+                    signature = actual
+                    name = table.nativeFaceNames?[index]
+                }
+            }
+            guard case .planar = signature.kind else {
+                throw Failure(message: "This extrusion end needs a planar face.")
+            }
+            definition.targets = [input.reference]
+            definition.nextFace = FaceRef(body: input.reference, creator: input.reference.producer,
+                role: entry.role, signature: signature, elementName: name)
+        }
+        try definition.validate()
+        return definition
+    }
+
+    func resolvedDistance(plane: SketchPlane, seed: SIMD2<Double>, symmetric: Bool,
+                          inputs: [Input], naming: any TopoNaming) throws -> Double {
+        try validate()
+        let chosen = targets.compactMap { target in inputs.first { $0.body.id == target.bodyID } }
+        guard chosen.count == targets.count else {
+            throw Failure(message: "An extrusion end source is missing. Select its replacement explicitly.")
+        }
+        let direction = reversed ? -plane.normal : plane.normal
+        let distance: Double
+        if let nextFace {
+            guard !symmetric, let input = chosen.first,
+                  let resolved = naming.resolve(nextFace, in: input.body, table: input.table),
+                  let face = resolved.planar else {
+                throw Failure(message: "The selected extrusion end face no longer resolves.")
+            }
+            let localNormal = SIMD3<Double>(Double(face.normal.x), Double(face.normal.y), Double(face.normal.z))
+            let normal = input.body.transform.rotation.act(localNormal)
+            let denominator = simd_dot(direction, normal)
+            guard abs(denominator) > 1e-9 else {
+                throw Failure(message: "The extrusion direction is parallel to its end face.")
+            }
+            let point = input.body.transform.applying(to: face.origin)
+            distance = simd_dot(point - plane.toWorld(seed), normal) / denominator
+        } else {
+            guard let value = ExtrudeEndKit.resolve(.throughAll, plane: plane, seed: seed,
+                direction: direction, symmetric: symmetric, bodies: chosen.map(\.body)) else {
+                throw Failure(message: "No source remains for Through All.")
+            }
+            distance = value
+        }
+        guard distance.isFinite, distance > ExtrudeEndKit.upToNextSkip else {
+            throw Failure(message: "The selected end no longer lies ahead of the extrusion.")
+        }
+        return reversed ? -distance : distance
     }
 }
 
