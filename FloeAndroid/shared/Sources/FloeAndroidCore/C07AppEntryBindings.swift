@@ -154,6 +154,9 @@ public enum C07AppEntryBridge {
                         "items": admission.items.map(itemJSON),
                         "totalKnownBytes": admission.totalKnownBytes,
                         "textBytes": admission.textBytes,
+                        "taskAvailable": admission.taskAvailable,
+                        "notesAvailable": admission.notesAvailable,
+                        "packageKind": admission.packageKind.rawValue,
                     ],
                 ])
             case .failure(let refusal):

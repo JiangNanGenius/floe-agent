@@ -50,6 +50,8 @@ public fun EntryShareSheet(
     onDismiss: () -> Unit,
     onChooseTask: () -> Unit,
     onChooseNotes: () -> Unit,
+    onChooseReview: () -> Unit,
+    onOpenReview: () -> Unit,
     onDiscard: () -> Unit,
     onOpenNotes: () -> Unit,
 ) {
@@ -161,7 +163,13 @@ public fun EntryShareSheet(
                 ) {
                     CupertinoActivityIndicator(color = colors.secondaryLabel)
                     FloeText(
-                        stringResource(R.string.entry_share_saving_notes),
+                        stringResource(
+                            if (state.destination == EntryShareDestination.REVIEW) {
+                                R.string.entry_share_opening_review
+                            } else {
+                                R.string.entry_share_saving_notes
+                            },
+                        ),
                         style = Floe.typography.metadata,
                         color = colors.secondaryLabel,
                     )
@@ -169,10 +177,12 @@ public fun EntryShareSheet(
 
                 EntrySharePhase.COMPLETE -> {
                     FloeText(
-                        if (state.savedNotes > 0) {
-                            stringResource(R.string.entry_share_saved_notes, state.savedNotes)
-                        } else {
-                            stringResource(R.string.entry_share_added_task)
+                        when {
+                            state.savedNotes > 0 ->
+                                stringResource(R.string.entry_share_saved_notes, state.savedNotes)
+                            state.destination == EntryShareDestination.REVIEW ->
+                                stringResource(R.string.entry_share_review_ready)
+                            else -> stringResource(R.string.entry_share_added_task)
                         },
                         style = Floe.typography.body,
                     )
@@ -181,6 +191,14 @@ public fun EntryShareSheet(
                         FloePrimaryAction(
                             label = stringResource(R.string.entry_share_open_notes),
                             onClick = onOpenNotes,
+                            modifier = Modifier.fillMaxWidth(),
+                        )
+                        Spacer(Modifier.height(8.dp))
+                    }
+                    if (state.openReviewAvailable) {
+                        FloePrimaryAction(
+                            label = stringResource(R.string.entry_share_open_review),
+                            onClick = onOpenReview,
                             modifier = Modifier.fillMaxWidth(),
                         )
                         Spacer(Modifier.height(8.dp))
@@ -199,16 +217,11 @@ public fun EntryShareSheet(
                         color = colors.destructive,
                     )
                     Spacer(Modifier.height(10.dp))
-                    FloeCapsuleButton(
-                        label = stringResource(R.string.entry_share_notes),
-                        onClick = onChooseNotes,
-                        modifier = Modifier.fillMaxWidth(),
-                    )
-                    Spacer(Modifier.height(8.dp))
-                    FloeCapsuleButton(
-                        label = stringResource(R.string.entry_share_task),
-                        onClick = onChooseTask,
-                        modifier = Modifier.fillMaxWidth(),
+                    destinationActions(
+                        state = state,
+                        onChooseTask = onChooseTask,
+                        onChooseNotes = onChooseNotes,
+                        onChooseReview = onChooseReview,
                     )
                     Spacer(Modifier.height(8.dp))
                     FloeCapsuleAction(
@@ -218,17 +231,11 @@ public fun EntryShareSheet(
                 }
 
                 EntrySharePhase.READY -> {
-                    FloeCapsuleButton(
-                        label = stringResource(R.string.entry_share_task),
-                        onClick = onChooseTask,
-                        modifier = Modifier.fillMaxWidth(),
-                        prominent = true,
-                    )
-                    Spacer(Modifier.height(8.dp))
-                    FloeCapsuleButton(
-                        label = stringResource(R.string.entry_share_notes),
-                        onClick = onChooseNotes,
-                        modifier = Modifier.fillMaxWidth(),
+                    destinationActions(
+                        state = state,
+                        onChooseTask = onChooseTask,
+                        onChooseNotes = onChooseNotes,
+                        onChooseReview = onChooseReview,
                     )
                     Spacer(Modifier.height(10.dp))
                     FloeText(
@@ -242,6 +249,78 @@ public fun EntryShareSheet(
     }
 }
 
+/**
+ * The destination list follows the ACTUAL admitted items. A Floe package has
+ * one inspection/review owner and never appears under the generic Task/Notes
+ * destinations; a missing owner or a missing directory import is shown as
+ * missing wiring with the precise reason, not as an unsupported file type.
+ */
+@Composable
+private fun destinationActions(
+    state: EntryShareUi,
+    onChooseTask: () -> Unit,
+    onChooseNotes: () -> Unit,
+    onChooseReview: () -> Unit,
+) {
+    val colors = Floe.colors
+    if (state.reviewAvailability != EntryReviewAvailability.NOT_APPLICABLE) {
+        when (state.reviewAvailability) {
+            EntryReviewAvailability.AVAILABLE -> FloeCapsuleButton(
+                label = stringResource(R.string.entry_share_review),
+                onClick = onChooseReview,
+                modifier = Modifier.fillMaxWidth(),
+                prominent = true,
+            )
+            EntryReviewAvailability.MISSING_OWNER -> {
+                FloeCapsuleButton(
+                    label = stringResource(R.string.entry_share_review),
+                    onClick = {},
+                    enabled = false,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                Spacer(Modifier.height(6.dp))
+                FloeText(
+                    stringResource(R.string.entry_share_review_unavailable),
+                    style = Floe.typography.metadata,
+                    color = colors.secondaryLabel,
+                )
+            }
+            EntryReviewAvailability.DIRECTORY_UNAVAILABLE -> {
+                FloeCapsuleButton(
+                    label = stringResource(R.string.entry_share_review),
+                    onClick = {},
+                    enabled = false,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                Spacer(Modifier.height(6.dp))
+                FloeText(
+                    stringResource(R.string.entry_share_folder_unavailable),
+                    style = Floe.typography.metadata,
+                    color = colors.secondaryLabel,
+                )
+            }
+            EntryReviewAvailability.NOT_APPLICABLE -> Unit
+        }
+        return
+    }
+    if (state.canChooseTask) {
+        FloeCapsuleButton(
+            label = stringResource(R.string.entry_share_task),
+            onClick = onChooseTask,
+            modifier = Modifier.fillMaxWidth(),
+            prominent = true,
+        )
+        Spacer(Modifier.height(8.dp))
+    }
+    if (state.canChooseNotes) {
+        FloeCapsuleButton(
+            label = stringResource(R.string.entry_share_notes),
+            onClick = onChooseNotes,
+            modifier = Modifier.fillMaxWidth(),
+        )
+    }
+}
+
 @Composable
 private fun shareErrorText(error: EntryShareError?): Int = when (error) {
     EntryShareError.EMPTY -> R.string.entry_share_empty
@@ -252,9 +331,12 @@ private fun shareErrorText(error: EntryShareError?): Int = when (error) {
     EntryShareError.TOO_LARGE -> R.string.entry_share_item_too_large
     EntryShareError.ITEM_LIMIT -> R.string.entry_share_item_limit
     EntryShareError.UNSUPPORTED -> R.string.entry_share_unsupported
+    EntryShareError.PACKAGE_MIXED -> R.string.entry_share_package_mixed
     EntryShareError.UNREADABLE -> R.string.entry_share_unreadable
     EntryShareError.NOTES_UNAVAILABLE -> R.string.entry_share_notes_unavailable
     EntryShareError.STAGING_UNAVAILABLE -> R.string.entry_share_staging_unavailable
+    EntryShareError.REVIEW_UNAVAILABLE -> R.string.entry_share_review_unavailable
+    EntryShareError.FOLDER_UNAVAILABLE -> R.string.entry_share_folder_unavailable
     EntryShareError.FAILED, null -> R.string.entry_share_failed
 }
 
@@ -408,6 +490,8 @@ private fun noticeText(kind: EntryNoticeKind): Int = when (kind) {
     EntryNoticeKind.TOO_LARGE -> R.string.entry_notice_too_large
     EntryNoticeKind.ITEM_LIMIT -> R.string.entry_notice_item_limit
     EntryNoticeKind.UNSUPPORTED -> R.string.entry_notice_unsupported
+    EntryNoticeKind.CONTENT_MISMATCH -> R.string.entry_notice_content_mismatch
+    EntryNoticeKind.PACKAGE_MIXED -> R.string.entry_notice_package_mixed
     EntryNoticeKind.GRANT_REVOKED -> R.string.entry_notice_grant_revoked
     EntryNoticeKind.UNREADABLE -> R.string.entry_notice_unreadable
     EntryNoticeKind.NOTES_UNAVAILABLE -> R.string.entry_notice_notes_unavailable

@@ -184,48 +184,126 @@
                 <action android:name="android.intent.action.SEND" />
                 <category android:name="android.intent.category.DEFAULT" />
                 <data android:mimeType="text/plain" />
+                <data android:mimeType="text/*" />
                 <data android:mimeType="application/pdf" />
+                <data android:mimeType="application/json" />
+                <data android:mimeType="application/xml" />
+                <data android:mimeType="application/javascript" />
                 <data android:mimeType="image/png" />
                 <data android:mimeType="image/jpeg" />
                 <data android:mimeType="image/webp" />
                 <data android:mimeType="image/gif" />
+                <data android:mimeType="image/heic" />
+                <data android:mimeType="image/heif" />
+                <data android:mimeType="image/avif" />
                 <data android:mimeType="image/*" />
+                <data android:mimeType="audio/*" />
+                <data android:mimeType="video/*" />
                 <data android:mimeType="application/vnd.openxmlformats-officedocument.wordprocessingml.document" />
                 <data android:mimeType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" />
                 <data android:mimeType="application/vnd.openxmlformats-officedocument.presentationml.presentation" />
                 <data android:mimeType="application/zip" />
+                <data android:mimeType="application/x-zip-compressed" />
+                <data android:mimeType="application/dxf" />
+                <data android:mimeType="application/acad" />
+                <data android:mimeType="application/step" />
+                <data android:mimeType="model/iges" />
+                <data android:mimeType="model/gltf-binary" />
+                <data android:mimeType="model/gltf+json" />
+                <data android:mimeType="model/stl" />
+                <data android:mimeType="model/3mf" />
+                <data android:mimeType="application/x-floenote" />
+                <data android:mimeType="application/vnd.floe.note" />
+                <data android:mimeType="application/x-flocanvas" />
+                <data android:mimeType="application/vnd.floe.canvas" />
+                <data android:mimeType="application/x-floebackup" />
+                <data android:mimeType="application/vnd.floe.backup" />
+                <data android:mimeType="application/x-floecad" />
+                <data android:mimeType="application/vnd.floe.cad.package" />
                 <data android:mimeType="application/octet-stream" />
             </intent-filter>
             <intent-filter>
                 <action android:name="android.intent.action.SEND_MULTIPLE" />
                 <category android:name="android.intent.category.DEFAULT" />
                 <data android:mimeType="text/plain" />
+                <data android:mimeType="text/*" />
                 <data android:mimeType="application/pdf" />
+                <data android:mimeType="application/json" />
+                <data android:mimeType="application/xml" />
+                <data android:mimeType="application/javascript" />
                 <data android:mimeType="image/png" />
                 <data android:mimeType="image/jpeg" />
                 <data android:mimeType="image/webp" />
                 <data android:mimeType="image/gif" />
+                <data android:mimeType="image/heic" />
+                <data android:mimeType="image/heif" />
+                <data android:mimeType="image/avif" />
                 <data android:mimeType="image/*" />
+                <data android:mimeType="audio/*" />
+                <data android:mimeType="video/*" />
                 <data android:mimeType="application/vnd.openxmlformats-officedocument.wordprocessingml.document" />
                 <data android:mimeType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" />
                 <data android:mimeType="application/vnd.openxmlformats-officedocument.presentationml.presentation" />
                 <data android:mimeType="application/zip" />
+                <data android:mimeType="application/x-zip-compressed" />
+                <data android:mimeType="application/dxf" />
+                <data android:mimeType="application/acad" />
+                <data android:mimeType="application/step" />
+                <data android:mimeType="model/iges" />
+                <data android:mimeType="model/gltf-binary" />
+                <data android:mimeType="model/gltf+json" />
+                <data android:mimeType="model/stl" />
+                <data android:mimeType="model/3mf" />
+                <data android:mimeType="application/x-floenote" />
+                <data android:mimeType="application/vnd.floe.note" />
+                <data android:mimeType="application/x-flocanvas" />
+                <data android:mimeType="application/vnd.floe.canvas" />
+                <data android:mimeType="application/x-floebackup" />
+                <data android:mimeType="application/vnd.floe.backup" />
+                <data android:mimeType="application/x-floecad" />
+                <data android:mimeType="application/vnd.floe.cad.package" />
                 <data android:mimeType="application/octet-stream" />
             </intent-filter>
             <intent-filter>
                 <action android:name="android.intent.action.VIEW" />
                 <category android:name="android.intent.category.DEFAULT" />
                 <data android:scheme="content" android:mimeType="text/plain" />
+                <data android:scheme="content" android:mimeType="text/*" />
                 <data android:scheme="content" android:mimeType="application/pdf" />
+                <data android:scheme="content" android:mimeType="application/json" />
+                <data android:scheme="content" android:mimeType="application/xml" />
+                <data android:scheme="content" android:mimeType="application/javascript" />
                 <data android:scheme="content" android:mimeType="image/png" />
                 <data android:scheme="content" android:mimeType="image/jpeg" />
                 <data android:scheme="content" android:mimeType="image/webp" />
                 <data android:scheme="content" android:mimeType="image/gif" />
+                <data android:scheme="content" android:mimeType="image/heic" />
+                <data android:scheme="content" android:mimeType="image/heif" />
+                <data android:scheme="content" android:mimeType="image/avif" />
                 <data android:scheme="content" android:mimeType="image/*" />
+                <data android:scheme="content" android:mimeType="audio/*" />
+                <data android:scheme="content" android:mimeType="video/*" />
                 <data android:scheme="content" android:mimeType="application/vnd.openxmlformats-officedocument.wordprocessingml.document" />
                 <data android:scheme="content" android:mimeType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" />
                 <data android:scheme="content" android:mimeType="application/vnd.openxmlformats-officedocument.presentationml.presentation" />
                 <data android:scheme="content" android:mimeType="application/zip" />
+                <data android:scheme="content" android:mimeType="application/x-zip-compressed" />
+                <data android:scheme="content" android:mimeType="application/dxf" />
+                <data android:scheme="content" android:mimeType="application/acad" />
+                <data android:scheme="content" android:mimeType="application/step" />
+                <data android:scheme="content" android:mimeType="model/iges" />
+                <data android:scheme="content" android:mimeType="model/gltf-binary" />
+                <data android:scheme="content" android:mimeType="model/gltf+json" />
+                <data android:scheme="content" android:mimeType="model/stl" />
+                <data android:scheme="content" android:mimeType="model/3mf" />
+                <data android:scheme="content" android:mimeType="application/x-floenote" />
+                <data android:scheme="content" android:mimeType="application/vnd.floe.note" />
+                <data android:scheme="content" android:mimeType="application/x-flocanvas" />
+                <data android:scheme="content" android:mimeType="application/vnd.floe.canvas" />
+                <data android:scheme="content" android:mimeType="application/x-floebackup" />
+                <data android:scheme="content" android:mimeType="application/vnd.floe.backup" />
+                <data android:scheme="content" android:mimeType="application/x-floecad" />
+                <data android:scheme="content" android:mimeType="application/vnd.floe.cad.package" />
                 <data android:scheme="content" android:mimeType="application/octet-stream" />
             </intent-filter>
             <!-- Custom deep links only. No file path, prompt, model text,

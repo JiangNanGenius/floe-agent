@@ -151,9 +151,20 @@ final class C07AppEntryTests: XCTestCase {
             refusal(C07SharePolicy.validate([
                 C07ShareItemDescriptor(
                     kind: .file,
-                    mimeType: "text/html",
+                    mimeType: "application/x-msdownload",
                     byteCount: 10,
-                    fileName: "page.html"
+                    fileName: "setup.exe"
+                ),
+            ])),
+            .unsupportedType
+        )
+        XCTAssertEqual(
+            refusal(C07SharePolicy.validate([
+                C07ShareItemDescriptor(
+                    kind: .file,
+                    mimeType: "application/octet-stream",
+                    byteCount: 10,
+                    fileName: "payload.unknown"
                 ),
             ])),
             .unsupportedType
@@ -203,6 +214,130 @@ final class C07AppEntryTests: XCTestCase {
             .invalidDescriptor
         )
         XCTAssertEqual(refusal(C07SharePolicy.validate([])), .empty)
+    }
+
+    func testSharePolicyAdmitsExistingMediaCadSourceAsDataNotExecution() {
+        let cases: [(mime: String, name: String)] = [
+            ("image/heic", "photo.heic"),
+            ("image/heif", "photo.heif"),
+            ("image/avif", "photo.avif"),
+            ("audio/mpeg", "voice.mp3"),
+            ("audio/mp4", "voice.m4a"),
+            ("video/mp4", "clip.mp4"),
+            ("video/quicktime", "clip.mov"),
+            ("application/dxf", "plan.dxf"),
+            ("application/step", "part.step"),
+            ("model/gltf-binary", "scene.glb"),
+            ("text/x-python", "tool.py"),
+            ("application/json", "data.json"),
+            ("text/html", "page.html"),
+            ("application/octet-stream", "notes.md"),
+        ]
+        for entry in cases {
+            guard case .success(let admission) = C07SharePolicy.validate([
+                C07ShareItemDescriptor(
+                    kind: .file,
+                    mimeType: entry.mime,
+                    byteCount: 1_024,
+                    fileName: entry.name
+                ),
+            ]) else {
+                XCTFail("expected admission for \(entry.mime)")
+                continue
+            }
+            XCTAssertTrue(admission.taskAvailable, entry.mime)
+            XCTAssertTrue(admission.notesAvailable, entry.mime)
+            XCTAssertEqual(admission.packageKind, .none, entry.mime)
+            XCTAssertEqual(admission.items.first?.mimeType, C07SharePolicy.normalizedMime(entry.mime))
+        }
+        XCTAssertEqual(
+            refusal(C07SharePolicy.validate([
+                C07ShareItemDescriptor(
+                    kind: .file,
+                    mimeType: "application/vnd.android.package-archive",
+                    byteCount: 10,
+                    fileName: "install.apk"
+                ),
+            ])),
+            .unsupportedType
+        )
+    }
+
+    func testSharePolicyRoutesPackagesToSingleReviewOwner() {
+        guard case .success(let note) = C07SharePolicy.validate([
+            C07ShareItemDescriptor(
+                kind: .file,
+                mimeType: "application/zip",
+                byteCount: 8_192,
+                fileName: "Story.floenote"
+            ),
+        ]) else {
+            return XCTFail("expected note package admission")
+        }
+        XCTAssertEqual(note.packageKind, .note)
+        XCTAssertFalse(note.taskAvailable)
+        XCTAssertFalse(note.notesAvailable)
+
+        guard case .success(let backup) = C07SharePolicy.validate([
+            C07ShareItemDescriptor(
+                kind: .file,
+                mimeType: "application/octet-stream",
+                byteCount: C07ShareLimits.standard.maxItemBytes * 4,
+                fileName: "Floe-backup.floebackup"
+            ),
+        ]) else {
+            return XCTFail("expected backup package admission")
+        }
+        XCTAssertEqual(backup.packageKind, .backup)
+        XCTAssertEqual(backup.totalKnownBytes, 0)
+
+        guard case .success(let cad) = C07SharePolicy.validate([
+            C07ShareItemDescriptor(
+                kind: .file,
+                mimeType: "application/octet-stream",
+                byteCount: -1,
+                fileName: "Model.floecad"
+            ),
+        ]) else {
+            return XCTFail("expected cad package admission")
+        }
+        XCTAssertEqual(cad.packageKind, .cad)
+        XCTAssertFalse(cad.taskAvailable)
+
+        XCTAssertEqual(
+            refusal(C07SharePolicy.validate([
+                C07ShareItemDescriptor(
+                    kind: .file,
+                    mimeType: "application/zip",
+                    byteCount: 10,
+                    fileName: "Story.floenote"
+                ),
+                C07ShareItemDescriptor(
+                    kind: .file,
+                    mimeType: "application/pdf",
+                    byteCount: 10,
+                    fileName: "Synthetic.pdf"
+                ),
+            ])),
+            .packageMixed
+        )
+    }
+
+    func testBridgeAdmissionExposesConsumerRouting() {
+        let replyValue = reply(json(request("entry.validateShare", extra: [
+            "items": [[
+                "kind": "file",
+                "mimeType": "image/heic",
+                "byteCount": 12,
+                "textBytes": 0,
+                "fileName": "photo.heic",
+            ]],
+        ])))
+        XCTAssertEqual(replyValue["ok"] as? Bool, true)
+        let admission = replyValue["admission"] as? [String: Any]
+        XCTAssertEqual(admission?["taskAvailable"] as? Bool, true)
+        XCTAssertEqual(admission?["notesAvailable"] as? Bool, true)
+        XCTAssertEqual(admission?["packageKind"] as? String, "none")
     }
 
     func testSharePolicyAcceptsHonestUnknownSizeAndKnownExtensions() {
@@ -274,10 +409,10 @@ final class C07AppEntryTests: XCTestCase {
         let refused = reply(json(request("entry.validateShare", extra: [
             "items": [[
                 "kind": "file",
-                "mimeType": "text/html",
+                "mimeType": "application/x-msdownload",
                 "byteCount": 12,
                 "textBytes": 0,
-                "fileName": "page.html",
+                "fileName": "setup.exe",
             ]],
         ])))
         XCTAssertEqual(refused["ok"] as? Bool, false)

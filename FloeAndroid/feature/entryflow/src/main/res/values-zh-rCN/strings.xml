@@ -84,6 +84,15 @@
     <string name="entry_notice_notes_unavailable">手记尚未就绪，请打开手记后重试。</string>
     <string name="entry_notice_staging_unavailable">暂时无法添加文件，请在应用就绪后重试。</string>
     <string name="entry_share_staging_unavailable">暂时无法添加文件，请在应用就绪后重试。</string>
+    <string name="entry_share_review">检查并导入</string>
+    <string name="entry_share_open_review">打开检查</string>
+    <string name="entry_share_opening_review">正在打开展示检查…</string>
+    <string name="entry_share_review_ready">已可以检查，尚未恢复任何内容。</string>
+    <string name="entry_share_review_unavailable">暂时无法检查该包，未导入任何内容。</string>
+    <string name="entry_share_folder_unavailable">暂时无法导入该文件夹，未导入任何内容。</string>
+    <string name="entry_share_package_mixed">Floe 包不能与其他内容一起添加。</string>
+    <string name="entry_notice_content_mismatch">文件内容与类型不一致。</string>
+    <string name="entry_notice_package_mixed">请单独添加一个 Floe 包。</string>
     <string name="entry_notice_item_limit">一次最多可分享 5 项内容。</string>
     <string name="entry_feedback_too_long">报告内容过长。</string>
     <string name="entry_shared_note_title">分享内容</string>

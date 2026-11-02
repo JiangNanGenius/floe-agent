@@ -83,13 +83,21 @@ class C07SharePolicyTest {
     }
 
     @Test
-    fun rejectsUnknownAndMislabeledTypes() {
+    fun rejectsExecutableAndUnknownUnnamedPayloads() {
+        // Installable containers have no existing in-App consumer.
         assertEquals(
             C07EntryRefusal.UNSUPPORTED,
             (C07SharePolicy.validate(
-                listOf(file("text/html", "page.html", 12)),
+                listOf(file("application/vnd.android.package-archive", "install.apk", 12)),
             ) as C07ShareValidation.Refused).code,
         )
+        assertEquals(
+            C07EntryRefusal.UNSUPPORTED,
+            (C07SharePolicy.validate(
+                listOf(file("application/x-msdownload", "setup.exe", 12)),
+            ) as C07ShareValidation.Refused).code,
+        )
+        // Unknown binary with no supported identity stays refused.
         assertEquals(
             C07EntryRefusal.UNSUPPORTED,
             (C07SharePolicy.validate(
@@ -100,12 +108,6 @@ class C07SharePolicyTest {
             C07EntryRefusal.UNSUPPORTED,
             (C07SharePolicy.validate(
                 listOf(file("application/zip", "payload.bin", 12)),
-            ) as C07ShareValidation.Refused).code,
-        )
-        assertEquals(
-            C07EntryRefusal.UNSUPPORTED,
-            (C07SharePolicy.validate(
-                listOf(file("image/heic", "photo.heic", 12)),
             ) as C07ShareValidation.Refused).code,
         )
     }
@@ -119,6 +121,95 @@ class C07SharePolicyTest {
             ),
         ) as C07ShareValidation.Accepted
         assertEquals(20L, result.totalKnownBytes)
+    }
+
+    @Test
+    fun admitsExistingMediaCadAndSourceFormatsAsData() {
+        for ((mime, name) in listOf(
+            "image/heic" to "photo.heic",
+            "image/heif" to "photo.heif",
+            "image/avif" to "photo.avif",
+            "image/bmp" to "scan.bmp",
+            "audio/mpeg" to "voice.mp3",
+            "audio/mp4" to "voice.m4a",
+            "audio/ogg" to "voice.opus",
+            "video/mp4" to "clip.mp4",
+            "video/quicktime" to "clip.mov",
+            "application/dxf" to "plan.dxf",
+            "application/acad" to "plan.dwg",
+            "application/step" to "part.step",
+            "model/gltf-binary" to "scene.glb",
+            "text/x-python" to "tool.py",
+            "application/json" to "data.json",
+            "text/html" to "page.html",
+            "application/octet-stream" to "notes.md",
+        )) {
+            val accepted = C07SharePolicy.validate(listOf(file(mime, name, 1024)))
+            assertTrue("expected admission for $mime, got $accepted", accepted is C07ShareValidation.Accepted)
+            val admission = accepted as C07ShareValidation.Accepted
+            assertTrue(admission.taskAvailable)
+            assertTrue(admission.notesAvailable)
+            assertEquals(C07EntryPackageKind.NONE, admission.packageKind)
+        }
+    }
+
+    @Test
+    fun routesPackagesToSingleReviewOwnerAndExemptsOwnerBudget() {
+        val note = C07SharePolicy.validate(
+            listOf(file("application/zip", "Story.floenote", 8_192)),
+        ) as C07ShareValidation.Accepted
+        assertEquals(C07EntryPackageKind.NOTE, note.packageKind)
+        assertTrue(!note.taskAvailable)
+        assertTrue(!note.notesAvailable)
+
+        val canvas = C07SharePolicy.validate(
+            listOf(file("application/octet-stream", "Board.flocanvas", 1)),
+        ) as C07ShareValidation.Accepted
+        assertEquals(C07EntryPackageKind.CANVAS, canvas.packageKind)
+
+        val backup = C07SharePolicy.validate(
+            listOf(file("application/octet-stream", "Floe-backup.floebackup", ENTRY_MAX_ITEM_BYTES * 4)),
+        ) as C07ShareValidation.Accepted
+        assertEquals(C07EntryPackageKind.BACKUP, backup.packageKind)
+        assertEquals(0L, backup.totalKnownBytes)
+
+        val cad = C07SharePolicy.validate(
+            listOf(file("application/octet-stream", "Model.floecad", -1)),
+        ) as C07ShareValidation.Accepted
+        assertEquals(C07EntryPackageKind.CAD, cad.packageKind)
+
+        assertEquals(
+            C07EntryRefusal.PACKAGE_MIXED,
+            (C07SharePolicy.validate(
+                listOf(
+                    file("application/zip", "Story.floenote", 10, 0),
+                    file("application/pdf", "Synthetic.pdf", 10, 1),
+                ),
+            ) as C07ShareValidation.Refused).code,
+        )
+    }
+
+    @Test
+    fun supportedDataIsNeverAPermissionToExecute() {
+        val source = C07SharePolicy.validate(
+            listOf(file("text/x-shellscript", "install.sh", 128)),
+        ) as C07ShareValidation.Accepted
+        // Only consumer routing is decided here; no execution/run/install flag
+        // exists in the admitted contract.
+        assertTrue(source.taskAvailable && source.notesAvailable)
+        assertEquals(C07EntryPackageKind.NONE, source.packageKind)
+        assertEquals(C07EntryContentClass.SOURCE, C07SharePolicy.formatFor("text/x-shellscript", "install.sh")?.contentClass)
+        assertEquals(C07EntryContentClass.SOURCE, C07SharePolicy.formatFor("application/octet-stream", "install.sh")?.contentClass)
+    }
+
+    @Test
+    fun payloadCapStillBoundsNonPackageItems() {
+        assertEquals(
+            C07EntryRefusal.ITEM_TOO_LARGE,
+            (C07SharePolicy.validate(
+                listOf(file("video/mp4", "clip.mp4", ENTRY_MAX_ITEM_BYTES + 1)),
+            ) as C07ShareValidation.Refused).code,
+        )
     }
 
     @Test
@@ -154,11 +245,14 @@ class C07SharePolicyTest {
             C07ContentSniffer.reconcile("application/octet-stream", C07ProbeKind.UNKNOWN, "a.bin").refusal,
         )
         assertEquals(
-            C07EntryRefusal.UNSUPPORTED,
+            C07EntryRefusal.CONTENT_MISMATCH,
             C07ContentSniffer.reconcile("application/octet-stream", C07ProbeKind.ZIP, "a.pdf").refusal,
         )
+        val html = C07ContentSniffer.reconcile("text/html", C07ProbeKind.TEXT, "a.html")
+        assertEquals("text/plain", html.mimeType)
+        assertEquals(C07EntryContentClass.SOURCE, html.contentClass)
         assertNull(
-            C07ContentSniffer.reconcile("text/html", C07ProbeKind.TEXT, "a.html").mimeType,
+            C07ContentSniffer.reconcile("text/html", C07ProbeKind.BMP, "a.html").mimeType,
         )
     }
 

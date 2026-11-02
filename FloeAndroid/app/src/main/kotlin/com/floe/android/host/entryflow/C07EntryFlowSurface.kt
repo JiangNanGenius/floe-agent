@@ -5,6 +5,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
@@ -30,6 +31,15 @@ internal fun C07EntryFlowSurface(
     val share by C07EntryFlowHost.shareUi.collectAsState()
     val setup by C07EntryFlowHost.setupUi.collectAsState()
     val notice by C07EntryFlowHost.notice.collectAsState()
+    val openSection by C07EntryFlowHost.openSettingsSection.collectAsState()
+
+    // The package review owner exposes an EXISTING settings category. Opening
+    // it is only requested after that owner really accepted the handoff.
+    LaunchedEffect(openSection) {
+        val key = openSection ?: return@LaunchedEffect
+        onOpenSettingsSection(key)
+        C07EntryFlowHost.consumeOpenSettingsSection(key)
+    }
 
     share?.let { state ->
         val intakeID = state.intakeID
@@ -43,6 +53,10 @@ internal fun C07EntryFlowSurface(
             onChooseNotes = {
                 intakeID?.let(C07EntryFlowHost::chooseNotesDestination)
             },
+            onChooseReview = {
+                intakeID?.let(C07EntryFlowHost::chooseReviewDestination)
+            },
+            onOpenReview = C07EntryFlowHost::openReviewFromShare,
             onDiscard = { C07EntryFlowHost.discardIntake() },
             onOpenNotes = C07EntryFlowHost::openNotesFromShare,
         )

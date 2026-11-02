@@ -8,6 +8,7 @@
 // user-visible display metadata used by the chooser.
 package com.floe.android.host.entryflow
 
+import com.floe.android.feature.entryflow.EntryReviewAvailability
 import java.security.MessageDigest
 import java.util.UUID
 
@@ -135,6 +136,52 @@ internal object C07EntryIds {
 internal enum class C07EntryItemKind { TEXT, FILE }
 
 /**
+ * What the admitted bytes ARE for routing to a real consumer. It is admission
+ * metadata only: it grants no execution, rendering, upload or tool authority,
+ * and it never asserts a verified preview. A SOURCE/DATA/CAD item is stored as
+ * bounded opaque data by the existing Task staging or Notes resource importer.
+ */
+internal enum class C07EntryContentClass {
+    TEXT,
+    IMAGE,
+    AUDIO,
+    VIDEO,
+    PDF,
+    OFFICE,
+    CAD,
+    SOURCE,
+    DATA,
+    PACKAGE,
+}
+
+/**
+ * Existing Floe package owners. A package is handed to the owner that already
+ * implements inspection/review; the entry flow never restores, remaps or
+ * auto-imports one. `wire` is the exact `restoreKind` the Data Exchange owner
+ * already understands (`beginRestore(uri, restoreKind)`).
+ */
+internal enum class C07EntryPackageKind(val wire: String) {
+    NONE(""),
+    NOTE("note"),
+    CANVAS("canvas"),
+    BACKUP("backup"),
+    CAD("cad"),
+    ;
+
+    val isPackage: Boolean get() = this != NONE
+
+    companion object {
+        fun ofExtension(extension: String): C07EntryPackageKind = when (extension) {
+            "floenote" -> NOTE
+            "flocanvas" -> CANVAS
+            "floebackup" -> BACKUP
+            "floecad" -> CAD
+            else -> NONE
+        }
+    }
+}
+
+/**
  * One admitted share/open item. The content URI and text stay internals of
  * the host: [toString] exposes only the bounded display metadata, so this
  * value is safe in diagnostics and test failures.
@@ -147,16 +194,29 @@ internal class C07EntryCapturedItem(
     val displayName: String,
     val declaredBytes: Long,
     val text: String?,
+    /** Consumer routing class. Defaults keep older fixtures source-compatible. */
+    val contentClass: C07EntryContentClass = C07EntryContentClass.DATA,
+    val packageKind: C07EntryPackageKind = C07EntryPackageKind.NONE,
+    /** The exact format resolved at admission. Null keeps the pure lookup path
+     * used by direct fixtures; the host always supplies the resolved format so
+     * a recognised opaque container keeps its real admission identity. */
+    val format: C07EntryFormat? = null,
 ) {
     override fun toString(): String =
         "C07EntryCapturedItem(index=$index, kind=$kind, mime=$mimeType, " +
-            "bytes=$declaredBytes, nameChars=${displayName.length})"
+            "bytes=$declaredBytes, nameChars=${displayName.length}, " +
+            "class=$contentClass, package=$packageKind)"
 }
 
 internal sealed interface C07ShareValidation {
     data class Accepted(
         val totalKnownBytes: Long,
         val textBytes: Long,
+        /** Both existing destinations accept bounded opaque data files. */
+        val taskAvailable: Boolean = true,
+        val notesAvailable: Boolean = true,
+        /** Non-NONE only when the single admitted item is a Floe package. */
+        val packageKind: C07EntryPackageKind = C07EntryPackageKind.NONE,
     ) : C07ShareValidation
 
     data class Refused(val code: C07EntryRefusal) : C07ShareValidation
@@ -170,6 +230,7 @@ internal enum class C07EntryRefusal {
     TOTAL_TOO_LARGE,
     UNSUPPORTED,
     CONTENT_MISMATCH,
+    PACKAGE_MIXED,
     INVALID_URI,
     GRANT_REVOKED,
     UNREADABLE,
@@ -184,42 +245,300 @@ internal enum class C07EntryRefusal {
 }
 
 /**
- * Bounded, explicit share/open policy. MIME parameters are stripped; unknown
- * sizes are allowed at admission (declared -1) only for a supported type and
- * are enforced while copying. Executable, markup, archive-bomb and unknown
- * binary payloads are refused rather than forwarded to a consumer.
+ * One admitted content format. `probes` is the exact magic family the actual
+ * bytes must show; `null` means the format is extension-routed and content is
+ * proved later by the real pinned reader (CAD files), never by this policy.
+ * `opaqueWhenUnrecognized` allows an extension-proved data/CAD file whose
+ * container has no portable magic to continue as bounded opaque DATA instead
+ * of inventing a verified preview.
+ */
+internal data class C07EntryFormat(
+    val mimeType: String,
+    val contentClass: C07EntryContentClass,
+    val extensions: Set<String>,
+    val probes: Set<C07ProbeKind>?,
+    val opaqueWhenUnrecognized: Boolean = false,
+    val canTask: Boolean = true,
+    val canNotes: Boolean = true,
+    val packageKind: C07EntryPackageKind = C07EntryPackageKind.NONE,
+)
+
+/**
+ * Bounded, consumer-aware share/open policy.
+ *
+ * Admission is about whether a REAL existing consumer can take bounded opaque
+ * bytes, not whether Floe can execute, render or preview them. The existing
+ * Task attachment producer stages any admitted content as data (no send), and
+ * the existing Notes resource/file-note importer stores it as an immutable
+ * resource (no execution, no invented page/preview). Executable installers
+ * (`apk`, `dex`, `exe`, ...) remain refused: no existing consumer opens them
+ * and admitting them would invite an install/run flow that must not exist.
  */
 internal object C07SharePolicy {
-    private val exactTypes = setOf(
-        "text/plain",
-        "application/pdf",
-        "image/png",
-        "image/jpeg",
-        "image/webp",
-        "image/gif",
-        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        "application/vnd.openxmlformats-officedocument.presentationml.presentation",
-        "application/zip",
+    val packageMimeNote = "application/vnd.floe.package.note"
+    val packageMimeCanvas = "application/vnd.floe.package.canvas"
+    val packageMimeBackup = "application/vnd.floe.package.backup"
+
+    /** Text/source/config extensions admitted as SOURCE data. They are stored
+     * as bytes only; nothing is rendered, parsed or executed. */
+    private val textExtensions = setOf(
+        "txt", "text", "log", "csv", "tsv", "md", "markdown", "mdx", "rst", "org",
+        "json", "jsonl", "ndjson", "json5", "xml", "yaml", "yml", "toml", "ini",
+        "cfg", "conf", "config", "properties", "env", "lock", "sql", "sh", "bash",
+        "zsh", "fish", "py", "pyw", "pyi", "js", "mjs", "cjs", "jsx", "ts", "mts",
+        "cts", "tsx", "kt", "kts", "java", "scala", "groovy", "gradle", "c", "h",
+        "cc", "cpp", "cxx", "hpp", "hh", "hxx", "m", "mm", "cs", "fs", "vb", "rs",
+        "go", "rb", "php", "pl", "pm", "lua", "r", "swift", "dart", "ex", "exs",
+        "erl", "hrl", "hs", "lhs", "clj", "cljs", "sol", "vue", "svelte", "astro",
+        "html", "htm", "xhtml", "css", "scss", "sass", "less", "tex", "bib",
+        "diff", "patch", "srt", "vtt", "asm", "s", "proto", "graphql", "gql",
+        "cmake", "mk", "ninja", "plist",
     )
-    private val octetExtensions = setOf(
-        "pdf", "png", "jpg", "jpeg", "webp", "gif", "txt", "md",
-        "docx", "xlsx", "pptx", "zip",
+
+    /** Extra source-data MIME declarations providers commonly use. */
+    private val sourceMimes = setOf(
+        "application/json",
+        "application/xml",
+        "application/javascript",
+        "application/x-javascript",
+        "application/typescript",
+        "application/x-sh",
+        "application/x-yaml",
+        "application/yaml",
+        "application/sql",
+        "application/toml",
+        "application/x-httpd-php",
+        "application/x-python-code",
     )
+
+    /**
+     * Installable executable containers. None has an existing in-App consumer,
+     * so they stay refused by name instead of being staged and mistaken for
+     * something Floe could run.
+     */
+    private val refusedExtensions = setOf(
+        "apk", "apks", "xapk", "aab", "dex", "odex", "vdex", "oat", "art",
+        "elf", "exe", "dll", "msi", "dmg", "pkg", "deb", "rpm", "ipa", "jar",
+        "class", "wasm",
+    )
+
+    private val cadFormats: List<C07EntryFormat> = listOf(
+        C07EntryFormat("application/dxf", C07EntryContentClass.CAD, setOf("dxf"), null, opaqueWhenUnrecognized = true),
+        C07EntryFormat("application/acad", C07EntryContentClass.CAD, setOf("dwg"), null, opaqueWhenUnrecognized = true),
+        C07EntryFormat("application/step", C07EntryContentClass.CAD, setOf("step", "stp"), null, opaqueWhenUnrecognized = true),
+        C07EntryFormat("model/iges", C07EntryContentClass.CAD, setOf("iges", "igs"), null, opaqueWhenUnrecognized = true),
+        C07EntryFormat("application/octet-stream", C07EntryContentClass.CAD, setOf("brep"), null, opaqueWhenUnrecognized = true),
+        C07EntryFormat("model/gltf-binary", C07EntryContentClass.CAD, setOf("glb"), setOf(C07ProbeKind.GLB)),
+        C07EntryFormat("text/plain", C07EntryContentClass.CAD, setOf("gltf", "obj"), setOf(C07ProbeKind.TEXT)),
+        C07EntryFormat("model/stl", C07EntryContentClass.CAD, setOf("stl"), null, opaqueWhenUnrecognized = true),
+        C07EntryFormat("model/3mf", C07EntryContentClass.CAD, setOf("3mf"), setOf(C07ProbeKind.ZIP)),
+    )
+
+    private val formats: List<C07EntryFormat> = listOf(
+        C07EntryFormat("text/plain", C07EntryContentClass.SOURCE, textExtensions, setOf(C07ProbeKind.TEXT)),
+        C07EntryFormat("application/pdf", C07EntryContentClass.PDF, setOf("pdf"), setOf(C07ProbeKind.PDF)),
+        C07EntryFormat("image/png", C07EntryContentClass.IMAGE, setOf("png"), setOf(C07ProbeKind.PNG)),
+        C07EntryFormat("image/jpeg", C07EntryContentClass.IMAGE, setOf("jpg", "jpeg"), setOf(C07ProbeKind.JPEG)),
+        C07EntryFormat("image/webp", C07EntryContentClass.IMAGE, setOf("webp"), setOf(C07ProbeKind.WEBP)),
+        C07EntryFormat("image/gif", C07EntryContentClass.IMAGE, setOf("gif"), setOf(C07ProbeKind.GIF)),
+        C07EntryFormat("image/heic", C07EntryContentClass.IMAGE, setOf("heic"), setOf(C07ProbeKind.HEIC)),
+        C07EntryFormat("image/heif", C07EntryContentClass.IMAGE, setOf("heif"), setOf(C07ProbeKind.HEIC)),
+        C07EntryFormat("image/avif", C07EntryContentClass.IMAGE, setOf("avif"), setOf(C07ProbeKind.AVIF)),
+        C07EntryFormat("image/bmp", C07EntryContentClass.IMAGE, setOf("bmp"), setOf(C07ProbeKind.BMP)),
+        C07EntryFormat("image/x-ms-bmp", C07EntryContentClass.IMAGE, setOf("bmp"), setOf(C07ProbeKind.BMP)),
+        C07EntryFormat("audio/mpeg", C07EntryContentClass.AUDIO, setOf("mp3"), setOf(C07ProbeKind.MP3)),
+        C07EntryFormat("audio/x-m4a", C07EntryContentClass.AUDIO, setOf("m4a"), setOf(C07ProbeKind.ISO_BMFF)),
+        C07EntryFormat("audio/aac", C07EntryContentClass.AUDIO, setOf("aac"), setOf(C07ProbeKind.AAC)),
+        C07EntryFormat("audio/wav", C07EntryContentClass.AUDIO, setOf("wav"), setOf(C07ProbeKind.WAV)),
+        C07EntryFormat("audio/x-wav", C07EntryContentClass.AUDIO, setOf("wav"), setOf(C07ProbeKind.WAV)),
+        C07EntryFormat("audio/flac", C07EntryContentClass.AUDIO, setOf("flac"), setOf(C07ProbeKind.FLAC)),
+        C07EntryFormat("audio/ogg", C07EntryContentClass.AUDIO, setOf("ogg", "oga", "opus"), setOf(C07ProbeKind.OGG)),
+        C07EntryFormat("audio/opus", C07EntryContentClass.AUDIO, setOf("opus"), setOf(C07ProbeKind.OGG)),
+        C07EntryFormat("audio/webm", C07EntryContentClass.AUDIO, setOf("webm"), setOf(C07ProbeKind.WEBM)),
+        C07EntryFormat("video/mp4", C07EntryContentClass.VIDEO, setOf("mp4", "m4v"), setOf(C07ProbeKind.ISO_BMFF)),
+        C07EntryFormat("audio/mp4", C07EntryContentClass.AUDIO, setOf("m4a", "mp4", "aac"), setOf(C07ProbeKind.ISO_BMFF)),
+        C07EntryFormat("video/quicktime", C07EntryContentClass.VIDEO, setOf("mov"), setOf(C07ProbeKind.ISO_BMFF)),
+        C07EntryFormat("video/x-m4v", C07EntryContentClass.VIDEO, setOf("m4v"), setOf(C07ProbeKind.ISO_BMFF)),
+        C07EntryFormat("video/3gpp", C07EntryContentClass.VIDEO, setOf("3gp"), setOf(C07ProbeKind.ISO_BMFF)),
+        C07EntryFormat("video/webm", C07EntryContentClass.VIDEO, setOf("webm"), setOf(C07ProbeKind.WEBM)),
+        C07EntryFormat("video/x-matroska", C07EntryContentClass.VIDEO, setOf("mkv"), setOf(C07ProbeKind.WEBM)),
+        C07EntryFormat("application/zip", C07EntryContentClass.DATA, setOf("zip"), setOf(C07ProbeKind.ZIP)),
+        C07EntryFormat(
+            "application/x-zip-compressed",
+            C07EntryContentClass.DATA,
+            setOf("zip"),
+            setOf(C07ProbeKind.ZIP),
+        ),
+        C07EntryFormat(
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            C07EntryContentClass.OFFICE, setOf("docx"), setOf(C07ProbeKind.ZIP),
+        ),
+        C07EntryFormat(
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            C07EntryContentClass.OFFICE, setOf("xlsx"), setOf(C07ProbeKind.ZIP),
+        ),
+        C07EntryFormat(
+            "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+            C07EntryContentClass.OFFICE, setOf("pptx"), setOf(C07ProbeKind.ZIP),
+        ),
+    )
+
+    private val packageFormats: List<C07EntryFormat> = listOf(
+        C07EntryFormat(
+            packageMimeNote, C07EntryContentClass.PACKAGE, setOf("floenote"),
+            setOf(C07ProbeKind.ZIP), canTask = false, canNotes = false,
+            packageKind = C07EntryPackageKind.NOTE,
+        ),
+        C07EntryFormat(
+            packageMimeCanvas, C07EntryContentClass.PACKAGE, setOf("flocanvas"),
+            setOf(C07ProbeKind.ZIP), canTask = false, canNotes = false,
+            packageKind = C07EntryPackageKind.CANVAS,
+        ),
+        C07EntryFormat(
+            packageMimeBackup, C07EntryContentClass.PACKAGE, setOf("floebackup"),
+            setOf(C07ProbeKind.ZIP), canTask = false, canNotes = false,
+            packageKind = C07EntryPackageKind.BACKUP,
+        ),
+        C07EntryFormat(
+            "application/vnd.floe.cad.package", C07EntryContentClass.PACKAGE,
+            setOf("floecad"), null, opaqueWhenUnrecognized = true,
+            canTask = false, canNotes = false,
+            packageKind = C07EntryPackageKind.CAD,
+        ),
+    )
+
+    private val allFormats: List<C07EntryFormat> = packageFormats + cadFormats + formats
 
     fun normalizeMime(raw: String?): String =
         raw.orEmpty().substringBefore(';').trim().lowercase()
 
-    fun isSupported(mimeType: String, displayName: String): Boolean {
-        if (mimeType == "application/zip") {
-            return extension(displayName) in setOf("zip", "docx", "xlsx", "pptx")
+    fun extension(displayName: String): String =
+        displayName.substringAfterLast('.', "").trim().lowercase()
+
+    fun isRefusedExecutable(extension: String): Boolean = extension in refusedExtensions
+
+    /**
+     * Resolves the declared provider hint and the file name to one admitted
+     * format. Package and CAD extensions are authoritative identity, not
+     * content claims; everything else must also pass [probeMatches].
+     */
+    fun formatFor(declaredMime: String, displayName: String): C07EntryFormat? {
+        val mime = normalizeMime(declaredMime)
+        val fileExtension = extension(displayName)
+        if (isRefusedExecutable(fileExtension)) return null
+        packageFormats.firstOrNull { fileExtension in it.extensions }?.let { return it }
+        cadFormats.firstOrNull { fileExtension in it.extensions }?.let { return it }
+        if (mime.isEmpty() || mime == "application/octet-stream") {
+            formats.firstOrNull { fileExtension in it.extensions }?.let { return it }
+            if (fileExtension in textExtensions) return textFormat()
+            return null
         }
-        if (mimeType in exactTypes) return true
-        if (mimeType == "application/octet-stream") {
-            return extension(displayName) in octetExtensions
+        formats.firstOrNull { it.mimeType == mime && fileExtension in it.extensions }?.let { return it }
+        // A provider-declared Office/ZIP MIME refines only through the family
+        // extension; a ZIP renamed .pdf never resolves to a PDF format here.
+        if (mime == "application/zip" || mime == "application/x-zip-compressed") {
+            return formats.firstOrNull {
+                it.contentClass == C07EntryContentClass.OFFICE && fileExtension in it.extensions
+            }
         }
-        return false
+        if (mime.startsWith("text/") || mime in sourceMimes) return textFormat()
+        return null
     }
+
+    private fun textFormat(): C07EntryFormat =
+        C07EntryFormat("text/plain", C07EntryContentClass.SOURCE, textExtensions, setOf(C07ProbeKind.TEXT))
+
+    fun isKnownFormatMime(mime: String): Boolean {
+        val normalized = normalizeMime(mime)
+        return normalized.startsWith("text/") ||
+            normalized in sourceMimes ||
+            allFormats.any { it.mimeType == normalized }
+    }
+
+    fun isKnownFormatExtension(extension: String): Boolean =
+        extension in textExtensions || allFormats.any { extension in it.extensions }
+
+    val executableExtensions: Set<String> get() = refusedExtensions
+    val knownTextExtensions: Set<String> get() = textExtensions
+
+    fun isSupported(mimeType: String, displayName: String): Boolean =
+        formatFor(mimeType, displayName) != null
+
+    /**
+     * Honest reconciliation of the provider MIME with the actual container.
+     * `format` came from the declared hint; [probe] is what the bytes show.
+     */
+    fun probeMatches(format: C07EntryFormat, probe: C07ProbeKind): Boolean {
+        val expected = format.probes ?: return true
+        if (probe in expected) return true
+        return format.opaqueWhenUnrecognized && probe == C07ProbeKind.UNKNOWN
+    }
+
+    /**
+     * Resolves a format from bytes when the provider declared no concrete type
+     * (empty or `application/octet-stream`). Known magic wins; an
+     * extension-proved data/CAD file may continue as opaque data without any
+     * preview claim. A recognizable media container with no declared subtype
+     * stays opaque DATA: the container is proved, the codec/preview is not.
+     */
+    fun formatForProbe(probe: C07ProbeKind, displayName: String): C07EntryFormat? {
+        val fileExtension = extension(displayName)
+        if (isRefusedExecutable(fileExtension)) return null
+        packageFormats.firstOrNull { fileExtension in it.extensions }?.let { return it }
+        cadFormats.firstOrNull { fileExtension in it.extensions }?.let { return it }
+        val direct = when (probe) {
+            C07ProbeKind.PDF -> "application/pdf"
+            C07ProbeKind.PNG -> "image/png"
+            C07ProbeKind.JPEG -> "image/jpeg"
+            C07ProbeKind.WEBP -> "image/webp"
+            C07ProbeKind.GIF -> "image/gif"
+            C07ProbeKind.HEIC -> "image/heic"
+            C07ProbeKind.AVIF -> "image/avif"
+            C07ProbeKind.BMP -> "image/bmp"
+            C07ProbeKind.MP3 -> "audio/mpeg"
+            C07ProbeKind.WAV -> "audio/wav"
+            C07ProbeKind.FLAC -> "audio/flac"
+            C07ProbeKind.AAC -> "audio/aac"
+            C07ProbeKind.OGG -> "audio/ogg"
+            C07ProbeKind.ISO_BMFF -> when (fileExtension) {
+                "mov" -> "video/quicktime"
+                "m4v" -> "video/x-m4v"
+                "3gp" -> "video/3gpp"
+                "m4a" -> "audio/x-m4a"
+                "aac" -> "audio/aac"
+                "mp4" -> "video/mp4"
+                else -> return opaqueFormat(probe)
+            }
+            C07ProbeKind.WEBM -> when (fileExtension) {
+                "mkv" -> "video/x-matroska"
+                "webm" -> "video/webm"
+                else -> return opaqueFormat(probe)
+            }
+            C07ProbeKind.GLB -> "model/gltf-binary"
+            C07ProbeKind.ZIP -> when (fileExtension) {
+                "docx", "xlsx", "pptx" -> formats.first {
+                    it.contentClass == C07EntryContentClass.OFFICE && fileExtension in it.extensions
+                }.mimeType
+                else -> "application/zip"
+            }
+            C07ProbeKind.TEXT -> "text/plain"
+            C07ProbeKind.UNKNOWN -> return null
+        }
+        return formats.firstOrNull { it.mimeType == direct }
+    }
+
+    private fun opaqueFormat(probe: C07ProbeKind): C07EntryFormat =
+        C07EntryFormat(
+            "application/octet-stream",
+            C07EntryContentClass.DATA,
+            emptySet(),
+            setOf(probe),
+            opaqueWhenUnrecognized = true,
+        )
+
+    /** Bytes are recognized as a container, but the name does not identify the
+     * concrete type: keep routing as opaque data instead of claiming a preview. */
+    fun opaqueData(probe: C07ProbeKind): C07EntryFormat = opaqueFormat(probe)
 
     fun validate(items: List<C07EntryCapturedItem>): C07ShareValidation {
         if (items.isEmpty()) return C07ShareValidation.Refused(C07EntryRefusal.EMPTY)
@@ -228,6 +547,10 @@ internal object C07SharePolicy {
         }
         var textBytes = 0L
         var totalKnown = 0L
+        var packages = 0
+        var packageKind = C07EntryPackageKind.NONE
+        var taskAvailable = true
+        var notesAvailable = true
         for (item in items) {
             when (item.kind) {
                 C07EntryItemKind.TEXT -> {
@@ -239,27 +562,49 @@ internal object C07SharePolicy {
                     }
                 }
                 C07EntryItemKind.FILE -> {
-                    if (!isSupported(item.mimeType, item.displayName)) {
-                        return C07ShareValidation.Refused(C07EntryRefusal.UNSUPPORTED)
+                    val format = item.format ?: formatFor(item.mimeType, item.displayName)
+                        ?: return C07ShareValidation.Refused(C07EntryRefusal.UNSUPPORTED)
+                    if (format.packageKind.isPackage) {
+                        packages += 1
+                        packageKind = format.packageKind
                     }
+                    if (!format.canTask) taskAvailable = false
+                    if (!format.canNotes) notesAvailable = false
                     if (item.declaredBytes < -1L) {
                         return C07ShareValidation.Refused(C07EntryRefusal.UNREADABLE)
                     }
-                    if (item.declaredBytes > ENTRY_MAX_ITEM_BYTES) {
-                        return C07ShareValidation.Refused(C07EntryRefusal.ITEM_TOO_LARGE)
+                    if (!format.packageKind.isPackage) {
+                        // Package bytes are streamed by the EXISTING review
+                        // owner under its own budget; the entry owner never
+                        // copies them, so the attachment cap does not apply.
+                        if (item.declaredBytes > ENTRY_MAX_ITEM_BYTES) {
+                            return C07ShareValidation.Refused(C07EntryRefusal.ITEM_TOO_LARGE)
+                        }
+                        if (item.declaredBytes > 0L) totalKnown += item.declaredBytes
                     }
-                    if (item.declaredBytes > 0L) totalKnown += item.declaredBytes
                 }
             }
         }
         if (totalKnown > ENTRY_MAX_TOTAL_BYTES) {
             return C07ShareValidation.Refused(C07EntryRefusal.TOTAL_TOO_LARGE)
         }
-        return C07ShareValidation.Accepted(totalKnown, textBytes)
+        if (packages > 0) {
+            // A Floe package has ONE owner that inspects/reviews the archive.
+            // Mixing it with other items would silently split or re-bundle it.
+            if (packages != 1 || items.size != 1 || items.single().kind != C07EntryItemKind.FILE) {
+                return C07ShareValidation.Refused(C07EntryRefusal.PACKAGE_MIXED)
+            }
+            taskAvailable = false
+            notesAvailable = false
+        }
+        return C07ShareValidation.Accepted(
+            totalKnownBytes = totalKnown,
+            textBytes = textBytes,
+            taskAvailable = taskAvailable,
+            notesAvailable = notesAvailable,
+            packageKind = packageKind,
+        )
     }
-
-    fun extension(displayName: String): String =
-        displayName.substringAfterLast('.', "").trim().lowercase()
 
     /**
      * Metadata-only name. It is never used as a path; the native notes and
@@ -278,6 +623,32 @@ internal object C07SharePolicy {
         val stem = displayName.substringBeforeLast('.', displayName).trim()
         return stem.take(120).ifBlank { displayName.take(120) }
     }
+}
+
+/**
+ * Pure destination gate used by both the host and its JVM regressions. A
+ * genuinely unsupported item is refused at admission; a package whose review
+ * owner is not wired (or a `.floecad` directory with no folder importer) is a
+ * disabled destination with a PRECISE missing-wiring reason.
+ */
+internal object C07EntryDestinationGate {
+    fun review(
+        packageKind: C07EntryPackageKind,
+        ownerInstalled: Boolean,
+        supportsDirectoryPackages: Boolean,
+    ): EntryReviewAvailability = when {
+        !packageKind.isPackage -> EntryReviewAvailability.NOT_APPLICABLE
+        !ownerInstalled -> EntryReviewAvailability.MISSING_OWNER
+        packageKind == C07EntryPackageKind.CAD && !supportsDirectoryPackages ->
+            EntryReviewAvailability.DIRECTORY_UNAVAILABLE
+        else -> EntryReviewAvailability.AVAILABLE
+    }
+
+    fun offersTask(canTask: Boolean, packageKind: C07EntryPackageKind): Boolean =
+        canTask && !packageKind.isPackage
+
+    fun offersNotes(canNotes: Boolean, packageKind: C07EntryPackageKind): Boolean =
+        canNotes && !packageKind.isPackage
 }
 
 /** Stable duplicate-suppression key. Only a digest is persisted. */

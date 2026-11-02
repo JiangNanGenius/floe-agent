@@ -19,6 +19,7 @@ package com.floe.android.host.entryflow
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
+import android.provider.DocumentsContract
 import android.provider.OpenableColumns
 import com.floe.android.FloeApplication
 import com.floe.android.FloeFoundation
@@ -28,6 +29,7 @@ import com.floe.android.feature.entryflow.EntryFeedbackError
 import com.floe.android.feature.entryflow.EntryFeedbackPhase
 import com.floe.android.feature.entryflow.EntryFeedbackUi
 import com.floe.android.feature.entryflow.EntryNoticeKind
+import com.floe.android.feature.entryflow.EntryReviewAvailability
 import com.floe.android.feature.entryflow.EntrySetupStep
 import com.floe.android.feature.entryflow.EntrySetupUi
 import com.floe.android.feature.entryflow.EntryShareDestination
@@ -74,6 +76,36 @@ internal fun interface C07HomeAttachmentStager {
     fun stage(uris: List<Uri>): Boolean
 }
 
+/**
+ * The EXISTING package inspection/review owner (Data Exchange for
+ * `.floenote`/`.flocanvas`/`.floebackup`, the CAD package/folder import for
+ * `.floecad`). Main installs the real adapter; the entry flow never restores,
+ * remaps or auto-imports a package itself.
+ *
+ * The implementation takes ownership of [releaseSource] and MUST invoke it
+ * exactly once after its own source read/copy settles: the entry owner has
+ * already transferred its reference at the moment [beginReview] returns true.
+ * It must synchronously retain its own read reference before any asynchronous
+ * work, exactly like the attachment-staging handoff.
+ */
+internal interface C07PackageReviewOwner {
+    /** True only when this owner really offers the existing directory
+     * `.floecad` tree/package import. A single-file Data Exchange owner
+     * reports false so the sheet can state the precise missing path. */
+    val supportsDirectoryPackages: Boolean get() = false
+
+    /** Existing settings category that shows the live review, or null when the
+     * owner has no public surface to open. */
+    val settingsSectionKey: String? get() = null
+
+    fun beginReview(
+        uri: Uri,
+        kind: C07EntryPackageKind,
+        displayName: String,
+        releaseSource: () -> Unit,
+    ): Boolean
+}
+
 internal object C07EntryFlowHost {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private val io = Dispatchers.IO
@@ -89,6 +121,7 @@ internal object C07EntryFlowHost {
     private var runtimeHost: RuntimeHost? = null
     private var notes: NotesService? = null
     private var homeStager: C07HomeAttachmentStager? = null
+    private var packageReviewOwner: C07PackageReviewOwner? = null
     private var admissionJob: Job? = null
     private var activeJob: Job? = null
     private var linkJob: Job? = null
@@ -108,6 +141,7 @@ internal object C07EntryFlowHost {
     private val scheduleFocusState = MutableStateFlow<C07ScheduleFocus?>(null)
     private val homeDraftState = MutableStateFlow<C07HomeDraftAdoption?>(null)
     private val feedbackState = MutableStateFlow(EntryFeedbackUi())
+    private val settingsSectionState = MutableStateFlow<String?>(null)
 
     val shareUi: StateFlow<EntryShareUi?> = shareUiState.asStateFlow()
     val setupUi: StateFlow<EntrySetupUi?> = setupUiState.asStateFlow()
@@ -116,6 +150,11 @@ internal object C07EntryFlowHost {
     val scheduleFocus: StateFlow<C07ScheduleFocus?> = scheduleFocusState.asStateFlow()
     val homeDraftAdoption: StateFlow<C07HomeDraftAdoption?> = homeDraftState.asStateFlow()
     val feedback: StateFlow<EntryFeedbackUi> = feedbackState.asStateFlow()
+
+    /** One-shot request to open an EXISTING settings category (the package
+     * review owner's page). Consumed by the shell surface; never navigates on
+     * arrival or before the owner really accepted the handoff. */
+    val openSettingsSection: StateFlow<String?> = settingsSectionState.asStateFlow()
 
     @Synchronized
     fun initialize(context: Context) {
@@ -153,6 +192,14 @@ internal object C07EntryFlowHost {
 
     fun installHomeAttachmentStager(stager: C07HomeAttachmentStager) {
         homeStager = stager
+    }
+
+    fun installPackageReviewOwner(owner: C07PackageReviewOwner) {
+        packageReviewOwner = owner
+    }
+
+    fun consumeOpenSettingsSection(key: String) {
+        settingsSectionState.compareAndSet(key, null)
     }
 
     /** Entry point from the Activity's onCreate + onNewIntent. Idempotent for
@@ -486,6 +533,9 @@ internal object C07EntryFlowHost {
             val items: List<C07EntryCapturedItem>,
             val leases: List<SafSharedGrantBroker.Lease>,
             val fingerprint: String,
+            val taskAvailable: Boolean,
+            val notesAvailable: Boolean,
+            val packageKind: C07EntryPackageKind,
         ) : Prepared
 
         data class Refused(val code: C07EntryRefusal) : Prepared
@@ -509,6 +559,7 @@ internal object C07EntryFlowHost {
                     displayName = "Shared text",
                     declaredBytes = text.toByteArray(Charsets.UTF_8).size.toLong(),
                     text = text,
+                    contentClass = C07EntryContentClass.TEXT,
                 )
             }
             for (uriString in raw.uriStrings) {
@@ -519,6 +570,11 @@ internal object C07EntryFlowHost {
                     ?: return Prepared.Refused(C07EntryRefusal.INVALID_URI)
                 if (uri.scheme != "content") {
                     return Prepared.Refused(C07EntryRefusal.INVALID_URI)
+                }
+                val tree = try {
+                    DocumentsContract.isTreeUri(uri)
+                } catch (_: RuntimeException) {
+                    false
                 }
                 val lease = try {
                     SharedUriGrantAuthority.acquireRead(
@@ -533,6 +589,47 @@ internal object C07EntryFlowHost {
                 }
                 leases += lease
                 val meta = queryMeta(uri)
+                val extensionPackage = C07EntryPackageKind.ofExtension(
+                    C07SharePolicy.extension(meta.displayName),
+                )
+                if (tree) {
+                    // A tree URI cannot be copied as one stream. Only the
+                    // existing directory-package importer may take it, and
+                    // only for an actual .floecad package.
+                    if (extensionPackage != C07EntryPackageKind.CAD) {
+                        return Prepared.Refused(C07EntryRefusal.INVALID_URI)
+                    }
+                    items += C07EntryCapturedItem(
+                        index = index++,
+                        kind = C07EntryItemKind.FILE,
+                        uriString = uriString,
+                        mimeType = "application/vnd.floe.cad.package",
+                        displayName = meta.displayName,
+                        declaredBytes = meta.byteCount.takeIf { it > 0L } ?: -1L,
+                        text = null,
+                        contentClass = C07EntryContentClass.PACKAGE,
+                        packageKind = C07EntryPackageKind.CAD,
+                        format = cadPackageFormat(meta.displayName),
+                    )
+                    continue
+                }
+                if (extensionPackage == C07EntryPackageKind.CAD) {
+                    // A .floecad package is a DIRECTORY. Never open it as a
+                    // single stream and never convert it to a ZIP guess.
+                    items += C07EntryCapturedItem(
+                        index = index++,
+                        kind = C07EntryItemKind.FILE,
+                        uriString = uriString,
+                        mimeType = "application/vnd.floe.cad.package",
+                        displayName = meta.displayName,
+                        declaredBytes = meta.byteCount.takeIf { it > 0L } ?: -1L,
+                        text = null,
+                        contentClass = C07EntryContentClass.PACKAGE,
+                        packageKind = C07EntryPackageKind.CAD,
+                        format = cadPackageFormat(meta.displayName),
+                    )
+                    continue
+                }
                 val probe = try {
                     appContext.contentResolver.openInputStream(uri)?.use {
                         C07ContentSniffer.probe(it)
@@ -549,10 +646,12 @@ internal object C07EntryFlowHost {
                 )
                 val mime = decision.mimeType
                     ?: return Prepared.Refused(decision.refusal ?: C07EntryRefusal.UNSUPPORTED)
-                val declaredBytes = if (meta.byteCount > 0L) {
-                    meta.byteCount
-                } else {
-                    try {
+                val declaredBytes = when {
+                    meta.byteCount > 0L -> meta.byteCount
+                    // A package is copied by the existing review owner under
+                    // its own budget; never spool/measure it here.
+                    decision.packageKind.isPackage -> -1L
+                    else -> try {
                         measureBytes(uri)
                     } catch (error: C07EntryImportException) {
                         return Prepared.Refused(error.refusal)
@@ -566,6 +665,9 @@ internal object C07EntryFlowHost {
                     displayName = meta.displayName,
                     declaredBytes = declaredBytes,
                     text = null,
+                    contentClass = decision.contentClass,
+                    packageKind = decision.packageKind,
+                    format = decision.format,
                 )
             }
             return when (val validation = C07SharePolicy.validate(items)) {
@@ -576,6 +678,9 @@ internal object C07EntryFlowHost {
                         items = items,
                         leases = leases,
                         fingerprint = C07EntryFingerprint.of(raw.action, raw.subject, items),
+                        taskAvailable = validation.taskAvailable,
+                        notesAvailable = validation.notesAvailable,
+                        packageKind = validation.packageKind,
                     )
                 }
             }
@@ -623,8 +728,11 @@ internal object C07EntryFlowHost {
                     subject = raw.subject,
                     items = prepared.items,
                     preview = C07EntryCopy.textPreview(prepared.items),
-                    leases = prepared.leases,
+                    leases = prepared.leases.toMutableList(),
                     createdAt = now,
+                    canTask = prepared.taskAvailable,
+                    canNotes = prepared.notesAvailable,
+                    packageKind = prepared.packageKind,
                 )
                 intakeStore.begin(fingerprint, intake.id, now)
                 activeState.value = intake
@@ -643,6 +751,17 @@ internal object C07EntryFlowHost {
         }
         if (activeJob?.isActive == true) {
             showNotice(EntryNoticeKind.BUSY)
+            return
+        }
+        if (!intake.canTask || intake.packageKind.isPackage) {
+            // A package has one inspection/review owner; it is never staged
+            // into a draft or a Notes file note by the generic destinations.
+            publishShare(
+                intake,
+                EntrySharePhase.FAILED,
+                error = EntryShareError.UNSUPPORTED,
+                destination = EntryShareDestination.TASK,
+            )
             return
         }
         val hasFiles = intake.items.any { it.kind == C07EntryItemKind.FILE }
@@ -666,6 +785,12 @@ internal object C07EntryFlowHost {
     fun applyTaskDestination(intakeID: String) {
         val intake = activeState.value ?: return
         if (intake.id != intakeID) return
+        if (intake.packageKind.isPackage) {
+            // Defensive: a package is never staged through the generic draft
+            // boundary, even if a stale navigation callback arrives.
+            failShare(intake, C07EntryRefusal.UNSUPPORTED)
+            return
+        }
         val text = intake.items
             .filter { it.kind == C07EntryItemKind.TEXT }
             .mapNotNull { it.text }
@@ -751,6 +876,15 @@ internal object C07EntryFlowHost {
             showNotice(EntryNoticeKind.BUSY)
             return
         }
+        if (!intake.canNotes || intake.packageKind.isPackage) {
+            publishShare(
+                intake,
+                EntrySharePhase.FAILED,
+                error = EntryShareError.UNSUPPORTED,
+                destination = EntryShareDestination.NOTES,
+            )
+            return
+        }
         val service = notesService()
         if (service == null) {
             publishShare(
@@ -815,6 +949,108 @@ internal object C07EntryFlowHost {
         resumeDeferredSetup()
     }
 
+    /**
+     * The ONLY package destination. It hands the single already-admitted
+     * package URI to the existing inspection/review owner. The entry flow never
+     * inspects, remaps, restores or imports the archive itself, and nothing is
+     * restored on arrival: the owner presents its own review first.
+     */
+    fun chooseReviewDestination(intakeID: String) {
+        val intake = activeState.value ?: return
+        val phase = shareUiState.value?.phase
+        if (intake.id != intakeID ||
+            (phase != EntrySharePhase.READY && phase != EntrySharePhase.FAILED)
+        ) {
+            return
+        }
+        if (activeJob?.isActive == true) {
+            showNotice(EntryNoticeKind.BUSY)
+            return
+        }
+        if (!intake.packageKind.isPackage) {
+            publishShare(
+                intake,
+                EntrySharePhase.FAILED,
+                error = EntryShareError.UNSUPPORTED,
+                destination = EntryShareDestination.REVIEW,
+            )
+            return
+        }
+        when (reviewAvailability(intake)) {
+            EntryReviewAvailability.AVAILABLE -> Unit
+            EntryReviewAvailability.MISSING_OWNER -> {
+                publishShare(
+                    intake, EntrySharePhase.FAILED,
+                    error = EntryShareError.REVIEW_UNAVAILABLE,
+                    destination = EntryShareDestination.REVIEW,
+                )
+                return
+            }
+            EntryReviewAvailability.DIRECTORY_UNAVAILABLE -> {
+                publishShare(
+                    intake, EntrySharePhase.FAILED,
+                    error = EntryShareError.FOLDER_UNAVAILABLE,
+                    destination = EntryShareDestination.REVIEW,
+                )
+                return
+            }
+            EntryReviewAvailability.NOT_APPLICABLE -> {
+                publishShare(
+                    intake, EntrySharePhase.FAILED,
+                    error = EntryShareError.UNSUPPORTED,
+                    destination = EntryShareDestination.REVIEW,
+                )
+                return
+            }
+        }
+        val owner = packageReviewOwner ?: return
+        val item = intake.items.singleOrNull() ?: return
+        val uri = item.uriString?.let { value -> runCatching { Uri.parse(value) }.getOrNull() }
+            ?: return
+        val lease = intake.leases.singleOrNull() ?: return
+        publishShare(intake, EntrySharePhase.WORKING, destination = EntryShareDestination.REVIEW)
+        val released = java.util.concurrent.atomic.AtomicBoolean(false)
+        val releaseSource: () -> Unit = {
+            if (released.compareAndSet(false, true)) runCatching { lease.release() }
+        }
+        val started = runCatching {
+            owner.beginReview(uri, intake.packageKind, item.displayName) { releaseSource() }
+        }.getOrDefault(false)
+        if (!started) {
+            // The owner did not take the source. Keep the intake lease so an
+            // explicit retry is a real retry of the same admitted item; it is
+            // released on discard, never by a timer.
+            publishShare(
+                intake,
+                EntrySharePhase.FAILED,
+                error = if (intake.packageKind == C07EntryPackageKind.CAD) {
+                    EntryShareError.FOLDER_UNAVAILABLE
+                } else {
+                    EntryShareError.REVIEW_UNAVAILABLE
+                },
+                destination = EntryShareDestination.REVIEW,
+            )
+            return
+        }
+        // The review owner now owns the source reference; the entry lease is
+        // transferred (removed before settle) and released by that owner.
+        intake.leases.remove(lease)
+        settle(intake, C07EntryJournalStatus.COMPLETED, clear = false)
+        publishShare(
+            intake,
+            EntrySharePhase.COMPLETE,
+            destination = EntryShareDestination.REVIEW,
+            openReviewAvailable = packageReviewOwner?.settingsSectionKey != null,
+        )
+    }
+
+    fun openReviewFromShare() {
+        val key = packageReviewOwner?.settingsSectionKey ?: return
+        settingsSectionState.value = key
+        shareUiState.value = null
+        resumeDeferredSetup()
+    }
+
     fun dismissShare() {
         val phase = shareUiState.value?.phase
         if (phase == EntrySharePhase.COMPLETE) {
@@ -863,6 +1099,7 @@ internal object C07EntryFlowHost {
         error: EntryShareError? = null,
         savedNotes: Int = 0,
         canOpenNotes: Boolean = false,
+        openReviewAvailable: Boolean = false,
     ) {
         shareUiState.value = EntryShareUi(
             items = intake.items.map { item ->
@@ -880,6 +1117,19 @@ internal object C07EntryFlowHost {
             canOpenNotes = canOpenNotes,
             totalCount = intake.items.size,
             intakeID = intake.id,
+            canChooseTask = intake.canTask,
+            canChooseNotes = intake.canNotes,
+            reviewAvailability = reviewAvailability(intake),
+            openReviewAvailable = openReviewAvailable,
+        )
+    }
+
+    private fun reviewAvailability(intake: ActiveIntake): EntryReviewAvailability {
+        val owner = packageReviewOwner
+        return C07EntryDestinationGate.review(
+            packageKind = intake.packageKind,
+            ownerInstalled = owner != null,
+            supportsDirectoryPackages = owner?.supportsDirectoryPackages == true,
         )
     }
 
@@ -1021,6 +1271,19 @@ internal object C07EntryFlowHost {
         val byteCount: Long,
     )
 
+    private fun cadPackageFormat(displayName: String): C07EntryFormat =
+        C07SharePolicy.formatFor("application/vnd.floe.cad.package", displayName)
+            ?: C07EntryFormat(
+                "application/vnd.floe.cad.package",
+                C07EntryContentClass.PACKAGE,
+                setOf("floecad"),
+                null,
+                opaqueWhenUnrecognized = true,
+                canTask = false,
+                canNotes = false,
+                packageKind = C07EntryPackageKind.CAD,
+            )
+
     /**
      * A provider that reports no size is measured once, bounded at the same
      * per-item cap, so the intake total remains a real bound instead of an
@@ -1147,6 +1410,7 @@ internal object C07EntryFlowHost {
         C07EntryRefusal.TOTAL_TOO_LARGE,
         C07EntryRefusal.UNSUPPORTED,
         C07EntryRefusal.CONTENT_MISMATCH,
+        C07EntryRefusal.PACKAGE_MIXED,
         C07EntryRefusal.INVALID_URI,
     )
 
@@ -1161,6 +1425,7 @@ internal object C07EntryFlowHost {
         C07EntryRefusal.TOTAL_TOO_LARGE -> EntryShareError.TOO_LARGE
         C07EntryRefusal.UNSUPPORTED,
         C07EntryRefusal.CONTENT_MISMATCH -> EntryShareError.UNSUPPORTED
+        C07EntryRefusal.PACKAGE_MIXED -> EntryShareError.PACKAGE_MIXED
         C07EntryRefusal.UNREADABLE,
         C07EntryRefusal.INVALID_URI -> EntryShareError.UNREADABLE
         C07EntryRefusal.NOTES_UNAVAILABLE -> EntryShareError.NOTES_UNAVAILABLE
@@ -1177,8 +1442,9 @@ internal object C07EntryFlowHost {
         C07EntryRefusal.ITEM_TOO_LARGE,
         C07EntryRefusal.TOTAL_TOO_LARGE -> EntryNoticeKind.TOO_LARGE
         C07EntryRefusal.ITEM_LIMIT -> EntryNoticeKind.ITEM_LIMIT
-        C07EntryRefusal.UNSUPPORTED,
-        C07EntryRefusal.CONTENT_MISMATCH -> EntryNoticeKind.UNSUPPORTED
+        C07EntryRefusal.UNSUPPORTED -> EntryNoticeKind.UNSUPPORTED
+        C07EntryRefusal.CONTENT_MISMATCH -> EntryNoticeKind.CONTENT_MISMATCH
+        C07EntryRefusal.PACKAGE_MIXED -> EntryNoticeKind.PACKAGE_MIXED
         C07EntryRefusal.UNREADABLE,
         C07EntryRefusal.INVALID_URI -> EntryNoticeKind.UNREADABLE
         C07EntryRefusal.NOTES_UNAVAILABLE -> EntryNoticeKind.NOTES_UNAVAILABLE
@@ -1196,7 +1462,12 @@ internal object C07EntryFlowHost {
         val subject: String?,
         val items: List<C07EntryCapturedItem>,
         val preview: String?,
-        val leases: List<SafSharedGrantBroker.Lease>,
+        /** Mutable only for the one explicit package review transfer; every
+         * other destination keeps the leases until its own work settles. */
+        val leases: MutableList<SafSharedGrantBroker.Lease>,
         val createdAt: Long,
+        val canTask: Boolean,
+        val canNotes: Boolean,
+        val packageKind: C07EntryPackageKind,
     )
 }

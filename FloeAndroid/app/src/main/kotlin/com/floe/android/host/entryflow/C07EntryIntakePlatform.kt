@@ -109,20 +109,26 @@ internal object C07ShareIntentReader {
     }
 }
 
-internal enum class C07ProbeKind { PDF, PNG, JPEG, WEBP, GIF, ZIP, TEXT, UNKNOWN }
+internal enum class C07ProbeKind {
+    PDF, PNG, JPEG, WEBP, GIF, BMP, HEIC, AVIF, ISO_BMFF,
+    MP3, WAV, FLAC, OGG, AAC, WEBM, GLB, ZIP, TEXT, UNKNOWN,
+}
 
 internal data class C07MimeDecision(
     val mimeType: String?,
+    val contentClass: C07EntryContentClass = C07EntryContentClass.DATA,
+    val packageKind: C07EntryPackageKind = C07EntryPackageKind.NONE,
+    val format: C07EntryFormat? = null,
     val refusal: C07EntryRefusal? = null,
 )
 
 internal object C07ContentSniffer {
     private const val PROBE_BYTES = 4_096
-    private val officeMimes = setOf(
-        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        "application/vnd.openxmlformats-officedocument.presentationml.presentation",
-    )
+
+    private val heicBrands = setOf("heic", "heix", "hevc", "hevx", "heim", "heis", "mif1", "msf1")
+    private val genericHeifBrands = setOf("mif1", "msf1")
+    private val avifBrands = setOf("avif", "avis")
+    private val genericMimes = setOf("*/*", "application/*", "image/*", "audio/*", "video/*")
 
     fun probe(stream: InputStream): C07ProbeKind {
         val header = ByteArray(PROBE_BYTES)
@@ -152,10 +158,14 @@ internal object C07ContentSniffer {
             return C07ProbeKind.JPEG
         }
         if (length >= 12 &&
-            header.copyOfRange(0, 4).contentEquals("RIFF".toByteArray(Charsets.US_ASCII)) &&
-            header.copyOfRange(8, 12).contentEquals("WEBP".toByteArray(Charsets.US_ASCII))
+            header.copyOfRange(0, 4).contentEquals("RIFF".toByteArray(Charsets.US_ASCII))
         ) {
-            return C07ProbeKind.WEBP
+            if (header.copyOfRange(8, 12).contentEquals("WEBP".toByteArray(Charsets.US_ASCII))) {
+                return C07ProbeKind.WEBP
+            }
+            if (header.copyOfRange(8, 12).contentEquals("WAVE".toByteArray(Charsets.US_ASCII))) {
+                return C07ProbeKind.WAV
+            }
         }
         if (length >= 6 &&
             header.copyOfRange(0, 6).contentEquals("GIF87a".toByteArray(Charsets.US_ASCII))
@@ -168,6 +178,71 @@ internal object C07ContentSniffer {
             return C07ProbeKind.GIF
         }
         if (length >= 4 &&
+            header.copyOfRange(0, 4).contentEquals("fLaC".toByteArray(Charsets.US_ASCII))
+        ) {
+            return C07ProbeKind.FLAC
+        }
+        if (length >= 4 &&
+            header.copyOfRange(0, 4).contentEquals("OggS".toByteArray(Charsets.US_ASCII))
+        ) {
+            return C07ProbeKind.OGG
+        }
+        if (length >= 3 &&
+            header.copyOfRange(0, 3).contentEquals("ID3".toByteArray(Charsets.US_ASCII))
+        ) {
+            return C07ProbeKind.MP3
+        }
+        if (length >= 2 && (header[0].toInt() and 0xff) == 0xFF) {
+            val second = header[1].toInt() and 0xff
+            // ADTS (layer bits 00) is checked before the broader MPEG-audio sync.
+            if ((second and 0xF6) == 0xF0) return C07ProbeKind.AAC
+            if ((second and 0xE0) == 0xE0) return C07ProbeKind.MP3
+        }
+        if (length >= 4 &&
+            (header[0].toInt() and 0xff) == 0x1A &&
+            (header[1].toInt() and 0xff) == 0x45 &&
+            (header[2].toInt() and 0xff) == 0xDF &&
+            (header[3].toInt() and 0xff) == 0xA3
+        ) {
+            return C07ProbeKind.WEBM
+        }
+        if (length >= 4 &&
+            header.copyOfRange(0, 4).contentEquals("glTF".toByteArray(Charsets.US_ASCII))
+        ) {
+            return C07ProbeKind.GLB
+        }
+        if (length >= 12 &&
+            header.copyOfRange(4, 8).contentEquals("ftyp".toByteArray(Charsets.US_ASCII))
+        ) {
+            // The MAJOR brand is the file's own declaration. AVIF commonly adds
+            // the generic HEIF brand `mif1` as a COMPATIBLE brand, so scanning
+            // compatible brands before the major brand would misclassify it.
+            val major = brand(header, length, 8)
+            if (major != null) {
+                if (major in avifBrands) return C07ProbeKind.AVIF
+                if (major in heicBrands && major !in genericHeifBrands) {
+                    return C07ProbeKind.HEIC
+                }
+            }
+            val compatible = buildList {
+                var offset = 16
+                while (offset + 4 <= minOf(length, 64)) {
+                    brand(header, length, offset)?.let { add(it) }
+                    offset += 4
+                }
+            }
+            if (compatible.any { it in avifBrands }) return C07ProbeKind.AVIF
+            if (compatible.any { it in heicBrands && it !in genericHeifBrands }) {
+                return C07ProbeKind.HEIC
+            }
+            if ((major != null && major in genericHeifBrands) ||
+                compatible.any { it in genericHeifBrands }
+            ) {
+                return C07ProbeKind.HEIC
+            }
+            if (major != null || compatible.isNotEmpty()) return C07ProbeKind.ISO_BMFF
+        }
+        if (length >= 4 &&
             header[0].toInt() == 'P'.code &&
             header[1].toInt() == 'K'.code &&
             ((header[2].toInt() == 3 && header[3].toInt() == 4) ||
@@ -176,6 +251,14 @@ internal object C07ContentSniffer {
         ) {
             return C07ProbeKind.ZIP
         }
+        if (length >= 26 &&
+            header[0].toInt() == 'B'.code &&
+            header[1].toInt() == 'M'.code &&
+            header[6].toInt() == 0 && header[7].toInt() == 0 &&
+            header[8].toInt() == 0 && header[9].toInt() == 0
+        ) {
+            return C07ProbeKind.BMP
+        }
         if (validUtf8Prefix(header, length) && header.copyOf(length).none { it.toInt() == 0 }) {
             return C07ProbeKind.TEXT
         }
@@ -183,9 +266,12 @@ internal object C07ContentSniffer {
     }
 
     /**
-     * Reconciles the provider's untrusted type with the actual bytes. A known
-     * concrete type must match its magic; a ZIP container may be declared as
-     * docx/xlsx/pptx/zip; an unknown declaration is resolved from magic.
+     * Reconciles the provider's untrusted type with the actual bytes and
+     * resolves the REAL consumer class. A concrete declared type must match its
+     * magic family; an unknown declaration is resolved from magic + extension.
+     * A recognized container with an unrelated name stays opaque DATA (the
+     * container is proved, the concrete preview is not). Recognized mismatches
+     * fail honestly instead of being forwarded as another type.
      */
     fun reconcile(
         declaredRaw: String?,
@@ -193,59 +279,80 @@ internal object C07ContentSniffer {
         displayName: String,
     ): C07MimeDecision {
         val declared = C07SharePolicy.normalizeMime(declaredRaw)
-        val detected = detectedMime(kind, displayName)
-        val finalMime = when {
-            declared.isEmpty() || declared == "application/octet-stream" -> detected
-            declared == "text/plain" -> "text/plain".takeIf { kind == C07ProbeKind.TEXT }
-            declared == "application/pdf" -> "application/pdf".takeIf { kind == C07ProbeKind.PDF }
-            declared == "image/png" -> "image/png".takeIf { kind == C07ProbeKind.PNG }
-            declared == "image/jpeg" -> "image/jpeg".takeIf { kind == C07ProbeKind.JPEG }
-            declared == "image/webp" -> "image/webp".takeIf { kind == C07ProbeKind.WEBP }
-            declared == "image/gif" -> "image/gif".takeIf { kind == C07ProbeKind.GIF }
-            declared == "application/zip" -> {
-                if (kind == C07ProbeKind.ZIP) {
-                    zipMime(C07SharePolicy.extension(displayName)) ?: "application/zip"
-                } else {
-                    null
-                }
-            }
-            declared in officeMimes -> declared.takeIf { kind == C07ProbeKind.ZIP }
-            else -> null
+        val extension = C07SharePolicy.extension(displayName)
+        if (C07SharePolicy.isRefusedExecutable(extension)) {
+            return C07MimeDecision(null, refusal = C07EntryRefusal.UNSUPPORTED)
         }
-        if (finalMime == null) {
-            val refusal = if (kind == C07ProbeKind.UNKNOWN) {
-                C07EntryRefusal.UNSUPPORTED
-            } else {
-                C07EntryRefusal.CONTENT_MISMATCH
-            }
-            return C07MimeDecision(null, refusal)
+        val declaredFormat = C07SharePolicy.formatFor(declared, displayName)
+        val generic = declared.isEmpty() ||
+            declared == "application/octet-stream" ||
+            declared in genericMimes
+        if (generic) {
+            declaredFormat?.let { return reconcileKnown(it, kind) }
+            val probed = C07SharePolicy.formatForProbe(kind, displayName)
+                ?: return C07MimeDecision(
+                    null,
+                    refusal = if (kind == C07ProbeKind.UNKNOWN) {
+                        C07EntryRefusal.UNSUPPORTED
+                    } else {
+                        C07EntryRefusal.CONTENT_MISMATCH
+                    },
+                )
+            return decisionForProbe(probed, kind, extension)
         }
-        if (!C07SharePolicy.isSupported(finalMime, displayName)) {
-            return C07MimeDecision(null, C07EntryRefusal.UNSUPPORTED)
+        if (declaredFormat == null) {
+            val known = C07SharePolicy.isKnownFormatMime(declared) ||
+                C07SharePolicy.isKnownFormatExtension(extension)
+            return C07MimeDecision(
+                null,
+                refusal = if (known) C07EntryRefusal.CONTENT_MISMATCH else C07EntryRefusal.UNSUPPORTED,
+            )
         }
-        return C07MimeDecision(finalMime)
+        return reconcileKnown(declaredFormat, kind)
     }
 
-    private fun detectedMime(kind: C07ProbeKind, displayName: String): String? = when (kind) {
-        C07ProbeKind.PDF -> "application/pdf"
-        C07ProbeKind.PNG -> "image/png"
-        C07ProbeKind.JPEG -> "image/jpeg"
-        C07ProbeKind.WEBP -> "image/webp"
-        C07ProbeKind.GIF -> "image/gif"
-        C07ProbeKind.TEXT -> "text/plain"
-        C07ProbeKind.ZIP -> zipMime(C07SharePolicy.extension(displayName))
-            ?: "application/zip"
-        C07ProbeKind.UNKNOWN -> null
+    private fun reconcileKnown(
+        format: C07EntryFormat,
+        kind: C07ProbeKind,
+    ): C07MimeDecision {
+        if (format.packageKind == C07EntryPackageKind.CAD) {
+            // A .floecad package is a DIRECTORY: its manifest/blobs are proved
+            // by the existing C04 reader, not by this 4 KiB probe.
+            return C07MimeDecision(format.mimeType, format.contentClass, format.packageKind, format)
+        }
+        if (!C07SharePolicy.probeMatches(format, kind)) {
+            return C07MimeDecision(null, refusal = C07EntryRefusal.CONTENT_MISMATCH)
+        }
+        return C07MimeDecision(format.mimeType, format.contentClass, format.packageKind, format)
     }
 
-    /** ZIP bytes can only refine to the ZIP-container family. A ZIP renamed
-     * .pdf is never accepted as a PDF. */
-    private fun zipMime(extension: String): String? = when (extension) {
-        "docx" -> "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-        "xlsx" -> "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-        "pptx" -> "application/vnd.openxmlformats-officedocument.presentationml.presentation"
-        "zip" -> "application/zip"
-        else -> null
+    private fun decisionForProbe(
+        probed: C07EntryFormat,
+        kind: C07ProbeKind,
+        extension: String,
+    ): C07MimeDecision {
+        if (probed.contentClass == C07EntryContentClass.PACKAGE ||
+            probed.contentClass == C07EntryContentClass.CAD
+        ) {
+            return C07MimeDecision(probed.mimeType, probed.contentClass, probed.packageKind, probed)
+        }
+        val extensionMatches = extension.isEmpty() || extension in probed.extensions
+        if (!extensionMatches) {
+            val opaque = C07SharePolicy.opaqueData(kind)
+            return C07MimeDecision(opaque.mimeType, opaque.contentClass, opaque.packageKind, opaque)
+        }
+        return C07MimeDecision(probed.mimeType, probed.contentClass, probed.packageKind, probed)
+    }
+
+    private fun brand(header: ByteArray, length: Int, offset: Int): String? {
+        if (offset + 4 > length) return null
+        val chars = CharArray(4)
+        for (index in 0 until 4) {
+            val value = header[offset + index].toInt() and 0xff
+            if (value < 0x20 || value > 0x7e) return null
+            chars[index] = value.toChar()
+        }
+        return String(chars)
     }
 
     private fun startsWith(bytes: ByteArray, length: Int, prefix: ByteArray): Boolean {
