@@ -954,6 +954,16 @@ public actor G04WorkspaceFacade {
         if let credential = error as? G04GitCredentialLease.Failure {
             return .refused(code: "gitCredentialUnavailable", reason: String(describing: credential))
         }
+        // GIT-PUSH-CONFLICT: typed push outcomes. Codes are bounded and
+        // closed; the refusal reason carries only the bounded rejection
+        // classification (never tokens, remote URLs or the server's raw
+        // status text — the FloeGit receipt discards those at the callback).
+        if let push = error as? GitPushRefusedError {
+            return .refused(code: "gitPushRejected", reason: push.classification.rawValue)
+        }
+        if error is GitPushUnreportedError {
+            return .refused(code: "gitPushUnreported", reason: nil)
+        }
         // Durable Actions engine refusals: typed codes; the reason carries
         // ONLY redacted, bounded diagnostic text (never tokens, headers or
         // raw response bodies — the FloeGit client already redacts against

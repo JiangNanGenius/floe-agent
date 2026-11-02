@@ -954,8 +954,11 @@
       "originalOperation": "Push with explicit conflict/rejection handling",
       "originalStatus": "planned",
       "required": true,
-      "codeReview": "pending per-operation UI/service/runtime-storage/failure reconciliation",
-      "qualification": "not newly verified this round"
+      "codeReview": "source-connected-and-corrected; git-push-receipt-20261103 exact file hashes recorded; awaiting integrated qualification",
+      "qualification": "Regression source authored but not yet executed; no real Git remote write performed by audit. Native object/App checks pending coherent batch.",
+      "previousCodeReviews": [
+        "pending per-operation UI/service/runtime-storage/failure reconciliation"
+      ]
     },
     {
       "id": "GH-ACTIONS-STATUS",
@@ -2520,8 +2523,11 @@
       "originalOperation": "Wi-Fi signal/channel/SSID readings through Android system APIs with per-API permission branches",
       "originalStatus": "planned",
       "required": true,
-      "codeReview": "pending per-operation UI/service/runtime-storage/failure reconciliation",
-      "qualification": "not newly verified this round"
+      "codeReview": "present-source-connected at 66d3b8b2f9e1c89a790ca7a37d3fb216f06a871a; actual source chain inspected",
+      "qualification": "No new real radio/server/speed/root capture traffic performed in this source review. Existing exact component evidence retained; Root App acceptance remains controlled-emulator only and pending.",
+      "previousCodeReviews": [
+        "pending per-operation UI/service/runtime-storage/failure reconciliation"
+      ]
     },
     {
       "id": "NET-LAN-DISCOVERY",
@@ -2530,8 +2536,11 @@
       "originalOperation": "LAN device discovery (NSD/mDNS/scan)",
       "originalStatus": "planned",
       "required": true,
-      "codeReview": "pending per-operation UI/service/runtime-storage/failure reconciliation",
-      "qualification": "not newly verified this round"
+      "codeReview": "present-source-connected at 66d3b8b2f9e1c89a790ca7a37d3fb216f06a871a; actual source chain inspected",
+      "qualification": "No new real radio/server/speed/root capture traffic performed in this source review. Existing exact component evidence retained; Root App acceptance remains controlled-emulator only and pending.",
+      "previousCodeReviews": [
+        "pending per-operation UI/service/runtime-storage/failure reconciliation"
+      ]
     },
     {
       "id": "NET-DNS",
@@ -2540,8 +2549,11 @@
       "originalOperation": "DNS resolution and record inspection",
       "originalStatus": "planned",
       "required": true,
-      "codeReview": "pending per-operation UI/service/runtime-storage/failure reconciliation",
-      "qualification": "not newly verified this round"
+      "codeReview": "present-source-connected at 66d3b8b2f9e1c89a790ca7a37d3fb216f06a871a; actual source chain inspected",
+      "qualification": "No new real radio/server/speed/root capture traffic performed in this source review. Existing exact component evidence retained; Root App acceptance remains controlled-emulator only and pending.",
+      "previousCodeReviews": [
+        "pending per-operation UI/service/runtime-storage/failure reconciliation"
+      ]
     },
     {
       "id": "NET-PING-TRACE",
@@ -2550,8 +2562,12 @@
       "originalOperation": "Ping/traceroute path diagnostics",
       "originalStatus": "planned",
       "required": true,
-      "codeReview": "pending per-operation UI/service/runtime-storage/failure reconciliation",
-      "qualification": "not newly verified this round"
+      "codeReview": "partial-implementation-gap-traceroute at 66d3b8b2f9e1c89a790ca7a37d3fb216f06a871a; actual source chain inspected",
+      "qualification": "No new real radio/server/speed/root capture traffic performed in this source review. Existing exact component evidence retained; Root App acceptance remains controlled-emulator only and pending.",
+      "previousCodeReviews": [
+        "pending per-operation UI/service/runtime-storage/failure reconciliation"
+      ],
+      "remainingImplementation": "Implement actual bounded unprivileged traceroute with structured observed hop results, model/UI reachability and cancellation; do not label missing implementation unsupported."
     },
     {
       "id": "NET-TCP-TLS-HTTP",
@@ -2560,8 +2576,11 @@
       "originalOperation": "TCP/TLS/HTTP protocol diagnostics",
       "originalStatus": "planned",
       "required": true,
-      "codeReview": "pending per-operation UI/service/runtime-storage/failure reconciliation",
-      "qualification": "not newly verified this round"
+      "codeReview": "present-source-connected at 66d3b8b2f9e1c89a790ca7a37d3fb216f06a871a; actual source chain inspected",
+      "qualification": "No new real radio/server/speed/root capture traffic performed in this source review. Existing exact component evidence retained; Root App acceptance remains controlled-emulator only and pending.",
+      "previousCodeReviews": [
+        "pending per-operation UI/service/runtime-storage/failure reconciliation"
+      ]
     },
     {
       "id": "NET-SPEED-MONITOR",
@@ -2570,8 +2589,11 @@
       "originalOperation": "Speed test and sustained monitoring with report export",
       "originalStatus": "planned",
       "required": true,
-      "codeReview": "pending per-operation UI/service/runtime-storage/failure reconciliation",
-      "qualification": "not newly verified this round"
+      "codeReview": "present-source-connected at 66d3b8b2f9e1c89a790ca7a37d3fb216f06a871a; actual source chain inspected",
+      "qualification": "No new real radio/server/speed/root capture traffic performed in this source review. Existing exact component evidence retained; Root App acceptance remains controlled-emulator only and pending.",
+      "previousCodeReviews": [
+        "pending per-operation UI/service/runtime-storage/failure reconciliation"
+      ]
     },
     {
       "id": "NET-AGENT-TOOLS",
@@ -2580,8 +2602,11 @@
       "originalOperation": "Structured network tools callable by the agent",
       "originalStatus": "planned",
       "required": true,
-      "codeReview": "pending per-operation UI/service/runtime-storage/failure reconciliation",
-      "qualification": "not newly verified this round"
+      "codeReview": "present-source-connected at 66d3b8b2f9e1c89a790ca7a37d3fb216f06a871a; actual source chain inspected",
+      "qualification": "No new real radio/server/speed/root capture traffic performed in this source review. Existing exact component evidence retained; Root App acceptance remains controlled-emulator only and pending.",
+      "previousCodeReviews": [
+        "pending per-operation UI/service/runtime-storage/failure reconciliation"
+      ]
     },
     {
       "id": "NET-ROOT-CAPTURE",
@@ -2590,8 +2615,11 @@
       "originalOperation": "Deep analysis/packet-capture interfaces backed by a Root component",
       "originalStatus": "planned",
       "required": true,
-      "codeReview": "pending per-operation UI/service/runtime-storage/failure reconciliation",
-      "qualification": "not newly verified this round"
+      "codeReview": "present-source-connected at 66d3b8b2f9e1c89a790ca7a37d3fb216f06a871a; actual source chain inspected",
+      "qualification": "No new real radio/server/speed/root capture traffic performed in this source review. Existing exact component evidence retained; Root App acceptance remains controlled-emulator only and pending.",
+      "previousCodeReviews": [
+        "pending per-operation UI/service/runtime-storage/failure reconciliation"
+      ]
     },
     {
       "id": "ROOT-TOGGLE-AUTH",
@@ -4642,6 +4670,178 @@
           "qualification": "Unchanged component compilation/tests reusable where exact source matches. Browser navigation/actions/download/handoff/preview not newly device exercised this round; source wiring is not end-to-end App acceptance."
         }
       ]
+    },
+    "network8-20261103": {
+      "androidCommit": "66d3b8b2f9e1c89a790ca7a37d3fb216f06a871a",
+      "iosReference": "36f63bf400dfaa3a127259eac006b38d72516390",
+      "operations": [
+        {
+          "id": "NET-WIFI-INFO",
+          "entry": "Network -> Wi-Fi",
+          "chain": "Real WifiManager scan-completion receiver, actual result age/channel data and distinct permission/location-disabled/throttle states; per-API permission snapshot, no fabricated rows.",
+          "reviewState": "present-source-connected",
+          "evidence": [
+            "feature/network/src/main/kotlin/com/floe/android/feature/network/NetworkWorkbench.kt",
+            "core/network/src/main/java/com/floe/android/core/network/PhoneNetworkService.kt",
+            "core/network/src/main/java/com/floe/android/core/network/AndroidWifiScan.kt",
+            "core/network/src/main/java/com/floe/android/core/network/WifiChannels.kt"
+          ],
+          "evidenceSha256": {
+            "feature/network/src/main/kotlin/com/floe/android/feature/network/NetworkWorkbench.kt": "0957b0ff8914a016a39572eeacd988fb3e0b37e8cf9381805301f1b470a7a0c4",
+            "core/network/src/main/java/com/floe/android/core/network/PhoneNetworkService.kt": "96721b04a0e4958b271a57fa99b8e65a723c25bcbe53abaddb4bf8911b80d0db",
+            "core/network/src/main/java/com/floe/android/core/network/AndroidWifiScan.kt": "bfcf6791d7635193d2fb745ed840e917a81f86dc56a2bad0a98669836aa9c81b",
+            "core/network/src/main/java/com/floe/android/core/network/WifiChannels.kt": "9339bd54ca8c409ac7e28e6ec8742b56b79e92837236f7401ca7aca3eb988427"
+          },
+          "qualification": "No new real radio/server/speed/root capture traffic performed in this source review. Existing exact component evidence retained; Root App acceptance remains controlled-emulator only and pending."
+        },
+        {
+          "id": "NET-LAN-DISCOVERY",
+          "entry": "Network -> LAN discovery",
+          "chain": "Actual NSD listener discovery/resolve and bounded host scan; cancellation closes original session/listeners and reports partial observed results.",
+          "reviewState": "present-source-connected",
+          "evidence": [
+            "feature/network/src/main/kotlin/com/floe/android/feature/network/NetworkWorkbench.kt",
+            "core/network/src/main/java/com/floe/android/core/network/PhoneNetworkService.kt",
+            "core/network/src/main/java/com/floe/android/core/network/AndroidLanDiscovery.kt"
+          ],
+          "evidenceSha256": {
+            "feature/network/src/main/kotlin/com/floe/android/feature/network/NetworkWorkbench.kt": "0957b0ff8914a016a39572eeacd988fb3e0b37e8cf9381805301f1b470a7a0c4",
+            "core/network/src/main/java/com/floe/android/core/network/PhoneNetworkService.kt": "96721b04a0e4958b271a57fa99b8e65a723c25bcbe53abaddb4bf8911b80d0db",
+            "core/network/src/main/java/com/floe/android/core/network/AndroidLanDiscovery.kt": "93a12aa56ed45232f409075bd0605cc8c2510e4ad7ae8f6a986bd600716f1283"
+          },
+          "qualification": "No new real radio/server/speed/root capture traffic performed in this source review. Existing exact component evidence retained; Root App acceptance remains controlled-emulator only and pending."
+        },
+        {
+          "id": "NET-DNS",
+          "entry": "Network -> DNS",
+          "chain": "Actual DNS wire resolver, bounded query/deadline and result types through existing request service; source UI result is original observation.",
+          "reviewState": "present-source-connected",
+          "evidence": [
+            "feature/network/src/main/kotlin/com/floe/android/feature/network/NetworkWorkbench.kt",
+            "core/network/src/main/java/com/floe/android/core/network/PhoneNetworkService.kt",
+            "core/network/src/main/java/com/floe/android/core/network/AndroidDnsLookup.kt",
+            "core/network/src/main/java/com/floe/android/core/network/DnsWire.kt"
+          ],
+          "evidenceSha256": {
+            "feature/network/src/main/kotlin/com/floe/android/feature/network/NetworkWorkbench.kt": "0957b0ff8914a016a39572eeacd988fb3e0b37e8cf9381805301f1b470a7a0c4",
+            "core/network/src/main/java/com/floe/android/core/network/PhoneNetworkService.kt": "96721b04a0e4958b271a57fa99b8e65a723c25bcbe53abaddb4bf8911b80d0db",
+            "core/network/src/main/java/com/floe/android/core/network/AndroidDnsLookup.kt": "36600ae63c8a5e1454d9aa7c9502ab7e7d9ee3dbb64d7da9b3963889fef2a67b",
+            "core/network/src/main/java/com/floe/android/core/network/DnsWire.kt": "dc465744f4234ca3565548c0b19302c88025d6fafb5a1500d13071826b897535"
+          },
+          "qualification": "No new real radio/server/speed/root capture traffic performed in this source review. Existing exact component evidence retained; Root App acceptance remains controlled-emulator only and pending."
+        },
+        {
+          "id": "NET-PING-TRACE",
+          "entry": "Network -> Ping",
+          "chain": "ICMP ping implemented, but no traceroute/tracepath operation in current Android UI/core/network/monitor/native Android tools. Combined original operation cannot be closed from ping success.",
+          "reviewState": "partial-implementation-gap-traceroute",
+          "evidence": [
+            "feature/network/src/main/kotlin/com/floe/android/feature/network/NetworkWorkbench.kt",
+            "core/network/src/main/java/com/floe/android/core/network/PhoneNetworkService.kt",
+            "core/network/src/main/java/com/floe/android/core/network/AndroidIcmpPing.kt",
+            "core/network/src/main/java/com/floe/android/core/network/NetworkContract.kt"
+          ],
+          "evidenceSha256": {
+            "feature/network/src/main/kotlin/com/floe/android/feature/network/NetworkWorkbench.kt": "0957b0ff8914a016a39572eeacd988fb3e0b37e8cf9381805301f1b470a7a0c4",
+            "core/network/src/main/java/com/floe/android/core/network/PhoneNetworkService.kt": "96721b04a0e4958b271a57fa99b8e65a723c25bcbe53abaddb4bf8911b80d0db",
+            "core/network/src/main/java/com/floe/android/core/network/AndroidIcmpPing.kt": "624b4bcc5fe08a5144a32bcfa602dd5e6b6b8f248b5fc5932cede7359a44d2ca",
+            "core/network/src/main/java/com/floe/android/core/network/NetworkContract.kt": "119e1f1e3bc94ade351a50a76a17981799ad001ee7e46bc5640a9680c305915f"
+          },
+          "qualification": "No new real radio/server/speed/root capture traffic performed in this source review. Existing exact component evidence retained; Root App acceptance remains controlled-emulator only and pending."
+        },
+        {
+          "id": "NET-TCP-TLS-HTTP",
+          "entry": "Network -> TCP/HTTPS",
+          "chain": "Real TCP connection and TLS certificate observation, strict HTTPS/redirect policy and bounded HTTP result; unavailable and certificate/transport failures are observations, not success strings.",
+          "reviewState": "present-source-connected",
+          "evidence": [
+            "feature/network/src/main/kotlin/com/floe/android/feature/network/NetworkWorkbench.kt",
+            "core/network/src/main/java/com/floe/android/core/network/PhoneNetworkService.kt",
+            "core/network/src/main/java/com/floe/android/core/network/AndroidTcpProbe.kt",
+            "core/network/src/main/java/com/floe/android/core/network/AndroidHttpsProbe.kt",
+            "core/network/src/main/java/com/floe/android/core/network/TlsCertificateObservation.kt"
+          ],
+          "evidenceSha256": {
+            "feature/network/src/main/kotlin/com/floe/android/feature/network/NetworkWorkbench.kt": "0957b0ff8914a016a39572eeacd988fb3e0b37e8cf9381805301f1b470a7a0c4",
+            "core/network/src/main/java/com/floe/android/core/network/PhoneNetworkService.kt": "96721b04a0e4958b271a57fa99b8e65a723c25bcbe53abaddb4bf8911b80d0db",
+            "core/network/src/main/java/com/floe/android/core/network/AndroidTcpProbe.kt": "708075287cd16687b33923c4efcd8c6d683c13b2cbb4e2576d044f637c0a97a5",
+            "core/network/src/main/java/com/floe/android/core/network/AndroidHttpsProbe.kt": "4bae43e8c365f44fc58bcb756a65e36c0135cf9002305f2081687815858cdff3",
+            "core/network/src/main/java/com/floe/android/core/network/TlsCertificateObservation.kt": "5b0ce2dd12383fe3edd0c10b1ac3c4292977ae7ea764bfce2cce12222c1c8577"
+          },
+          "qualification": "No new real radio/server/speed/root capture traffic performed in this source review. Existing exact component evidence retained; Root App acceptance remains controlled-emulator only and pending."
+        },
+        {
+          "id": "NET-SPEED-MONITOR",
+          "entry": "Network -> speed test / monitoring -> report export",
+          "chain": "Actual bounded HTTPS transfer speed service plus SEPARATE existing NetworkMonitoringEngine and user-started dataSync foreground service, owned session/cancellation and persistent report files. Monitor is not missing merely because it is outside core/network.",
+          "reviewState": "present-source-connected",
+          "evidence": [
+            "feature/network/src/main/kotlin/com/floe/android/feature/network/NetworkWorkbench.kt",
+            "core/network/src/main/java/com/floe/android/core/network/PhoneNetworkService.kt",
+            "core/network/src/main/java/com/floe/android/core/network/AndroidSpeedTest.kt",
+            "core/networkmonitor/src/main/java/com/floe/android/core/networkmonitor/NetworkMonitoringEngine.kt",
+            "app/src/main/kotlin/com/floe/android/host/networkmonitor/NetworkMonitorService.kt",
+            "app/src/main/kotlin/com/floe/android/host/networkmonitor/NetworkMonitorHost.kt",
+            "app/src/main/kotlin/com/floe/android/NetworkMonitoringDestination.kt"
+          ],
+          "evidenceSha256": {
+            "feature/network/src/main/kotlin/com/floe/android/feature/network/NetworkWorkbench.kt": "0957b0ff8914a016a39572eeacd988fb3e0b37e8cf9381805301f1b470a7a0c4",
+            "core/network/src/main/java/com/floe/android/core/network/PhoneNetworkService.kt": "96721b04a0e4958b271a57fa99b8e65a723c25bcbe53abaddb4bf8911b80d0db",
+            "core/network/src/main/java/com/floe/android/core/network/AndroidSpeedTest.kt": "38bfb3210654122491f10eb86dee034eba1bfcfaacf2218bf71294277202b1ef",
+            "core/networkmonitor/src/main/java/com/floe/android/core/networkmonitor/NetworkMonitoringEngine.kt": "9dba4a0bf053e44f117ae44df05c189126036abcbe82ca98da1176e46243b673",
+            "app/src/main/kotlin/com/floe/android/host/networkmonitor/NetworkMonitorService.kt": "fe649fb92ca21eb9b62d15201a56a9ace14cd6c5a9bb51a11de97eeaf9de5cb4",
+            "app/src/main/kotlin/com/floe/android/host/networkmonitor/NetworkMonitorHost.kt": "1b9655ab8d06e45caaa982e7f37c384bb7c20528c0400896afbc866d6c0feea5",
+            "app/src/main/kotlin/com/floe/android/NetworkMonitoringDestination.kt": "48c24697728e96de28f3e1eff5c4454f5e04029569aae75aad29241b8b27b0b5"
+          },
+          "qualification": "No new real radio/server/speed/root capture traffic performed in this source review. Existing exact component evidence retained; Root App acceptance remains controlled-emulator only and pending."
+        },
+        {
+          "id": "NET-AGENT-TOOLS",
+          "entry": "Configured ordinary task -> network tools",
+          "chain": "Real catalog runners -> G07 executor resolves runtime-issued task/run/current epoch, refuses temporary chats and stale root, forwards original typed request to PhoneNetworkService; actual descriptors reflect bound host.",
+          "reviewState": "present-source-connected",
+          "evidence": [
+            "feature/network/src/main/kotlin/com/floe/android/feature/network/NetworkWorkbench.kt",
+            "core/network/src/main/java/com/floe/android/core/network/PhoneNetworkService.kt",
+            "shared/Sources/FloeAndroidCore/G07NetworkToolBindings.swift",
+            "shared/Sources/FloeAndroidNetwork/NetworkToolRegistration.swift",
+            "app/src/main/kotlin/com/floe/android/host/network/NetworkDiagnosticsHostPump.kt"
+          ],
+          "evidenceSha256": {
+            "feature/network/src/main/kotlin/com/floe/android/feature/network/NetworkWorkbench.kt": "0957b0ff8914a016a39572eeacd988fb3e0b37e8cf9381805301f1b470a7a0c4",
+            "core/network/src/main/java/com/floe/android/core/network/PhoneNetworkService.kt": "96721b04a0e4958b271a57fa99b8e65a723c25bcbe53abaddb4bf8911b80d0db",
+            "shared/Sources/FloeAndroidCore/G07NetworkToolBindings.swift": "a4f39a5e986763f2e091f29457e23323632de2a802971fa83e080941a09a3bdf",
+            "shared/Sources/FloeAndroidNetwork/NetworkToolRegistration.swift": "786622d61668c9c31c7a818cc8d8ab809ae2a73c38e49f2ac5a6b17b58cedfd1",
+            "app/src/main/kotlin/com/floe/android/host/network/NetworkDiagnosticsHostPump.kt": "3f752f3150b4802f9d455cc6d7be84f44afdbea451fc483990cd3b96e7ee6549"
+          },
+          "qualification": "No new real radio/server/speed/root capture traffic performed in this source review. Existing exact component evidence retained; Root App acceptance remains controlled-emulator only and pending."
+        },
+        {
+          "id": "NET-ROOT-CAPTURE",
+          "entry": "Full packet capture -> root backend; normal VPN remains separate",
+          "chain": "C06 capture domain/bindings -> real user foreground service and FullRootCaptureBackend/helper; original sink and PCAP report path, retained physical stop and failure states. Play excludes root implementation.",
+          "reviewState": "present-source-connected",
+          "evidence": [
+            "feature/network/src/main/kotlin/com/floe/android/feature/network/NetworkWorkbench.kt",
+            "core/network/src/main/java/com/floe/android/core/network/PhoneNetworkService.kt",
+            "shared/Sources/FloeAndroidCore/C06PacketCaptureDomain.swift",
+            "shared/Sources/FloeAndroidCore/C06PacketCaptureBindings.swift",
+            "app/src/full/kotlin/com/floe/android/host/capture/root/FullRootCaptureBackend.kt",
+            "app/src/full/kotlin/com/floe/android/host/capture/root/RootPacketCaptureService.kt",
+            "app/src/main/kotlin/com/floe/android/host/capture/VpnPacketCaptureService.kt"
+          ],
+          "evidenceSha256": {
+            "feature/network/src/main/kotlin/com/floe/android/feature/network/NetworkWorkbench.kt": "0957b0ff8914a016a39572eeacd988fb3e0b37e8cf9381805301f1b470a7a0c4",
+            "core/network/src/main/java/com/floe/android/core/network/PhoneNetworkService.kt": "96721b04a0e4958b271a57fa99b8e65a723c25bcbe53abaddb4bf8911b80d0db",
+            "shared/Sources/FloeAndroidCore/C06PacketCaptureDomain.swift": "57721f969f94432fa802ee79d90de721e8cc9ed8c2ac9dd6b22fd11d0d4de442",
+            "shared/Sources/FloeAndroidCore/C06PacketCaptureBindings.swift": "ee2a3aff5680ff0cfd4b0f7df2794527de2ebbc8b9efc33696eab6abd71e3ba6",
+            "app/src/full/kotlin/com/floe/android/host/capture/root/FullRootCaptureBackend.kt": "421b584866ef677c1fb72b7a4a51bc65edf6eeebc2dba97e211da468d7a56028",
+            "app/src/full/kotlin/com/floe/android/host/capture/root/RootPacketCaptureService.kt": "19069db65b784c735b8dfc636e57466af9bf4b89f73789ac97668960801a5392",
+            "app/src/main/kotlin/com/floe/android/host/capture/VpnPacketCaptureService.kt": "77331fe1c9eb28a1fd0daafea113dde273e7fe91fe00282b2119eac6939f36fe"
+          },
+          "qualification": "No new real radio/server/speed/root capture traffic performed in this source review. Existing exact component evidence retained; Root App acceptance remains controlled-emulator only and pending."
+        }
+      ]
     }
   },
   "implementationBatches": {
@@ -4739,6 +4939,27 @@
         "Swift6 ARM64 object/native build and focused regression execution with integrated batch",
         "Actual App archive list/extract destination and lifecycle integration; active bounded package",
         "Same-APK actual App flow verification"
+      ],
+      "compiled": false,
+      "testsRun": false,
+      "deviceVerified": false
+    },
+    "git-push-receipt-20261103": {
+      "state": "source-integrated-reviewed-unqualified",
+      "sourceSha256": {
+        "shared/Sources/FloeGit/LocalGitService.swift": "48e7589cd88e11cf8ab7e4a43d1702f7e4163f9a17212dda8edee9c03b3f564b",
+        "shared/Sources/FloeGit/GitPushReceipt.swift": "5dc0644aaab115c603f3f49d87cfa326f1b51e4ea865adb60169dce47e54df7f",
+        "shared/Sources/FloeAndroidCore/G04WorkspaceFacade.swift": "5a571cefea1f741b97c559cfc9148be4de7d5f249049ebac0a2c10afb73462a9",
+        "app/src/main/kotlin/com/floe/android/WorkspaceGitPane.kt": "27212c3d19786272d9e650830b9029c65adf7ed44f7ee753afd2a5659b6781e4",
+        "app/src/main/res/values/git_workspace_strings.xml": "a081c8fe1a8a3c865edd59a27ecefcb528ebe6fe751a7a2077793ed3d4f21ebe",
+        "app/src/main/res/values-zh-rCN/git_workspace_strings.xml": "98ed30febed10ebe1c6b9ebaf6f108eb9ce94cdb7e07f8670ef40e091f10216f",
+        "shared/Tests/FloeGitTests/GitPushReceiptTests.swift": "54f561dc5828f130fb999d2811695600fe4aa8895a632b5cb8ac7cb4e2adf4ec"
+      },
+      "coverage": [
+        "Real libgit2 per-ref push callback recorded per operation; non-null empty status is rejection",
+        "Accepted receipt must exactly cover expected refs; partial/foreign/duplicate/missing reports remain unconfirmed",
+        "Closed rejection classification and precise bilingual remote-branch guidance; no raw status/credential output",
+        "Actual callback and receipt regression source with isolated payloads and bounded report collection"
       ],
       "compiled": false,
       "testsRun": false,
