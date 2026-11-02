@@ -109,6 +109,10 @@ class PdfDocumentSession internal constructor(
                 // uncached rather than dropping a valid render.
                 return result
             }
+            // Ownership transferred to the cache. The first render must
+            // report the same ownership as a later cache hit; otherwise
+            // releaseBitmap recycles the still-cached page after encoding it.
+            return result.copy(fromCache = true)
         }
         return result
     }

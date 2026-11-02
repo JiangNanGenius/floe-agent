@@ -131,6 +131,13 @@ class LinuxShellPump(context: Context, private val scope: CoroutineScope) {
             }
         }
 
+        suspend fun poll(payload: JSONObject): JSONObject = pollWithSettlement(
+            settlement = settlementLock,
+            isSettled = { settledProof != null },
+            live = { exchange("shell.poll", payload) },
+            retired = { readTerminalPoll(payload, JSONObject(checkNotNull(settledProof))) },
+        )
+
         suspend fun requestStop() {
             val stopStage = if (sessionID == null) Stage.PUMP_STOP_REQUEST else Stage.PUMP_STOP_SESSION
             if (tracedStopTargets.add(stopStage)) RuntimeExecutionTrace.mark(stopStage)
@@ -322,11 +329,16 @@ class LinuxShellPump(context: Context, private val scope: CoroutineScope) {
     }
 
     private suspend fun handle(claim: Long, acceptedEpoch: Long) {
+        var observedOperation = "unknown"
         try {
             check(epoch.get() == acceptedEpoch && LinuxShellNative.isLive(claim) == 1)
             val descriptor = objectBytes(checkNotNull(LinuxShellNative.describe(claim)))
             val payload = objectBytes(checkNotNull(LinuxShellNative.payload(claim)))
             val operation = descriptor.getString("operation")
+            observedOperation = when (operation) {
+                "shell.start", "shell.poll", "shell.input", "shell.resize", "shell.cancel" -> operation
+                else -> "other"
+            }
             if (operation == "host.jobOwnership") {
                 complete(claim, 0, jobOwnership(claim, payload, acceptedEpoch)); return
             }
@@ -451,14 +463,7 @@ class LinuxShellPump(context: Context, private val scope: CoroutineScope) {
             if (owner == null && operation == "shell.poll") {
                 val terminal = synchronized(terminals) { terminals.values.firstOrNull { it.epoch == acceptedEpoch && it.sessionID == sessionID } }
                 checkNotNull(terminal)
-                val client = RuntimeConnection(context)
-                try {
-                    client.connect().get(15, TimeUnit.SECONDS)
-                    val response = result(client.exchange(operation, payload))
-                    require(response.getString("sessionID") == sessionID)
-                    copyWorkspaceProof(response, JSONObject(terminal.proof))
-                    complete(claim, 0, response)
-                } finally { client.close() }
+                complete(claim, 0, readTerminalPoll(payload, JSONObject(terminal.proof)))
                 return
             }
             if (owner == null && operation == "shell.input" &&
@@ -489,7 +494,11 @@ class LinuxShellPump(context: Context, private val scope: CoroutineScope) {
                 return
             }
             checkNotNull(owner)
-            val response = if (operation == "shell.cancel") {
+            val response = if (operation == "shell.poll") {
+                // The watcher may settle this owner after the map lookup.
+                // Share its settlement lock before selecting a connection.
+                owner.poll(payload)
+            } else if (operation == "shell.cancel") {
                 owner.requestStop(); JSONObject().put("state", "stop_requested")
             } else {
                 val first = owner.exchange(operation, payload)
@@ -508,7 +517,26 @@ class LinuxShellPump(context: Context, private val scope: CoroutineScope) {
                 copyWorkspaceProof(response, proof)
             }
             complete(claim, 0, response)
-        } catch (_: Exception) { complete(claim, 1, JSONObject().put("code", "runtime_unavailable")) }
+        } catch (failure: Exception) {
+            // Closed operation and exception class only; never payloads,
+            // commands, paths, IDs or exception messages.
+            runCatching { android.util.Log.i("FloeLinuxStart",
+                "PUMP_CONTROL_REFUSED op=$observedOperation type=${failure.javaClass.simpleName.take(80)}") }
+            complete(claim, 1, JSONObject().put("code", "runtime_unavailable"))
+        }
+    }
+
+    private suspend fun readTerminalPoll(payload: JSONObject, proof: JSONObject): JSONObject {
+        val sessionID = payload.getString("sessionID")
+        require(proof.getString("sessionID") == sessionID)
+        val client = RuntimeConnection(context)
+        try {
+            client.connect().get(15, TimeUnit.SECONDS)
+            val response = result(client.exchange("shell.poll", payload))
+            require(response.getString("sessionID") == sessionID)
+            copyWorkspaceProof(response, proof)
+            return response
+        } finally { client.close() }
     }
 
     /**

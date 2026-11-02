@@ -10,11 +10,15 @@ import androidx.compose.foundation.layout.safeDrawingPadding
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalView
+import androidx.compose.ui.window.DialogWindowProvider
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import androidx.compose.ui.unit.dp
+import androidx.core.view.WindowCompat
 import com.floe.android.design.Floe
 import com.floe.android.feature.notes.NotesService
 import com.floe.android.feature.notes.ui.api.NotesHostPorts
@@ -87,6 +91,19 @@ public fun FloeNotesWorkspace(
                 dismissOnClickOutside = false,
             ),
         ) {
+            // A Dialog owns a different Window from the App shell. Its edge
+            // bars must follow this editor's theme, including live changes.
+            val window = (LocalView.current.parent as? DialogWindowProvider)?.window
+            val view = LocalView.current
+            val lightBars = !Floe.colors.isDark
+            SideEffect {
+                window?.let {
+                    WindowCompat.getInsetsController(it, view).apply {
+                        isAppearanceLightStatusBars = lightBars
+                        isAppearanceLightNavigationBars = lightBars
+                    }
+                }
+            }
             BackHandler(enabled = controller.canGoBack()) { controller.goBack() }
             BoxWithConstraints(
                 Modifier.fillMaxSize()
