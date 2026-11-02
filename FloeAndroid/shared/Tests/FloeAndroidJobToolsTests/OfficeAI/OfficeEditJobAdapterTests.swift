@@ -61,6 +61,8 @@ private final class AdapterScriptPort: OfficeEditEnginePort, @unchecked Sendable
                                           partName: "xl/worksheets/sheet1.xml",
                                           cellTypeAttribute: "", cellHasFormula: true,
                                           cellTypeMatchesIntent: true,
+                                          cellFormulaResultVerified: true,
+                                          cellFormulaResultOutcome: "verified",
                                           expectedContentMatches: true),
         contextConsumed: true)
     var reconcileArtifact: OfficeEditSavedSnapshot?

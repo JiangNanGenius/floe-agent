@@ -1259,13 +1259,32 @@ class OfficeAiHostServiceTest {
         runTicket(commandTicket("cell-f59", "setCellContent", "targetHandle" to handle,
             "cellAddress" to "B4", "contentKind" to "formula"), staged = bytes("=SUM(B2:B3)"))
         val export = packageFile("xlsx")
-        runTicket(verifyJsonBytes(
+        // C08: the persisted computed-result proof is an ADDITIVE reply fact;
+        // the host must relay it exactly (the Core gate consumes it), never
+        // infer it from the <f> source.
+        verifier.next = OfficeAiVerificationResult.Verified(
+            defaultFacts().copy(
+                cellFormulaResultVerified = true,
+                cellFormulaResultOutcome = "verified",
+            ),
+        )
+        val settlement = runTicket(verifyJsonBytes(
             "xlsx", export.canonicalPath, sha(export.readBytes()), "setCellContent",
             "verificationMode" to "liveEffect", "effectOpId" to "cell-f59",
             "exportOpId" to "seed-export-f59", "sessionToken" to session, "generation" to "9",
             "targetHandle" to handle, "taskID" to task, "cellAddress" to "B4",
             "contentKind" to "formula", "expectPartIndex" to "1", "preEditSha256" to captureDigest,
-        ), staged = bytes("=SUM(B2:B3)"))
+        ), staged = bytes("=SUM(B2:B3)")) as OfficeAiWire.Settlement.Success
+        assertEquals(
+            "true",
+            (settlement.body["cellFormulaResultVerified"]
+                as kotlinx.serialization.json.JsonPrimitive).content,
+        )
+        assertEquals(
+            "verified",
+            (settlement.body["cellFormulaResultOutcome"]
+                as kotlinx.serialization.json.JsonPrimitive).content,
+        )
         val input = verifier.inputs.last()
         assertEquals("7", input.baseline?.priorSelectionText)
         assertEquals(1, input.partIndex)

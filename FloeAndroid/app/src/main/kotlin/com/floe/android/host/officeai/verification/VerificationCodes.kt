@@ -44,6 +44,15 @@ internal object VerificationCodes {
     const val NUMBER_INTENT_INVALID = "numberIntentInvalid"
     const val FORMULA_INTENT_MISSING_EQUALS = "formulaIntentMissingEquals"
     const val INSPECTOR_ERROR = "inspectorError"
+
+    // Persisted formula-COMPUTED-RESULT proof (C08 OFC-CELL-FORMULA-RECALC).
+    // A saved <f> source alone never proves the recalculated value; these
+    // typed refusals keep a missing/contradictory cache out of "verified".
+    const val FORMULA_RESULT_MISSING_CACHE = "formulaResultMissingCache"
+    const val FORMULA_RESULT_STALE_CACHE = "formulaResultStaleCache"
+    const val FORMULA_RESULT_TYPE_MISMATCH = "formulaResultTypeMismatch"
+    const val FORMULA_DEPENDENCY_MISSING_CACHE = "formulaDependencyMissingCache"
+    const val FORMULA_DEPENDENCY_STALE_CACHE = "formulaDependencyStaleCache"
 }
 
 /** Bounded-work limits. The artifact cap is fixed by Main at 256 MiB; every
@@ -82,4 +91,7 @@ internal object VerificationNotes {
     const val PREVIEW_TRUNCATED = "persistedValuePreviewTruncated"
     const val OCCURRENCES_CAPPED = "occurrenceCountCapped"
     const val DELTA_NOT_SINGLE_EDIT = "savedNotOneEditFromBaseline"
+    /** The formula source is exactly saved, but its persisted computed result
+     * is outside the bounded evaluator's contract: explicitly NOT verified. */
+    const val FORMULA_RESULT_UNVERIFIED = "formulaResultUnverified"
 }

@@ -734,7 +734,10 @@ class OfficeAiOoxmlVerifierTest {
 
     @Test
     fun formulaMatchesActualSavedSourceWithBoundaryOnlyNormalization() {
-        val facts = cellCase(XlsxCell("A1", f = "SUM(A1:A2)"), "= SUM(A1:A2)  ", "formula")
+        // The cache is present so this source-normalization case is not
+        // pre-empted by the separate C08 missing-cache refusal (the formula
+        // is self-referential, so its RESULT stays explicitly unverified).
+        val facts = cellCase(XlsxCell("A1", f = "SUM(A1:A2)", v = "0"), "= SUM(A1:A2)  ", "formula")
         assertTrue(facts.expectedContentMatches)
     }
 
@@ -794,12 +797,12 @@ class OfficeAiOoxmlVerifierTest {
     @Test
     fun sharedFormulaOwnTextAndArrayWithTextResolveToActualSource() {
         val shared = cellCase(
-            XlsxCell("A1", f = "SUM(A1:A2)", fAttrs = " t=\"shared\" si=\"1\""),
+            XlsxCell("A1", f = "SUM(A1:A2)", fAttrs = " t=\"shared\" si=\"1\"", v = "0"),
             "=SUM(A1:A2)", "formula",
         )
         assertTrue(shared.expectedContentMatches)
         val array = cellCase(
-            XlsxCell("A1", f = "SUM(A1:A2)", fAttrs = " t=\"array\" ref=\"A1\""),
+            XlsxCell("A1", f = "SUM(A1:A2)", fAttrs = " t=\"array\" ref=\"A1\"", v = "0"),
             "=SUM(A1:A2)", "formula",
         )
         assertTrue(array.expectedContentMatches)
@@ -897,7 +900,11 @@ class OfficeAiOoxmlVerifierTest {
             listOf(
                 XlsxSheet(
                     "rId1", "sheet1.xml",
-                    listOf(XlsxCell("A1", f = "SUM(B1:B2)", v = "14")),
+                    // C08: the cached result must agree with the persisted
+                    // dependencies (both B cells are absent => SUM = 0); a
+                    // 14 here is exactly the stale cache the result proof
+                    // now refuses, and would test nothing about the delta.
+                    listOf(XlsxCell("A1", f = "SUM(B1:B2)", v = "0")),
                 ),
             ),
         )
@@ -913,6 +920,8 @@ class OfficeAiOoxmlVerifierTest {
         assertTrue(facts.cellTypeMatchesIntent == true)
         assertTrue("the prior display value plus saved formula source proves this cell delta",
             facts.semanticDeltaVerified)
+        assertTrue("the saved formula result is independently verified",
+            facts.cellFormulaResultVerified == true)
         assertEquals(SemanticScope.CELL_REPLACED, facts.replacementScope)
         assertFalse("FORMULA_NOT_COMPARABLE must rely on saved proof, not native effect promotion",
             facts.targetEffectVerified)

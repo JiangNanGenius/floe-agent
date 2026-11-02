@@ -4,6 +4,9 @@ package com.floe.android.host.officeai
 import com.floe.android.host.officeai.verification.ArtifactGuard
 import com.floe.android.host.officeai.verification.BoundedZipReader
 import com.floe.android.host.officeai.verification.CellIntentEvaluator
+import com.floe.android.host.officeai.verification.FormulaCheck
+import com.floe.android.host.officeai.verification.FormulaOutcomes
+import com.floe.android.host.officeai.verification.FormulaResults
 import com.floe.android.host.officeai.verification.IntentEvaluation
 import com.floe.android.host.officeai.verification.PartReadResult
 import com.floe.android.host.officeai.verification.PptxText
@@ -408,6 +411,40 @@ internal object OfficeAiOoxmlVerifier : OfficeAiSavedPackageVerifier {
             is IntentEvaluation.Assessed -> evaluated
         }
         limitations.addAll(assessment.notes)
+        // A formula source match is ONE proof. The persisted COMPUTED RESULT
+        // is a separate proof over the same saved workbook: only when the
+        // intended source is actually the saved formula does its cached value
+        // carry meaning. Missing/stale/contradictory caches refuse here; an
+        // unsupported shape is explicitly reported as unverified.
+        var formulaResultVerified: Boolean? = null
+        var formulaResultOutcome: String? = null
+        var formulaResultDetail: String? = null
+        if (kind == "formula" && assessment.contentMatches) {
+            when (
+                val checked = FormulaResults.inspect(
+                    zip = zip,
+                    plan = plan,
+                    targetSheetIndex = logicalIndex,
+                    targetSheetDocument = sheetDocument,
+                    targetCell = cell,
+                    sharedStrings = strings,
+                )
+            ) {
+                is FormulaCheck.Failed -> {
+                    return OfficeAiVerificationResult.Refused(checked.code)
+                }
+                is FormulaCheck.Verified -> {
+                    formulaResultVerified = true
+                    formulaResultOutcome = checked.outcome
+                }
+                is FormulaCheck.Unverified -> {
+                    formulaResultVerified = false
+                    formulaResultOutcome = FormulaOutcomes.UNSUPPORTED
+                    formulaResultDetail = checked.reason
+                    limitations.add(VerificationNotes.FORMULA_RESULT_UNVERIFIED)
+                }
+            }
+        }
         var changedFromOriginal: Boolean? = null
         var baselineDisplay: String? = null
         var baselineCellMissing = false
@@ -460,6 +497,9 @@ internal object OfficeAiOoxmlVerifier : OfficeAiSavedPackageVerifier {
                 cellHasFormula = cell.hasFormula,
                 cellPersistedValue = assessment.persistedPreview,
                 cellTypeMatchesIntent = assessment.typeMatchesIntent,
+                cellFormulaResultVerified = formulaResultVerified,
+                cellFormulaResultOutcome = formulaResultOutcome,
+                cellFormulaResultDetail = formulaResultDetail,
                 semanticDeltaVerified = semanticDelta,
                 targetEffectVerified = input.nativeTargetEffectVerified && assessment.contentMatches,
                 proofReused = input.trustedCompletedJobProof && assessment.contentMatches,
@@ -601,6 +641,9 @@ internal object OfficeAiOoxmlVerifier : OfficeAiSavedPackageVerifier {
         cellHasFormula: Boolean?,
         cellPersistedValue: String?,
         cellTypeMatchesIntent: Boolean?,
+        cellFormulaResultVerified: Boolean? = null,
+        cellFormulaResultOutcome: String? = null,
+        cellFormulaResultDetail: String? = null,
         semanticDeltaVerified: Boolean,
         targetEffectVerified: Boolean,
         proofReused: Boolean,
@@ -616,6 +659,9 @@ internal object OfficeAiOoxmlVerifier : OfficeAiSavedPackageVerifier {
         cellHasFormula = cellHasFormula,
         cellPersistedValue = cellPersistedValue,
         cellTypeMatchesIntent = cellTypeMatchesIntent,
+        cellFormulaResultVerified = cellFormulaResultVerified,
+        cellFormulaResultOutcome = cellFormulaResultOutcome,
+        cellFormulaResultDetail = cellFormulaResultDetail,
         semanticDeltaVerified = semanticDeltaVerified,
         targetEffectVerified = targetEffectVerified,
         proofReused = proofReused,

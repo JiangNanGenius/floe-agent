@@ -1901,6 +1901,17 @@
         ],
         "dependencies": [],
         "qualification": "source-only; no formula execution/verification run"
+      },
+      "currentImplementation": {
+        "state": "source-integrated-unqualified",
+        "batch": "c08-office-formula",
+        "sourceContract": "Saved source proof retained; recompute bounded formulas and transitive persisted dependencies in same saved XLSX; reject stale/missing caches; unsupported explicit unverified; original tool gate/payload decodes exact facts",
+        "sourceFiles": 16,
+        "authoredKotlinRegressions": 25,
+        "testsRun": false,
+        "compiled": false,
+        "deviceVerified": false,
+        "limitations": "Bounded contract, not full Excel. Original immutable4437 partial source review retained."
       }
     },
     {

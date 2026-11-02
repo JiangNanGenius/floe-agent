@@ -1095,6 +1095,12 @@ internal class OfficeAiHostService(
                     putOptional("cellHasFormula", facts.cellHasFormula)
                     putOptional("cellPersistedValue", facts.cellPersistedValue)
                     putOptional("cellTypeMatchesIntent", facts.cellTypeMatchesIntent)
+                    // Additive C08 proof facts: the saved formula's PERSISTED
+                    // COMPUTED RESULT (not the <f> source). Absent for non-
+                    // formula intents and for a source that did not match.
+                    putOptional("cellFormulaResultVerified", facts.cellFormulaResultVerified)
+                    putOptional("cellFormulaResultOutcome", facts.cellFormulaResultOutcome)
+                    putOptional("cellFormulaResultDetail", facts.cellFormulaResultDetail)
                     // changedFromOriginal is a byte-hash fact the HOST owns
                     // when the verifier cannot measure it (no retained
                     // baseline): the descriptor's pre-edit digest bound at

@@ -467,6 +467,20 @@ public struct OfficeEditSemanticFacts: Sendable, Equatable {
     ///    (`n`/`str`/`b`/`e`) alongside it is VALID, never by itself a mismatch
     ///    (amendment/2 repairs the v1 refusal of every non-empty `t`+`f`).
     public var cellTypeMatchesIntent: Bool?
+    // MARK: C08 OFC-CELL-FORMULA-RECALC persisted computed-result facts.
+    /// TRUE only when the SAVED formula's persisted computed result was
+    /// independently recomputed from the SAME saved workbook's persisted
+    /// dependency values and agrees with the cell's persisted cache/type
+    /// (`verified`/`errorCached`/`blankResult`). FALSE means the source is
+    /// saved but the shape/dependency context is outside the bounded
+    /// contract: explicitly UNVERIFIED, never a semantic result success.
+    /// nil when this edit carries no formula, or when the source did not
+    /// match (the content gate already refuses that case).
+    public var cellFormulaResultVerified: Bool?
+    /// `verified` | `errorCached` | `blankResult` | `unsupported`.
+    public var cellFormulaResultOutcome: String?
+    /// Bounded structural reason (function/range/bound name) for `unsupported`.
+    public var cellFormulaResultDetail: String?
     /// True when the ACTUAL saved bytes differ from the bound pre-edit
     /// baseline (measured digest equality, never an acknowledgement-derived
     /// claim). A `nil` baseline honestly yields nil here.
@@ -503,7 +517,11 @@ public struct OfficeEditSemanticFacts: Sendable, Equatable {
                  expectedTextFound: Bool? = nil, occurrenceCount: Int? = nil,
                  replacementScope: String? = nil, cellTypeAttribute: String? = nil,
                  cellHasFormula: Bool? = nil, cellPersistedValue: String? = nil,
-                 cellTypeMatchesIntent: Bool? = nil, changedFromOriginal: Bool? = nil,
+                 cellTypeMatchesIntent: Bool? = nil,
+                 cellFormulaResultVerified: Bool? = nil,
+                 cellFormulaResultOutcome: String? = nil,
+                 cellFormulaResultDetail: String? = nil,
+                 changedFromOriginal: Bool? = nil,
                  expectedContentMatches: Bool? = nil, targetEffectVerified: Bool? = nil,
                  semanticDeltaVerified: Bool? = nil, proofReused: Bool? = nil,
                  proofVersion: Int = 2, limitations: [String] = []) {
@@ -516,6 +534,9 @@ public struct OfficeEditSemanticFacts: Sendable, Equatable {
         self.cellHasFormula = cellHasFormula
         self.cellPersistedValue = cellPersistedValue
         self.cellTypeMatchesIntent = cellTypeMatchesIntent
+        self.cellFormulaResultVerified = cellFormulaResultVerified
+        self.cellFormulaResultOutcome = cellFormulaResultOutcome
+        self.cellFormulaResultDetail = cellFormulaResultDetail
         self.changedFromOriginal = changedFromOriginal
         self.expectedContentMatches = expectedContentMatches
         self.targetEffectVerified = targetEffectVerified
@@ -732,6 +753,24 @@ public enum OfficeEditSemanticGate {
                     code: "savedCellContentMismatch",
                     detail: "The saved cell content does not equal the intended value or formula "
                         + "source at the addressed cell. No output was published.")
+            }
+            // C08 OFC-CELL-FORMULA-RECALC: a saved formula cell must carry an
+            // explicit persisted computed-result outcome. A cache that
+            // contradicts its persisted dependencies is refused by the host
+            // before these facts exist; an absent fact (an older host) or an
+            // unsupported shape without its explicit outcome must never turn
+            // the `<f>` source match into semantic result success.
+            if semantic.cellHasFormula == true {
+                let explicitlyUnverified = semantic.cellFormulaResultOutcome == "unsupported"
+                    && semantic.cellFormulaResultVerified == false
+                guard semantic.cellFormulaResultVerified == true || explicitlyUnverified else {
+                    return OfficeEditHostError.verificationFailed(
+                        code: "savedCellFormulaResultUnproven",
+                        detail: "The saved cell carries a formula, but its persisted computed "
+                            + "result was not verified against the workbook's persisted dependency "
+                            + "values (outcome=\(semantic.cellFormulaResultOutcome ?? "absent")). "
+                            + "No output was published.")
+                }
             }
             // A cell whose saved value already equaled the intent verifies as
             // content without claiming a mutation from a byte-hash difference.

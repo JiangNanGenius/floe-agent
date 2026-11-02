@@ -829,6 +829,15 @@ public final class OfficeAIHostBridge: OfficeEditEnginePort, @unchecked Sendable
         facts.cellPersistedValue = (reply["cellPersistedValue"] as? String)
             .map { String($0.prefix(OfficeEditLimits.maximumPersistedValueChars)) }
         facts.cellTypeMatchesIntent = reply["cellTypeMatchesIntent"] as? Bool
+        // C08 OFC-CELL-FORMULA-RECALC: persisted computed-result facts are
+        // ADDITIVE reply keys. Absent (older host) stays nil, and the
+        // setCellContent gate refuses a formula cell without an explicit
+        // result outcome instead of promoting the `<f>` source.
+        facts.cellFormulaResultVerified = reply["cellFormulaResultVerified"] as? Bool
+        facts.cellFormulaResultOutcome = (reply["cellFormulaResultOutcome"] as? String)
+            .map { String($0.prefix(64)) }
+        facts.cellFormulaResultDetail = (reply["cellFormulaResultDetail"] as? String)
+            .map { String($0.prefix(160)) }
         facts.changedFromOriginal = reply["changedFromOriginal"] as? Bool
         // Amendment/2 owned proof facts (absent ⇒ nil ⇒ the gate refuses).
         facts.expectedContentMatches = reply["expectedContentMatches"] as? Bool

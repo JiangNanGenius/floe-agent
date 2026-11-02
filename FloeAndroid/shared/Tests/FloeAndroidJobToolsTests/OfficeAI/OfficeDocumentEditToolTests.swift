@@ -446,7 +446,9 @@ final class OfficeDocumentEditToolTests: XCTestCase {
         let cached = OfficeEditSemanticFacts(
             inspectedSavedPackage: true, partName: "xl/worksheets/sheet2.xml",
             cellTypeAttribute: "str", cellHasFormula: true,
-            cellTypeMatchesIntent: true, expectedContentMatches: true)
+            cellTypeMatchesIntent: true,
+            cellFormulaResultVerified: true, cellFormulaResultOutcome: "verified",
+            expectedContentMatches: true)
         XCTAssertNil(OfficeEditSemanticGate.failure(command: .setCellContent, semantic: cached))
         // A different/old <f> than the intended formula refuses on content.
         let oldFormula = OfficeEditSemanticFacts(
@@ -465,6 +467,38 @@ final class OfficeDocumentEditToolTests: XCTestCase {
         XCTAssertEqual(OfficeEditSemanticGate.failure(command: .setCellContent,
                                                       semantic: coerced)?.code,
                        "savedCellTypeMismatch")
+    }
+
+    func testSemanticGateFormulaRequiresExplicitPersistedResultOutcome() {
+        // C08: a matching `<f>` source with no computed-result fact (an older
+        // host, or any bypass) must never report semantic result success.
+        let absent = OfficeEditSemanticFacts(
+            inspectedSavedPackage: true, partName: "xl/worksheets/sheet2.xml",
+            cellTypeAttribute: "n", cellHasFormula: true,
+            cellTypeMatchesIntent: true, expectedContentMatches: true)
+        XCTAssertEqual(OfficeEditSemanticGate.failure(command: .setCellContent,
+                                                      semantic: absent)?.code,
+                       "savedCellFormulaResultUnproven")
+        // An explicitly unverified shape stays available, but only with the
+        // false fact + `unsupported` outcome pair; it is never `verified`.
+        let unsupported = OfficeEditSemanticFacts(
+            inspectedSavedPackage: true, partName: "xl/worksheets/sheet2.xml",
+            cellTypeAttribute: "n", cellHasFormula: true,
+            cellTypeMatchesIntent: true,
+            cellFormulaResultVerified: false, cellFormulaResultOutcome: "unsupported",
+            expectedContentMatches: true,
+            limitations: ["formulaResultUnverified"])
+        XCTAssertNil(OfficeEditSemanticGate.failure(command: .setCellContent, semantic: unsupported))
+        // A contradicted cache can never pass even if a caller hand-builds it.
+        let stale = OfficeEditSemanticFacts(
+            inspectedSavedPackage: true, partName: "xl/worksheets/sheet2.xml",
+            cellTypeAttribute: "n", cellHasFormula: true,
+            cellTypeMatchesIntent: true,
+            cellFormulaResultVerified: false, cellFormulaResultOutcome: "staleCache",
+            expectedContentMatches: true)
+        XCTAssertEqual(OfficeEditSemanticGate.failure(command: .setCellContent,
+                                                      semantic: stale)?.code,
+                       "savedCellFormulaResultUnproven")
     }
 
     func testContentKindIntentsValidation() throws {
@@ -707,6 +741,7 @@ final class OfficeDocumentEditToolTests: XCTestCase {
         fixture.port.semantic = OfficeEditSemanticFacts(
             inspectedSavedPackage: true, partName: "xl/worksheets/sheet2.xml",
             cellTypeAttribute: "str", cellHasFormula: true, cellTypeMatchesIntent: true,
+            cellFormulaResultVerified: true, cellFormulaResultOutcome: "verified",
             expectedContentMatches: true, proofReused: true)
         let run = UUID()
         fixture.port.publishReceipt = receipt(callID: "call-1", runID: run, taskID: mine)
@@ -780,6 +815,7 @@ final class OfficeDocumentEditToolTests: XCTestCase {
         fixture.port.semantic = OfficeEditSemanticFacts(
             inspectedSavedPackage: true, partName: "xl/worksheets/sheet2.xml",
             cellTypeAttribute: "str", cellHasFormula: true, cellTypeMatchesIntent: true,
+            cellFormulaResultVerified: true, cellFormulaResultOutcome: "verified",
             expectedContentMatches: true, proofReused: true)
         func collect(_ id: UUID) async -> String? {
             do {
