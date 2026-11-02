@@ -118,6 +118,7 @@ class NotesExportEngine(private val session: PdfDocumentSession) {
         if (destination.exists() && !overwrite) {
             return@withContext PdfExportResult.Failed(NotesExportFailure.DESTINATION_EXISTS)
         }
+        val destinationExisted = destination.exists()
         val temp = stagingFile(destination)
         val document = PdfDocument()
         try {
@@ -177,6 +178,13 @@ class NotesExportEngine(private val session: PdfDocumentSession) {
             if (!commit(temp, destination, overwrite)) {
                 return@withContext abort(document, temp, NotesExportFailure.IO_ERROR)
             }
+            // The committed destination is the bytes the caller will stream.
+            // Re-prove its length after the atomic rename; a mismatch is never
+            // reported as a successful export.
+            if (!destination.isFile || destination.length() != bytes.size.toLong()) {
+                if (!destinationExisted) runCatching { destination.delete() }
+                return@withContext PdfExportResult.Failed(NotesExportFailure.READBACK_MISMATCH)
+            }
             PdfExportResult.Ok(
                 ExportReadback(
                     file = destination,
@@ -211,6 +219,7 @@ class NotesExportEngine(private val session: PdfDocumentSession) {
         if (destination.exists() && !overwrite) {
             return@withContext failedImage(NotesExportFailure.DESTINATION_EXISTS)
         }
+        val destinationExisted = destination.exists()
         if (isCancelled()) return@withContext failedImage(NotesExportFailure.CANCELLED)
         val targetEdge = maxEdgePx.coerceIn(64, 8_192)
         val zoom = com.floe.android.core.notesmedia.pdf.PdfRenderPlanner.thumbnailZoomPercent(pagePlan.box, targetEdge)
@@ -256,6 +265,10 @@ class NotesExportEngine(private val session: PdfDocumentSession) {
             }
             if (!commit(temp, destination, overwrite)) {
                 return@withContext abortImage(temp, NotesExportFailure.IO_ERROR)
+            }
+            if (!destination.isFile || destination.length() != bytes.size.toLong()) {
+                if (!destinationExisted) runCatching { destination.delete() }
+                return@withContext failedImage(NotesExportFailure.READBACK_MISMATCH)
             }
             ImageExportResult(
                 file = destination,

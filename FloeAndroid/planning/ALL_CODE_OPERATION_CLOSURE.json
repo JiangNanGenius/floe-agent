@@ -1341,6 +1341,16 @@
         ],
         "dependencies": [],
         "qualification": "source-only; exported files not opened/re-imported"
+      },
+      "currentImplementation": {
+        "state": "source-integrated-unqualified",
+        "batch": "c08-notes-exports",
+        "behavior": "Stable ordered page subset with fresh stored document/revision; same protected PDF/image composition and share-launch receipt. Real notebook Markdown plus explicit nontext limitations; existing mind-map outline retained.",
+        "sourceFiles": 11,
+        "mainCorrection": "Unwrap FreshExportDocument in Markdown call; one-line post-handoff correction",
+        "compiled": false,
+        "testsRun": false,
+        "deviceVerified": false
       }
     },
     {

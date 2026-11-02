@@ -15,13 +15,23 @@ import com.floe.android.feature.notes.NotesException
 import com.floe.android.feature.notes.NotesService
 import com.floe.android.feature.notes.MindMapAttachment
 import com.floe.android.feature.notes.MindMapAttachmentKind
+import com.floe.android.feature.notes.ui.api.NotesExportElement
+import com.floe.android.feature.notes.ui.api.NotesExportPage
+import com.floe.android.feature.notes.ui.api.NotesExportedStream
 import com.floe.android.feature.notes.ui.api.NotesHostPorts
 import com.floe.android.feature.notes.ui.api.NotesImportKind
 import com.floe.android.feature.notes.ui.api.NotesOfficeIndexOutcome
 import com.floe.android.feature.notes.ui.api.NotesOfficeIndexingPort
 import com.floe.android.feature.notes.ui.api.NotesPickedFile
 import com.floe.android.feature.notes.ui.api.NotesPortFailure
+import com.floe.android.feature.notes.ui.api.NotesShareStreamRequest
+import com.floe.android.feature.notes.ui.api.NotesShareTextRequest
+import com.floe.android.feature.notes.ui.presentation.NotesExportSelection
+import com.floe.android.feature.notes.ui.presentation.NotesExportSelectionFailure
+import com.floe.android.feature.notes.ui.presentation.NotesExportSelectionResult
 import com.floe.android.feature.notes.ui.presentation.NotesFailure
+import com.floe.android.feature.notes.ui.presentation.NotesMarkdownLabels
+import com.floe.android.feature.notes.ui.presentation.NotesNotebookMarkdown
 import com.floe.android.feature.notes.ui.presentation.NotesPendingRecovery
 import com.floe.android.feature.notes.ui.presentation.toNotesFailure
 import kotlinx.coroutines.CancellationException
@@ -47,6 +57,21 @@ internal enum class NotesWorkspaceAlert {
 internal enum class NotesOfficeActionResult { SAVED, NO_CHANGES, UNAVAILABLE, FAILED }
 
 internal enum class NotesAttachmentOpenResult { OPENED, UNAVAILABLE, FAILED }
+
+/**
+ * Receipt for an export the platform share surface accepted (its chooser
+ * started). This is not proof that a recipient consumed the file. It is never
+ * created for a generated staging file that was not handed to that surface.
+ * [pageIDs] preserves the exact ordered selection that produced the bytes.
+ */
+internal data class NotesExportReceipt(
+    val fileName: String,
+    val mediaType: String,
+    val byteCount: Long,
+    val pageCount: Int?,
+    val pageIDs: List<String>,
+    val locationLabel: String?,
+)
 
 /**
  * Workspace-level coordination: tab/session ownership, active document,
@@ -80,6 +105,8 @@ internal class NotesWorkspaceController(
     var navigation by mutableStateOf<List<NotesLinkLocation>>(emptyList())
         private set
     var lastFailure by mutableStateOf<NotesFailure?>(null)
+        private set
+    var lastExportReceipt by mutableStateOf<NotesExportReceipt?>(null)
         private set
     var alert by mutableStateOf<NotesWorkspaceAlert?>(null)
         private set
@@ -499,6 +526,8 @@ internal class NotesWorkspaceController(
     }
 
     suspend fun exportArchive(session: NotesDocumentSession): Boolean {
+        lastFailure = null
+        lastExportReceipt = null
         if (!ensureSavedForExport(session)) return false
         val document = session.document ?: return false
         val export = try {
@@ -511,7 +540,7 @@ internal class NotesWorkspaceController(
         }
         return try {
             val outcome = ports.exchange.shareStream(
-                com.floe.android.feature.notes.ui.api.NotesShareStreamRequest(
+                NotesShareStreamRequest(
                     fileName = export.fileName,
                     mediaType = "application/zip",
                     totalBytes = export.totalBytes,
@@ -529,51 +558,37 @@ internal class NotesWorkspaceController(
         }
     }
 
-    suspend fun exportPdf(session: NotesDocumentSession): Boolean {
-        val stream = buildPdfStream(session) ?: return false
-        return try {
-            val outcome = ports.exchange.shareStream(
-                com.floe.android.feature.notes.ui.api.NotesShareStreamRequest(
-                    fileName = stream.fileName,
-                    mediaType = stream.mediaType,
-                    totalBytes = stream.totalBytes,
-                    read = stream.read,
-                ),
-            )
-            outcome.launched
-        } catch (cancelled: CancellationException) {
-            throw cancelled
-        } catch (error: Throwable) {
-            lastFailure = error.toNotesFailure()
-            false
-        } finally {
-            runCatching { stream.close() }
-        }
+    /**
+     * Export the whole document by default, or exactly [requestedPageIDs] in
+     * the caller's order. The final selection is resolved against a freshly
+     * re-read stored document (after the last flush), so a page insert/delete,
+     * external revision or revoked root refuses the export instead of
+     * composing stale identities.
+     */
+    suspend fun exportPdf(
+        session: NotesDocumentSession,
+        requestedPageIDs: List<String>? = null,
+    ): Boolean {
+        val prepared = preparePdfExport(session, requestedPageIDs) ?: return false
+        return deliver(prepared)
     }
 
-    suspend fun exportCurrentPageImage(session: NotesDocumentSession): Boolean {
-        val stream = buildPageImageStream(session) ?: return false
-        return try {
-            val outcome = ports.exchange.shareStream(
-                com.floe.android.feature.notes.ui.api.NotesShareStreamRequest(
-                    fileName = stream.fileName,
-                    mediaType = stream.mediaType,
-                    totalBytes = stream.totalBytes,
-                    read = stream.read,
-                ),
-            )
-            outcome.launched
-        } catch (cancelled: CancellationException) {
-            throw cancelled
-        } catch (error: Throwable) {
-            lastFailure = error.toNotesFailure()
-            false
-        } finally {
-            runCatching { stream.close() }
-        }
+    /**
+     * Export one page image. When [pageID] is null the current page is used;
+     * an explicit id (for example the single selected export page) wins and is
+     * re-read/validated like PDF export.
+     */
+    suspend fun exportCurrentPageImage(
+        session: NotesDocumentSession,
+        pageID: String? = null,
+    ): Boolean {
+        val prepared = preparePageImageExport(session, pageID) ?: return false
+        return deliver(prepared)
     }
 
     suspend fun exportOutline(session: NotesDocumentSession): Boolean {
+        lastFailure = null
+        lastExportReceipt = null
         val document = session.document ?: return false
         if (document.kind != com.floe.android.feature.notes.NoteDocumentKind.MIND_MAP) return false
         val outline = com.floe.android.feature.notes.ui.presentation.MindMapLayoutEngine.outline(document)
@@ -586,23 +601,18 @@ internal class NotesWorkspaceController(
                 }
             }
         }
-        return try {
-            ports.exchange.shareText(
-                com.floe.android.feature.notes.ui.api.NotesShareTextRequest(
-                    fileName = safeExportName(document.title) + ".md",
-                    mediaType = "text/markdown",
-                    text = text,
-                ),
-            ).launched
-        } catch (cancelled: CancellationException) {
-            throw cancelled
-        } catch (error: Throwable) {
-            lastFailure = error.toNotesFailure()
-            false
-        }
+        return deliverText(
+            NotesShareTextRequest(
+                fileName = safeExportName(document.title) + ".md",
+                mediaType = "text/markdown",
+                text = text,
+            ),
+        )
     }
 
     suspend fun exportPlainText(session: NotesDocumentSession): Boolean {
+        lastFailure = null
+        lastExportReceipt = null
         val document = session.document ?: return false
         val text = buildString {
             document.pages.forEachIndexed { index, page ->
@@ -618,27 +628,57 @@ internal class NotesWorkspaceController(
                 document.nodes.forEach { append(it.title).append('\n') }
             }
         }
-        return try {
-            ports.exchange.shareText(
-                com.floe.android.feature.notes.ui.api.NotesShareTextRequest(
-                    fileName = safeExportName(document.title) + ".txt",
-                    mediaType = "text/plain",
-                    text = text,
-                ),
-            ).launched
-        } catch (cancelled: CancellationException) {
-            throw cancelled
-        } catch (error: Throwable) {
-            lastFailure = error.toNotesFailure()
-            false
-        }
+        return deliverText(
+            NotesShareTextRequest(
+                fileName = safeExportName(document.title) + ".txt",
+                mediaType = "text/plain",
+                text = text,
+            ),
+        )
     }
 
-    suspend fun printActiveDocument(session: NotesDocumentSession): com.floe.android.feature.notes.ui.api.NotesPrintOutcome {
-        val stream = buildPdfStream(session)
-            ?: return com.floe.android.feature.notes.ui.api.NotesPrintOutcome.Unavailable(
+    /**
+     * Notebook Markdown: the stored document's real structure (authored
+     * Markdown, plain text escaping, page text/OCR, ordered pages) with
+     * explicit limitations for image/ink/shape/PDF-page content. Distinct from
+     * the mind-map outline and the plain-text export.
+     */
+    suspend fun exportNotebookMarkdown(
+        session: NotesDocumentSession,
+        labels: NotesMarkdownLabels = NotesMarkdownLabels(),
+    ): Boolean {
+        lastFailure = null
+        lastExportReceipt = null
+        val document = (prepareExportDocument(session) ?: return false).document
+        if (document.kind != com.floe.android.feature.notes.NoteDocumentKind.NOTEBOOK) {
+            lastFailure = NotesFailure("invalidOperation", "notNotebook")
+            return false
+        }
+        val text = NotesNotebookMarkdown.build(document, labels)
+        return deliverText(
+            NotesShareTextRequest(
+                fileName = safeExportName(document.title) + ".md",
+                mediaType = "text/markdown",
+                text = text,
+            ),
+            pageIDs = document.pages.map { it.id },
+            pageCount = document.pages.size,
+        )
+    }
+
+    suspend fun printActiveDocument(
+        session: NotesDocumentSession,
+        requestedPageIDs: List<String>? = null,
+    ): com.floe.android.feature.notes.ui.api.NotesPrintOutcome {
+        val prepared = preparePdfExport(session, requestedPageIDs)
+            ?: return lastFailure?.let { failure ->
+                com.floe.android.feature.notes.ui.api.NotesPrintOutcome.Failed(
+                    com.floe.android.feature.notes.ui.api.NotesPortFailure(failure.code, failure.detail),
+                )
+            } ?: com.floe.android.feature.notes.ui.api.NotesPrintOutcome.Unavailable(
                 com.floe.android.feature.notes.ui.api.NotesPortFailure("portUnavailable"),
             )
+        val stream = prepared.stream
         return try {
             ports.media.print(
                 com.floe.android.feature.notes.ui.api.NotesPrintRequest(
@@ -695,41 +735,124 @@ internal class NotesWorkspaceController(
         return true
     }
 
-    private suspend fun buildPdfStream(
+    private data class FreshExportDocument(
+        val document: NoteDocument,
+        val presentedRevision: Int,
+    )
+
+    private data class PreparedExport(
+        val stream: NotesExportedStream,
+        val pageIDs: List<String>,
+    )
+
+    /**
+     * Re-read the ACTUAL stored document after the final flush. The revision
+     * the user was looking at is retained so [NotesExportSelection] can refuse
+     * a changed document; a revoked root/permission surfaces its typed service
+     * failure before any page or resource is staged.
+     */
+    private suspend fun prepareExportDocument(
         session: NotesDocumentSession,
-    ): com.floe.android.feature.notes.ui.api.NotesExportedStream? {
+    ): FreshExportDocument? {
         if (!ensureSavedForExport(session)) return null
-        val document = session.document ?: return null
-        val pages = document.pages.map { page ->
-            com.floe.android.feature.notes.ui.api.NotesExportPage(
-                pageID = page.id,
-                widthPt = page.width.toFloat(),
-                heightPt = page.height.toFloat(),
-                paper = page.paper,
-                pdfPageIndex = page.pdfPageIndex,
-                pdfResourceID = page.backgroundResourceID.takeIf { page.pdfPageIndex != null },
-                drawingResourceID = page.drawingResourceID,
-                backgroundResourceID = page.backgroundResourceID,
-                elements = page.elements.map { element ->
-                    com.floe.android.feature.notes.ui.api.NotesExportElement(
-                        kind = element.kind,
-                        frame = element.frame,
-                        text = com.floe.android.feature.notes.ui.presentation.resolveElementText(document, element),
-                        color = element.color,
-                        fontSize = element.fontSize,
-                        isMarkdown = element.isMarkdown,
-                        imageResourceID = element.resourceID,
-                    )
-                },
-            )
+        val presented = session.document ?: run {
+            lastFailure = NotesFailure("invalidDocument", "noDocument")
+            return null
         }
-        if (pages.isEmpty()) {
+        val fresh = try {
+            service.document(presented.id)
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (error: Throwable) {
+            lastFailure = error.toNotesFailure()
+            return null
+        }
+        if (fresh.id != presented.id) {
+            lastFailure = NotesFailure("invalidResponse", "documentChanged")
+            return null
+        }
+        if (presented.deletedAt == null && fresh.deletedAt != null) {
+            lastFailure = NotesFailure("notFound", "document")
+            return null
+        }
+        return FreshExportDocument(fresh, presented.revision)
+    }
+
+    private suspend fun preparePdfExport(
+        session: NotesDocumentSession,
+        requestedPageIDs: List<String>?,
+    ): PreparedExport? {
+        lastFailure = null
+        lastExportReceipt = null
+        val snapshot = prepareExportDocument(session) ?: return null
+        val pages = when (
+            val resolved = NotesExportSelection.resolve(
+                snapshot.document,
+                requestedPageIDs,
+                snapshot.presentedRevision,
+            )
+        ) {
+            is NotesExportSelectionResult.Ready -> resolved.pages
+            is NotesExportSelectionResult.Refused -> {
+                lastFailure = resolved.failure.toNotesFailure()
+                return null
+            }
+        }
+        val stream = buildPdfStream(snapshot.document, pages) ?: return null
+        return PreparedExport(stream, pages.map { it.id })
+    }
+
+    private suspend fun preparePageImageExport(
+        session: NotesDocumentSession,
+        pageID: String?,
+    ): PreparedExport? {
+        lastFailure = null
+        lastExportReceipt = null
+        val snapshot = prepareExportDocument(session) ?: return null
+        val requested = pageID?.let { listOf(it) }
+            ?: session.currentPage?.let { listOf(it.id) }
+        if (requested == null) {
+            lastFailure = NotesFailure("invalidPageSelection", "noPage")
+            return null
+        }
+        val page = when (
+            val resolved = NotesExportSelection.resolve(
+                snapshot.document,
+                requested,
+                snapshot.presentedRevision,
+            )
+        ) {
+            is NotesExportSelectionResult.Ready -> resolved.pages.single()
+            is NotesExportSelectionResult.Refused -> {
+                lastFailure = resolved.failure.toNotesFailure()
+                return null
+            }
+        }
+        val stream = buildPageImageStream(snapshot.document, page) ?: return null
+        return PreparedExport(stream, listOf(page.id))
+    }
+
+    private suspend fun buildPdfStream(
+        document: NoteDocument,
+        selectedPages: List<com.floe.android.feature.notes.NotePage>,
+    ): NotesExportedStream? {
+        if (selectedPages.isEmpty()) {
             lastFailure = NotesFailure("invalidDocument", "noPages")
             return null
         }
+        val pages = selectedPages.map { page -> exportPageSpec(document, page) }
         val pdfResourceID = pages.firstNotNullOfOrNull { it.pdfResourceID }
-        val record = pdfResourceID?.let { id ->
-            runCatching { service.resourceMetadata(id) }.getOrNull()
+        val record = if (pdfResourceID == null) {
+            null
+        } else {
+            try {
+                service.resourceMetadata(pdfResourceID)
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (error: Throwable) {
+                lastFailure = error.toNotesFailure()
+                return null
+            }
         }
         return try {
             ports.media.exportPdf(
@@ -753,32 +876,10 @@ internal class NotesWorkspaceController(
     }
 
     private suspend fun buildPageImageStream(
-        session: NotesDocumentSession,
-    ): com.floe.android.feature.notes.ui.api.NotesExportedStream? {
-        if (!ensureSavedForExport(session)) return null
-        val document = session.document ?: return null
-        val page = session.currentPage ?: return null
-        val spec = com.floe.android.feature.notes.ui.api.NotesExportPage(
-            pageID = page.id,
-            widthPt = page.width.toFloat(),
-            heightPt = page.height.toFloat(),
-            paper = page.paper,
-            pdfPageIndex = page.pdfPageIndex,
-            pdfResourceID = page.backgroundResourceID.takeIf { page.pdfPageIndex != null },
-            drawingResourceID = page.drawingResourceID,
-            backgroundResourceID = page.backgroundResourceID,
-            elements = page.elements.map { element ->
-                com.floe.android.feature.notes.ui.api.NotesExportElement(
-                    kind = element.kind,
-                    frame = element.frame,
-                    text = com.floe.android.feature.notes.ui.presentation.resolveElementText(document, element),
-                    color = element.color,
-                    fontSize = element.fontSize,
-                    isMarkdown = element.isMarkdown,
-                    imageResourceID = element.resourceID,
-                )
-            },
-        )
+        document: NoteDocument,
+        page: com.floe.android.feature.notes.NotePage,
+    ): NotesExportedStream? {
+        val spec = exportPageSpec(document, page)
         return try {
             ports.media.exportPageImage(
                 com.floe.android.feature.notes.ui.api.NotesPageImageExportRequest(
@@ -795,6 +896,110 @@ internal class NotesWorkspaceController(
             lastFailure = error.toNotesFailure()
             null
         }
+    }
+
+    private fun exportPageSpec(
+        document: NoteDocument,
+        page: com.floe.android.feature.notes.NotePage,
+    ): NotesExportPage = NotesExportPage(
+        pageID = page.id,
+        widthPt = page.width.toFloat(),
+        heightPt = page.height.toFloat(),
+        paper = page.paper,
+        pdfPageIndex = page.pdfPageIndex,
+        pdfResourceID = page.backgroundResourceID.takeIf { page.pdfPageIndex != null },
+        drawingResourceID = page.drawingResourceID,
+        backgroundResourceID = page.backgroundResourceID,
+        elements = page.elements.map { element ->
+            NotesExportElement(
+                kind = element.kind,
+                frame = element.frame,
+                text = com.floe.android.feature.notes.ui.presentation.resolveElementText(document, element),
+                color = element.color,
+                fontSize = element.fontSize,
+                isMarkdown = element.isMarkdown,
+                imageResourceID = element.resourceID,
+            )
+        },
+    )
+
+    /**
+     * Hand the generated stream to the existing share surface and only create
+     * a receipt after the surface reports that it launched. A zero-byte or
+     * unlaunched result is a failure/cancel, never a successful export.
+     */
+    private suspend fun deliver(prepared: PreparedExport): Boolean {
+        val stream = prepared.stream
+        return try {
+            if (stream.totalBytes <= 0L) {
+                lastFailure = NotesFailure("invalidExport", "emptyExport")
+                false
+            } else {
+                val outcome = ports.exchange.shareStream(
+                    NotesShareStreamRequest(
+                        fileName = stream.fileName,
+                        mediaType = stream.mediaType,
+                        totalBytes = stream.totalBytes,
+                        read = stream.read,
+                    ),
+                )
+                if (!outcome.launched) {
+                    false
+                } else {
+                    lastExportReceipt = NotesExportReceipt(
+                        fileName = stream.fileName,
+                        mediaType = stream.mediaType,
+                        byteCount = stream.totalBytes,
+                        pageCount = prepared.pageIDs.size,
+                        pageIDs = prepared.pageIDs,
+                        locationLabel = outcome.locationLabel,
+                    )
+                    true
+                }
+            }
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (error: Throwable) {
+            lastFailure = error.toNotesFailure()
+            false
+        } finally {
+            runCatching { stream.close() }
+        }
+    }
+
+    private suspend fun deliverText(
+        request: NotesShareTextRequest,
+        pageIDs: List<String> = emptyList(),
+        pageCount: Int? = null,
+    ): Boolean = try {
+        val outcome = ports.exchange.shareText(request)
+        if (!outcome.launched) {
+            false
+        } else {
+            lastExportReceipt = NotesExportReceipt(
+                fileName = request.fileName,
+                mediaType = request.mediaType,
+                byteCount = request.text.encodeToByteArray().size.toLong(),
+                pageCount = pageCount,
+                pageIDs = pageIDs,
+                locationLabel = outcome.locationLabel,
+            )
+            true
+        }
+    } catch (cancelled: CancellationException) {
+        throw cancelled
+    } catch (error: Throwable) {
+        lastFailure = error.toNotesFailure()
+        false
+    }
+
+    private fun NotesExportSelectionFailure.toNotesFailure(): NotesFailure = when (this) {
+        NotesExportSelectionFailure.NO_PAGES -> NotesFailure("invalidDocument", "noPages")
+        NotesExportSelectionFailure.EMPTY_SELECTION -> NotesFailure("invalidPageSelection", "emptySelection")
+        NotesExportSelectionFailure.TOO_MANY_PAGES -> NotesFailure("requestTooLarge", "tooManyPages")
+        NotesExportSelectionFailure.DUPLICATE_PAGE -> NotesFailure("invalidPageSelection", "duplicatePage")
+        NotesExportSelectionFailure.UNKNOWN_PAGE -> NotesFailure("notFound", "page")
+        NotesExportSelectionFailure.STALE_REVISION -> NotesFailure("conflict", "documentChanged")
     }
 
     private fun safeExportName(title: String): String =
