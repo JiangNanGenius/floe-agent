@@ -878,10 +878,13 @@ class RuntimeHost internal constructor(
     ): String? = privacyConfirmationIssuer?.invoke(
         expectedNativeEpoch, operation, previewDigest, invocationID, action)
 
+    private val fontTools = com.floe.android.host.fonts.FontToolHostPump(appContext, scope, ::nativeRootEpoch)
+
     /** Called once by the Application owner, off-main. */
     fun start() {
         if (!started.compareAndSet(false, true)) return
         platformExtension?.onHostStarted(this)
+        fontTools.start()
         observationJob = scope.launch(ioDispatcher) { observeCapabilities() }
         providers.start()
         conversations.start()
@@ -901,6 +904,7 @@ class RuntimeHost internal constructor(
      * RB-1 owner stop. The host never cancels another owner's work.
      */
     suspend fun stop() {
+        if (!fontTools.stopAndJoin()) return
         // C03 voice owns real microphone/TTS/cloud operations; fence and join
         // them before the native root retires.
         if (::voice.isInitialized && !voice.prepareForRootStop()) return

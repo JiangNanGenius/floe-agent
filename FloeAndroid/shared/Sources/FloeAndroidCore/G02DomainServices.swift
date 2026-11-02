@@ -705,6 +705,7 @@ public final class G02InstalledComposition: @unchecked Sendable {
         // + read grant; writes additionally need the write grant and a
         // writable calendar. No account, subscription or developer calendar
         // is invented here.
+        registerC08FontTools(epoch: epoch, registry: runComponents.registry)
         registerC06CalendarTools(registry: runComponents.registry)
         registerC06TodoTools(registry: runComponents.registry)
         await C06TodoDomain.shared.refreshAvailability(epoch: epoch)

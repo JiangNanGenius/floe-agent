@@ -97,7 +97,8 @@ class ManagedFontStore(context: Context) {
     fun list(): List<Entry> = locked { read() }
 
     /** Caller owns the granted source stream. It is consumed and closed here. */
-    fun install(input: InputStream): Entry = locked {
+    fun install(input: InputStream, expectedDigest: String? = null, expectedBytes: Long? = null,
+                mayCommit: () -> Boolean = { true }): Entry = locked {
         val stage = File(root, "incoming-${UUID.randomUUID()}.part")
         try {
             var size = 0L
@@ -117,6 +118,9 @@ class ManagedFontStore(context: Context) {
                 require(Typeface.Builder(stage).setTtcIndex(index).setFallback(null).build() != null) { "Android cannot load this font" }
             }
             val id = digest(stage)
+            require(expectedDigest == null || id == expectedDigest) { "Font source digest changed" }
+            require(expectedBytes == null || size == expectedBytes) { "Font source size changed" }
+            check(mayCommit()) { "Font operation cancelled" }
             val entries = read()
             entries.firstOrNull { it.id == id }?.let { verifiedPayload(it); return@locked it }
             require(entries.size < 256 && entries.sumOf { it.bytes } + size <= 128L * 1024 * 1024) { "Font library is full" }
@@ -134,15 +138,17 @@ class ManagedFontStore(context: Context) {
                 check(stage.renameTo(payload)) { "Cannot commit font payload" }
             }
             val entry = Entry(id, size, names.mapIndexed { index, name -> Face(index, name.displayName, name.aliases) })
+            check(mayCommit()) { "Font operation cancelled" }
             commit(entries + entry)
             require(read().any { it == entry }) { "Font catalogue read-back failed" }
             entry
         } finally { stage.delete() }
     }
-    fun remove(id: String): Boolean = locked {
+    fun remove(id: String, mayCommit: () -> Boolean = { true }): Boolean = locked {
         require(ID.matches(id)) { "Invalid font identity" }
         val entries = read(); val remaining = entries.filterNot { it.id == id }
         if (entries.size == remaining.size) false else {
+            check(mayCommit()) { "Font operation cancelled" }
             commit(remaining)
             require(read().none { it.id == id }) { "Font removal read-back failed" }
             true

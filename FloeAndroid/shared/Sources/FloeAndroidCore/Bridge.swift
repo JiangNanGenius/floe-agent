@@ -50,7 +50,8 @@ public enum AndroidBridge {
                 || requestVersion == BridgeV21.version
                 || requestVersion == BridgeV24.version
                 || requestVersion == BridgeV23.version
-                || requestVersion == BridgeV25.version else {
+                || requestVersion == BridgeV25.version
+                || requestVersion == BridgeV27.version else {
             return response(["ok": false, "error": "unsupportedVersion"])
         }
         if requestVersion == BridgeV2.version {
@@ -427,6 +428,9 @@ public enum AndroidBridge {
                                 stampVersion: BridgeV24.version)
             }
             return response(object, stampVersion: BridgeV24.version)
+        }
+        if requestVersion == BridgeV27.version {
+            return response(FontHostMailbox.handle(request), stampVersion: BridgeV27.version)
         }
         if requestVersion == BridgeV25.version {
             // Additive G04 host-only archive document channel: bounded

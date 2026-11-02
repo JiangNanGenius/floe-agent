@@ -159,6 +159,7 @@ class GenerationForegroundService : Service() {
 class GenerationForegroundCancelReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
         if (intent.action != GenerationForegroundOwner.ACTION_CANCEL_ALL) return
-        GenerationForegroundOwner.cancelAll()
+        val tokens = intent.getStringArrayListExtra(GenerationForegroundOwner.EXTRA_CANCEL_TOKENS) ?: return
+        GenerationForegroundOwner.cancelCaptured(tokens)
     }
 }

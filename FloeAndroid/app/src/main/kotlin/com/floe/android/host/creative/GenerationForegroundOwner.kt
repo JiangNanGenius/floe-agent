@@ -80,6 +80,7 @@ object GenerationForegroundOwner : GenerationForegroundPort {
     const val ACTION_START = "com.floe.android.host.creative.GENERATION_FOREGROUND_START"
     const val ACTION_CANCEL_ALL = "com.floe.android.host.creative.GENERATION_FOREGROUND_CANCEL"
     const val EXTRA_TOKEN = "com.floe.android.host.creative.GENERATION_FOREGROUND_TOKEN"
+    const val EXTRA_CANCEL_TOKENS = "com.floe.android.host.creative.GENERATION_CANCEL_TOKENS"
 
     /** Android 15+ dataSync budget for one app in 24h. */
     const val MAX_DATA_SYNC_MILLIS = GenerationReturnNavigation.CLAIM_TTL_MILLIS
@@ -447,6 +448,21 @@ object GenerationForegroundOwner : GenerationForegroundPort {
         updateNotification(applicationContext)
     }
 
+    /** Stop only the claims represented by the rendered notification.
+     * A late press must never acquire authority over a newly started job. */
+    fun cancelCaptured(tokens: List<String>) {
+        if (tokens.isEmpty() || tokens.size > MAX_CLAIMS || tokens.toSet().size != tokens.size) return
+        val owned = synchronized(lock) { tokens.mapNotNull { byToken[it] } }
+        for (claim in owned) {
+            if (removeClaim(claim)) {
+                GenerationForegroundNative.cancel(claim.jobID, claim.epoch, claim.token)
+                GenerationForegroundNative.release(claim.jobID, claim.epoch, claim.token)
+            }
+        }
+        stopServiceIfIdle(applicationContext)
+        updateNotification(applicationContext)
+    }
+
     fun cancelAll() {
         val owned = synchronized(lock) { byToken.values.toList() }
         for (claim in owned) {
@@ -530,12 +546,14 @@ object GenerationForegroundOwner : GenerationForegroundPort {
     }
 
     private fun removeClaim(claim: Claim): Boolean = synchronized(lock) {
-        val removed = byToken.remove(claim.token) != null
-        byJob.remove(key(claim.jobID, claim.epoch))
-        byReturnToken.remove(claim.returnToken)
+        if (byToken[claim.token] !== claim) return@synchronized false
+        byToken.remove(claim.token)
+        val jobKey = key(claim.jobID, claim.epoch)
+        if (byJob[jobKey] === claim) byJob.remove(jobKey)
+        if (byReturnToken[claim.returnToken] === claim) byReturnToken.remove(claim.returnToken)
         // The accepted context is intentionally NOT retained after the exact
         // claim leaves process ownership (terminal/root/expiration/denial).
-        removed
+        true
     }
 
     // MARK: - Notification
@@ -603,12 +621,13 @@ object GenerationForegroundOwner : GenerationForegroundPort {
         }
         val cancelIntent = Intent(context, GenerationForegroundCancelReceiver::class.java)
             .setAction(ACTION_CANCEL_ALL)
+            .putStringArrayListExtra(EXTRA_CANCEL_TOKENS, ArrayList(claims.map { it.token }))
         builder.addAction(
             android.R.drawable.ic_menu_close_clear_cancel,
             copy("Cancel", "取消"),
             PendingIntent.getBroadcast(
                 context, 0x46474E32, cancelIntent,
-                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE))
+                PendingIntent.FLAG_CANCEL_CURRENT or PendingIntent.FLAG_IMMUTABLE))
         val launch = context.packageManager.getLaunchIntentForPackage(
             context.packageName)
         if (launch != null) {
