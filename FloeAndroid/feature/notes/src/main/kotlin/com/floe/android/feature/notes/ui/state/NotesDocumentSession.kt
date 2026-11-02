@@ -138,6 +138,8 @@ internal class NotesDocumentSession(
         private set
     var pageScrollFraction by mutableStateOf(preferences.scrollFraction.coerceIn(0f, 1f))
         private set
+    var readingMode by mutableStateOf(false)
+        private set
     var editorTool by mutableStateOf(NotesEditorTool.fromKey(preferences.tool))
         private set
     var inkTool by mutableStateOf(NotesInkToolKind.PEN)
@@ -341,6 +343,14 @@ internal class NotesDocumentSession(
         if (pageID != activePageID) return
         pageScrollFraction = fraction.coerceIn(0f, 1f)
         persistPreferences()
+    }
+
+    fun toggleReadingMode() {
+        readingMode = !readingMode
+        if (readingMode) {
+            clearSelection()
+            if (pdfTextMode) exitPdfTextMode()
+        }
     }
 
     fun selectEditorTool(value: NotesEditorTool) {

@@ -26,6 +26,12 @@ interface WorkspaceSwapOps {
     fun kind(path: File): SwapKind
     fun size(path: File): Long
     fun rename(from: File, to: File): Boolean
+    /** Live-input operations must fail closed unless the backend implements
+     * descriptor-anchored, atomic creation without replacing any entry. */
+    fun kindNoFollow(root: File, relativePath: String): SwapKind = SwapKind.UNREADABLE
+    fun installNewFile(stage: File, root: File, relativePath: String): Boolean = false
+    fun createNewDirectory(root: File, relativePath: String): Boolean = false
+    fun createNewSymlink(root: File, relativePath: String, target: String): Boolean = false
     fun mkdir(path: File): Boolean
     /** True when an existing empty directory was removed. */
     fun rmdir(path: File): Boolean

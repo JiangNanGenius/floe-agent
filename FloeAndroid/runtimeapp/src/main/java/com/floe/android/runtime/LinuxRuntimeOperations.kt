@@ -610,6 +610,8 @@ internal class LinuxRuntimeOperations(
             var imported: WorkspaceImportReceipt? = null
             var importMillis = 0L
             var importedEntries = 0L
+            var newInputEntries = 0
+            var retainedInputEntries = 0
             if (!isReuseParticipant) {
                 // An owner start begins a new live workspace epoch. Any
                 // earlier preparation receipt can no longer prove the guest
@@ -633,6 +635,13 @@ internal class LinuxRuntimeOperations(
                     receipt.preservedUnsyncedCount + receipt.unchangedCount).toLong()
                 check(!isCancelled())
             } else {
+                RuntimeWorkspaceSession(context, workspaceGrant, projectID, runID, workspace).use { transfer ->
+                    val receipt = transfer.importNewInputs(
+                        WorkspaceCancelSignal { isCancelled() })
+                    check(receipt.skippedCount == 0 && receipt.conflictPaths.isEmpty()) { "newWorkspaceInputsUnavailable" }
+                    newInputEntries = receipt.createdCount
+                    retainedInputEntries = receipt.retainedExistingCount
+                }
                 latency.mark(LinuxRuntimePhaseTiming.Phase.IMPORT)
             }
             val scratchParent = File(root, "Scratch").apply { check(mkdirs() || isDirectory) }
@@ -735,6 +744,8 @@ internal class LinuxRuntimeOperations(
                         .put("prepareCopiedBytes", materialized.copiedBytes)
                         .put("importMillis", importMillis)
                         .put("importedEntries", importedEntries)
+                        .put("newInputEntries", newInputEntries)
+                        .put("retainedInputEntries", retainedInputEntries)
                 }
             }
         } catch (failure: Exception) {
@@ -885,6 +896,8 @@ internal class LinuxRuntimeOperations(
             var imported: WorkspaceImportReceipt? = null
             var importMillis = 0L
             var importedEntries = 0L
+            var newInputEntries = 0
+            var retainedInputEntries = 0
             if (!isReuseParticipant) {
                 preparation.invalidate(projectID)
                 exportStatuses.remove(projectID)
@@ -899,6 +912,14 @@ internal class LinuxRuntimeOperations(
                 importedEntries = (receipt.createdCount + receipt.replacedSyncedCount +
                     receipt.preservedUnsyncedCount + receipt.unchangedCount).toLong()
                 check(!cancelled())
+            } else {
+                RuntimeWorkspaceSession(context, workspaceGrant, projectID, runID, workspace).use { transfer ->
+                    val receipt = transfer.importNewInputs(
+                        WorkspaceCancelSignal { cancelled() })
+                    check(receipt.skippedCount == 0 && receipt.conflictPaths.isEmpty()) { "newWorkspaceInputsUnavailable" }
+                    newInputEntries = receipt.createdCount
+                    retainedInputEntries = receipt.retainedExistingCount
+                }
             }
             val scratchParent = File(root, "Scratch").apply { check(mkdirs() || isDirectory) }
             check(scratchParent.canonicalFile == scratchParent)
@@ -986,6 +1007,8 @@ internal class LinuxRuntimeOperations(
                         .put("prepareCopiedBytes", materialized.copiedBytes)
                         .put("importMillis", importMillis)
                         .put("importedEntries", importedEntries)
+                        .put("newInputEntries", newInputEntries)
+                        .put("retainedInputEntries", retainedInputEntries)
                         .put("stdioContractVersion", RuntimeKernel.STDIO_CONTRACT)
                 }
             }

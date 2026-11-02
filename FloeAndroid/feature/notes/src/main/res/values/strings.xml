@@ -495,4 +495,6 @@
     <string name="notes_task_launch_loading">Loading attachments…</string>
     <string name="notes_task_launch_busy">Creating task…</string>
     <string name="notes_task_launch_not_ready">Notes or the task runtime isn’t ready.</string>
+    <string name="notes_mode_read">Read</string>
+    <string name="notes_mode_edit">Edit</string>
 </resources>

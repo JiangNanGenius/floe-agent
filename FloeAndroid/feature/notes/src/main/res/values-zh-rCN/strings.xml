@@ -492,4 +492,6 @@
     <string name="notes_task_launch_loading">正在载入附件…</string>
     <string name="notes_task_launch_busy">正在创建任务…</string>
     <string name="notes_task_launch_not_ready">手记或任务运行时尚未就绪。</string>
+    <string name="notes_mode_read">阅读</string>
+    <string name="notes_mode_edit">编辑</string>
 </resources>

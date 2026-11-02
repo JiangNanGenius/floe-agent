@@ -116,6 +116,9 @@ internal fun NotesDocumentPane(
             .onPreviewKeyEvent { event ->
                 if (event.type != KeyEventType.KeyDown) return@onPreviewKeyEvent false
                 val shortcut = event.isCtrlPressed || event.isMetaPressed
+                if (session.readingMode && event.key != Key.F && event.key != Key.Escape) {
+                    return@onPreviewKeyEvent false
+                }
                 when {
                     shortcut && event.key == Key.Z && event.isShiftPressed -> {
                         scope.launch { session.undo(redo = true) }
@@ -163,11 +166,18 @@ internal fun NotesDocumentPane(
                     )
                 },
                 actions = {
+                    if (document?.kind == NoteDocumentKind.NOTEBOOK) {
+                        NotesIconAction(
+                            if (session.readingMode) FloeIcons.Pencil else FloeIcons.BookPages,
+                            stringResource(if (session.readingMode) R.string.notes_mode_edit else R.string.notes_mode_read),
+                            { session.toggleReadingMode() },
+                        )
+                    }
                     NotesIconAction(
                         NotesIcons.Undo,
                         stringResource(R.string.notes_undo),
                         { scope.launch { session.undo(redo = false) } },
-                        enabled = session.canUndo && session.pendingEditCount == 0,
+                        enabled = !session.readingMode && session.canUndo && session.pendingEditCount == 0,
                     )
                     // iOS keeps redo out of the compact header; the title
                     // needs the width. Redo remains available from the
@@ -177,7 +187,7 @@ internal fun NotesDocumentPane(
                             NotesIcons.Redo,
                             stringResource(R.string.notes_redo),
                             { scope.launch { session.undo(redo = true) } },
-                            enabled = session.canRedo && session.pendingEditCount == 0,
+                            enabled = !session.readingMode && session.canRedo && session.pendingEditCount == 0,
                         )
                     }
                     NotesIconAction(

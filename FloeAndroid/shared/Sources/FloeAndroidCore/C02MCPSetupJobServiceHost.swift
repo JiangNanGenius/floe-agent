@@ -21,9 +21,11 @@ public struct C02MCPSetupJobServiceHost: C02MCPSetupServiceHosting {
         guard binding.recordID == recordID, binding.workspaceRelativePath == projectRelativePath else {
             throw failure("The service workspace changed.")
         }
+        try C02MCPSetupWorkspaceStager.ensureGuestAdapters(
+            projectRoot: binding.rootURL, relativePath: projectRelativePath, recordID: recordID)
         let context = try await contexts.context(for: binding)
-        let declaration = C01ManagedServiceDeclaration(runtime: .node,
-            entry: projectRelativePath + "/node-http/" + C02MCPSetupLimits.launcherName,
+        let declaration = C01ManagedServiceDeclaration(runtime: .shell,
+            entry: projectRelativePath + "/node-http/" + C02MCPSetupLimits.shellLauncherName,
             cwd: ".", port: binding.port)
         let payload = try services.makeExecShellPayload(innerArguments: Data("{}".utf8), declaration: declaration)
         try await contexts.submissionStarted(recordID: recordID)

@@ -70,6 +70,8 @@ public enum C02MCPSetupLimits {
     public static let serviceDirectoryName = "MCPServices"
     public static let markerName = ".floe-mcp-setup.json"
     public static let launcherName = "floe-start.mjs"
+    public static let shellLauncherName = "floe-start.sh"
+    public static let nodeEnvironmentName = "floe-node-env.sh"
 
     /// The Android CLIENT compatibility identity. This is deliberately
     /// independent from the native display/OTA prerelease version
@@ -608,6 +610,17 @@ public struct C02MCPSetupTemplateIdentity: Sendable, Equatable {
                                      message: "The MCP template launcher changed after extraction.",
                                      retryable: false)
         }
+        for (name, content) in [
+            (C02MCPSetupLimits.nodeEnvironmentName, C02MCPNodePrerequisites.environment),
+            (C02MCPSetupLimits.shellLauncherName, C02MCPNodePrerequisites.launcher),
+        ] {
+            let adapter = try guardPaths.resolve("node-http/" + name)
+            guard (try? Data(contentsOf: adapter)) == Data(content.utf8) else {
+                throw C02MCPSetupFailure(.templateChanged,
+                    message: "The MCP runtime adapter changed after preparation.")
+            }
+        }
+
     }
 }
 
@@ -811,13 +824,7 @@ public enum C02MCPSetupBuildPlan {
         C02MCPSetupBuildCommand(
             name: .probe,
             callPrefix: "mcp.setup.probe.",
-            command: """
-            set -eu
-            printf 'FLOE_OS=%s\\n' "$(uname -s)"
-            printf 'FLOE_ARCH=%s\\n' "$(uname -m)"
-            printf 'FLOE_NODE=%s\\n' "$(node --version)"
-            printf 'FLOE_NPM=%s\\n' "$(npm --version)"
-            """,
+            command: C02MCPNodePrerequisites.prepare,
             timeoutSeconds: 600,
             maximumOutputBytes: 262_144),
         C02MCPSetupBuildCommand(
@@ -825,6 +832,7 @@ public enum C02MCPSetupBuildPlan {
             callPrefix: "mcp.setup.install.",
             command: """
             set -eu
+            . ./floe-node-env.sh
             node -e 'const [a,b]=process.versions.node.split(".").map(Number); if(a<20||(a===20&&b<19)){throw new Error("Node 20.19 or newer is required")}'
             npm ci --ignore-scripts --no-audit --no-fund
             """,
@@ -835,6 +843,7 @@ public enum C02MCPSetupBuildPlan {
             callPrefix: "mcp.setup.compile.",
             command: """
             set -eu
+            . ./floe-node-env.sh
             node -e 'const [a,b]=process.versions.node.split(".").map(Number); if(a<20||(a===20&&b<19)){throw new Error("Node 20.19 or newer is required")}'
             npm run build
             """,
@@ -845,6 +854,7 @@ public enum C02MCPSetupBuildPlan {
             callPrefix: "mcp.setup.test.",
             command: """
             set -eu
+            . ./floe-node-env.sh
             node -e 'const [a,b]=process.versions.node.split(".").map(Number); if(a<20||(a===20&&b<19)){throw new Error("Node 20.19 or newer is required")}'
             node --test tests/http.test.mjs
             """,
@@ -1018,6 +1028,38 @@ public enum C02MCPSetupWorkspaceStager {
         FloeDigest.sha256Hex(Data(root.standardizedFileURL.path.utf8))
     }
 
+    /// Adds only the App-owned adapter files to an owned existing record.
+    /// Existing user source, dependencies, Node installations and data stay intact.
+    public static func ensureGuestAdapters(projectRoot: URL, relativePath: String, recordID: UUID) throws {
+        guard relativePath == C02MCPSetupLimits.serviceDirectoryName + "/" + recordID.uuidString.lowercased() else {
+            throw C02MCPSetupFailure(.templateDestinationUnsafe, message: "The MCP workspace changed.")
+        }
+        let directory = try WorkspacePathGuard(rootURL: projectRoot).resolve(relativePath)
+        try writeGuestAdapters(directory: directory, recordID: recordID)
+    }
+
+    private static func writeGuestAdapters(directory: URL, recordID: UUID) throws {
+        guard try marker(at: directory)?.recordID == recordID else {
+            throw C02MCPSetupFailure(.templateDestinationUnsafe, message: "The MCP workspace owner changed.")
+        }
+        let paths = WorkspacePathGuard(rootURL: directory)
+        for (name, content) in [
+            (C02MCPSetupLimits.nodeEnvironmentName, C02MCPNodePrerequisites.environment),
+            (C02MCPSetupLimits.shellLauncherName, C02MCPNodePrerequisites.launcher),
+        ] {
+            let target = try paths.resolve("node-http/" + name)
+            let bytes = Data(content.utf8)
+            if isPresent(target) {
+                guard (try? Data(contentsOf: target)) == bytes else {
+                    throw C02MCPSetupFailure(.templateChanged, message: "The MCP runtime adapter was modified.")
+                }
+            } else {
+                try bytes.write(to: target, options: .atomic)
+                try setMode(0o600, at: target)
+            }
+        }
+    }
+
     public static func prepare(recordID: UUID,
                                projectRoot: URL,
                                archive: Data) throws -> C02MCPSetupWorkspace {
@@ -1039,6 +1081,7 @@ public enum C02MCPSetupWorkspaceStager {
                                          message: "A different MCP service already occupies this record's project directory.",
                                          retryable: false)
             }
+            try writeGuestAdapters(directory: finalURL, recordID: recordID)
             try C02MCPSetupTemplateIdentity.verifyExtracted(root: finalURL)
             return C02MCPSetupWorkspace(
                 projectRootIdentity: projectRootIdentity(root),
@@ -1073,6 +1116,7 @@ public enum C02MCPSetupWorkspaceStager {
             let markerBytes = try JSONEncoder().encode(C02MCPSetupMarker(recordID: recordID))
             try markerBytes.write(to: stagingURL.appendingPathComponent(C02MCPSetupLimits.markerName),
                                   options: .atomic)
+            try writeGuestAdapters(directory: stagingURL, recordID: recordID)
             try C02MCPSetupTemplateIdentity.verifyExtracted(root: stagingURL)
         } catch {
             try? FileManager.default.removeItem(at: stagingURL)
@@ -2670,6 +2714,8 @@ public actor C02MCPSetupCenter {
                                      retryable: false)
         }
         var binding = try await resolveBinding(record)
+        try C02MCPSetupWorkspaceStager.ensureGuestAdapters(
+            projectRoot: binding.rootURL, relativePath: binding.workspaceRelativePath, recordID: record.id)
         if let revision = try await dependencies.commands.prepare(
             binding: binding, expectedProjectRevision: record.projectRevision ?? "") {
             // Only the provider's own CAS assignment may advance this token.
