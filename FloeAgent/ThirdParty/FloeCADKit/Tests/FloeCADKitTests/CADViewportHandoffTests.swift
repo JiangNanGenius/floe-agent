@@ -90,6 +90,63 @@ final class CADViewportHandoffTests: XCTestCase {
         XCTAssertNotNil(model.cameraControl?.worldToScreenPoint(.zero))
     }
 
+    func testReplacedUIViewKeepsRendererCameraAndOnlyOneSetOfGestures() async throws {
+        let document = try await makeDocument("Replacement")
+        defer { document.close() }
+        addCube(document)
+        let model = document.viewModel()
+        let coordinator = ViewportCoordinator(viewModel: model)
+        let sizing = CADViewportMTKView(frame: .zero)
+        sizing.coordinator = coordinator
+        coordinator.attach(to: sizing)
+        let renderer = try XCTUnwrap(coordinator.renderer)
+        renderer.camera.distance = 77
+        renderer.camera.target = SIMD3(1, 2, 3)
+        let camera = renderer.camera
+        let originalGestureCount = sizing.gestureRecognizers?.count
+        XCTAssertEqual(originalGestureCount, 7)
+
+        let replacement = CADViewportMTKView(frame: CGRect(x: 0, y: 0, width: 400, height: 300))
+        replacement.coordinator = coordinator
+        coordinator.updateViewport(to: replacement)
+        XCTAssertTrue(coordinator.renderer === renderer)
+        XCTAssertTrue(replacement.delegate === renderer)
+        XCTAssertNil(sizing.delegate)
+        XCTAssertTrue(sizing.gestureRecognizers?.isEmpty ?? true)
+        XCTAssertFalse(sizing.interactions.contains { $0 is UIPencilInteraction })
+        XCTAssertEqual(renderer.camera, camera)
+        XCTAssertNotNil(model.cameraControl?.worldToScreenPoint(.zero))
+
+        // Repeated updates do not duplicate input; a dismantle delivered for
+        // the old UIView cannot hand off or reset the active renderer.
+        coordinator.updateViewport(to: replacement)
+        ViewportView.dismantleUIView(sizing, coordinator: coordinator)
+        XCTAssertTrue(model.cameraControl === coordinator)
+        XCTAssertEqual(replacement.gestureRecognizers?.count, originalGestureCount)
+        XCTAssertEqual(replacement.interactions.filter { $0 is UIPencilInteraction }.count, 1)
+        XCTAssertEqual(renderer.camera, camera)
+
+        guard let scene = UIApplication.shared.connectedScenes.compactMap({ $0 as? UIWindowScene }).first else {
+            return XCTFail("App test host must provide a window scene")
+        }
+        let window = UIWindow(windowScene: scene)
+        let controller = UIViewController()
+        window.rootViewController = controller
+        window.isHidden = false
+        defer { window.isHidden = true; window.rootViewController = nil }
+        controller.view.addSubview(replacement)
+        XCTAssertNotNil(replacement.window)
+
+        let unusedMeasurement = CADViewportMTKView(frame: .zero)
+        coordinator.attach(to: unusedMeasurement)
+        coordinator.updateViewport(to: unusedMeasurement)
+        XCTAssertTrue(replacement.delegate === renderer,
+            "A detached measurement cannot displace the mounted view")
+        XCTAssertNil(unusedMeasurement.delegate)
+        XCTAssertEqual(renderer.camera, camera)
+        XCTAssertNotNil(model.cameraControl?.worldToScreenPoint(.zero))
+    }
+
     func testFullscreenStartsAtPresenterCameraAndHandsBack() async throws {
         let document = try await makeDocument("Handoff")
         defer { document.close() }

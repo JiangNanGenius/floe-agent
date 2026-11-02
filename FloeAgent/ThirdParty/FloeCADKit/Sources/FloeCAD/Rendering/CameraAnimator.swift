@@ -34,6 +34,11 @@ final class CameraAnimator {
         self.view = view
     }
 
+    /// Continue an in-flight camera move when SwiftUI replaces its UIView.
+    func updateViewport(to view: MTKView) {
+        self.view = view
+    }
+
     func animate(to camera: TurntableCamera, duration: CFTimeInterval = 0.35) {
         guard let renderer else { return }
         displayLink?.invalidate()

@@ -48,6 +48,7 @@ struct ViewportView: UIViewRepresentable {
         #if DEBUG
         context.coordinator.projectionQualificationUpdatedView = view
         #endif
+        context.coordinator.updateViewport(to: view)
         context.coordinator.sceneDidChange()
         context.coordinator.setPalette(frame: paletteFrame, onRight: paletteOnRight)
     }
@@ -59,7 +60,7 @@ struct ViewportView: UIViewRepresentable {
     /// viewport: the camera lives on a per-renderer value, so continuity is an
     /// explicit copy, never a re-attach or a re-fit. (T7W)
     static func dismantleUIView(_ view: MTKView, coordinator: ViewportCoordinator) {
-        coordinator.viewportDidLeaveWindow()
+        coordinator.viewportDidLeaveWindow(view: view)
     }
 }
 
@@ -79,9 +80,9 @@ final class CADViewportMTKView: MTKView {
         // `newWindow` is the incoming window; `self.window` still reports the
         // old one here, so the coordinator must be told which is current.
         if newWindow != nil {
-            coordinator?.viewportDidEnterWindow()
+            coordinator?.viewportDidEnterWindow(view: self)
         } else {
-            coordinator?.viewportDidLeaveWindow()
+            coordinator?.viewportDidLeaveWindow(view: self)
         }
     }
 }
@@ -146,7 +147,10 @@ final class ViewportCoordinator: NSObject, ViewportGestureDelegate, ViewportCame
     /// visible viewport showed instead of re-fitting its own. Called from
     /// `CADViewportMTKView.willMove(toWindow:)`; tests may call it directly.
     /// (T7W)
-    func viewportDidEnterWindow() {
+    func viewportDidEnterWindow(view incomingView: MTKView? = nil) {
+        if let incomingView, incomingView !== view, let renderer {
+            install(renderer, in: incomingView)
+        }
         guard let renderer else { return }
         if let current = viewModel.cameraControl as? ViewportCoordinator,
            current !== self, let currentRenderer = current.renderer {
@@ -166,7 +170,10 @@ final class ViewportCoordinator: NSObject, ViewportGestureDelegate, ViewportCame
     /// a close-time thumbnail still needs a renderer. Called from
     /// `CADViewportMTKView.willMove(toWindow:)` and `dismantleUIView`; the
     /// second call is a no-op. (T7W)
-    func viewportDidLeaveWindow() {
+    func viewportDidLeaveWindow(view departingView: MTKView? = nil) {
+        // A representable can replace its UIView while keeping its coordinator.
+        // A late exit/dismantle from the old view cannot release the new one.
+        if let departingView, departingView !== view { return }
         if let id = sketchDragGestureID { _ = viewModel.cancelSketchDragGesture(id) }
         sketchDragGestureID = nil
         viewportDragID = nil
@@ -204,6 +211,16 @@ final class ViewportCoordinator: NSObject, ViewportGestureDelegate, ViewportCame
     }
 
     func attach(to view: MTKView) {
+        if let renderer {
+            // SwiftUI may ask one coordinator to make more than one UIView.
+            // Reuse the camera/GPU state instead of leaving the mounted view
+            // with a weak delegate to an already-replaced renderer. An
+            // offscreen measurement view cannot displace an on-screen view.
+            if self.view?.window == nil || view.window != nil {
+                install(renderer, in: view)
+            }
+            return
+        }
         guard let context = RenderContext() else {
             // Never crash or render blank silently: a Metal/shader failure is
             // surfaced through the editor's recoverable alert; the document is
@@ -212,7 +229,6 @@ final class ViewportCoordinator: NSObject, ViewportGestureDelegate, ViewportCame
             viewModel.errorMessage = CADViewportStartupError.message + detail
             return
         }
-        context.configure(view: view)
         #if DEBUG
         OpenTiming.mark("render context ready")
         #endif
@@ -221,11 +237,8 @@ final class ViewportCoordinator: NSObject, ViewportGestureDelegate, ViewportCame
         #if DEBUG
         OpenTiming.mark("renderer + scene built")
         #endif
-        view.delegate = renderer
         self.renderer = renderer
-        self.view = view
-        cameraAnimator = CameraAnimator(renderer: renderer, view: view)
-        gestures.attach(to: view, renderer: renderer)
+        install(renderer, in: view)
         #if DEBUG
         OpenTiming.mark("viewport attached")
         #endif
@@ -274,6 +287,34 @@ final class ViewportCoordinator: NSObject, ViewportGestureDelegate, ViewportCame
             self?.cameraDidMove()
         }
         cameraDidMove()
+    }
+
+    /// Reconcile the actual UIView delivered to updateUIView with the view
+    /// retained by this coordinator. On-screen updates win over detached
+    /// sizing views; a repeat update is deliberately a no-op.
+    func updateViewport(to view: MTKView) {
+        guard self.view !== view else { return }
+        attach(to: view)
+    }
+
+    private func install(_ renderer: Renderer, in view: MTKView) {
+        guard self.view !== view else { return }
+        if let previous = self.view, previous.delegate === renderer {
+            previous.delegate = nil
+        }
+        renderer.context.configure(view: view)
+        self.view = view
+        view.delegate = renderer
+        if let cameraAnimator {
+            cameraAnimator.updateViewport(to: view)
+        } else {
+            cameraAnimator = CameraAnimator(renderer: renderer, view: view)
+        }
+        gestures.attach(to: view, renderer: renderer)
+        updateSafeArea()
+        refitIfStillOpening()
+        cameraDidMove()
+        view.setNeedsDisplay()
     }
 
     func sceneDidChange() {

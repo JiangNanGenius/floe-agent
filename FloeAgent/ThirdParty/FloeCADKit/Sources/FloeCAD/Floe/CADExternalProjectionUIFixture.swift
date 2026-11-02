@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 // DEBUG-only starting document and live readback for the shipped Project tool.
-#if DEBUG && canImport(SwiftUI)
+#if DEBUG && canImport(SwiftUI) && canImport(UIKit)
 import Foundation
 import SwiftUI
 import simd

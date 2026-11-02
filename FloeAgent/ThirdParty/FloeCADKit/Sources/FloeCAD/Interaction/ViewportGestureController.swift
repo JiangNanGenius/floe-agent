@@ -67,8 +67,17 @@ final class ViewportGestureController: NSObject {
     /// Where the one-finger touch actually LANDED, captured in shouldReceive
     /// before the pan recognizer has moved its threshold. See `handleOrbit`.
     private var orbitTouchDown: CGPoint?
+    private var ownedRecognizers: [UIGestureRecognizer] = []
+    private var pencilInteraction: UIPencilInteraction?
 
     func attach(to view: MTKView, renderer: Renderer) {
+        if self.view === view { self.renderer = renderer; return }
+        if let previous = self.view {
+            for recognizer in ownedRecognizers { previous.removeGestureRecognizer(recognizer) }
+            if let pencilInteraction { previous.removeInteraction(pencilInteraction) }
+        }
+        ownedRecognizers.removeAll()
+        pencilInteraction = nil
         self.view = view
         self.renderer = renderer
 
@@ -119,6 +128,8 @@ final class ViewportGestureController: NSObject {
         let pencil = UIPencilInteraction()
         pencil.delegate = self
         view.addInteraction(pencil)
+        ownedRecognizers = [orbit, twoFingerPan, pinch, doubleTap, tap, longPress, hover]
+        pencilInteraction = pencil
     }
 
     private func redraw() {

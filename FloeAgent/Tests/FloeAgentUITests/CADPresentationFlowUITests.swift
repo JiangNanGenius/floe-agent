@@ -2035,7 +2035,7 @@ final class CADExternalProjectionNativeFlowUITests: XCTestCase {
         let values = text.label.split(separator: ",").compactMap { Double($0) }
         XCTAssertEqual(values.count, 2, text.label)
         guard values.count == 2 else { return }
-        let viewport = element(app, "CADProjectionViewport")
+        let viewport = element(app, "CADEditorViewport")
         XCTAssertTrue(viewport.exists && viewport.frame.width > 0)
         XCTAssertGreaterThan(values[0], 0); XCTAssertGreaterThan(values[1], 0)
         XCTAssertLessThan(values[0], Double(viewport.frame.width))
