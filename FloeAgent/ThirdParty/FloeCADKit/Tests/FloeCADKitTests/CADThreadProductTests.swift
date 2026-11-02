@@ -218,12 +218,22 @@ final class CADThreadProductTests: XCTestCase {
         let old = try XCTUnwrap(f.document.session.inputBody(for: id, bodyID: f.bodyID)?.brep)
         let normal = f.cylinder.axis
         for z in [0.5, 10.0] {
-            let origin = f.cylinder.origin + normal * z
+            // z is distance from the beginning of the selected cylinder,
+            // not its arbitrary analytic surface origin (which may be at
+            // the OTHER end with a negative parameter interval).
+            let coordinate = f.cylinder.lower + z
+            XCTAssertGreaterThan(coordinate, f.cylinder.lower)
+            XCTAssertLessThan(coordinate, f.cylinder.upper)
+            let origin = f.cylinder.origin + normal * coordinate
             let before = OCCTKernel.sectionPolylines(old, origin: origin, normal: normal, deflection: 0.001).flatMap { $0 }
             let after = OCCTKernel.sectionPolylines(try shape(f), origin: origin, normal: normal, deflection: 0.001).flatMap { $0 }
             XCTAssertFalse(before.isEmpty); XCTAssertFalse(after.isEmpty)
             XCTAssertEqual(after.map { simd_length($0 - origin) }.max() ?? 0,
                            before.map { simd_length($0 - origin) }.max() ?? 0, accuracy: 0.001)
+            // A threaded section still has the same maximum radius. The
+            // minimum also must match to prove the entire ring is uncut.
+            XCTAssertEqual(after.map { simd_length($0 - origin) }.min() ?? 0,
+                           before.map { simd_length($0 - origin) }.min() ?? 0, accuracy: 0.001)
         }
     }
     func testSchematicPreservesOriginalBodyAndIsExplicitInQueries() async throws {
