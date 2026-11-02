@@ -560,8 +560,9 @@ internal class AppUpdateInstaller(
     /** Only a visible user click may launch this intent. */
     fun consumeConfirmation(): Intent? {
         val current = mutable.value as? AppInstallState.Confirming ?: return null
-        mutable.value = AppInstallState.AwaitingSystem(current.sessionID)
-        return current.intent
+        return if (mutable.compareAndSet(current, AppInstallState.AwaitingSystem(current.sessionID))) {
+            current.intent
+        } else null
     }
 
     /**
@@ -569,10 +570,13 @@ internal class AppUpdateInstaller(
      * still exists and still blocks a duplicate commit; the explicit recovery
      * is "cancel install" followed by a retry from the same verified APK.
      */
-    fun onConfirmationUnavailable() {
-        if (mutable.value is AppInstallState.Confirming) {
-            mutable.value = AppInstallState.Failed(InstallFailure.SYSTEM, "confirmation-unavailable")
-        }
+    fun onConfirmationUnavailable(sessionID: Int) {
+        // consumeConfirmation has already advanced to AwaitingSystem. Match
+        // the exact launch so a late failure cannot erase a newer callback.
+        mutable.compareAndSet(
+            AppInstallState.AwaitingSystem(sessionID),
+            AppInstallState.Failed(InstallFailure.SYSTEM, "confirmation-unavailable"),
+        )
     }
 
     fun dismissFailure() {
@@ -739,8 +743,15 @@ internal class AppUpdateInstaller(
                 session.commit(callback.intentSender)
                 committed = true
             } catch (failure: Exception) {
-                mutable.value = AppInstallState.Failed(InstallFailure.SYSTEM, "commit-unknown")
+                mutable.compareAndSet(
+                    AppInstallState.Committing,
+                    AppInstallState.Failed(InstallFailure.SYSTEM, "commit-unknown"),
+                )
                 return
+            } finally {
+                // Closing the handle does not abandon a committed/ambiguous
+                // system session; retain its durable ownership record.
+                runCatching { session.close() }
             }
         } catch (failure: Exception) {
             // Only pre-commit work reaches here (commit has its own handling).
@@ -752,9 +763,10 @@ internal class AppUpdateInstaller(
             mutable.value = AppInstallState.Failed(InstallFailure.SYSTEM, "session-commit")
             return
         }
-        if (committed) runCatching { session.close() }
         permissionPending = null
-        mutable.value = AppInstallState.AwaitingSystem(sessionID)
+        // A fast receiver may have delivered confirmation or completion while
+        // commit was returning. Never overwrite that authoritative callback.
+        mutable.compareAndSet(AppInstallState.Committing, AppInstallState.AwaitingSystem(sessionID))
     }
 
     private fun handleEvent(event: InstallEvent) {

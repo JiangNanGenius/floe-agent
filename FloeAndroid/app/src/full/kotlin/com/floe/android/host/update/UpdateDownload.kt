@@ -469,7 +469,14 @@ internal class UpdateDownloader(
             runWriter(owner, initial, release)
         }
         owner.job = job
-        synchronized(writerLock) { writer = owner }
+        synchronized(writerLock) {
+            writer = owner
+            // Publish before checksum/base/network IO. The button responds
+            // immediately and duplicate starts cannot replace a preparing writer.
+            mutable.value = AppDownloadState.InProgress(
+                initial.versionName, initial.receivedBytes, initial.totalBytes,
+            )
+        }
         job.start()
     }
 
@@ -522,6 +529,7 @@ internal class UpdateDownloader(
     private suspend fun stageAndDownload(owner: Writer, initial: DownloadMeta, release: AndroidRelease?) {
         checkCancelled(owner)
         var working = initial
+        persist(owner, working)
         prepareStaging(working)
         checkCancelled(owner)
         checkDisk(working)

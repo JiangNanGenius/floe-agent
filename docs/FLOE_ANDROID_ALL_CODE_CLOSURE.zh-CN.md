@@ -285,3 +285,10 @@ An explicit Notes action now creates an ordinary task through the existing conve
 当前验证事实：新增 Swift 源码语法检查通过，中英文资源281项名称一致，新增任务／运行隔离回归源码尚未运行。主协调者尝试一次集成模块定向编译，先修复原构建脚本的 MessageDigest 名称遮蔽；后续同项检查停在真实依赖解析，Haze 1.7.3 尚未缓存、Activity 与旧锁文件约束冲突，集成模块 Kotlin 尚未编译通过。保留两次原日志，锁文件未手改、组件未降级；待全代码收口时由真实解析器统一生成和核对依赖。
 
 尚未完成：MCP 新环境的 Node/npm 自动依赖准备核对、活动 Linux 会话中新文件传递、手记封面／阅读模式、183项剩余对账、最终 Swift/Kotlin/原生生产与同源 APK／设备验收。不能从上述源码增量推断这些项目已通过，也没有发布新 Release。
+
+
+## 2026-11-02: updater fallback and integrated compilation
+
+Removed duplicate default-delta dispatch from the foreground download service. The controller owns the exact user choice (delta, explicit full fallback or resume); the service only hosts its lifecycle. Preparation publishes progress before checksum/base/network work. The selected release survives later feed refresh/failure. Installer commit uses compare-and-set so an early system callback is not overwritten; confirmation-launch failure is tied to its original session, retaining durable ownership until explicit recovery.
+
+Actual production download-source host tests passed 69 cases, including corrupt-delta reconstruction followed by verified full bytes and no duplicate writer during preparation. This does not prove real APK signature/installation/UI/device behavior. Integrated App compilation reached application sources and exposed cross-batch integration errors now under repair. No qualified new APK or Release exists. Resolver-generated dependency candidates still need review; no new dependency metadata is selected in this source checkpoint.

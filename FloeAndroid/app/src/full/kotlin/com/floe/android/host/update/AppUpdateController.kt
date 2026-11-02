@@ -163,20 +163,28 @@ internal class AppUpdateController private constructor(
         refresh()
     }
 
+    @Volatile private var downloadRelease: AndroidRelease? = null
+
     fun startDownload() {
         val available = checkController.state.value as? AppCheckState.UpdateAvailable ?: return
-        startDownloadService()
+        downloadRelease = available.release
         // The visible user tap is the consent for this transfer (metered or
         // not); nothing in the updater downloads without such a tap.
         downloader.start(available.release, allowDelta = true)
+        startDownloadService()
         refresh()
     }
 
     /** Explicit fallback after a delta was refused or failed. */
     fun startFullDownload() {
-        val available = checkController.state.value as? AppCheckState.UpdateAvailable ?: return
+        // Keep the user-selected release across foreground feed refreshes. A
+        // failed/rechecking feed must not make the visible fallback button inert.
+        val release = downloadRelease
+            ?: (checkController.state.value as? AppCheckState.UpdateAvailable)?.release
+            ?: return
+        downloadRelease = release
+        downloader.startFull(release)
         startDownloadService()
-        downloader.startFull(available.release)
         refresh()
     }
 
@@ -228,8 +236,8 @@ internal class AppUpdateController private constructor(
     }
 
     /** The system confirmation intent could not be launched. */
-    fun onConfirmationUnavailable() {
-        installer.onConfirmationUnavailable()
+    fun onConfirmationUnavailable(sessionID: Int) {
+        installer.onConfirmationUnavailable(sessionID)
         refresh()
     }
 
@@ -281,12 +289,6 @@ internal class AppUpdateController private constructor(
     /** Re-open the dialog after the user minimized it (settings entry). */
     fun showDialog() {
         suppressed = false
-        refresh()
-    }
-
-    fun startDownloadWork() {
-        val available = checkController.state.value as? AppCheckState.UpdateAvailable
-        if (available != null) downloader.start(available.release) else downloader.resume()
         refresh()
     }
 
@@ -425,10 +427,9 @@ class AppUpdateDownloadService : Service() {
             stopNow()
             return START_NOT_STICKY
         }
-        when (intent?.action) {
-            ACTION_START -> controller.startDownloadWork()
-            else -> Unit
-        }
+        // The controller already submitted the exact user choice (delta,
+        // full fallback or resume). This service only hosts that work: starting
+        // a default transfer here could cancel a full fallback and retry delta.
         observe(controller)
         return START_NOT_STICKY
     }
