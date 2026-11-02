@@ -4089,7 +4089,7 @@ public final class CADParameterService {
              let .rotateFace(face, _, _), let .draftFace(face, _, _, _),
              let .replaceFace(face, _, _, _):
             return [face.body.bodyID]
-        case .primitive, .mirror, .pattern:
+        case .primitive, .baseSolid, .mirror, .pattern:
             return []
         }
     }
@@ -4526,6 +4526,11 @@ public final class CADParameterService {
         }
 
         switch node.kind {
+        case let .baseSolid(source):
+            kindName = "importedSolid"
+            add("source_sha256", "unitless", source.sha256, editable: false)
+            add("source_bytes", "bytes", source.byteCount, editable: false)
+            vector("placement_translation", source.placement.translation, "mm")
         case let .primitive(spec, placement):
             kindName = "primitive"
             switch spec {
@@ -4670,9 +4675,13 @@ public final class CADParameterService {
                 add("axis_id", "unitless", NSNull(),
                     note: "No construction axis; set an axis id to drive this pattern.")
             }
-        case let .pushPull(_, distance, _):
+        case let .pushPull(_, distance, mode):
             kindName = "pushPull"
-            add("distance", "mm", distance.value)
+            add("mode", "unitless", mode == .cylinderRadial ? "cylinderRadial" : "planarAxial", editable: false)
+            add("distance", "mm", distance.value,
+                note: mode == .cylinderRadial
+                    ? "Signed radius change in body-local millimetres, not a diameter or replacement radius."
+                    : "Signed distance along the selected face normal.")
             unit = "mm"
         case let .moveFace(_, delta):
             kindName = "moveFace"
@@ -4784,7 +4793,11 @@ public final class CADParameterService {
             "variable_references": Array(Set(
                 expressionSlots.flatMap(\.formulaReferences))).sorted(),
         ]
-        if let data = try? JSONEncoder().encode(node.kind),
+        if case let .baseSolid(source) = node.kind {
+            // Original BRep bytes are immutable storage, not model context.
+            row["definition"] = ["baseSolid": ["version": source.version,
+                "name": source.name, "sha256": source.sha256, "bytes": source.byteCount]]
+        } else if let data = try? JSONEncoder().encode(node.kind),
            let definition = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] {
             row["definition"] = definition
         }
@@ -4828,7 +4841,7 @@ public final class CADParameterService {
              let .fillet(body, _, _), let .shell(body, _, _),
              let .deleteFace(body, _):
             return [body]
-        case .primitive,
+        case .primitive, .baseSolid,
              .pushPull, .moveFace, .scaleFace, .rotateFace, .draftFace, .replaceFace:
             return []
         }

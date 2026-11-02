@@ -508,6 +508,7 @@ final class CADCommandExecutor {
                              openFaces: openFaces, on: viewModel)
 
         case let .pushPull(bodyID, face, distance, radial):
+            if radial { return execRadialOffset(body: bodyID, face: face, distance: distance, on: viewModel) }
             return execSingleFace(body: bodyID, face: face, name: "Push/Pull",
                                   on: viewModel) { ref in
                 .pushPull(face: ref, distance: Expr(value: distance),
@@ -571,7 +572,7 @@ final class CADCommandExecutor {
     /// success: a feature that lands in History but produces no body is exactly
     /// the "silent no-op" failure this bridge exists to make visible.
     private func record(_ node: FeatureNode, on viewModel: EditorViewModel,
-                        details: [String: Any] = [:]) -> AgentResponse {
+                        details: [String: Any] = [:], prefix: [FeatureNode] = []) -> AgentResponse {
         let session = viewModel.session
         // Revisions, not just ids. A boolean REPLACES its target in place, so it
         // adds no new body — reporting "produced nothing" on a subtract that had
@@ -588,7 +589,7 @@ final class CADCommandExecutor {
         // undo of a feature that built reverted only its rebuild, leaving the
         // node in History over the old bodies.
         let checkpoint = session.captureEditCheckpoint()
-        session.recordAndRebuild([node], title: node.name)
+        session.recordAndRebuild(prefix + [node], title: node.name)
 
         var produced: [BodyID] = []
         var changed: [BodyID] = []
@@ -1246,6 +1247,49 @@ final class CADCommandExecutor {
     /// one kernel face index, and record a node the `kind` closure builds from
     /// it. Same face-minting as delete/replace-face; `outputBodyIDs:[bodyID]`
     /// because these modify the body in place.
+    private func execRadialOffset(body bodyID: BodyID, face: Int, distance: Double,
+                                  on viewModel: EditorViewModel) -> AgentResponse {
+        let session = viewModel.session
+        let body: Body, solid: BRepHandle
+        switch identityContext(bodyID, session) {
+        case let .ok(found, handle): body = found; solid = handle
+        case let .reply(reply): return reply
+        }
+        guard let info = OCCTKernel.faceInfo(solid).first(where: { $0.index == face }),
+              let signature = info.signature, case let .cylindrical(radius) = signature.kind,
+              distance.isFinite, abs(distance) > 1e-9, radius + distance > 1e-7 else {
+            return .failure(422, "Unprocessable Entity", error: "bad_radial_offset",
+                message: "Select an existing cylindrical face and a non-zero offset that keeps its radius positive.")
+        }
+        var prefix: [FeatureNode] = []
+        let reference: BodyRef
+        let name: ElementName?
+        if let owner = session.document.features.nodes.last(where: { $0.outputBodyIDs.contains(bodyID) }) {
+            reference = BodyRef(producer: owner.id, bodyID: bodyID)
+            name = freshNames(for: body, session)[face]
+        } else {
+            do {
+                let source = try NativeBodySource(capturing: body)
+                let base = FeatureNode(name: FloeCADStrings.text("cad.feature.importedBody", "Imported body"),
+                    kind: .baseSolid(source: source), outputBodyIDs: [bodyID])
+                prefix = [base]
+                reference = BodyRef(producer: base.id, bodyID: bodyID)
+                name = ElementName(creator: base.id,
+                    source: .immutableSourceFace(version: 1, sha256: source.sha256, index: face))
+            } catch {
+                return .failure(422, "Unprocessable Entity", error: "source_preservation_failed",
+                    message: error.localizedDescription)
+            }
+        }
+        let ref = FaceRef(body: reference, creator: name?.creator ?? reference.producer,
+            role: .derived(index: face), signature: signature, elementName: name)
+        return record(FeatureNode(name: FloeCADStrings.text("cad.feature.radialOffset", "Radial offset"),
+            kind: .pushPull(face: ref, distance: Expr(value: distance), mode: .cylinderRadial),
+            outputBodyIDs: [bodyID]), on: viewModel,
+            details: ["mode": "cylinderRadial", "radialOffsetMM": distance,
+                "importSourceCaptured": !prefix.isEmpty], prefix: prefix)
+    }
+
     private func execSingleFace(body bodyID: BodyID, face: Int, name: String,
                                 on viewModel: EditorViewModel,
                                 _ kind: (FaceRef) -> FeatureKind) -> AgentResponse {

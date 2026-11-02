@@ -424,6 +424,18 @@ typedef NS_ENUM(NSInteger, OCCTOpCode) {
                                         status:(nullable OCCTOpStatus *)status
     NS_SWIFT_NAME(pushedPlanarFace(of:atPointX:y:z:normalX:normalY:normalZ:distance:tolerance:status:));
 
+/// Change the radius of ONE actual analytic cylinder, keeping its neighboring
+/// surfaces and a closed exact solid. Positive distance increases the radius
+/// for both an outer wall and a bore; no mesh or whole-cylinder replacement.
+/// The input is copied before offsetting, so undo/source handles stay immutable.
++ (nullable OCCTShape *)radiallyOffsetFaceOfShape:(OCCTShape *)shape
+                                           index:(NSInteger)index
+                                        distance:(double)distance
+                                       tolerance:(double)tolerance
+                                          status:(nullable OCCTOpStatus *)status
+                                         history:(nullable OCCTShapeHistory *)history
+    NS_SWIFT_NAME(radiallyOffsetFace(of:index:distance:tolerance:status:history:));
+
 /// Remove the faces nearest `worldPoints` and heal the result
 /// (`BRepAlgoAPI_Defeaturing`) — spec §4.16 Delete Face. A face counts as picked
 /// when a sample on it lies within `tolerance` of a point. Nil when nothing

@@ -1538,6 +1538,36 @@ nonisolated extension KernelOps {
         return try exactPushPull(body: body, face: face, distance: distance, revision: revision)
     }
 
+    /// A picked display region must correspond to exactly one current native
+    /// face. Never use a majority vote to move only part of a grouped wall.
+    static func radialFaceIndex(body: Body, triangles: [Int]) throws -> Int {
+        guard let solid = body.brep, !triangles.isEmpty else { throw ExactEditError.refused }
+        let render = OCCTKernel.renderMesh(from: solid)
+        guard render.positions == body.render.positions, render.indices == body.render.indices else {
+            throw ExactEditError.refused
+        }
+        let channel = OCCTKernel.renderMeshFaceChannel(from: solid)
+        guard triangles.allSatisfy({ $0 >= 0 && $0 < channel.count }) else { throw ExactEditError.refused }
+        let indices = Set(triangles.map { channel[$0] })
+        guard indices.count == 1, let index = indices.first, index > 0 else { throw ExactEditError.refused }
+        return Int(index)
+    }
+
+    /// Face index and delta are native body-local values. C++ verifies the
+    /// requested analytic radius, solid validity, volume direction and ancestry.
+    static func exactRadialOffset(body: Body, faceIndex: Int, distance: Double,
+                                  revision: UInt64) throws -> (Body, ShapeAncestry) {
+        guard let solid = body.brep, distance.isFinite else { throw ExactEditError.refused }
+        let status = OCCTOpStatus(), history = OCCTShapeHistory()
+        guard let shape = OCCTBridge.radiallyOffsetFace(of: solid.shape, index: faceIndex,
+            distance: distance, tolerance: OCCTKernel.matchTolerance(for: solid), status: status, history: history),
+              status.code.rawValue == 0 else { throw OCCTOpError(status) }
+        var result = Body(id: body.id, name: body.name, transform: body.transform, primitive: nil,
+            render: body.render, revision: revision)
+        guard result.adoptBRep(BRepHandle(shape)) else { throw ExactEditError.refused }
+        return (result.keepingAppearance(of: body), ShapeAncestry(history))
+    }
+
     /// Returns world-space exact halves. Callers commit both atomically only
     /// after both OCCT results and their render meshes have been validated.
     static func exactSplit(body: Body, plane: SketchPlane, profile: Profile? = nil,

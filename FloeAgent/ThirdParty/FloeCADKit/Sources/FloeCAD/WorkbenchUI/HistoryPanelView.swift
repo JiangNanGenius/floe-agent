@@ -138,7 +138,7 @@ struct HistoryPanelView: View {
     private func iconName(for id: FeatureID) -> String {
         guard let node = viewModel.session.document.features.node(id) else { return "gearshape" }
         switch node.kind {
-        case .primitive: return "cube"
+        case .primitive, .baseSolid: return "cube"
         case .extrude: return "square.stack.3d.up"
         case .draftExtrude: return "square.stack.3d.up.trianglebadge.exclamationmark"
         case .boolean: return "circle.lefthalf.filled"

@@ -59,10 +59,12 @@ nonisolated enum ProjectMergeKit {
             || guest.sketches.contains { $0.support != nil }
             || guest.axes.contains { $0.definition != nil }
             || guest.datumPoints.contains { $0.definition != nil }
+            || guest.features.nodes.contains { if case .baseSolid = $0.kind { return true }; return false }
         let hostAssociative = host.planes.contains { $0.definition != nil }
             || host.sketches.contains { $0.support != nil }
             || host.axes.contains { $0.definition != nil }
             || host.datumPoints.contains { $0.definition != nil }
+            || host.features.nodes.contains { if case .baseSolid = $0.kind { return true }; return false }
         // One ordered rollback prefix cannot represent two independently
         // active histories. In particular, adding the guest count to a host
         // marker would activate the host's formerly rolled-back suffix.
@@ -255,12 +257,48 @@ nonisolated enum ProjectMergeKit {
         var axes = [ConstructionAxisID: ConstructionAxisID]()
         var datumPoints = [DatumPointID: DatumPointID]()
         var entities = [UUID: UUID]()
+        private var localFramesBefore: [FeatureID: Set<BodyID>] = [:]
+        private var localFramesAfter: [FeatureID: Set<BodyID>] = [:]
+        private var activeFeature: FeatureID?
 
         let rejectUnknownReferences: Bool
         private(set) var missingReferences = Set<String>()
 
         init(_ guest: DesignDocument, rejectUnknownReferences: Bool) {
             self.rejectUnknownReferences = rejectUnknownReferences
+            // Existing feature roots bake the insertion into geometry. An
+            // imported exact root keeps immutable body-local geometry and
+            // moves its placement instead. Track that frame through the real
+            // operation vocabulary, including a later boolean that bakes it.
+            // This path activates only for the new source kind; old projects
+            // retain their existing remapping behavior.
+            if guest.features.nodes.contains(where: { if case .baseSolid = $0.kind { return true }; return false }) {
+                var local: Set<BodyID> = []
+                for node in guest.features.nodes where !node.suppressed {
+                    localFramesBefore[node.id] = local
+                    switch node.kind {
+                    case .baseSolid:
+                        local.formUnion(node.outputBodyIDs)
+                    case .primitive, .mirror:
+                        local.subtract(node.outputBodyIDs)
+                        if case let .mirror(body, _, false) = node.kind { local.remove(body.bodyID) }
+                    case let .pattern(body, _):
+                        if local.contains(body.bodyID) { local.formUnion(node.outputBodyIDs) }
+                        else { local.subtract(node.outputBodyIDs) }
+                    case let .extrude(_, _, _, _, boolean, _, _), let .draftExtrude(_, _, _, _, _, boolean),
+                         let .revolve(_, _, _, _, boolean), let .sweep(_, _, _, boolean, _, _), let .loft(_, boolean):
+                        local.subtract(node.outputBodyIDs)
+                        if boolean.op != .newBody, let target = boolean.resolvedTargets.first { local.remove(target.bodyID) }
+                    case let .hole(target, _, _, _): local.remove(target.bodyID)
+                    case let .boolean(_, target, tools):
+                        local.remove(target.bodyID); local.subtract(tools.map(\.bodyID))
+                    case .transform, .pushPull, .moveFace, .scaleFace, .rotateFace,
+                         .draftFace, .chamfer, .fillet, .shell, .deleteFace, .replaceFace:
+                        break // each preserves the input's body-local geometry frame
+                    }
+                    localFramesAfter[node.id] = local
+                }
+            }
             for node in guest.features.nodes {
                 features[node.id] = FeatureID()
                 for id in node.outputBodyIDs { bodies[id] = BodyID() }
@@ -407,7 +445,7 @@ nonisolated enum ProjectMergeKit {
             case let .face(face):
                 return .face(FaceAxisDefinition(
                     version: face.version,
-                    source: remap(face.source, translation: translation),
+                    source: remap(face.source, translation: translation, coordinateWriter: face.sourceVersion.writer),
                     sourceVersion: GeometryVersionRef(
                         bodyID: newBody(face.sourceVersion.bodyID),
                         writer: newFeature(face.sourceVersion.writer)),
@@ -416,7 +454,7 @@ nonisolated enum ProjectMergeKit {
             case let .edge(edge):
                 return .edge(EdgeAxisDefinition(
                     version: edge.version,
-                    source: remap(edge.source, translation: translation),
+                    source: remap(edge.source, translation: translation, coordinateWriter: edge.sourceVersion.writer),
                     sourceVersion: GeometryVersionRef(
                         bodyID: newBody(edge.sourceVersion.bodyID),
                         writer: newFeature(edge.sourceVersion.writer)),
@@ -425,7 +463,7 @@ nonisolated enum ProjectMergeKit {
             case let .cylinder(cylinder):
                 return .cylinder(CylinderAxisDefinition(
                     version: cylinder.version,
-                    source: remap(cylinder.source, translation: translation),
+                    source: remap(cylinder.source, translation: translation, coordinateWriter: cylinder.sourceVersion.writer),
                     sourceVersion: GeometryVersionRef(
                         bodyID: newBody(cylinder.sourceVersion.bodyID),
                         writer: newFeature(cylinder.sourceVersion.writer))))
@@ -446,14 +484,14 @@ nonisolated enum ProjectMergeKit {
             case let .faceCenter(face):
                 return .faceCenter(FaceCenterPointDefinition(
                     version: face.version,
-                    source: remap(face.source, translation: translation),
+                    source: remap(face.source, translation: translation, coordinateWriter: face.sourceVersion.writer),
                     sourceVersion: GeometryVersionRef(
                         bodyID: newBody(face.sourceVersion.bodyID),
                         writer: newFeature(face.sourceVersion.writer))))
             case let .edgePoint(edge):
                 return .edgePoint(EdgePointDefinition(
                     version: edge.version,
-                    source: remap(edge.source, translation: translation),
+                    source: remap(edge.source, translation: translation, coordinateWriter: edge.sourceVersion.writer),
                     sourceVersion: GeometryVersionRef(
                         bodyID: newBody(edge.sourceVersion.bodyID),
                         writer: newFeature(edge.sourceVersion.writer)),
@@ -501,7 +539,10 @@ nonisolated enum ProjectMergeKit {
         }
 
         func remap(_ node: FeatureNode, translation: SIMD3<Double>) -> FeatureNode {
-            FeatureNode(
+            let previous = activeFeature
+            activeFeature = node.id
+            defer { activeFeature = previous }
+            return FeatureNode(
                 id: newFeature(node.id), name: node.name,
                 kind: remap(node.kind, translation: translation),
                 suppressed: node.suppressed,
@@ -548,22 +589,29 @@ nonisolated enum ProjectMergeKit {
             }
         }
 
-        func remap(_ ref: FaceRef, translation: SIMD3<Double>) -> FaceRef {
+        func remap(_ ref: FaceRef, translation: SIMD3<Double>, coordinateWriter: FeatureID? = nil) -> FaceRef {
             var result = ref
             result.body = remap(ref.body)
             result.creator = newFeature(ref.creator)
             result.elementName = ref.elementName.map(remap)
-            result.signature.centroid += translation
+            let locals = coordinateWriter.flatMap { localFramesAfter[$0] }
+                ?? activeFeature.flatMap { localFramesBefore[$0] }
+                ?? localFramesAfter[ref.body.producer] ?? []
+            let shift = locals.contains(ref.body.bodyID) ? SIMD3<Double>.zero : translation
+            result.signature.centroid += shift
             // The plane offset is n·centroid, so it moves with the geometry.
-            result.signature.planeOffset += simd_dot(ref.signature.normal, translation)
+            result.signature.planeOffset += simd_dot(ref.signature.normal, shift)
             return result
         }
 
-        func remap(_ ref: EdgeRef, translation: SIMD3<Double>) -> EdgeRef {
+        func remap(_ ref: EdgeRef, translation: SIMD3<Double>, coordinateWriter: FeatureID? = nil) -> EdgeRef {
             var result = ref
             result.body = remap(ref.body)
             result.faceNames = ref.faceNames.map(remap)
-            result.signature.midpoint += translation
+            let locals = coordinateWriter.flatMap { localFramesAfter[$0] }
+                ?? activeFeature.flatMap { localFramesBefore[$0] }
+                ?? localFramesAfter[ref.body.producer] ?? []
+            if !locals.contains(ref.body.bodyID) { result.signature.midpoint += translation }
             return result
         }
 
@@ -577,7 +625,7 @@ nonisolated enum ProjectMergeKit {
             case let .operationFace(version, operation, parents, neighbors):
                 source = .operationFace(version: version, operation: newFeature(operation),
                                         parents: parents.map(remap), neighbors: neighbors.map(remap))
-            case .primitiveFace, .profileCap, .kernelFace, .holeFace(_):
+            case .primitiveFace, .profileCap, .kernelFace, .immutableSourceFace, .holeFace(_):
                 source = name.source
             }
             return ElementName(creator: newFeature(name.creator), source: source)
@@ -594,7 +642,7 @@ nonisolated enum ProjectMergeKit {
             case let .offset(offset):
                 return .offset(OffsetPlaneDefinition(
                     version: offset.version,
-                    source: remap(offset.source, translation: translation),
+                    source: remap(offset.source, translation: translation, coordinateWriter: offset.sourceVersion.writer),
                     sourceVersion: GeometryVersionRef(
                         bodyID: newBody(offset.sourceVersion.bodyID),
                         writer: newFeature(offset.sourceVersion.writer)),
@@ -605,7 +653,7 @@ nonisolated enum ProjectMergeKit {
             case let .angle(angle):
                 return .angle(AnglePlaneDefinition(
                     version: angle.version,
-                    source: remap(angle.source, translation: translation),
+                    source: remap(angle.source, translation: translation, coordinateWriter: angle.sourceVersion.writer),
                     sourceVersion: GeometryVersionRef(
                         bodyID: newBody(angle.sourceVersion.bodyID),
                         writer: newFeature(angle.sourceVersion.writer)),
@@ -632,6 +680,7 @@ nonisolated enum ProjectMergeKit {
 
         func remap(_ kind: FeatureKind, translation t: SIMD3<Double>) -> FeatureKind {
             switch kind {
+            case let .baseSolid(source): return .baseSolid(source: source.translated(by: t))
             case let .primitive(spec, placement):
                 var moved = placement
                 moved.translation += t

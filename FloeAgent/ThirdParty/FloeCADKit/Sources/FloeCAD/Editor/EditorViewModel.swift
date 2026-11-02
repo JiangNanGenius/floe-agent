@@ -9617,6 +9617,11 @@ final class EditorViewModel {
             errorMessage = nil
             return current
         }
+        if end == .upToNext, context.symmetric {
+            errorMessage = FloeCADStrings.text("cad.extrude.oneSidedEnd",
+                "Up to next face uses one direction. Turn off Symmetric first.")
+            return nil
+        }
         do {
             let inputs = ExtrudeEndDefinition.inputs(bodies: session.document.bodies,
                 graph: session.document.features, tables: session.lastFaceTables)
@@ -9927,6 +9932,12 @@ final class EditorViewModel {
         // radius (distance is the radial delta). Local params → world via the
         // body transform.
         if let cyl = context.cylinderFace {
+            if source.brep != nil {
+                guard let index = try? KernelOps.radialFaceIndex(body: source, triangles: cyl.triangles),
+                      let result = try? KernelOps.exactRadialOffset(body: source, faceIndex: index,
+                        distance: distance / max(source.transform.scale, 1e-6), revision: 0) else { return nil }
+                return result.0.euclidMesh().transformed(by: source.transform.euclid)
+            }
             let newRadius = cyl.radius + distance / max(source.transform.scale, 1e-6)
             guard newRadius > 1e-3 else { return nil }
             let grown = KernelOps.cylinderAlongAxis(
@@ -9998,6 +10009,23 @@ final class EditorViewModel {
         }
         if let sourceID = context.sourceBody,
            let source = session.document.body(with: sourceID), source.brep != nil {
+            if let cylinder = context.cylinderFace {
+                do {
+                    let index = try KernelOps.radialFaceIndex(body: source, triangles: cylinder.triangles)
+                    let response = CADCommandExecutor(viewModel: self).run(.pushPull(body: sourceID,
+                        face: index, distance: distance / source.transform.scale, radial: true))
+                    guard response.status < 300 else { throw KernelOps.ExactEditError.refused }
+                    toolContext = nil
+                    selection = [sourceID]
+                    mode = .selected(sourceID)
+                    errorMessage = nil
+                    session.save()
+                } catch {
+                    errorMessage = FloeCADStrings.text("cad.feature.radialRejected",
+                        "Couldn't change this cylindrical face. Check its radius or select it again.")
+                }
+                return
+            }
             do {
                 guard context.cylinderFace == nil else {
                     throw KernelOps.ExactEditError.unsupported("Radial face movement")
@@ -20029,6 +20057,8 @@ final class EditorViewModel {
         switch kind {
         case let .primitive(spec, _):
             return spec.displayName
+        case .baseSolid:
+            return FloeCADStrings.text("cad.feature.importedBody", "Imported body")
         case let .extrude(_, _, distance, _, boolean, _, _):
             let value = fmt(distance.value)
             switch boolean.op {
@@ -20041,7 +20071,10 @@ final class EditorViewModel {
             return f("cad.feature.draftExtrude", "Draft %@ mm @ %@°", fmt(distance.value), fmt(taperAngle.value))
         case let .boolean(op, _, _):
             return localizedBooleanName(op)
-        case let .pushPull(_, distance, _):
+        case let .pushPull(_, distance, mode):
+            if mode == .cylinderRadial {
+                return f("cad.feature.radialOffsetDistance", "Radial offset %@ mm", fmt(distance.value))
+            }
             return f("cad.feature.pushPull", "Push/Pull %@ mm", fmt(distance.value))
         case let .moveFace(_, delta):
             return f("cad.feature.moveFace", "Move Face %@ mm", fmt(simd_length(delta.point)))

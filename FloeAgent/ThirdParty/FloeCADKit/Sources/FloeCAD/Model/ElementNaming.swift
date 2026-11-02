@@ -35,6 +35,10 @@ nonisolated struct ElementName: Codable, Hashable, Sendable {
         /// Fallback identity: the k-th face (1-based indexed-map order) of
         /// the creating op's result, when nothing finer exists.
         case kernelFace(index: Int)
+        /// An index in a VERIFIED, immutable native-source blob. Unlike a
+        /// generic result ordinal it cannot shuffle during a parameter edit:
+        /// replacing the source changes its digest and breaks the reference.
+        case immutableSourceFace(version: Int, sha256: String, index: Int)
         /// A mechanical hole's semantic wall/shoulder/cone/bottom. The role
         /// comes from the TOOL revolve's own history (the profile segment that
         /// generated the face) and is carried through the exact boolean; a
@@ -68,6 +72,9 @@ nonisolated struct ElementName: Codable, Hashable, Sendable {
     /// operation can renumber a surviving fragment after deleting a sibling.
     var requiresExactSignature: Bool {
         switch source {
+        case let .immutableSourceFace(version, digest, index):
+            return version != 1 || index <= 0 || digest.count != 64
+                || digest.unicodeScalars.contains { !(48...57).contains($0.value) && !(97...102).contains($0.value) }
         case .opFace, .kernelFace, .primitiveFace(.derived): return true
         case .primitiveFace, .profileWall, .profileCap, .holeFace: return false
         case let .operationFace(version, operation, parents, neighbors):
@@ -81,7 +88,7 @@ nonisolated struct ElementName: Codable, Hashable, Sendable {
 
     var containsQualifiedOperationIdentity: Bool {
         switch source {
-        case .operationFace: return true
+        case .operationFace, .immutableSourceFace: return true
         case let .opFace(_, parents, _): return parents.contains(where: \.containsQualifiedOperationIdentity)
         default: return false
         }
@@ -89,6 +96,7 @@ nonisolated struct ElementName: Codable, Hashable, Sendable {
 
     var hasSupportedOperationIdentity: Bool {
         switch source {
+        case .immutableSourceFace: return !requiresExactSignature
         case let .operationFace(_, _, parents, neighbors):
             return !requiresExactSignature && parents.allSatisfy(\.hasSupportedOperationIdentity)
                 && neighbors.allSatisfy(\.hasSupportedOperationIdentity)

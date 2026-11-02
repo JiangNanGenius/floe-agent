@@ -649,6 +649,266 @@ final class CADParameterCorrectnessTests: XCTestCase {
         XCTAssertEqual(OCCTKernel.volume(try XCTUnwrap(actual.brep)), 10 * .pi, accuracy: 1e-4)
     }
 
+    private func importedBoredPlate(_ document: FloeCADDocument, twoHoles: Bool = false) async throws -> BodyID {
+        var solid = try XCTUnwrap(OCCTKernel.primitiveShape(.box(width: 40, depth: 20, height: 10), placement: .identity))
+        let holeLocations: [Double] = twoHoles ? [-8, 8] : [0]
+        for x in holeLocations {
+            let cutter = try XCTUnwrap(OCCTKernel.primitiveShape(.cylinder(radius: 2, height: 12),
+                placement: Transform3D(translation: SIMD3(x, -1, 0))))
+            solid = try XCTUnwrap(OCCTKernel.boolean(solid, cutter, op: 1))
+        }
+        let file = workDir.appendingPathComponent("bored-\(UUID().uuidString).step")
+        XCTAssertTrue(OCCTKernel.writeSTEP([solid], to: file))
+        let token = MeshImportCancellation()
+        let plan = try await CADExactImportService.parseOffMain(data: Data(contentsOf: file),
+            format: "step", fileName: "Bored plate.step", limits: .standard, cancellation: token)
+        XCTAssertTrue(plan.parsedOffMain)
+        let imported = try CADExactImportService.apply(plan, to: document, cancellation: token, undoMode: .singleStep)
+        XCTAssertTrue(imported.outcome.isOK, imported.outcome.message ?? "")
+        XCTAssertTrue(document.session.document.sketches.isEmpty)
+        XCTAssertTrue(document.session.document.features.nodes.isEmpty)
+        XCTAssertNotNil(try body(document).brep)
+        return try body(document).id
+    }
+
+    private func boreIndex(_ document: FloeCADDocument, radius: Double, x: Double = 0) throws -> Int {
+        let native = try XCTUnwrap(try body(document).brep)
+        return try XCTUnwrap(OCCTKernel.faceInfo(native).first { info in
+            guard let signature = info.signature, case let .cylindrical(r) = signature.kind else { return false }
+            return abs(r - radius) < 1e-6 && abs(signature.centroid.x - x) < 1e-6
+        }).index
+    }
+
+    func testImportedBoreRadiusEditRetainsExactSourceOneUndoAndReopen() async throws {
+        let document = try await makeDocument(); defer { document.close() }
+        let id = try await importedBoredPlate(document)
+        let before = try XCTUnwrap(OCCTKernel.serialize(try XCTUnwrap(try body(document).brep)))
+        let count = document.session.undoStack.undoCommands.count
+        try run(document, "feature.pushPull", ["bodyID": id.raw.uuidString,
+            "face": try boreIndex(document, radius: 2), "distance": 1, "mode": "cylinderRadial"])
+        XCTAssertEqual(try body(document).id, id)
+        XCTAssertEqual(try volume(document), 8000 - 90 * .pi, accuracy: 1e-3)
+        XCTAssertGreaterThan(try boreIndex(document, radius: 3), 0)
+        XCTAssertEqual(document.session.document.features.nodes.count, 2)
+        XCTAssertEqual(document.session.undoStack.undoCommands.count, count + 1)
+        guard case let .baseSolid(source) = document.session.document.features.nodes[0].kind else {
+            return XCTFail("An imported body needs its immutable exact replay source")
+        }
+        let feature = try XCTUnwrap(document.session.document.features.nodes.last)
+        let radialQuery = try XCTUnwrap(try rows(document, "features").first { $0["kind"] as? String == "pushPull" })
+        let radialParameters = try XCTUnwrap(radialQuery["parameters"] as? [[String: Any]])
+        let radialMode = try XCTUnwrap(radialParameters.first { $0["name"] as? String == "mode" })
+        XCTAssertEqual(radialMode["value"] as? String, "cylinderRadial")
+        XCTAssertEqual(radialMode["editable"] as? Bool, false)
+        let query = try XCTUnwrap(try rows(document, "features").first { $0["kind"] as? String == "importedSolid" })
+        let text = String(decoding: try JSONSerialization.data(withJSONObject: query), as: UTF8.self)
+        XCTAssertFalse(text.contains("brepData"), "Original source bytes are storage, not model context")
+        document.session.undo()
+        XCTAssertTrue(document.session.document.features.nodes.isEmpty)
+        XCTAssertEqual(try volume(document), 8000 - 40 * .pi, accuracy: 1e-3)
+        XCTAssertEqual(try XCTUnwrap(OCCTKernel.serialize(try XCTUnwrap(try body(document).brep))), before)
+        document.session.redo()
+        let update = CADParameterService(document: document).handle(action: "update", args: [
+            "feature_id": feature.id.raw.uuidString, "changes": ["distance": 2]])
+        XCTAssertEqual(update["ok"] as? Bool, true, "\(update)")
+        XCTAssertEqual(document.session.document.features.nodes.count, 2)
+        XCTAssertEqual(try volume(document), 8000 - 160 * .pi, accuracy: 1e-3)
+        document.session.undo()
+        XCTAssertEqual(try volume(document), 8000 - 90 * .pi, accuracy: 1e-3)
+        document.session.redo()
+        let saved = await document.save(); XCTAssertTrue(saved.succeeded, saved.error ?? "")
+        let url = document.url; document.close()
+        let reopened = try await FloeCADDocument.open(at: url); defer { reopened.close() }
+        XCTAssertEqual(try body(reopened).id, id)
+        XCTAssertEqual(try volume(reopened), 8000 - 160 * .pi, accuracy: 1e-3)
+        XCTAssertNotNil(try body(reopened).brep)
+        guard case let .baseSolid(restored) = reopened.session.document.features.nodes[0].kind else { return XCTFail("Source lost") }
+        XCTAssertEqual(restored.sha256, source.sha256)
+        XCTAssertNotNil(reopened.session.document.features.node(feature.id))
+    }
+
+    func testRadialEditTargetsOnlyOneOfTwoEqualRadiusImportedBores() async throws {
+        let document = try await makeDocument(); defer { document.close() }
+        let id = try await importedBoredPlate(document, twoHoles: true)
+        try run(document, "feature.pushPull", ["bodyID": id.raw.uuidString,
+            "face": try boreIndex(document, radius: 2, x: -8), "distance": 1, "mode": "cylinderRadial"])
+        XCTAssertGreaterThan(try boreIndex(document, radius: 3, x: -8), 0)
+        XCTAssertGreaterThan(try boreIndex(document, radius: 2, x: 8), 0)
+        XCTAssertEqual(try volume(document), 8000 - 130 * .pi, accuracy: 1e-3)
+    }
+
+    func testRadialChainFollowsItsVerifiedSourceAndRejectsAChangedSourceDigest() async throws {
+        let document = try await makeDocument(); defer { document.close() }
+        let id = try await importedBoredPlate(document)
+        try run(document, "feature.pushPull", ["bodyID": id.raw.uuidString,
+            "face": try boreIndex(document, radius: 2), "distance": 1, "mode": "cylinderRadial"])
+        let first = try XCTUnwrap(document.session.document.features.nodes.last)
+        try run(document, "feature.pushPull", ["bodyID": id.raw.uuidString,
+            "face": try boreIndex(document, radius: 3), "distance": 1, "mode": "cylinderRadial"])
+        XCTAssertEqual(try volume(document), 8000 - 160 * .pi, accuracy: 1e-3)
+        let reply = CADParameterService(document: document).handle(action: "update", args: [
+            "feature_id": first.id.raw.uuidString, "changes": ["distance": 2]])
+        XCTAssertEqual(reply["ok"] as? Bool, true, "\(reply)")
+        XCTAssertEqual(try volume(document), 8000 - 250 * .pi, accuracy: 1e-3)
+        XCTAssertGreaterThan(try boreIndex(document, radius: 5), 0)
+        document.session.undo()
+        XCTAssertEqual(try volume(document), 8000 - 160 * .pi, accuracy: 1e-3)
+        document.session.redo()
+        var graph = document.session.document.features
+        guard case let .pushPull(reference, distance, mode) = graph.nodes[1].kind,
+              let identity = reference.elementName,
+              case let .immutableSourceFace(version, _, index) = identity.source else { return XCTFail("Verified source identity missing") }
+        XCTAssertFalse(identity.requiresExactSignature)
+        XCTAssertTrue(ElementName(creator: identity.creator, source: .kernelFace(index: index)).requiresExactSignature,
+            "An old unqualified ordinal still needs exact proof")
+        var wrong = reference
+        wrong.elementName = ElementName(creator: identity.creator,
+            source: .immutableSourceFace(version: version, sha256: String(repeating: "0", count: 64), index: index))
+        graph.nodes[1].kind = .pushPull(face: wrong, distance: distance, mode: mode)
+        var revision: UInt64 = 0
+        let refused = graph.evaluate(sketches: [], planes: [], naming: SignatureNaming(),
+            nextRevision: { revision += 1; return revision })
+        XCTAssertNotNil(refused.errors[first.id], "A different source must never inherit a matching face by resemblance")
+        XCTAssertEqual(try volume(document), 8000 - 250 * .pi, accuracy: 1e-3)
+    }
+
+    func testNativeScaledBorePreviewAndCommitPreserveTheRestOfTheImportedBody() async throws {
+        let document = try await makeDocument(); defer { document.close() }
+        let id = try await importedBoredPlate(document)
+        let original = try body(document)
+        var scaled = original; scaled.transform.scale = 2; scaled.transform.translation.x = 5
+        document.session.perform(ReplaceBodyCommand(title: "Placement", before: original, after: scaled))
+        let cylinder = try XCTUnwrap(FaceTopology.enumerateFaces(in: scaled.render).cylindrical.first)
+        let viewModel = document.viewModel()
+        viewModel.toolContext = .init(profile: Profile(loop: [SIMD2(-0.001,-0.001), SIMD2(0.001,-0.001),
+            SIMD2(0.001,0.001), SIMD2(-0.001,0.001)], kind: .polygonal, sourceEntityIDs: []),
+            holes: [], plane: .ground, sourceBody: id, faceTriangles: cylinder.triangles,
+            cylinderFace: cylinder, kind: .extrude(distance: 0))
+        viewModel.mode = .faceSelected(id)
+        viewModel.setExtrudeDistance(2) // two world mm = one local radius mm
+        let preview = try XCTUnwrap(viewModel.toolContext?.preview)
+        let extent = preview.render.localAABB
+        XCTAssertGreaterThan(extent.max.x - extent.min.x, 79,
+            "Preview must retain the plate, not replace the entire body with a cylinder")
+        viewModel.commitTool()
+        XCTAssertNil(viewModel.errorMessage)
+        XCTAssertEqual(try body(document).id, id)
+        XCTAssertEqual(try body(document).transform, scaled.transform)
+        XCTAssertGreaterThan(try boreIndex(document, radius: 3), 0)
+        XCTAssertEqual(try volume(document), (8000 - 90 * .pi) * 8, accuracy: 1e-2)
+    }
+
+    func testRadialCollapseAndFailedReplayPreserveImportedSourceAndHistory() async throws {
+        let document = try await makeDocument(); defer { document.close() }
+        let id = try await importedBoredPlate(document)
+        let before = try XCTUnwrap(OCCTKernel.serialize(try XCTUnwrap(try body(document).brep)))
+        let undo = document.session.undoStack.undoCommands.count
+        let command = try JSONSerialization.data(withJSONObject: ["op": "feature.pushPull", "args": [
+            "bodyID": id.raw.uuidString, "face": try boreIndex(document, radius: 2),
+            "distance": -3, "mode": "cylinderRadial"]])
+        XCTAssertFalse(document.executeJSON(command).isOK)
+        XCTAssertTrue(document.session.document.features.nodes.isEmpty)
+        XCTAssertEqual(document.session.undoStack.undoCommands.count, undo)
+        XCTAssertEqual(try XCTUnwrap(OCCTKernel.serialize(try XCTUnwrap(try body(document).brep))), before)
+        try run(document, "feature.pushPull", ["bodyID": id.raw.uuidString,
+            "face": try boreIndex(document, radius: 2), "distance": 1, "mode": "cylinderRadial"])
+        let feature = try XCTUnwrap(document.session.document.features.nodes.last)
+        let afterUndo = document.session.undoStack.undoCommands.count
+        let rejection = CADParameterService(document: document).handle(action: "update", args: [
+            "feature_id": feature.id.raw.uuidString, "changes": ["distance": -3]])
+        XCTAssertEqual(rejection["ok"] as? Bool, false, "\(rejection)")
+        XCTAssertEqual(document.session.undoStack.undoCommands.count, afterUndo)
+        XCTAssertEqual(try volume(document), 8000 - 90 * .pi, accuracy: 1e-3)
+        XCTAssertGreaterThan(try boreIndex(document, radius: 3), 0)
+    }
+
+    func testImportedSourceDigestFutureVersionAndFaceWitnessFenceTheReplayMemo() async throws {
+        let document = try await makeDocument(); defer { document.close() }
+        let id = try await importedBoredPlate(document)
+        try run(document, "feature.pushPull", ["bodyID": id.raw.uuidString,
+            "face": try boreIndex(document, radius: 2), "distance": 1, "mode": "cylinderRadial"])
+        let base = document.session.document.features.nodes[0]
+        guard case let .baseSolid(source) = base.kind else { return XCTFail("Source missing") }
+        var payload = try XCTUnwrap(JSONSerialization.jsonObject(with: JSONEncoder().encode(source)) as? [String: Any])
+        payload["sha256"] = String(repeating: "0", count: 64)
+        XCTAssertThrowsError(try JSONDecoder().decode(NativeBodySource.self,
+            from: JSONSerialization.data(withJSONObject: payload)))
+        payload["sha256"] = source.sha256; payload["version"] = 999
+        let futureKind = try JSONSerialization.data(withJSONObject: ["baseSolid": ["source": payload]])
+        let row = CADFeatureRecord(featureID: base.id.raw, orderIndex: 0, name: base.name,
+            suppressed: false, kind: futureKind, outputBodyIDs: try JSONEncoder().encode([id]))
+        XCTAssertTrue(try CADDocumentFormat.assess(planes: [], sketches: [], features: [row]).opaqueFeatures.contains(base.id.raw))
+        payload["version"] = 1
+        var witnesses = try XCTUnwrap(payload["faces"] as? [[String: Any]])
+        witnesses[0]["index"] = 10000; payload["faces"] = witnesses
+        let bad = try JSONDecoder().decode(NativeBodySource.self, from: JSONSerialization.data(withJSONObject: payload))
+        XCTAssertNotEqual(bad.faceWitnessSHA256, source.faceWitnessSHA256)
+        var graph = FeatureGraph(nodes: [base]), cache = EvalCache(), revision: UInt64 = 0
+        let first = graph.evaluate(sketches: [], planes: [], naming: SignatureNaming(),
+            nextRevision: { revision += 1; return revision }, cache: &cache)
+        XCTAssertTrue(first.errors.isEmpty)
+        graph.nodes[0].kind = .baseSolid(source: bad)
+        let refused = graph.evaluate(sketches: [], planes: [], naming: SignatureNaming(),
+            nextRevision: { revision += 1; return revision }, cache: &cache)
+        XCTAssertNotNil(refused.errors[base.id]); XCTAssertTrue(refused.bodies.isEmpty)
+        XCTAssertEqual(CADDocumentFormat.requiredFormat(document: document.session.document), 7)
+    }
+
+    func testImportedRadialSourceAndNamedFacesMergeWithoutDoubleTranslation() async throws {
+        let document = try await makeDocument(); defer { document.close() }
+        let id = try await importedBoredPlate(document)
+        try run(document, "feature.pushPull", ["bodyID": id.raw.uuidString,
+            "face": try boreIndex(document, radius: 2), "distance": 1, "mode": "cylinderRadial"])
+        let owner = try XCTUnwrap(document.session.document.features.nodes.last)
+        let move = FeatureNode(name: "Move", kind: .transform(body: BodyRef(producer: owner.id, bodyID: id),
+            delta: Transform3D(translation: SIMD3(10, 0, 0))), outputBodyIDs: [id])
+        document.session.recordAndRebuild([move], title: "Move")
+        let insertion = try ProjectMergeKit.insert(document.session.document, into: DesignDocument(),
+            translation: SIMD3(100, 50, 20))
+        var revision: UInt64 = 0
+        let result = insertion.document.features.evaluate(sketches: [], planes: [], naming: SignatureNaming(),
+            nextRevision: { revision += 1; return revision })
+        XCTAssertTrue(result.errors.isEmpty, "\(result.errors)")
+        let merged = try XCTUnwrap(result.bodies.first)
+        XCTAssertEqual(OCCTKernel.volume(try XCTUnwrap(merged.brep)), 8000 - 90 * .pi, accuracy: 1e-3)
+        let points = merged.render.positions.map { merged.transform.applying(to: SIMD3<Double>($0)) }
+        XCTAssertEqual(try XCTUnwrap(points.map(\.x).min()), 90, accuracy: 1e-4)
+        XCTAssertEqual(try XCTUnwrap(points.map(\.y).min()), 50, accuracy: 1e-4)
+        XCTAssertEqual(try XCTUnwrap(points.map(\.z).min()), 10, accuracy: 1e-4)
+    }
+
+    func testImportedRadialMergeTracksTheFrameBeforeAndAfterABooleanBake() async throws {
+        let document = try await makeDocument(); defer { document.close() }
+        let id = try await importedBoredPlate(document)
+        try run(document, "feature.pushPull", ["bodyID": id.raw.uuidString,
+            "face": try boreIndex(document, radius: 2), "distance": 1, "mode": "cylinderRadial"])
+        let radial = try XCTUnwrap(document.session.document.features.nodes.last)
+        let toolID = BodyID()
+        let tool = FeatureNode(name: "Corner cutter", kind: .primitive(
+            spec: .box(width: 4, depth: 4, height: 12), placement: Transform3D(translation: SIMD3(18,-1,8))),
+            outputBodyIDs: [toolID])
+        let cut = FeatureNode(name: "Corner", kind: .boolean(kind: .subtract,
+            target: BodyRef(producer: radial.id, bodyID: id), tools: [BodyRef(producer: tool.id, bodyID: toolID)]),
+            outputBodyIDs: [id])
+        document.session.recordAndRebuild([tool, cut], title: "Corner")
+        XCTAssertTrue(document.session.lastEvalErrors.isEmpty, "\(document.session.lastEvalErrors)")
+        XCTAssertEqual(try volume(document), 7840 - 90 * .pi, accuracy: 1e-3)
+        try run(document, "feature.pushPull", ["bodyID": id.raw.uuidString,
+            "face": try boreIndex(document, radius: 3), "distance": 1, "mode": "cylinderRadial"])
+        let insertion = try ProjectMergeKit.insert(document.session.document, into: DesignDocument(),
+            translation: SIMD3(100, 50, 20))
+        var revision: UInt64 = 0
+        let result = insertion.document.features.evaluate(sketches: [], planes: [], naming: SignatureNaming(),
+            nextRevision: { revision += 1; return revision })
+        XCTAssertTrue(result.errors.isEmpty, "\(result.errors)")
+        let merged = try XCTUnwrap(result.bodies.first)
+        XCTAssertEqual(OCCTKernel.volume(try XCTUnwrap(merged.brep)), 7840 - 160 * .pi, accuracy: 1e-3)
+        let points = merged.render.positions.map { merged.transform.applying(to: SIMD3<Double>($0)) }
+        XCTAssertEqual(try XCTUnwrap(points.map(\.x).min()), 80, accuracy: 1e-4)
+        XCTAssertEqual(try XCTUnwrap(points.map(\.y).min()), 50, accuracy: 1e-4)
+        XCTAssertEqual(try XCTUnwrap(points.map(\.z).min()), 10, accuracy: 1e-4)
+    }
+
     private func parameter(_ document: FloeCADDocument, feature: FeatureID,
                            name: String) throws -> [String: Any] {
         let featureRow = try XCTUnwrap(try rows(document, "features").first {

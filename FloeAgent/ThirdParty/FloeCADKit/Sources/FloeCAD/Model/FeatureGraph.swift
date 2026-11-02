@@ -347,6 +347,10 @@ nonisolated enum HelixSamplingLimits {
 /// defined for schema stability and evaluated in tranche 2.
 nonisolated enum FeatureKind: Codable, Sendable {
     case primitive(spec: PrimitiveSpec, placement: Transform3D)
+    /// Immutable exact root captured before editing a non-feature import.
+    /// Stores the original once; downstream edits never use their own output
+    /// as an implicit input. No model-authored source bytes are accepted.
+    case baseSolid(source: NativeBodySource)
     case extrude(
         profile: ProfileRef,
         plane: PlaneRef,
@@ -489,7 +493,7 @@ nonisolated extension FeatureNode {
             for ref in sections { ids.insert(ref.sketchID) }
         case let .mirror(_, plane, _):
             addPlane(plane)
-        case .primitive, .boolean, .transform, .pattern, .pushPull, .moveFace,
+        case .primitive, .baseSolid, .boolean, .transform, .pattern, .pushPull, .moveFace,
              .scaleFace, .rotateFace, .draftFace, .chamfer, .fillet, .shell,
              .deleteFace, .replaceFace:
             break
@@ -509,7 +513,7 @@ nonisolated extension FeatureNode {
              let .revolve(_, plane, _, _, _), let .sweep(_, plane, _, _, _, _),
              let .hole(_, _, plane, _), let .mirror(_, plane, _):
             add(plane)
-        case .primitive, .loft, .boolean, .transform, .pattern, .pushPull, .moveFace,
+        case .primitive, .baseSolid, .loft, .boolean, .transform, .pattern, .pushPull, .moveFace,
              .scaleFace, .rotateFace, .draftFace, .chamfer, .fillet, .shell,
              .deleteFace, .replaceFace:
             break
@@ -545,7 +549,7 @@ nonisolated extension FeatureNode {
     /// the memo is only as correct as this enumeration.
     var consumedBodyIDs: [BodyID] {
         switch kind {
-        case .primitive:
+        case .primitive, .baseSolid:
             return []
         case let .extrude(_, _, _, _, boolean, _, termination):
             return Array(Set(boolean.resolvedTargets.map(\.bodyID) + (termination?.targets.map(\.bodyID) ?? [])))
@@ -840,7 +844,15 @@ nonisolated extension FeatureGraph {
             semanticKind = .extrude(profile: profile, plane: plane, distance: Expr(value: 0),
                 symmetric: symmetric, boolean: boolean, extraProfiles: extras, termination: termination)
         } else { semanticKind = node.kind }
-        if let kind = EvalFingerprint.json(semanticKind) {
+        if case let .baseSolid(source) = semanticKind {
+            // Do not base64 encode/hash an immutable multi-megabyte BRep on
+            // every mouse move. Its verified digest is the content identity.
+            f.combine(Data(source.sha256.utf8))
+            f.combine(Data(source.faceWitnessSHA256.utf8))
+            f.combine(Data(source.name.utf8))
+            f.combine(UInt64(source.version))
+            f.combine(EvalFingerprint.hash(source.placement))
+        } else if let kind = EvalFingerprint.json(semanticKind) {
             f.combine(kind)
         } else {
             // An unencodable kind (a non-finite parameter): salt so it never
@@ -870,6 +882,8 @@ nonisolated extension FeatureGraph {
         nextRevision: () -> UInt64
     ) {
         switch node.kind {
+        case let .baseSolid(source):
+            evalBaseSolid(node, source: source, into: &state, next: nextRevision)
         case let .primitive(spec, placement):
             evalPrimitive(node, spec: spec, placement: placement, into: &state, next: nextRevision)
         case let .extrude(profile, plane, distance, symmetric, boolean, extraProfiles, termination):
@@ -985,6 +999,27 @@ nonisolated extension FeatureGraph {
     }
 
     // MARK: Primitive
+
+    private func evalBaseSolid(_ node: FeatureNode, source: NativeBodySource,
+                               into state: inout EvalState, next: () -> UInt64) {
+        guard node.outputBodyIDs.count == 1, let id = node.outputBodyIDs.first else {
+            state.errors[node.id] = .brokenRef("An exact source must own one body.")
+            return
+        }
+        do {
+            let body = try source.restoredBody(id: id, revision: next())
+            guard let solid = body.brep else { throw KernelOps.ExactEditError.refused }
+            let names = Dictionary(uniqueKeysWithValues: OCCTKernel.faceInfo(solid).map {
+                ($0.index, ElementName(creator: node.id,
+                    source: .immutableSourceFace(version: 1, sha256: source.sha256, index: $0.index)))
+            })
+            let table = ElementNaming.attach(names,
+                to: state.naming.faceTable(for: body, createdBy: node.id, scheme: .generic),
+                channel: OCCTKernel.renderMeshFaceChannel(from: solid), body: body)
+            state.put(body, table: table)
+            state.kernelNames[id] = names
+        } catch { state.errors[node.id] = .kernelFailure(error.localizedDescription) }
+    }
 
     private func evalPrimitive(
         _ node: FeatureNode,
@@ -1573,10 +1608,6 @@ nonisolated extension FeatureGraph {
         into state: inout EvalState,
         next nextRevision: () -> UInt64
     ) {
-        guard mode == .planarAxial else {
-            state.errors[node.id] = .kernelFailure("pushPull(.cylinderRadial) is tranche 2")
-            return
-        }
         guard let body = state.bodies[face.body.bodyID] else {
             state.errors[node.id] = .brokenRef("pushPull body unresolved")
             return
@@ -1586,6 +1617,33 @@ nonisolated extension FeatureGraph {
         // this is the topological-naming step that lets the pushed face follow the
         // geometry after an upstream edit.
         let table = state.faceTables[body.id]
+        if mode == .cylinderRadial {
+            guard let resolved = state.naming.resolve(face, in: body, table: table),
+                  let cylinder = resolved.cylinder else {
+                state.errors[node.id] = .brokenRef("The original cylindrical face no longer resolves.")
+                return
+            }
+            do {
+                let index = try KernelOps.radialFaceIndex(body: body, triangles: cylinder.triangles)
+                let (result, ancestry) = try KernelOps.exactRadialOffset(body: body, faceIndex: index,
+                    distance: distance.value, revision: nextRevision())
+                let names = ElementNaming.composeNames(operation: node.id, ancestry: ancestry,
+                    inputNames: [state.kernelNames[body.id] ?? [:]],
+                    adjacency: result.brep.map(OCCTKernel.edgeFaceAdjacency) ?? [])
+                var outputTable = state.naming.faceTable(for: result, createdBy: node.id, scheme: .generic)
+                if let solid = result.brep, !names.isEmpty {
+                    outputTable = ElementNaming.attach(names, to: outputTable,
+                        channel: OCCTKernel.renderMeshFaceChannel(from: solid), body: result)
+                }
+                state.put(result, table: outputTable)
+                state.kernelNames[result.id] = names
+                proposeUpgrade(node, ref: face, resolved: resolved, into: &state)
+            } catch {
+                state.errors[node.id] = .kernelFailure((error as? OCCTOpError)?.message
+                    ?? (error as? KernelOps.ExactEditError)?.message ?? error.localizedDescription)
+            }
+            return
+        }
         guard let resolved = state.naming.resolve(face, in: body, table: table),
               let planar = resolved.planar else {
             state.errors[node.id] = .brokenRef("pushPull face did not resolve")

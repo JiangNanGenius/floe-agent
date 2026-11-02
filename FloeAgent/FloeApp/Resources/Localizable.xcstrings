@@ -127058,6 +127058,74 @@
         }
       }
     },
+    "cad.feature.importedBody": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Imported body"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "导入的实体"
+          }
+        }
+      }
+    },
+    "cad.feature.radialOffset": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Radial offset"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "径向偏移"
+          }
+        }
+      }
+    },
+    "cad.feature.radialOffsetDistance": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Radial offset %@ mm"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "径向偏移 %@ 毫米"
+          }
+        }
+      }
+    },
+    "cad.feature.radialRejected": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Couldn't change this cylindrical face. Check its radius or select it again."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "无法修改此圆柱面，请检查半径或重新选择。"
+          }
+        }
+      }
+    },
     "cad.feature.pitch": {
       "extractionState": "manual",
       "localizations": {

@@ -58,6 +58,7 @@ nonisolated enum CADDocumentFormat {
     /// writer must not drop them and reinterpret the stored fallback geometry.
     static let associativeSweepVersion = 7
     static let associativeExtrudeVersion = 7
+    static let exactRadialVersion = 7
     /// Coordinated package floor for a document that actually stores
     /// user-named versions. Ordinary documents keep their existing schema
     /// floor; only a package that gains a checkpoint is raised to this floor.
@@ -137,6 +138,12 @@ nonisolated enum CADDocumentFormat {
 
     static func requiredFormat(document: DesignDocument) -> Int {
         var required = legacyVersion
+        if document.features.nodes.contains(where: {
+            switch $0.kind {
+            case .baseSolid, .pushPull(_, _, .cylinderRadial): return true
+            default: return false
+            }
+        }) { required = max(required, exactRadialVersion) }
         if document.features.nodes.contains(where: {
             if case let .extrude(_, _, _, _, _, _, termination) = $0.kind { return termination != nil }
             return false
@@ -268,20 +275,23 @@ nonisolated enum CADDocumentFormat {
                 let child = try operationIdentityIntent(value)
                 present = present || child.present; opaque = opaque || child.opaque
             }
-            if fields["creator"] != nil, let source = fields["source"] as? [String: Any],
-               let raw = source["operationFace"] {
+            if fields["creator"] != nil, let source = fields["source"] as? [String: Any] {
+                for key in ["operationFace", "immutableSourceFace"] {
+                guard let raw = source[key] else { continue }
+                let label = key == "operationFace" ? "operation-face-identity" : "source-face-identity"
                 present = true
                 guard let payload = raw as? [String: Any], let value = payload["version"],
                       let version = jsonIntegerValue(value) else {
-                    throw CADDocumentFormatError.malformedAssociation("operation-face-identity")
+                    throw CADDocumentFormatError.malformedAssociation(label)
                 }
                 if version != 1 { opaque = true }
                 else if !opaque {
                     guard let bytes = try? JSONSerialization.data(withJSONObject: fields),
                           let name = try? JSONDecoder().decode(ElementName.self, from: bytes),
                           name.hasSupportedOperationIdentity else {
-                        throw CADDocumentFormatError.malformedAssociation("operation-face-identity")
+                        throw CADDocumentFormatError.malformedAssociation(label)
                     }
+                }
                 }
             }
         }
@@ -804,6 +814,25 @@ nonisolated enum CADDocumentFormat {
                 continue
             }
             let operationIdentity = try operationIdentityIntent(object)
+            if let root = object["baseSolid"] as? [String: Any] {
+                result.requiredVersion = max(result.requiredVersion, exactRadialVersion)
+                guard let source = root["source"] as? [String: Any],
+                      let version = source["version"] as? Int, version > 0 else {
+                    throw CADDocumentFormatError.malformedAssociation("exact-body-source")
+                }
+                if version > NativeBodySource.supportedVersion {
+                    result.opaqueFeatures.insert(row.featureID)
+                } else {
+                    do {
+                        _ = try JSONDecoder().decode(NativeBodySource.self,
+                            from: JSONSerialization.data(withJSONObject: source))
+                    } catch { throw CADDocumentFormatError.malformedAssociation("exact-body-source") }
+                }
+            }
+            if let push = object["pushPull"] as? [String: Any],
+               let mode = push["mode"] as? [String: Any], mode["cylinderRadial"] != nil {
+                result.requiredVersion = max(result.requiredVersion, exactRadialVersion)
+            }
             if let extrude = object["extrude"] as? [String: Any],
                let raw = extrude["termination"], !(raw is NSNull) {
                 result.requiredVersion = max(result.requiredVersion, associativeExtrudeVersion)
