@@ -421,13 +421,16 @@ final class CADCommandExecutor {
                 outputBodyIDs: outputs), on: viewModel)
 
         case let .mirror(bodyID, plane, keepOriginal):
-            if let bad = missingBody([bodyID], session) { return bad }
-            return record(FeatureNode(
-                name: "Mirror",
-                kind: .mirror(body: bodyRef(bodyID, session),
-                              plane: PlaneRef(source: .explicit(plane)),
-                              keepOriginal: keepOriginal),
-                outputBodyIDs: [BodyID()]), on: viewModel)
+            guard let body = session.document.body(with: bodyID) else { return execMissing("body", bodyID.raw.uuidString) }
+            do {
+                let source = try preservedBodyReference(body, in: session)
+                return record(FeatureNode(name: "Mirror",
+                    kind: .mirror(body: source.reference, plane: plane, keepOriginal: keepOriginal),
+                    outputBodyIDs: [BodyID()]), on: viewModel, prefix: source.prefix)
+            } catch {
+                return .failure(422, "Unprocessable Entity", error: "source_preservation_failed",
+                    message: error.localizedDescription)
+            }
 
         case let .transform(bodyID, delta):
             if let bad = missingBody([bodyID], session) { return bad }
@@ -600,24 +603,15 @@ final class CADCommandExecutor {
             profile = value
         } else { profile = nil }
         let cutter = SplitCutterDefinition(plane: plane, profile: profile)
-        let target: BodyRef
-        let prefix: [FeatureNode]
-        if let writer = session.lastBodyWriters[bodyID] {
-            target = BodyRef(producer: writer, bodyID: bodyID); prefix = []
-        } else {
-            do {
-                let source = try NativeBodySource(capturing: body)
-                let base = FeatureNode(name: FloeCADStrings.text("cad.feature.importedBody", "Imported body"),
-                    kind: .baseSolid(source: source), outputBodyIDs: [bodyID])
-                target = BodyRef(producer: base.id, bodyID: bodyID); prefix = [base]
-            } catch {
-                return .failure(422, "Unprocessable Entity", error: "source_preservation_failed",
-                    message: error.localizedDescription)
-            }
+        do {
+            let source = try preservedBodyReference(body, in: session)
+            let node = FeatureNode(name: FloeCADStrings.text("cad.cmd.model.split", "Split Body"),
+                kind: .split(target: source.reference, cutter: cutter), outputBodyIDs: [bodyID, BodyID()])
+            return record(node, on: viewModel, prefix: source.prefix)
+        } catch {
+            return .failure(422, "Unprocessable Entity", error: "source_preservation_failed",
+                message: error.localizedDescription)
         }
-        let node = FeatureNode(name: FloeCADStrings.text("cad.cmd.model.split", "Split Body"),
-            kind: .split(target: target, cutter: cutter), outputBodyIDs: [bodyID, BodyID()])
-        return record(node, on: viewModel, prefix: prefix)
     }
 
     /// Append a node and evaluate it. Reports the eval errors rather than a bare
@@ -729,6 +723,20 @@ final class CADCommandExecutor {
     private func bodyRef(_ id: BodyID, _ session: DocumentSession) -> BodyRef {
         let producer = session.document.features.nodes.last { $0.outputBodyIDs.contains(id) }
         return BodyRef(producer: producer?.id ?? FeatureID(), bodyID: id)
+    }
+
+    private func preservedBodyReference(_ body: Body, in session: DocumentSession) throws
+        -> (reference: BodyRef, prefix: [FeatureNode]) {
+        // Native one-undo commands may have just appended an owner before
+        // the next replay refreshes lastBodyWriters. Reuse that owner too.
+        if let writer = session.lastBodyWriters[body.id]
+            ?? session.document.features.nodes.last(where: { $0.outputBodyIDs.contains(body.id) })?.id {
+            return (BodyRef(producer: writer, bodyID: body.id), [])
+        }
+        let source = try NativeBodySource(capturing: body)
+        let base = FeatureNode(name: FloeCADStrings.text("cad.feature.importedBody", "Imported body"),
+            kind: .baseSolid(source: source), outputBodyIDs: [body.id])
+        return (BodyRef(producer: base.id, bodyID: body.id), [base])
     }
 
     private func missingBody(_ ids: [BodyID], _ session: DocumentSession) -> AgentResponse? {

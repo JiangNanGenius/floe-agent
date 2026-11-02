@@ -4934,14 +4934,14 @@ final class EditorViewModel {
 
     /// Mirror planes offered by the palette: world planes plus any
     /// construction planes in the document.
-    var mirrorPlaneOptions: [(label: String, plane: SketchPlane)] {
-        var options: [(label: String, plane: SketchPlane)] = [
-            ("XY Plane", .worldXY),
-            ("YZ Plane", .worldYZ),
-            ("Ground (ZX)", .ground),
+    var mirrorPlaneOptions: [(label: String, plane: SketchPlane, reference: PlaneRef)] {
+        var options: [(label: String, plane: SketchPlane, reference: PlaneRef)] = [
+            ("XY Plane", .worldXY, PlaneRef(source: .explicit(.worldXY))),
+            ("YZ Plane", .worldYZ, PlaneRef(source: .explicit(.worldYZ))),
+            ("Ground (ZX)", .ground, PlaneRef(source: .ground)),
         ]
         for (index, plane) in session.document.planes.enumerated() {
-            options.append(("Plane \(index + 1)", plane.plane))
+            options.append(("Plane \(index + 1)", plane.plane, PlaneRef(source: .construction(plane.id))))
         }
         return options
     }
@@ -4949,6 +4949,25 @@ final class EditorViewModel {
     /// Mirror every selected body across `plane` into new bodies (one undo
     /// step for multi-selections, plan §B13).
     func mirrorSelection(across plane: SketchPlane) {
+        mirrorSelection(across: plane, reference: PlaneRef(source: .explicit(plane)))
+    }
+
+    func mirrorSelection(across reference: PlaneRef) {
+        let plane: SketchPlane?
+        switch reference.source {
+        case let .construction(id): plane = session.document.planes.first { $0.id == id }?.plane
+        case let .sketch(id): plane = session.document.sketches.first { $0.id == id }?.plane
+        case .ground: plane = .ground
+        case let .explicit(value): plane = value
+        }
+        guard let plane else {
+            errorMessage = FloeCADStrings.text("cad.error.mirrorPlaneUnavailable", "The mirror plane is no longer available.")
+            return
+        }
+        mirrorSelection(across: plane, reference: reference)
+    }
+
+    private func mirrorSelection(across plane: SketchPlane, reference: PlaneRef) {
         cancelTransientPicks()
         guard !selection.isEmpty else { return }
         let n = simd_normalize(plane.normal)
@@ -5002,17 +5021,27 @@ final class EditorViewModel {
             }
             document.bodies.append(copy) // keeps the next name unique
             commands.append(AddBodyCommand(body: copy, title: "Mirror"))
-            // Phase D: record a `.mirror` history node for a feature-owned source
-            // so the reflected copy rebuilds associatively. Bundled into the same
-            // command list (one CompositeCommand) so a single undo drops the copy
-            // and its node together. Non-feature sources (import/seed) can't be
-            // replayed, so they're mirrored geometry-only.
-            if let owner = featureNode(owning: id) {
+            // Reuse the existing one-undo mirror history. An imported exact
+            // solid can now retain its immutable root in that same transaction.
+            var owner = featureNode(owning: id)
+            if owner == nil, body.brep != nil {
+                do {
+                    let source = try NativeBodySource(capturing: body)
+                    let base = FeatureNode(name: FloeCADStrings.text("cad.feature.importedBody", "Imported body"),
+                        kind: .baseSolid(source: source), outputBodyIDs: [id])
+                    commands.append(AppendFeatureCommand(node: base))
+                    owner = base
+                } catch {
+                    errorMessage = error.localizedDescription
+                    return
+                }
+            }
+            if let owner {
                 let mirrorNode = FeatureNode(
                     name: "Mirror",
                     kind: .mirror(
-                        body: BodyRef(producer: owner.id, bodyID: id),
-                        plane: PlaneRef(source: .explicit(plane)),
+                        body: BodyRef(producer: session.lastBodyWriters[id] ?? owner.id, bodyID: id),
+                        plane: reference,
                         keepOriginal: true
                     ),
                     outputBodyIDs: [copy.id]

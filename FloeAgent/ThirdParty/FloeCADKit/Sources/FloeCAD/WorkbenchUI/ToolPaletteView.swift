@@ -513,7 +513,7 @@ struct ToolPaletteView: View {
         Menu {
             ForEach(Array(viewModel.mirrorPlaneOptions.enumerated()), id: \.offset) { _, option in
                 Button(option.label) {
-                    viewModel.mirrorSelection(across: option.plane)
+                    viewModel.mirrorSelection(across: option.reference)
                     expandedGroupID = nil
                 }
             }

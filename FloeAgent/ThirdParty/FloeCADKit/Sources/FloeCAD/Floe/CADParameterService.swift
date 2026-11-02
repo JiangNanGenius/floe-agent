@@ -5101,9 +5101,13 @@ public final class CADParameterService {
             kindName = "transform"
             vector("translation", delta.translation, "mm")
             add("scale", "unitless", delta.scale, editable: false)
-        case let .mirror(_, _, keepOriginal):
+        case let .mirror(_, plane, keepOriginal):
             kindName = "mirror"
-            add("keep_original", "unitless", keepOriginal, editable: false)
+            add("keep_original", "unitless", keepOriginal)
+            let planeID: String? = { if case let .construction(id) = plane.source { return id.raw.uuidString }; return nil }()
+            let sketchID: String? = { if case let .sketch(id) = plane.source { return id.raw.uuidString }; return nil }()
+            add("plane_id", "unitless", planeID.map { $0 as Any } ?? NSNull(), note: "Set one existing plane_id or sketch_id.")
+            add("sketch_id", "unitless", sketchID.map { $0 as Any } ?? NSNull(), note: "Set one existing plane_id or sketch_id.")
         case let .pattern(_, spec):
             kindName = "pattern"
             add("count", "unitless", spec.count, minimum: 1, maximum: 10_000)
@@ -5262,7 +5266,7 @@ public final class CADParameterService {
         switch kind {
         case .primitive, .extrude, .draftExtrude, .revolve, .pattern,
              .pushPull, .scaleFace, .rotateFace, .draftFace, .chamfer,
-             .fillet, .shell, .hole, .thread, .sweep, .replaceFace:
+             .fillet, .shell, .hole, .thread, .sweep, .replaceFace, .mirror:
             return true
         default:
             return false
@@ -5607,6 +5611,28 @@ public final class CADParameterService {
             return .success(.draftFace(face: face, neutralOrigin: origin,
                                        neutralNormal: normal, angle: Expr(value: a, formula: nil),
                                        planeReference: support))
+        case let .mirror(body, plane, keepOriginal):
+            guard changes.keys.allSatisfy({ ["plane_id", "sketch_id", "keep_original"].contains($0) }) else {
+                return unknown(["plane_id", "sketch_id", "keep_original"])
+            }
+            guard changes["plane_id"] == nil || changes["sketch_id"] == nil else {
+                return fail("plane", "Choose one plane_id or sketch_id.")
+            }
+            var nextPlane = plane
+            for key in ["plane_id", "sketch_id"] where changes[key] != nil {
+                guard let text = CADMaterialService.string(changes[key]), let id = UUID(uuidString: text) else {
+                    return fail(key, "Provide an existing plane or sketch UUID.")
+                }
+                nextPlane = key == "plane_id" ? PlaneRef(source: .construction(ConstructionPlaneID(raw: id)))
+                    : PlaneRef(source: .sketch(SketchID(raw: id)))
+            }
+            var nextKeep = keepOriginal
+            if changes["keep_original"] != nil {
+                guard let value = boolValue("keep_original") else { return fail("keep_original", "Use true or false.") }
+                nextKeep = value
+            }
+            guard !requireChange || nextPlane != plane || nextKeep != keepOriginal else { return fail("mirror", "Nothing changed.") }
+            return .success(.mirror(body: body, plane: nextPlane, keepOriginal: nextKeep))
         case let .replaceFace(face, origin, normal, oldFlip, support):
             guard changes.keys.allSatisfy({ $0 == "flip" }) else { return unknown(["flip"]) }
             guard let flip = boolValue("flip") else { return fail("flip", "flip must be true or false.") }

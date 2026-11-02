@@ -102,7 +102,7 @@ nonisolated enum AgentExecOp: Sendable, Equatable {
     /// degrees. The target must carry a B-rep; there is no mesh fallback.
     case hole(sketch: SketchID, seed: SIMD2<Double>, target: BodyID, spec: HoleSpec)
     case pattern(body: BodyID, spec: PatternSpec)
-    case mirror(body: BodyID, plane: SketchPlane, keepOriginal: Bool)
+    case mirror(body: BodyID, plane: PlaneRef, keepOriginal: Bool)
     /// Move a body in place (same id): a rigid delta, rotation already folded
     /// about its centre. Scale is never set here.
     case transform(body: BodyID, delta: Transform3D)
@@ -548,13 +548,26 @@ nonisolated enum AgentExec {
     private static func parseMirror(_ a: [String: Any]) -> Result<AgentExecOp, AgentExecError> {
         do {
             let body = BodyID(raw: try uuid(a, "bodyID"))
+            let named = [a["planeID"], a["sketchID"]].compactMap { $0 }.count
+            guard named <= 1, named == 0 || (a["planeOrigin"] == nil && a["planeNormal"] == nil) else {
+                throw AgentExecError(code: "conflicting_plane", message: "Choose one planeID, sketchID, or absolute mirror plane.")
+            }
+            if named == 1 {
+                let reference: PlaneRef
+                if a["planeID"] != nil {
+                    reference = PlaneRef(source: .construction(ConstructionPlaneID(raw: try uuid(a, "planeID"))))
+                } else {
+                    reference = PlaneRef(source: .sketch(SketchID(raw: try uuid(a, "sketchID"))))
+                }
+                return .success(.mirror(body: body, plane: reference, keepOriginal: a["keepOriginal"] as? Bool ?? true))
+            }
             let origin = try vector3(a, "planeOrigin", default: .zero)
             let normal = try vector3(a, "planeNormal", default: SIMD3(1, 0, 0))
             guard simd_length(normal) > 1e-9 else {
                 return .failure(.init(code: "degenerate_plane", message: "\"planeNormal\" must be non-zero."))
             }
             return .success(.mirror(body: body,
-                                    plane: plane(origin: origin, normal: simd_normalize(normal)),
+                                    plane: PlaneRef(source: .explicit(plane(origin: origin, normal: simd_normalize(normal)))),
                                     keepOriginal: a["keepOriginal"] as? Bool ?? true))
         } catch let e as AgentExecError { return .failure(e) } catch { return .failure(unexpected) }
     }

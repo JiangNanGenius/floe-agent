@@ -2253,3 +2253,158 @@ final class CADSplitHistoryTests: XCTestCase {
         }
     }
 }
+
+/// M25 mirror seam only. Curve/feature-level patterns remain a separate gate.
+@MainActor
+final class CADMirrorReferenceTests: XCTestCase {
+    private var directory: URL!
+    override func setUp() async throws {
+        directory = FileManager.default.temporaryDirectory.appendingPathComponent("CADMirror-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    }
+    override func tearDown() async throws { try? FileManager.default.removeItem(at: directory) }
+    private func document() async throws -> FloeCADDocument {
+        try await FloeCADDocument.create(at: directory.appendingPathComponent("Part.floecad"), name: "Mirror")
+    }
+    private func box(_ document: FloeCADDocument, x: Double = 0) -> FeatureNode {
+        let entity = UUID()
+        let sketch = Sketch(name: "Profile", plane: .readable(origin: SIMD3(x, 0, 0), normal: SIMD3(0, 1, 0)),
+            entities: [.rect(id: entity, min: .zero, max: SIMD2(40, 20))])
+        let feature = FeatureNode(name: "Box", kind: .extrude(profile: ProfileRef(sketchID: sketch.id,
+            entityIDs: [entity], holeEntityIDs: [], seedPoint: SIMD2(5, 5)), plane: PlaneRef(source: .sketch(sketch.id)),
+            distance: Expr(value: 10), symmetric: false, boolean: BooleanIntent(op: .newBody, resolvedTargets: []),
+            extraProfiles: []), outputBodyIDs: [BodyID()])
+        document.session.recordAndRebuild([feature], extra: [AddSketchCommand(sketch: sketch)], title: "Box")
+        XCTAssertTrue(document.session.lastEvalErrors.isEmpty)
+        return feature
+    }
+    private func datum(_ document: FloeCADDocument, x: Double = 0) -> ConstructionPlane {
+        let plane = ConstructionPlane(plane: .readable(origin: SIMD3(x, 0, 0), normal: SIMD3(1, 0, 0)), size: 100)
+        document.session.perform(AddConstructionPlaneCommand(plane: plane))
+        return plane
+    }
+    private func center(_ document: FloeCADDocument, id: BodyID) throws -> SIMD3<Double> {
+        let body = try XCTUnwrap(document.session.document.body(with: id))
+        let positions = body.render.positions.map { body.transform.applying(to: SIMD3<Double>($0)) }
+        let xs = positions.map(\.x), ys = positions.map(\.y), zs = positions.map(\.z)
+        return SIMD3((try XCTUnwrap(xs.min()) + XCTUnwrap(xs.max())) / 2,
+            (try XCTUnwrap(ys.min()) + XCTUnwrap(ys.max())) / 2,
+            (try XCTUnwrap(zs.min()) + XCTUnwrap(zs.max())) / 2)
+    }
+    private func volume(_ document: FloeCADDocument, id: BodyID) throws -> Double {
+        abs(OCCTKernel.volume(try XCTUnwrap(document.session.document.body(with: id)?.brep)))
+    }
+    private func move(_ document: FloeCADDocument, plane: ConstructionPlane, x: Double) throws {
+        let before = try XCTUnwrap(document.session.document.planes.first { $0.id == plane.id })
+        XCTAssertTrue(document.session.performAssociativeTransaction([
+            UpdateResolvedConstructionPlaneCommand(planeID: plane.id, before: before.plane,
+                after: .readable(origin: SIMD3(x, 0, 0), normal: SIMD3(1, 0, 0)))], title: "Move mirror plane"))
+        XCTAssertTrue(document.session.lastEvalErrors.isEmpty, "\(document.session.lastEvalErrors)")
+    }
+    private func execute(_ document: FloeCADDocument, op: String, args: [String: Any]) throws -> FeatureNode {
+        let response = document.executeJSON(try JSONSerialization.data(withJSONObject: ["op": op, "args": args]))
+        XCTAssertTrue(response.isOK, "\(response.errorCode ?? ""): \(response.message ?? "")")
+        guard response.isOK else { throw CADDocumentError(code: response.errorCode ?? "mirror", message: response.message ?? "Mirror failed") }
+        return try XCTUnwrap(document.session.document.features.nodes.last)
+    }
+
+    func testNativeNamedPlaneMirrorMovesAndChangesSourceWithoutReplacingFeature() async throws {
+        let document = try await document(); defer { document.close() }
+        let source = box(document), body = try XCTUnwrap(source.outputBodyIDs.first), plane = datum(document)
+        let model = document.viewModel(); model.selection = [body]
+        let option = try XCTUnwrap(model.mirrorPlaneOptions.first { $0.reference == PlaneRef(source: .construction(plane.id)) })
+        let undo = document.session.undoStack.undoCommands.count
+        model.mirrorSelection(across: option.reference)
+        let mirror = try XCTUnwrap(document.session.document.features.nodes.last), output = try XCTUnwrap(mirror.outputBodyIDs.first)
+        guard case let .mirror(_, reference, true) = mirror.kind else { return XCTFail("History must keep the selected plane") }
+        XCTAssertEqual(reference, option.reference)
+        XCTAssertEqual(document.session.undoStack.undoCommands.count, undo + 1)
+        let originalCenter = try center(document, id: body)
+        XCTAssertEqual(try center(document, id: output).x, -originalCenter.x, accuracy: 1e-4)
+        try move(document, plane: plane, x: 10)
+        XCTAssertEqual(try center(document, id: output).x, 20 - originalCenter.x, accuracy: 1e-4)
+        let changed = CADParameterService(document: document).handle(action: "update", args: [
+            "feature_id": source.id.raw.uuidString, "changes": ["distance": 12]])
+        XCTAssertEqual(changed["ok"] as? Bool, true, "\(changed)")
+        XCTAssertEqual(try volume(document, id: output), 9600, accuracy: 1e-3)
+        XCTAssertEqual(document.session.document.features.node(mirror.id)?.outputBodyIDs, mirror.outputBodyIDs)
+        let saved = await document.save(); XCTAssertTrue(saved.succeeded, saved.error ?? "")
+        let url = document.url; document.close()
+        let opened = try await FloeCADDocument.open(at: url); defer { opened.close() }
+        XCTAssertEqual(opened.session.document.features.node(mirror.id)?.outputBodyIDs, mirror.outputBodyIDs)
+        try move(opened, plane: plane, x: 15)
+        XCTAssertEqual(try center(opened, id: output).x, 30 - originalCenter.x, accuracy: 1e-4)
+        XCTAssertEqual(try volume(opened, id: output), 9600, accuracy: 1e-3)
+    }
+
+    func testNativeMultiMirrorRetainsOneUndoAndEveryPlaneReference() async throws {
+        let document = try await document(); defer { document.close() }
+        let first = box(document), second = box(document, x: 60), plane = datum(document)
+        let sources = [try XCTUnwrap(first.outputBodyIDs.first), try XCTUnwrap(second.outputBodyIDs.first)]
+        let model = document.viewModel(); model.selection = Set(sources)
+        let undo = document.session.undoStack.undoCommands.count
+        model.mirrorSelection(across: PlaneRef(source: .construction(plane.id)))
+        let mirrors = Array(document.session.document.features.nodes.suffix(2))
+        XCTAssertEqual(document.session.document.bodies.count, 4)
+        XCTAssertEqual(document.session.undoStack.undoCommands.count, undo + 1)
+        XCTAssertEqual(model.selection, Set(mirrors.flatMap(\.outputBodyIDs)))
+        for mirror in mirrors { XCTAssertEqual(mirror.referencedConstructionPlaneIDs, [plane.id]) }
+        document.session.undo()
+        XCTAssertEqual(document.session.document.bodies.count, 2)
+        XCTAssertEqual(document.session.document.features.nodes.map(\.id), [first.id, second.id])
+        document.session.redo()
+        XCTAssertEqual(document.session.document.bodies.count, 4)
+        try move(document, plane: plane, x: 10)
+        for mirror in mirrors { XCTAssertEqual(try volume(document, id: XCTUnwrap(mirror.outputBodyIDs.first)), 8000, accuracy: 1e-3) }
+    }
+
+    func testImportedNativeMirrorThenSplitReusesOnePreservedSourceAndUndo() async throws {
+        let document = try await document(); defer { document.close() }
+        let solid = try XCTUnwrap(OCCTKernel.primitiveShape(.box(width: 40, depth: 20, height: 20), placement: .identity))
+        var body = Body(name: "Imported", euclidMesh: .init([]), revision: 0)
+        XCTAssertTrue(body.adoptBRep(solid))
+        document.session.perform(AddBodyCommand(body: body, title: "Import"))
+        let bytes = OCCTKernel.serialize(solid), plane = datum(document)
+        let undo = document.session.undoStack.undoCommands.count, model = document.viewModel()
+        model.selection = [body.id]; model.mirrorSelection(across: PlaneRef(source: .construction(plane.id)))
+        XCTAssertEqual(document.session.document.features.nodes.count, 2)
+        XCTAssertEqual(document.session.undoStack.undoCommands.count, undo + 1)
+        guard case .baseSolid = document.session.document.features.nodes[0].kind else { return XCTFail("Missing immutable import root") }
+        _ = try execute(document, op: "feature.split", args: ["bodyID": body.id.raw.uuidString,
+            "planeOrigin": [0, 8, 0], "planeNormal": [0, 1, 0]])
+        XCTAssertEqual(document.session.document.features.nodes.count, 3, "A newly appended native owner must not be captured twice")
+        document.session.undo()
+        XCTAssertEqual(document.session.document.features.nodes.count, 2)
+        document.session.undo()
+        XCTAssertTrue(document.session.document.features.nodes.isEmpty)
+        XCTAssertEqual(document.session.document.bodies.count, 1)
+        XCTAssertEqual(OCCTKernel.serialize(try XCTUnwrap(document.session.document.body(with: body.id)?.brep)), bytes)
+    }
+
+    func testAIMirrorRebindsPlaneOnSameFeatureAndRejectsMissingOrMixedTargets() async throws {
+        let document = try await document(); defer { document.close() }
+        let source = box(document), target = try XCTUnwrap(source.outputBodyIDs.first)
+        let first = datum(document), second = datum(document, x: 12)
+        let mirror = try execute(document, op: "feature.mirror", args: ["bodyID": target.raw.uuidString, "planeID": first.id.raw.uuidString])
+        let output = try XCTUnwrap(mirror.outputBodyIDs.first), originalCenter = try center(document, id: target)
+        let service = CADParameterService(document: document)
+        let bound = service.handle(action: "update", args: ["feature_id": mirror.id.raw.uuidString,
+            "changes": ["plane_id": second.id.raw.uuidString]])
+        XCTAssertEqual(bound["ok"] as? Bool, true, "\(bound)")
+        XCTAssertEqual(document.session.document.features.node(mirror.id)?.outputBodyIDs, mirror.outputBodyIDs)
+        XCTAssertEqual(try center(document, id: output).x, 24 - originalCenter.x, accuracy: 1e-4)
+        let undo = document.session.undoStack.undoCommands.count
+        let missing = service.handle(action: "update", args: ["feature_id": mirror.id.raw.uuidString,
+            "changes": ["plane_id": UUID().uuidString]])
+        XCTAssertEqual(missing["ok"] as? Bool, false, "\(missing)")
+        XCTAssertEqual(document.session.undoStack.undoCommands.count, undo)
+        XCTAssertEqual(try center(document, id: output).x, 24 - originalCenter.x, accuracy: 1e-4)
+        if case .success = AgentExec.parse(["op": "feature.mirror", "args": ["bodyID": target.raw.uuidString,
+            "planeID": first.id.raw.uuidString, "planeOrigin": [0, 0, 0]]]) { XCTFail("Named and absolute planes must not mix") }
+        let descriptor = CADParameterService.describe(try XCTUnwrap(document.session.document.features.node(mirror.id)), document: document.session.document)
+        XCTAssertTrue(descriptor["update_supported"] as? Bool == true)
+        XCTAssertNoThrow(try JSONSerialization.data(withJSONObject: descriptor))
+        document.session.undo()
+        XCTAssertEqual(try center(document, id: output).x, -originalCenter.x, accuracy: 1e-4)
+    }
+}

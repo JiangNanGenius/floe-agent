@@ -13158,6 +13158,23 @@
         }
       }
     },
+    "cad.error.mirrorPlaneUnavailable": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The mirror plane is no longer available."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "镜像平面已不可用。"
+          }
+        }
+      }
+    },
     "cad.error.patternQuantity": {
       "extractionState": "manual",
       "localizations": {
