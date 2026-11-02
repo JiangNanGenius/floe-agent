@@ -23,6 +23,7 @@
 #include <Standard_Failure.hxx>
 #include <limits>
 #include <set>
+#include <map>
 #include <cmath>
 #include <Bnd_Box.hxx>
 #include <BRepBndLib.hxx>
@@ -34,6 +35,8 @@
 #include <BRepGProp_Face.hxx>
 #include <BRep_Builder.hxx>
 #include <BRepFilletAPI_MakeFillet.hxx>
+#include <TColgp_Array1OfPnt2d.hxx>
+#include <gp_Pnt2d.hxx>
 #include <BRepAlgoAPI_Defeaturing.hxx>
 #include <ShapeUpgrade_UnifySameDomain.hxx>
 #include <TopTools_ListOfShape.hxx>
@@ -2990,6 +2993,170 @@ static OCCTShape *OS3DBlendByIndices(OCCTShape *shape, NSData *edgeIndices,
                                 status:(nullable OCCTOpStatus *)status
                                history:(nullable OCCTShapeHistory *)history {
     return OS3DBlendByIndices(shape, edgeIndices, distance, false, status, history);
+}
+
+// Strict operand admission shared by advanced dress-up operations. Unlike a
+// picker filter, this may not discard even one explicitly requested edge.
+static bool OS3DAdvancedBlendOperands(OCCTShape *shape, NSData *packed,
+                                      TopTools_IndexedMapOfShape &edgeMap,
+                                      std::set<Standard_Integer> &chosen,
+                                      OCCTOpStatus *status) {
+    OS3DSetStatus(status, OCCTOpCodeKernelRefused, @"invalid blend operands");
+    if (shape == nil || packed.length == 0 || packed.length % sizeof(int32_t) != 0)
+        return false;
+    if (!OS3DFiniteBounds(shape->_shape)) return false;
+    TopExp::MapShapes(shape->_shape, TopAbs_EDGE, edgeMap);
+    const int32_t *indices = (const int32_t *)packed.bytes;
+    const NSUInteger count = packed.length / sizeof(int32_t);
+    for (NSUInteger i = 0; i < count; ++i) {
+        if (indices[i] < 1 || indices[i] > edgeMap.Extent()) {
+            OS3DSetStatus(status, OCCTOpCodeNoTargetMatched, @"an edge identity is missing");
+            return false;
+        }
+        chosen.insert(indices[i]);
+    }
+    NSString *reason = nil;
+    const auto qualified = OS3DBlendableEdges(shape->_shape, edgeMap, chosen, &reason);
+    if (qualified != chosen) {
+        OS3DSetStatus(status, OCCTOpCodeNoTargetMatched,
+                      reason ?: @"at least one requested edge cannot be blended");
+        if (status != nil) {
+            status.requestedCount = (NSInteger)chosen.size();
+            status.failedCount = (NSInteger)(chosen.size() - qualified.size());
+        }
+        return false;
+    }
+    return true;
+}
+
++ (nullable OCCTShape *)advancedChamferedShape:(OCCTShape *)shape
+                                  edgeIndices:(NSData *)edgeIndices
+                         referenceFaceIndices:(NSData *)referenceFaceIndices
+                                firstDistance:(double)firstDistance
+                                 secondAmount:(double)secondAmount
+                                distanceAngle:(BOOL)distanceAngle
+                                       status:(nullable OCCTOpStatus *)status
+                                      history:(nullable OCCTShapeHistory *)history {
+    OS3DSetStatus(status, OCCTOpCodeKernelRefused, @"invalid chamfer dimensions");
+    if (!std::isfinite(firstDistance) || !std::isfinite(secondAmount) ||
+        firstDistance <= 0 || secondAmount <= 0 ||
+        (distanceAngle && secondAmount >= M_PI_2)) return nil;
+    try {
+        TopTools_IndexedMapOfShape edgeMap, faceMap;
+        std::set<Standard_Integer> chosen;
+        if (!OS3DAdvancedBlendOperands(shape, edgeIndices, edgeMap, chosen, status)) return nil;
+        if (referenceFaceIndices.length != edgeIndices.length) {
+            OS3DSetStatus(status, OCCTOpCodeNoTargetMatched, @"each edge needs one support face");
+            return nil;
+        }
+        TopExp::MapShapes(shape->_shape, TopAbs_FACE, faceMap);
+        TopTools_IndexedDataMapOfShapeListOfShape edgeFaces;
+        TopExp::MapShapesAndAncestors(shape->_shape, TopAbs_EDGE, TopAbs_FACE, edgeFaces);
+        const int32_t *edges = (const int32_t *)edgeIndices.bytes;
+        const int32_t *faces = (const int32_t *)referenceFaceIndices.bytes;
+        std::map<Standard_Integer, Standard_Integer> supports;
+        for (NSUInteger i = 0; i < edgeIndices.length / sizeof(int32_t); ++i) {
+            if (faces[i] < 1 || faces[i] > faceMap.Extent()) {
+                OS3DSetStatus(status, OCCTOpCodeNoTargetMatched, @"a support face identity is missing");
+                return nil;
+            }
+            const auto &adjacent = edgeFaces.FindFromKey(edgeMap(edges[i]));
+            bool found = false;
+            for (TopTools_ListIteratorOfListOfShape it(adjacent); it.More(); it.Next()) {
+                if (it.Value().IsSame(faceMap(faces[i]))) found = true;
+            }
+            auto existing = supports.find(edges[i]);
+            if (!found || (existing != supports.end() && existing->second != faces[i])) {
+                OS3DSetStatus(status, OCCTOpCodeNoTargetMatched,
+                              @"a support face is foreign, ambiguous or not adjacent to its edge");
+                return nil;
+            }
+            supports[edges[i]] = faces[i];
+        }
+        BRepFilletAPI_MakeChamfer mk(shape->_shape);
+        for (const auto &operand : supports) {
+            const auto edge = TopoDS::Edge(edgeMap(operand.first));
+            const auto face = TopoDS::Face(faceMap(operand.second));
+            if (distanceAngle) mk.AddDA(firstDistance, secondAmount, edge, face);
+            else mk.Add(firstDistance, secondAmount, edge, face);
+        }
+        // Distinct explicit rows on one propagated contour may disagree about
+        // its reference side. Refuse rather than let the last Add silently win.
+        std::set<Standard_Integer> contours;
+        for (const auto &operand : supports) {
+            const auto contour = mk.Contour(TopoDS::Edge(edgeMap(operand.first)));
+            if (contour == 0 || !contours.insert(contour).second) {
+                OS3DSetStatus(status, OCCTOpCodeKernelRefused,
+                              @"select one seed per tangent chamfer contour");
+                return nil;
+            }
+        }
+        OS3DDeadlineProgress *deadline = new OS3DDeadlineProgress(kOS3DOpDeadlineSeconds);
+        Handle(Message_ProgressIndicator) progress(deadline);
+        OS3D_GUARDED(status, "advancedChamfer", mk.Build(progress->Start()));
+        if (deadline->Fired()) {
+            OS3DSetStatus(status, OCCTOpCodeKernelRefused, @"the operation exceeded the kernel deadline");
+            return nil;
+        }
+        OCCTShape *out = OS3DFinishBlend(mk, edgeMap, chosen, -1, status);
+        if (out != nil) OS3DFillModifierHistory(history, mk, shape->_shape, out->_shape);
+        return out;
+    } catch (Standard_Failure &e) {
+        OS3DSetStatus(status, OCCTOpCodeKernelRefused,
+                      [NSString stringWithFormat:@"%s", e.GetMessageString()]);
+        return nil;
+    } catch (...) {
+        OS3DSetStatus(status, OCCTOpCodeKernelRefused, @"kernel exception");
+        return nil;
+    }
+}
+
++ (nullable OCCTShape *)variableFilletedShape:(OCCTShape *)shape
+                                 edgeIndices:(NSData *)edgeIndices
+                                   endRadius:(double)endRadius
+                                middleRadius:(double)middleRadius
+                                      status:(nullable OCCTOpStatus *)status
+                                     history:(nullable OCCTShapeHistory *)history {
+    OS3DSetStatus(status, OCCTOpCodeKernelRefused, @"invalid fillet radii");
+    if (!std::isfinite(endRadius) || !std::isfinite(middleRadius) ||
+        endRadius <= 0 || middleRadius <= 0) return nil;
+    try {
+        TopTools_IndexedMapOfShape edgeMap;
+        std::set<Standard_Integer> chosen;
+        if (!OS3DAdvancedBlendOperands(shape, edgeIndices, edgeMap, chosen, status)) return nil;
+        BRepFilletAPI_MakeFillet mk(shape->_shape);
+        TColgp_Array1OfPnt2d law(1, 3);
+        law(1) = gp_Pnt2d(0, endRadius);
+        law(2) = gp_Pnt2d(0.5, middleRadius);
+        law(3) = gp_Pnt2d(1, endRadius);
+        for (const auto index : chosen) mk.Add(law, TopoDS::Edge(edgeMap(index)));
+        for (const auto index : chosen) {
+            const auto contour = mk.Contour(TopoDS::Edge(edgeMap(index)));
+            if (contour == 0 || mk.NbEdges(contour) != 1) {
+                OS3DSetStatus(status, OCCTOpCodeKernelRefused,
+                              @"variable fillet requires one original edge per contour");
+                return nil;
+            }
+        }
+        OS3DDeadlineProgress *deadline = new OS3DDeadlineProgress(kOS3DOpDeadlineSeconds);
+        Handle(Message_ProgressIndicator) progress(deadline);
+        OS3D_GUARDED(status, "variableFillet", mk.Build(progress->Start()));
+        if (deadline->Fired()) {
+            OS3DSetStatus(status, OCCTOpCodeKernelRefused, @"the operation exceeded the kernel deadline");
+            return nil;
+        }
+        OCCTShape *out = OS3DFinishBlend(mk, edgeMap, chosen,
+                                        mk.IsDone() ? mk.NbFaultyContours() : -1, status);
+        if (out != nil) OS3DFillModifierHistory(history, mk, shape->_shape, out->_shape);
+        return out;
+    } catch (Standard_Failure &e) {
+        OS3DSetStatus(status, OCCTOpCodeKernelRefused,
+                      [NSString stringWithFormat:@"%s", e.GetMessageString()]);
+        return nil;
+    } catch (...) {
+        OS3DSetStatus(status, OCCTOpCodeKernelRefused, @"kernel exception");
+        return nil;
+    }
 }
 
 /// Whether the face's UV domain is an untrimmed iso-rectangle — one wire,

@@ -564,6 +564,30 @@ typedef NS_ENUM(NSInteger, OCCTOpCode) {
                                 status:(nullable OCCTOpStatus *)status
                                history:(nullable OCCTShapeHistory *)history;
 
+/// Advanced identity-addressed blends. Indices are ephemeral maps of THIS
+/// exact input shape; callers must resolve persisted identities first. Every
+/// operand must qualify before building, and a partial result is discarded.
+/// The two-distance/angle support face must be adjacent to its corresponding
+/// edge. Angle is in radians, strictly between zero and pi/2.
++ (nullable OCCTShape *)advancedChamferedShape:(OCCTShape *)shape
+                                  edgeIndices:(NSData *)edgeIndices
+                         referenceFaceIndices:(NSData *)referenceFaceIndices
+                                firstDistance:(double)firstDistance
+                                 secondAmount:(double)secondAmount
+                                distanceAngle:(BOOL)distanceAngle
+                                       status:(nullable OCCTOpStatus *)status
+                                      history:(nullable OCCTShapeHistory *)history;
+/// Radius is endRadius at BOTH endpoints and middleRadius at the midpoint.
+/// This deliberately symmetric law survives edge orientation reversal.
+/// Multi-edge tangent contours are refused rather than applying the profile
+/// to an implicitly extended spine. No mesh approximation is returned.
++ (nullable OCCTShape *)variableFilletedShape:(OCCTShape *)shape
+                                 edgeIndices:(NSData *)edgeIndices
+                                   endRadius:(double)endRadius
+                                middleRadius:(double)middleRadius
+                                      status:(nullable OCCTOpStatus *)status
+                                     history:(nullable OCCTShapeHistory *)history;
+
 /// Modifier-op ancestry (step 5): shell and delete-face with the same
 /// fill-only `history` the boolean carries — untouched faces report `same`,
 /// offset/healed faces `modified`, new faces `generated` — so these ops

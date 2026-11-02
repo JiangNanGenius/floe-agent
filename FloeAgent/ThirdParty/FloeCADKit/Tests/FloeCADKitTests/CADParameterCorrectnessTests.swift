@@ -2734,3 +2734,176 @@ final class CADAdvancedPatternTests: XCTestCase {
     }
 
 }
+
+/// Native advanced blend admission. Consumer/history/UI integration is a
+/// separate boundary; these tests measure the actual OCCT result, not a mock.
+@MainActor
+final class CADAdvancedBlendKernelTests: XCTestCase {
+    private struct EdgeFixture {
+        let handle: BRepHandle
+        let edge: Int
+        let faceA: Int
+        let faceB: Int
+        let length: Double
+    }
+
+    private func box() throws -> EdgeFixture {
+        let handle = try XCTUnwrap(OCCTKernel.primitiveShape(
+            .box(width: 40, depth: 20, height: 10), placement: .identity))
+        let adjacency = try XCTUnwrap(OCCTKernel.edgeFaceAdjacency(handle).first)
+        var body = Body(name: "Blend fixture", euclidMesh: .init([]), revision: 1)
+        XCTAssertTrue(body.adoptBRep(handle))
+        let tolerance = OCCTKernel.matchTolerance(for: handle)
+        let segment = try XCTUnwrap(EdgeTopology.selectableEdges(from: body.render).first { edge in
+            OCCTKernel.nearestEdgeIndex(handle,
+                to: SIMD3(Double(edge.midpoint.x), Double(edge.midpoint.y), Double(edge.midpoint.z)),
+                tolerance: tolerance) == adjacency.edge
+        })
+        return EdgeFixture(handle: handle, edge: adjacency.edge,
+                           faceA: adjacency.faceA, faceB: adjacency.faceB,
+                           length: Double(segment.length))
+    }
+
+    private func area(_ handle: BRepHandle, _ index: Int) throws -> Double {
+        try XCTUnwrap(OCCTKernel.faceInfo(handle).first { $0.index == index }).area
+    }
+
+    private func modifiedArea(_ handle: BRepHandle, _ history: ShapeAncestry,
+                              input: Int) throws -> Double {
+        let ids = Set(history.rows.filter {
+            $0.inputOrdinal == 0 && $0.inputKind == .face && $0.inputSubshape == input
+        }.map(\.resultFace))
+        XCTAssertEqual(ids.count, 1, "An actual planar support must have one surviving image")
+        return try area(handle, XCTUnwrap(ids.first))
+    }
+
+    private func assertHealthy(_ handle: BRepHandle,
+                               file: StaticString = #filePath, line: UInt = #line) {
+        let health = OCCTKernel.healthReport(for: handle)
+        XCTAssertTrue(health.isValid, health.findingsSummary, file: file, line: line)
+        XCTAssertEqual(health.counts["solids"], 1, file: file, line: line)
+        XCTAssertEqual(health.openFreeWires, 0, file: file, line: line)
+        XCTAssertEqual(health.closedFreeWires, 0, file: file, line: line)
+    }
+
+    func testTwoDistanceChamferMeasuresBothActualSupportFacesAndReopens() throws {
+        let f = try box(), originalVolume = OCCTKernel.volume(f.handle)
+        for reference in [f.faceA, f.faceB] {
+            let out = try OCCTKernel.advancedChamferResultWithAncestry(f.handle,
+                edgeIndices: [f.edge], referenceFaceIndices: [reference],
+                firstDistance: 2, secondAmount: 4).get()
+            assertHealthy(out.handle)
+            XCTAssertEqual(OCCTKernel.volume(out.handle), originalVolume - f.length * 4, accuracy: 1e-5)
+            let other = reference == f.faceA ? f.faceB : f.faceA
+            XCTAssertEqual(try area(f.handle, reference) - modifiedArea(out.handle, out.ancestry, input: reference),
+                           f.length * 2, accuracy: 1e-5)
+            XCTAssertEqual(try area(f.handle, other) - modifiedArea(out.handle, out.ancestry, input: other),
+                           f.length * 4, accuracy: 1e-5)
+            let reopened = try XCTUnwrap(OCCTKernel.deserialize(try XCTUnwrap(OCCTKernel.serialize(out.handle))))
+            assertHealthy(reopened)
+            XCTAssertEqual(OCCTKernel.volume(reopened), OCCTKernel.volume(out.handle), accuracy: 1e-7)
+            XCTAssertTrue(out.ancestry.rows.contains { $0.inputKind == .edge && $0.inputSubshape == f.edge })
+        }
+        XCTAssertEqual(OCCTKernel.volume(f.handle), originalVolume, accuracy: 1e-8)
+    }
+
+    func testDistanceAngleChamferUsesRadiansAndSelectedSupportSide() throws {
+        let f = try box()
+        let out = try OCCTKernel.advancedChamferResultWithAncestry(f.handle,
+            edgeIndices: [f.edge], referenceFaceIndices: [f.faceA],
+            firstDistance: 2, secondAmount: .pi / 6, distanceAngle: true).get()
+        let otherDistance = 2 * tan(Double.pi / 6)
+        XCTAssertEqual(try area(f.handle, f.faceA) - modifiedArea(out.handle, out.ancestry, input: f.faceA),
+                       f.length * 2, accuracy: 1e-5)
+        XCTAssertEqual(try area(f.handle, f.faceB) - modifiedArea(out.handle, out.ancestry, input: f.faceB),
+                       f.length * otherDistance, accuracy: 1e-5)
+        XCTAssertEqual(OCCTKernel.volume(out.handle), OCCTKernel.volume(f.handle) - f.length * otherDistance,
+                       accuracy: 1e-5)
+        assertHealthy(out.handle)
+    }
+
+    func testVariableRadiusCreatesActualDifferentGeometryAndPreservesAncestry() throws {
+        let f = try box()
+        let small = try OCCTKernel.filletResultWithAncestry(f.handle, edgeIndices: [f.edge], radius: 1).get()
+        let large = try OCCTKernel.filletResultWithAncestry(f.handle, edgeIndices: [f.edge], radius: 3).get()
+        let variable = try OCCTKernel.variableFilletResultWithAncestry(f.handle,
+            edgeIndices: [f.edge], endRadius: 1, middleRadius: 3).get()
+        assertHealthy(variable.handle)
+        let volume = OCCTKernel.volume(variable.handle)
+        XCTAssertLessThan(volume, OCCTKernel.volume(small.handle) - 1)
+        XCTAssertGreaterThan(volume, OCCTKernel.volume(large.handle) + 1)
+        let constant = try OCCTKernel.variableFilletResultWithAncestry(f.handle,
+            edgeIndices: [f.edge], endRadius: 1, middleRadius: 1).get()
+        XCTAssertEqual(OCCTKernel.volume(constant.handle), OCCTKernel.volume(small.handle), accuracy: 1e-5)
+        XCTAssertTrue(variable.ancestry.rows.contains {
+            $0.inputKind == .edge && $0.inputSubshape == f.edge && $0.relation == .generated
+        })
+        let reopened = try XCTUnwrap(OCCTKernel.deserialize(try XCTUnwrap(OCCTKernel.serialize(variable.handle))))
+        assertHealthy(reopened)
+        XCTAssertEqual(OCCTKernel.volume(reopened), volume, accuracy: 1e-5)
+    }
+
+    func testInvalidWholeSelectionAndDimensionsLeaveInputUnchanged() throws {
+        let f = try box(), before = try XCTUnwrap(OCCTKernel.serialize(f.handle))
+        let foreign = try XCTUnwrap(OCCTKernel.faceInfo(f.handle).first {
+            $0.index != f.faceA && $0.index != f.faceB
+        }).index
+        func refused<T>(_ result: Result<T, OCCTOpError>, file: StaticString = #filePath, line: UInt = #line) {
+            if case .success = result { XCTFail("Invalid whole blend must refuse", file: file, line: line) }
+        }
+        for (edges, faces) in [([f.edge], [foreign]), ([f.edge, Int(Int32.max)], [f.faceA, f.faceB]),
+                               ([f.edge], []), ([f.edge, f.edge], [f.faceA, f.faceB]),
+                               ([Int.max], [f.faceA])] {
+            refused(OCCTKernel.advancedChamferResultWithAncestry(f.handle,
+                edgeIndices: edges, referenceFaceIndices: faces, firstDistance: 2, secondAmount: 3))
+        }
+        for invalid in [Double.nan, .infinity, -1, 0] {
+            refused(OCCTKernel.advancedChamferResultWithAncestry(f.handle,
+                edgeIndices: [f.edge], referenceFaceIndices: [f.faceA], firstDistance: invalid, secondAmount: 2))
+            refused(OCCTKernel.variableFilletResultWithAncestry(f.handle,
+                edgeIndices: [f.edge], endRadius: 1, middleRadius: invalid))
+        }
+        for angle in [0, -.pi / 4, .pi / 2, .pi, .nan, .infinity] as [Double] {
+            refused(OCCTKernel.advancedChamferResultWithAncestry(f.handle,
+                edgeIndices: [f.edge], referenceFaceIndices: [f.faceA],
+                firstDistance: 1, secondAmount: angle, distanceAngle: true))
+        }
+        refused(OCCTKernel.advancedChamferResultWithAncestry(f.handle,
+            edgeIndices: [f.edge], referenceFaceIndices: [f.faceA], firstDistance: 10000, secondAmount: 2))
+        refused(OCCTKernel.variableFilletResultWithAncestry(f.handle,
+            edgeIndices: [f.edge, Int(Int32.max)], endRadius: 1, middleRadius: 2))
+        XCTAssertEqual(OCCTKernel.serialize(f.handle), before)
+    }
+
+    func testRepeatedSameOperandDoesNotDuplicateTheMachiningOperation() throws {
+        let f = try box()
+        let once = try OCCTKernel.advancedChamferResultWithAncestry(f.handle,
+            edgeIndices: [f.edge], referenceFaceIndices: [f.faceA], firstDistance: 2, secondAmount: 3).get()
+        let twice = try OCCTKernel.advancedChamferResultWithAncestry(f.handle,
+            edgeIndices: [f.edge, f.edge], referenceFaceIndices: [f.faceA, f.faceA],
+            firstDistance: 2, secondAmount: 3).get()
+        XCTAssertEqual(OCCTKernel.volume(once.handle), OCCTKernel.volume(twice.handle), accuracy: 1e-7)
+        let variable = try OCCTKernel.variableFilletResultWithAncestry(f.handle,
+            edgeIndices: [f.edge, f.edge], endRadius: 1, middleRadius: 2).get()
+        let single = try OCCTKernel.variableFilletResultWithAncestry(f.handle,
+            edgeIndices: [f.edge], endRadius: 1, middleRadius: 2).get()
+        XCTAssertEqual(OCCTKernel.volume(variable.handle), OCCTKernel.volume(single.handle), accuracy: 1e-7)
+    }
+
+    func testConcaveExactChamferAddsMeasuredMaterialAndVariableFilletStaysExact() throws {
+        let polygon: [SIMD2<Double>] = [SIMD2(0, 0), SIMD2(40, 0), SIMD2(40, 20),
+                                       SIMD2(20, 20), SIMD2(20, 40), SIMD2(0, 40)]
+        let handle = try XCTUnwrap(OCCTKernel.extrudeShape(outerLoop: polygon, holes: [], zMin: 0, zMax: 10,
+            origin: .zero, xAxis: SIMD3(1, 0, 0), yAxis: SIMD3(0, 1, 0), normal: SIMD3(0, 0, 1)))
+        let edge = try XCTUnwrap(OCCTKernel.nearestEdgeIndex(handle, to: SIMD3(20, 20, 5), tolerance: 1e-4))
+        let adjacent = try XCTUnwrap(OCCTKernel.edgeFaceAdjacency(handle).first { $0.edge == edge })
+        let out = try OCCTKernel.advancedChamferResultWithAncestry(handle,
+            edgeIndices: [edge], referenceFaceIndices: [adjacent.faceA], firstDistance: 2, secondAmount: 3).get()
+        assertHealthy(out.handle)
+        XCTAssertEqual(OCCTKernel.volume(out.handle), OCCTKernel.volume(handle) + 30, accuracy: 1e-5)
+        let variable = try OCCTKernel.variableFilletResultWithAncestry(handle,
+            edgeIndices: [edge], endRadius: 1, middleRadius: 2).get()
+        assertHealthy(variable.handle)
+        XCTAssertGreaterThan(OCCTKernel.volume(variable.handle), OCCTKernel.volume(handle))
+    }
+}

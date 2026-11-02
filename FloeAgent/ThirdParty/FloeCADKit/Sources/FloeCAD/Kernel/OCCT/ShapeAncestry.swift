@@ -170,6 +170,60 @@ nonisolated extension OCCTKernel {
         return .success((BRepHandle(shape), ShapeAncestry(history)))
     }
 
+    /// The support face is an explicit current-shape identity for each edge,
+    /// not whichever adjacent face happens to be enumerated first by OCCT.
+    static func advancedChamferResultWithAncestry(
+        _ handle: BRepHandle, edgeIndices: [Int], referenceFaceIndices: [Int],
+        firstDistance: Double, secondAmount: Double, distanceAngle: Bool = false
+    ) -> Result<(handle: BRepHandle, ancestry: ShapeAncestry), OCCTOpError> {
+        guard !edgeIndices.isEmpty, edgeIndices.count == referenceFaceIndices.count,
+              edgeIndices.allSatisfy({ $0 > 0 && Int32(exactly: $0) != nil }),
+              referenceFaceIndices.allSatisfy({ $0 > 0 && Int32(exactly: $0) != nil }),
+              firstDistance.isFinite, firstDistance > 0,
+              secondAmount.isFinite, secondAmount > 0,
+              !distanceAngle || secondAmount < .pi / 2 else {
+            return .failure(.kernelRefused("invalid advanced chamfer dimensions or identities"))
+        }
+        let status = OCCTOpStatus(), history = OCCTShapeHistory()
+        guard let shape = OCCTBridge.advancedChamferedShape(
+            handle.shape, edgeIndices: packIndices(edgeIndices),
+            referenceFaceIndices: packIndices(referenceFaceIndices),
+            firstDistance: firstDistance, secondAmount: secondAmount,
+            distanceAngle: distanceAngle, status: status, history: history) else {
+            let error = OCCTOpError(status)
+            KernelCapture.recordFailure(op: "advancedChamfer", inputs: [("shape", handle)],
+                params: ["edgeIndices": edgeIndices, "referenceFaceIndices": referenceFaceIndices,
+                         "firstDistance": firstDistance, "secondAmount": secondAmount,
+                         "distanceAngle": distanceAngle], error: error)
+            return .failure(error)
+        }
+        return .success((BRepHandle(shape), ShapeAncestry(history)))
+    }
+
+    /// An orientation-independent three-station law: end, midpoint, end.
+    /// Retains real OCCT faces and ancestry. It is deliberately not presented
+    /// as an asymmetric endpoint law or a mesh approximation.
+    static func variableFilletResultWithAncestry(
+        _ handle: BRepHandle, edgeIndices: [Int], endRadius: Double, middleRadius: Double
+    ) -> Result<(handle: BRepHandle, ancestry: ShapeAncestry), OCCTOpError> {
+        guard !edgeIndices.isEmpty,
+              edgeIndices.allSatisfy({ $0 > 0 && Int32(exactly: $0) != nil }),
+              endRadius.isFinite, endRadius > 0, middleRadius.isFinite, middleRadius > 0 else {
+            return .failure(.kernelRefused("invalid variable fillet radii or identities"))
+        }
+        let status = OCCTOpStatus(), history = OCCTShapeHistory()
+        guard let shape = OCCTBridge.variableFilletedShape(
+            handle.shape, edgeIndices: packIndices(edgeIndices),
+            endRadius: endRadius, middleRadius: middleRadius, status: status, history: history) else {
+            let error = OCCTOpError(status)
+            KernelCapture.recordFailure(op: "variableFillet", inputs: [("shape", handle)],
+                params: ["edgeIndices": edgeIndices, "endRadius": endRadius,
+                         "middleRadius": middleRadius], error: error)
+            return .failure(error)
+        }
+        return .success((BRepHandle(shape), ShapeAncestry(history)))
+    }
+
     static func shellResultWithAncestry(
         _ handle: BRepHandle, openingAt points: [SIMD3<Double>],
         thickness: Double, tolerance: Double
