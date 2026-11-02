@@ -425,7 +425,7 @@ struct IOSBridgeIntegrationTests {
             bindingCount: 0
         ))
         #expect(!IOSBridgeTextCredentialPolicy.allows(
-            record: credentialRecord(origin: exactOrigin, hostID: UUID()),
+            record: credentialRecord(hostID: UUID(), origin: exactOrigin),
             runID: runID,
             bindingCount: 0
         ))
