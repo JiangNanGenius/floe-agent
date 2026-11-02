@@ -257,8 +257,7 @@ nonisolated enum CADDocumentFormat {
             let refs: [FaceRef]
             switch node.kind {
             case let .thread(_, spec):
-                if let name = spec.source.elementName { names.append(name) }
-
+                refs = [spec.source]
             case let .pushPull(face, _, _), let .moveFace(face, _), let .scaleFace(face, _),
                  let .rotateFace(face, _, _), let .draftFace(face, _, _, _), let .replaceFace(face, _, _, _):
                 refs = [face]
