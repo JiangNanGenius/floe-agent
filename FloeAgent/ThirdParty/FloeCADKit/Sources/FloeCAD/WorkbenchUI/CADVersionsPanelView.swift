@@ -26,6 +26,7 @@ struct CADVersionsPanelView: View {
     let document: FloeCADDocument
 
     @Environment(\.dismiss) private var dismiss
+    @State private var showCopyMerge = false
     @State private var versions: [CADNamedVersionSummary] = []
     @State private var recoveries: [CADNamedVersionRecoverySummary] = []
     @State private var selectedID: UUID?
@@ -81,6 +82,16 @@ struct CADVersionsPanelView: View {
                             .font(.callout)
                             .foregroundStyle(.secondary)
                     }
+                }
+
+                Section {
+                    Button {
+                        showCopyMerge = true
+                    } label: {
+                        Label(FloeCADStrings.label("cad.merge.title", "Merge Design Copies"), systemImage: "arrow.triangle.merge")
+                    }
+                    .disabled(document.isReadOnly || busyAction != nil)
+                    .accessibilityIdentifier("CADVersionsMergeCopiesButton")
                 }
 
                 Section {
@@ -190,6 +201,9 @@ struct CADVersionsPanelView: View {
         }
         .accessibilityIdentifier("CADVersionsPanel")
         .task { await reload() }
+        .sheet(isPresented: $showCopyMerge, onDismiss: { Task { await reload() } }) {
+            CADCopyMergePanelView(document: document)
+        }
         .alert(FloeCADStrings.text("cad.versions.create.title", "New Design Version"),
                isPresented: $showCreate) {
             TextField(FloeCADStrings.text("cad.versions.create.name", "Version name"),

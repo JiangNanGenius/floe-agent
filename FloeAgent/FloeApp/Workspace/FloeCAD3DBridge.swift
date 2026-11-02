@@ -368,7 +368,7 @@ final class FloeCAD3DBridge {
             // undo while the document is still at that post-edit generation.
             let changeBefore = document.liveChangeCount
             let checkpoint = document.captureEditCheckpoint()
-            var reply = CADMaterialService(document: document).handle(action: action, args: payload)
+            var reply = await CADMaterialService(document: document).handleAsync(action: action, args: payload)
             if Self.bool(reply["mutated"]) == true {
                 let changeAfter = document.liveChangeCount
                 if changeAfter == changeBefore {
@@ -709,6 +709,13 @@ final class FloeCAD3DBridge {
                         + "(list|create|compare|restore|delete|recoveries|recover|discard_recovery|record).")
             }
             do {
+                let operation = action.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+                if ["merge_compare", "merge_apply", "merge_cancel"].contains(operation) {
+                    // This URL was resolved and overwritten by the App host's
+                    // existing workspace guard, never trusted from a model.
+                    let source = (payload["_resolved_merge_source_url"] as? String).flatMap(URL.init(string:))
+                    return try await document.handleCopyMergeAction(operation, args: payload, sourceURL: source)
+                }
                 return try await document.handleNamedVersionAction(action, args: payload)
             } catch let error as CADNamedVersionError {
                 throw CADDocumentError(code: "versions_failed",

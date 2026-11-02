@@ -1,0 +1,23 @@
+{
+  "upstreamRevision": "f700c7790aaa030e794b52ba7791a05c085faf0c",
+  "archives": [
+    {
+      "sdk": "iphoneos",
+      "sha256": "3d574f8f0f76c327fa31aaea3dc885ef728c0d1cfa9a2844bb4e425fcc29e99a",
+      "bytes": 461400
+    },
+    {
+      "sdk": "iphonesimulator",
+      "sha256": "8a77e933786423dd7320c077f7e3765ff4a0ad3c71ce117849853ebafa32e3e8",
+      "bytes": 462824
+    },
+    {
+      "sdk": "macosx",
+      "sha256": "8ddd367d70cc0f3fd791f0e33a64c74c5321b51a2628d3c4374c157971792703",
+      "bytes": 462888
+    }
+  ],
+  "packaging": "Metadata and byte-exact archive copies only. No algorithm compilation. Thin XAtlasShim is new and unqualified.",
+  "componentEvidence": "native-xatlas-qualification-r1",
+  "appAccepted": false
+}

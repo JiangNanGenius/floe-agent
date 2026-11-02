@@ -148,7 +148,7 @@ public enum OrdinaryDocumentActionProfile {
                 guard let payload = cadPayload(in: arguments),
                       let operation = payload["action"] as? String else { return nil }
                 let normalized = operation.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-                return ["list", "compare", "recoveries", "record"].contains(normalized)
+                return ["list", "compare", "recoveries", "record", "merge_compare", "merge_cancel"].contains(normalized)
                     ? .readOnly : nil
             }
             if action == "three_d_assembly" || action == "three_d_drawing" {

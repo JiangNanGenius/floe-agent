@@ -25,7 +25,7 @@ public final class CADMaterialService {
         "list", "read", "create", "update", "remove", "apply", "applyFaces",
         "reassignFaces", "mapping", "textures", "unresolved", "libraryExport",
         "libraryImport", "libraryList", "environment.read", "environment.update", "undo", "redo",
-    ]
+    ] + CADUVService.actions
 
     /// Applied appearances are complete copies, not live library links. This
     /// is reported explicitly so an Agent/user can tell a copy from a linked
@@ -45,7 +45,18 @@ public final class CADMaterialService {
 
     // MARK: - Router
 
+    /// Production UI/AI path. UV computation owns a joined off-main worker;
+    /// all existing material operations keep their current command path.
+    public func handleAsync(action: String, args: [String: Any]) async -> [String: Any] {
+        if action.hasPrefix("uv.") { return await CADUVService(document: document).handle(action: action, args: args) }
+        return handle(action: action, args: args)
+    }
+
     public func handle(action: String, args: [String: Any]) -> [String: Any] {
+        if action.hasPrefix("uv.") {
+            if action == "uv.status" || action == "uv.cancel" { return CADUVService(document: document).control(action: action) }
+            return Self.fail("async_required", "Use the asynchronous material service for UV actions.")
+        }
         if let refusal = CADServiceOperations.readOnlyRefusal(document: document, kind: "material", action: action) { return refusal }
         if action == "environment.read" || action == "environment.update" {
             guard !document.isClosed else {

@@ -195,20 +195,40 @@ export function buildDelete(handles) {
   return buildBatch(handles.map(handle => ({ operation: 'delete', handle })));
 }
 
-export function buildTrimExtend(op, target, boundary, pick) {
+// Canvas coordinates are a WCS top view. Lift that view pick onto the
+// selected polyline's real OCS plane instead of silently forcing Z to zero.
+// Explicit XYZ from other callers stays WCS; the engine checks coplanarity.
+export function pickOnEntityPlane(point, row) {
+  if (!point || !Number.isFinite(point.x) || !Number.isFinite(point.y)) throw new Error('Pick a point on the drawing');
+  let z = point.z;
+  const polyline = row?.entity?.LwPolyline;
+  if (z === undefined && polyline) {
+    const normal = polyline.normal ?? { x: 0, y: 0, z: 1 };
+    const length = Math.hypot(normal.x, normal.y, normal.z);
+    const elevation = polyline.elevation ?? 0;
+    if (!Number.isFinite(length) || length <= 1e-9 || !Number.isFinite(elevation)) throw new Error('Invalid drawing plane');
+    if (Math.abs(normal.z / length) <= 1e-8) throw new Error('此轮廓在当前视图中侧立，暂无法取点。 This contour is edge-on in this view.');
+    z = (elevation * length - normal.x * point.x - normal.y * point.y) / normal.z;
+  }
+  const result = [point.x, point.y, z ?? 0];
+  if (!result.every(value => Number.isFinite(value) && Math.abs(value) <= 1e12)) throw new Error('Invalid drawing coordinate');
+  return result;
+}
+
+export function buildTrimExtend(op, target, boundary, pick, targetRow) {
   if (!target || !boundary) throw new Error('Trim/extend needs a target and a boundary entity');
-  if (!pick || !Number.isFinite(pick.x) || !Number.isFinite(pick.y)) throw new Error('Pick a point on the part to remove or extend');
-  if (op === 'trim') return { operation: 'trim', handle: target, boundary, pick: [pick.x, pick.y, 0] };
-  if (op === 'extend') return { operation: 'extend', handle: target, boundary, pick: [pick.x, pick.y, 0] };
+  if (String(target).toUpperCase() === String(boundary).toUpperCase()) throw new Error('请选择与边界不同的图元。 Select a target different from the boundary.');
+  const point = pickOnEntityPlane(pick, targetRow);
+  if (op === 'trim') return { operation: 'trim', handle: target, boundary, pick: point };
+  if (op === 'extend') return { operation: 'extend', handle: target, boundary, pick: point };
   throw new Error(`Unknown trim/extend operation '${op}'`);
 }
 
-export function buildOffset(handle, distance, side) {
+export function buildOffset(handle, distance, side, targetRow) {
   if (!handle) throw new Error('Select an entity first');
   const value = finite(Number(distance), 'offset distance');
   if (value <= 0) throw new Error('Offset distance must be positive');
-  if (!side || !Number.isFinite(side.x) || !Number.isFinite(side.y)) throw new Error('Pick the offset side');
-  return { operation: 'offset', handle, distance: value, side: [side.x, side.y, 0] };
+  return { operation: 'offset', handle, distance: value, side: pickOnEntityPlane(side, targetRow) };
 }
 
 export function buildSetLayer(handles, layer) {

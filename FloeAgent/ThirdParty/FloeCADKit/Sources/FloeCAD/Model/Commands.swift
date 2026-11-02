@@ -1839,6 +1839,7 @@ struct ResizePrimitiveCommand: DocumentCommand {
                 rebuilt.brep = handle
             }
         }
+        rebuilt = rebuilt.keepingUVAuthoring(of: old)
         document.bodies[index] = rebuilt
     }
 

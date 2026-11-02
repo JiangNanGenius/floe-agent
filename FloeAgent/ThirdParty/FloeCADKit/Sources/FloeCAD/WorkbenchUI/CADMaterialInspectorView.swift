@@ -52,6 +52,9 @@ struct CADMaterialInspectorView: View {
     @State private var renameText = ""
     @State private var exportedPack: MaterialPackDocument?
     @State private var disclosure: Set<String> = []
+    @State private var uvTarget: UVTarget?
+
+    private struct UVTarget: Identifiable { let bodyID: BodyID; var id: UUID { bodyID.raw } }
 
     @Environment(\.dismiss) private var dismiss
     private let onApplied: () -> Void
@@ -85,6 +88,18 @@ struct CADMaterialInspectorView: View {
                 surfaceSection
                 texturesSection
                 mappingSection
+                if model.target.bodyIDs.count == 1, let id = model.target.bodyIDs.first {
+                    Section {
+                        Button(FloeCADStrings.text("cad.uv.title", "UV Editor"), systemImage: "square.grid.3x3") {
+                            model.endPreviewOnly()
+                            uvTarget = UVTarget(bodyID: BodyID(raw: id))
+                        }
+                        .frame(minHeight: 44)
+                        .accessibilityIdentifier("CADMaterialOpenUVEditor")
+                        Text(FloeCADStrings.text("cad.uv.savedMaterial", "The UV editor uses the body’s current material."))
+                            .font(.footnote).foregroundStyle(.secondary)
+                    }
+                }
                 librarySection
                 issueSection
             }
@@ -109,6 +124,12 @@ struct CADMaterialInspectorView: View {
                     .disabled(!model.canApply)
                     .accessibilityIdentifier("CADMaterialApply")
                 }
+            }
+            .sheet(item: $uvTarget, onDismiss: {
+                _ = model.refreshTargetBinding()
+                model.refreshStaleBindings()
+            }) { target in
+                CADUVEditorView(document: model.document, bodyID: target.bodyID)
             }
             .onDisappear {
                 model.endPreviewOnly()

@@ -32,6 +32,11 @@ let package = Package(
         // ThirdParty/FloeCADKit/OCCT_RELINK.md.
         .binaryTarget(name: "OCCT", path: "Vendor/OCCT.xcframework"),
 
+        // Byte-exact qualified xatlas archives; this target packages, not rebuilds, the algorithm.
+        .binaryTarget(name: "XAtlasCore", path: "Vendor/XAtlasCore.xcframework"),
+        .target(name: "XAtlasShim", dependencies: ["XAtlasCore"], path: "Sources/XAtlasShim",
+                publicHeadersPath: "include", cxxSettings: [.headerSearchPath("Private")]),
+
         // ObjC++ façade over OCCT plus the LAPACK shim used by the sketch
         // solver. Swift never sees OCCT C++ headers.
         .target(
@@ -54,6 +59,7 @@ let package = Package(
             dependencies: [
                 "OCCTShim",
                 "OCCT",
+                "XAtlasShim",
                 .product(name: "Euclid", package: "Euclid"),
                 .product(name: "ShapeScript", package: "ShapeScript")
             ],

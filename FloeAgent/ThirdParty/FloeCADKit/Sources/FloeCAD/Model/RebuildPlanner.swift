@@ -169,6 +169,7 @@ enum RebuildPlanner {
                 after.isHidden = existing.isHidden
                 after.material = existing.material
                 after.materialFaceBindings = existing.materialFaceBindings
+                after = after.keepingUVAuthoring(of: existing)
                 commands.append(ReplaceBodyCommand(title: title, before: existing, after: after))
             } else {
                 commands.append(AddBodyCommand(body: body, title: title))

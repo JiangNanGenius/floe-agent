@@ -466,7 +466,9 @@ pub fn polyline_signed_area(points: &[P], bulges: &[f64], closed: bool) -> f64 {
             let r2 = (chord / (2.0 * (theta / 2.0).sin())).powi(2);
             // Circular segment area = r²/2 (θ - sin θ); signed by bulge.
             let segment = 0.5 * r2 * (theta - theta.sin());
-            area += segment;
+            // Shoelace below is twice the polygon area. Add twice the
+            // actual arc-segment area before the final halving as well.
+            area += 2.0 * segment;
         }
     }
     area * 0.5

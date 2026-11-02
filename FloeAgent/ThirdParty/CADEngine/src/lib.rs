@@ -12,13 +12,16 @@
 //! line/circle/arc/LWPolyline/text creation (including rectangle LWPolylines),
 //! move/copy/rotate/uniform scale/mirror/delete/property changes, layer
 //! create/rename/update/delete, trim/extend for coplanar lines and arcs,
-//! offset for lines/circles/arcs/open polylines, native dimensions and leaders,
+//! offset for lines/circles/arcs and exact open/closed bulge polylines, native dimensions and leaders,
 //! and one atomic pencil stroke. Read-only queries cover capabilities, drawing
 //! header, layers, paginated filtered entities, object snap candidates,
 //! geometric measurements and a consistency check. Splines, blocks, xrefs,
-//! proxy graphics, 3D and non-default OCS edits are retained and reported as
-//! unsupported, never flattened.
+//! proxy graphics and 3D edits are retained and reported as unsupported.
+//! LWPolyline trim/offset works in its OCS; other OCS edits remain unsupported.
 mod geometry;
+mod polyline_edit;
+#[cfg(test)]
+mod polyline_edit_tests;
 
 use acadrust::entities::Entity;
 use acadrust::entities::{
@@ -32,7 +35,7 @@ use acadrust::{
 };
 use geometry::{
     intersections, line_arc_intersections_infinite, line_circle_intersections_infinite,
-    line_line_intersection, norm_angle, offset_open_polyline, polyline_length,
+    line_line_intersection, norm_angle, polyline_length,
     polyline_signed_area, primitive_distance, Primitive, P,
 };
 use serde::Deserialize;
@@ -137,7 +140,7 @@ fn unit_name(document: &CadDocument) -> String {
 fn capabilities() -> Value {
     json!({
         "version": 2,
-        "coordinateUnits": "unitless drawing units; coordinates are world/OCS values [x,y,z] with Z preserved",
+        "coordinateUnits": "unitless drawing units; trim pick and offset side are WCS [x,y,z] on the target plane; serialized circle/arc/polyline coordinates remain OCS",
         "operations": [
             "addLine", "addCircle", "addArc", "addLwPolyline", "addText", "addLeader",
             "addDimension", "move", "copy", "rotate", "scale", "mirror", "setText",
@@ -160,10 +163,11 @@ fn capabilities() -> Value {
             "rotate": ["Line", "Circle", "Arc", "LwPolyline", "Text"],
             "scaleUniform": ["Line", "Circle", "Arc", "LwPolyline", "Text"],
             "mirror": ["Line", "Circle", "Arc", "LwPolyline", "Text"],
-            "trim": {"targets": ["Line", "Arc"], "boundaries": ["Line", "Circle", "Arc", "LwPolyline"], "bulgePolylines": false, "splittingPicks": "rejected"},
+            "trim": {"targets": ["Line", "Arc", "LwPolyline"], "boundaries": ["Line", "Circle", "Arc", "LwPolyline"], "bulgePolylines": true, "closedLwPolyline": "remove picked interval, retain one open chain in original direction", "splittingPicks": "open-entity splitting rejected"},
             "extend": {"targets": ["Line"], "boundaries": ["Line", "Circle", "Arc", "LwPolyline"]},
-            "offset": {"line": true, "circle": true, "arc": true, "openLwPolyline": true, "closedLwPolyline": false, "spline": false},
+            "offset": {"line": true, "circle": true, "arc": true, "openLwPolyline": true, "closedLwPolyline": true, "bulgePolylines": true, "topologyChanges": "collapse, folds, overlaps and disconnected supports rejected", "spline": false},
             "nonDefaultOCS": false,
+            "lwPolylineOCS": {"trim": true, "offset": true, "boundary": "coplanar Line/Circle/Arc/LwPolyline; opposite normals supported", "pick": "WCS point on target plane", "dependencies": "attached data/reactors/dictionaries/raw graphics rejected without mutation"},
             "lockedLayers": "all edits rejected on locked entities/layers"
         },
         "layers": {
@@ -189,7 +193,7 @@ fn capabilities() -> Value {
         },
         "batch": {"maxOperations": MAX_BATCH_OPERATIONS, "atomicity": "all operations applied or none; one undo snapshot", "strokeAllowed": false},
         "limits": {"bytes": MAX_BYTES, "entities": MAX_ENTITIES, "history": HISTORY, "requestBytes": 32768, "textBytes": 16384, "polylinePoints": MAX_POLYLINE_POINTS},
-        "unsupported": ["splines", "block and xref editing", "proxy graphics editing", "3D solid editing", "non-default OCS flattening", "bulge trim/offset", "closed polyline offset"]
+        "unsupported": ["splines", "block and xref editing", "proxy graphics editing", "3D solid editing", "non-default OCS edits other than LWPolyline trim/offset", "topology-changing offsets", "open polyline split trims", "attached/dependent polyline trim/offset"]
     })
 }
 
@@ -429,13 +433,12 @@ enum Edit {
         line_weight: Option<i32>,
     },
     Delete { handle: String },
-    /// Trim a Line or Arc at its intersections with one boundary entity. The
-    /// pick point selects the portion to remove; an interior pick that would
-    /// split the entity is rejected.
+    /// Trim a Line, Arc or LWPolyline. WCS pick selects the portion to remove.
+    /// Closed polylines retain one open chain; open-entity splits are rejected.
     Trim { handle: String, boundary: String, pick: [f64; 3] },
     /// Extend a Line to the boundary intersection beyond the nearer endpoint.
     Extend { handle: String, boundary: String, pick: [f64; 3] },
-    /// Offset a Line/Circle/Arc/open LWPolyline, creating a new entity.
+    /// Offset a Line/Circle/Arc or open/closed bulge LWPolyline, creating a new entity.
     Offset { handle: String, distance: f64, side: [f64; 3] },
     AddDimension {
         kind: String,
@@ -957,19 +960,35 @@ impl CadSession {
                 document.remove_entity(key);
             }
             Edit::Trim { handle: id, boundary, pick } => {
+                if id.eq_ignore_ascii_case(&boundary) {
+                    return Err("Select different target and boundary entities".into());
+                }
+                let plane = match Self::read_only(document, &id)? {
+                    EntityType::LwPolyline(polyline) => Some(polyline_edit::Plane::of(polyline)?),
+                    _ => None,
+                };
                 let boundary_primitives = {
                     let boundary_entity = Self::read_only(document, &boundary)?;
                     if !model_space(document, boundary_entity) {
                         return Err("Only model-space boundaries are supported".into());
                     }
-                    primitives_of(boundary_entity)?
+                    if let Some(plane) = plane {
+                        polyline_edit::primitives_in_plane(boundary_entity, plane)?
+                    } else {
+                        primitives_of(boundary_entity)?
+                    }
                 };
-                let pick = point2(pick)?;
+                let world_pick = vector(pick)?;
                 let target = Self::mutable(document, &id)?;
-                if !planar(target) {
-                    return Err("Trimming this coordinate system is not supported".into());
+                if let EntityType::LwPolyline(polyline) = target {
+                    *polyline = polyline_edit::trim(polyline, &boundary_primitives, world_pick)?;
+                } else {
+                    if !planar(target) {
+                        return Err("Trimming this coordinate system is not supported".into());
+                    }
+                    planar_vector(pick)?;
+                    trim_entity(target, &boundary_primitives, P::new(world_pick.x, world_pick.y))?;
                 }
-                trim_entity(target, &boundary_primitives, pick)?;
             }
             Edit::Extend { handle: id, boundary, pick } => {
                 let boundary_primitives = {
@@ -988,12 +1007,19 @@ impl CadSession {
             }
             Edit::Offset { handle: id, distance, side } => {
                 let distance = positive(distance)?;
-                let side = point2(side)?;
-                let source = Self::read_only(document, &id)?.clone();
-                if !editable(&source) || !planar(&source) || !model_space(document, &source) {
-                    return Err("Offsetting this entity or coordinate system is not supported".into());
-                }
-                let mut copy = offset_entity(&source, distance, side)?;
+                let world_side = vector(side)?;
+                // The source's normal layer/model-space checks also apply to
+                // clone-based offset, before any geometry or new handle.
+                let source = Self::mutable(document, &id)?.clone();
+                let mut copy = if let EntityType::LwPolyline(polyline) = &source {
+                    EntityType::LwPolyline(polyline_edit::offset(polyline, distance, world_side)?)
+                } else {
+                    if !planar(&source) {
+                        return Err("Offsetting this entity or coordinate system is not supported".into());
+                    }
+                    planar_vector(side)?;
+                    offset_entity(&source, distance, P::new(world_side.x, world_side.y))?
+                };
                 copy.as_entity_mut().set_handle(Handle::NULL);
                 Self::add(document, copy, created)?;
             }
@@ -1806,34 +1832,13 @@ fn entity_length(entity: &EntityType) -> Result<f64, String> {
     }
 }
 
-/// Convert editable entities into 2D primitives for intersection work.
-/// LWPolylines with bulges are refused: trimming against an approximated arc
-/// would silently change the drawing.
+/// Convert only world-XY entities for legacy line/arc operations and queries.
+/// Bulge boundary curves are exact; OCS polyline operations pass their own plane.
 fn primitives_of(entity: &EntityType) -> Result<Vec<Primitive>, String> {
     if !planar(entity) {
         return Err("Only coplanar (+Z) entities are supported for this operation".into());
     }
-    match entity {
-        EntityType::Line(e) => Ok(vec![Primitive::Segment { a: P::new(e.start.x, e.start.y), b: P::new(e.end.x, e.end.y) }]),
-        EntityType::Circle(e) => Ok(vec![Primitive::Circle { c: P::new(e.center.x, e.center.y), r: e.radius }]),
-        EntityType::Arc(e) => Ok(vec![Primitive::Arc {
-            c: P::new(e.center.x, e.center.y),
-            r: e.radius,
-            start: e.start_angle,
-            end: e.end_angle,
-        }]),
-        EntityType::LwPolyline(e) => {
-            if e.vertices.iter().any(|v| v.bulge.abs() > 1e-12) {
-                return Err("Polylines with arc segments (bulges) are not supported for this operation".into());
-            }
-            let points: Vec<P> = e.vertices.iter().map(|v| P::new(v.location.x, v.location.y)).collect();
-            let count = if e.is_closed { points.len() } else { points.len().saturating_sub(1) };
-            Ok((0..count)
-                .map(|i| Primitive::Segment { a: points[i], b: points[(i + 1) % points.len()] })
-                .collect())
-        }
-        _ => Err("This entity type has no supported planar geometry".into()),
-    }
+    polyline_edit::primitives_in_plane(entity, polyline_edit::Plane::new(Vector3::UNIT_Z, 0.0)?)
 }
 
 /// Intersections of a target primitive with boundary primitives, expressed as
@@ -2033,23 +2038,7 @@ fn offset_entity(source: &EntityType, distance: f64, side: P) -> Result<EntityTy
             copy.radius = radius;
             Ok(EntityType::Arc(copy))
         }
-        EntityType::LwPolyline(e) => {
-            if e.is_closed {
-                return Err("Offset of closed polylines is not supported yet".into());
-            }
-            if e.vertices.iter().any(|v| v.bulge.abs() > 1e-12) {
-                return Err("Offset of polylines with arc segments is not supported yet".into());
-            }
-            let points: Vec<P> = e.vertices.iter().map(|v| P::new(v.location.x, v.location.y)).collect();
-            let offset = offset_open_polyline(&points, distance, side).ok_or("Offset folds the polyline; reduce the distance")?;
-            let mut copy = e.clone();
-            copy.vertices = offset
-                .iter()
-                .map(|p| LwVertex::new(Vector2::new(p.x, p.y)))
-                .collect();
-            Ok(EntityType::LwPolyline(copy))
-        }
-        _ => Err("Offset supports lines, circles, arcs and open polylines".into()),
+        _ => Err("Offset supports lines, circles, arcs and supported polylines".into()),
     }
 }
 

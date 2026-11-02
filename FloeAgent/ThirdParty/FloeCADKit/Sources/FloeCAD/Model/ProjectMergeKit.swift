@@ -523,6 +523,8 @@ nonisolated enum ProjectMergeKit {
             result.transform.translation += translation
             result.isHidden = body.isHidden
             result.material = body.material
+            // UV source indices are body-local, so no identity/translation remap is needed.
+            result.uvData = body.uvData
             result.materialFaceBindings = body.materialFaceBindings.map { binding in
                 var mapped = binding
                 // The material signature is body-local and does not translate.

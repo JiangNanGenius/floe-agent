@@ -313,12 +313,24 @@ export function installCadEditor({engine,initial,render,viewer,zh,dark=false,onD
  button(modifyActions,say('镜像','Mirror'),()=>applyTransform('mirror'));
  button(modifyActions,say('删除选中','Delete selected'),()=>{try{const handles=targets();if(!handles.length)throw Error(say('请先选择图元','Select an entity first'));void mutate('edit',buildDelete(handles));}catch(e){note(e.message,true);}});
  const boundaryLabel=document.createElement('span');boundaryLabel.className='cadFieldLabel';boundaryLabel.textContent=say('边界：无','Boundary: none');
- const setBoundary=button(modifyActions,say('把选中设为边界','Use selected as boundary'),()=>{if(!selected){note(say('请先选择边界图元','Select the boundary entity'),true);return;}boundaryHandle=selected;boundaryLabel.textContent=say(`边界：${boundaryHandle}`,'Boundary: '+boundaryHandle);note(say('点击要修剪/延伸的部分','Click the part to trim or extend'));clickAction=(point)=>{clickAction=null;try{void mutate('edit',buildTrimExtend(trimMode,selected,boundaryHandle,point));}catch(e){note(e.message,true);}};});
- let trimMode='trim';
- button(modifyActions,say('修剪','Trim'),()=>{trimMode='trim';setBoundary.onclick();});
- button(modifyActions,say('延伸','Extend'),()=>{trimMode='extend';setBoundary.onclick();});
+ button(modifyActions,say('把选中设为边界','Use selected as boundary'),()=>{
+  if(!selected){note(say('请先选择边界图元','Select the boundary entity'),true);return;}
+  boundaryHandle=selected;clickAction=null;
+  boundaryLabel.textContent=say(`边界：${boundaryHandle}`,'Boundary: '+boundaryHandle);
+  note(say('请选择目标图元，再点击修剪或延伸','Select the target, then choose Trim or Extend'));
+ });
+ function beginTrimExtend(mode){
+  const target=selected,boundary=boundaryHandle;
+  if(!boundary){note(say('请先将边界图元设为边界','Choose a boundary entity first'),true);return;}
+  if(!target||target===boundary){note(say('请选择与边界不同的目标图元','Select a target different from the boundary'),true);return;}
+  const row=info.entities.find(entity=>entity.handle===target);
+  clickAction=point=>{clickAction=null;try{void mutate('edit',buildTrimExtend(mode,target,boundary,point,row));}catch(e){note(e.message,true);}};
+  note(say('点击要移除或延伸的部分','Click the part to remove or extend'));
+ }
+ button(modifyActions,say('修剪','Trim'),()=>beginTrimExtend('trim'));
+ button(modifyActions,say('延伸','Extend'),()=>beginTrimExtend('extend'));
  button(modifyActions,say('加选/取消多选','Toggle multi-select'),()=>{toggleSelection(selected);});
- button(modifyActions,say('偏移','Offset'),()=>{try{const handle=targets()[0];if(!handle)throw Error(say('请先选择图元','Select an entity first'));clickAction=point=>{clickAction=null;try{void mutate('edit',buildOffset(handle,offsetDistance(),point));}catch(e){note(e.message,true);}};note(say('点击偏移方向一侧','Click the side to offset toward'));}catch(e){note(e.message,true);}});
+ button(modifyActions,say('偏移','Offset'),()=>{try{const handle=targets()[0];if(!handle)throw Error(say('请先选择图元','Select an entity first'));clickAction=point=>{clickAction=null;try{void mutate('edit',buildOffset(handle,offsetDistance(),point,info.entities.find(entity=>entity.handle===handle)));}catch(e){note(e.message,true);}};note(say('点击偏移方向一侧','Click the side to offset toward'));}catch(e){note(e.message,true);}});
  modify.append(boundaryLabel);
 
  // -------------------------------------------------------------- layer tools

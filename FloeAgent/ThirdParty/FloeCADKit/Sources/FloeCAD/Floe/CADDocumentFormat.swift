@@ -59,6 +59,8 @@ nonisolated enum CADDocumentFormat {
     static let associativeSweepVersion = 7
     static let associativeExtrudeVersion = 7
     static let exactRadialVersion = 7
+    /// Only real body UV authoring records need this shared unreleased floor.
+    static let uvAuthoringVersion = 7
     /// Coordinated package floor for a document that actually stores
     /// user-named versions. Ordinary documents keep their existing schema
     /// floor; only a package that gains a checkpoint is raised to this floor.
@@ -128,16 +130,18 @@ nonisolated enum CADDocumentFormat {
         /// than letting an edit remove targets that future schema depends on.
         var opaqueAnimation = false
         var opaqueBodyAppearance = false
+        var opaqueUVAuthoring = false
         var isOpaqueReadOnly: Bool {
             !opaquePlanes.isEmpty || !opaqueSketches.isEmpty
                 || !opaqueAxes.isEmpty || !opaqueDatumPoints.isEmpty
                 || !opaqueFeatures.isEmpty || opaqueDrawings
-                || opaqueAnimation || opaqueBodyAppearance
+                || opaqueAnimation || opaqueBodyAppearance || opaqueUVAuthoring
         }
     }
 
     static func requiredFormat(document: DesignDocument) -> Int {
         var required = legacyVersion
+        if document.bodies.contains(where: { $0.uvData != nil }) { required = max(required, uvAuthoringVersion) }
         if document.features.nodes.contains(where: {
             switch $0.kind {
             case .baseSolid, .pushPull(_, _, .cylinderRadial): return true
@@ -701,6 +705,10 @@ nonisolated enum CADDocumentFormat {
                                      animationIntent.requiredVersion)
         if animationIntent.isFutureSchema { result.opaqueAnimation = true }
         for body in bodies {
+            if let uv = body.uv {
+                result.requiredVersion = max(result.requiredVersion, uvAuthoringVersion)
+                if (try? CADUVRecord.decode(uv)) == nil { result.opaqueUVAuthoring = true }
+            }
             guard let bytes = body.faceMaterials,
                   let object = try? JSONSerialization.jsonObject(with: bytes) else { continue }
             if let bindings = object as? [[String: Any]], bindings.contains(where: {

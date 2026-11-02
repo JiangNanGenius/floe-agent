@@ -122,6 +122,8 @@ final class PersistedBody {
     var faceMaterialsData: Data?
     /// Optional derived face map bound to the stored mesh/BRep bytes.
     var faceNamingSnapshotData: Data?
+    /// Body-owned source/seams/UV sets; raw bytes preserve future versions.
+    var uvData: Data?
     /// OCCT BRep blob, so analytic geometry survives a reload.
     var brepData: Data?
     weak var project: Project?

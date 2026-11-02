@@ -155,6 +155,8 @@ struct CADBodyRecord: Codable, Sendable {
     var faceNamingSnapshot: Data?
     var brepBlob: String?
     var brepSHA256: String?
+    /// Semantic UV authoring record; only actual use raises the writer floor.
+    var uv: Data? = nil
 }
 
 struct CADBlobRecord: Codable, Sendable {
@@ -627,6 +629,7 @@ final class FileCADDocumentStore: CADDocumentStore, @unchecked Sendable {
             persisted.materialData = record.material
             persisted.faceMaterialsData = record.faceMaterials
             persisted.faceNamingSnapshotData = record.faceNamingSnapshot
+            persisted.uvData = record.uv
             persisted.brepData = record.brepBlob.flatMap { blobs[$0] }
             persisted.project = project
             project.bodies.append(persisted)
@@ -740,7 +743,8 @@ final class FileCADDocumentStore: CADDocumentStore, @unchecked Sendable {
                 faceMaterials: body.faceMaterialsData,
                 faceNamingSnapshot: body.faceNamingSnapshotData,
                 brepBlob: brepBlob,
-                brepSHA256: brepSHA
+                brepSHA256: brepSHA,
+                uv: body.uvData
             ))
         }
         document.sketches = project.sketches.map {

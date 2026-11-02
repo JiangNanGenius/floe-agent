@@ -610,6 +610,34 @@ final class DocumentSession {
         didChange()
     }
 
+    /// UV changes preserve ordered triangle geometry. Retain only tables that
+    /// already belong to the actual source; copying UVs cannot mint identities.
+    /// The same cache snapshot travels with undo/redo, while BRep/CSG remain intact.
+    @discardableResult
+    func performUVEdit(body: Body, render: RenderMesh, data: Data?) -> Bool {
+        guard requireWritable(), let current = document.body(with: body.id),
+              current.meshRevision == body.meshRevision, current.render == body.render,
+              current.uvData == body.uvData,
+              let oldDigest = try? CADUVRecord.geometryDigest(current.render),
+              let newDigest = try? CADUVRecord.geometryDigest(render), oldDigest == newDigest else { return false }
+        guard current.render != render || current.uvData != data else { return false }
+        let table = faceRangeTable(for: current)
+        let valid = Set(document.bodies.filter { lastNamingRevisions[$0.id] == $0.meshRevision }.map(\.id))
+        var cache = NamingCacheState(faceTables: lastFaceTables.filter { valid.contains($0.key) },
+                                     kernelNames: lastKernelNames.filter { valid.contains($0.key) })
+        // A restored table was verified against these exact mesh/BRep bytes.
+        // Keeping it through a UV-only vertex split preserves its triangle ids;
+        // no new native face or edge name is manufactured here.
+        if let table { cache.faceTables[body.id] = table }
+        let command = SetBodyUVCommand(title: "Edit UV", bodyID: body.id,
+            beforeRender: current.render, afterRender: render,
+            beforeData: current.uvData, afterData: data)
+        perform(CompositeCommand(title: "Edit UV", commands: [command,
+            NamingCacheCommand(owner: self, before: cache, after: cache)]))
+        finishHistoryNamingRestore()
+        return document.body(with: body.id)?.uvData == data
+    }
+
     /// Coalesce with the previous command (live drags, slider edits).
     func amend(_ command: DocumentCommand) {
         guard requireWritable() else { return }
@@ -914,7 +942,8 @@ final class DocumentSession {
     @discardableResult
     private func performRebuild(
         _ editedGraph: FeatureGraph, leadingCommands: [DocumentCommand], title: String,
-        sketches: [Sketch]? = nil, previewDocument: DesignDocument? = nil
+        sketches: [Sketch]? = nil, previewDocument: DesignDocument? = nil,
+        strictValidation: Bool = false
     ) -> Bool {
         // Re-entrancy guard: this method ends by `perform`ing one internal
         // `CompositeCommand`; if that mutation ever routes back into a rebuild
@@ -950,6 +979,13 @@ final class DocumentSession {
             leadingCommands: leadingCommands, title: title,
             previewDocument: prospective,
             variables: VariableTable.resolve(prospective.variables).values)
+        // A merge is all-or-nothing even for histories without datum refs.
+        // Do not publish a partially evaluated graph or consume the old Undo.
+        if strictValidation, !plan.errors.isEmpty || !plan.referenceErrors.isEmpty {
+            lastRebuildRejection = plan.referenceErrors
+            lastRejectedFeatureErrors = plan.errors
+            return false
+        }
         if associative {
             var baselineCache = evalCache
             var counter: UInt64 = 0
@@ -1021,6 +1057,28 @@ final class DocumentSession {
         restoredNamingCacheFromHistory = false
         adoptCachedBodies()
         return true
+    }
+
+    /// E35: one reviewed feature-history merge. The real planner validates
+    /// and rebuilds before any command is published. Its owned receipt pins
+    /// the exact pre-merge document, Undo/Redo and naming/cache state so a
+    /// failed ordinary save can roll back only this command.
+    func performTwoCopyMerge(_ nodes: [FeatureNode]) -> OwnedCommandReceipt? {
+        guard requireWritable(), !isRebuilding else { return nil }
+        let checkpoint = captureEditCheckpoint()
+        let title = FloeCADStrings.text("cad.merge.undo", "Merge Copies")
+        var graph = document.features
+        graph.nodes = nodes
+        let command = CADTwoCopyMergeFeaturesCommand(title: title, before: document.features, after: graph)
+        guard performRebuild(graph, leadingCommands: [command], title: title, strictValidation: true) else {
+            return nil
+        }
+        lastCommittedOwnedToken = nil
+        let receipt = OwnedCommandReceipt(token: UUID(), tag: "two-copy-merge", commandTitle: title,
+            checkpoint: checkpoint, changeCount: changeCount, persistenceChangeCount: persistenceChangeCount,
+            savedRevision: savedIdentity.revision, undoDepth: undoStack.undoCommands.count)
+        lastOwnedCommandReceipt = receipt
+        return receipt
     }
 
     /// Read-only source acquisition for the datum adapter. Two bounded memo
@@ -1915,7 +1973,7 @@ final class DocumentSession {
             },
             bodies: project.bodies.map {
                 CADBodyRecord(bodyID: $0.bodyID, name: $0.name, transform: $0.transformData,
-                              isHidden: $0.isHidden, faceMaterials: $0.faceMaterialsData)
+                              isHidden: $0.isHidden, faceMaterials: $0.faceMaterialsData, uv: $0.uvData)
             },
             drawings: project.drawingsData,
             animation: project.animationData)
@@ -1953,6 +2011,7 @@ final class DocumentSession {
                 revision: loaded.nextRevision()
             )
             body.isHidden = persisted.isHidden
+            body.uvData = persisted.uvData
             body.material = persisted.materialData.flatMap { data -> BodyMaterialSpec? in
                 let decoded = try? JSONDecoder().decode(BodyMaterialSpec.self, from: data)
                 if decoded == nil { unreadableRows.bodyMaterial.insert(persisted.bodyID) }
@@ -2734,6 +2793,7 @@ final class DocumentSession {
                     persisted.brepData = brepData
                 }
                 persisted.faceNamingSnapshotData = faceNamingSnapshotData
+                persisted.uvData = body.uvData
             } else {
                 let persisted = PersistedBody(
                     bodyID: body.id.raw,
@@ -2747,6 +2807,7 @@ final class DocumentSession {
                 persisted.faceMaterialsData = faceMaterialsData
                 persisted.brepData = brepData
                 persisted.faceNamingSnapshotData = faceNamingSnapshotData
+                persisted.uvData = body.uvData
                 persisted.project = project
                 modelContext.insert(persisted)
             }

@@ -133,3 +133,7 @@ cleanup. Headers and `Info.plist` remain Git-tracked. Instead:
 ShapeScript is integrated (see above). The Canvas child-project entry from the
 native workbench is still open; the 2D Canvas binding path from 1.7.24 is
 unchanged. See the completion matrix in `docs/FLOE_CAD_AND_DRAWING_ASSISTANT.md`.
+
+## xatlas UV algorithm
+
+Pinned upstream `jpcy/xatlas` commit `f700c7790aaa030e794b52ba7791a05c085faf0c` (MIT), with the existing qualified invalid-AddMesh cleanup guard (`7f4e0f1a6cf9418ab5e07c0e4e4052f493434e8863013301070b80351fc46e0d`). The byte-exact arm64 iPhoneOS, iOS Simulator and macOS static archives are packaged as `Vendor/XAtlasCore.xcframework`; no algorithm source is recompiled by this package. Archive hashes are in `Vendor/XAtlasCore-PROVENANCE.json`. The bridge `Sources/XAtlasShim` is separate new Floe code, with validation/cancellation/ownership and no examples/thirdparty dependencies. Original MIT and Thekla/NVIDIA/Fast-BVH notices remain in `Vendor/XAtlasCore-NOTICES.txt` and the App Licenses resources. Component qualification does not qualify this new bridge or product UI.

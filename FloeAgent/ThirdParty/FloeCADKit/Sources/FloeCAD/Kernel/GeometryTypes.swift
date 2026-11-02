@@ -174,6 +174,9 @@ nonisolated struct Body: Identifiable, Sendable {
     /// existing document/body; resolution never guesses after a topology
     /// change (see `CADFaceMaterialResolver`).
     var materialFaceBindings: [CADFaceMaterialBinding] = []
+    /// Raw, versioned UV authoring bytes. Stale/unknown records are retained;
+    /// no old vertex index is ever interpreted against a new geometry mesh.
+    var uvData: Data? = nil
     /// Euclid source mesh, if this body was just built/booleaned in-session.
     /// Nil after loading from disk; use `euclidMesh()` which rebuilds on demand.
     var euclid: Euclid.Mesh?
@@ -272,6 +275,6 @@ nonisolated struct Body: Identifiable, Sendable {
         body.material = live.material
         body.materialFaceBindings = live.materialFaceBindings
         body.isHidden = live.isHidden
-        return body
+        return body.keepingUVAuthoring(of: live)
     }
 }

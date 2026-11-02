@@ -167,6 +167,36 @@ actor CadDocumentCenter: CadDocumentHost {
                 let normalized = try materialRequest(request, resolved: resolved)
                 return try await FloeCAD3DBridge.shared.handle(
                     url: url, requestJSON: Self.encodeNativeJSON(normalized))
+            case "versions":
+                var normalized = request
+                var payload = request["payload"] as? [String: Any] ?? [:]
+                // Always discard an incoming host field, including on apply
+                // and cancel. Only a resolved workspace path can supply it.
+                payload["_resolved_merge_source_url"] = nil
+                let action = (payload["action"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+                if action == "merge_compare" {
+                    guard let raw = payload["source_path"] as? String,
+                          !raw.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                        throw FloeError.validationFailed("versions merge_compare requires source_path")
+                    }
+                    var relative = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+                    if relative.hasPrefix("/") {
+                        let prefix = resolved.root.path + "/"
+                        guard relative.hasPrefix(prefix) else {
+                            throw FloeError.validationFailed("The other copy must be inside the task workspace.")
+                        }
+                        relative = String(relative.dropFirst(prefix.count))
+                    }
+                    let source = try resolved.service.guardResolver.resolve(relative)
+                    guard source.pathExtension.lowercased() == "floecad",
+                          Self.canonicalDocumentPath(source) != canonicalTarget else {
+                        throw FloeError.validationFailed("Choose a different native .floecad copy.")
+                    }
+                    payload["_resolved_merge_source_url"] = source.absoluteString
+                }
+                normalized["payload"] = payload
+                try cancellation.throwIfCancelled()
+                return try await FloeCAD3DBridge.shared.handle(url: url, requestJSON: Self.encodeNativeJSON(normalized))
             case "parameters":
                 return try await FloeCAD3DBridge.shared.handle(
                     url: url, requestJSON: requestJSON)

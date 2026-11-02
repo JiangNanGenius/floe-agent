@@ -1,0 +1,1 @@
+module XAtlasCore { header "XAtlasCore.h" export * }
