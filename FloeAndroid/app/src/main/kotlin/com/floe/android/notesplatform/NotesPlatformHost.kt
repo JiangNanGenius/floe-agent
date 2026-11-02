@@ -81,6 +81,7 @@ class NotesPlatformHost internal constructor(
     fun hostPorts(
         assistant: NotesAssistantPort,
         indexing: NotesIndexingPort? = null,
+        taskLaunch: com.floe.android.feature.notes.ui.api.NotesTaskLaunchPort? = null,
     ): NotesHostPorts = NotesHostPorts(
         media = media,
         office = office,
@@ -90,6 +91,7 @@ class NotesPlatformHost internal constructor(
         recovery = recovery,
         indexing = indexing,
         workspaceImport = workspaceImport,
+        taskLaunch = taskLaunch,
     )
 
     /**

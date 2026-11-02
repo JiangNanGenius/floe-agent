@@ -845,6 +845,11 @@ public class NotesHostPorts(
      * row instead of showing a placeholder that cannot work.
      */
     public val workspaceImport: NotesWorkspaceImportPort? = null,
+    /**
+     * Optional explicit Notes-selection -> ordinary-task host. Null hides the
+     * action; the library never presents an unavailable placeholder.
+     */
+    public val taskLaunch: NotesTaskLaunchPort? = null,
 )
 
 public enum class NotesSettingsTarget { MODELS, GENERAL }

@@ -154,7 +154,8 @@ class FloeApplication : Application() {
                             // the platform host above and participates in the
                             // same root-stop gate. The handle is read-only;
                             // the workspace file is never modified.
-                            val ports = platform.hostPorts(assistant = assistant, indexing = ocr)
+                            val ports = platform.hostPorts(assistant = assistant, indexing = ocr,
+                                taskLaunch = com.floe.android.notesplatform.NotesTaskLaunchHost(host, notesHost))
                             val session = com.floe.android.feature.notes.ui.state.createNotesWorkspaceSession(
                                 notesHost.service, ports,
                             )

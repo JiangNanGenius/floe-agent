@@ -3360,6 +3360,21 @@
       "compiled": false,
       "testsRun": false,
       "deviceVerified": false
+    },
+    "c08-notes-task-input": {
+      "state": "source-integrated-unqualified",
+      "coverage": [
+        "Explicit Notes resources -> real ordinary conversation + composer draft; no provider required to create the task",
+        "Original committed run token reused for exact-resource staging before model starts and fresh guest baseline",
+        "Mandatory owner admission, bounded shared receipt store and unchanged Notes originals"
+      ],
+      "stillPending": [
+        "Unified compilation and authored regression execution",
+        "Live reused project workspace new-input handoff remains separate C01 integration concern"
+      ],
+      "compiled": false,
+      "testsRun": false,
+      "deviceVerified": false
     }
   }
 }

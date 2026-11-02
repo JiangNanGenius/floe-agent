@@ -1729,8 +1729,33 @@ public actor FacadeRunDomain {
         //    run keeps living under this service owner independent of any
         //    view.
         let service: ConversationRunService
+        var notesTaskInputs: C08NotesTaskLaunchCommittedResult?
         var assemblyPhase: RunDomainError.Phase? = .historyLoad
         do {
+            if bundle.identity == .ordinary,
+               prepared.run.goal.contains("Attached from Notes (selection "),
+               let root = AndroidRuntimeBootstrap.notesBinding(epoch: epoch, ownerToken: nil),
+               try C08NotesTaskLaunchFileReceiptStore().pending(
+                   forConversation: prepared.conversation.id,
+                   receiptRoot: C08NotesTaskLaunch.receiptRoot(for: root.artifactStoreURL),
+                   now: Date()) != nil {
+                guard let lease = owners[runID]?.ownedTokens[RuntimeOwnedWorkKind.run.rawValue] else {
+                    throw C08NotesTaskLaunchError(.ownerAdmissionRefused).runError
+                }
+                do {
+                    notesTaskInputs = try await C08NotesTaskLaunch.stagePendingCommittedLaunch(
+                        conversationID: prepared.conversation.id,
+                        runID: prepared.run.id,
+                        goal: prepared.run.goal,
+                        ownerLease: lease,
+                        cancellation: C08NotesTaskLaunchCancellation { [weak self] in
+                            guard let self else { return true }
+                            return await self.notesTaskLaunchCancelled(runID, launchToken)
+                        })
+                } catch let error as C08NotesTaskLaunchError {
+                    throw error.runError
+                }
+            }
             let history = try await loadRunHistory(
                 conversationID: prepared.conversation.id,
                 excludingRun: prepared.run.id,
@@ -1798,6 +1823,10 @@ public actor FacadeRunDomain {
         }
         register(handed)
         launchTaskAttach(prepared: prepared, service: service, domain: self)
+        if let notesTaskInputs {
+            _ = C08NotesTaskLaunch.completeCommittedLaunch(
+                receiptID: notesTaskInputs.receiptID, notesEpoch: epoch)
+        }
         return RunDomainReply(.mutationAccepted(detail: [
             "launched": "true",
             "runID": prepared.run.id.uuidString,
@@ -3777,6 +3806,10 @@ public actor FacadeRunDomain {
     private func shouldAbortBeforeEffects(_ runID: UUID) -> Bool {
         guard let ownership = owners[runID] else { return true }
         return ownership.cancelRequested
+    }
+
+    private func notesTaskLaunchCancelled(_ runID: UUID, _ token: LaunchEpochFence.Token) -> Bool {
+        shouldAbortBeforeEffects(runID) || !fenceIsValid(token)
     }
 
     private func refuseLaunch(runID: UUID, error: RunDomainError) -> RunDomainReply {

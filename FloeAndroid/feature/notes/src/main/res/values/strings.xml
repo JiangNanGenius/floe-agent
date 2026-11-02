@@ -472,4 +472,27 @@
     <string name="notes_assistant_proposal_accept">Apply</string>
     <string name="notes_assistant_proposal_reject">Dismiss</string>
     <string name="notes_assistant_proposal_based_on">Based on revision %1$d</string>
+    <string name="notes_task_launch">Use in Task</string>
+    <string name="notes_task_launch_title">Use Notes Attachments in a Task</string>
+    <string name="notes_task_launch_body">Choose the attachments to copy into the new task’s workspace. They are copied when you send the first message.</string>
+    <string name="notes_task_launch_prompt_label">Message</string>
+    <string name="notes_task_launch_prompt_default">Use the selected Notes attachments for this task.</string>
+    <string name="notes_task_launch_create">Create Task</string>
+    <string name="notes_task_launch_empty">This note has no attachments.</string>
+    <string name="notes_task_launch_empty_body">Add a PDF, image, Office file or other attachment to the note first.</string>
+    <string name="notes_task_launch_select_all">Select All</string>
+    <string name="notes_task_launch_clear">Clear</string>
+    <string name="notes_task_launch_scope">The original note is never changed.</string>
+    <string name="notes_task_launch_too_many">Select up to %1$d files.</string>
+    <string name="notes_task_launch_too_large">The selected files are too large.</string>
+    <string name="notes_task_launch_failed">The task could not be created.</string>
+    <string name="notes_task_launch_changed">The note changed. Reopen it and select the files again.</string>
+    <string name="notes_task_launch_unavailable">Tasks aren’t available right now.</string>
+    <string name="notes_task_launch_unavailable_body">Wait for the app to finish starting, then try again.</string>
+    <string name="notes_task_launch_partial">The task was created, but its attachments could not be prepared. You can find it in history; your note is unchanged.</string>
+    <string name="notes_task_launch_count">%1$d files</string>
+    <string name="notes_task_launch_resource_meta">%1$s · %2$s</string>
+    <string name="notes_task_launch_loading">Loading attachments…</string>
+    <string name="notes_task_launch_busy">Creating task…</string>
+    <string name="notes_task_launch_not_ready">Notes or the task runtime isn’t ready.</string>
 </resources>

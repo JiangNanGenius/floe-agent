@@ -2085,6 +2085,34 @@ internal class NotesDocumentSession(
             ?.mapNotNull { it.resourceID }
             .orEmpty()
 
+    /**
+     * User-selectable attachments for the explicit "Use in Task" action.
+     * Candidates come from the current document's REAL resource references
+     * (page drawings are editor-internal and excluded). The exact digest,
+     * size and display name are read through the existing Notes service; a
+     * missing/unavailable resource is omitted rather than fabricated.
+     */
+    suspend fun taskLaunchResources(): List<com.floe.android.feature.notes.ui.api.NotesTaskLaunchResource> {
+        val doc = document ?: return emptyList()
+        val candidates =
+            com.floe.android.feature.notes.ui.presentation.NotesTaskLaunchSelection
+                .candidates(doc)
+        if (candidates.isEmpty()) return emptyList()
+        val metadata = LinkedHashMap<String, com.floe.android.feature.notes.NoteResourceRecord>()
+        for (candidate in candidates) {
+            try {
+                metadata[candidate.resourceID] = service.resourceMetadata(candidate.resourceID)
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (_: Throwable) {
+                // A resource whose bytes are unavailable is not offered; the
+                // caller sees the remaining real choices. Never a fake row.
+            }
+        }
+        return com.floe.android.feature.notes.ui.presentation.NotesTaskLaunchSelection
+            .resources(candidates, metadata)
+    }
+
     fun setMindMapSelectionNode(node: MindMapNode?) {
         // Reserved for the canvas selection; node identity itself lives in UI state.
         selectedMindMapNodeID = node?.id

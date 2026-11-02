@@ -85,6 +85,7 @@ internal fun NotesDocumentPane(
     val scope = rememberCoroutineScope()
     val document = session.document
     var showMore by remember(session.documentID) { mutableStateOf(false) }
+    var showTaskLaunch by remember(session.documentID) { mutableStateOf(false) }
     var showRename by remember(session.documentID) { mutableStateOf(false) }
     var showTags by remember(session.documentID) { mutableStateOf(false) }
     var showMove by remember(session.documentID) { mutableStateOf(false) }
@@ -293,6 +294,13 @@ internal fun NotesDocumentPane(
     val doc = session.document
     if (doc != null) {
         val page = session.currentPage
+        if (showTaskLaunch) {
+            NotesTaskLaunchSheet(session, controller.ports.taskLaunch,
+                onDismiss = { showTaskLaunch = false },
+                onCreated = { id ->
+                    if (controller.ports.taskLaunch?.openCreatedTask(id) == true) showTaskLaunch = false
+                })
+        }
         if (showMore) {
             NotesDocumentMoreSheet(
                 controller = controller,
@@ -304,6 +312,7 @@ internal fun NotesDocumentPane(
                 onCover = { showCover = true },
                 onTrash = { showTrash = true },
                 onExport = { showExport = true },
+                onTaskLaunch = { showTaskLaunch = true },
                 onLinkedMaps = { showLinkedMaps = true },
                 onOcr = { showOcr = true },
                 onAssistantSave = { showAssistantSave = true },
@@ -672,6 +681,7 @@ private fun NotesDocumentMoreSheet(
     onCover: () -> Unit,
     onTrash: () -> Unit,
     onExport: () -> Unit,
+    onTaskLaunch: () -> Unit,
     onLinkedMaps: () -> Unit,
     onOcr: () -> Unit,
     onAssistantSave: () -> Unit,
@@ -690,6 +700,10 @@ private fun NotesDocumentMoreSheet(
         }
         add(NotesActionItem(stringResource(R.string.notes_find), FloeIcons.Magnifier, onClick = onFind))
         add(NotesActionItem(stringResource(R.string.notes_export), NotesIcons.Share, onClick = onExport))
+        if (controller.ports.taskLaunch?.isAvailable() == true) {
+            add(NotesActionItem(stringResource(R.string.notes_task_launch_title), FloeIcons.ChatRole,
+                onClick = onTaskLaunch))
+        }
         if (doc.kind != NoteDocumentKind.MIND_MAP) {
             add(NotesActionItem(stringResource(R.string.notes_mindmap_linked_maps), NotesIcons.MindMap, onClick = onLinkedMaps))
         }

@@ -469,4 +469,27 @@
     <string name="notes_assistant_proposal_accept">应用</string>
     <string name="notes_assistant_proposal_reject">忽略</string>
     <string name="notes_assistant_proposal_based_on">基于第 %1$d 版</string>
+    <string name="notes_task_launch">在任务中使用</string>
+    <string name="notes_task_launch_title">在任务中使用手记附件</string>
+    <string name="notes_task_launch_body">选择要复制到新任务工作区的附件。发送第一条消息时会复制这些文件。</string>
+    <string name="notes_task_launch_prompt_label">消息</string>
+    <string name="notes_task_launch_prompt_default">请在任务中使用所选手记附件。</string>
+    <string name="notes_task_launch_create">创建任务</string>
+    <string name="notes_task_launch_empty">这篇手记没有附件。</string>
+    <string name="notes_task_launch_empty_body">请先为手记添加 PDF、图片、Office 文件或其他附件。</string>
+    <string name="notes_task_launch_select_all">全选</string>
+    <string name="notes_task_launch_clear">清除</string>
+    <string name="notes_task_launch_scope">原手记不会被更改。</string>
+    <string name="notes_task_launch_too_many">最多选择 %1$d 个文件。</string>
+    <string name="notes_task_launch_too_large">所选文件过大。</string>
+    <string name="notes_task_launch_failed">无法创建任务。</string>
+    <string name="notes_task_launch_changed">手记已更改，请重新打开并再次选择文件。</string>
+    <string name="notes_task_launch_unavailable">任务暂不可用。</string>
+    <string name="notes_task_launch_unavailable_body">请等待应用启动完成后重试。</string>
+    <string name="notes_task_launch_partial">任务已创建，但附件未能准备完成。可以在历史记录中找到该任务，原手记没有改变。</string>
+    <string name="notes_task_launch_count">%1$d 个文件</string>
+    <string name="notes_task_launch_resource_meta">%1$s · %2$s</string>
+    <string name="notes_task_launch_loading">正在载入附件…</string>
+    <string name="notes_task_launch_busy">正在创建任务…</string>
+    <string name="notes_task_launch_not_ready">手记或任务运行时尚未就绪。</string>
 </resources>
