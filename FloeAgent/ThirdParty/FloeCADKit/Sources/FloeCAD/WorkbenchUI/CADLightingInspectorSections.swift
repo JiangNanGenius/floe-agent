@@ -62,16 +62,15 @@ struct CADLightingInspectorSections: View {
                     var lights = draft.sceneLights ?? []; lights.remove(atOffsets:offsets)
                     draft.sceneLights = lights; onPreview()
                 }
-                Menu {
-                    ForEach(CADSceneLight.Kind.allCases,id:\.self) { kind in
-                        Button(Self.kindName(kind)) {
-                            var lights = draft.sceneLights ?? []
-                            let name = FloeCADStrings.format("cad.lights.numberedName", "Light %@",lights.count+1)
-                            lights.append(CADSceneLight(name:name,kind:kind))
-                            draft.sceneLights = lights; onPreview()
-                        }
+                NavigationLink {
+                    CADSceneLightKindPicker { kind in
+                        var lights = draft.sceneLights ?? []
+                        guard lights.count < CADSceneLight.maximumCount else { return }
+                        let name = FloeCADStrings.format("cad.lights.numberedName", "Light %@", lights.count + 1)
+                        lights.append(CADSceneLight(name: name, kind: kind))
+                        draft.sceneLights = lights; onPreview()
                     }
-                } label: { Label(FloeCADStrings.text("cad.lights.add", "Add light"),systemImage:"plus") }
+                } label: { Label(FloeCADStrings.text("cad.lights.add", "Add light"), systemImage: "plus") }
                 .disabled((draft.sceneLights?.count ?? 0) >= CADSceneLight.maximumCount)
                 .accessibilityIdentifier("CADSceneLightAdd")
                 if draft.sceneLights != nil {
@@ -104,6 +103,26 @@ struct CADLightingInspectorSections: View {
         case .point: FloeCADStrings.text("cad.lights.point", "Point")
         case .spot: FloeCADStrings.text("cad.lights.spot", "Spot")
         }
+    }
+}
+
+/// A compact native page within the existing inspector. It does not rely on
+/// a context menu being presented from a lazily recycled Form row.
+private struct CADSceneLightKindPicker: View {
+    let onSelect: (CADSceneLight.Kind) -> Void
+    @Environment(\.dismiss) private var dismiss
+    var body: some View {
+        List(CADSceneLight.Kind.allCases, id: \.self) { kind in
+            Button {
+                onSelect(kind)
+                dismiss()
+            } label: {
+                Text(CADLightingInspectorSections.kindName(kind))
+            }
+            .accessibilityIdentifier("CADSceneLightKind-\(kind.rawValue)")
+        }
+        .navigationTitle(FloeCADStrings.text("cad.lights.add", "Add light"))
+        .navigationBarTitleDisplayMode(.inline)
     }
 }
 
