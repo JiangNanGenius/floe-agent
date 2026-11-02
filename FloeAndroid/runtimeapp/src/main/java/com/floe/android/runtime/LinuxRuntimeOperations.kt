@@ -97,6 +97,7 @@ internal class LinuxRuntimeOperations(
     private val running = java.util.concurrent.ConcurrentHashMap<String, Running>()
     /** Bounded settled receipts for poll-after-terminal reads. */
     private val completed = java.util.concurrent.ConcurrentHashMap<String, Running>()
+    private val sessionReads = RuntimeSessionReadIndex(running, completed)
     /** projectID -> the ONE workspace owner lease still responsible for import/export. */
     private val workspaceOwners = java.util.concurrent.ConcurrentHashMap<String, String>()
     /** projectID -> live participant lease ids sharing the owner's guest workspace. */
@@ -1061,7 +1062,7 @@ internal class LinuxRuntimeOperations(
     private fun stdioPoll(payload: JSONObject): JSONObject {
         fields(payload, setOf("sessionID", "stdoutCursor", "stderrCursor", "maxBytes"))
         val sessionID = payload.getString("sessionID")
-        val owned = running[sessionID] ?: completed[sessionID]
+        val owned = sessionReads.find(sessionID)
         if (owned == null) {
             // The session was already settled AND evicted from the bounded
             // completed ring. Nothing survives to read: report a real closed
@@ -1184,7 +1185,7 @@ internal class LinuxRuntimeOperations(
     private fun stdioStdinEof(payload: JSONObject): JSONObject {
         fields(payload, setOf("sessionID"))
         val sessionID = payload.getString("sessionID")
-        val owned = running[sessionID] ?: completed[sessionID]
+        val owned = sessionReads.find(sessionID)
         if (owned == null || owned.stdio == null) {
             return JSONObject().put("stdinEof", "rejected").put("reason", "sessionReleased")
                 .put("leaseReleased", true)
@@ -1286,6 +1287,7 @@ internal class LinuxRuntimeOperations(
                         // Remove self FIRST so the global proof sees no live
                         // owned job; the whole-UID census then proves the exact
                         // ORIGINAL export boundary (and may reap strays).
+                        sessionReads.beginSettlement(owned.lease.id, owned)
                         running.remove(owned.lease.id, owned)
                         val globalProof = supervisor.globalQuiescence("workspace-export")
                         if (globalProof is Quiescence.Proven) {
@@ -1338,6 +1340,7 @@ internal class LinuxRuntimeOperations(
             owned.nativeReleaseFailed = false
             owned.finished.set(true)
             completed[owned.lease.id] = owned
+            sessionReads.endSettlement(owned.lease.id, owned)
             while (completed.size > 32) completed.keys.firstOrNull()?.let { completed.remove(it) }
             running.remove(owned.lease.id, owned)
             heldLeases.remove(owned.lease.id)
@@ -1495,7 +1498,7 @@ internal class LinuxRuntimeOperations(
 
     private fun matching(payload: JSONObject): Running {
         val id = payload.getString("sessionID")
-        return running[id] ?: completed[id] ?: error("Unknown Linux session")
+        return sessionReads.find(id) ?: error("Unknown Linux session")
     }
 
     /**

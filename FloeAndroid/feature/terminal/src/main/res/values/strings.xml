@@ -9,7 +9,7 @@
     <string name="terminal_exited">Process exited with code %1$d</string>
     <string name="terminal_stopped">Process stopped (%1$s)</string>
     <string name="terminal_closed">Terminal closed</string>
-    <string name="terminal_fault">Terminal unavailable: %1$s</string>
+    <string name="terminal_fault">Terminal unavailable. Check Terminal Settings.</string>
     <string name="terminal_engine_unqualified">The Linux runtime is not qualified yet. Open the runtime setup, finish installation, then try again.</string>
     <string name="terminal_not_ready">Terminal not started</string>
     <string name="terminal_workspace_mapping_pending">Open the terminal to prepare this workspace.</string>
