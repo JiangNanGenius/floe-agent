@@ -5308,10 +5308,29 @@
       "package": "engineering",
       "implementation": {
         "stage": "E",
-        "status": "planned",
-        "source_changes": [],
-        "verification": [],
-        "limitations": []
+        "status": "accepted_original_literal_native_import_and_independent_readback",
+        "source_changes": [
+          "4c97f966008995168e1e3c64dd8e0cc40374df88",
+          "c321e1911e21bd427a65f365a6fcb582da5fa6a3",
+          "8a7ba9b0",
+          "397e7f5a4466e76d95190b55060072cc2389f99a",
+          "e12ed268e1ea23f528a8c8ddc7d4a92eba2e009a"
+        ],
+        "verification": [
+          {
+            "record": "docs/qualification/cad-import-semantics-20261103/README.md",
+            "distinct_affected_native_methods_passed": 6,
+            "actual_App_exports_independently_read": 2,
+            "objects": 4,
+            "max_bounds_error_mm": 3.725290298461914e-06,
+            "original_failures_preserved": true,
+            "physical_device": false
+          }
+        ],
+        "limitations": [
+          "Static import only; editable hierarchy, animation and unsupported material channels remain in original sources.",
+          "Unknown binary USD units require an explicit choice."
+        ]
       },
       "alignment_review": {
         "disposition": "planned",
@@ -5341,14 +5360,14 @@
         ],
         "notes": [],
         "evidence_level": "baseline_plus_verified_delta",
-        "verified_delta": "本轮没有该原始缺口的新运行通过声明；现有功能仍按基线保留。",
-        "acceptance_pending": "导入前列出可保留/丢弃项，复杂场景的对象位置与材质通过独立比较，未支持数据保持源文件。"
+        "verified_delta": "静态导入报告、父级放置和单位修复已在实际 App 与独立 Blender 读回通过；完整 DCC 工程往返仍不宣称。",
+        "acceptance_pending": null
       },
       "current_acceptance": {
-        "original_criterion_accepted": false,
-        "source_changes": [
-          "4c97f966008995168e1e3c64dd8e0cc40374df88"
-        ]
+        "original_criterion_accepted": true,
+        "evidence": "docs/qualification/cad-import-semantics-20261103/README.md",
+        "original_criterion_text_unchanged": true,
+        "whole106_complete": false
       }
     },
     {
@@ -9465,7 +9484,7 @@
     "license_delta": "GLTFKit2 ownMIT/cgltfMIT do notclear precompiled libktx4.2.1 etcdec exception; prefer existing O3DV+same-r176 localGLTFLoader qualification"
   },
   "current_integration_verification": {
-    "source": "ba910252240eb209bee218daf80586dd306fdb86",
+    "source": "cc619af3c906a33b1d16b4b1461333f97d816140",
     "all_106_retained": true,
     "all_106_accepted": false,
     "release_ready": false,
@@ -9498,8 +9517,8 @@
       "actual_OBJ": "真实OBJ/MTL/PNG显示、缺失贴图及仅资源变化后的旧帧拒绝通过。",
       "scope": "本地实际渲染与资源来源；不冒充原生可编辑BRep，也不代替真实LLM视觉连续编辑。"
     },
-    "accepted_original_criteria": 72,
-    "pending_original_criteria": 34,
+    "accepted_original_criteria": 73,
+    "pending_original_criteria": 33,
     "device_acceptance": "iPad通过的功能复用验收，iPhone仅确认界面；不使用用户手机。",
     "latest_native_batch": {
       "source": "582810ed58f8d3d63e23967909b74898af502c60",
@@ -9773,6 +9792,31 @@
       "physical_phone_used": false,
       "native_floating_controls": true,
       "original_focus_failures_preserved": true
+    },
+    "import_semantics_E27": {
+      "accepted_original_criterion": true,
+      "evidence": "docs/qualification/cad-import-semantics-20261103/README.md",
+      "distinct_native_methods_passed": 6,
+      "independent_actual_export_objects": 4,
+      "max_bounds_error_mm": 3.725290298461914e-06
+    },
+    "bottom_area_finish": {
+      "source": "cc619af3c906a33b1d16b4b1461333f97d816140",
+      "existing_custom_style_retained": true,
+      "actual_app_object_build_passed": true,
+      "object_build_seconds": 92.103,
+      "regular_keypad_value_save_reopen_passed": true,
+      "compact_large_text_keypad_passed": true,
+      "regular_iPad_portrait_controls_passed": true,
+      "final_compact_menu_recovery": {
+        "passed": 2,
+        "failed": 0,
+        "skipped": 0
+      },
+      "original_failures_preserved": true,
+      "root_visual_review": true,
+      "canonical_simulator_shutdown": true,
+      "physical_phone_used": false
     }
   }
 }
