@@ -1359,6 +1359,7 @@ targets:
       - path: ThirdParty/FloeCADKit/Tests/FloeCADKitTests/CADAssociativeMergeTests.swift
       - path: ThirdParty/FloeCADKit/Tests/FloeCADKitTests/CADAssociativeSessionTests.swift
       - path: ThirdParty/FloeCADKit/Tests/FloeCADKitTests/CADExternalSketchProjectionTests.swift
+      - path: ThirdParty/FloeCADKit/Tests/FloeCADKitTests/CADSketchCurveEditTests.swift
       # M07 angle/three-point associative datum source + native UI tests.
       # Explicit test-target membership; regenerate the Xcode project with
       # scripts/gen_project.sh after applying this file.

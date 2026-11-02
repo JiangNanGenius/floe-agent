@@ -246,6 +246,8 @@ nonisolated struct Sketch: Identifiable, Codable, Equatable, Sendable {
     /// seed, so editing the seed re-generates them. Auto-created by the Pattern
     /// tool, never by hand.
     var patternLinks: [SketchPatternLink]
+    /// Exact, versioned normal-offset definitions; entity geometry is a validated cache.
+    var curveOffsetLinks: [SketchCurveOffsetLink]
     var rectangleSizingAnchors: [UUID: RectangleSizingAnchor]
     /// Ordered edges of a migrated center rectangle; independent of later branches.
     var rotatedRectangleEdges: [UUID: [UUID]]
@@ -281,6 +283,7 @@ nonisolated struct Sketch: Identifiable, Codable, Equatable, Sendable {
         constraints: [SketchConstraint] = [],
         dimensions: [SketchDimension] = [],
         patternLinks: [SketchPatternLink] = [],
+        curveOffsetLinks: [SketchCurveOffsetLink] = [],
         rectangleSizingAnchors: [UUID: RectangleSizingAnchor] = [:],
         rotatedRectangleEdges: [UUID: [UUID]] = [:],
         disconnectedEndpoints: [ConstraintRef] = [],
@@ -298,6 +301,7 @@ nonisolated struct Sketch: Identifiable, Codable, Equatable, Sendable {
         self.constraints = constraints
         self.dimensions = dimensions
         self.patternLinks = patternLinks
+        self.curveOffsetLinks = curveOffsetLinks
         self.rotatedRectangleEdges = rotatedRectangleEdges
         self.rectangleSizingAnchors = rectangleSizingAnchors
         self.disconnectedEndpoints = disconnectedEndpoints
@@ -309,7 +313,7 @@ nonisolated struct Sketch: Identifiable, Codable, Equatable, Sendable {
 
     private enum CodingKeys: String, CodingKey {
         case id, name, plane, entities, isHidden, constructionEntityIDs
-        case constraints, dimensions, patternLinks, rectangleSizingAnchors
+        case constraints, dimensions, patternLinks, curveOffsetLinks, rectangleSizingAnchors
         case disconnectedEndpoints, rotatedRectangleEdges, circleRadiusDirections
         case lineDimensionKinds, support, externalReferences
     }
@@ -335,6 +339,7 @@ nonisolated struct Sketch: Identifiable, Codable, Equatable, Sendable {
             [UUID: [UUID]].self, forKey: .rotatedRectangleEdges) ?? [:]
         patternLinks =
             try container.decodeIfPresent([SketchPatternLink].self, forKey: .patternLinks) ?? []
+        curveOffsetLinks = try container.decodeIfPresent([SketchCurveOffsetLink].self, forKey: .curveOffsetLinks) ?? []
         disconnectedEndpoints = try container.decodeIfPresent(
             [ConstraintRef].self, forKey: .disconnectedEndpoints) ?? []
         circleRadiusDirections = try container.decodeIfPresent(
@@ -363,6 +368,7 @@ nonisolated struct Sketch: Identifiable, Codable, Equatable, Sendable {
         try container.encode(constraints, forKey: .constraints)
         try container.encode(dimensions, forKey: .dimensions)
         try container.encode(patternLinks, forKey: .patternLinks)
+        if !curveOffsetLinks.isEmpty { try container.encode(curveOffsetLinks, forKey: .curveOffsetLinks) }
         try container.encode(rectangleSizingAnchors, forKey: .rectangleSizingAnchors)
         try container.encode(disconnectedEndpoints, forKey: .disconnectedEndpoints)
         try container.encode(rotatedRectangleEdges, forKey: .rotatedRectangleEdges)

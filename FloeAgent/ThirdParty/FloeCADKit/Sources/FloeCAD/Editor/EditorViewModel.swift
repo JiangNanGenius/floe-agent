@@ -12403,41 +12403,77 @@ final class EditorViewModel {
 
     /// Trim (spec §1.14): delete the tapped span between the entity's nearest
     /// intersections with the other entities.
+    var sketchCurveEditKind: SketchCurveEditKind = .trim
+    var sketchCurveBoundaryID: UUID?
+    struct SketchCurveBoundaryChoice: Identifiable {
+        var id: UUID
+        var title: String
+    }
+    var sketchCurveBoundaryChoices: [SketchCurveBoundaryChoice] {
+        guard let sketch = activeSketch else { return [] }
+        return sketch.entities.enumerated().compactMap { index, entity in
+            guard let definition = try? SketchCurveDefinition(entity) else { return nil }
+            let name = FloeCADStrings.text("cad.sketch.curve.kind." + definition.sourceKind.rawValue,
+                                          definition.sourceKind.rawValue.capitalized)
+            return SketchCurveBoundaryChoice(id: entity.id, title: name + " \(index + 1)")
+        }
+    }
+    func cancelSketchCurveEdit() { sketchCurveBoundaryID = nil; deselectSketchTool() }
+
+    @discardableResult
+    private func reportSketchCurveReply(_ reply: [String: Any]) -> Bool {
+        if reply["ok"] as? Bool == true { return true }
+        switch reply["error"] as? String {
+        case "external_reference":
+            showNotice(FloeCADStrings.text("cad.project.detach_to_edit", "This edge follows its source body. Detach it to edit the geometry here."))
+        case "exact_curve_representation_required":
+            showNotice(FloeCADStrings.text("cad.sketch.curve.exactRangeRequired", "This curve cannot be edited exactly yet. The original is unchanged."))
+        case "curve_edit_references", "constrained_curve_offset_target", "linked_curve_target", "linked_curve_entity":
+            showNotice(FloeCADStrings.text("cad.sketch.curve.references", "Release the curve's constraints or links first. Nothing was removed."))
+        case "curve_offset_collapse":
+            showNotice(FloeCADStrings.text("cad.sketch.curve.collapse", "The offset collapses the curve. Reduce the inward distance."))
+        case "revision_mismatch":
+            showNotice(FloeCADStrings.text("cad.sketch.curve.changed", "The sketch changed. Select the curve again."))
+        case "no_curve_intersection", "no_extension_intersection", "insufficient_curve_intersections", "curve_intersection_refused":
+            showNotice(FloeCADStrings.text("cad.sketch.curve.noIntersection", "There is no unambiguous intersection with that boundary."))
+        default:
+            showNotice(FloeCADStrings.text("cad.sketch.curve.refused", "The curve could not be edited. The original is unchanged."))
+        }
+        return false
+    }
+
     private func performTrim(ray: Ray) {
-        guard case .sketching(let sketchID, _) = mode,
-              let sketch = activeSketch,
+        guard case .sketching(let sketchID, _) = mode, let sketch = activeSketch,
               let raw = rawSketchPoint(from: ray),
-              let hit = SketchHitTester.nearestEntity(
-                  to: raw, in: sketch.entities, tolerance: entityPickTolerance
-              ),
-              let fragments = SketchTrimmer.trim(entity: hit.entity, at: raw, in: sketch),
-              let index = sketch.entities.firstIndex(where: { $0.id == hit.entity.id })
+              let hit = SketchHitTester.nearestEntity(to: raw, in: sketch.entities, tolerance: entityPickTolerance)
         else { return }
-        // M05 review (R2): trimming a linked projection would replace the
-        // source-driven entity with fragments while its reference keeps
-        // re-projecting the original edge — geometry and ownership
-        // permanently disagreeing. Detach is the explicit escape hatch.
         if sketch.externalReference(forEntityID: hit.entity.id) != nil {
-            showNotice(FloeCADStrings.text(
-                "cad.project.detach_to_edit",
+            showNotice(FloeCADStrings.text("cad.project.detach_to_edit",
                 "This edge follows its source body. Detach it to edit the geometry here."))
             return
         }
-        selectedSketchEntityIDs.remove(hit.entity.id)
-        // Phase D: trimming edits sketch geometry — the dependent-feature
-        // rebuild lands in the SAME undo step (S6). The sketch-aware init
-        // re-anchors constraints/dimensions onto the surviving fragments and
-        // drops what can't transfer (R2-2) — say so when it does, since a
-        // silently vanished dimension reads as data loss.
-        let command = TrimCommand(
-            sketch: sketch, index: index, removed: hit.entity, fragments: fragments)
-        session.performWithSketchRebuild(command, sketchID: sketchID)
-        let droppedCount = command.droppedConstraints.count + command.droppedDimensions.count
-        if droppedCount > 0 {
-            showNotice(droppedCount == 1
-                ? "1 constraint on the trimmed span was removed"
-                : "\(droppedCount) constraints on the trimmed span were removed")
+        if (try? SketchCurveDefinition(hit.entity)) != nil {
+            guard let boundary = sketchCurveBoundaryID else {
+                showNotice(FloeCADStrings.text("cad.sketch.curve.chooseBoundary", "Choose the boundary first.")); return
+            }
+            let reply = CADSketchCurveService(session: session).handle(
+                action: sketchCurveEditKind == .trim ? "trimSketchCurve" : "extendSketchCurve",
+                args: ["sketch_id": sketchID.raw.uuidString, "entity_id": hit.entity.id.uuidString,
+                       "boundary_id": boundary.uuidString, "pick": [raw.x, raw.y],
+                       "expected_change_count": session.changeCount])
+            if reportSketchCurveReply(reply) { selectedSketchEntityIDs.remove(hit.entity.id) }
+            return
         }
+        // Preserve the existing composite-primitive path, but do not discard
+        // any nontransferable constraints/dimensions as a side effect.
+        guard sketchCurveEditKind == .trim,
+              let fragments = SketchTrimmer.trim(entity: hit.entity, at: raw, in: sketch),
+              let index = sketch.entities.firstIndex(where: { $0.id == hit.entity.id }) else { return }
+        let command = TrimCommand(sketch: sketch, index: index, removed: hit.entity, fragments: fragments)
+        guard command.droppedConstraints.isEmpty, command.droppedDimensions.isEmpty else {
+            _ = reportSketchCurveReply(["ok": false, "error": "curve_edit_references"]); return
+        }
+        if session.performWithSketchRebuild(command, sketchID: sketchID) { selectedSketchEntityIDs.remove(hit.entity.id) }
     }
 
     // MARK: - Construction axes (spec §6.2)
@@ -13229,28 +13265,70 @@ final class EditorViewModel {
         return true
     }
 
+    private var sketchOffsetPreviewChangeCount: Int?
+    var sketchOffsetUsesLinkedCurve: Bool {
+        let sources = sketchOffsetSourceEntities
+        return sources.count == 1 && (try? SketchCurveDefinition(sources[0]).canMaterializeInterval) == true
+    }
+    var sketchOffsetSelectedLinkID: UUID? {
+        guard let sketch = activeSketch, sketchOffsetSeedIDs.count == 1, let id = sketchOffsetSeedIDs.first else { return nil }
+        return sketch.curveOffsetLinks.first(where: { $0.targetID == id })?.id
+    }
+    func unlinkSelectedSketchOffset() {
+        guard let sketch = activeSketch, let id = sketchOffsetSelectedLinkID else { return }
+        let reply = CADSketchCurveService(session: session).handle(action: "unlinkSketchOffset", args: [
+            "sketch_id": sketch.id.raw.uuidString, "link_id": id.uuidString,
+            "expected_change_count": session.changeCount])
+        if reportSketchCurveReply(reply) { resetSketchOffsetState() }
+    }
+
     private func recomputeSketchOffsetPreview() {
         let sources = sketchOffsetSourceEntities
-        guard !sources.isEmpty, abs(sketchOffsetDistance) > 1e-9 else {
+        sketchOffsetPreviewChangeCount = session.changeCount
+        guard !sources.isEmpty, abs(sketchOffsetDistance) > 1e-9 else { sketchOffsetPreview = []; return }
+        if let sketch = activeSketch, sources.contains(where: { sketch.externalReference(forEntityID: $0.id) != nil }) {
+            sketchOffsetPreview = []; _ = reportSketchCurveReply(["ok": false, "error": "external_reference"]); return
+        }
+        if sources.count == 1, let definition = try? SketchCurveDefinition(sources[0]) {
+            do {
+                let offset = try definition.normalOffset(by: sketchOffsetDistance)
+                sketchOffsetPreview = [try offset.materialized(id: UUID())]
+            } catch let error as SketchCurveEditFailure {
+                sketchOffsetPreview = []; _ = reportSketchCurveReply(["ok": false, "error": error.code])
+            } catch { sketchOffsetPreview = [] }
+            return
+        }
+        if sources.contains(where: {
+            switch $0 {
+            case let .ellipse(_, _, rx, ry, _): return rx != ry
+            case .spline: return true
+            default: return false
+            }
+        }) {
             sketchOffsetPreview = []
+            _ = reportSketchCurveReply(["ok": false, "error": "exact_curve_representation_required"])
             return
         }
         sketchOffsetPreview = KernelOps.offsetSketchEntities(sources, by: sketchOffsetDistance)
     }
 
-    /// Commit the previewed offset as new sketch entities.
     func commitSketchOffset() {
-        guard case .sketching(let sketchID, .offset) = mode,
-              canCommitSketchOffset
-        else { return }
-        // Offsetting ADDS geometry, so downstream profiles keep resolving; the
-        // sketch rebuild still runs so a dependent feature sees the new loop.
-        session.performWithSketchRebuild(AddSketchEntitiesCommand(
-            sketchID: sketchID,
-            entities: sketchOffsetPreview,
-            title: "Offset Edge"
-        ), sketchID: sketchID)
-        resetSketchOffsetState()
+        guard case .sketching(let sketchID, .offset) = mode, canCommitSketchOffset else { return }
+        guard sketchOffsetPreviewChangeCount == session.changeCount else {
+            recomputeSketchOffsetPreview(); _ = reportSketchCurveReply(["ok": false, "error": "revision_mismatch"]); return
+        }
+        if sketchOffsetUsesLinkedCurve, let source = sketchOffsetSourceEntities.first {
+            let reply = CADSketchCurveService(session: session).handle(action: "offsetSketchCurve", args: [
+                "sketch_id": sketchID.raw.uuidString, "entity_id": source.id.uuidString,
+                "distance": sketchOffsetDistance, "associative": true,
+                "expected_change_count": session.changeCount])
+            if reportSketchCurveReply(reply) { resetSketchOffsetState() }
+            return
+        }
+        if session.performWithSketchRebuild(AddSketchEntitiesCommand(
+            sketchID: sketchID, entities: sketchOffsetPreview, title: "Offset Edge"), sketchID: sketchID) {
+            resetSketchOffsetState()
+        }
     }
 
     func cancelSketchOffset() {
@@ -13263,6 +13341,7 @@ final class EditorViewModel {
     func resetSketchOffsetState() {
         sketchOffsetSeedIDs = []
         sketchOffsetPreview = []
+        sketchOffsetPreviewChangeCount = nil
     }
 
     /// A drag landing on an entity edits it instead of drawing: control
@@ -14069,6 +14148,7 @@ final class EditorViewModel {
         // drops them, so re-arming starts clean rather than resuming a pick
         // the user has visually lost track of.
         resetSketchOffsetState()
+        sketchCurveBoundaryID = nil
         mode = .sketching(id, tool: nil)
     }
 

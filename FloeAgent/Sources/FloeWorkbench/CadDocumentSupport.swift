@@ -289,6 +289,7 @@ public enum CadNativeEditActions {
     ]
     public static let parameters: Set<String> = [
         "list", "update", "updateSketchEntity", "deleteSketchEntity",
+        "trimSketchCurve", "extendSketchCurve", "offsetSketchCurve", "unlinkSketchOffset",
         "setSketchDimension", "removeSketchDimension",
         "projectExternalEdges", "detachExternalReferences",
         "feature.suppress", "feature.delete", "feature.move",

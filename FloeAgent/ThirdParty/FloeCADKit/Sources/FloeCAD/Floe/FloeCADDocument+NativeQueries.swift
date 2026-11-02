@@ -265,6 +265,26 @@ public extension FloeCADDocument {
                     // itself. Reference ownership (shared refs / pattern links)
                     // is enforced by the service, not by dropping the action.
                     row["delete_action"] = "deleteSketchEntity"
+                    if let definition = try? SketchCurveDefinition(entity) {
+                        row["exact_curve_editable"] = definition.canMaterializeInterval
+                        row["curve_trim_action"] = definition.canMaterializeInterval ? ("trimSketchCurve" as Any) : NSNull()
+                        row["curve_extend_action"] = definition.canMaterializeInterval && !definition.interval.periodic ? ("extendSketchCurve" as Any) : NSNull()
+                        row["curve_offset_action"] = definition.canMaterializeInterval ? ("offsetSketchCurve" as Any) : NSNull()
+                    }
+                    if sketch.externalReference(forEntityID: entity.id) != nil {
+                        row["exact_curve_editable"] = false
+                        row["curve_trim_action"] = NSNull(); row["curve_extend_action"] = NSNull(); row["curve_offset_action"] = NSNull()
+                    }
+                    if sketch.curveOffsetLinks.contains(where: { $0.targetID == entity.id }) {
+                        row["editable"] = false
+                        row["update_action"] = NSNull(); row["delete_action"] = NSNull()
+                        row["curve_trim_action"] = NSNull(); row["curve_extend_action"] = NSNull()
+                    }
+                    row["curve_offset_links"] = sketch.curveOffsetLinks.filter { $0.sourceID == entity.id || $0.targetID == entity.id }.map {
+                        ["id": $0.id.uuidString, "source_id": $0.sourceID.uuidString, "target_id": $0.targetID.uuidString,
+                         "distance_mm": $0.distance, "normal_convention": $0.convention,
+                         "unlink_action": "unlinkSketchOffset"] as [String: Any]
+                    }
                     return row
                 }
                 var row: [String: Any] = [

@@ -51,6 +51,7 @@ final class DocumentSession {
     /// describe the unchanged document. Services must not report that as success.
     private(set) var lastRebuildRejection: [AssociativeReferenceKey: AssociativeReferenceError] = [:]
     private(set) var lastRejectedFeatureErrors: [FeatureID: FeatureError] = [:]
+    private(set) var lastCurveEditFailure: SketchCurveEditFailure?
 
     /// The face tables of the most recent APPLIED rebuild — the tables whose
     /// triangle indices are valid against the documents' CURRENT renders,
@@ -606,6 +607,14 @@ final class DocumentSession {
 
     func perform(_ command: DocumentCommand) {
         guard requireWritable() else { return }
+        if !isRebuilding {
+            lastCurveEditFailure = nil
+            let touched = SketchCurveCommandScope.sketchIDs(of: command)
+            if document.sketches.contains(where: { touched.contains($0.id) && !$0.curveOffsetLinks.isEmpty }) {
+                _ = performWithSketchRebuild(command, sketchIDs: touched)
+                return
+            }
+        }
         undoStack.perform(command, on: &document)
         didChange()
     }
@@ -641,6 +650,16 @@ final class DocumentSession {
     /// Coalesce with the previous command (live drags, slider edits).
     func amend(_ command: DocumentCommand) {
         guard requireWritable() else { return }
+        // Associated drags use the owned preview. This protects any legacy
+        // caller that still amends: it cannot publish a stale offset cache.
+        if !isRebuilding {
+            lastCurveEditFailure = nil
+            let touched = SketchCurveCommandScope.sketchIDs(of: command)
+            if document.sketches.contains(where: { touched.contains($0.id) && !$0.curveOffsetLinks.isEmpty }) {
+                _ = performWithSketchRebuild(command, sketchIDs: touched)
+                return
+            }
+        }
         undoStack.amendLast(command, on: &document)
         didChange()
     }
@@ -913,6 +932,7 @@ final class DocumentSession {
     @discardableResult
     func performWithSketchRebuild(_ command: DocumentCommand, sketchIDs: Set<SketchID>) -> Bool {
         guard requireWritable(), !isRebuilding else { return false }
+        lastCurveEditFailure = nil
         var preview = document
         command.apply(to: &preview)
         // A support/definition can be invalid even with no solid consuming it.
@@ -967,6 +987,28 @@ final class DocumentSession {
             if let sketches { prospective.sketches = sketches }
         }
         prospective.features = editedGraph
+        var effectiveLeadingCommands = leadingCommands
+        lastCurveEditFailure = nil
+        do {
+            for index in prospective.sketches.indices {
+                let before = prospective.sketches[index]
+                if let original = document.sketches.first(where: { $0.id == before.id }) {
+                    try SketchCurveOffsetKit.validateTransition(before: original, after: before)
+                }
+                let after = try SketchCurveOffsetKit.resolve(before)
+                if before != after {
+                    effectiveLeadingCommands.append(ReplaceSketchGeometryCommand(
+                        title: title, before: before, after: after))
+                    prospective.sketches[index] = after
+                }
+            }
+        } catch let failure as SketchCurveEditFailure {
+            lastCurveEditFailure = failure
+            return false
+        } catch {
+            lastCurveEditFailure = .init(code: "curve_offset_failed", message: "The linked offset could not be rebuilt.")
+            return false
+        }
         let associative = Self.hasAssociations(document) || Self.hasAssociations(prospective)
         var plannedCache = evalCache
         var revisionDocument = document
@@ -976,7 +1018,7 @@ final class DocumentSession {
             axes: prospective.axes, datumPoints: prospective.datumPoints,
             naming: naming, cache: &plannedCache,
             nextRevision: { revisionDocument.nextRevision() },
-            leadingCommands: leadingCommands, title: title,
+            leadingCommands: effectiveLeadingCommands, title: title,
             previewDocument: prospective,
             variables: VariableTable.resolve(prospective.variables).values)
         // A merge is all-or-nothing even for histories without datum refs.
@@ -1165,7 +1207,7 @@ final class DocumentSession {
 
     private static func hasAssociations(_ document: DesignDocument) -> Bool {
         document.planes.contains { $0.definition != nil }
-            || document.sketches.contains { $0.support != nil }
+            || document.sketches.contains { $0.support != nil || !$0.curveOffsetLinks.isEmpty }
             // M08: an associative axis/point is a replay input exactly like an
             // associative plane, so the resolver path must be chosen for a
             // document that carries one even when no plane is associative.

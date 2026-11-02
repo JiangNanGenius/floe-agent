@@ -371,6 +371,7 @@
 		476447B4CE7415AB82CF84D9 /* CADViewOverlayBridgeTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5B5C0F2825632A91FE26A1D4 /* CADViewOverlayBridgeTests.swift */; };
 		4779618B8A955CBFF851FE53 /* SkillAuthoringFlowTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D21F6EB9DECEF2DA8D261094 /* SkillAuthoringFlowTests.swift */; };
 		4784A3887226D623A88E2788 /* SkillAuthoringStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 01ABD65EFCB3A829722AA2F9 /* SkillAuthoringStoreTests.swift */; };
+		4788DC13ACB2839F8B2F1B28 /* CADSketchCurveEditTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = DEA862EA043FB6CA5FBF937F /* CADSketchCurveEditTests.swift */; };
 		47B2C07592F1455165810076 /* SkillHubMediaView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7769AB149B629E31CE323E87 /* SkillHubMediaView.swift */; };
 		47E01ED30B8459274EE5C24E /* WebSearchCatalogSettingsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5091D7483C58A8267F75CA2D /* WebSearchCatalogSettingsTests.swift */; };
 		47FD547142BECEEC217AA5A0 /* FloePersistence in Frameworks */ = {isa = PBXBuildFile; productRef = 965E6D0EA43EAB5E9B21FF73 /* FloePersistence */; };
@@ -2477,6 +2478,7 @@
 		DE4A05DEA6026A0D2B0B79DF /* OfficeNativeAutomaticExecutionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OfficeNativeAutomaticExecutionTests.swift; sourceTree = "<group>"; };
 		DE7D9B197F8A707329E5EF4A /* CalendarOccurrenceIdentityTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CalendarOccurrenceIdentityTests.swift; sourceTree = "<group>"; };
 		DE86794829F35622F77D0A95 /* OfficeTouchQualificationProbe.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OfficeTouchQualificationProbe.swift; sourceTree = "<group>"; };
+		DEA862EA043FB6CA5FBF937F /* CADSketchCurveEditTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CADSketchCurveEditTests.swift; sourceTree = "<group>"; };
 		DF13C78E7841E6D58D7EF3C1 /* TaskScheduleDetailView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TaskScheduleDetailView.swift; sourceTree = "<group>"; };
 		DF4D24163BFC581647517C5C /* MailTools.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MailTools.swift; sourceTree = "<group>"; };
 		DFA29AB69117AD72CBDC3A8B /* CreativeDesignStartView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CreativeDesignStartView.swift; sourceTree = "<group>"; };
@@ -2798,6 +2800,7 @@
 				1B8DBC33C6DCC3572ED533A2 /* CADSavePrewarmOwnershipTests.swift */,
 				ECB54AC8459EF8B6491B184D /* CADShellOpeningTests.swift */,
 				80A077958CF0B207D394D2C8 /* CADSketchConflictAttributionReportTests.swift */,
+				DEA862EA043FB6CA5FBF937F /* CADSketchCurveEditTests.swift */,
 				BE124227ED054EC676ECD8D2 /* CADSketchDefinitionPublicationFenceTests.swift */,
 				3AF0DC903D0169E2F4A70799 /* CADSketchEditTests.swift */,
 				05308E8930F4B27808A3CEB2 /* CADSketchEntityEditingTests.swift */,
@@ -5932,6 +5935,7 @@
 				639F402D4F0E43CCAD392BC5 /* CADSavedIdentityObservationTests.swift in Sources */,
 				565EC2EA71D896B57E00D849 /* CADShellOpeningTests.swift in Sources */,
 				A395C9B4A2ED8DDA95FFD11E /* CADSketchConflictAttributionReportTests.swift in Sources */,
+				4788DC13ACB2839F8B2F1B28 /* CADSketchCurveEditTests.swift in Sources */,
 				D5914043FD5E2E35C5CD5766 /* CADSketchDefinitionPublicationFenceTests.swift in Sources */,
 				8DAC43BFCC06984C40CDA12C /* CADSketchEditTests.swift in Sources */,
 				B25FB3B9B21E1B7AF6A42428 /* CADSketchEntityEditingTests.swift in Sources */,

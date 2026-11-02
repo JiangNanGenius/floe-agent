@@ -17,8 +17,8 @@ nonisolated enum SketchOffset {
     private static let quantum = 1e-6
 
     /// Offset `entities` by the signed `distance`.
-    /// - Closed shapes (circles, arcs, rects, ellipses, polygons, closed line
-    ///   loops): positive grows outward, negative shrinks inward. Entities
+    /// - Supported closed shapes (circles, arcs, rects, circular ellipses,
+    ///   polygons, closed line loops): positive grows outward, negative shrinks inward. Entities
     ///   that collapse (radius/extent <= 0, loops that vanish) are dropped;
     ///   closed line loops mitre their joins and drop segments whose direction
     ///   flips (they collapsed through the opposite wall) so the result stays
@@ -28,6 +28,15 @@ nonisolated enum SketchOffset {
     ///   disambiguation picks the sign.
     /// Output entities get fresh IDs.
     static func offset(entities: [SketchEntity], by distance: Double) -> [SketchEntity] {
+        // An ellipse's normal offset is not an ellipse; no scaled-radius
+        // approximation or partial "success" when such a source is present.
+        guard !entities.contains(where: {
+            switch $0 {
+            case let .ellipse(_, _, rx, ry, _): return rx != ry
+            case .spline: return true // exact two-point subtype uses SketchCurveDefinition
+            default: return false
+            }
+        }) else { return [] }
         var result: [SketchEntity] = []
         var lines: [(a: SIMD2<Double>, b: SIMD2<Double>)] = []
 
@@ -59,7 +68,7 @@ nonisolated enum SketchOffset {
                     result.append(.rect(id: UUID(), min: newLo, max: newHi))
                 }
             case let .ellipse(_, center, radiusX, radiusY, rotation):
-                // Radial approximation (a true ellipse offset is not an ellipse).
+                // Only the exact circular subtype reaches this legacy copy path.
                 let rx = radiusX + distance
                 let ry = radiusY + distance
                 if rx > epsilon, ry > epsilon {

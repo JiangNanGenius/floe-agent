@@ -39,7 +39,7 @@ public final class CADParameterService {
         "variable.create", "variable.update", "variable.delete",
         "feature.setExpression",
         "undo", "redo",
-    ] + CADDatumService.actions
+    ] + CADDatumService.actions + CADSketchCurveService.actions
 
     /// Sketch-entity kinds with a real typed geometry edit. Polygon remains
     /// query-only until its side/rotation semantics are promoted with the same
@@ -63,6 +63,9 @@ public final class CADParameterService {
     public func handle(action: String, args: [String: Any]) -> [String: Any] {
         if let refusal = CADServiceOperations.readOnlyRefusal(document: document, kind: "parameter", action: action) { return refusal }
         if let failure = revisionPinFailure(args) { return failure }
+        if CADSketchCurveService.actions.contains(action) {
+            return CADSketchCurveService(document: document).handle(action: action, args: args)
+        }
         if CADDatumService.actions.contains(action) {
             return CADDatumService(document: document).handle(action: action, args: args)
         }
@@ -126,6 +129,16 @@ public final class CADParameterService {
             // The typed existing-sketch edits are discoverable from the SAME
             // service that applies them: entity ids and current geometry come
             // from query kind=sketches (rows[].entityRows).
+            "sketch_curve_edits": [
+                "actions": CADSketchCurveService.actions,
+                "fields": ["sketch_id", "entity_id", "boundary_id + pick:[x,y] (mm) for trim/extend", "distance (mm) + associative:true (default) for offset", "link_id for unlink"],
+                "targets": "line, arc, circle; ellipse only when exactly circular; spline only when exactly a two-point open line",
+                "boundaries": "exact Line/Circle/Arc/Ellipse/fit spline, through OCCT",
+                "unsupported": "general ellipse/spline interval materialization and normal offsets; no polyline approximation",
+                "identity": "first surviving fragment keeps source id; further fragments get explicit mapped ids",
+                "constraints": "trim/extend refuses attached constraints/links with their exact ids; none are dropped",
+                "offset_relation": "versioned source-id/target-id/distance; follows source and rejects collapse or unsupported source changes atomically",
+            ],
             "sketch_entity_update": [
                 "action": "updateSketchEntity",
                 "supported_entity_kinds": ["line", "rect", "circle", "arc", "ellipse", "spline"],
@@ -746,6 +759,11 @@ public final class CADParameterService {
                              "Sketch '\(sketch.name)' has no entity \(rawEntity). Query kind=sketches first.")
         }
         let before = sketch.entities[entityIndex]
+        if let link = sketch.curveOffsetLinks.first(where: { $0.targetID == entityUUID }) {
+            return ["ok": false, "mutated": false, "error": "linked_curve_target",
+                    "message": "Make this offset independent before editing it.",
+                    "affected_entity_ids": [entityUUID.uuidString], "affected_link_ids": [link.id.uuidString]]
+        }
         // M05: a linked projection is driven by its source edge — a direct
         // geometry edit would be overwritten by the next rebuild (or, worse,
         // bake a lie into the saved sketch). Detach first, then edit.
@@ -1047,6 +1065,12 @@ public final class CADParameterService {
                 extra: ["pattern_link_id": link.id.uuidString])
         }
 
+        let curveLinks = SketchCurveOffsetKit.relatedLinks(to: entityUUID, in: sketch)
+        if !curveLinks.isEmpty {
+            return ["ok": false, "mutated": false, "error": "linked_curve_entity",
+                    "message": "Unlink the offset before deleting its source or result.",
+                    "affected_entity_ids": [entityUUID.uuidString], "affected_link_ids": curveLinks.map { $0.id.uuidString }]
+        }
         let beforeErrors = document.session.lastEvalErrors
         let beforeChangeCount = document.session.changeCount
         let checkpoint = document.captureEditCheckpoint()
@@ -4494,6 +4518,13 @@ public final class CADParameterService {
     }
 
     private static func rebuildRejection(_ document: FloeCADDocument) -> [String: Any]? {
+        if let failure = document.session.lastCurveEditFailure {
+            return ["ok": false, "mutated": false, "error": failure.code, "message": failure.message,
+                    "affected_entity_ids": failure.entityIDs.map(\.uuidString),
+                    "affected_constraint_ids": failure.constraintIDs.map(\.uuidString),
+                    "affected_dimension_ids": failure.dimensionIDs.map(\.uuidString),
+                    "affected_link_ids": failure.linkIDs.map(\.uuidString)]
+        }
         let references = document.session.lastRebuildRejection
         let features = document.session.lastRejectedFeatureErrors
         guard !references.isEmpty || !features.isEmpty else { return nil }

@@ -42,6 +42,8 @@ nonisolated enum CADDocumentFormat {
     /// floor or bump ordinary documents just because this build can write 7.
     static let drawingManufacturingVersion = 7
     static let supportedVersion = 7
+    /// Root-coordinated unreleased floor; only actual normal-offset links raise it.
+    static let sketchCurveEditVersion = 7
     /// Shared unreleased format-7 floor. A pre-contract writer ignores an
     /// edge's qualifier and would reinterpret it as an ordinal. Raise only
     /// packages that actually contain a qualified edge reference.
@@ -217,6 +219,9 @@ nonisolated enum CADDocumentFormat {
         // reusing associativeVersion(2) would permit silent loss on re-save.
         if document.sketches.contains(where: { $0.hasExternalReferences }) {
             required = max(required, externalSketchProjectionVersion)
+        }
+        if document.sketches.contains(where: { !$0.curveOffsetLinks.isEmpty }) {
+            required = max(required, sketchCurveEditVersion)
         }
         return required
     }
@@ -665,6 +670,10 @@ nonisolated enum CADDocumentFormat {
             for reference in sketch.externalReferences ?? [] { try reference.validate() }
             _ = try encoder.encode(sketch)
         }
+        for sketch in document.sketches where !sketch.curveOffsetLinks.isEmpty {
+            try SketchCurveOffsetKit.validateStored(sketch)
+            _ = try encoder.encode(sketch)
+        }
         // A hole is the first non-additive feature kind: its semantic version,
         // every stored scalar and the actual pilot relation are validated
         // before any commit. A non-encodable hole must FAIL the transaction,
@@ -827,7 +836,26 @@ nonisolated enum CADDocumentFormat {
             // also has a support.
             let external = object["externalReferences"]
             let hasExternal = try externalProjectionIntent(in: object)
-            guard hasSupport || hasExternal else { continue }
+            let curveOffsets = try curveOffsetIntent(in: object)
+            guard hasSupport || hasExternal || curveOffsets.present else { continue }
+            if curveOffsets.present {
+                result.requiredVersion = max(result.requiredVersion, sketchCurveEditVersion)
+                if !curveOffsets.future {
+                    // Validate known curve siblings even if another kind of
+                    // association carries a future contract and becomes opaque.
+                    var cache = object
+                    cache.removeValue(forKey: "support"); cache.removeValue(forKey: "externalReferences")
+                    do {
+                        let sketch = try JSONDecoder().decode(Sketch.self,
+                            from: JSONSerialization.data(withJSONObject: cache))
+                        try SketchCurveOffsetKit.validateStored(sketch)
+                    } catch { throw CADDocumentFormatError.malformedAssociation("sketch-curve-offset") }
+                } else {
+                    _ = try cachedSketch(from: row.data)
+                    result.opaqueSketches.insert(row.blobID)
+                    continue
+                }
+            }
             // M05 review (R2): the floors split — a support-only row stays on
             // the M07 associative floor(2); a row carrying external references
             // raises the coordinated projection floor so older released writers never open
@@ -836,7 +864,8 @@ nonisolated enum CADDocumentFormat {
                 result.requiredVersion,
                 hasExternal ? externalSketchProjectionVersion : associativeVersion)
             do {
-                _ = try JSONDecoder().decode(Sketch.self, from: row.data)
+                let sketch = try JSONDecoder().decode(Sketch.self, from: row.data)
+                if curveOffsets.present { try SketchCurveOffsetKit.validateStored(sketch) }
             } catch let error as SketchExternalReferenceError where error.requiresOpaqueReadOnlyDocument {
                 // A newer external-reference semantic contract: prove the
                 // cached display portion itself is readable, then open opaque
@@ -1079,8 +1108,32 @@ nonisolated enum CADDocumentFormat {
         // fields: a newer support case OR a newer external-reference contract
         // both leave the readable geometry readable (the whole document then
         // opens opaque and read-only around it).
-        try cachedValue(Sketch.self, data: data, removing: "support", "externalReferences")
+        try cachedValue(Sketch.self, data: data, removing: "support", "externalReferences", "curveOffsetLinks")
     }
+    /// Validate every known sibling before allowing future curve intent to
+    /// remain opaque. Nothing is silently decoded away as an empty relation.
+    private static func curveOffsetIntent(in object: [String: Any]) throws -> (present: Bool, future: Bool) {
+        guard let raw = object["curveOffsetLinks"], !(raw is NSNull) else { return (false, false) }
+        func malformed() -> CADDocumentFormatError { .malformedAssociation("sketch-curve-offset") }
+        guard let values = raw as? [Any], values.count <= 256 else { throw malformed() }
+        var future = false
+        let kinds: Set<String> = ["line", "circle", "arc", "ellipse", "spline"]
+        for value in values {
+            guard let row = value as? [String: Any], let number = row["version"] as? NSNumber,
+                  CFGetTypeID(number) != CFBooleanGetTypeID(), number.doubleValue.isFinite,
+                  number.doubleValue.rounded() == number.doubleValue, number.doubleValue >= 1 else { throw malformed() }
+            let newer = number.doubleValue > 1
+                || ((row["sourceDefinitionVersion"] as? Int) ?? 1) > 1
+                || (row["intervalPolicy"] as? String).map { $0 != "followSource" } == true
+                || (row["sourceKind"] as? String).map { !kinds.contains($0) } == true
+                || (row["convention"] as? String).map { !["left_of_travel", "outward_conic"].contains($0) } == true
+            if newer { future = true; continue }
+            do { _ = try JSONDecoder().decode(SketchCurveOffsetLink.self, from: JSONSerialization.data(withJSONObject: row)) }
+            catch { throw malformed() }
+        }
+        return (!values.isEmpty, future)
+    }
+
     /// A PRESENT reference field must be a complete array. Validate every
     /// known row before admitting any future row as opaque, so null, mixed
     /// arrays or a corrupt known sibling can never turn into plain geometry.

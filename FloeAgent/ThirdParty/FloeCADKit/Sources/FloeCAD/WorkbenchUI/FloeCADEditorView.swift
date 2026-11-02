@@ -1028,6 +1028,26 @@ struct FloeCADEditorView: View {
         }
     }
 
+    private func sketchCurveEditBar(_ viewModel: EditorViewModel) -> some View {
+        AdaptiveBar(style: .capsule, spacing: 12) {
+            Picker(FloeCADStrings.text("cad.sketch.curve.operation", "Operation"), selection: Binding(
+                get: { viewModel.sketchCurveEditKind }, set: { viewModel.sketchCurveEditKind = $0 })) {
+                Text(FloeCADStrings.text("cad.sketch.curve.trim", "Trim")).tag(SketchCurveEditKind.trim)
+                Text(FloeCADStrings.text("cad.sketch.curve.extend", "Extend")).tag(SketchCurveEditKind.extend)
+            }.pickerStyle(.segmented).fixedSize().accessibilityIdentifier("SketchCurveOperation")
+            Picker(FloeCADStrings.text("cad.sketch.curve.boundary", "Boundary"), selection: Binding(
+                get: { viewModel.sketchCurveBoundaryID }, set: { viewModel.sketchCurveBoundaryID = $0 })) {
+                Text(FloeCADStrings.text("cad.sketch.curve.chooseBoundary", "Choose the boundary first.")).tag(Optional<UUID>.none)
+                ForEach(viewModel.sketchCurveBoundaryChoices) { choice in Text(choice.title).tag(Optional(choice.id)) }
+            }.accessibilityIdentifier("SketchCurveBoundary")
+            Text(FloeCADStrings.text("cad.sketch.curve.pickTarget", "Tap the part to remove or the endpoint to extend"))
+                .font(.caption).foregroundStyle(.barLabel)
+        } actions: {
+            Button(FloeCADStrings.text("cad.sketch.curve.done", "Done")) { viewModel.cancelSketchCurveEdit() }
+                .buttonStyle(.bordered).controlSize(.small).accessibilityIdentifier("SketchCurveDone")
+        }
+    }
+
     /// Offset Edge bar (spec §1.9): Single/Chain type, the signed distance,
     /// and Apply/Cancel. A negative distance offsets inward on a closed
     /// profile, which is why the field is not clamped to zero the way Shell's
@@ -1044,6 +1064,9 @@ struct FloeCADEditorView: View {
                  : "\(picked) selected")
                 .font(.subheadline)
                 .fixedSize()
+            if viewModel.sketchOffsetUsesLinkedCurve {
+                Text(FloeCADStrings.text("cad.sketch.curve.linkedOffset", "Linked offset")).font(.caption)
+            }
             Divider().frame(height: 20)
             Picker("Type", selection: Binding(
                 get: { viewModel.sketchOffsetType },
@@ -1066,6 +1089,10 @@ struct FloeCADEditorView: View {
                 .accessibilityIdentifier("SketchOffsetDistanceField")
             Text(settings.unit.symbol).font(.caption).foregroundStyle(.barLabel).fixedSize()
         } actions: {
+            if viewModel.sketchOffsetSelectedLinkID != nil {
+                Button(FloeCADStrings.text("cad.sketch.curve.makeIndependent", "Make independent")) { viewModel.unlinkSelectedSketchOffset() }
+                    .buttonStyle(.bordered).controlSize(.small).accessibilityIdentifier("SketchOffsetUnlink")
+            }
             Button("Cancel") { viewModel.cancelSketchOffset() }
                 .buttonStyle(.bordered)
                 .controlSize(.small)
@@ -1536,6 +1563,8 @@ struct FloeCADEditorView: View {
                         replaceFaceBar(viewModel)
                     } else if case .pickingAxisReferences = viewModel.mode {
                         axisBar(viewModel)
+                    } else if viewModel.mode.sketchTool == .trim {
+                        sketchCurveEditBar(viewModel)
                     } else if viewModel.mode.sketchTool == .offset {
                         sketchOffsetBar(viewModel)
                     } else {

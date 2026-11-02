@@ -458,6 +458,20 @@ typedef NS_ENUM(NSInteger, OCCTOpCode) {
 /// them pole for pole with the Swift conversion. Nil if the edge cannot be built.
 + (nullable NSData *)splineEdgePolesForPoints:(NSData *)xy closed:(BOOL)closed;
 
+/// Exact planar sketch intersections. Packed double record v1:
+/// version, kind(0 line / 1 conic / 2 fit spline), lower, upper,
+/// flags(bit0 periodic range / bit1 closed spline basis),
+/// then [ax,ay,bx,by] / [cx,cy,rx,ry,rotation] / [count,x,y,...].
+/// Spline values are original fit points consumed by OS3DSplineEdge, NEVER
+/// samples. Output is packed x,y intersections; nil refuses overlapping or
+/// invalid curves atomically. Empty data means no cross intersection.
++ (nullable NSData *)sketchCurveIntersectionsForTarget:(NSData *)target
+                                            boundary:(NSData *)boundary
+                                        extendTarget:(BOOL)extendTarget
+                                           tolerance:(double)tolerance
+                                              status:(nullable OCCTOpStatus *)status
+    NS_SWIFT_NAME(sketchCurveIntersections(target:boundary:extendTarget:tolerance:status:));
+
 /// Round the edges that pass near `worldPoints` to `radius`
 /// (`BRepFilletAPI_MakeFillet`). `worldPoints` is packed doubles (x,y,z triples)
 /// — typically the midpoints of the mesh edges the user picked. An edge counts

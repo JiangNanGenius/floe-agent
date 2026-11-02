@@ -379,6 +379,12 @@ nonisolated enum ProjectMergeKit {
                         id: UUID(), seedIDs: $0.seedIDs.map(newEntity),
                         instanceIDs: $0.instanceIDs.map { $0.map(newEntity) }, spec: $0.spec)
                 },
+                curveOffsetLinks: sketch.curveOffsetLinks.map {
+                    // Persisted links were validated before merge preparation.
+                    // Rebind local identities with the same remapping as geometry.
+                    SketchCurveOffsetLink.remappingValidated($0,
+                        sourceID: newEntity($0.sourceID), targetID: newEntity($0.targetID))
+                },
                 rectangleSizingAnchors: Dictionary(uniqueKeysWithValues:
                     sketch.rectangleSizingAnchors.map { (newEntity($0.key), $0.value) }),
                 rotatedRectangleEdges: Dictionary(uniqueKeysWithValues:

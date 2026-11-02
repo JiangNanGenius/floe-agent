@@ -129494,6 +129494,86 @@
           }
         }
       }
+    },
+    "cad.sketch.curve.kind.line": {
+      "en": "Line",
+      "zh-Hans": "直线"
+    },
+    "cad.sketch.curve.kind.circle": {
+      "en": "Circle",
+      "zh-Hans": "圆"
+    },
+    "cad.sketch.curve.kind.arc": {
+      "en": "Arc",
+      "zh-Hans": "圆弧"
+    },
+    "cad.sketch.curve.kind.ellipse": {
+      "en": "Ellipse",
+      "zh-Hans": "椭圆"
+    },
+    "cad.sketch.curve.kind.spline": {
+      "en": "Spline",
+      "zh-Hans": "样条"
+    },
+    "cad.sketch.curve.operation": {
+      "en": "Operation",
+      "zh-Hans": "操作"
+    },
+    "cad.sketch.curve.trim": {
+      "en": "Trim",
+      "zh-Hans": "修剪"
+    },
+    "cad.sketch.curve.extend": {
+      "en": "Extend",
+      "zh-Hans": "延伸"
+    },
+    "cad.sketch.curve.boundary": {
+      "en": "Boundary",
+      "zh-Hans": "边界"
+    },
+    "cad.sketch.curve.chooseBoundary": {
+      "en": "Choose the boundary first.",
+      "zh-Hans": "请先选择边界。"
+    },
+    "cad.sketch.curve.pickTarget": {
+      "en": "Tap the part to remove or the endpoint to extend",
+      "zh-Hans": "点选要移除的部分或要延伸的端点"
+    },
+    "cad.sketch.curve.done": {
+      "en": "Done",
+      "zh-Hans": "完成"
+    },
+    "cad.sketch.curve.linkedOffset": {
+      "en": "Linked offset",
+      "zh-Hans": "关联偏移"
+    },
+    "cad.sketch.curve.makeIndependent": {
+      "en": "Make independent",
+      "zh-Hans": "解除关联"
+    },
+    "cad.sketch.curve.exactRangeRequired": {
+      "en": "This curve cannot be edited exactly yet. The original is unchanged.",
+      "zh-Hans": "暂不支持精确编辑此曲线，原曲线已保留。"
+    },
+    "cad.sketch.curve.references": {
+      "en": "Release the curve's constraints or links first. Nothing was removed.",
+      "zh-Hans": "请先解除曲线的约束或关联，原有内容均已保留。"
+    },
+    "cad.sketch.curve.collapse": {
+      "en": "The offset collapses the curve. Reduce the inward distance.",
+      "zh-Hans": "偏移后曲线会塌缩，请减小内偏移距离。"
+    },
+    "cad.sketch.curve.changed": {
+      "en": "The sketch changed. Select the curve again.",
+      "zh-Hans": "草图已变化，请重新选择曲线。"
+    },
+    "cad.sketch.curve.noIntersection": {
+      "en": "There is no unambiguous intersection with that boundary.",
+      "zh-Hans": "与此边界没有明确交点。"
+    },
+    "cad.sketch.curve.refused": {
+      "en": "The curve could not be edited. The original is unchanged.",
+      "zh-Hans": "无法完成曲线编辑，原曲线已保留。"
     }
   },
   "version": "1.0"
