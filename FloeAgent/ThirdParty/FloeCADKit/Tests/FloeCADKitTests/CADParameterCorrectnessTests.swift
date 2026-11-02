@@ -345,20 +345,34 @@ final class CADParameterCorrectnessTests: XCTestCase {
             "helix": ["axisPoint": [0, 0, 0], "axisDirection": [0, 1, 0],
                 "referenceDirection": [1, 0, 0], "radius": 3.5, "pitch": 2, "turns": 2]])
         let feature = try XCTUnwrap(document.session.document.features.nodes.last)
-        func radialExtent() throws -> Double {
-            let solid = try XCTUnwrap(try body(document).brep)
+        func radialExtent(_ target: FloeCADDocument) throws -> Double {
+            let solid = try XCTUnwrap(try body(target).brep)
             let points = OCCTKernel.renderMesh(from: solid).positions
             return try XCTUnwrap(points.map { hypot(Double($0.x), Double($0.z)) }.max())
         }
-        let original = try radialExtent()
+        let original = try radialExtent(document)
         let viewModel = document.viewModel()
         viewModel.editFeatureScalar(feature.id, key: .helixRadius, value: 4.5)
         XCTAssertNil(viewModel.errorMessage)
-        XCTAssertGreaterThan(try radialExtent(), original + 0.8,
+        XCTAssertGreaterThan(try radialExtent(document), original + 0.8,
             "Measure tessellated actual BRep, independently of the sampled display spine")
         XCTAssertNotNil(document.session.document.features.node(feature.id))
         document.session.undo()
-        XCTAssertEqual(try radialExtent(), original, accuracy: 1e-3)
+        XCTAssertEqual(try radialExtent(document), original, accuracy: 1e-3)
+        document.session.redo()
+        let grown = try radialExtent(document)
+        XCTAssertGreaterThan(grown, original + 0.8)
+        let saved = await document.save(); XCTAssertTrue(saved.succeeded, saved.error ?? "")
+        let url = document.url; document.close()
+        let reopened = try await FloeCADDocument.open(at: url); defer { reopened.close() }
+        XCTAssertEqual(try radialExtent(reopened), grown, accuracy: 1e-3)
+        guard let restored = reopened.session.document.features.node(feature.id),
+              case let .sweep(_, _, _, _, spec?, _) = restored.kind else {
+            return XCTFail("Reopen lost the edited helix")
+        }
+        XCTAssertNotNil(spec.profileAnchor)
+        XCTAssertEqual(CADDocumentFormat.requiredFormat(document: reopened.session.document),
+                       CADDocumentFormat.associativeSweepVersion)
     }
 
     private func parameter(_ document: FloeCADDocument, feature: FeatureID,

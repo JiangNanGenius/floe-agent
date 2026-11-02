@@ -292,6 +292,20 @@ public final class CADParameterService {
         var edited: FeatureKind = node.kind
         if !scalarChanges.isEmpty {
             var currentSweepSpine: [PointWrapper]?
+            var sweepProfileAnchor: SIMD2<Double>?
+            if scalarChanges["helix_radius"] != nil,
+               case let .sweep(_, planeRef, _, _, helix?, _) = node.kind {
+                let sourcePlane: SketchPlane?
+                switch planeRef.source {
+                case .ground: sourcePlane = .ground
+                case let .explicit(plane): sourcePlane = plane
+                case let .sketch(id):
+                    sourcePlane = document.session.document.sketches.first(where: { $0.id == id })?.plane
+                case let .construction(id):
+                    sourcePlane = document.session.document.planes.first(where: { $0.id == id })?.plane
+                }
+                sweepProfileAnchor = sourcePlane?.toLocal(helix.point(at: helix.startAngle))
+            }
             if scalarChanges["path"] is NSNull,
                case let .sweep(_, _, _, _, _, path) = node.kind, let path {
                 currentSweepSpine = try? path.resolvedSpine { id in
@@ -301,7 +315,8 @@ public final class CADParameterService {
             switch Self.updated(node.kind, changes: scalarChanges,
                                 pilotDiameter: Self.placementPilotDiameter(
                                     node, document: document.session.document),
-                                currentSweepSpine: currentSweepSpine) {
+                                currentSweepSpine: currentSweepSpine,
+                                sweepProfileAnchor: sweepProfileAnchor) {
             case .failure(let error):
                 return Self.fail("bad_parameter", error.message)
             case .success(let kind):
@@ -4780,7 +4795,8 @@ public final class CADParameterService {
                         changes: [String: Any],
                         requireChange: Bool = true,
                         pilotDiameter: Double? = nil,
-                        currentSweepSpine: [PointWrapper]? = nil) -> Result<FeatureKind, CADParameterEditError> {
+                        currentSweepSpine: [PointWrapper]? = nil,
+                        sweepProfileAnchor: SIMD2<Double>? = nil) -> Result<FeatureKind, CADParameterEditError> {
         var didChange = false
         func value(_ name: String) -> Double? {
             guard let raw = changes[name] else { return nil }
@@ -4823,6 +4839,12 @@ public final class CADParameterService {
                     }
                 }
                 if spec == nextHelix { return .success(kind) }
+                if let original = helix, spec.radius != original.radius, spec.profileAnchor == nil {
+                    guard let sweepProfileAnchor else {
+                        return fail("helix_radius", "The source section plane must resolve before its radius can change.")
+                    }
+                    spec.profileAnchor = sweepProfileAnchor
+                }
                 do { nextSpine = try spec.checkedSampledSpine().map(PointWrapper.init) }
                 catch { return fail("helix", error.localizedDescription) }
                 nextHelix = spec

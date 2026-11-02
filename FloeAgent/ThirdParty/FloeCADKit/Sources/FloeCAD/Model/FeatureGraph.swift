@@ -122,6 +122,12 @@ nonisolated struct HelixSpec: Codable, Hashable, Sendable {
     var pitch: Double
     var turns: Double
     var startAngle: Double = 0
+    /// Plane-local attachment captured when an existing helix radius is
+    /// edited. Keeping the section at the OLD world position cancels the
+    /// new pipe radius. This anchor moves only the evaluation frame, never
+    /// the source sketch or its support relationship. Nil preserves legacy
+    /// placement until a real radius edit establishes the attachment.
+    var profileAnchor: SIMD2<Double>? = nil
 
     /// The helix point at angle `theta` (radians from `referenceDirection`).
     func point(at theta: Double) -> SIMD3<Double> {
@@ -189,6 +195,9 @@ nonisolated struct HelixSpec: Codable, Hashable, Sendable {
         }
         guard startAngle.isFinite else {
             return .invalid("helix.startAngle must be finite.")
+        }
+        if let profileAnchor, !profileAnchor.x.isFinite || !profileAnchor.y.isFinite {
+            return .invalid("helix.profileAnchor must be finite.")
         }
         guard perTurn > 0 else { return .invalidPerTurn }
         guard HelixSamplingLimits.checkedSegmentCount(turns: turns, perTurn: perTurn) != nil else {
@@ -2738,9 +2747,19 @@ nonisolated extension FeatureGraph {
                 return
             }
         } else { resolvedSpine = spine }
-        guard let plane = state.resolvePlane(planeRef) else {
+        guard var plane = state.resolvePlane(planeRef) else {
             state.errors[node.id] = .brokenRef("sweep plane unresolved")
             return
+        }
+        if let helix, let anchor = helix.profileAnchor {
+            let shift = helix.point(at: helix.startAngle) - plane.toWorld(anchor)
+            let origin = plane.origin + shift
+            guard shift.x.isFinite, shift.y.isFinite, shift.z.isFinite,
+                  origin.x.isFinite, origin.y.isFinite, origin.z.isFinite else {
+                state.errors[node.id] = .kernelFailure("The helix section attachment is outside the coordinate range.")
+                return
+            }
+            plane.origin = origin
         }
         guard let (outer, holes) = state.resolveProfile(profileRef) else {
             state.errors[node.id] = .brokenRef("sweep profile unresolved")

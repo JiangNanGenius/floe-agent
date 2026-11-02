@@ -52,8 +52,9 @@ nonisolated enum CADDocumentFormat {
     /// A saved material name is now an active binding, not merely provenance
     /// that an older similarity-based writer may ignore.
     static let namedFaceMaterialVersion = 7
-    /// Ordered sweep edges are semantic references, not cached spine points.
-    /// Share the coordinated unreleased floor; old writers must not drop them.
+    /// Ordered sweep edges and an editable helix's section attachment are
+    /// semantic references. Share the coordinated unreleased floor; an old
+    /// writer must not drop them and reinterpret the stored fallback geometry.
     static let associativeSweepVersion = 7
     /// Coordinated package floor for a document that actually stores
     /// user-named versions. Ordinary documents keep their existing schema
@@ -135,7 +136,9 @@ nonisolated enum CADDocumentFormat {
     static func requiredFormat(document: DesignDocument) -> Int {
         var required = legacyVersion
         if document.features.nodes.contains(where: {
-            if case let .sweep(_, _, _, _, _, path) = $0.kind { return path != nil }
+            if case let .sweep(_, _, _, _, helix, path) = $0.kind {
+                return path != nil || helix?.profileAnchor != nil
+            }
             return false
         }) { required = max(required, associativeSweepVersion) }
         if document.bodies.contains(where: { $0.materialFaceBindings.contains { $0.key.elementName != nil } }) {
@@ -795,6 +798,15 @@ nonisolated enum CADDocumentFormat {
                 continue
             }
             let operationIdentity = try operationIdentityIntent(object)
+            if let sweep = object["sweep"] as? [String: Any],
+               let helix = sweep["helix"] as? [String: Any],
+               let raw = helix["profileAnchor"], !(raw is NSNull) {
+                result.requiredVersion = max(result.requiredVersion, associativeSweepVersion)
+                guard let values = raw as? [Any], values.count == 2,
+                      values.allSatisfy({ CADMaterialService.number($0)?.isFinite == true }) else {
+                    throw CADDocumentFormatError.malformedAssociation("helix-section-anchor")
+                }
+            }
             if let sweep = object["sweep"] as? [String: Any], let raw = sweep["path"], !(raw is NSNull) {
                 result.requiredVersion = max(result.requiredVersion, associativeSweepVersion)
                 guard let definition = raw as? [String: Any],
