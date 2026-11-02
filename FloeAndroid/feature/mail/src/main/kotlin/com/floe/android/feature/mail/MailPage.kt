@@ -96,6 +96,7 @@ fun MailDestinationUi(
     onDismissError: () -> Unit,
     onDismissNotice: () -> Unit,
     onCancel: () -> Unit,
+    sheetNavigation: (@Composable () -> Unit)? = null,
 ) {
     var editor by remember { mutableStateOf<MailAccountDraftUi?>(null) }
     var accountsOpen by rememberSaveable { mutableStateOf(false) }
@@ -132,6 +133,7 @@ fun MailDestinationUi(
             },
         )
         else -> MailMainScreen(
+            sheetNavigation = sheetNavigation,
             state = state,
             compact = compact,
             showSidebarToggle = showSidebarToggle,
@@ -242,12 +244,15 @@ private fun MailMainScreen(
     onDismissError: () -> Unit,
     onDismissNotice: () -> Unit,
     onCancel: () -> Unit,
+    sheetNavigation: (@Composable () -> Unit)? = null,
 ) {
     Column(Modifier.fillMaxSize().background(Floe.colors.readingSurface)) {
         FloeToolbar(
             title = stringResource(R.string.mail_title),
             navigation = {
-                if (compact || showSidebarToggle) {
+                if (sheetNavigation != null) {
+                    sheetNavigation()
+                } else if (compact || showSidebarToggle) {
                     FloeCircleButton(
                         icon = FloeIcons.SidebarToggle,
                         contentDescription = stringResource(R.string.open_sidebar),

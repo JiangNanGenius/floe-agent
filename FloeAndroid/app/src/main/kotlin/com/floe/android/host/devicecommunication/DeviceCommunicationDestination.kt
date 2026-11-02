@@ -33,6 +33,7 @@ internal fun C05DeviceCommunicationDestination(
     showSidebarToggle: Boolean,
     onExpandSidebar: () -> Unit,
     onOpenDrawer: () -> Unit,
+    sheetNavigation: (@Composable () -> Unit)? = null,
 ) {
     if (host == null) {
         FloeUnavailableView(
@@ -66,6 +67,7 @@ internal fun C05DeviceCommunicationDestination(
     }
 
     DeviceCommunicationDestinationUi(
+        sheetNavigation = sheetNavigation,
         state = state,
         terminalEngine = terminal,
         compact = compact,

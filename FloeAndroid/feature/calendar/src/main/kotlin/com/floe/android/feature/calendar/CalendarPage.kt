@@ -104,12 +104,15 @@ fun CalendarDestinationUi(
     onOpenNotificationSettings: () -> Unit,
     onOpenExactAlarmSettings: () -> Unit,
     onDismissNotice: () -> Unit,
+    sheetNavigation: (@Composable () -> Unit)? = null,
 ) {
     Column(Modifier.fillMaxSize().background(Floe.colors.readingSurface)) {
         FloeToolbar(
             title = stringResource(R.string.calendar_title),
             navigation = {
-                if (!compact) {
+                if (sheetNavigation != null) {
+                    sheetNavigation()
+                } else if (!compact) {
                     if (showSidebarToggle) {
                         FloeCircleButton(
                             icon = FloeIcons.SidebarToggle,

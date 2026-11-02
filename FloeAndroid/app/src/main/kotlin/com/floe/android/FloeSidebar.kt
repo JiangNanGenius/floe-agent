@@ -20,8 +20,6 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.mutableStateOf
-import com.floe.android.design.FloeChoiceMenu
-import com.floe.android.design.FloeChoiceOption
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.stringResource
@@ -148,54 +146,6 @@ fun FloeSidebar(
                 selectionStyle = FloeSelectionStyle.GRAY,
                 modifier = Modifier.padding(horizontal = 12.dp),
             )
-            FloeSidebarRow(
-                icon = FloeIcons.Terminal,
-                label = stringResource(com.floe.android.feature.remote.R.string.remote_hosts_title),
-                selected = selection == SidebarSelection.More(MoreDestination.REMOTE),
-                onClick = { onSelect(SidebarSelection.More(MoreDestination.REMOTE)) },
-                selectionStyle = FloeSelectionStyle.GRAY,
-                modifier = Modifier.padding(horizontal = 12.dp),
-            )
-            FloeSidebarRow(
-                icon = FloeIcons.DeviceLocal,
-                label = stringResource(com.floe.android.feature.rdp.R.string.rdp_title),
-                selected = selection == SidebarSelection.More(MoreDestination.RDP),
-                onClick = { onSelect(SidebarSelection.More(MoreDestination.RDP)) },
-                selectionStyle = FloeSelectionStyle.GRAY,
-                modifier = Modifier.padding(horizontal = 12.dp),
-            )
-            FloeSidebarRow(
-                icon = FloeIcons.Bubble,
-                label = stringResource(com.floe.android.feature.mail.R.string.mail_title),
-                selected = selection == SidebarSelection.More(MoreDestination.MAIL),
-                onClick = { onSelect(SidebarSelection.More(MoreDestination.MAIL)) },
-                selectionStyle = FloeSelectionStyle.GRAY,
-                modifier = Modifier.padding(horizontal = 12.dp),
-            )
-            FloeSidebarRow(
-                icon = FloeIcons.Clock,
-                label = stringResource(com.floe.android.feature.calendar.R.string.calendar_title),
-                selected = selection == SidebarSelection.More(MoreDestination.CALENDAR),
-                onClick = { onSelect(SidebarSelection.More(MoreDestination.CALENDAR)) },
-                selectionStyle = FloeSelectionStyle.GRAY,
-                modifier = Modifier.padding(horizontal = 12.dp),
-            )
-            FloeSidebarRow(
-                icon = FloeIcons.Antenna,
-                label = stringResource(com.floe.android.feature.devicecommunication.R.string.devices_title),
-                selected = selection == SidebarSelection.More(MoreDestination.DEVICES),
-                onClick = { onSelect(SidebarSelection.More(MoreDestination.DEVICES)) },
-                selectionStyle = FloeSelectionStyle.GRAY,
-                modifier = Modifier.padding(horizontal = 12.dp),
-            )
-            FloeSidebarRow(
-                icon = FloeIcons.Gearshape,
-                label = stringResource(com.floe.android.feature.systemservices.R.string.system_services_title),
-                selected = selection == SidebarSelection.More(MoreDestination.SYSTEM_SERVICES),
-                onClick = { onSelect(SidebarSelection.More(MoreDestination.SYSTEM_SERVICES)) },
-                selectionStyle = FloeSelectionStyle.GRAY,
-                modifier = Modifier.padding(horizontal = 12.dp),
-            )
 
             FloeSectionHeader(stringResource(R.string.projects))
             val defaultProjectName = stringResource(R.string.project_default_name)
@@ -303,70 +253,6 @@ fun FloeSidebar(
                 tint = Floe.colors.label,
             )
             Spacer(Modifier.weight(1f))
-            Box {
-                var moreOpen by remember { mutableStateOf(false) }
-                FloeCircleButton(
-                    icon = FloeIcons.Ellipsis, contentDescription = stringResource(R.string.shell_more),
-                    onClick = { moreOpen = true }, visualSize = 34.dp, iconSize = 19.dp,
-                    background = androidx.compose.ui.graphics.Color.Transparent, hairline = false, tint = Floe.colors.label,
-                )
-                FloeChoiceMenu(
-                    expanded = moreOpen, onDismissRequest = { moreOpen = false },
-                    options = listOf(
-                        FloeChoiceOption("network", stringResource(R.string.network_workbench)),
-                        FloeChoiceOption(
-                            "remote",
-                            stringResource(com.floe.android.feature.remote.R.string.remote_hosts_title),
-                        ),
-                        FloeChoiceOption(
-                            "mail",
-                            stringResource(com.floe.android.feature.mail.R.string.mail_title),
-                        ),
-                        FloeChoiceOption(
-                            "calendar",
-                            stringResource(com.floe.android.feature.calendar.R.string.calendar_title),
-                        ),
-                        FloeChoiceOption(
-                            "rdp",
-                            stringResource(com.floe.android.feature.rdp.R.string.rdp_title),
-                        ),
-                        FloeChoiceOption(
-                            "devices",
-                            stringResource(com.floe.android.feature.devicecommunication.R.string.devices_title),
-                        ),
-                        FloeChoiceOption(
-                            "system_services",
-                            stringResource(com.floe.android.feature.systemservices.R.string.system_services_title),
-                        ),
-                    ),
-                    selectedKey = when (selection) {
-                        SidebarSelection.More(MoreDestination.NETWORK) -> "network"
-                        SidebarSelection.More(MoreDestination.REMOTE) -> "remote"
-                        SidebarSelection.More(MoreDestination.RDP) -> "rdp"
-                        SidebarSelection.More(MoreDestination.MAIL) -> "mail"
-                        SidebarSelection.More(MoreDestination.CALENDAR) -> "calendar"
-                        SidebarSelection.More(MoreDestination.DEVICES) -> "devices"
-                        SidebarSelection.More(MoreDestination.SYSTEM_SERVICES) -> "system_services"
-                        else -> null
-                    },
-                    onSelect = { key ->
-                        moreOpen = false
-                        onSelect(
-                            SidebarSelection.More(
-                                when (key) {
-                                    "remote" -> MoreDestination.REMOTE
-                                    "rdp" -> MoreDestination.RDP
-                                    "mail" -> MoreDestination.MAIL
-                                    "calendar" -> MoreDestination.CALENDAR
-                                    "devices" -> MoreDestination.DEVICES
-                                    "system_services" -> MoreDestination.SYSTEM_SERVICES
-                                    else -> MoreDestination.NETWORK
-                                }
-                            )
-                        )
-                    },
-                )
-            }
         }
     }
 }

@@ -59,12 +59,15 @@ fun SystemServicesDestinationUi(
     onInstallHealth: () -> Unit,
     onUpdateHealth: () -> Unit,
     onDismissNotice: () -> Unit,
+    sheetNavigation: (@Composable () -> Unit)? = null,
 ) {
     Column(Modifier.fillMaxSize().background(Floe.colors.readingSurface)) {
         FloeToolbar(
             title = stringResource(R.string.system_services_title),
             navigation = {
-                if (compact || showSidebarToggle) {
+                if (sheetNavigation != null) {
+                    sheetNavigation()
+                } else if (compact || showSidebarToggle) {
                     FloeCircleButton(
                         icon = FloeIcons.SidebarToggle,
                         contentDescription = stringResource(R.string.system_services_open_sidebar),

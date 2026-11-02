@@ -42,6 +42,7 @@ private data class PendingRawExport(
 @Composable
 internal fun NetworkWorkbenchDestination(
     host: RuntimeHost?, compact: Boolean, showSidebarToggle: Boolean, onNavigate: () -> Unit,
+    sheetNavigation: (@Composable () -> Unit)? = null,
 ) {
     if (host == null) {
         FloeUnavailableView(FloeIcons.Antenna, stringResource(R.string.network_workbench), stringResource(R.string.projects_runtime_pending))
@@ -209,6 +210,7 @@ internal fun NetworkWorkbenchDestination(
         captureController.refreshRawCaptures()
     }
     NetworkWorkbench(
+        sheetNavigation = sheetNavigation,
         state = state, compact = compact,
         onExecute = controller::execute, onStop = controller::stop,
         onPermission = permissionAction,

@@ -88,6 +88,7 @@ public fun RdpDestinationUi(
     showSidebarToggle: Boolean,
     onExpandSidebar: () -> Unit,
     onOpenDrawer: () -> Unit,
+    sheetNavigation: (@Composable () -> Unit)? = null,
 ) {
     val session = state.session
     if (session != null) {
@@ -102,6 +103,7 @@ public fun RdpDestinationUi(
         )
     } else {
         RdpHostsPage(
+            sheetNavigation = sheetNavigation,
             state = state,
             actions = actions,
             compact = compact,
@@ -123,6 +125,7 @@ private fun RdpHostsPage(
     showSidebarToggle: Boolean,
     onExpandSidebar: () -> Unit,
     onOpenDrawer: () -> Unit,
+    sheetNavigation: (@Composable () -> Unit)? = null,
 ) {
     var editorVisible by rememberSaveable { mutableStateOf(false) }
     var draft by remember { mutableStateOf(RdpProfileDraftUi()) }
@@ -132,7 +135,9 @@ private fun RdpHostsPage(
         FloeToolbar(
             title = stringResource(R.string.rdp_title),
             navigation = {
-                if (compact || showSidebarToggle) {
+                if (sheetNavigation != null) {
+                    sheetNavigation()
+                } else if (compact || showSidebarToggle) {
                     FloeCircleButton(
                         icon = FloeIcons.SidebarToggle,
                         contentDescription = stringResource(R.string.rdp_title),

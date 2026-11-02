@@ -45,6 +45,7 @@ internal fun C06CalendarDestination(
     showSidebarToggle: Boolean,
     onExpandSidebar: () -> Unit,
     onOpenDrawer: () -> Unit,
+    sheetNavigation: (@Composable () -> Unit)? = null,
 ) {
     if (host == null) {
         FloeUnavailableView(
@@ -118,6 +119,7 @@ internal fun C06CalendarDestination(
     }
 
     CalendarDestinationUi(
+        sheetNavigation = sheetNavigation,
         state = state,
         compact = compact,
         showSidebarToggle = showSidebarToggle,

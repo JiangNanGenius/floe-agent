@@ -43,6 +43,7 @@ internal fun C06MailDestination(
     showSidebarToggle: Boolean,
     onExpandSidebar: () -> Unit,
     onOpenDrawer: () -> Unit,
+    sheetNavigation: (@Composable () -> Unit)? = null,
 ) {
     if (host == null) {
         FloeUnavailableView(
@@ -73,6 +74,7 @@ internal fun C06MailDestination(
     }
 
     MailDestinationUi(
+        sheetNavigation = sheetNavigation,
         state = state.toScreenState(),
         compact = compact,
         showSidebarToggle = showSidebarToggle,

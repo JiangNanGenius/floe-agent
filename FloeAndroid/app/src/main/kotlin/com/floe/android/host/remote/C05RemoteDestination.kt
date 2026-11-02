@@ -28,6 +28,7 @@ internal fun C05RemoteDestination(
     showSidebarToggle: Boolean,
     onExpandSidebar: () -> Unit,
     onOpenDrawer: () -> Unit,
+    sheetNavigation: (@Composable () -> Unit)? = null,
 ) {
     if (host == null) {
         FloeUnavailableView(
@@ -42,6 +43,7 @@ internal fun C05RemoteDestination(
     val state by controller.state.collectAsState()
     LaunchedEffect(controller) { controller.enter() }
     RemoteDestinationUi(
+        sheetNavigation = sheetNavigation,
         state = state,
         compact = compact,
         showSidebarToggle = showSidebarToggle,

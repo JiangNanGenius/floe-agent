@@ -49,6 +49,7 @@ fun NetworkWorkbench(
     artifactContent: (@Composable (Modifier) -> Unit)? = null,
     diagnosticReport: (@Composable (NetworkObservationUi) -> Unit)? = null,
     modifier: Modifier = Modifier,
+    sheetNavigation: (@Composable () -> Unit)? = null,
 ) {
     var selection by rememberSaveable { mutableStateOf<String?>(null) }
     var detailsPage by rememberSaveable { mutableStateOf<String?>(null) }
@@ -102,6 +103,7 @@ fun NetworkWorkbench(
                         )
                     }
                 }
+                sheetNavigation != null -> { { sheetNavigation() } }
                 compact -> {
                     {
                         FloeCircleButton(

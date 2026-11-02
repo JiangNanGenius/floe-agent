@@ -258,7 +258,7 @@ fun SettingsSheet(
                                         .verticalScroll(rememberScrollState())
                                         .padding(vertical = 8.dp),
                                 ) {
-                                    FloeSettingsSection.entries.forEach { entry ->
+                                    FloeSettingsSection.visibleCases.forEach { entry ->
                                         FloeSidebarRow(
                                             icon = settingsIcon(entry),
                                             label = settingsTitle(entry),
@@ -454,7 +454,7 @@ fun SettingsSheet(
                                     .verticalScroll(rememberScrollState())
                                     .padding(vertical = 8.dp),
                             ) {
-                                FloeSettingsSection.entries.forEach { entry ->
+                                FloeSettingsSection.visibleCases.forEach { entry ->
                                     FloeSidebarRow(
                                         icon = settingsIcon(entry),
                                         label = settingsTitle(entry),
@@ -612,13 +612,15 @@ private fun SettingsSectionContent(
     when (section) {
         FloeSettingsSection.GENERAL -> {
             GeneralSettingsPage(themeMode, onThemeModeChange)
-            com.floe.android.host.linux.LocalRuntimeSettingsCard()
-            C03VoiceSettingsCard(runtimeHost?.voiceOrNull())
             if (runtimeHost != null) {
                 SettingsHostPages.DefaultsPage(runtimeHost.settings)
             }
         }
         FloeSettingsSection.PROVIDERS -> ProvidersSettingsPage()
+        FloeSettingsSection.AUXILIARY -> C03VoiceSettingsCard(runtimeHost?.voiceOrNull())
+        FloeSettingsSection.EXECUTION -> com.floe.android.host.linux.LocalRuntimeSettingsCard()
+        FloeSettingsSection.REMOTE -> RemoteOperationalSettingsPage(runtimeHost)
+        FloeSettingsSection.SYSTEM_CAPABILITIES -> SystemOperationalSettingsPage(runtimeHost)
         FloeSettingsSection.SKILLS -> SkillsSettingsPage(runtimeHost)
         FloeSettingsSection.MEMORY -> {
             if (runtimeHost != null) {
@@ -859,6 +861,10 @@ private fun settingsIcon(section: FloeSettingsSection) = when (section) {
     FloeSettingsSection.WEB_SEARCH -> FloeIcons.Magnifier
     FloeSettingsSection.DESKTOP_ASSIST -> FloeIcons.DeviceLocal
     FloeSettingsSection.DIAGNOSTICS -> FloeIcons.Stethoscope
+    FloeSettingsSection.AUXILIARY -> FloeIcons.Mic
+    FloeSettingsSection.EXECUTION -> FloeIcons.Terminal
+    FloeSettingsSection.REMOTE -> FloeIcons.DeviceLocal
+    FloeSettingsSection.SYSTEM_CAPABILITIES -> FloeIcons.Gearshape
 }
 
 @Composable
@@ -872,4 +878,8 @@ private fun settingsTitle(section: FloeSettingsSection): String = when (section)
     FloeSettingsSection.WEB_SEARCH -> stringResource(R.string.settings_web_search)
     FloeSettingsSection.DESKTOP_ASSIST -> stringResource(R.string.settings_desktop_assist)
     FloeSettingsSection.DIAGNOSTICS -> stringResource(R.string.settings_diagnostics)
+    FloeSettingsSection.AUXILIARY -> stringResource(R.string.settings_auxiliary_capabilities)
+    FloeSettingsSection.EXECUTION -> stringResource(R.string.settings_execution_environment)
+    FloeSettingsSection.REMOTE -> stringResource(R.string.settings_remote_connections)
+    FloeSettingsSection.SYSTEM_CAPABILITIES -> stringResource(R.string.settings_system_capabilities)
 }

@@ -70,13 +70,16 @@ fun DeviceCommunicationDestinationUi(
     showSidebarToggle: Boolean,
     onExpandSidebar: () -> Unit,
     onOpenDrawer: () -> Unit,
+    sheetNavigation: (@Composable () -> Unit)? = null,
 ) {
     var pendingDelete by remember { mutableStateOf<String?>(null) }
     Column(Modifier.fillMaxSize().background(Floe.colors.readingSurface)) {
         FloeToolbar(
             title = stringResource(R.string.devices_title),
             navigation = {
-                if (compact || showSidebarToggle) {
+                if (sheetNavigation != null) {
+                    sheetNavigation()
+                } else if (compact || showSidebarToggle) {
                     FloeCircleButton(
                         icon = FloeIcons.SidebarToggle,
                         contentDescription = stringResource(R.string.devices_open_sidebar),

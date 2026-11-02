@@ -82,6 +82,7 @@ fun RemoteDestinationUi(
     onReleaseExec: () -> Unit,
     onTerminalVisible: (Boolean) -> Unit,
     vncActions: RemoteVncActions,
+    sheetNavigation: (@Composable () -> Unit)? = null,
 ) {
     val vnc = state.vnc
     if (vnc != null) {
@@ -115,6 +116,7 @@ fun RemoteDestinationUi(
         )
     } else {
         RemoteHostsPage(
+            sheetNavigation = sheetNavigation,
             state = state,
             compact = compact,
             showSidebarToggle = showSidebarToggle,
@@ -145,6 +147,7 @@ private fun RemoteHostsPage(
     onApproveChallenge: (accept: Boolean, replaceChanged: Boolean) -> Unit,
     onDismissError: () -> Unit,
     vncActions: RemoteVncActions,
+    sheetNavigation: (@Composable () -> Unit)? = null,
 ) {
     var editorVisible by rememberSaveable { mutableStateOf(false) }
     var vncHostVisible by remember { mutableStateOf(false) }
@@ -163,7 +166,9 @@ private fun RemoteHostsPage(
         FloeToolbar(
             title = stringResource(R.string.remote_hosts_title),
             navigation = {
-                if (compact || showSidebarToggle) {
+                if (sheetNavigation != null) {
+                    sheetNavigation()
+                } else if (compact || showSidebarToggle) {
                     com.floe.android.design.FloeCircleButton(
                         icon = FloeIcons.SidebarToggle,
                         contentDescription = stringResource(R.string.open_sidebar),

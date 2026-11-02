@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="settings_auxiliary_capabilities">辅助能力</string>
+    <string name="settings_execution_environment">执行环境</string>
+    <string name="settings_remote_connections">远程</string>
+    <string name="settings_system_capabilities">系统能力</string>
+</resources>

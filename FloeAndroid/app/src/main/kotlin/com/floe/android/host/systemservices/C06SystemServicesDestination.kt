@@ -37,6 +37,7 @@ internal fun C06SystemServicesDestination(
     showSidebarToggle: Boolean,
     onExpandSidebar: () -> Unit,
     onOpenDrawer: () -> Unit,
+    sheetNavigation: (@Composable () -> Unit)? = null,
 ) {
     val controller = host?.c06SystemServices
     if (controller == null) {
@@ -112,6 +113,7 @@ internal fun C06SystemServicesDestination(
     }
 
     SystemServicesDestinationUi(
+        sheetNavigation = sheetNavigation,
         state = state,
         compact = compact,
         showSidebarToggle = showSidebarToggle,
