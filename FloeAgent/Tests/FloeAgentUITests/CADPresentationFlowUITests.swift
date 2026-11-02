@@ -137,7 +137,7 @@ final class CADPresentationFlowUITests: XCTestCase {
         }
         let add = app.buttons["CADSceneLightAdd"]
         reveal(add); add.tap()
-        let point = app.descendants(matching: .any)["Point"]
+        let point = app.descendants(matching: .any).matching(identifier: "Point").firstMatch
         XCTAssertTrue(point.waitForExistence(timeout: 5)); point.tap()
         let row = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "CADSceneLight-")).firstMatch
         reveal(row); row.tap()
@@ -152,7 +152,7 @@ final class CADPresentationFlowUITests: XCTestCase {
         reveal(add)
         XCTAssertFalse(row.exists, "Cancel must discard the draft light")
         add.tap()
-        let spot = app.descendants(matching: .any)["Spot"]
+        let spot = app.descendants(matching: .any).matching(identifier: "Spot").firstMatch
         XCTAssertTrue(spot.waitForExistence(timeout: 5)); spot.tap()
         reveal(row); row.tap()
         let spotName = app.textFields["CADSceneLightName"]

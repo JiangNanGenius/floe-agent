@@ -12,6 +12,7 @@
 #if canImport(SwiftUI) && canImport(UIKit)
 import SwiftUI
 import UIKit
+import UniformTypeIdentifiers
 import simd
 
 struct CADEnvironmentInspectorView: View {
@@ -22,6 +23,10 @@ struct CADEnvironmentInspectorView: View {
     @State private var draft: CADViewAppearance
     private let initialAppearance: CADViewAppearance
     @State private var problem: String?
+    @State private var choosingImage = false
+    @State private var importing = false
+    @State private var importID = UUID()
+    @State private var importTask: Task<Void, Never>?
     @Environment(\.dismiss) private var dismiss
 
     init(document: FloeCADDocument,
@@ -91,7 +96,9 @@ struct CADEnvironmentInspectorView: View {
                     Text(FloeCADStrings.text("cad.environment.section.light", "Light"))
                 }
 
-                CADLightingInspectorSections(draft:$draft,onPreview:preview)
+                CADLightingInspectorSections(draft: $draft, onPreview: preview,
+                    importing: importing, onImport: { choosingImage = true },
+                    onRemoveImage: cancelImport)
 
                 Section {
                     Toggle(FloeCADStrings.text("cad.environment.floor", "Floor"),
@@ -182,13 +189,21 @@ struct CADEnvironmentInspectorView: View {
                 }
             }
         }
+        // One presentation owner. Attaching these to a Group distributes
+        // them to every Section, including disappearing/recycled Form rows.
+        .fileImporter(isPresented: $choosingImage, allowedContentTypes: [.image, .data]) { result in
+            switch result {
+            case .success(let url): importImage(url)
+            case .failure(let error): if !(error is CancellationError) { problem = error.localizedDescription }
+            }
+        }
         .presentationDetents([.medium, .large])
         .presentationDragIndicator(.visible)
         .alert(FloeCADStrings.text("cad.environment.title", "Environment"),isPresented:Binding(
             get:{ problem != nil },set:{ if !$0 { problem = nil } })) {
                 Button(FloeCADStrings.text("cad.ui.common.ok", "OK"),role:.cancel) { problem = nil }
             } message: { Text(problem ?? "") }
-        .onDisappear { onCancelPreview() }
+        .onDisappear { cancelImport(); onCancelPreview() }
     }
 
     // MARK: Helpers
@@ -202,6 +217,35 @@ struct CADEnvironmentInspectorView: View {
         case .dark: draft.dark = value.sanitized
         }
         preview()
+    }
+
+    private func cancelImport() { guard importing || importTask != nil else { return }; importID = UUID(); importTask?.cancel(); importTask = nil; importing = false }
+    private func importImage(_ url:URL) {
+        cancelImport(); let id = UUID(); importID = id; importing = true
+        importTask = Task { @MainActor in
+            let worker = Task.detached(priority:.userInitiated) {
+                let scoped = url.startAccessingSecurityScopedResource()
+                defer { if scoped { url.stopAccessingSecurityScopedResource() } }
+                let file = try FileHandle(forReadingFrom:url); defer { try? file.close() }
+                var bytes = Data()
+                while true {
+                    try Task.checkCancellation()
+                    let part = try file.read(upToCount:1024*1024) ?? Data()
+                    if part.isEmpty { break }
+                    guard bytes.count <= CADEnvironmentMap.maximumEncodedBytes - part.count else { throw CADSceneLightingError.mapTooLarge }
+                    bytes.append(part)
+                }
+                return try CADEnvironmentMap.imported(data:bytes,name:url.lastPathComponent)
+            }
+            do {
+                let map = try await withTaskCancellationHandler { try await worker.value } onCancel:{ worker.cancel() }
+                guard importID == id, !Task.isCancelled else { return }
+                draft.environmentMap = map; preview()
+            } catch {
+                if importID == id, !Task.isCancelled, !(error is CancellationError) { problem = error.localizedDescription }
+            }
+            if importID == id { importing = false; importTask = nil }
+        }
     }
 
     private func preview() {
