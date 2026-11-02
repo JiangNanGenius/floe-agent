@@ -107,7 +107,6 @@ enum AdaptiveBarStyle {
 
 struct AdaptiveBar<Controls: View, Actions: View, Footer: View>: View {
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
-    @Environment(\.colorScheme) private var colorScheme
     @State private var compactOptionsExpanded = false
 
     private let style: AdaptiveBarStyle
@@ -152,9 +151,7 @@ struct AdaptiveBar<Controls: View, Actions: View, Footer: View>: View {
             .environment(\.cadInlineValueAppearance, true)
             .padding(.horizontal, isCompact ? 14 : style.horizontalPadding)
             .padding(.vertical, isCompact ? 10 : style.verticalPadding)
-            .glassEffect(.regular.tint(colorScheme == .dark
-                ? Color(uiColor: .systemBackground).opacity(0.75) : .clear),
-                in: RoundedRectangle(cornerRadius: 24, style: .continuous))
+            .cadFloatingSurface(in: RoundedRectangle(cornerRadius: 24, style: .continuous))
     }
 
     @ViewBuilder
@@ -352,5 +349,36 @@ struct CADBarValueAppearance: ViewModifier {
         } else {
             content.textFieldStyle(.roundedBorder).frame(width: width)
         }
+    }
+}
+
+private struct CADFloatingSurface<S: Shape>: ViewModifier {
+    @Environment(\.colorScheme) private var colorScheme
+    let shape: S
+
+    func body(content: Content) -> some View {
+        content.glassEffect(.regular.tint(colorScheme == .dark
+            ? Color(uiColor: .systemBackground).opacity(0.75) : .clear), in: shape)
+    }
+}
+
+extension View {
+    func cadFloatingSurface<S: Shape>(in shape: S) -> some View {
+        modifier(CADFloatingSurface(shape: shape))
+    }
+}
+
+/// Native accessory actions outside the parameter surface. At narrow widths
+/// the system keeps each Label's accessible title while showing its symbol.
+struct CADAccessoryControls: ViewModifier {
+    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
+
+    func body(content: Content) -> some View {
+        GlassEffectContainer(spacing: 10) {
+            if horizontalSizeClass == .compact { content.labelStyle(.iconOnly) }
+            else { content.labelStyle(.titleAndIcon) }
+        }
+        .buttonStyle(.glass)
+        .controlSize(.regular)
     }
 }

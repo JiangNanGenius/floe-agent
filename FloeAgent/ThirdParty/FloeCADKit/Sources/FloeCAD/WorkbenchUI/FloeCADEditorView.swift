@@ -1007,12 +1007,18 @@ struct FloeCADEditorView: View {
 
     private func blendModeMenu(_ kind: BlendKind, _ viewModel: EditorViewModel) -> some View {
         Menu {
-            Button(FloeCADStrings.text("cad.blend.uniform", "Uniform")) { viewModel.setBlendAdvancedMode(nil) }
-            if kind == .fillet {
-                Button(FloeCADStrings.text("cad.blend.variableFillet", "Variable Fillet")) { viewModel.setBlendAdvancedMode(.variableFillet) }
-            } else {
-                Button(FloeCADStrings.text("cad.blend.twoDistances", "Two-Distance Chamfer")) { viewModel.setBlendAdvancedMode(.twoDistanceChamfer) }
-                Button(FloeCADStrings.text("cad.blend.distanceAngle", "Distance-Angle Chamfer")) { viewModel.setBlendAdvancedMode(.distanceAngleChamfer) }
+            Picker(FloeCADStrings.text("cad.blend.uniform", "Uniform"), selection: Binding<AdvancedBlendDefinition.Mode?>(
+                get: { viewModel.blendAdvancedMode }, set: { viewModel.setBlendAdvancedMode($0) })) {
+                Text(FloeCADStrings.text("cad.blend.uniform", "Uniform")).tag(nil as AdvancedBlendDefinition.Mode?)
+                if kind == .fillet {
+                    Text(FloeCADStrings.text("cad.blend.variableFillet", "Variable Fillet"))
+                        .tag(AdvancedBlendDefinition.Mode.variableFillet as AdvancedBlendDefinition.Mode?)
+                } else {
+                    Text(FloeCADStrings.text("cad.blend.twoDistances", "Two-Distance Chamfer"))
+                        .tag(AdvancedBlendDefinition.Mode.twoDistanceChamfer as AdvancedBlendDefinition.Mode?)
+                    Text(FloeCADStrings.text("cad.blend.distanceAngle", "Distance-Angle Chamfer"))
+                        .tag(AdvancedBlendDefinition.Mode.distanceAngleChamfer as AdvancedBlendDefinition.Mode?)
+                }
             }
         } label: {
             let label: String = switch viewModel.blendAdvancedMode {
@@ -1808,9 +1814,6 @@ struct FloeCADEditorView: View {
                             Label("Recenter", systemImage: "arrow.counterclockwise")
                                 .font(.subheadline.weight(.semibold))
                         }
-                        .buttonStyle(.bordered)
-                        .tint(Color.secondary)
-                        .background(.regularMaterial, in: Capsule())
                         .accessibilityIdentifier("RecenterBadge")
                     }
                     // Reposition badge: the same mode a tap on the pivot
@@ -1824,9 +1827,7 @@ struct FloeCADEditorView: View {
                               systemImage: viewModel.gizmoRepositionArmed ? "checkmark" : "scope")
                             .font(.subheadline.weight(.semibold))
                     }
-                    .buttonStyle(.bordered)
-                    .tint(viewModel.gizmoRepositionArmed ? Color.orange : Color.secondary)
-                    .background(.regularMaterial, in: Capsule())
+                    .tint(viewModel.gizmoRepositionArmed ? Color.accentColor : nil)
                     .accessibilityIdentifier("RepositionBadge")
                     Button {
                         viewModel.copyOnDrag.toggle()
@@ -1834,11 +1835,11 @@ struct FloeCADEditorView: View {
                         Label("Copy", systemImage: "plus.square.on.square")
                             .font(.subheadline.weight(.semibold))
                     }
-                    .buttonStyle(.bordered)
-                    .tint(viewModel.copyOnDrag ? Color.blue : Color.secondary)
-                    .background(.regularMaterial, in: Capsule())
+                    .tint(viewModel.copyOnDrag ? Color.accentColor : nil)
+                    .accessibilityAddTraits(viewModel.copyOnDrag ? .isSelected : [])
                     .accessibilityIdentifier("CopyBadge")
                   }
+                    .modifier(CADAccessoryControls())
                     .padding(.trailing, 16)
                     .padding(.bottom, bottomBarInset)
                 } else if viewModel.mode.isSketching, viewModel.mode.sketchTool == nil,
@@ -1851,11 +1852,10 @@ struct FloeCADEditorView: View {
                     // offers arrows plus a keypad for whatever is selected); a
                     // mixed selection used to have only the drag gizmo.
                     if !viewModel.selectedSketchEntityIDs.isEmpty || viewModel.sketchTransformActive {
-                        Button(viewModel.sketchTransformActive ? "Done" : "Move/Rotate") {
-                            viewModel.sketchTransformActive.toggle()
+                        Button { viewModel.sketchTransformActive.toggle() } label: {
+                            Label(viewModel.sketchTransformActive ? "Done" : "Move/Rotate",
+                                  systemImage: "arrow.up.left.and.arrow.down.right")
                         }
-                        .buttonStyle(.bordered)
-                        .background(.regularMaterial, in: Capsule())
                         .accessibilityIdentifier("SketchTransformMode")
                     }
                     Button {
@@ -1865,12 +1865,12 @@ struct FloeCADEditorView: View {
                         Label("Copy", systemImage: "plus.square.on.square")
                             .font(.subheadline.weight(.semibold))
                     }
-                    .buttonStyle(.bordered)
-                    .tint(viewModel.sketchCopyOnDrag ? Color.blue : Color.secondary)
-                    .background(.regularMaterial, in: Capsule())
+                    .tint(viewModel.sketchCopyOnDrag ? Color.accentColor : nil)
+                    .accessibilityAddTraits(viewModel.sketchCopyOnDrag ? .isSelected : [])
                     .accessibilityIdentifier("SketchCopyBadge")
                     .disabled(viewModel.selectedSketchEntityIDs.isEmpty)
                     }
+                    .modifier(CADAccessoryControls())
                     .fixedSize(horizontal: true, vertical: false)
                     .padding(.trailing, 16)
                     .padding(.bottom, bottomBarInset)
@@ -1893,9 +1893,7 @@ struct FloeCADEditorView: View {
                         }
                         .accessibilityIdentifier("SectionOff")
                     }
-                    .buttonStyle(.bordered)
-                    .tint(Color.secondary)
-                    .background(.regularMaterial, in: Capsule())
+                    .modifier(CADAccessoryControls())
                     .padding(.trailing, 16)
                     .padding(.bottom, bottomBarInset)
                 }
@@ -2401,29 +2399,9 @@ struct FloeCADEditorView: View {
                     Button {
                         showSettings = true
                     } label: {
-                        // One shape for both places this button can end up.
-                        //
-                        // In the bar: a custom 44pt clear surface. As a
-                        // `Label`, the bar renders a native 41.5pt item, and
-                        // a tap at its exact centre missed while ±9pt opened
-                        // (6c8ffaf, and again 2026-09-16; mechanism
-                        // unconfirmed). testSettingsCenterTargetOpensInBothOrientations
-                        // guards it.
-                        //
-                        // In the "…" overflow: whenever the bar is too narrow
-                        // (an iPhone in portrait, but also an iPad mini in
-                        // portrait at REGULAR width), each row is built from
-                        // a `Text` in the label. `.accessibilityLabel` does not
-                        // count; without the hidden `Text` the menu silently
-                        // dropped Settings, its only route (gotcha 58).
-                        ZStack {
-                            Color.clear
-                            Image(systemName: "gearshape")
-                            Text("Settings").opacity(0).frame(width: 0)
-                        }
-                        .frame(width: 44, height: 44)
-                        .contentShape(Rectangle())
-                        .accessibilityLabel("Settings")
+                        Label("Settings", systemImage: "gearshape")
+                            .frame(minWidth: 44, minHeight: 44)
+                            .contentShape(Rectangle())
                     }
                     .accessibilityIdentifier("SettingsButton")
                     }

@@ -17,9 +17,11 @@ import SwiftUI
 
 struct NumericKeypad: View {
     @Binding var text: String
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     /// Current dimension lock state. Nil hides the key for unrelated fields.
     var isLocked: Bool?
     var lockEnabled = true
+    var inPopover = false
     /// Dimension fields start with their measured value selected. Other
     /// numeric consumers retain append behavior unless they opt in.
     var initialValueSelected: Binding<Bool> = .constant(false)
@@ -39,133 +41,123 @@ struct NumericKeypad: View {
         }
     }
 
-    private static let keyW: CGFloat = 44
-    private static let keyH: CGFloat = 36
     private static let gap: CGFloat = 6
 
     var body: some View {
         VStack(spacing: Self.gap) {
             secondaryRow
-            HStack(alignment: .top, spacing: Self.gap) {
-                digitsAndOperators
-                actionColumn
+            Grid(horizontalSpacing: Self.gap, verticalSpacing: Self.gap) {
+                GridRow {
+                    digitKey("7"); digitKey("8"); digitKey("9"); digitKey("÷")
+                    iconKey("delete.left", id: "KeypadDelete",
+                            title: FloeCADStrings.text("cad.input.backspace", "Backspace"), action: backspace)
+                }
+                GridRow {
+                    digitKey("4"); digitKey("5"); digitKey("6"); digitKey("×")
+                    if let isLocked {
+                        iconKey(isLocked ? "lock.fill" : "lock.open", id: "KeypadLock",
+                                title: isLocked ? FloeCADStrings.text("cad.input.unlock", "Unlock") : FloeCADStrings.text("cad.input.lock", "Lock"),
+                                action: onToggleLock)
+                            .disabled(!lockEnabled)
+                            .accessibilityAddTraits(isLocked ? .isSelected : [])
+                    } else if let onSwitchToSystemKeyboard {
+                        iconKey("keyboard", id: "KeypadKeyboard",
+                                title: FloeCADStrings.text("cad.input.keyboard", "Keyboard"), action: onSwitchToSystemKeyboard)
+                    } else { emptyKeyCell }
+                }
+                GridRow {
+                    digitKey("1"); digitKey("2"); digitKey("3"); digitKey("−")
+                    emptyKeyCell
+                }
+                GridRow {
+                    digitKey("±"); digitKey("0"); digitKey("."); digitKey("+")
+                    Button(action: onCommit) {
+                        Image(systemName: "checkmark")
+                            .font(.title3.weight(.semibold))
+                            .frame(minWidth: 20, maxWidth: .infinity, minHeight: 30)
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .accessibilityLabel(FloeCADStrings.text("cad.ui.common.done", "Done"))
+                    .accessibilityIdentifier("KeypadCommit")
+                }
+            }
+            .controlSize(.regular)
+            .buttonBorderShape(.roundedRectangle)
+        }
+        .padding(12)
+        .fixedSize(horizontal: true, vertical: false)
+        .background {
+            // An embedded overlay needs to obscure the geometry; a popover
+            // already owns its surface, border and shadow.
+            if !inPopover {
+                RoundedRectangle(cornerRadius: 16, style: .continuous)
+                    .fill(Color(uiColor: .secondarySystemBackground))
+                    .shadow(color: .black.opacity(0.12), radius: 10, y: 3)
             }
         }
-        .padding(10)
-        // A numeric editor must obscure the sketch points/edges below it.
-        .background(Color(uiColor: .secondarySystemBackground), in: RoundedRectangle(cornerRadius: 14))
-        .overlay(RoundedRectangle(cornerRadius: 14).stroke(.quaternary, lineWidth: 0.5))
-        .shadow(color: .black.opacity(0.18), radius: 12, y: 4)
-        // An identifier on a styled container collapses it into ONE element and
-        // every key vanishes from the tree (STATUS gotcha: a11y container
-        // collapse). `.contain` keeps the pad addressable AND its keys.
-        // NOTE: removing this does NOT fix the second-shape bug — tried.
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("NumericKeypad")
     }
 
-    // MARK: Rows
-
-    /// Parentheses and units — the keys that make an expression rather than a
-    /// number. Flat, so they read as modifiers rather than digits.
     private var secondaryRow: some View {
-        HStack(spacing: Self.gap) {
-            ForEach(["(", ")"], id: \.self) { token in
-                flatKey(token) { append(token) }
+        let layout = dynamicTypeSize.isAccessibilitySize
+            ? AnyLayout(VStackLayout(spacing: Self.gap))
+            : AnyLayout(HStackLayout(spacing: Self.gap))
+        return layout {
+            HStack(spacing: Self.gap) {
+                ForEach(["(", ")"], id: \.self) { token in
+                    flatKey(token) { append(token) }
+                }
             }
-            ForEach(visibleUnits, id: \.self) { unit in
-                flatKey(unit) { appendUnit(unit) }
+            HStack(spacing: Self.gap) {
+                ForEach(visibleUnits, id: \.self) { unit in
+                    flatKey(unit) { appendUnit(unit) }
+                }
             }
         }
     }
 
-    private var digitsAndOperators: some View {
-        VStack(spacing: Self.gap) {
-            keyRow("7", "8", "9", "÷")
-            keyRow("4", "5", "6", "×")
-            keyRow("1", "2", "3", "−")
-            keyRow("±", "0", ".", "+")
-        }
+    private var emptyKeyCell: some View {
+        Color.clear.gridCellUnsizedAxes([.horizontal, .vertical])
     }
-
-    private func keyRow(_ keys: String...) -> some View {
-        HStack(spacing: Self.gap) {
-            ForEach(keys, id: \.self) { digitKey($0) }
-        }
-    }
-
-    /// Backspace, lock and a double-height commit — the column Shapr3D puts
-    /// down the right-hand side.
-    private var actionColumn: some View {
-        VStack(spacing: Self.gap) {
-            iconKey("delete.left", id: "KeypadDelete", action: backspace)
-            if let isLocked {
-                iconKey(isLocked ? "lock.fill" : "lock.open",
-                        id: "KeypadLock",
-                        tint: .primary,
-                        action: onToggleLock)
-                    .disabled(!lockEnabled)
-                    .opacity(lockEnabled ? 1 : 0.35)
-            } else if onSwitchToSystemKeyboard != nil {
-                Color.clear.frame(width: Self.keyW, height: Self.keyH)
-            }
-            Button(action: onCommit) {
-                Image(systemName: "checkmark")
-                    .font(.title3.weight(.semibold))
-                    .foregroundStyle(.white)
-                    .frame(width: Self.keyW,
-                           height: Self.keyH * 2 + Self.gap)
-                    .background(Color.accentColor, in: RoundedRectangle(cornerRadius: 8))
-            }
-            .buttonStyle(.plain)
-            // Named for the PAD, not for dimensions — every numeric field uses it.
-            .accessibilityIdentifier("KeypadCommit")
-        }
-    }
-
-    // MARK: Keys
 
     private func digitKey(_ key: String) -> some View {
         Button(action: { press(key) }) {
             Text(key)
-                .font(.title3)
+                .font(.title3.monospacedDigit())
                 .foregroundStyle(.primary)
-                .frame(width: Self.keyW, height: Self.keyH)
-                .background(Color(.tertiarySystemFill), in: RoundedRectangle(cornerRadius: 8))
-                // Without an explicit content shape the tappable region is the
-                // GLYPH, not the key: a 44×36 button whose hit area is the
-                // digit's own ink. Every digit reported hittable with a correct
-                // frame and still swallowed taps.
+                .frame(minWidth: 20, maxWidth: .infinity, minHeight: 30)
                 .contentShape(Rectangle())
         }
-        .buttonStyle(.plain)
+        .buttonStyle(.bordered)
+        .tint(Color(uiColor: .secondaryLabel))
         .accessibilityIdentifier("Keypad-\(key)")
     }
 
     private func flatKey(_ title: String, action: @escaping () -> Void) -> some View {
         Button(action: action) {
             Text(title)
-                .font(.subheadline)
-                .foregroundStyle(.secondary)
-                .frame(minWidth: 34, minHeight: 24)
+                .font(.subheadline.weight(.medium))
+                .frame(minWidth: 30, minHeight: 44)
                 .contentShape(Rectangle())
         }
-        .buttonStyle(.plain)
+        .buttonStyle(.borderless)
         .accessibilityIdentifier("Keypad-\(title)")
     }
 
-    private func iconKey(_ symbol: String, id: String,
-                         tint: Color = .primary,
+    private func iconKey(_ symbol: String, id: String, title: String,
                          action: @escaping () -> Void) -> some View {
         Button(action: action) {
             Image(systemName: symbol)
                 .font(.body)
-                .foregroundStyle(tint)
-                .frame(width: Self.keyW, height: Self.keyH)
-                .background(Color(.tertiarySystemFill), in: RoundedRectangle(cornerRadius: 8))
+                .foregroundStyle(.primary)
+                .frame(minWidth: 20, maxWidth: .infinity, minHeight: 30)
                 .contentShape(Rectangle())
         }
-        .buttonStyle(.plain)
+        .buttonStyle(.bordered)
+        .tint(Color(uiColor: .secondaryLabel))
+        .accessibilityLabel(title)
         .accessibilityIdentifier(id)
     }
 
@@ -266,10 +258,11 @@ extension View {
             NumericKeypad(
                 text: text,
                 isLocked: nil,
+                inPopover: true,
                 onCommit: onCommit,
                 onSwitchToSystemKeyboard: onSwitchToSystemKeyboard
             )
-            .padding(4)
+            .presentationBackground(Color(uiColor: .secondarySystemBackground))
             .presentationCompactAdaptation(.popover)
         }
     }

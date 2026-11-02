@@ -2329,3 +2329,52 @@ final class CADAdvancedBlendNativeFlowUITests: XCTestCase {
     }
 }
 #endif
+
+@MainActor
+final class CADBottomAccessoryFinishUITests: XCTestCase {
+    func testIPadCopyFeedbackAndSettingsCenterAcrossOrientations() { check(compact: false) }
+    func testCompactCopyFeedbackAndSettingsMenu() { check(compact: true) }
+
+    private func check(compact: Bool) {
+        continueAfterFailure = false
+        XCUIDevice.shared.orientation = .landscapeLeft
+        let app = XCUIApplication()
+        app.launchArguments = ["-AppleLanguages", "(en)", "-AppleLocale", "en_US", "-ui-testing",
+            "--ui-test-cad-fixture", "--ui-test-cad-uninstanced"]
+        app.launchArguments += compact ? ["--ui-test-cad-compact"] : ["-ui-testing-ipad"]
+        app.launch();defer { app.terminate();XCUIDevice.shared.orientation = .landscapeLeft }
+        XCTAssertTrue(app.buttons["UndoButton"].waitForExistence(timeout: 60))
+        func items() {
+            if app.buttons["ItemsButton"].isHittable { app.buttons["ItemsButton"].tap() }
+            else { app.buttons["CADCompactMoreMenu"].tap();app.buttons["Items"].firstMatch.tap() }
+        }
+        items()
+        let row=app.descendants(matching: .any).matching(identifier:"ItemRow-Extrude").firstMatch
+        XCTAssertTrue(row.waitForExistence(timeout: 20) && row.isHittable);row.tap();items()
+        let copy=app.buttons["CopyBadge"]
+        XCTAssertTrue(copy.waitForExistence(timeout: 15) && copy.isHittable)
+        XCTAssertFalse(copy.isSelected);copy.tap();XCTAssertTrue(copy.isSelected)
+        capture(compact ? "Compact accessory selection and complete controls" : "iPad accessory selection and complete controls")
+        copy.tap();XCTAssertFalse(copy.isSelected)
+        for portrait in compact ? [false] : [false,true] {
+            if portrait { XCUIDevice.shared.orientation = .portrait }
+            let settings=app.buttons["SettingsButton"]
+            if settings.exists && settings.isHittable {
+                settings.coordinate(withNormalizedOffset:CGVector(dx:0.5,dy:0.5)).tap()
+            } else if app.buttons["CADCompactMoreMenu"].isHittable {
+                app.buttons["CADCompactMoreMenu"].tap();app.buttons["Settings"].firstMatch.tap()
+            } else {
+                let more=app.navigationBars.buttons["More"].firstMatch
+                XCTAssertTrue(more.waitForExistence(timeout: 10) && more.isHittable,app.debugDescription)
+                more.tap();app.buttons["Settings"].firstMatch.tap()
+            }
+            let sheet=app.navigationBars["CAD Settings"]
+            XCTAssertTrue(sheet.waitForExistence(timeout: 15),app.debugDescription)
+            capture(portrait ? "Native settings portrait" : "Native settings controls")
+            sheet.buttons["Done"].tap();XCTAssertFalse(sheet.exists)
+        }
+    }
+    private func capture(_ name:String) {
+        let a=XCTAttachment(screenshot:XCUIScreen.main.screenshot());a.name=name;a.lifetime = .keepAlways;add(a)
+    }
+}

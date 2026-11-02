@@ -705,12 +705,11 @@ struct NumericInputBar: View {
             .accessibilityIdentifier("ExtrudeEndMenu")
 
             // Symmetric sides: distance is per-side, total depth 2×.
-            Button(FloeCADStrings.label("cad.ui.extrude.symmetric", "Symmetric")) {
-                viewModel.setExtrudeSymmetric(!context.symmetric)
-            }
-            .buttonStyle(.bordered)
-            // Concrete grey, not hierarchical `.secondary` — see `.barLabel`.
-            .tint(context.symmetric ? Color.accentColor : .barLabel)
+            Toggle(FloeCADStrings.label("cad.ui.extrude.symmetric", "Symmetric"), isOn: Binding(
+                get: { viewModel.toolContext?.symmetric ?? false },
+                set: { viewModel.setExtrudeSymmetric($0) }))
+                .toggleStyle(.button)
+                .accessibilityIdentifier("ExtrudeSymmetric")
 
             if !isCompact { Spacer() }
         } actions: {

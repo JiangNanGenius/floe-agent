@@ -25,8 +25,7 @@ struct SelectionInfoBar: View {
                 // A capsule around a strip that has had to wrap looks broken;
                 // at compact width the strip scrolls instead, so it stays one
                 // line and the capsule still fits it.
-                .background(.regularMaterial, in: Capsule())
-                .shadow(color: .black.opacity(0.12), radius: 8, y: 2)
+                .cadFloatingSurface(in: Capsule())
                 .accessibilityIdentifier("SelectionInfoBar")
         }
     }
