@@ -524,8 +524,8 @@ final class CADExternalSketchProjectionTests: XCTestCase {
                 body: victim.source.body,
                 signature: victim.source.signature,
                 faceNames: EdgeName(
-                    faceA: ElementName(creator: sourceNode.id, source: .primitiveFace(.px)),
-                    faceB: ElementName(creator: sourceNode.id, source: .primitiveFace(.py)),
+                    faceA: ElementName(creator: sourceNode.id, source: .primitiveFace(.boxFace(.px))),
+                    faceB: ElementName(creator: sourceNode.id, source: .primitiveFace(.boxFace(.py))),
                     occurrence: 0)))
         let torn = Sketch(
             name: "Projection", plane: .offsetGround(y: -5),
