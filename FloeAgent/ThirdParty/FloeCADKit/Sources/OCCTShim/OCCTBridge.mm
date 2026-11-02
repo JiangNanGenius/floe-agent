@@ -2775,16 +2775,12 @@ static std::set<Standard_Integer> OS3DNearestFaces(
             latest = [NSMutableData dataWithCapacity:intersection.NbPoints() * 3 * sizeof(double)];
             bool foundRequestedExtension = false;
             for (Standard_Integer i = 1; i <= intersection.NbPoints(); ++i) {
-                const gp_Pnt2d point = intersection.Point(i);
-                Geom2dAPI_ProjectPointOnCurve projection(point, aa);
-                if (projection.NbPoints() < 1
-                    || projection.LowerDistance() > tolerance * 10) {
-                    OS3DSetStatus(status, OCCTOpCodeInvalidResult,
-                                  @"an exact intersection did not project onto its target");
-                    return nil;
-                }
+                // Use the parameter belonging to this intersection, not a
+                // second closest-point solve that can choose another branch.
+                const auto &hit = intersection.Intersector().Point(i);
+                const gp_Pnt2d point = hit.Value();
                 const double parameter = OS3DDefinitionParameter(
-                    target, projection.LowerDistanceParameter(), false);
+                    target, hit.ParamOnFirst(), false);
                 const double row[3] = { point.X(), point.Y(), parameter };
                 if (!std::isfinite(row[0]) || !std::isfinite(row[1]) || !std::isfinite(row[2])) {
                     return nil;

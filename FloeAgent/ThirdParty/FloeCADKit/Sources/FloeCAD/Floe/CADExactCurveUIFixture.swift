@@ -68,8 +68,9 @@ public struct CADExactCurveReadbackPanel: View {
                    camera.worldToScreenPoint(sketch.plane.origin) != nil {
                     let a = sketch.plane.toWorld(SIMD2(-45,-48))
                     let b = sketch.plane.toWorld(SIMD2(45,48))
-                    camera.fitTo(bounds: (simd_min(a,b) - SIMD3(repeating: 2),
-                                          simd_max(a,b) + SIMD3(repeating: 2)))
+                    let lower = SIMD3<Float>(simd_min(a,b)) - SIMD3<Float>(repeating: 2)
+                    let upper = SIMD3<Float>(simd_max(a,b)) + SIMD3<Float>(repeating: 2)
+                    camera.fitTo(bounds: (min: lower, max: upper))
                     try? await Task.sleep(for: .milliseconds(600))
                     if Task.isCancelled { return }
                     camera.moveCameraHeadOn(to: sketch.plane)
