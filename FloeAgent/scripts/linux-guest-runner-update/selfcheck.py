@@ -399,6 +399,25 @@ def check_guest_protocol(out):
            "a protocol-current runner without env=1 fails the new component boot gate")
     expect(verdict["serviceTicks"] == 4 and verdict["failures"] == 0, "verdict records service ticks")
 
+    smp_script = os.path.join(out, "smp-script.txt")
+    guest_protocol_check.generate(smp_script, expected_vcpus=3)
+    expect(b"FLOE-EXEC vcpus " in open(smp_script, "rb").read(),
+           "SMP qualification probes the online CPU count from the guest kernel")
+    smp_blob = transcript_for(CAPS_WITH_NET) + b"\x1eFLOE-BEGIN vcpus\x1eFLOE_VCPUS_3\n\x1eFLOE-END vcpus 0\x1e"
+    smp_transcript = write(os.path.join(out, "smp-transcript.txt"), smp_blob)
+    smp_verdict = os.path.join(out, "smp-verdict.json")
+    expect(quiet(guest_protocol_check.run_assert, smp_transcript, share, smp_verdict, 3) == 0,
+           "actual online-CPU output and successful command frame satisfy the requested SMP shape")
+    expect(json.load(open(smp_verdict))["guestVCPUs"] == 3, "SMP verdict records the observed count")
+    wrong_cpu = write(os.path.join(out, "wrong-cpu-transcript.txt"), smp_blob.replace(b"VCPUS_3", b"VCPUS_1"))
+    expect(quiet(guest_protocol_check.run_assert, wrong_cpu, share,
+                 os.path.join(out, "wrong-cpu-verdict.json"), 3) == 1,
+           "host shape alone cannot substitute for the guest's real online CPU count")
+    failed_cpu = write(os.path.join(out, "failed-cpu-transcript.txt"), smp_blob.replace(b"END vcpus 0", b"END vcpus 9"))
+    expect(quiet(guest_protocol_check.run_assert, failed_cpu, share,
+                 os.path.join(out, "failed-cpu-verdict.json"), 3) == 1,
+           "a failed CPU command cannot support an SMP claim")
+
     bad = write(os.path.join(out, "bad-transcript.txt"),
                 transcript_for(CAPS_WITH_NET, broken=True))
     expect(quiet(guest_protocol_check.run_assert, bad, share, os.path.join(out, "bad-verdict.json")) == 1,
@@ -671,6 +690,36 @@ def check_package(out):
     expect(local_distribution["workflowRun"] is None
            and local_distribution["qualificationID"] == "local-selfcheck",
            "local provenance is distinct from a workflow run")
+
+    smp_paths = make_fixture(os.path.join(out, "smp-template"))
+    recipe_path = "FloeAgent/LinuxGuest/image/templates/basic.json"
+    recipe = write(os.path.join(smp_paths["repo"], recipe_path), '{"id":"basic"}\n')
+    base = json.load(open(smp_paths["manifest-base"]))
+    template = {"id": "basic", "verified": True, "recipePath": recipe_path,
+                "recipeSha512": sha(recipe), "missingPackages": [], "belowMinimum": [],
+                "pypiFailures": [], "checks": ["recipe:sha512"],
+                "packages": [{"name": "python3", "version": "3.13"}]}
+    base.update(smp_capable=True, max_vcpus=3, template=template)
+    write(smp_paths["manifest-base"], json.dumps(base))
+    args, env = package_env(smp_paths, base_toolchain)
+    verdict_path = os.path.join(smp_paths["fixture"], "verdict.json")
+    smp_verdict = json.load(open(verdict_path));smp_verdict.update(guestVCPUs=3, expectedVCPUs=3)
+    write(verdict_path, json.dumps(smp_verdict))
+    smp_result = run_package(args, env)
+    if smp_result.returncode:
+        sys.stderr.write(smp_result.stdout + smp_result.stderr)
+    expect(smp_result.returncode == 0, "verified unchanged SMP/template base packages successfully")
+    smp_manifest = json.load(open(os.path.join(smp_paths["out"], "manifest.json")))
+    expect(smp_manifest.get("smp_capable") is True and smp_manifest.get("max_vcpus") == 3,
+           "runner update retains the actually qualified three-core capability")
+    expect(smp_manifest.get("template") == template, "runner update retains the verified base template")
+    smp_verdict.pop("guestVCPUs");write(verdict_path, json.dumps(smp_verdict))
+    args[args.index("--out") + 1] = os.path.join(smp_paths["fixture"], "no-cpu-proof")
+    expect(run_package(args, env).returncode != 0, "SMP base requires fresh guest online-CPU proof")
+    smp_verdict["guestVCPUs"] = 3;write(verdict_path, json.dumps(smp_verdict))
+    write(recipe, '{"id":"changed"}\n')
+    args[args.index("--out") + 1] = os.path.join(smp_paths["fixture"], "changed-recipe")
+    expect(run_package(args, env).returncode != 0, "changed recipe cannot inherit stale verified template metadata")
 
     # --- fail-closed cases --------------------------------------------------
     bad_paths = make_fixture(os.path.join(out, "mismatch"))

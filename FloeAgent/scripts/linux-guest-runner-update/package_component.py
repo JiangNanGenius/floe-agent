@@ -272,6 +272,8 @@ def main():
     # disks come from exactly this image, so the manifest declares it as a
     # compatible origin for the runner-only upgrade.
     predecessor = None
+    base_template = None
+    base_max_vcpus = None
     base_manifest_path = os.path.join(args.image_dir, "manifest-base.json")
     if os.path.isfile(base_manifest_path):
         with open(base_manifest_path, "r", encoding="utf-8") as handle:
@@ -296,6 +298,29 @@ def main():
                            "bytes": int(base_disk["bytes"]) if base_disk else None}
             ok("predecessor origin verified from the pinned base manifest: %s (%d bytes, %s…)"
                % (predecessor["imageID"], predecessor["bytes"], (predecessor["sha512"] or "")[:16]))
+            if base_manifest.get("smp_capable") is True:
+                base_max_vcpus = base_manifest.get("max_vcpus")
+                require(type(base_max_vcpus) is int and base_max_vcpus in (2, 3),
+                        "SMP base declares a supported, explicit CPU ceiling")
+                require(verdict.get("guestVCPUs") == base_max_vcpus
+                        and verdict.get("expectedVCPUs") == base_max_vcpus,
+                        "updated runner booted the base image's maximum CPU shape in the real guest")
+            base_template = base_manifest.get("template")
+            if base_template is not None:
+                require(isinstance(base_template, dict) and base_template.get("verified") is True,
+                        "base template metadata has a verified recipe")
+                recipe = base_template.get("recipePath", "") if isinstance(base_template, dict) else ""
+                if not isinstance(recipe, str):
+                    recipe = ""
+                recipe_path = os.path.realpath(os.path.join(args.repo, recipe))
+                recipe_inside = bool(recipe) and not os.path.isabs(recipe) \
+                    and ".." not in recipe.replace("\\", "/").split("/") \
+                    and os.path.commonpath([os.path.realpath(args.repo), recipe_path]) == os.path.realpath(args.repo)
+                require(recipe_inside and os.path.isfile(recipe_path),
+                        "base recipe exists within the target-commit checkout")
+                if recipe_inside and os.path.isfile(recipe_path):
+                    require(sha(recipe_path, "sha512") == base_template.get("recipeSha512"),
+                            "unchanged base template recipe matches the target commit byte-for-byte")
 
     # The standalone runner inside the image directory (and ZIP): existing
     # writable disks upgrade from exactly these bytes.
@@ -343,6 +368,8 @@ def main():
            "--license", ("Floe runner MPL-2.0; guest userland under its own Debian package licenses; "
                          "kernel GPL-2.0; bbl BSD-3-Clause; static glibc LGPL-2.1"),
            "--distribution-allowed"]
+    if base_max_vcpus is not None:
+        cmd += ["--smp-capable", "--max-vcpus", str(base_max_vcpus)]
     result = subprocess.run(cmd, capture_output=True, text=True)
     print(result.stdout, end="")
     if not require(result.returncode == 0, "write-image-manifest.py wrote the new manifest"):
@@ -355,6 +382,8 @@ def main():
     manifest["runnerArtifact"] = {"role": role, "path": RUNNER_MEMBER,
                                   "sha512": runner_sha512, "bytes": runner_bytes}
     manifest["runnerCapabilities"] = caps_payload
+    if base_template is not None:
+        manifest["template"] = base_template
     origin_entry = {origin_contract["keys"]["image_id"]: predecessor["imageID"],
                     origin_contract["keys"]["sha512"]: predecessor["sha512"],
                     origin_contract["keys"]["bytes"]: predecessor["bytes"]}
@@ -727,6 +756,9 @@ def main():
                               "keys": origin_contract["keys"],
                               "entry": origin_entry},
         "runnerConstants": constants,
+        "inheritedBaseCapabilities": {"smp_capable": base_max_vcpus is not None,
+                                      "max_vcpus": base_max_vcpus,
+                                      "template": base_template},
         "appImportContract": import_budget,
         "protocolCheck": {"failures": verdict.get("failures"), "checks": len(verdict.get("checks", [])),
                           "serviceTicks": verdict.get("serviceTicks"),

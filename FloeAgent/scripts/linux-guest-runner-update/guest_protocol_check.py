@@ -141,7 +141,7 @@ TERMINAL_TOKEN = "p3done"
 TERMINAL_MARKER = "FLOE-END %s 0" % TERMINAL_TOKEN
 
 
-def generate(out_path, terminal_out=None):
+def generate(out_path, terminal_out=None, expected_vcpus=None):
     """Write the timed script; also the marker the host must wait for."""
     lines = []
 
@@ -160,6 +160,8 @@ def generate(out_path, terminal_out=None):
     #    the markers cannot appear unless the guest userland executed them.
     at(27, sh("netdev", NET_DEVICE_CMD))
     at(28, sh("netdns", NET_DNS_CMD))
+    if expected_vcpus is not None:
+        at(29, sh("vcpus", "n=$(getconf _NPROCESSORS_ONLN) && printf 'FLOE_VCPUS_%s\\n' \"$n\""))
     # 3. four concurrent one-shot commands with a real overlap barrier.
     for n in (1, 2, 3, 4):
         at(30, sh("cc%d" % n, CC_CMD.format(n)))
@@ -261,7 +263,7 @@ FORBIDDEN = [
 ]
 
 
-def run_assert(transcript_path, share_dir, out_path):
+def run_assert(transcript_path, share_dir, out_path, expected_vcpus=None):
     with open(transcript_path, "rb") as handle:
         blob = handle.read()
     checks = []
@@ -317,6 +319,18 @@ def run_assert(transcript_path, share_dir, out_path):
         ("CAPS allows >=2 concurrent PTY sessions", caps is not None and caps["maxSessions"] >= 2),
         ("CAPS runner version is non-empty", caps is not None and bool(caps["runner"])),
     ]
+    observed_vcpus = None
+    if expected_vcpus is not None:
+        # Only accept executed output within this command's own frame, plus
+        # its successful terminal frame. A host --vcpu flag is not evidence
+        # that the guest kernel actually brought those CPUs online.
+        matches = re.findall(rb"\x1eFLOE-(?:BEGIN|OUT) vcpus\x1eFLOE_VCPUS_([0-9]+)[\r\n]", blob)
+        if len(matches) == 1:
+            observed_vcpus = int(matches[0])
+        extra.extend([
+            ("guest kernel online CPU count matches the qualified shape", observed_vcpus == expected_vcpus),
+            ("guest CPU probe completed successfully", b"\x1eFLOE-END vcpus 0\x1e" in blob),
+        ])
     for label, seen in extra:
         checks.append({"check": label, "expected": True, "seen": seen})
         if not seen:
@@ -335,6 +349,9 @@ def run_assert(transcript_path, share_dir, out_path):
                "capsPayloadRaw": caps_payload_raw,
                "netStatus": caps["net"] if caps else None,
                "checks": checks, "failures": failed}
+    if expected_vcpus is not None:
+        verdict["guestVCPUs"] = observed_vcpus
+        verdict["expectedVCPUs"] = expected_vcpus
     with open(out_path, "w", encoding="utf-8") as handle:
         json.dump(verdict, handle, indent=2)
         handle.write("\n")
@@ -354,14 +371,17 @@ def main(argv=None):
     gen.add_argument("--out", required=True)
     gen.add_argument("--terminal-out", default=None,
                      help="write the exact --until marker for the host (terminal END frame)")
+    gen.add_argument("--expected-vcpus", type=int, choices=[1, 2, 3], default=None,
+                     help="probe the guest kernel's actual online CPU count")
     chk = sub.add_parser("assert", help="verify the transcript + 9p share, write the JSON verdict")
     chk.add_argument("--transcript", required=True)
     chk.add_argument("--share", required=True)
     chk.add_argument("--out", required=True)
+    chk.add_argument("--expected-vcpus", type=int, choices=[1, 2, 3], default=None)
     args = parser.parse_args(argv)
     if args.command == "generate":
-        return generate(args.out, args.terminal_out)
-    return run_assert(args.transcript, args.share, args.out)
+        return generate(args.out, args.terminal_out, args.expected_vcpus)
+    return run_assert(args.transcript, args.share, args.out, args.expected_vcpus)
 
 
 if __name__ == "__main__":
