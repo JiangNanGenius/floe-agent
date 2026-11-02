@@ -1,0 +1,57 @@
+{
+  "generator": "Blender 4.5.10 LTS",
+  "buildHash": "6dc0b208d1b5",
+  "expected": [
+    {
+      "name": "Alpha",
+      "minimum": [
+        4.999998956918716,
+        33.49999710917473,
+        -24.49999935925007
+      ],
+      "maximum": [
+        8.999999612569809,
+        34.49999913573265,
+        -21.5000007301569
+      ],
+      "baseColor": [
+        0.800000011920929,
+        0.10000000149011612,
+        0.20000000298023224,
+        1.0
+      ],
+      "vertices": 8
+    },
+    {
+      "name": "Beta",
+      "minimum": [
+        7.999999448657036,
+        26.499999687075615,
+        -16.249999403953552
+      ],
+      "maximum": [
+        9.999999776482582,
+        29.499998316168785,
+        -14.750000089406967
+      ],
+      "baseColor": [
+        0.10000000149011612,
+        0.30000001192092896,
+        0.8999999761581421,
+        1.0
+      ],
+      "vertices": 8
+    }
+  ],
+  "scope": "Nested transformed mesh objects; separate viewport colors; static frame1. Editable hierarchy and animation intentionally not imported.",
+  "files": {
+    "nested-static.blend": {
+      "bytes": 432891,
+      "sha256": "5f77a77e1bfbdd3cefa5b13e155753f054a57bf831847653b99fe47571b18438"
+    },
+    "nested-static.usdz": {
+      "bytes": 3678,
+      "sha256": "17997df6186567087c06f3d6c63f98e68f4e2be6ed576f40bca285513a88ff62"
+    }
+  }
+}

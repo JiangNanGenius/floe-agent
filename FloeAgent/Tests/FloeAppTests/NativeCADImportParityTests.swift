@@ -57,14 +57,14 @@ final class NativeCADImportParityTests: XCTestCase {
         let grant=try await center.issueNativeCADGrant(proposalID:id)
         _=try await center.applyNativeCAD(proposalID:id,grantID:grant)
     }
-    private func manual(_ group:CADImportSourceGroup,unit:MeshImportUnit,name:String) async throws -> FloeCADDocument {
+    private func manual(_ group:CADImportSourceGroup,unit:MeshImportUnit?=nil,name:String) async throws -> FloeCADDocument {
         let url=try await target(name),doc=try await FloeCADDocument.open(at:url)
         let vm=doc.viewModel()
         let parsed=await vm.probeMeshOffMainWithOperation(data:group.primary.data,
             fileName:group.primary.fileName,siblings:group.resources)
         let prepared=try XCTUnwrap(parsed)
         XCTAssertNotNil(prepared.probe.coverage)
-        await vm.importMeshProbe(prepared.probe,unit:unit,operation:prepared.operation)
+        await vm.importMeshProbe(prepared.probe,unit:unit ?? prepared.probe.detectedUnit,operation:prepared.operation)
         XCTAssertNil(vm.errorMessage)
         return doc
     }
@@ -139,6 +139,71 @@ final class NativeCADImportParityTests: XCTestCase {
         equalBodies(reopened,ai)
         XCTAssertEqual(try Data(contentsOf:source),NativeImportParityFixture.scene)
         for (name,bytes) in NativeImportParityFixture.resources { XCTAssertEqual(try Data(contentsOf:workspace.appendingPathComponent("scene/"+name)),bytes) }
+    }
+
+    func testBlenderNestedStaticSceneKeepsIndependentPlacementAndReportsDiscardedData() async throws {
+        try await assertIndependentStaticScene("nested-static.blend")
+    }
+
+    func testUSDZNestedStaticSceneKeepsIndependentPlacementAndDeclaredUnits() async throws {
+        try await assertIndependentStaticScene("nested-static.usdz")
+    }
+
+    private func fixture(_ name:String) throws -> Data {
+        let url=try XCTUnwrap(Bundle(for:Self.self).resourceURL?.appendingPathComponent("CADImport").appendingPathComponent(name))
+        return try Data(contentsOf:url)
+    }
+
+    private func assertIndependentStaticScene(_ fileName:String) async throws {
+        let bytes=try fixture(fileName)
+        let manifest=try XCTUnwrap(JSONSerialization.jsonObject(with:fixture("expected.json")) as? [String:Any])
+        let files=try XCTUnwrap(manifest["files"] as? [String:[String:Any]])
+        XCTAssertEqual(CADImportResources.sha256(bytes),files[fileName]?["sha256"] as? String)
+        let expected=try XCTUnwrap(manifest["expected"] as? [[String:Any]])
+        let source=try put(fileName,bytes)
+        // This is the same pre-commit report and unit detection used by both
+        // entry points. No explicit scale may mask broken native detection.
+        let plan=try CADMeshImportService.parse(data:bytes,fileName:fileName)
+        let report=try XCTUnwrap(plan.coverage)
+        XCTAssertTrue(report.retained.contains("object_placement"))
+        XCTAssertTrue(report.discarded.contains("editable_scene_hierarchy"))
+        XCTAssertTrue(report.discarded.contains("animation_rig_modifiers"))
+        XCTAssertTrue(report.sourceRetained)
+        XCTAssertEqual(plan.detectedScale,1000,accuracy:1e-8)
+        keep(try JSONSerialization.data(withJSONObject:report.json,options:[.sortedKeys]),name:"E27 \(fileName) pre-import report.json")
+        let group=try await CADImportSourceReader.readGroup(urls:[source]).get()
+        let ui=try await manual(group,name:"Manual-\(fileName).floecad");defer{ui.close()}
+        let aiName="Agent-\(fileName).floecad",aiURL=try await target(aiName)
+        let proposal=try await propose(target:aiName,source:fileName)
+        try await apply(proposal)
+        let ai=try await FloeCAD3DBridge.shared.openDocument(at:aiURL)
+        equalBodies(ui,ai)
+        XCTAssertEqual(ai.summary().bodyCount,2)
+        var unused=expected
+        for body in ai.session.document.bodies {
+            let (lo,hi)=worldBounds(body)
+            let index=try XCTUnwrap(unused.indices.min { lhs,rhs in
+                let a=unused[lhs]["minimum"] as? [Double] ?? [],b=unused[rhs]["minimum"] as? [Double] ?? []
+                return zip(a,[lo.x,lo.y,lo.z]).reduce(0){$0+abs($1.0-$1.1)} < zip(b,[lo.x,lo.y,lo.z]).reduce(0){$0+abs($1.0-$1.1)}
+            })
+            let row=unused.remove(at:index),minimum=try XCTUnwrap(row["minimum"] as? [Double]),maximum=try XCTUnwrap(row["maximum"] as? [Double])
+            for axis in 0..<3 { XCTAssertEqual(lo[axis],minimum[axis],accuracy:1e-3,"\(fileName) \(body.name) minimum");XCTAssertEqual(hi[axis],maximum[axis],accuracy:1e-3,"\(fileName) \(body.name) maximum") }
+            let color=try XCTUnwrap(row["baseColor"] as? [Double]),material=try XCTUnwrap(body.material)
+            for channel in 0..<4 { XCTAssertEqual(material.baseColor[channel],color[channel],accuracy:1e-4) }
+        }
+        XCTAssertTrue(unused.isEmpty)
+        let glb=GLBExporter.glb(bodies:ai.session.document.bodies)
+        let rows=try independentGLBRows(glb);XCTAssertEqual(rows.count,2)
+        for body in ai.session.document.bodies {
+            let wire=try XCTUnwrap(rows.first{$0.name==body.name}),(lo,hi)=worldBounds(body)
+            for axis in 0..<3 { XCTAssertEqual(wire.minimumMM[axis],lo[axis],accuracy:1e-3);XCTAssertEqual(wire.maximumMM[axis],hi[axis],accuracy:1e-3) }
+        }
+        keep(glb,name:"E27 \(fileName) native independent export.glb")
+        ui.session.undo();XCTAssertEqual(ui.summary().bodyCount,0);ui.session.redo();XCTAssertEqual(ui.summary().bodyCount,2)
+        let saved=await ui.save();XCTAssertTrue(saved.succeeded)
+        let url=ui.url;ui.close();let reopened=try await FloeCADDocument.open(at:url);defer{reopened.close()}
+        equalBodies(reopened,ai)
+        XCTAssertEqual(try Data(contentsOf:source),bytes)
     }
 
     func testExplicitTwoMillimetresAndTwoMetresAgreeAcrossManualAgentAndIndependentExport() async throws {

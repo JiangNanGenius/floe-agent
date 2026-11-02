@@ -63,6 +63,7 @@
 		0C29254C1162DC79D7A0659E /* FloeCore in Frameworks */ = {isa = PBXBuildFile; productRef = B251CF833FCCC7B1B7EEAEE7 /* FloeCore */; };
 		0C3B75DEC2F5E1676ADB7CAD /* FloeImageEditorView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A3C3CC090EE8725611E64C35 /* FloeImageEditorView.swift */; };
 		0C3DAB95BE318C1C79637AE7 /* MindMapEdgesLayer.swift in Sources */ = {isa = PBXBuildFile; fileRef = A082083860EE4285F25B90BA /* MindMapEdgesLayer.swift */; };
+		0C8D478C940B27BE6CCE1CD8 /* CADImport in Resources */ = {isa = PBXBuildFile; fileRef = C6FE985BB041B771B3148F46 /* CADImport */; };
 		0CEA0F53456C2B909B39DF42 /* HealthModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = 54143713779BE3FF98DD2CEF /* HealthModels.swift */; };
 		0D61B284A930FFB5055E0D1E /* OfficeDocumentEditorView.swift in Sources */ = {isa = PBXBuildFile; fileRef = D196A6882F00C663F4186CF1 /* OfficeDocumentEditorView.swift */; };
 		0DA622C51347B5CEA2C8278A /* NotesAIActualOutputUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 02DEE2FEE9044F7BE5635809 /* NotesAIActualOutputUITests.swift */; };
@@ -2369,6 +2370,7 @@
 		C64BE0E03A990BA0CFBF7943 /* VoiceConversationSemantics.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VoiceConversationSemantics.swift; sourceTree = "<group>"; };
 		C6C760BC7C3346FFF1B947CE /* NativeMediaRoutingTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeMediaRoutingTests.swift; sourceTree = "<group>"; };
 		C6DE72EE67C1075195444C9A /* SharedDocumentsSettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SharedDocumentsSettingsView.swift; sourceTree = "<group>"; };
+		C6FE985BB041B771B3148F46 /* CADImport */ = {isa = PBXFileReference; lastKnownFileType = folder; name = CADImport; path = Tests/Fixtures/CADImport; sourceTree = SOURCE_ROOT; };
 		C71624FFDB9B76CB148DA3CE /* WorkspaceCanvasView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkspaceCanvasView.swift; sourceTree = "<group>"; };
 		C7509CFCDC86E59C7EDD8344 /* VoiceConversationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VoiceConversationTests.swift; sourceTree = "<group>"; };
 		C76468D2E1892824BB69BC71 /* SkillRuntimeTargetTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SkillRuntimeTargetTests.swift; sourceTree = "<group>"; };
@@ -3206,6 +3208,7 @@
 		20D89574F460EBD323C07AC4 /* Fixtures */ = {
 			isa = PBXGroup;
 			children = (
+				C6FE985BB041B771B3148F46 /* CADImport */,
 				E748840321D727712C1CB425 /* EngineeringScene */,
 			);
 			path = Fixtures;
@@ -5142,6 +5145,7 @@
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				0C8D478C940B27BE6CCE1CD8 /* CADImport in Resources */,
 				DD0C89F89F12C6E295A1BD63 /* CuratedSkillHub in Resources */,
 				B8BF9B31F1D267EE94008C38 /* EngineeringScene in Resources */,
 				9233A31C6990563129C25B2B /* floe-sim-qual.pptx in Resources */,

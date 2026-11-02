@@ -710,6 +710,9 @@ targets:
       - path: Tests/FloeAppTests/TaskRemoteEnvironmentLiveTests.swift
       - path: Tests/FloeAppTests/NativeCADLiveLLMTests.swift
       - path: Tests/FloeAppTests/NativeCADImportParityTests.swift
+      - path: Tests/Fixtures/CADImport
+        type: folder
+        buildPhase: resources
       - path: Tests/FloeAppTests/LocalModelCanonicalCADAdmissionTests.swift
       - path: Tests/FloeAppTests/LocalMLXRealCADQualificationTests.swift
       - path: Tests/FloeAppTests/TaskWorkspaceMirrorTests.swift
