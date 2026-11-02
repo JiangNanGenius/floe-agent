@@ -50,6 +50,7 @@ import com.floe.android.design.FloeDivider
 import com.floe.android.design.FloeIcons
 import com.floe.android.design.FloeLayout
 import com.floe.android.design.FloeText
+import com.floe.android.design.FloeToolbarIconButton
 import com.floe.android.design.IconGlyph
 import com.floe.android.feature.notes.NoteDocumentSummary
 import com.floe.android.feature.notes.NoteDocumentKind
@@ -90,18 +91,29 @@ internal fun NotesIconAction(
     modifier: Modifier = Modifier,
     enabled: Boolean = true,
     tint: Color = Floe.colors.label,
-    visualSize: Dp = 36.dp,
+    visualSize: Dp? = null,
 ) {
-    FloeCircleButton(
-        icon = icon,
-        contentDescription = contentDescription,
-        onClick = onClick,
-        modifier = modifier,
-        enabled = enabled,
-        visualSize = visualSize,
-        iconSize = 20.dp,
-        tint = tint,
-    )
+    if (visualSize == null) {
+        FloeToolbarIconButton(
+            icon = icon,
+            contentDescription = contentDescription,
+            onClick = onClick,
+            modifier = modifier,
+            enabled = enabled,
+            tint = tint,
+        )
+    } else {
+        FloeCircleButton(
+            icon = icon,
+            contentDescription = contentDescription,
+            onClick = onClick,
+            modifier = modifier,
+            enabled = enabled,
+            visualSize = visualSize,
+            iconSize = 20.dp,
+            tint = tint,
+        )
+    }
 }
 
 @Composable

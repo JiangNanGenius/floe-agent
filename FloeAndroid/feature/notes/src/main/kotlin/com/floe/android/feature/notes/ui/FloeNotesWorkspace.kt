@@ -3,24 +3,19 @@ package com.floe.android.feature.notes.ui
 
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
-import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
-import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.navigationBarsPadding
-import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.safeDrawingPadding
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
 import androidx.compose.ui.unit.dp
 import com.floe.android.design.Floe
-import com.floe.android.design.FloeIcons
-import com.floe.android.design.FloeUnavailableView
 import com.floe.android.feature.notes.NotesService
 import com.floe.android.feature.notes.ui.api.NotesHostPorts
 import com.floe.android.feature.notes.ui.api.NotesWorkspaceCallbacks
@@ -38,11 +33,10 @@ import com.floe.android.feature.notes.ui.ui.NotesLibraryPane
  * media/Office/assistant/exchange adapters plus the REQUIRED durable
  * presentation and recovery stores.
  *
- * On phone widths the library and editor are single-pane with Android Back
- * returning to the library. On tablet widths the library stays visible beside
- * the editor; the assistant appears as a third column when the window can
- * afford it. Document/selection/undo/assistant state is per-session, never a
- * global mutable store.
+ * The library remains mounted behind a full-window document presentation, as
+ * in the iOS NotesRootView. The editor covers the App sidebar on every window
+ * size. Closing it returns to the same library position; editor sessions and
+ * pending saves remain owned by the workspace rather than the dialog.
  */
 @Composable
 public fun FloeNotesWorkspace(
@@ -67,8 +61,6 @@ public fun FloeNotesWorkspace(
             }
         }
     }
-    BackHandler(enabled = controller.canGoBack()) { controller.goBack() }
-
     BoxWithConstraints(
         modifier
             .fillMaxSize()
@@ -78,54 +70,37 @@ public fun FloeNotesWorkspace(
             // library card) rendered underneath the gesture navigation bar.
             .navigationBarsPadding(),
     ) {
-        val compact = maxWidth < 600.dp
-        val wideLayout = maxWidth >= 1_010.dp
-        val libraryWidth = if (maxWidth < 900.dp) 280.dp else 320.dp
-        if (compact) {
-            val active = controller.activeSession
-            if (active == null) {
-                NotesLibraryPane(
-                    controller = controller,
-                    modifiers = Modifier.fillMaxSize(),
-                    onRequestSidebar = callbacks.onRequestSidebar,
-                )
-            } else {
+        NotesLibraryPane(
+            controller = controller,
+            modifiers = Modifier.fillMaxSize(),
+            onRequestSidebar = callbacks.onRequestSidebar,
+        )
+    }
+
+    val active = controller.activeSession
+    if (active != null) {
+        Dialog(
+            onDismissRequest = { controller.goBack() },
+            properties = DialogProperties(
+                usePlatformDefaultWidth = false,
+                decorFitsSystemWindows = false,
+                dismissOnClickOutside = false,
+            ),
+        ) {
+            BackHandler(enabled = controller.canGoBack()) { controller.goBack() }
+            BoxWithConstraints(
+                Modifier.fillMaxSize()
+                    .background(Floe.colors.groupedSurface)
+                    .safeDrawingPadding(),
+            ) {
                 NotesDocumentPane(
                     controller = controller,
                     session = active,
-                    wide = false,
-                    compact = true,
+                    wide = maxWidth >= 1_010.dp,
+                    compact = maxWidth < 600.dp,
                     callbacks = callbacks,
                     modifiers = Modifier.fillMaxSize(),
                 )
-            }
-        } else {
-            Row(Modifier.fillMaxSize()) {
-                NotesLibraryPane(
-                    controller = controller,
-                    modifiers = Modifier.width(libraryWidth).fillMaxHeight(),
-                    onRequestSidebar = callbacks.onRequestSidebar,
-                )
-                Box(Modifier.width(0.5.dp).fillMaxHeight().background(Floe.colors.separator))
-                Box(Modifier.weight(1f).fillMaxHeight()) {
-                    val active = controller.activeSession
-                    if (active == null) {
-                        FloeUnavailableView(
-                            icon = FloeIcons.BookPages,
-                            title = stringResource(R.string.notes_select_note),
-                            description = stringResource(R.string.notes_select_note_body),
-                        )
-                    } else {
-                        NotesDocumentPane(
-                            controller = controller,
-                            session = active,
-                            wide = wideLayout,
-                            compact = false,
-                            callbacks = callbacks,
-                            modifiers = Modifier.fillMaxSize(),
-                        )
-                    }
-                }
             }
         }
     }

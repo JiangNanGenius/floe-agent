@@ -27,6 +27,7 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertSame
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -195,6 +196,40 @@ class NotesWorkspaceColdOpenObservableTest {
             native.releaseLibrary()
             assertTrue(controller.library.documents.any { it.id == documentID })
             assertNull(controller.session(documentID))
+        } finally { scope.cancel() }
+    }
+
+    @Test
+    fun dismissingDocumentPreservesLibraryAndReusesOwnedEditorSession() = runBlocking {
+        val presentation = InMemoryNotesPresentationStore()
+        presentation.saveWorkspace(NotesWorkspacePreferences(
+            openDocumentIDs = listOf(documentID), activeDocumentID = documentID,
+        ))
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Unconfined)
+        val native = GatedLibraryService(document())
+        try {
+            val controller = NotesWorkspaceController(
+                service = native.service,
+                ports = unavailableNotesHostPorts(presentation, InMemoryNotesRecoveryStore()),
+                scope = scope, generation = { 0L }, fenced = { false },
+            )
+            controller.start()
+            native.releaseLibrary()
+            val editor = controller.activeSession
+            assertNotNull(editor)
+            val library = controller.library
+            library.applyGrid(false)
+            library.applyFilter(com.floe.android.feature.notes.ui.presentation.NotesLibraryFilter.ALL)
+
+            assertTrue(controller.goBack())
+            assertNull(controller.activeSession)
+            assertSame(library, controller.library)
+            assertTrue(!library.grid)
+            assertTrue(library.filter == com.floe.android.feature.notes.ui.presentation.NotesLibraryFilter.ALL)
+            assertTrue(controller.tabs.contains(documentID))
+
+            controller.openDocument(documentID, null)
+            assertSame("Closing presentation must not discard editor state", editor, controller.activeSession)
         } finally { scope.cancel() }
     }
 
