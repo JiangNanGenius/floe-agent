@@ -1,14 +1,13 @@
 {
   "schemaVersion": 1,
-  "assets": [
-    {
-      "source": "FloeAgent/FloeApp/Resources/Assets.xcassets/AppIcon.appiconset/AppIcon-1024.png",
-      "sha256": "19547864334816dbcf0b423bd755d18daeace86cd93ed897b8806a25509d25e2"
-    },
-    {
-      "source": "FloeAgent/FloeApp/Resources/Assets.xcassets/VoiceMark.imageset/VoiceMark.png",
-      "sha256": "e490ab13f0ee796b0d746b93a25b53cdcef61917b8778acb1257d1c5ea86675d"
-    }
-  ],
-  "usage": "Unmodified existing Floe brand assets. ICNS uses iconutil/sips size representations."
+  "base": "FloeIOSBridge/Design/AppIcon-master.png",
+  "baseSourceCommit": "444c9cb247d3ec2cd5f2b562f6253c067b11e40b",
+  "baseSHA256": "daa268807c59e32e15bf0135c7cfcce1a932e55d35bb59b3033a5c715566f4fd",
+  "master": "FloeMacBridge/Design/AppIcon-master.png",
+  "masterSHA256": "1ac28852d0d7d53f866b98b7cfdd9b5d716522bf856c47ad9a558cc4caf906fb",
+  "usage": "Unchanged iOS Bridge emblem with a small native desktop-computer corner badge; no Mac text. Reproducible AppKit composition is in Design/compose-mac-badge.swift. ICNS/settings icons use iconutil/sips size representations. Menu bar uses the transparent Floe template.",
+  "menuTemplate": {
+    "source": "FloeAgent/FloeApp/Resources/Assets.xcassets/VoiceMark.imageset/VoiceMark.png",
+    "sha256": "e490ab13f0ee796b0d746b93a25b53cdcef61917b8778acb1257d1c5ea86675d"
+  }
 }
