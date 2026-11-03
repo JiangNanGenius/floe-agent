@@ -120,5 +120,27 @@ struct NativeCADCapabilityDiscoveryTests {
         }
     }
 
+    @Test func texturePaintDiscoveryUsesExistingMaterialRouteAndCompletePagedHelp() throws {
+        let actions=Set(CADMaterialService.actions)
+        for action in ["paint.read","paint.stroke","paint.bakeAO","paint.status","paint.cancel"] {
+            #expect(actions.contains(action));#expect(CadNativeEditActions.material.contains(action))
+        }
+        let full=try #require(CadDocumentHelp.fullText(for:"texture-paint"))
+        #expect(full.contains("BVH"));#expect(full.contains("flattened"));#expect(full.contains("source_sha256"))
+        var page=0,joined=""
+        while true {
+            let row=try #require(CadDocumentHelp.page(.init(topic:"texture-paint",page:page,pageSize:1000)))
+            joined += row.text;guard let next=row.nextPage else { break };page=next
+        }
+        #expect(joined==full);#expect(page>0)
+        let payload=#"{"action":"paint.stroke","body_id":"00000000-0000-4000-8000-000000000001","source_sha256":"synthetic","expected_change_count":1,"hits":[{"triangle":0,"barycentric":[0.25,0.5,0.25]}],"color_srgb":[1,0,0,1]}"#
+        let outer=try JSONSerialization.data(withJSONObject:["action":"material","path":"example.floecad","payload":payload])
+        let decoded=try JSONDecoder().decode(CadDocumentArguments.self,from:outer)
+        #expect(decoded.action == .material);#expect(decoded.payload==payload)
+        let object=try #require(JSONSerialization.jsonObject(with:Data(payload.utf8)) as? [String:Any])
+        let hits=try JSONDecoder().decode([CADTexturePaintHit].self,from:JSONSerialization.data(withJSONObject:try #require(object["hits"])))
+        #expect(hits.count==1);#expect(hits[0].triangle==0);#expect(hits[0].barycentric.x==0.25)
+    }
+
 }
 #endif

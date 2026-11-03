@@ -72,6 +72,7 @@ struct CADMaterialInspectorView: View {
     @State private var exportedPack: MaterialPackDocument?
     @State private var disclosure: Set<String> = []
     @State private var uvTarget: UVTarget?
+    @State private var paintTarget:UVTarget?
 
     private struct UVTarget: Identifiable { let bodyID: BodyID; var id: UUID { bodyID.raw } }
 
@@ -115,6 +116,13 @@ struct CADMaterialInspectorView: View {
                         }
                         .frame(minHeight: 44)
                         .accessibilityIdentifier("CADMaterialOpenUVEditor")
+                        if !model.target.isFaceTarget {
+                            Button(FloeCADStrings.text("cad.paint.title","Texture painting"),systemImage:"paintbrush.pointed") {
+                                model.endPreviewOnly();paintTarget=UVTarget(bodyID:BodyID(raw:id))
+                            }.disabled(model.hasUnsavedChanges || model.document.session.isReadOnly)
+                            .frame(minHeight:44).accessibilityIdentifier("CADMaterialOpenTexturePaint")
+                            if model.hasUnsavedChanges { Text(FloeCADStrings.text("cad.paint.applyFirst","Apply material changes before painting.")) .font(.footnote).foregroundStyle(.secondary) }
+                        }
                         Text(FloeCADStrings.text("cad.uv.savedMaterial", "The UV editor uses the body’s current material."))
                             .font(.footnote).foregroundStyle(.secondary)
                     }
@@ -150,6 +158,9 @@ struct CADMaterialInspectorView: View {
                 model.refreshStaleBindings()
             }) { target in
                 CADUVEditorView(document: model.document, bodyID: target.bodyID)
+            }
+            .sheet(item:$paintTarget,onDismiss:{ model.refreshAfterTexturePainting() }) { target in
+                CADTexturePaintView(document:model.document,bodyID:target.bodyID)
             }
             .onAppear {
                 isVisible = true

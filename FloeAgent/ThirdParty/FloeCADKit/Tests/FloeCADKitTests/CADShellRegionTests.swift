@@ -1,5 +1,6 @@
 import Foundation
 import XCTest
+import OCCTShim
 import simd
 @testable import FloeCAD
 
@@ -233,6 +234,22 @@ final class CADShellRegionTests: XCTestCase {
         }?.index)
         return (document, id, curved)
     }
+    /// Independent integral for the SAME R10 quarter sphere. Two planar
+    /// wall slabs minus their overlap; no output mesh or requested-volume metadata.
+    private func expectedSphericalWallVolume(_ t: Double) -> Double {
+        let radius = 10.0, steps = 128, h = t / Double(steps)
+        var overlap = 0.0
+        for i in 0...steps {
+            let x = Double(i) * h, wx = i == 0 || i == steps ? 1.0 : (i.isMultiple(of: 2) ? 2 : 4)
+            for j in 0...steps {
+                let z = Double(j) * h, wz = j == 0 || j == steps ? 1.0 : (j.isMultiple(of: 2) ? 2 : 4)
+                overlap += wx * wz * 2 * sqrt(radius * radius - x * x - z * z)
+            }
+        }
+        overlap *= h * h / 9
+        return Double.pi * (radius * radius * t - t * t * t / 3) - overlap
+    }
+
     private func assertSphericalOpening(_ handle: BRepHandle, thickness: Double,
                                          file: StaticString = #filePath, line: UInt = #line) {
         let planes = OCCTKernel.faceInfo(handle).filter { $0.signature?.kind == .planar }
@@ -245,6 +262,8 @@ final class CADShellRegionTests: XCTestCase {
         }
         XCTAssertGreaterThan(abs(OCCTKernel.volume(handle)), 0, file: file, line: line)
         XCTAssertLessThan(abs(OCCTKernel.volume(handle)), 1_000 * .pi / 3, file: file, line: line)
+        XCTAssertEqual(OCCTKernel.volume(handle), expectedSphericalWallVolume(thickness), accuracy: 1e-3, file: file, line: line)
+        XCTAssertLessThanOrEqual(OCCTBridge.maxTolerance(of: handle.shape), 1e-5, file: file, line: line)
         let health = OCCTKernel.healthReportDictionary(for: handle, runBOPCheck: true)
         XCTAssertEqual(health["valid"] as? Bool, true, "\(health)", file: file, line: line)
         XCTAssertEqual(health["openFreeWires"] as? Int, 0, file: file, line: line)
@@ -270,6 +289,16 @@ final class CADShellRegionTests: XCTestCase {
         case let .success(result):
             assertSphericalOpening(result.handle, thickness: 1)
             XCTAssertFalse(result.ancestry.rows.isEmpty)
+            let planarSources = OCCTKernel.faceInfo(original).filter { $0.signature?.kind == .planar }
+            let resultPlanes = Set(OCCTKernel.faceInfo(result.handle).filter { $0.signature?.kind == .planar }.map(\.index))
+            for plane in planarSources {
+                let rows = result.ancestry.rows.filter {
+                    $0.inputOrdinal == 0 && $0.inputKind == .face && $0.inputSubshape == plane.index
+                        && resultPlanes.contains($0.resultFace)
+                }
+                XCTAssertEqual(Set(rows.map(\.resultFace)).count, 2, "Outer and inner wall need real ancestry from this original support.")
+                XCTAssertTrue(rows.contains { $0.relation == .generated })
+            }
         case let .failure(error): XCTFail("Spherical native opening: \(error.message)")
         }
         XCTAssertEqual(OCCTKernel.serialize(original), inputBytes)
@@ -293,6 +322,20 @@ final class CADShellRegionTests: XCTestCase {
         assertSphericalOpening(try handle(reopened, f.body), thickness: 2)
         XCTAssertTrue(reopened.viewModel().beginShellEdit(node.id))
     }
+    func testOpeningWholeSphereHasNoPlanarWallSupportAndPreservesInput() throws {
+        let source = try XCTUnwrap(OCCTKernel.primitiveShape(.sphere(radius: 10), placement: .identity))
+        let face = try XCTUnwrap(OCCTKernel.faceInfo(source).first)
+        let point = try XCTUnwrap(OCCTKernel.faceSample(source, index: face.index))
+        let before = try XCTUnwrap(OCCTKernel.serialize(source))
+        let result = OCCTKernel.shellResultWithAncestry(source, openingAt: [point], thickness: 1,
+            tolerance: OCCTKernel.matchTolerance(for: source))
+        if case let .failure(error) = result { XCTAssertFalse(error.message.isEmpty) }
+        else { XCTFail("Removing every curved support cannot manufacture a wall.") }
+        preserveBRepDifference(before: before, after: OCCTKernel.serialize(source), stage: "no-planar-support")
+        XCTAssertEqual(OCCTKernel.serialize(source), before)
+        XCTAssertEqual(OCCTKernel.volume(source), 4_000 * Double.pi / 3, accuracy: 1e-3)
+    }
+
     func testRegionalWriterFloorAndFutureDefinitionStaysOpaque() async throws {
         let (document, body) = try await fixture()
         let node = try createShell(document, body)

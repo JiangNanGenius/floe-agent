@@ -175,7 +175,7 @@ public nonisolated struct CADSceneSettings: Codable, Equatable, Sendable {
     /// optional X22 section/measurement overlay. The fields are additive
     /// optionals, so a version-1/2 package decodes unchanged and an older
     /// reader ignores them.
-    public static let currentSchemaVersion = 3
+    public static let currentSchemaVersion = 4
 
     public nonisolated struct Camera: Codable, Equatable, Sendable {
         public var azimuthRadians: Double
@@ -285,6 +285,10 @@ public nonisolated struct CADSceneSettings: Codable, Equatable, Sendable {
     /// screenshots and animation export. Additive optional: nil means the
     /// historical "no overlay" behavior and an older reader ignores the key.
     public var viewOverlay: CADViewOverlayState?
+    /// X19 references/parents and empty-group local poses; payloads stay in their original stores.
+    public var sceneObjects: CADSceneObjectHierarchy?
+    /// Additive offline still-export preferences; absent in older documents.
+    public var stillRender: CADStillRenderSettings?
 
     public init(schemaVersion: Int = CADSceneSettings.currentSchemaVersion,
                 camera: Camera? = nil, lighting: Lighting? = nil,
@@ -298,6 +302,7 @@ public nonisolated struct CADSceneSettings: Codable, Equatable, Sendable {
         self.background = background; self.showsGrid = showsGrid; self.legacy = legacy
         self.savedCameras = savedCameras; self.activeCameraID = activeCameraID
         self.viewOverlay = viewOverlay
+        self.sceneObjects = nil
     }
 }
 

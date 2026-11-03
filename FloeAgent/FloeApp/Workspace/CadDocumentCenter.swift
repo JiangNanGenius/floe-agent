@@ -320,6 +320,18 @@ actor CadDocumentCenter: CadDocumentHost {
         }
     }
 
+    func renderStill(documentID: String, requestJSON: String,
+                     expectedRevision: Int64?, access: CadDocumentAccess) async throws -> CadViewportCapture {
+        let resolved = try await resolveNativeAware(documentID: documentID, access: access)
+        let url = try resolved.service.guardResolver.resolve(resolved.id)
+        let expected: Int?
+        if let expectedRevision {
+            guard let value = Int(exactly: expectedRevision) else { throw FloeError.validationFailed("revision is outside the supported range") }
+            expected = value
+        } else { expected = nil }
+        return try await FloeCAD3DBridge.shared.renderStill(at: url, requestJSON: requestJSON, expectedRevision: expected)
+    }
+
     // MARK: - Native animation capture / MP4 export
 
     /// Upper bound for one verified animation output (MP4 or PNG frame ZIP)

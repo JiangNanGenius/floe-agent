@@ -639,6 +639,7 @@ struct CADPresentationWorkbenchContent: View {
     @State private var mode: CADWorkbenchMode = .edit
     @State private var showEnvironmentInspector = false
     @State private var showCameraSheet = false
+    @State private var showStillRender = false
     @State private var materialInspector: MaterialInspectorRequest?
     @State private var handle = CADPresentationHandle()
     @State private var store: CADPresentationSceneStore
@@ -754,6 +755,9 @@ struct CADPresentationWorkbenchContent: View {
         }
         .sheet(isPresented: $showCameraSheet) {
             CADCameraBookmarksSheet(document: document, handle: handle)
+        }
+        .sheet(isPresented: $showStillRender) {
+            CADStillRenderSheet(document: document)
         }
         .sheet(isPresented: $showOverlays) {
             // Refresh the applied scene before the sheet closes, so Export/
@@ -1435,6 +1439,14 @@ struct CADPresentationWorkbenchContent: View {
 
     private var presentationExportMenu: some View {
         Menu {
+            Button {
+                playback.stop()
+                showStillRender = true
+            } label: {
+                Label(FloeCADStrings.text("cad.render.title", "Render image"), systemImage: "sparkles")
+            }
+            .disabled(exportHandle != nil || exportStarting)
+            .accessibilityIdentifier("CADStillRenderOpen")
             Button {
                 exportPNG()
             } label: {

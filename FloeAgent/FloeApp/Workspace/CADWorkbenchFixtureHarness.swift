@@ -214,6 +214,10 @@ enum CADQualificationFixture {
         }
     }
 
+    @MainActor static func openTexturePaint(reset:Bool)async throws->FloeCADDocument {
+        try await CADTexturePaintUIFixture.open(at:fixtureURL("texture-paint-bake.floecad"),reset:reset)
+    }
+
     /// M17 native form fixture. Seeds two real open sketch lines ONLY.
     /// No loft/surface/thickness command or callback is run by the fixture.
     @MainActor
@@ -835,7 +839,9 @@ struct CADWorkbenchFixtureHarness: View {
             Self.installMeshPanelFlowProbeIfRequested()
             do {
                 let arguments = ProcessInfo.processInfo.arguments
-                if arguments.contains(CADTextureImportUIFixture.argument) {
+                if arguments.contains("--ui-test-cad-texture-paint") {
+                    document=try await CADQualificationFixture.openTexturePaint(reset:arguments.contains("--ui-test-cad-texture-paint-reset"))
+                } else if arguments.contains(CADTextureImportUIFixture.argument) {
                     document = try await CADTextureImportUIFixture.open(
                         reset: arguments.contains(CADTextureImportUIFixture.resetArgument),
                         reopen: arguments.contains(CADTextureImportUIFixture.reopenArgument))

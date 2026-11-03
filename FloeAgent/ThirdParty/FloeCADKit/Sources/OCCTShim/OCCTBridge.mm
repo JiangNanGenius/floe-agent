@@ -16,6 +16,7 @@
 
 #include <vector>
 #include <tuple>
+#include <limits>
 #include <algorithm>
 #include <csignal>
 #include <memory>
@@ -97,6 +98,7 @@
 
 #include <BRepPrimAPI_MakeBox.hxx>
 #include <BRepPrimAPI_MakePrism.hxx>
+#include <BRepPrimAPI_MakeHalfSpace.hxx>
 #include <BRepPrimAPI_MakeRevol.hxx>
 #include <BRepOffsetAPI_ThruSections.hxx>
 #include <BRepOffsetAPI_MakePipe.hxx>
@@ -4969,6 +4971,225 @@ static void OS3DCollectShellHistory(BRepBuilderAPI_MakeShape *builder,
     }
 }
 
+// Exact bounded alternative to offsetting a curved closing surface:
+// all surviving walls must be planar CONVEX SUPPORTS of the source solid.
+// This is a source/halfspace boolean construction, not a generic surface offset.
+static NSInteger OS3DSurfaceFreeEdges(const TopoDS_Shape &shape);
+struct OS3DSupportFaceLineage {
+    TopoDS_Shape face;
+    std::set<int32_t> sourceFaces;
+    bool generated = false;
+};
+
+// Real OCCT Modified/Generated plus same-TShape survival. No geometric/ordinal
+// nearest match is used to identify a result face or an offset wall.
+static std::vector<OS3DSupportFaceLineage> OS3DSupportBooleanLineage(
+    BRepAlgoAPI_BooleanOperation &maker, const TopoDS_Shape &result,
+    const std::vector<OS3DSupportFaceLineage> &inputs) {
+    TopTools_IndexedMapOfShape faces; TopExp::MapShapes(result, TopAbs_FACE, faces);
+    std::vector<OS3DSupportFaceLineage> out;
+    for (Standard_Integer i = 1; i <= faces.Extent(); ++i) out.push_back({faces(i), {}, false});
+    auto claim = [&](const TopoDS_Shape &image, const OS3DSupportFaceLineage &parent, bool generated) {
+        if (image.IsNull()) return;
+        auto one = [&](const TopoDS_Shape &face) {
+            const Standard_Integer index = faces.FindIndex(face);
+            if (index <= 0) return;
+            auto &row = out[(size_t)index - 1];
+            row.sourceFaces.insert(parent.sourceFaces.begin(), parent.sourceFaces.end());
+            row.generated = row.generated || parent.generated || generated;
+        };
+        if (image.ShapeType() == TopAbs_FACE) one(image);
+        else if (image.ShapeType() < TopAbs_FACE)
+            for (TopExp_Explorer it(image, TopAbs_FACE); it.More(); it.Next()) one(it.Current());
+    };
+    for (const auto &parent : inputs) {
+        claim(parent.face, parent, false);
+        for (int relation : {1, 2}) {
+            const TopTools_ListOfShape &images = relation == 1 ? maker.Modified(parent.face) : maker.Generated(parent.face);
+            for (TopTools_ListIteratorOfListOfShape it(images); it.More(); it.Next()) claim(it.Value(), parent, relation == 2);
+        }
+    }
+    for (const auto &row : out)
+        if (row.sourceFaces.empty()) throw Standard_Failure("planar support boolean has an unproven face ancestry");
+    return out;
+}
+
+static OCCTShape *OS3DPlanarSupportShell(const TopoDS_Shape &source,
+                                        const TopTools_ListOfShape &openFaces,
+                                        double thickness, OCCTOpStatus *status,
+                                        OCCTShapeHistory *history) {
+    OS3DSetStatus(status, OCCTOpCodeKernelRefused, @"planar-support shell is not applicable");
+    if (!std::isfinite(thickness) || thickness <= 1e-6 || openFaces.IsEmpty()) return nil;
+    try {
+        TopTools_IndexedMapOfShape sourceFaces; TopExp::MapShapes(source, TopAbs_FACE, sourceFaces);
+        if (sourceFaces.Extent() < 2 || sourceFaces.Extent() > 64 || openFaces.Extent() > 16) return nil;
+        std::set<Standard_Integer> openings;
+        for (TopTools_ListIteratorOfListOfShape it(openFaces); it.More(); it.Next()) {
+            const Standard_Integer index = sourceFaces.FindIndex(it.Value());
+            if (index <= 0 || !openings.insert(index).second
+                || BRepAdaptor_Surface(TopoDS::Face(it.Value())).GetType() == GeomAbs_Plane) return nil;
+        }
+        struct Support { int32_t sourceFace; gp_Pnt origin; gp_Dir outward; };
+        std::vector<Support> supports;
+        for (Standard_Integer i = 1; i <= sourceFaces.Extent(); ++i) {
+            if (openings.count(i)) continue;
+            const TopoDS_Face face = TopoDS::Face(sourceFaces(i));
+            BRepAdaptor_Surface surface(face);
+            if (surface.GetType() != GeomAbs_Plane
+                || (face.Orientation() != TopAbs_FORWARD && face.Orientation() != TopAbs_REVERSED)) return nil;
+            const gp_Pln plane = surface.Plane();
+            gp_Dir normal = plane.Axis().Direction();
+            if (face.Orientation() == TopAbs_REVERSED) normal.Reverse();
+            supports.push_back({(int32_t)i, plane.Location(), normal});
+        }
+        if (supports.empty() || supports.size() > 16) return nil;
+        BRepBuilderAPI_Copy copy(source, Standard_True, Standard_False);
+        if (!copy.IsDone() || copy.Shape().IsNull()) return nil;
+        const TopoDS_Shape owned = copy.Shape();
+        const double before = OS3DVolume(owned), inputTolerance = OS3DMaxTolerance(owned);
+        if (!std::isfinite(before) || before <= 0 || !std::isfinite(inputTolerance)
+            || inputTolerance > 1e-6 || !OS3DFiniteBounds(owned) || !BRepCheck_Analyzer(owned).IsValid()) return nil;
+        const double allowedTolerance = std::max(1e-6, inputTolerance * 10);
+        const double volumeTolerance = std::max(1e-9, before * 1e-8);
+        NSString *closedRefusal = @"";
+        auto closedSingle = [&](const TopoDS_Shape &shape) -> TopoDS_Shape {
+            int count = 0; TopoDS_Shape solid = OS3DExtractSingleSolid(shape, count);
+            if (count != 1 || solid.IsNull()) {
+                closedRefusal = [NSString stringWithFormat:@"expected one solid, got %d", count]; return TopoDS_Shape();
+            }
+            const double measuredTolerance = OS3DMaxTolerance(solid);
+            if (!std::isfinite(measuredTolerance) || measuredTolerance < 0 || measuredTolerance > allowedTolerance) {
+                closedRefusal = [NSString stringWithFormat:@"native tolerance %.17g exceeds %.17g mm", measuredTolerance, allowedTolerance];
+                return TopoDS_Shape();
+            }
+            if (!OS3DFiniteBounds(solid) || !BRepCheck_Analyzer(solid).IsValid() || OS3DSurfaceFreeEdges(solid) != 0) {
+                closedRefusal = @"native result is non-finite, invalid, or has free/nonmanifold edges"; return TopoDS_Shape();
+            }
+            closedRefusal = @""; return solid;
+        };
+        OS3DDeadlineProgress *deadline = new OS3DDeadlineProgress(kOS3DOpDeadlineSeconds);
+        Handle(Message_ProgressIndicator) progress(deadline);
+        auto configure = [](auto &maker, const TopoDS_Shape &argument, const TopoDS_Shape &tool) {
+            TopTools_ListOfShape args, tools; args.Append(argument); tools.Append(tool);
+            maker.SetArguments(args); maker.SetTools(tools);
+            maker.SetNonDestructive(Standard_True); maker.SetRunParallel(Standard_False);
+            maker.SetFuzzyValue(0.0); maker.SetToFillHistory(Standard_True);
+        };
+        auto halfspace = [&](const Support &support, double inset) -> TopoDS_Solid {
+            const gp_Vec inward = gp_Vec(support.outward).Multiplied(-1);
+            const gp_Pnt origin = support.origin.Translated(inward.Multiplied(inset));
+            BRepBuilderAPI_MakeFace face(gp_Pln(origin, support.outward));
+            if (!face.IsDone()) throw Standard_Failure("planar support face construction failed");
+            BRepPrimAPI_MakeHalfSpace half(face.Face(), origin.Translated(inward.Multiplied(std::max(1.0, thickness))));
+            if (!half.IsDone() || half.Solid().IsNull()) throw Standard_Failure("planar support halfspace construction failed");
+            return half.Solid();
+        };
+        std::vector<TopoDS_Solid> inwardTools;
+        // PROVE each orientation with real Common AND empty source-minus-halfspace.
+        // A plane merely passing through a face does not prove convex support.
+        for (const auto &support : supports) {
+            if (deadline->Fired()) throw Standard_Failure("planar support proof deadline exceeded");
+            TopoDS_Solid originalHalf;
+            OS3D_GUARDED(status, "planar support halfspace", originalHalf = halfspace(support, 0));
+            BRepAlgoAPI_Common proof; configure(proof, owned, originalHalf);
+            OS3D_GUARDED(status, "planar support common proof", proof.Build(progress->Start()));
+            if (deadline->Fired() || !proof.IsDone() || proof.HasErrors() || proof.HasWarnings())
+                throw Standard_Failure("planar support common proof failed");
+            const TopoDS_Shape contained = closedSingle(proof.Shape());
+            const double commonVolume = contained.IsNull() ? 0 : OS3DVolume(contained);
+            if (contained.IsNull() || !std::isfinite(commonVolume) || fabs(commonVolume - before) > volumeTolerance) {
+                OS3DSetStatus(status, OCCTOpCodeKernelRefused, [NSString stringWithFormat:
+                    @"planar support %d containment: source=%.17g common=%.17g budget=%.17g (%@)",
+                    support.sourceFace, before, commonVolume, volumeTolerance, closedRefusal]); return nil;
+            }
+            BRepAlgoAPI_Cut outside; configure(outside, owned, originalHalf);
+            OS3D_GUARDED(status, "planar support outside proof", outside.Build(progress->Start()));
+            if (deadline->Fired() || !outside.IsDone() || outside.HasErrors() || outside.HasWarnings()
+                || outside.Shape().IsNull() || TopExp_Explorer(outside.Shape(), TopAbs_SOLID).More())
+                throw Standard_Failure("source has material outside an original planar support");
+            TopoDS_Solid inwardHalf;
+            OS3D_GUARDED(status, "inward planar support halfspace", inwardHalf = halfspace(support, thickness));
+            inwardTools.push_back(inwardHalf);
+        }
+        std::vector<OS3DSupportFaceLineage> sourceLineage;
+        for (Standard_Integer i = 1; i <= sourceFaces.Extent(); ++i) {
+            const TopoDS_Shape face = copy.ModifiedShape(sourceFaces(i));
+            if (face.IsNull()) throw Standard_Failure("planar support copy lost an original face");
+            sourceLineage.push_back({face, {(int32_t)i}, false});
+        }
+        TopoDS_Shape cavity = owned;
+        auto cavityLineage = sourceLineage;
+        for (size_t i = 0; i < supports.size(); ++i) {
+            BRepAlgoAPI_Common common; configure(common, cavity, inwardTools[i]);
+            OS3D_GUARDED(status, "planar support cavity common", common.Build(progress->Start()));
+            if (deadline->Fired() || !common.IsDone() || common.HasErrors() || common.HasWarnings())
+                throw Standard_Failure("planar support cavity common failed");
+            const TopoDS_Shape next = closedSingle(common.Shape());
+            const double nextVolume = next.IsNull() ? 0 : OS3DVolume(next);
+            if (next.IsNull() || !std::isfinite(nextVolume) || nextVolume <= volumeTolerance) {
+                OS3DSetStatus(status, OCCTOpCodeKernelRefused, [NSString stringWithFormat:
+                    @"planar support cavity %lu: volume=%.17g budget=%.17g (%@)",
+                    (unsigned long)i, nextVolume, volumeTolerance, closedRefusal]); return nil;
+            }
+            auto ancestors = cavityLineage;
+            for (TopExp_Explorer face(inwardTools[i], TopAbs_FACE); face.More(); face.Next())
+                ancestors.push_back({face.Current(), {supports[i].sourceFace}, true});
+            cavityLineage = OS3DSupportBooleanLineage(common, next, ancestors);
+            cavity = next;
+        }
+        // Every retained wall must actually have its authored inward plane in
+        // the final cavity; no redundant constraint is claimed as a measured wall.
+        for (const auto &support : supports) {
+            bool found = false;
+            for (const auto &row : cavityLineage) {
+                if (!row.generated || !row.sourceFaces.count(support.sourceFace)) continue;
+                BRepAdaptor_Surface surface(TopoDS::Face(row.face));
+                if (surface.GetType() != GeomAbs_Plane) continue;
+                const gp_Pln plane = surface.Plane();
+                const double distance = gp_Vec(support.origin, plane.Location()).Dot(gp_Vec(support.outward));
+                if (fabs(plane.Axis().Direction().Dot(support.outward)) > 1 - 1e-12
+                    && fabs(distance + thickness) <= allowedTolerance) { found = true; break; }
+            }
+            if (!found) throw Standard_Failure("planar support has no verified inward cavity face");
+        }
+        const double cavityVolume = OS3DVolume(cavity);
+        if (!std::isfinite(cavityVolume) || cavityVolume <= volumeTolerance || cavityVolume >= before - volumeTolerance)
+            throw Standard_Failure("planar support cavity did not remove a positive wall volume");
+        BRepAlgoAPI_Cut cut; configure(cut, owned, cavity);
+        OS3D_GUARDED(status, "planar support shell difference", cut.Build(progress->Start()));
+        if (deadline->Fired() || !cut.IsDone() || cut.HasErrors() || cut.HasWarnings())
+            throw Standard_Failure("planar support shell difference failed");
+        const TopoDS_Shape result = closedSingle(cut.Shape());
+        const double after = result.IsNull() ? 0 : OS3DVolume(result);
+        if (result.IsNull() || !std::isfinite(after) || after <= volumeTolerance || after >= before - volumeTolerance
+            || fabs((after + cavityVolume) - before) > volumeTolerance) {
+            OS3DSetStatus(status, OCCTOpCodeKernelRefused, [NSString stringWithFormat:
+                @"planar support shell: source=%.17g cavity=%.17g wall=%.17g balance=%.17g budget=%.17g (%@)",
+                before, cavityVolume, after, after + cavityVolume - before, volumeTolerance, closedRefusal]); return nil;
+        }
+        auto ancestors = sourceLineage;
+        for (auto row : cavityLineage) { row.generated = true; ancestors.push_back(row); }
+        const auto lineage = OS3DSupportBooleanLineage(cut, result, ancestors);
+        if (history != nil) {
+            std::vector<OS3DHistEdge> rows;
+            for (const auto &row : lineage)
+                for (int32_t root : row.sourceFaces) rows.push_back({row.face, 0, 0, root, row.generated ? 2 : 1});
+            if (rows.size() > kOS3DMaxHistoryRows) throw Standard_Failure("planar support shell history budget exceeded");
+            OS3DFillHistory(history, rows, {source}, Handle(BRepTools_History)(), result, NO);
+        }
+        if (deadline->Fired()) throw Standard_Failure("planar support result deadline exceeded");
+        OCCTShape *output = [OCCTShape new]; output->_shape = result;
+        OS3DSetStatus(status, OCCTOpCodeOK, nil); return output;
+    } catch (Standard_Failure &failure) {
+        const char *message = failure.GetMessageString();
+        OS3DSetStatus(status, OCCTOpCodeKernelRefused,
+            message != nullptr && message[0] != 0 ? @(message) : @"planar-support shell native exception");
+        return nil;
+    } catch (...) {
+        OS3DSetStatus(status, OCCTOpCodeKernelRefused, @"planar-support shell exception"); return nil;
+    }
+}
+
 + (nullable OCCTShape *)regionShelledShape:(OCCTShape *)shape
                           openFaceIndices:(NSData *)openFaces
                                 thickness:(double)thickness
@@ -5401,6 +5622,15 @@ static void OS3DCollectShellHistory(BRepBuilderAPI_MakeShape *builder,
                 }
                 if (indexedStatus.detail.length > 0)
                     retryNote = [retryNote stringByAppendingFormat:@"; indexed join: %@", indexedStatus.detail];
+                // One proved special construction, after preserving every
+                // existing successful offset/join path. No curved support is
+                // offset here: only convex planar walls bound the cavity.
+                OCCTOpStatus *supportStatus = [OCCTOpStatus new];
+                OCCTShape *supported = OS3DPlanarSupportShell(sourceInput, sourceOpenFaces,
+                    thickness, supportStatus, history);
+                if (supported != nil) { OS3DSetStatus(status, OCCTOpCodeOK, nil); return supported; }
+                if (supportStatus.detail.length > 0)
+                    retryNote = [retryNote stringByAppendingFormat:@"; planar supports: %@", supportStatus.detail];
                 retryNote = [retryNote stringByAppendingFormat:@"; last candidate: %@", candidateRefusal];
                 // Say WHY: BRepOffset's own error code, so a refusal on a
                 // curved wall can be told apart from a wall eating the body.
@@ -6440,10 +6670,11 @@ static OCCTShape *OS3DSurfaceResult(const TopoDS_Shape &shape, bool solid,
     const NSInteger faceCount=OS3DFaceCount(shape);
     const double maxTolerance=OS3DMaxTolerance(shape);
     const double allowed = tolerance * 10;
-    // Decimal 1e-5 and binary (1e-6 * 10) differ by one representable
-    // double. Accept only that arithmetic rounding, not a wider geometry
-    // tolerance; the exact validity and closure gates remain unchanged.
-    const double roundedAllowed = std::nextafter(allowed, INFINITY);
+    // Offset/repair and decimal-to-binary multiplication can round at the
+    // same engineering bound. Account only for four relative machine
+    // epsilons (not a larger mm tolerance); validity/closure stay unchanged.
+    const double arithmeticSlack = 4.0 * std::numeric_limits<double>::epsilon() * std::abs(allowed);
+    const double roundedAllowed = allowed + arithmeticSlack;
     if (!valid || faceCount == 0 || !std::isfinite(maxTolerance) || maxTolerance > roundedAllowed) {
         OS3DSetStatus(status,OCCTOpCodeInvalidResult,[NSString stringWithFormat:
             @"Surface validation failed: valid=%d, faces=%ld, max_tolerance=%.17g mm, allowed=%.17g mm.",

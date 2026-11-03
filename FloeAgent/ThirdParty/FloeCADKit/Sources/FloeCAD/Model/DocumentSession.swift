@@ -44,6 +44,7 @@ final class DocumentSession {
     /// and adopted to the document's bodies after each apply; the read-only
     /// replays (`refreshEvalErrors`, `inputBody`) use a discarded copy.
     private var evalCache = EvalCache()
+    private(set) var lastSceneObjectFailure: CADSceneObjectError?
     private(set) var lastEvalErrors: [FeatureID: FeatureError] = [:]
     private(set) var lastReferenceErrors: [AssociativeReferenceKey: AssociativeReferenceError] = [:]
     private(set) var lastBodyWriters: [BodyID: FeatureID] = [:]
@@ -628,6 +629,8 @@ final class DocumentSession {
 
     func perform(_ command: DocumentCommand) {
         guard requireWritable() else { return }
+        lastSceneObjectFailure = CADSceneObjectCodec.deletionFailure(commands: [command], document: document)
+        guard lastSceneObjectFailure == nil else { return }
         if !isRebuilding {
             lastCurveEditFailure = nil
             let touched = SketchCurveCommandScope.sketchIDs(of: command)
@@ -862,6 +865,22 @@ final class DocumentSession {
         performRebuild(editedGraph, leadingCommands: appends + extra, title: title)
     }
 
+    /// X19 updates the same managed transform node, plus all scene/assembly
+    /// records, through the existing strict one-undo rebuild transaction.
+    func applySceneObjectEdit(appending nodes: [FeatureNode], editing edits: [EditFeatureCommand],
+                              extra: [DocumentCommand]) -> Bool {
+        guard document.features.rollbackIndex == nil else { return false }
+        var graph = document.features
+        for edit in edits {
+            guard let index = graph.index(of: edit.featureID) else { return false }
+            graph.nodes[index].kind = edit.after
+        }
+        graph.nodes.append(contentsOf: nodes)
+        let commands: [DocumentCommand] = edits.map { $0 as DocumentCommand }
+            + nodes.map { AppendFeatureCommand(node: $0, title: "Scene objects") as DocumentCommand } + extra
+        return performRebuild(graph, leadingCommands: commands, title: "Scene objects", strictValidation: true)
+    }
+
     /// Mint a body revision from the LIVE document's monotonic counter.
     ///
     /// A tool that creates a node-owned body outside `performRebuild` must take
@@ -1021,6 +1040,7 @@ final class DocumentSession {
         guard requireWritable(), !isRebuilding else { return false }
         lastRebuildRejection = [:]
         lastRejectedFeatureErrors = [:]
+        lastSceneObjectFailure = nil
         isRebuilding = true
         defer { isRebuilding = false }
 
@@ -1105,6 +1125,12 @@ final class DocumentSession {
                 return false
             }
         }
+        // Validate reference deletion before adopting any scratch revisions,
+        // caches or naming state. Rejected scene references cannot partially
+        // commit the replay or consume the old Undo/Redo.
+        lastSceneObjectFailure = CADSceneObjectCodec.deletionFailure(commands: plan.commands, document: document)
+        guard lastSceneObjectFailure == nil else { return false }
+        if strictValidation && Task.isCancelled { return false }
         let currentNamingRevisions = Dictionary(uniqueKeysWithValues:
             document.bodies.map { ($0.id, $0.meshRevision) })
         let namingBefore = NamingCacheState(

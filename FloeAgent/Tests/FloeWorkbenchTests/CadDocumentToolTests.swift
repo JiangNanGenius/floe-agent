@@ -2146,6 +2146,32 @@ struct CadNativeEditToolTests {
         }
     }
 
+    @Test("offline quality is explicit, bounded and never falls back to ordinary capture")
+    func offlineStillQualityContract() async throws {
+        let tool = CadDocumentTool(host: FakeCadHost())
+        func request(_ payload: [String: Any]) throws -> String {
+            let inner = String(decoding: try JSONSerialization.data(withJSONObject: payload), as: UTF8.self)
+            return String(decoding: try JSONSerialization.data(withJSONObject: ["action":"capture", "path":"part.floecad", "payload":inner]), as: UTF8.self)
+        }
+        for payload: [String: Any] in [
+            ["render_quality":"ultra"], ["render_quality":true],
+            ["render_quality":"detailed","width":2048,"height":2048],
+            ["render_quality":"standard","exposure_ev":true],
+            ["render_quality":"standard","saturation":2.1]
+        ] {
+            let args = try decode(request(payload))
+            #expect(throws: FloeError.self) { try tool.validate(args) }
+        }
+        let valid = try request(["render_quality":"detailed","width":1024,"height":768,"exposure_ev":0.5,"saturation":0.8])
+        try tool.validate(decode(valid))
+        do {
+            _ = try await execute(tool, valid, context: makeContext())
+            Issue.record("An old host with no offline renderer substituted its ordinary capture")
+        } catch let error as FloeError {
+            #expect(String(describing: error).contains("native_cad_still_renderer"))
+        }
+    }
+
     @Test("capture returns a real image artifact bound to revision/change count")
     func captureReturnsArtifact() async throws {
         let host = FakeCadHost()

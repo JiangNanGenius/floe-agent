@@ -1300,6 +1300,9 @@ targets:
       - path: ThirdParty/FloeCADKit/Tests/FloeCADKitTests/CADMaterialCoreTests.swift
       - path: ThirdParty/FloeCADKit/Tests/FloeCADKitTests/CADTextureImportTests.swift
       - path: ThirdParty/FloeCADKit/Tests/FloeCADKitTests/CADSceneLightingTests.swift
+      - path: ThirdParty/FloeCADKit/Tests/FloeCADKitTests/CADStillRenderTests.swift
+      - path: ThirdParty/FloeCADKit/Tests/FloeCADKitTests/CADTexturePaintBakeTests.swift
+      - path: ThirdParty/FloeCADKit/Tests/FloeCADKitTests/CADSceneObjectHierarchyTests.swift
       - path: ThirdParty/FloeCADKit/Tests/FloeCADKitTests/CADMaterialUVConsistencyTests.swift
       - path: ThirdParty/FloeCADKit/Tests/FloeCADKitTests/CADUVAuthoringTests.swift
       - path: ThirdParty/FloeCADKit/Tests/FloeCADKitTests/CADMaterialRenderWitnessTests.swift

@@ -345,6 +345,14 @@ struct CADWorkbenchToolsPanel: View {
         NavigationStack {
             ScrollView {
                 VStack(alignment: .leading, spacing: 12) {
+                    NavigationLink {
+                        ScrollView { CADSceneObjectsPanel(document: document, viewModel: viewModel).padding(16) }
+                            .navigationTitle(FloeCADStrings.text("cad.scene.objects", "Objects"))
+                    } label: {
+                        Label(FloeCADStrings.text("cad.scene.objects", "Objects"), systemImage: "list.bullet.indent")
+                            .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+                    }
+                    .accessibilityIdentifier("CADSceneObjectsOpen")
                     Picker("", selection: $mode) {
                         Text(FloeCADStrings.label("cad.workbench.panel.assembly", "Assembly")).tag(0)
                         Text(FloeCADStrings.label("cad.workbench.panel.drawing", "Drawings")).tag(1)

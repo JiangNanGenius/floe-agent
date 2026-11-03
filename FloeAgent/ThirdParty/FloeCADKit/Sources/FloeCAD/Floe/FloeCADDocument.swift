@@ -218,6 +218,7 @@ public final class FloeCADDocument {
         CADDrawingService.cancelProjection(for: self)
         CADMeshService.cancelActiveOperation(for: self)
         CADUVService.cancel(for: self)
+        CADTexturePaintService.cancel(for:self)
         #if canImport(AVFoundation) && canImport(RealityKit) && canImport(UIKit)
         // A service-owned animation export keeps the document alive; closing
         // it must cancel the render lease and remove its staging directory

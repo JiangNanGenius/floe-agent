@@ -864,6 +864,17 @@ final class CADMaterialDraftModel {
         update { $0.uvMapping = mapping }
     }
 
+    /// The child tool edits the actual applied body, not this inspector draft.
+    /// Entry requires a clean draft; on return the parent must adopt the new
+    /// snapshot so Apply cannot silently reapply the pre-paint image.
+    func refreshAfterTexturePainting() {
+        guard !hasUnsavedChanges,!target.isFaceTarget,target.bodyIDs.count==1,
+              let id=target.bodyIDs.first,let body=document.session.document.bodies.first(where:{$0.id.raw==id}) else { return }
+        let definition=CADMaterialDefinition(spec:body.material ?? .default)
+        select(definition,origin:.new)
+        _=refreshTargetBinding();refreshStaleBindings()
+    }
+
     // MARK: Selection / library
 
     func select(_ definition: CADMaterialDefinition, origin: CADMaterialOrigin) {

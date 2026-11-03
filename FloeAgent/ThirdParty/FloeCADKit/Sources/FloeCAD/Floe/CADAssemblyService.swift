@@ -5452,6 +5452,10 @@ public final class CADAssemblyService {
             let data = try assembly.encoded()
             document.session.perform(SetAssemblyDataCommand(
                 before: document.session.document.assemblyData, after: data))
+            guard document.session.document.assemblyData == data else {
+                let error = document.session.lastSceneObjectFailure
+                return fail(error?.rawValue ?? "write_refused", error?.localizedDescription ?? "The assembly edit was refused.")
+            }
             return nil
         } catch {
             return fail("encode_failed",

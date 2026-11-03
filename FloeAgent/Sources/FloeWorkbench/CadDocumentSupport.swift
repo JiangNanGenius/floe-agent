@@ -286,6 +286,7 @@ public enum CadNativeEditActions {
         "libraryImport", "libraryList", "environment.read", "environment.update", "environment.import", "undo", "redo",
         "uv.read", "uv.seams", "uv.unwrap", "uv.pack", "uv.transform", "uv.createSet",
         "uv.activateSet", "uv.removeSet", "uv.status", "uv.cancel",
+        "paint.read", "paint.stroke", "paint.bakeAO", "paint.status", "paint.cancel",
     ]
     /// Same parameters route; the engine validates geometry and transaction
     /// ownership. Documentation and examples use the existing complete/paged
@@ -338,11 +339,12 @@ public enum CadNativeEditActions {
     ]
     /// X22 persisted section / measurement overlay. `get` is read-only; every
     /// other action is one existing sceneSettings undoable edit.
-    public static let sceneReads: Set<String> = ["get"]
+    public static let sceneReads: Set<String> = ["get", "objects", "object.resources"]
     public static let sceneMutations: Set<String> = [
         "setSection", "setSectionEnabled", "flipSection", "removeSection",
         "setMeasurementsVisible", "addMeasurement", "removeMeasurement",
         "clearMeasurements", "undo", "redo",
+        "object.createGroup", "object.reparent", "object.transform", "object.rename", "object.remove",
     ]
     public static let scene: Set<String> = sceneReads.union(sceneMutations)
 

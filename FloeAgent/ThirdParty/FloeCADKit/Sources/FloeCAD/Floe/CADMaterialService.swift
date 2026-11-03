@@ -25,7 +25,7 @@ public final class CADMaterialService {
         "list", "read", "create", "update", "remove", "apply", "applyFaces",
         "reassignFaces", "mapping", "textures", "unresolved", "libraryExport",
         "libraryImport", "libraryList", "environment.read", "environment.update", "environment.import", "undo", "redo",
-    ] + CADUVService.actions
+    ] + CADUVService.actions + CADTexturePaintService.actions
 
     /// Applied appearances are complete copies, not live library links. This
     /// is reported explicitly so an Agent/user can tell a copy from a linked
@@ -49,11 +49,17 @@ public final class CADMaterialService {
     /// all existing material operations keep their current command path.
     public func handleAsync(action: String, args: [String: Any]) async -> [String: Any] {
         if action.hasPrefix("uv.") { return await CADUVService(document: document).handle(action: action, args: args) }
+        if action.hasPrefix("paint.") { return await CADTexturePaintService(document:document).handle(action:action,args:args) }
         if action == "environment.import" { return await importEnvironment(args) }
         return handle(action: action, args: args)
     }
 
     public func handle(action: String, args: [String: Any]) -> [String: Any] {
+        if action.hasPrefix("paint.") {
+            if let refusal=CADServiceOperations.readOnlyRefusal(document:document,kind:"material",action:action) { return refusal }
+            if action=="paint.status" || action=="paint.cancel" { return CADTexturePaintService(document:document).control(action:action) }
+            return Self.fail("async_required","Use the asynchronous material service for texture painting and baking.")
+        }
         if action == "environment.import" { return Self.fail("async_required", "Use the asynchronous material service to import an environment image.") }
         if action.hasPrefix("uv.") {
             if action == "uv.status" || action == "uv.cancel" { return CADUVService(document: document).control(action: action) }

@@ -149,6 +149,9 @@ extension FloeCADDocument {
     /// from the saved assembly placements.
     public func sceneSummaryJSON() -> [String: Any] {
         var summary = sceneSnapshot().summaryJSON
+        let hierarchy = CADSceneObjectService(document: self).handle(action: "objects", args: [:])
+        summary["objects"] = hierarchy["objects"] ?? []
+        summary["hierarchy_available"] = hierarchy["ok"] as? Bool == true
         guard let preview = CADExplodedViewPreview.current(for: session) else {
             return summary
         }
@@ -193,7 +196,7 @@ extension FloeCADDocument {
             return false
         }
         session.perform(SetSceneSettingsDataCommand(before: before, after: after))
-        return true
+        return session.document.sceneSettingsData == after
     }
 
     /// Immutable value snapshot from the live document. CoW mesh arrays make

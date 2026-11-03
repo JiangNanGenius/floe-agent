@@ -274,6 +274,7 @@ extension FloeCADDocument {
         if after == before { return }
         session.perform(SetSceneSettingsDataCommand(before: before, after: after))
         guard session.document.sceneSettingsData == after else {
+            if let failure = session.lastSceneObjectFailure { throw CADCameraBookmarkError.blocked(failure.localizedDescription) }
             throw CADCameraBookmarkError.readOnly
         }
     }

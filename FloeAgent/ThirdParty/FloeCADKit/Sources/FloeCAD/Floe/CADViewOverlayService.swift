@@ -23,16 +23,16 @@ public final class CADViewOverlayService {
         "get", "setSection", "setSectionEnabled", "flipSection",
         "removeSection", "setMeasurementsVisible", "addMeasurement",
         "removeMeasurement", "clearMeasurements", "undo", "redo",
-    ]
+    ] + CADSceneObjectService.reads.sorted() + CADSceneObjectService.mutations.sorted()
 
     /// Actions that write the document. `get` and the no-op success paths are
     /// read-only. Kept here so the host/tool can pre-classify without parsing
     /// the service implementation.
-    public static let mutationActions: Set<String> = [
+    public static let mutationActions: Set<String> = Set([
         "setSection", "setSectionEnabled", "flipSection", "removeSection",
         "setMeasurementsVisible", "addMeasurement", "removeMeasurement",
         "clearMeasurements", "undo", "redo",
-    ]
+    ]).union(CADSceneObjectService.mutations)
 
     private let document: FloeCADDocument
 
@@ -53,6 +53,9 @@ public final class CADViewOverlayService {
             return refusal
         }
         if let failure = revisionPinFailure(args) { return failure }
+        if CADSceneObjectService.reads.contains(action) || CADSceneObjectService.mutations.contains(action) {
+            return CADSceneObjectService(document: document).handle(action: action, args: args)
+        }
         switch action {
         case "get": return get(args)
         case "setSection": return setSection(args)

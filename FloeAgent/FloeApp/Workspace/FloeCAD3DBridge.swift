@@ -1592,6 +1592,20 @@ final class FloeCAD3DBridge {
             camera: document.activeSavedCamera)
     }
 
+    func renderStill(at url: URL, requestJSON: String, expectedRevision: Int?) async throws -> CadViewportCapture {
+        let document = try await document(at: url)
+        if let expectedRevision, document.revision != expectedRevision {
+            throw FloeError.validationFailed("revision_mismatch: Re-read the document before rendering.")
+        }
+        let options = try JSONDecoder().decode(CADStillRenderSettings.self, from: Data(requestJSON.utf8))
+        let output = try await CADStillRenderService.shared.render(document: document, settings: options)
+        return CadViewportCapture(pngData: output.png, width: output.width, height: output.height,
+            revision: Int64(output.revision), changeCount: document.liveChangeCount,
+            contentSHA256: output.sourceSHA256, sha256: output.imageSHA256,
+            renderer: "presentation-offline",
+            note: "Actual offline RealityKit raster, \(output.quality.rawValue), source \(output.sourceWidth)x\(output.sourceHeight); linear-light exposure and saturation; display-sRGB lossless PNG. Not HDR or path tracing. Numeric overlay labels are not drawn.")
+    }
+
     /// Actual animation frame from the live Present or the service render
     /// host. No engineering-viewport fallback: an animation frame must reflect
     /// the native animated scene or the call fails.

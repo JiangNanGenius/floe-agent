@@ -46,6 +46,7 @@ nonisolated enum CADDocumentFormat {
     /// Root-coordinated unreleased floor; only actual normal-offset links raise it.
     static let sketchCurveEditVersion = 7
     static let sceneLightingVersion = 7
+    static let sceneObjectHierarchyVersion = 7
     static let standardThreadVersion = 7
     /// Shared unreleased format-7 floor. A pre-contract writer ignores an
     /// edge's qualifier and would reinterpret it as an ordinal. Raise only
@@ -178,7 +179,8 @@ nonisolated enum CADDocumentFormat {
         if document.features.nodes.contains(where: { if case .mechanical = $0.kind { return true }; return false }) {
             required = max(required, specialistMechanicalVersion)
         }
-        required = max(required, sceneLightingIntent(document.sceneSettingsData).version)
+        required = max(required, max(sceneLightingIntent(document.sceneSettingsData).version,
+                       sceneObjectHierarchyIntent(document.sceneSettingsData).version))
         if document.features.nodes.contains(where: {
             if case let .pattern(_, spec) = $0.kind { return spec.kind == .curve || spec.featureSeed != nil }; return false
         }) { required = max(required, advancedPatternVersion) }
@@ -869,7 +871,9 @@ nonisolated enum CADDocumentFormat {
         var result = Assessment()
         let lighting = sceneLightingIntent(sceneSettings)
         result.requiredVersion = max(result.requiredVersion, lighting.version)
-        result.opaqueSceneAppearance = lighting.opaque
+        let hierarchy = sceneObjectHierarchyIntent(sceneSettings)
+        result.requiredVersion = max(result.requiredVersion, hierarchy.version)
+        result.opaqueSceneAppearance = lighting.opaque || hierarchy.opaque
         if assemblyRequiresNestedFormat(assembly) {
             result.requiredVersion = max(result.requiredVersion, nestedAssemblyVersion)
         }
@@ -1456,6 +1460,15 @@ nonisolated enum CADDocumentFormat {
                    features: record.features, bodies: record.bodies, assembly: record.assembly,
                    drawings: record.drawings, animation: record.animation,
                    sceneSettings: record.sceneSettings)
+    }
+
+    /// Older scene-settings writers would silently drop hierarchy references.
+    /// Raise the existing coordinated unreleased floor only for actual intent;
+    /// unknown/future/malformed hierarchy bytes remain opaque and read-only.
+    static func sceneObjectHierarchyIntent(_ data: Data?) -> (version: Int, opaque: Bool) {
+        guard let data, let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let graph = root["sceneObjects"], !(graph is NSNull) else { return (legacyVersion, false) }
+        return (sceneObjectHierarchyVersion, (try? CADSceneObjectCodec.hierarchy(data)) == nil)
     }
 
     /// Real authored resources/lights require the coordinated unreleased floor;

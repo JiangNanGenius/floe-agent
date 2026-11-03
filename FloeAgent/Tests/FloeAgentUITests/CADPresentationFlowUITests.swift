@@ -106,6 +106,59 @@ final class CADBackgroundOwnershipFlowUITests: XCTestCase {
 
 @MainActor
 final class CADPresentationFlowUITests: XCTestCase {
+    func testOfflineStillUsesNativeOptionsAndRendersPreview() throws {
+        continueAfterFailure = false
+        XCUIDevice.shared.orientation = .landscapeLeft
+        let app = XCUIApplication()
+        app.launchArguments = ["-AppleLanguages", "(en)", "-AppleLocale", "en_US",
+                               "-ui-testing", "-ui-testing-ipad", "--ui-test-cad-fixture"]
+        app.launch(); defer { app.terminate() }
+        XCTAssertTrue(app.buttons["HistoryButton"].waitForExistence(timeout: 60))
+        app.segmentedControls["CADWorkbenchMode"].buttons["Present"].tap()
+        let export = app.buttons["CADPresentExport"]
+        XCTAssertTrue(export.waitForExistence(timeout: 30)); export.tap()
+        app.buttons["CADStillRenderOpen"].tap()
+        let start = app.buttons["CADStillRenderStart"]
+        XCTAssertTrue(start.waitForExistence(timeout: 10))
+        snapshotFaceFlow("X18 native still-render settings before generation")
+        start.tap()
+        let preview = app.images["CADStillRenderPreview"]
+        XCTAssertTrue(preview.waitForExistence(timeout: 60), app.debugDescription)
+        XCTAssertTrue(app.buttons["CADStillRenderSave"].exists)
+        snapshotFaceFlow("X18 actual offline-rendered preview and save action")
+        app.navigationBars.buttons["Done"].tap()
+        XCTAssertTrue(export.waitForExistence(timeout: 10))
+    }
+
+    func testSceneObjectNativeGroupPersistsAfterReopen() throws {
+        continueAfterFailure = false
+        XCUIDevice.shared.orientation = .landscapeLeft
+        let app = XCUIApplication()
+        let base = ["-AppleLanguages", "(en)", "-AppleLocale", "en_US",
+                    "-ui-testing", "-ui-testing-ipad", "--ui-test-cad-fixture"]
+        app.launchArguments = base; app.launch(); defer { app.terminate() }
+        func openObjects() {
+            XCTAssertTrue(app.buttons["CADWorkbenchToolsButton"].waitForExistence(timeout: 60))
+            app.buttons["CADWorkbenchToolsButton"].tap()
+            let link = app.buttons["CADSceneObjectsOpen"]
+            XCTAssertTrue(link.waitForExistence(timeout: 15)); link.tap()
+            XCTAssertTrue(app.buttons["New group"].waitForExistence(timeout: 15))
+        }
+        openObjects()
+        app.buttons["New group"].tap()
+        let alert = app.alerts["New group"]
+        XCTAssertTrue(alert.waitForExistence(timeout: 5)); alert.buttons["Create"].tap()
+        XCTAssertTrue(app.staticTexts["Group"].firstMatch.waitForExistence(timeout: 15))
+        snapshotFaceFlow("X19 native scene group in the shared object hierarchy")
+        // The panel saves through the same real document writer; a fresh
+        // process must read the group from that package, not recreate it.
+        app.buttons["Refresh"].tap()
+        app.terminate(); app.launchArguments = base + ["--ui-test-cad-reopen"]; app.launch()
+        openObjects()
+        XCTAssertTrue(app.staticTexts["Group"].firstMatch.waitForExistence(timeout: 15))
+        snapshotFaceFlow("X19 reopened package retains the same scene group")
+    }
+
     func testNamedSceneLightNativeInspectorApplyCancelAndUndo() throws {
         continueAfterFailure = false
         XCUIDevice.shared.orientation = .landscapeLeft
