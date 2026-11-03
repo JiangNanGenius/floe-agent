@@ -66,6 +66,13 @@ internal fun CreativeDestination(
     LaunchedEffect(application, approvedReturn?.requestID) {
         val request = approvedReturn ?: return@LaunchedEffect
         val app = application ?: return@LaunchedEffect
+        if (request.targetSource == GenerationReturnNavigation.Source.EXPORT &&
+            com.floe.android.host.notification.resolveExportReturn(request.target.token,
+                app.mediaWorkbench.currentEpoch(), com.floe.android.feature.canvas.CreativeAvailability.Available) !=
+            com.floe.android.host.creative.GenerationReturnDecision.Authorized(request.target)) {
+            GenerationReturnNavigation.consumeApproved(request.requestID)
+            return@LaunchedEffect
+        }
         tab = 1
         val session = CreativeUiHost.mediaLibrarySession(app)
         session.start()

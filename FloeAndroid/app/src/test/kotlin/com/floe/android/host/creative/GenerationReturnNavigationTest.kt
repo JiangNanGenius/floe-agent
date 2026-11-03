@@ -437,4 +437,55 @@ class GenerationReturnNavigationTest {
                 request.copy(projectID = "p".repeat(129))),
         )
     }
+    @Test
+    fun `export notification uses the same one shot media return owner`() {
+        assertTrue(GenerationReturnNavigation.submitExportFromIntent(
+            com.floe.android.core.workbenchmedia.export.MediaExportReturns.ACTION,
+            "app", "app", requestID, opaqueToken))
+        assertEquals(GenerationReturnNavigation.Source.EXPORT, GenerationReturnNavigation.pending.value!!.source)
+        assertFalse(GenerationReturnNavigation.submitExportFromIntent(
+            com.floe.android.core.workbenchmedia.export.MediaExportReturns.ACTION,
+            "app", "app", requestID, opaqueToken))
+    }
+    @Test
+    fun `export action rejects a foreign component and path shaped identity`() {
+        assertFalse(GenerationReturnNavigation.submitExportFromIntent(
+            com.floe.android.core.workbenchmedia.export.MediaExportReturns.ACTION,
+            "foreign", "app", requestID, opaqueToken))
+        assertFalse(GenerationReturnNavigation.submitExportFromIntent(
+            com.floe.android.core.workbenchmedia.export.MediaExportReturns.ACTION,
+            "app", "app", requestID, "/files/project"))
+        assertNull(GenerationReturnNavigation.pending.value)
+    }
+    @Test
+    fun `new export tap supersedes unconsumed generation approval and shares ordering`() {
+        assertTrue(GenerationReturnNavigation.submit(requestID, opaqueToken))
+        assertTrue(GenerationReturnNavigation.approve(requestID, target()))
+        val older = GenerationReturnNavigation.approved.value!!.sequence
+        assertTrue(GenerationReturnNavigation.submitExportFromIntent(
+            com.floe.android.core.workbenchmedia.export.MediaExportReturns.ACTION,
+            "app", "app", secondRequestID, opaqueToken))
+        assertNull(GenerationReturnNavigation.approved.value)
+        assertTrue(GenerationReturnNavigation.approve(secondRequestID, target()))
+        val newer = GenerationReturnNavigation.approved.value!!
+        assertTrue(newer.sequence > older)
+        assertEquals(GenerationReturnNavigation.Source.EXPORT, newer.targetSource)
+    }
+    @Test
+    fun `new generation tap supersedes unconsumed export approval`() {
+        assertTrue(GenerationReturnNavigation.submitExportFromIntent(
+            com.floe.android.core.workbenchmedia.export.MediaExportReturns.ACTION,
+            "app", "app", requestID, opaqueToken))
+        assertTrue(GenerationReturnNavigation.approve(requestID, target()))
+        assertTrue(GenerationReturnNavigation.submit(secondRequestID, opaqueToken))
+        assertNull(GenerationReturnNavigation.approved.value)
+        assertFalse(GenerationReturnNavigation.approve(requestID, target()))
+        assertEquals(GenerationReturnNavigation.Source.GENERATION, GenerationReturnNavigation.pending.value!!.source)
+    }
+    @Test
+    fun `unknown or cold process export refuses before feature navigation`() {
+        assertEquals(GenerationReturnDecision.Rejected(GenerationReturnRejection.UNKNOWN_TOKEN),
+            com.floe.android.host.notification.resolveExportReturn(opaqueToken, 42L, CreativeAvailability.Available))
+    }
+
 }

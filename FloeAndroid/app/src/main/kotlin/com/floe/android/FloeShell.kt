@@ -689,6 +689,27 @@ private fun FloeShellContent(
             navigateTo(target, openSchedules = false)
         }
 
+        // Aggregate notifications carry no invented task association. Use
+        // the existing route authority, including the temporary-chat fence.
+        val ownedNotification by com.floe.android.host.notification.OwnedNotificationNavigation.pending.collectAsState()
+        LaunchedEffect(ownedNotification?.id, consumesExternalRoutes) {
+            if (!consumesExternalRoutes) return@LaunchedEffect
+            val request = ownedNotification ?: return@LaunchedEffect
+            val navigation = com.floe.android.host.notification.OwnedNotificationNavigation
+            if (!navigation.isCurrent(request)) { navigation.dismiss(request.id); return@LaunchedEffect }
+            navigateTo(
+                target = SidebarSelection.Workbench(WorkbenchSelection.OVERVIEW),
+                openSchedules = false,
+                mayCommit = { shellLifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED) && navigation.isCurrent(request) },
+                onCommitted = {
+                    settingsVisible = false
+                    previewVisible = false
+                    navigation.dismiss(request.id)
+                },
+                onRefused = { navigation.dismiss(request.id) },
+            )
+        }
+
         // C06 local reminder route. This is the shell's ONE calendar route
         // authority: the destination re-reads the exact todo and never opens a
         // different task/root. A temporary-chat fence refusal dismisses the
@@ -790,7 +811,11 @@ private fun FloeShellContent(
                 null
             }
             if (!shellLifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED)) return@LaunchedEffect
-            val decision = GenerationForegroundOwner.resolveReturn(
+            val decision = if (request.source == GenerationReturnNavigation.Source.EXPORT) {
+                com.floe.android.host.notification.resolveExportReturn(
+                    request.token, status?.boundEpoch,
+                    status?.availability ?: CreativeAvailability.Unavailable)
+            } else GenerationForegroundOwner.resolveReturn(
                 token = request.token,
                 nowElapsedMillis = android.os.SystemClock.elapsedRealtime(),
                 liveEpoch = status?.boundEpoch,
@@ -829,7 +854,10 @@ private fun FloeShellContent(
                             mayCommit = {
                                 shellLifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED) &&
                                     GenerationReturnNavigation.pending.value?.requestID ==
-                                    request.requestID
+                                    request.requestID &&
+                                    (request.source != GenerationReturnNavigation.Source.EXPORT ||
+                                        com.floe.android.host.notification.resolveExportReturn(request.token,
+                                            application?.mediaWorkbench?.currentEpoch(), CreativeAvailability.Available) == decision)
                             },
                             onCommitted = {
                                 // Close transient overlays only after the real

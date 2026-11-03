@@ -66,6 +66,7 @@ internal class ExportJob(
 ) {
     val kind: MediaExportKind =
         if (request is MediaExportRequest.Video) MediaExportKind.VIDEO else MediaExportKind.IMAGE
+    val returnToken: String = UUID.randomUUID().toString()
     val attemptID: String get() = binding.attemptID
     val control = RenderControl()
     val cancelRequested = AtomicBoolean(false)
@@ -622,6 +623,17 @@ internal class ExportRuntime(
     }
 
     fun job(jobID: String): ExportJob? = jobs[jobID]
+
+    /** No disk lookup or first-project fallback: only the actual live owner. */
+    fun resolveReturn(token: String): MediaExportReturnTarget? {
+        val job = jobs.values.firstOrNull { it.returnToken == token } ?: return null
+        if (job.drained || job.epoch <= 0L || job.context.projectID.isBlank()) return null
+        val live = runCatching {
+            epochOwner.currentEpoch() == job.epoch && epochOwner.isEpochLive(job.epoch)
+        }.getOrDefault(false)
+        if (!live) return null
+        return MediaExportReturnTarget(job.returnToken, job.jobID, job.epoch, job.context)
+    }
 
     fun requestCancel(jobID: String) {
         val job = jobs[jobID] ?: return

@@ -218,7 +218,7 @@ class RunForegroundService : Service() {
             .setContentText(getString(copyResFor(key)))
             .setOngoing(true)
             .setOnlyAlertOnce(true)
-            .setContentIntent(openAppIntent())
+            .setContentIntent(openAppIntent(stamp))
             .addAction(
                 Notification.Action.Builder(
                     null,
@@ -237,12 +237,16 @@ class RunForegroundService : Service() {
         NotificationCopy.Key.MULTIPLE -> R.string.floe_run_foreground_multiple
     }
 
-    private fun openAppIntent(): PendingIntent? = try {
+    private fun openAppIntent(stamp: Long): PendingIntent? = try {
         PendingIntent.getActivity(
             this,
             0,
-            Intent().setClassName(packageName, MAIN_ACTIVITY),
-            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
+            Intent().setClassName(packageName, MAIN_ACTIVITY)
+                .setAction(RunNotificationReturn.ACTION)
+                .setData(android.net.Uri.parse("floe-notification://runs/" + stamp))
+                .putExtra(RunNotificationReturn.EXTRA_REQUEST_ID, java.util.UUID.randomUUID().toString())
+                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP),
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_CANCEL_CURRENT,
         )
     } catch (failure: Exception) {
         null // Notification stays usable without a content intent.

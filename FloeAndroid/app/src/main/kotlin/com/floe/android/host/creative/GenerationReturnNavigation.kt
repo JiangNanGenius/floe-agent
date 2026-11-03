@@ -219,10 +219,12 @@ object GenerationReturnNavigation {
     const val CLAIM_TTL_MILLIS: Long = 6L * 60L * 60L * 1000L
     private const val MAX_HANDLED_REQUESTS = 32
 
-    data class PendingRequest(val requestID: String, val token: String)
+    enum class Source { GENERATION, EXPORT }
+    data class PendingRequest(val requestID: String, val token: String, val source: Source = Source.GENERATION)
 
     data class ApprovedRequest(
         val requestID: String,
+        val targetSource: Source = Source.GENERATION,
         val sequence: Long,
         val target: GenerationReturnTarget,
     )
@@ -234,8 +236,8 @@ object GenerationReturnNavigation {
     val approved: StateFlow<ApprovedRequest?> = approvedFlow.asStateFlow()
 
     private val lock = Any()
-    private val handled = LinkedHashSet<String>()
     private var nextSequence = 0L
+    private val handled = LinkedHashSet<String>()
 
     /**
      * MainActivity-side admission. The action and explicit same-app component
@@ -256,12 +258,19 @@ object GenerationReturnNavigation {
         return submit(requestID, token)
     }
 
+    fun submitExportFromIntent(action: String?, componentPackage: String?, ownPackage: String,
+        requestID: String?, token: String?): Boolean {
+        if (action != com.floe.android.core.workbenchmedia.export.MediaExportReturns.ACTION ||
+            componentPackage.isNullOrEmpty() || componentPackage != ownPackage) return false
+        return submit(requestID, token, Source.EXPORT)
+    }
+
     /**
      * Records one opaque return request. Duplicate delivery of the same
      * request id is a no-op (rotation/Activity recreation). A genuinely newer
      * request id supersedes an unconsumed older request.
      */
-    fun submit(requestID: String?, token: String?): Boolean {
+    fun submit(requestID: String?, token: String?, source: Source = Source.GENERATION): Boolean {
         val id = requestID?.takeIf { isOpaqueGenerationToken(it) } ?: return false
         val opaque = token?.takeIf { isOpaqueGenerationToken(it) } ?: return false
         synchronized(lock) {
@@ -273,7 +282,7 @@ object GenerationReturnNavigation {
             // has not been consumed yet, so an older project cannot open
             // after this newer explicit action.
             approvedFlow.value = null
-            pendingFlow.value = PendingRequest(id, opaque)
+            pendingFlow.value = PendingRequest(id, opaque, source)
             return true
         }
     }
@@ -308,10 +317,10 @@ object GenerationReturnNavigation {
             if (current.token != target.token) return false
             pendingFlow.value = null
             markHandled(requestID)
-            nextSequence += 1
             approvedFlow.value = ApprovedRequest(
                 requestID = requestID,
-                sequence = nextSequence,
+                targetSource = current.source,
+                sequence = ++nextSequence,
                 target = target,
             )
             return true

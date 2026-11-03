@@ -69,6 +69,7 @@ class MainActivity : ComponentActivity() {
         // context + current native bound epoch. A rotation re-delivery of the
         // SAME request id is ignored by the one-shot owner.
         admitGenerationReturn(intent)
+        admitOwnedNotification(intent)
         PacketCaptureNavigation.submitFromIntent(intent, packageName)
         admitCalendarRoute(intent)
         lifecycleScope.launch {
@@ -103,6 +104,7 @@ class MainActivity : ComponentActivity() {
         setIntent(intent)
         C07EntryFlowHost.admit(this, intent)
         admitGenerationReturn(intent)
+        admitOwnedNotification(intent)
         PacketCaptureNavigation.submitFromIntent(intent, packageName)
         admitCalendarRoute(intent)
     }
@@ -112,6 +114,14 @@ class MainActivity : ComponentActivity() {
      * component are checked, and only opaque UUID extras are forwarded. No
      * project id, path or root is read from it.
      */
+    private fun admitOwnedNotification(intent: Intent?) {
+        val incoming = intent ?: return
+        com.floe.android.host.notification.OwnedNotificationNavigation.admit(
+            incoming.action, incoming.component?.packageName, packageName,
+            incoming.getStringExtra(com.floe.android.runlifecycle.RunNotificationReturn.EXTRA_REQUEST_ID),
+        )
+    }
+
     private fun admitGenerationReturn(intent: Intent?) {
         val incoming = intent ?: return
         GenerationReturnNavigation.submitFromIntent(
@@ -122,6 +132,11 @@ class MainActivity : ComponentActivity() {
                 GenerationReturnNavigation.EXTRA_RETURN_REQUEST_ID),
             token = incoming.getStringExtra(
                 GenerationReturnNavigation.EXTRA_RETURN_TOKEN),
+        )
+        GenerationReturnNavigation.submitExportFromIntent(
+            incoming.action, incoming.component?.packageName, packageName,
+            incoming.getStringExtra(com.floe.android.core.workbenchmedia.export.MediaExportReturns.EXTRA_REQUEST_ID),
+            incoming.getStringExtra(com.floe.android.core.workbenchmedia.export.MediaExportReturns.EXTRA_TOKEN),
         )
     }
 

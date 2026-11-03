@@ -6,7 +6,7 @@
     "fixedIOSDonor": "a59b4d4005f616c611df67fab7620e9853c525b9"
   },
   "status": "Live source closure index; original IDs/statuses retained; scope replacement and source/runtime acceptance are separate",
-  "sourceCheckpoint": "5bdf1f680d375d3d728ca10d210a825f65c448c5",
+  "sourceCheckpoint": "057eca9ba9e935eb5856adfd44f28d23ba6f5e7f",
   "operationCount": 183,
   "noNewReleaseBeforeClosure": true,
   "operations": [
@@ -2837,8 +2837,11 @@
       "originalOperation": "Notification actions view/stop with task deep link",
       "originalStatus": "planned",
       "required": true,
-      "codeReview": "pending per-operation UI/service/runtime-storage/failure reconciliation",
-      "qualification": "not newly verified this round"
+      "codeReview": "present-source-connected; actual live media export return, existing ordered media coordinator and task-center route connected through original shell fence; exact generation/core stop policy retained",
+      "qualification": "Full/Play Kotlin compiled; 33 targeted JVM tests passed with no skipped cases; no same-APK notification device pass.",
+      "previousCodeReviews": [
+        "pending per-operation UI/service/runtime-storage/failure reconciliation"
+      ]
     },
     {
       "id": "NTF-LOCK-REDACT",
@@ -5684,6 +5687,12 @@
       "hostTests": 45,
       "deviceVerified": false,
       "newAPK": false
+    },
+    "notificationReturn20261103": {
+      "proof": "planning/NOTIFICATION_RETURN_SOURCE_20261103.json",
+      "compiled": true,
+      "hostTests": 33,
+      "deviceVerified": false
     }
   },
   "implementationBatches": {

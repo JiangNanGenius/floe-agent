@@ -14,6 +14,7 @@ import android.os.Build
 import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
+import com.floe.android.core.workbenchmedia.export.MediaExportReturns
 import com.floe.android.core.workbenchmedia.export.ExportJob
 import com.floe.android.core.workbenchmedia.R
 import com.floe.android.core.workbenchmedia.export.ExportRuntimeHolder
@@ -196,7 +197,7 @@ class MediaExportService : Service() {
             .setOnlyAlertOnce(true)
             .setOngoing(!terminal(status.state))
             .setAutoCancel(false)
-            .setContentIntent(returnIntent())
+            .setContentIntent(returnIntent(status.jobID))
         if (progress != null) {
             builder.setProgress(1000, (progress * 1000).toInt(), false)
         } else {
@@ -220,14 +221,19 @@ class MediaExportService : Service() {
         return builder.build()
     }
 
-    private fun returnIntent(): PendingIntent? {
+    private fun returnIntent(jobID: String): PendingIntent? {
+        val job = ExportRuntimeHolder.current()?.job(jobID) ?: return null
         val launch = packageManager.getLaunchIntentForPackage(packageName) ?: return null
+        launch.action = MediaExportReturns.ACTION
+        launch.data = android.net.Uri.parse("floe-notification://media/" + job.returnToken)
+        launch.putExtra(MediaExportReturns.EXTRA_TOKEN, job.returnToken)
+        launch.putExtra(MediaExportReturns.EXTRA_REQUEST_ID, java.util.UUID.randomUUID().toString())
         launch.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP)
         return PendingIntent.getActivity(
             this,
             0,
             launch,
-            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_CANCEL_CURRENT,
         )
     }
 
