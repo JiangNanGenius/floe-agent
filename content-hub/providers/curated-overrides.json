@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
-  "revision": "2026-10-31.1",
-  "reviewedAt": "2026-10-31T00:00:00Z",
+  "revision": "2026-11-04.1",
+  "reviewedAt": "2026-11-04T00:00:00Z",
   "upstreamPin": {
     "project": "models.dev",
     "url": "https://models.dev",
@@ -74,7 +74,7 @@
   },
   "providerPatches": {
     "alibaba": {
-      "name": "Alibaba Cloud · Pay as you go",
+      "name": "Alibaba Cloud",
       "serviceOffers": [
         {
           "role": "image",
@@ -161,7 +161,7 @@
       }
     },
     "volcengine": {
-      "name": "Volcengine Ark · Pay as you go"
+      "name": "Volcengine Ark"
     }
   },
   "additionalProviders": [
@@ -207,6 +207,15 @@
             "doubao-seedream-5-0-pro",
             "doubao-seedream-5.0-flash"
           ]
+        },
+        {
+          "models": [
+            "doubao-seedance-2.0",
+            "doubao-seedance-2.0-fast",
+            "doubao-seedance-2.0-mini",
+            "doubao-seedance-2.5"
+          ],
+          "role": "video"
         }
       ],
       "modelMetadata": {
@@ -218,7 +227,8 @@
           "output": [
             "text"
           ],
-          "attachment": true
+          "attachment": true,
+          "contextTokens": 1048576
         },
         "deepseek-v4-flash": {
           "output": [
@@ -331,7 +341,12 @@
             "text"
           ],
           "contextTokens": 1048576,
-          "maxOutputTokens": 1048576
+          "maxOutputTokens": 1048576,
+          "attachment": true,
+          "input": [
+            "image",
+            "text"
+          ]
         },
         "kimi-k3": {
           "output": [
@@ -339,14 +354,24 @@
           ],
           "reasoning": true,
           "contextTokens": 1048576,
-          "maxOutputTokens": 131072
+          "maxOutputTokens": 131072,
+          "attachment": true,
+          "input": [
+            "image",
+            "text"
+          ]
         },
         "kimi-k3.1-pro": {
           "output": [
             "text"
           ],
           "contextTokens": 1048576,
-          "maxOutputTokens": 1048576
+          "maxOutputTokens": 1048576,
+          "attachment": true,
+          "input": [
+            "image",
+            "text"
+          ]
         },
         "doubao-seedream-5-0-pro": {
           "input": [
@@ -364,6 +389,42 @@
           ],
           "output": [
             "image"
+          ]
+        },
+        "doubao-seedance-2.0": {
+          "input": [
+            "image",
+            "text"
+          ],
+          "output": [
+            "video"
+          ]
+        },
+        "doubao-seedance-2.0-fast": {
+          "input": [
+            "image",
+            "text"
+          ],
+          "output": [
+            "video"
+          ]
+        },
+        "doubao-seedance-2.0-mini": {
+          "input": [
+            "image",
+            "text"
+          ],
+          "output": [
+            "video"
+          ]
+        },
+        "doubao-seedance-2.5": {
+          "input": [
+            "image",
+            "text"
+          ],
+          "output": [
+            "video"
           ]
         }
       }

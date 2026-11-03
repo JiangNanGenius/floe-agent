@@ -375,6 +375,9 @@ final class SpeechOutputSourceTests: XCTestCase {
         let title = fixture.settings.outputSourceTitle(
             for: .online(provider: .volcengine, route: .agentPlan))
         XCTAssertTrue(title.contains(" · "), "The picker names the exact service and channel")
+        XCTAssertEqual(fixture.settings.outputSourceTitle(
+            for: .online(provider: .volcengine, route: .payAsYouGo)), TTSSpeakerProvider.volcengine.title)
+        XCTAssertTrue(title.contains(TTSBillingRoute.agentPlan.title))
         XCTAssertEqual(fixture.settings.outputSourceTitle(for: .system),
                        FloeL10n.l("voice.settings.service.system"))
     }

@@ -132,7 +132,7 @@ struct CloudASRProfilesView: View {
         let mode = profile.liveCapabilities?.supportsLiveTranscription == true
             ? FloeL10n.l("voice.cloud.profile.streaming")
             : FloeL10n.l("voice.cloud.profile.after_recording")
-        return "\(route) · \(mode)"
+        return profile.billingRoute == .payAsYouGo ? mode : "\(route) · \(mode)"
     }
 
 }
@@ -185,7 +185,9 @@ private struct CloudASRProfileEditor: View {
             Section {
                 TextField("voice.cloud.profile.name", text: $name)
                 LabeledContent("voice.cloud.profile.provider", value: providerTitle)
-                LabeledContent("voice.cloud.profile.route", value: routeTitle)
+                if original.billingRoute != .payAsYouGo {
+                    LabeledContent("voice.cloud.profile.route", value: routeTitle)
+                }
             }
             Section {
                 if offersStreaming {

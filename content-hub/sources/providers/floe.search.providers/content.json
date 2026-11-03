@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "id": "floe.search.providers",
-  "version": "1.2.0",
+  "version": "1.2.1",
   "kind": "providers",
   "minimumAppVersion": "1.7.65",
   "sourceRevision": "",
@@ -9,8 +9,8 @@
   "requiredCapabilities": [],
   "dependencies": [],
   "releaseNotes": {
-    "en": "Adds Moonshot AI with separate Pay as you go and Kimi Code search accounts.",
-    "zh-Hans": "新增月之暗面，支持独立的按量付费与 Kimi Code 搜索账号。"
+    "en": "Simplifies provider names while keeping Kimi Code accounts distinct.",
+    "zh-Hans": "简化供应商名称，保留 Kimi Code 账号标识。"
   },
   "privacy": {
     "zh-Hans": "本包仅包含声明式目录数据，不含密钥、令牌或可执行代码。",

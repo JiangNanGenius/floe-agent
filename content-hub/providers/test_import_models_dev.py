@@ -325,19 +325,23 @@ class CommittedCatalogTests(unittest.TestCase):
                 self.assertIsNotNone(provider["baseURL"])
         self.assertEqual(offered, 18)
         self.assertEqual(model_count, 609)
-        self.assertEqual(metadata_count, 458)
+        self.assertEqual(metadata_count, 462)
 
-    def test_plan_entries_are_exact_and_agent_plan_has_no_video(self):
+    def test_plan_entries_preserve_image_video_and_context_updates(self):
         providers = self.providers()
         agent = providers["volcengine-agent-plan"]
         self.assertEqual(agent["models"], AGENT_PLAN_MODELS)
-        self.assertEqual(agent["serviceOffers"], [{"models": AGENT_PLAN_IMAGE, "role": "image"}])
-        self.assertEqual(len(agent["modelMetadata"]), 16)
+        self.assertEqual(agent["serviceOffers"], [
+            {"models": AGENT_PLAN_IMAGE, "role": "image"},
+            {"models": ["doubao-seedance-2.0", "doubao-seedance-2.0-fast",
+                        "doubao-seedance-2.0-mini", "doubao-seedance-2.5"], "role": "video"},
+        ])
+        self.assertEqual(len(agent["modelMetadata"]), 20)
         self.assertEqual(
             agent["modelMetadata"]["ark-code-latest"],
-            {"attachment": True, "input": ["image", "text"], "output": ["text"]},
+            {"attachment": True, "contextTokens": 1_048_576, "input": ["image", "text"], "output": ["text"]},
         )
-        self.assertNotIn("contextTokens", agent["modelMetadata"]["ark-code-latest"])
+        self.assertEqual(agent["modelMetadata"]["ark-code-latest"]["contextTokens"], 1_048_576)
         self.assertNotIn("maxOutputTokens", agent["modelMetadata"]["ark-code-latest"])
 
         token = providers["alibaba-token-plan"]
@@ -381,6 +385,7 @@ class CommittedCatalogTests(unittest.TestCase):
             "deepseek-v4.1-flash-economy", "doubao-seed-2.0-mini",
             "doubao-seed-2.1-lite", "doubao-seed-2.1-pro",
             "doubao-seed-evolving", "glm-5.3-flash",
+            "kimi-k2.8-preview", "kimi-k3", "kimi-k3.1-pro",
         }
         always_reasoning = {"glm-5.3", "kimi-k3"}
         metadata = agent["modelMetadata"]
@@ -394,7 +399,7 @@ class CommittedCatalogTests(unittest.TestCase):
         self.assertEqual(metadata["ark-code-latest"]["input"], ["image", "text"])
         self.assertEqual(metadata["ark-code-latest"]["output"], ["text"])
         self.assertEqual(metadata["ark-code-latest"]["attachment"], True)
-        self.assertNotIn("contextTokens", metadata["ark-code-latest"])
+        self.assertEqual(metadata["ark-code-latest"]["contextTokens"], 1_048_576)
         self.assertNotIn("maxOutputTokens", metadata["ark-code-latest"])
         for model_id in AGENT_PLAN_IMAGE:
             facts = metadata[model_id]
@@ -423,7 +428,7 @@ class CommittedCatalogTests(unittest.TestCase):
             self.assertEqual(digest(providers[preset_id]), expected, preset_id)
 
         alibaba = providers["alibaba"]
-        self.assertEqual(alibaba["name"], "Alibaba Cloud · Pay as you go")
+        self.assertEqual(alibaba["name"], "Alibaba Cloud")
         self.assertEqual(digest(alibaba["models"]), ALIBABA_MODELS_DIGEST)
         self.assertEqual(
             digest({
@@ -459,7 +464,7 @@ class CommittedCatalogTests(unittest.TestCase):
         )
 
         volcengine = providers["volcengine"]
-        self.assertEqual(volcengine["name"], "Volcengine Ark · Pay as you go")
+        self.assertEqual(volcengine["name"], "Volcengine Ark")
         self.assertEqual(
             digest({key: value for key, value in volcengine.items() if key != "name"}),
             VOLCENGINE_STABLE_FIELDS_DIGEST,
@@ -479,9 +484,9 @@ class CommittedCatalogTests(unittest.TestCase):
         self.assertEqual(source["availableCount"], 18)
         self.assertEqual(source["unsupportedCount"], 4)
         self.assertEqual(source["modelEntryCount"], 609)
-        self.assertEqual(source["modelMetadataEntryCount"], 458)
-        self.assertEqual(source["serviceOfferCount"], 6)
-        self.assertEqual(source["serviceOfferModelEntryCount"], 38)
+        self.assertEqual(source["modelMetadataEntryCount"], 462)
+        self.assertEqual(source["serviceOfferCount"], 7)
+        self.assertEqual(source["serviceOfferModelEntryCount"], 42)
         self.assertEqual(source["generatedBy"], "content-hub/providers/import_models_dev.py")
         self.assertEqual(
             source["generatedWith"],
@@ -501,7 +506,7 @@ class CommittedCatalogTests(unittest.TestCase):
 
     def test_content_source_version_and_plan_mappings(self):
         content = json.loads(CONTENT.read_text(encoding="utf-8"))
-        self.assertEqual(content["version"], "1.1.3")
+        self.assertEqual(content["version"], "1.1.5")
         self.assertEqual(content["minimumAppVersion"], "1.7.64")
         self.assertEqual(content["id"], "floe.providers.compatibility")
         self.assertEqual(content["kind"], "providers")
@@ -525,7 +530,7 @@ class DeclarativeOverrideTests(unittest.TestCase):
     def test_config_is_versioned_pinned_and_provenanced(self):
         overrides, raw = self.load()
         self.assertEqual(overrides["schemaVersion"], 1)
-        self.assertEqual(overrides["revision"], "2026-10-31.1")
+        self.assertEqual(overrides["revision"], "2026-11-04.1")
         self.assertEqual(overrides["upstreamPin"]["documentSHA256"], PIN)
         self.assertEqual(overrides["upstreamPin"]["fetchedAt"], "2026-10-15T12:36:41Z")
         expected = set(overrides["providerPatches"]) | {
@@ -548,8 +553,12 @@ class DeclarativeOverrideTests(unittest.TestCase):
         self.assertEqual(list(providers)[-2:], ["volcengine-agent-plan", "alibaba-token-plan"])
         agent = providers["volcengine-agent-plan"]
         self.assertEqual(agent["models"], AGENT_PLAN_MODELS)
-        self.assertEqual(agent["serviceOffers"], [{"models": AGENT_PLAN_IMAGE, "role": "image"}])
-        self.assertEqual(len(agent["modelMetadata"]), 16)
+        self.assertEqual(agent["serviceOffers"], [
+            {"models": AGENT_PLAN_IMAGE, "role": "image"},
+            {"models": ["doubao-seedance-2.0", "doubao-seedance-2.0-fast",
+                        "doubao-seedance-2.0-mini", "doubao-seedance-2.5"], "role": "video"},
+        ])
+        self.assertEqual(len(agent["modelMetadata"]), 20)
         token = providers["alibaba-token-plan"]
         self.assertEqual(token["models"], TOKEN_PLAN_MODELS)
         self.assertEqual(
@@ -561,7 +570,7 @@ class DeclarativeOverrideTests(unittest.TestCase):
         )
 
         alibaba = providers["alibaba"]
-        self.assertEqual(alibaba["name"], "Alibaba Cloud · Pay as you go")
+        self.assertEqual(alibaba["name"], "Alibaba Cloud")
         self.assertEqual(
             alibaba["serviceOffers"],
             [
@@ -577,7 +586,7 @@ class DeclarativeOverrideTests(unittest.TestCase):
             ],
         )
         self.assertTrue(set(alibaba["modelMetadata"]).issuperset(ADDED_ALIBABA_METADATA))
-        self.assertEqual(providers["volcengine"]["name"], "Volcengine Ark · Pay as you go")
+        self.assertEqual(providers["volcengine"]["name"], "Volcengine Ark")
 
     def test_conflicting_metadata_is_rejected_instead_of_overwriting_upstream(self):
         overrides, _ = self.load()

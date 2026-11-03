@@ -1170,9 +1170,9 @@ struct WebSearchSettingsView: View {
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
-                    if instance.configuration.kind == .moonshot {
-                        Text(instance.configuration.options["interface"] == "kimiCode"
-                            ? "Kimi Code" : (WebSearchSettingsCenter.localePrimary == "zh-Hans" ? "按量付费" : "Pay as you go"))
+                    if instance.configuration.kind == .moonshot,
+                       instance.configuration.options["interface"] == "kimiCode" {
+                        Text("Kimi Code")
                             .font(.caption).foregroundStyle(.secondary)
                     }
                     if hasUpdate {
@@ -1412,7 +1412,7 @@ private struct SearchProviderCatalogPicker: View {
         VStack(alignment: .leading, spacing: 3) {
             Text(entry.displayName(localePrimary: WebSearchSettingsCenter.localePrimary))
             if entry.supportedAdapter == .moonshot {
-                Text(IDELanguageRunText.t("按量付费 · Kimi Code", "Pay as you go · Kimi Code"))
+                Text("Kimi Code")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -1538,12 +1538,12 @@ struct WebSearchProviderEditor: View {
                     revealsSecrets = false
                     endpointText = ""
                 })) {
-                Text(moonshotText("Pay as you go", "按量付费")).tag("payg")
+                Text(moonshotText("Moonshot AI", "月之暗面")).tag("payg")
                 Text("Kimi Code").tag("kimiCode")
             }
             Text(moonshotChannel == "kimiCode"
                 ? moonshotText("Uses this Kimi Code key for web search and professional datasets.", "使用当前 Kimi Code 密钥进行网页搜索与专业数据库查询。")
-                : moonshotText("Uses a separate Moonshot API key and pay-as-you-go billing.", "使用独立的月之暗面 API 密钥，按量计费。"))
+                : moonshotText("Uses your Moonshot AI API key.", "使用你的月之暗面 API 密钥。"))
                 .font(.caption).foregroundStyle(.secondary)
         }
     }

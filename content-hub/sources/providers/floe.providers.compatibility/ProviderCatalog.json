@@ -2183,7 +2183,7 @@
         "siliconflow/deepseek-v3.1-terminus",
         "siliconflow/deepseek-v3.2"
       ],
-      "name": "Alibaba Cloud · Pay as you go",
+      "name": "Alibaba Cloud",
       "presetID": "alibaba",
       "serviceOffers": [
         {
@@ -6017,7 +6017,7 @@
         "glm-5-2-260617",
         "glm-5-3-flash-260828"
       ],
-      "name": "Volcengine Ark · Pay as you go",
+      "name": "Volcengine Ark",
       "presetID": "volcengine",
       "toolNameCompatibility": false,
       "unsupportedReason": null,
@@ -6330,8 +6330,8 @@
       "kind": "custom",
       "modelMetadata": {
         "ark-code-latest": {
-          "contextTokens": 1048576,
           "attachment": true,
+          "contextTokens": 1048576,
           "input": [
             "image",
             "text"
@@ -6424,6 +6424,42 @@
           "maxOutputTokens": 262144,
           "output": [
             "text"
+          ]
+        },
+        "doubao-seedance-2.0": {
+          "input": [
+            "image",
+            "text"
+          ],
+          "output": [
+            "video"
+          ]
+        },
+        "doubao-seedance-2.0-fast": {
+          "input": [
+            "image",
+            "text"
+          ],
+          "output": [
+            "video"
+          ]
+        },
+        "doubao-seedance-2.0-mini": {
+          "input": [
+            "image",
+            "text"
+          ],
+          "output": [
+            "video"
+          ]
+        },
+        "doubao-seedance-2.5": {
+          "input": [
+            "image",
+            "text"
+          ],
+          "output": [
+            "video"
           ]
         },
         "doubao-seedream-5-0-pro": {
@@ -6527,6 +6563,15 @@
             "doubao-seedream-5.0-flash"
           ],
           "role": "image"
+        },
+        {
+          "models": [
+            "doubao-seedance-2.0",
+            "doubao-seedance-2.0-fast",
+            "doubao-seedance-2.0-mini",
+            "doubao-seedance-2.5"
+          ],
+          "role": "video"
         }
       ],
       "toolNameCompatibility": false,

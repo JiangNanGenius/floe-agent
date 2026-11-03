@@ -27,7 +27,9 @@ struct OnlineSpeechServicesView: View {
                         HStack {
                             VStack(alignment: .leading, spacing: 3) {
                                 Text(profile.provider.title).foregroundStyle(.primary)
-                                Text(profile.billingRoute.title).font(.caption).foregroundStyle(.secondary)
+                                if profile.billingRoute != .payAsYouGo {
+                                    Text(profile.billingRoute.title).font(.caption).foregroundStyle(.secondary)
+                                }
                             }
                             Spacer()
                             if selected {
@@ -98,7 +100,9 @@ private struct SpeechProfileEditor: View {
                 Section {
                     if draft.provider.supportedBillingRoutes.count > 1 {
                         Picker("voice.settings.channel", selection: $draft.billingRoute) {
-                            ForEach(draft.provider.supportedBillingRoutes, id: \.self) { Text($0.title).tag($0) }
+                            ForEach(draft.provider.supportedBillingRoutes, id: \.self) {
+                                Text($0 == .payAsYouGo ? draft.provider.title : $0.title).tag($0)
+                            }
                         }.onChange(of: draft.billingRoute) { _, route in
                             invalidateSavedKeyReveal()
                             key = ""; voices = [:]; failure = nil

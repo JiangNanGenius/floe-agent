@@ -6946,13 +6946,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Volcengine · Pay as you go"
+            "value": "Volcengine"
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "火山引擎 · 按量付费"
+            "value": "火山引擎"
           }
         }
       }
@@ -6980,13 +6980,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Alibaba Cloud · Pay as you go"
+            "value": "Alibaba Cloud"
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "阿里云 · 按量付费"
+            "value": "阿里云"
           }
         }
       }
@@ -72403,13 +72403,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Alibaba Cloud · Pay as you go"
+            "value": "Alibaba Cloud"
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "阿里云 · 按量付费"
+            "value": "阿里云"
           }
         }
       }
@@ -72420,13 +72420,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Volcengine · Pay as you go"
+            "value": "Volcengine"
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "火山引擎 · 按量付费"
+            "value": "火山引擎"
           }
         }
       }

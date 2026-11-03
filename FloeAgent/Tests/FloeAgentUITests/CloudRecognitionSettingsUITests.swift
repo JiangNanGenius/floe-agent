@@ -27,8 +27,8 @@ final class CloudRecognitionSettingsUITests: XCTestCase {
         XCTAssertTrue(add.waitForExistence(timeout: 10))
         let savedRows = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "voice.cloud.profile."))
         let originalCount = savedRows.count
-        let providers = ["OpenAI", "Volcengine · Pay as you go",
-                         "Volcengine Agent Plan", "Alibaba Cloud · Pay as you go", "Alibaba Cloud Token Plan"]
+        let providers = ["OpenAI", "Volcengine",
+                         "Volcengine Agent Plan", "Alibaba Cloud", "Alibaba Cloud Token Plan"]
         for (index, title) in providers.enumerated() {
             add.tap()
             let provider = app.buttons[title].firstMatch

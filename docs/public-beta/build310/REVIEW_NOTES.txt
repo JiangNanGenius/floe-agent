@@ -1,0 +1,16 @@
+Floe Agent 1.7.69 (Build 310)
+
+This build repairs access to app-managed task folders and improves streaming speech recognition. Provider names are simpler; subscription plans retain their labels. Existing composer, browser and native 3D improvements are retained.
+
+No Floe account is required. Cloud AI uses the user's own provider configuration; no provider credentials are embedded. Chat, search, media and speech tests may use the selected provider's allowance. Saving a provider does not generate paid media. Billing channels are separate and do not silently switch.
+
+Suggested checks:
+1. Enter a long message on New Task or in a conversation. Text wraps, keeps the caret visible, shows up to three complete lines and opens an expanded editor.
+2. Open Settings > General > Voice Input > Cloud recognition. Add Volcengine or Volcengine Agent Plan with your own key, keep Streaming recognition enabled, and speak. Words and punctuation update as recognition is revised. OpenAI has an editable official Base URL; custom compatible addresses use the same form.
+3. In browser settings, advanced website data access requires explicit risk confirmation. Provider permissions are persistent and individually revocable. Cookies and private page information may be sent to an authorized configured model service. Temporary chat keeps its read-only public-web boundary.
+4. In search settings, add Moonshot AI and choose Moonshot AI or Kimi Code. Professional accounts appear only after the user adds the corresponding search configuration.
+5. Native 3D editing works without paid AI: open Creative Mode, add a 3D Workbench document, edit dimensions and materials, undo/redo, save/reopen and export. Edit and Present share a document; non-AR Present does not require a camera.
+6. Background audio is user controlled in background settings. Choose an available sound and audible volume to check playback after returning to the Home Screen. Recording permission is requested only for an actual recording.
+7. Existing tasks retain their execution target when defaults change. Local native functions do not require downloading Linux. External commands require a ready on-device environment, SSH host or optional same-Mac Floe Bridge. Bridge installation and pairing are user initiated.
+
+The App is free to download. Floe does not sell provider subscriptions.

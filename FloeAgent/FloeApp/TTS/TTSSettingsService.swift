@@ -277,7 +277,7 @@ final class TTSSettingsService: ObservableObject {
             }
             return SpeechVoiceNames.model(model)
         case .online(let provider, let route):
-            return provider.title + " · " + route.title
+            return route == .payAsYouGo ? provider.title : provider.title + " · " + route.title
         }
     }
 

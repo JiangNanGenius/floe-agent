@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "id": "floe.search.providers",
-  "version": "1.2.0",
+  "version": "1.2.1",
   "entries": [
     {
       "presetID": "bocha",
@@ -155,8 +155,8 @@
         "zh-Hans": "月之暗面"
       },
       "blurb": {
-        "en": "Web search with separate Pay as you go and Kimi Code accounts.",
-        "zh-Hans": "选择按量付费或 Kimi Code，分别配置与计费。"
+        "en": "Web search with separate Moonshot AI and Kimi Code accounts.",
+        "zh-Hans": "选择月之暗面或 Kimi Code，分别配置。"
       },
       "defaultEndpoint": null,
       "endpointRequired": false,
