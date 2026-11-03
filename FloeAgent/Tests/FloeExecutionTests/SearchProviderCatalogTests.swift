@@ -164,7 +164,7 @@ struct SearchProviderCatalogTests {
     @Test("Local catalog search is deterministic and bilingual")
     func searchIsDeterministicAndLocalized() throws {
         let index = try Self.bundledIndex()
-        #expect(index.search(query: "", localePrimary: "en").count == 10)
+        #expect(index.search(query: "", localePrimary: "en").count == 11)
         #expect(index.search(query: "deepseek", localePrimary: "en").map(\.presetID) == ["deepseek"])
         #expect(index.search(query: "DeepSeek", localePrimary: "zh-Hans").map(\.presetID) == ["deepseek"])
         #expect(index.search(query: "brave", localePrimary: "en").map(\.presetID) == ["brave"])

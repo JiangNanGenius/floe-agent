@@ -220,7 +220,9 @@ struct ProviderCatalogTests {
         let agentPlan = try #require(index.entry(presetID: "volcengine-agent-plan"))
         #expect(agentPlan.serviceOffers?.first { $0.role == .image }?.models
                 == ["doubao-seedream-5-0-pro", "doubao-seedream-5.0-flash"])
-        #expect(agentPlan.serviceOffers?.contains(where: { $0.role == .video }) != true)
+        #expect(agentPlan.serviceOffers?.first { $0.role == .video }?.models
+                == ["doubao-seedance-2.0", "doubao-seedance-2.0-fast",
+                    "doubao-seedance-2.0-mini", "doubao-seedance-2.5"])
         #expect(agentPlan.modelMetadata?["doubao-seedream-5.0-lite"] == nil)
         #expect(agentPlan.modelMetadata?["doubao-seedream-5-0-pro"] != nil)
         #expect(agentPlan.modelMetadata?["doubao-seedream-5.0-flash"] != nil)

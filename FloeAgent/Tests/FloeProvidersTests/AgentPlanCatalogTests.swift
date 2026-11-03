@@ -193,8 +193,8 @@ struct AgentPlanCatalogTests {
         let entry = try agentPlan(in: try bundledCatalog())
         let offer = try #require(entry.serviceOffers?.first { $0.role == .video })
         #expect(offer.models == [
-            "doubao-seedance-2.5", "doubao-seedance-2.0",
-            "doubao-seedance-2.0-fast", "doubao-seedance-2.0-mini"
+            "doubao-seedance-2.0", "doubao-seedance-2.0-fast",
+            "doubao-seedance-2.0-mini", "doubao-seedance-2.5"
         ])
         let preset = ProviderPreset.volcengineAgentPlan
         let spec = ProviderFormSpecResolver.resolve(
