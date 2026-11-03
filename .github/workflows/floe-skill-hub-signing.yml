@@ -96,7 +96,7 @@ jobs:
           repository: JiangNanGenius/floe-skill-hub
           ref: ${{ env.TOOLING_COMMIT }}
           path: tooling
-          fetch-depth: 1
+          fetch-depth: 0
           persist-credentials: false
       - name: Fetch the exact data snapshot S/X at the claimed commit (tokenless, public)
         env:
@@ -129,6 +129,18 @@ jobs:
             *) echo "unexpected tooling origin: $origin" >&2; exit 1 ;;
           esac
           test -z "$(git -C tooling -c core.fsmonitor=false status --porcelain --untracked-files=all)"
+      - name: Resolve the independent current publication baseline
+        if: inputs.mode == 'catalog'
+        env:
+          GIT_CONFIG_GLOBAL: /dev/null
+          GIT_CONFIG_SYSTEM: /dev/null
+          GIT_TERMINAL_PROMPT: "0"
+        run: |
+          set -euo pipefail
+          baseline="$(git -C "$GITHUB_WORKSPACE/tooling" ls-remote --exit-code origin refs/heads/main | cut -f1)"
+          [[ "$baseline" =~ ^[0-9a-f]{40}$ ]]
+          git -C "$GITHUB_WORKSPACE/tooling" -c core.hooksPath=/dev/null -c core.fsmonitor=false fetch --no-tags origin "$baseline"
+          echo "PUBLISHED_Y=$baseline" >> "$GITHUB_ENV"
       - name: Set up the pinned interpreter
         uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
         with:
@@ -141,11 +153,17 @@ jobs:
         run: |
           set -euo pipefail
           cd "$RUNNER_TEMP"
+          baseline_args=()
+          if [[ "$MODE" == "catalog" ]]; then
+            [[ "$PUBLISHED_Y" =~ ^[0-9a-f]{40}$ ]]
+            baseline_args=(--published-y "$PUBLISHED_Y")
+          fi
           python3 -I "$GITHUB_WORKSPACE/tooling/scripts/sign_publication.py" \
             --mode "$MODE" \
             --source-commit "$SOURCE_COMMIT" \
             --data "$GITHUB_WORKSPACE/data" \
             --tooling "$GITHUB_WORKSPACE/tooling" \
+            "${baseline_args[@]}" \
             --out "$RUNNER_TEMP/bridge-out"
       - name: Upload the signed artifact bundle (no repository push, no release)
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
