@@ -227,6 +227,12 @@ public final class CredentialVaultOperationCoordinator: @unchecked Sendable {
         case delete
         case discard
         case recoveryDrain
+        /// G09-R2 enhancer configuration mutation (staged save commit /
+        /// revoke). Coordination treats every kind equally; the case exists
+        /// for honest diagnostics only (job-7951fc7bca9946bc — the enhancer
+        /// mutations serialize on the SHARED admitted coordinator instead of
+        /// a cloned process-wide NSLock gate).
+        case enhancerConfiguration
     }
 
     /// Opaque per-context domain identity for the owned-work registry

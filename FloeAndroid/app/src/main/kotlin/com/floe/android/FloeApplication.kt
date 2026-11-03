@@ -90,6 +90,14 @@ class FloeApplication : Application() {
     internal lateinit var mediaWorkbench: MediaWorkbenchHost
         private set
     /**
+     * G09-R2 Settings entry for the media-enhancement super-resolution
+     * backend. Retained UI state only; the typed row and the credential live
+     * in the original native stores.
+     */
+    internal lateinit var mediaEnhancementSettings:
+        com.floe.android.host.MediaEnhancementSettingsHostController
+        private set
+    /**
      * G09-R2 App-owned design UI integration: bounded retained design
      * sessions, real proposal staging, verified preview/export opening and
      * the design Save/Share drain gate. Data-only construction here; native
@@ -477,6 +485,15 @@ class FloeApplication : Application() {
                 { runtimeHost },
             ),
         )
+        // G09-R2 Settings → super-resolution backend configuration. Retained
+        // across rotation/background; resolves the current configuration host
+        // lazily (a Root/epoch replacement never binds the sheet to a stale
+        // adapter). Data-only construction; the secret never enters this
+        // owner.
+        mediaEnhancementSettings =
+            com.floe.android.host.MediaEnhancementSettingsHostController(
+                apiProvider = { creativeHost.mediaEnhancementConfigurationHost },
+            )
         designUi = com.floe.android.designintegration.DesignUiOwner(
             context = this,
             hostScope = hostScope,

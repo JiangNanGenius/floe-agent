@@ -7,16 +7,21 @@
 //
 // This package is authorized to mirror this file ADDITIVELY ONLY, to
 // implement the Main-authorized closed SubjectKind.webSearchSave kind
-// (MAIN_WEB_SEARCH_SECURE_INGRESS_DECISION_20261019.json). The single delta
-// is the webSearchSave cross-subject parse rule marked MC-WEBSEARCH-3 below;
+// (MAIN_WEB_SEARCH_SECURE_INGRESS_DECISION_20261019.json) and the G09-R2
+// closed SubjectKind.enhancerSave kind (job-e5e786c723244725 — the
+// super-resolution backend credential secure save reuses this ONE sealed
+// ingress instead of the removed two-call staging adapter). The deltas are
+// the webSearchSave cross-subject parse rule marked MC-WEBSEARCH-3 below and
+// the additive enhancerSave cross-subject parse rule marked G09-R2 below;
 // every other byte is the live file verbatim. SubjectKind itself gains
-// `webSearchSave` in the SecretGatewayMailbox.swift mirror of THIS package
-// (the live mailbox declares the enum). There is NO new public v3 command,
-// NO new permission and NO new JNI signature: the existing
+// `webSearchSave`/`enhancerSave` in the SecretGatewayMailbox.swift mirror of
+// THIS package (the live mailbox declares the enum). There is NO new public
+// v3 command, NO new permission and NO new JNI signature: the existing
 // floe_secret_save_intent_submit / _discard C ABI and the internal
 // consume(token:route:expectedSubject:) seam are reused unchanged, and
-// consume's existing expectedSubject equality enforces that a providerSave
-// or mcpSave token can never drive a web-search save and vice versa.
+// consume's existing expectedSubject equality enforces that a providerSave,
+// mcpSave or webSearchSave token can never drive an enhancer save and vice
+// versa.
 //
 // (private source candidate; NOT compiled, NOT executed; GRAMMAR-ONLY
 // evidence in evidence/.)
@@ -461,6 +466,18 @@ public final class SecretSaveIntentVault: @unchecked Sendable {
         // requirements by provider kind are the consumer handler's authority
         // (RuntimeFacadeConfig save path), exactly like providerSave.
         if kind == .webSearchSave
+            && (candidate["providerID"] != nil || candidate["serverID"] != nil
+                || candidate["mcpServerID"] != nil) {
+            throw SaveIntentVaultError.invalidSchema
+        }
+        // G09-R2 secure enhancer save (job-e5e786c723244725): the enhancer
+        // save subject is a CLOSED kind whose candidate is the secret-free
+        // frozen enhancer row projection (id/displayName/endpointID). It can
+        // never smuggle a provider / server / MCP identity: those keys are
+        // refused here, before any LIVE slot is stored. The enhancer field
+        // requirements are the consumer handler's authority (the enhancer
+        // configuration store), exactly like providerSave/webSearchSave.
+        if kind == .enhancerSave
             && (candidate["providerID"] != nil || candidate["serverID"] != nil
                 || candidate["mcpServerID"] != nil) {
             throw SaveIntentVaultError.invalidSchema

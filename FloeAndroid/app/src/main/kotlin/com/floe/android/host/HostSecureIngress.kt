@@ -25,6 +25,10 @@ internal enum class HostEditorKind(val raw: String) {
     PROVIDER("provider"),
     MCP("mcp"),
     WEB_SEARCH("webSearch"),
+    /** G09-R2 super-resolution backend credential editor (additive closed
+     *  kind; job-e5e786c723244725). Binds the dedicated `enhancerSave`
+     *  subject through the SAME route authority and sealed ingress. */
+    ENHANCER("enhancer"),
 }
 
 /**

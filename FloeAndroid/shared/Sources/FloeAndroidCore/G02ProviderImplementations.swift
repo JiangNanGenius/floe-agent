@@ -90,11 +90,14 @@ public final class G02HostRouteContextProvider: ConfigRouteContextProviding, Ski
 
     /// The closed editor kinds a trusted host editor may bind. The kind is
     /// also the subject kind the bound route may submit: a provider editor
-    /// can never mint MCP or web-search authority and vice versa.
+    /// can never mint MCP, web-search or enhancer authority and vice versa.
+    /// The `enhancer` mapping is the ONE additive closed kind for the G09-R2
+    /// super-resolution backend credential secure save (job-e5e786c723244725).
     static let editorKindSubject: [String: SubjectKind] = [
         "provider": .providerSave,
         "mcp": .mcpSave,
         "webSearch": .webSearchSave,
+        "enhancer": .enhancerSave,
     ]
 
     private func acceptedEpochLocked() -> UInt64? {

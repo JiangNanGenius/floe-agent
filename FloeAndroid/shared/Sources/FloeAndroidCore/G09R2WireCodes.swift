@@ -23,12 +23,34 @@ public enum BridgeV6 {
     /// CONTRACT FREEZE V2 (Main authorization 2026-11-01): the three
     /// `media.largeImport.*` actions are the ONLY additive change. Version,
     /// schema, limits and every other action name are unchanged.
+    ///
+    /// Additive media-enhancement actions (job-8e175eef3cea48d3,
+    /// 2026-11-03): `media.enhancement.*` exposes the real UI-driven
+    /// enhancement contract on the same frozen V6 envelope. Version, schema
+    /// and limits stay unchanged; App and Core ship together, and older
+    /// builds refuse these with the ordinary unsupportedAction vocabulary.
+    ///
+    /// Additive enhancement-configuration actions (job-418174da5d0c4a52,
+    /// 2026-11-03): `media.enhancement.configuration.*` configures/revokes
+    /// the super-resolution backend through the original settings/credential
+    /// stores (secret-free payloads; the key never crosses this bridge), and
+    /// `media.enhancement.import` retries the original importAsset ownership
+    /// for a verified output.
     public static let actions: [String] = [
         "media.video.load",
         "media.video.apply",
         "media.largeImport.submit",
         "media.largeImport.status",
         "media.largeImport.cancel",
+        "media.enhancement.capability",
+        "media.enhancement.submit",
+        "media.enhancement.status",
+        "media.enhancement.cancel",
+        "media.enhancement.configuration.get",
+        "media.enhancement.configuration.save",
+        "media.enhancement.configuration.clear",
+        "media.enhancement.configuration.reference",
+        "media.enhancement.import",
         "generation.models",
         "generation.image.submit",
         "generation.image.status",

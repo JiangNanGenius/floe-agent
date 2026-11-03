@@ -617,7 +617,13 @@ private fun SettingsSectionContent(
                 SettingsHostPages.DefaultsPage(runtimeHost.settings)
             }
         }
-        FloeSettingsSection.PROVIDERS -> ProvidersSettingsPage()
+        FloeSettingsSection.PROVIDERS -> {
+            ProvidersSettingsPage()
+            // G09-R2 media-enhancement backend lives with the provider
+            // configuration state (its fal.ai credential is provider config,
+            // not a general model provider).
+            MediaEnhancementSettingsCard()
+        }
         FloeSettingsSection.AUXILIARY -> {
             if (runtimeHost != null) SettingsHostPages.AuxiliaryPage(runtimeHost.settings)
             else HostPendingPage(R.string.settings_skills_pending)

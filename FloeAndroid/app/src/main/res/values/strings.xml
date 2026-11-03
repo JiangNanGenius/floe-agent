@@ -505,4 +505,9 @@
     <string name="workspace_terminal_empty_title">No terminal tabs</string>
     <string name="workspace_terminal_empty_hint">Open a new tab to start a terminal in this task.</string>
     <string name="terminal_open_runtime_setup">Set up local runtime</string>
+    <string name="media_enhancement_settings_title">Media enhancement</string>
+    <string name="media_enhancement_settings_configure">Configure</string>
+    <string name="media_enhancement_settings_configured">Super-resolution backend is set up.</string>
+    <string name="media_enhancement_settings_unconfigured">Set up the fal.ai super-resolution backend for video enhancement.</string>
+    <string name="media_enhancement_settings_pending">Available after the runtime starts.</string>
 </resources>

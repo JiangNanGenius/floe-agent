@@ -81,10 +81,16 @@ public enum SecretBackendError: Error, Equatable, Sendable {
 /// secure web-search Set ingress. The App binder rejects providerSave/
 /// mcpSave for the web-search save capability; unrelated subjects can never
 /// consume a web-search token (vault cross-subject rules).
+///
+/// G09-R2 secure enhancer save (job-e5e786c723244725): `enhancerSave` is the
+/// ONE dedicated closed kind for the super-resolution backend credential
+/// ingress. It rides the SAME frozen one-shot vault slot / C ABI and the
+/// SAME route-authority admission as the other kinds; no new ingress system.
 public enum SubjectKind: String, Sendable, CaseIterable {
     case providerSave
     case mcpSave
     case webSearchSave
+    case enhancerSave
 }
 
 public enum SecretOperation: String, Sendable {

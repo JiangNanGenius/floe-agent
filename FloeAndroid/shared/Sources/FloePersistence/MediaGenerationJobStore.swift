@@ -169,24 +169,30 @@ public actor MediaGenerationJobStore {
         id: UUID, to state: MediaGenerationJobState,
         mutate: @Sendable (inout MediaGenerationJob) -> Void = { _ in }
     ) async throws -> MediaGenerationJob {
-        guard let owned = try await ownedJob(id: id) else {
-            throw MediaGenerationJobStoreError.missingJob(id)
+        // Store instances share the database, not actor isolation. Re-read
+        // and validate inside the same write transaction so a competing
+        // terminal transition cannot be overwritten by an earlier snapshot.
+        try await database.writer { db in
+            guard let row = try Row.fetchOne(
+                db, sql: "SELECT * FROM media_generation_jobs WHERE id = ?",
+                arguments: [id.uuidString]) else {
+                throw MediaGenerationJobStoreError.missingJob(id)
+            }
+            let owned = try Self.decodeOwned(row, decoder: JSONDecoder())
+            var job = owned.job
+            guard job.state.canTransition(to: state) else {
+                throw MediaGenerationJobStoreError.invalidStateTransition(from: job.state, to: state)
+            }
+            mutate(&job)
+            job.state = state
+            job.updatedAt = Date()
+            // Preserve the existing owner and operation identity.
+            _ = try Self.insert(
+                db, job: job, owner: owned.owner,
+                originRunID: owned.originRunID,
+                idempotencyKey: owned.idempotencyKey)
+            return job
         }
-        var job = owned.job
-        guard job.state.canTransition(to: state) else {
-            throw MediaGenerationJobStoreError.invalidStateTransition(from: job.state, to: state)
-        }
-        mutate(&job)
-        job.state = state
-        job.updatedAt = Date()
-        // Ownership and the operation identity never change through a
-        // transition, so a conversation job cannot be rewritten as canvas (or
-        // vice versa) by a lifecycle update.
-        try await save(
-            job, owner: owned.owner, originRunID: owned.originRunID,
-            idempotencyKey: owned.idempotencyKey
-        )
-        return job
     }
 
     // MARK: - Reads
