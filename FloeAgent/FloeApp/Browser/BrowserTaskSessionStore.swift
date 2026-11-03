@@ -377,7 +377,7 @@ final class BrowserTaskSession: NSObject, ObservableObject {
             stagedExports.fenceTab(activeTabID, reason: .navigation)
         }
         let candidate = addressText.contains("://") ? addressText : "https://\(addressText)"
-        guard let url = try? BrowserURLPolicy.validate(candidate, conversationID: conversationID),
+        guard let url = try? BrowserURLPolicy.validate(candidate, conversationID: conversationID, allowLocalNetwork: true),
               let activeWebView else { return }
         activeWebView.load(URLRequest(url: url))
     }
@@ -605,7 +605,7 @@ final class BrowserTaskSession: NSObject, ObservableObject {
         do {
             switch command.action {
             case .navigate(let value):
-                let url = try BrowserURLPolicy.validate(value, conversationID: conversationID)
+                let url = try BrowserURLPolicy.validate(value, conversationID: conversationID, allowLocalNetwork: true)
                 impeccableCaptures.fence(tabID: tabID, reason: .navigation)
                 stagedExports.fenceTab(tabID, reason: .navigation)
                 tab.webView.load(URLRequest(url: url))
@@ -1801,7 +1801,7 @@ extension BrowserTaskSession: WKNavigationDelegate, WKUIDelegate {
         // normal http/https/private-network policy below.
         if url.absoluteString == "about:blank" { return .allow }
         // The owner is this session's trusted task, never the visible task.
-        guard (try? BrowserURLPolicy.validate(url.absoluteString, conversationID: conversationID)) != nil else {
+        guard (try? BrowserURLPolicy.validate(url.absoluteString, conversationID: conversationID, allowLocalNetwork: true)) != nil else {
             return .cancel
         }
         // "Open in system browser" applies only while a human controls the
@@ -1883,7 +1883,7 @@ extension BrowserTaskSession: WKNavigationDelegate, WKUIDelegate {
         if isUserControlling,
            linkOpenBehaviorProvider() == .systemBrowser,
            let url = navigationAction.request.url,
-           (try? BrowserURLPolicy.validate(url.absoluteString, conversationID: conversationID)) != nil {
+           (try? BrowserURLPolicy.validate(url.absoluteString, conversationID: conversationID, allowLocalNetwork: true)) != nil {
             Task { @MainActor in await UIApplication.shared.open(url) }
             return nil
         }
@@ -1898,7 +1898,7 @@ extension BrowserTaskSession: WKNavigationDelegate, WKUIDelegate {
             return nil
         }
         if let url = navigationAction.request.url,
-           (try? BrowserURLPolicy.validate(url.absoluteString, conversationID: conversationID)) != nil {
+           (try? BrowserURLPolicy.validate(url.absoluteString, conversationID: conversationID, allowLocalNetwork: true)) != nil {
             created.load(URLRequest(url: url))
         }
         return created

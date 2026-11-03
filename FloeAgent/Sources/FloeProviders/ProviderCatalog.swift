@@ -120,7 +120,7 @@ public struct ProviderCatalogModelMetadata: Codable, Sendable, Equatable, Hashab
     /// existing protocol/listing default. Never an invented ceiling.
     public var contextTokens: Int?
     /// Verified maximum output tokens, when the official provider page states
-    /// one. Absence keeps the protocol default.
+    /// one. Capacity metadata does not configure a request output limit.
     public var maxOutputTokens: Int?
 
     public init(

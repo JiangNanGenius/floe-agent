@@ -23,12 +23,18 @@ struct ProviderListView: View {
     @State private var showsCapabilityReview = false
     @State private var isApplyingCapabilityUpdates = false
     @State private var capabilityMigrationError: String?
+    @State private var showsCatalogUpdatePrompt = false
+    @State private var updatedCatalogProviders: [ProviderProfile] = []
+    @ObservedObject private var catalogOwner: ContentUpdateCenter
 
     /// Optional validated catalog plus refresh closure. Both stay nil for
     /// call sites that only support manual provider setup. When present the
     /// catalog search lives inside the editor's provider-field section; there
     /// is deliberately no independent catalog page or top-level route.
-    private let catalog: ProviderCatalogIndex?
+    private let initialCatalog: ProviderCatalogIndex?
+    private var catalog: ProviderCatalogIndex? {
+        initialCatalog == nil ? nil : catalogOwner.providerCatalogIndex() ?? initialCatalog
+    }
     private let onRefreshCatalog: (() async -> Void)?
 
     init(
@@ -37,7 +43,8 @@ struct ProviderListView: View {
         onRefreshCatalog: (() async -> Void)? = nil
     ) {
         _viewModel = StateObject(wrappedValue: ProviderListViewModel(center: center))
-        self.catalog = catalog
+        self.initialCatalog = catalog
+        _catalogOwner = ObservedObject(wrappedValue: center.environment.contentUpdateCenter)
         self.onRefreshCatalog = onRefreshCatalog
     }
 
@@ -80,6 +87,16 @@ struct ProviderListView: View {
         .refreshable {
             await viewModel.load()
             refreshCapabilityProposals()
+        }
+        .onChange(of: catalogOwner.installStates) { _, _ in refreshCapabilityProposals() }
+        .alert(IDELanguageRunText.t("模型数据有更新", "Model updates available"), isPresented: $showsCatalogUpdatePrompt) {
+            Button(IDELanguageRunText.t("查看更新", "Review updates")) {
+                if !capabilityProposals.isEmpty { showsCapabilityReview = true }
+                else if let provider = updatedCatalogProviders.first { reviewCatalog(provider) }
+            }
+            Button("providers.capability_migration.not_now", role: .cancel) {}
+        } message: {
+            Text(IDELanguageRunText.t("是否查看并更新已添加模型的信息？", "Review and update information for your saved models?"))
         }
         .confirmationDialog("providers.provider_list_view.add_model_provider", isPresented: $showsProviderTypePicker) {
             Button("providers.provider_list_view.chat_model_provider") { presentedEditor = .new(.conversation) }
@@ -129,6 +146,16 @@ struct ProviderListView: View {
 
     private var providerList: some View {
         List {
+            if !updatedCatalogProviders.isEmpty {
+                Section(IDELanguageRunText.t("模型目录有更新", "Model catalog updates")) {
+                    ForEach(updatedCatalogProviders) { provider in
+                        Button { reviewCatalog(provider) } label: {
+                            Label(provider.displayName ?? catalog?.entry(presetID: provider.presetID ?? "")?.name ?? "",
+                                  systemImage: "arrow.triangle.2.circlepath")
+                        }
+                    }
+                }
+            }
             if viewModel.remoteSyncRejectionCount > 0 {
                 Section {
                     Label("providers.sync.rejected_remote", systemImage: "exclamationmark.triangle")
@@ -244,9 +271,49 @@ struct ProviderListView: View {
     /// Pure and side-effect free; an empty list hides the section entirely.
     private func refreshCapabilityProposals() {
         capabilityProposals = viewModel.capabilityProposals(catalog: catalog)
+        updatedCatalogProviders = viewModel.center.configuredProviders.filter { provider in
+            guard let signature = catalogSignature(provider) else { return false }
+            let key = "providers.catalog.reviewed." + provider.id.uuidString
+            guard let previous = UserDefaults.standard.string(forKey: key) else {
+                UserDefaults.standard.set(signature, forKey: key)
+                return false
+            }
+            return previous != signature
+        }
         if capabilityProposals.isEmpty, !isApplyingCapabilityUpdates {
             showsCapabilityReview = false
         }
+        guard !capabilityProposals.isEmpty || !updatedCatalogProviders.isEmpty,
+              !isApplyingCapabilityUpdates else { return }
+        let metadataIdentity = capabilityProposals.map {
+            "\($0.id):\($0.addedCapabilities.rawValue):\($0.proposedContextTokens ?? 0)"
+        }.joined(separator: "\n")
+        let directoryIdentity = updatedCatalogProviders.compactMap { catalogSignature($0) }.joined(separator: "\n")
+        let identity = FloeDigest.sha256Hex(Data((metadataIdentity + directoryIdentity).utf8))
+        let key = "providers.catalog.lastPresentedUpdate"
+        if UserDefaults.standard.string(forKey: key) != identity {
+            UserDefaults.standard.set(identity, forKey: key)
+            showsCatalogUpdatePrompt = true
+        }
+    }
+
+    private func catalogSignature(_ provider: ProviderProfile) -> String? {
+        guard let preset = provider.presetID, let entry = catalog?.entry(presetID: preset) else { return nil }
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        guard let data = try? encoder.encode(entry) else { return nil }
+        return FloeDigest.sha256Hex(data)
+    }
+
+    private func reviewCatalog(_ provider: ProviderProfile) {
+        if let signature = catalogSignature(provider) {
+            UserDefaults.standard.set(signature, forKey: "providers.catalog.reviewed." + provider.id.uuidString)
+        }
+        updatedCatalogProviders.removeAll { $0.id == provider.id }
+        let models = viewModel.center.configuredModelsByProvider[provider.id] ?? []
+        let role: ProviderServiceRole = models.contains(where: \.supportsChatAgentSurface) || models.isEmpty
+            ? .conversation : models.contains(where: \.supportsImageGenerationSurface) ? .image : .video
+        presentedEditor = .existing(provider, role)
     }
 
     /// Applies the confirmed batch through the existing per-model save path:

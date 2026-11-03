@@ -523,7 +523,8 @@ struct ComposerReturnField: UIViewRepresentable {
             deviceLineCap: ComposerFieldMetrics.lineCap(horizontalSizeClass: sizeClass),
             availableHeight: maxHeightBudget,
             restingMinimumHeight: restingMinHeight,
-            visualLineCount: natural.lineCount
+            visualLineCount: natural.lineCount,
+            lineBottoms: natural.lineBottoms
         )
     }
 
@@ -579,7 +580,8 @@ struct ComposerReturnField: UIViewRepresentable {
         )
         return MeasuredComposerText(
             height: metrics.height + textInsets.top + textInsets.bottom,
-            lineCount: metrics.lineCount
+            lineCount: metrics.lineCount,
+            lineBottoms: metrics.lineBottoms.map { $0 + textInsets.top + textInsets.bottom }
         )
     }
 
@@ -1232,14 +1234,21 @@ enum ComposerFieldMeasurement {
         // same quantity `sizeThatFits` reports for the live field.
         let glyphs = manager.glyphRange(for: container)
         var lineCount = 0
-        manager.enumerateLineFragments(forGlyphRange: glyphs) { _, usedRect, _, _, _ in
-            if usedRect.height > 0.5 { lineCount += 1 }
+        var lineBottoms: [CGFloat] = []
+        manager.enumerateLineFragments(forGlyphRange: glyphs) { lineRect, usedRect, _, _, _ in
+            if usedRect.height > 0.5 {
+                lineCount += 1
+                lineBottoms.append(lineRect.maxY)
+            }
         }
         // `enumerateLineFragments` skips the empty fragment a trailing
         // newline adds, but the user sees that caret row; count it so a
         // draft ending in a newline offers the editor on its third row, not
         // its fourth.
-        if detachedStorage.string.hasSuffix("\n") { lineCount += 1 }
+        if detachedStorage.string.hasSuffix("\n") {
+            lineCount += 1
+            lineBottoms.append(manager.extraLineFragmentRect.maxY)
+        }
         let usedHeight = manager.usedRect(for: container).maxY
         // TextKit can keep the final empty caret row outside usedRect. The
         // host must reserve that row too, otherwise pressing Return hides
@@ -1248,7 +1257,8 @@ enum ComposerFieldMeasurement {
             ? manager.extraLineFragmentUsedRect.maxY : 0
         return MeasuredComposerText(
             height: max(usedHeight, caretRowHeight),
-            lineCount: max(1, lineCount)
+            lineCount: max(1, lineCount),
+            lineBottoms: lineBottoms
         )
     }
 

@@ -101,6 +101,8 @@ enum ComposerFieldMetrics {
 struct MeasuredComposerText: Equatable {
     var height: CGFloat
     var lineCount: Int
+    /// Exact typographic bottoms of complete rows, including caller insets.
+    var lineBottoms: [CGFloat] = []
 }
 
 extension ComposerFieldMetrics {
@@ -169,10 +171,11 @@ enum ComposerFieldLayout {
         deviceLineCap: Int,
         availableHeight: CGFloat?,
         restingMinimumHeight: CGFloat,
-        visualLineCount: Int? = nil
+        visualLineCount: Int? = nil,
+        lineBottoms: [CGFloat] = []
     ) -> Verdict {
         let upperBound = max(1, min(lineLimit.upperBound, deviceLineCap))
-        let cap = max(
+        let estimatedCap = max(
             restingMinimumHeight,
             max(
                 lineHeight + verticalInsets,
@@ -182,6 +185,15 @@ enum ComposerFieldLayout {
                 )
             )
         )
+        // Mixed scripts can use fallback fonts with a different line advance.
+        // Multiplying one sample glyph's ink height clips part of the next
+        // row. Use this draft's actual TextKit fragments, rounded to whole
+        // rows, instead of treating that sample as a line-height ruler.
+        let candidates = Array(lineBottoms.prefix(upperBound))
+        let availableCap = availableHeight.flatMap { $0 > 0 ? $0 / 3 : nil }
+        let completeRowCap = candidates.last { bottom in availableCap.map { bottom <= $0 } ?? true }
+            ?? candidates.first
+        let cap = max(restingMinimumHeight, completeRowCap ?? estimatedCap)
         let floor = max(
             restingMinimumHeight,
             lineHeight * CGFloat(max(1, lineLimit.lowerBound)) + verticalInsets
@@ -274,7 +286,7 @@ enum ComposerResponsiveLayoutPolicy {
         }
         // Multiline at the widest available slot (the host reports the field
         // scrolls there), so the text still deserves the whole row.
-        return isFieldOverflowing
+        return isFieldOverflowing || fieldHeightAtFullWidth > 44 + multilineHeightTolerance
     }
 }
 

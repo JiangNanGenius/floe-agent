@@ -1067,4 +1067,24 @@ private struct HostedResponsiveRowFixture {
         previousKeyWindow?.makeKey()
     }
 }
+
+@Suite("Composer complete-row viewport")
+@MainActor
+struct ComposerCompleteRowViewportTests {
+    @Test("Mixed-script row advances cap the actual field at three whole rows")
+    func completeRowsDetermineViewport() {
+        let metrics = ComposerFieldMeasurement.detachedMetrics(
+            of: NSTextStorage(string: "first English row\n第二行中文\nthird row 123\nfourth row tail"),
+            width: 520, fallbackFont: UIFont.preferredFont(forTextStyle: .body))
+        #expect(metrics.lineBottoms.count >= 4)
+        let insets: CGFloat = 16
+        let result = ComposerFieldLayout.verdict(naturalTextHeight: metrics.height + insets,
+            lineHeight: 17, verticalInsets: insets, lineLimit: 1...3, deviceLineCap: 3,
+            availableHeight: 900, restingMinimumHeight: 44, visualLineCount: metrics.lineCount,
+            lineBottoms: metrics.lineBottoms.map { $0 + insets })
+        #expect(result.height == metrics.lineBottoms[2] + insets)
+        #expect(result.scrolls)
+        #expect(result.canExpand)
+    }
+}
 #endif

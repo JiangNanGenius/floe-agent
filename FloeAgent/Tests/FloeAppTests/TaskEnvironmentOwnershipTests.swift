@@ -8,6 +8,38 @@ import FloePersistence
 
 @Suite("Task environment migration ownership")
 struct TaskEnvironmentOwnershipTests {
+
+    @Test("The task pin survives an authorized working-folder change without giving another task its environment")
+    func pinnedSessionFollowsTaskRatherThanOldWorkingFolder() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let old = root.appendingPathComponent("old"), current = root.appendingPathComponent("current")
+        try FileManager.default.createDirectory(at: old, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: current, withIntermediateDirectories: true)
+        let roots = EnvironmentRoots(rootURL: root.appendingPathComponent("environments"))
+        let registry = EnvironmentRegistry(roots: roots, baseRevision: "fixture")
+        let owner = UUID()
+        let record = try await registry.ensureSessionContainer(conversationID: owner.uuidString,
+            workspaceID: FloeDigest.sha256Hex(Data(old.resolvingSymlinksInPath().standardizedFileURL.path.utf8)),
+            workspaceRootPath: old.path, executionBackend: .linuxVM)
+        let coordinator = EnvironmentExecutionCoordinator(roots: roots, registry: registry)
+        var context = ToolContext(runID: UUID(), workspaceRootURL: current,
+            cancellation: CancellationToken(), environmentID: record.id, conversationID: owner)
+        context.executionToolName = "exec.shell"
+        let lease = try await coordinator.acquire(context)
+        #expect(lease.context.environmentID == record.id)
+        #expect(lease.context.workspaceRootURL == current)
+        await lease.finish()
+        var foreign = context
+        foreign.conversationID = UUID()
+        await #expect(throws: (any Error).self) { _ = try await coordinator.acquire(foreign) }
+        var unowned = context
+        unowned.conversationID = nil
+        await #expect(throws: (any Error).self) { _ = try await coordinator.acquire(unowned) }
+        var project = context
+        project.environmentID = record.parentID
+        await #expect(throws: (any Error).self) { _ = try await coordinator.acquire(project) }
+    }
     @Test func idleFenceJoinsOwnersAndKeepsNativeToolsAvailable() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: root) }

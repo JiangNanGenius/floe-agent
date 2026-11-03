@@ -30,14 +30,16 @@ public actor EnvironmentExecutionCoordinator {
         let record: ContainerRecord
         if let id = original.environmentID {
             guard let selected = await registry.record(id: id) else { throw FloeError.notFound("Execution environment \(id)") }
-            let projectOwner: String?
-            if selected.kind == .session, let parent = selected.parentID {
-                projectOwner = await registry.record(id: parent)?.ownerID
-                if let conversationID = original.conversationID, selected.ownerID != conversationID.uuidString {
+            if selected.kind == .session {
+                // Session dependencies follow the task's saved environment,
+                // including after its authorized working folder changes.
+                // ToolContext owns current file access; the inherited project
+                // layer is not an independent grant to its old working folder.
+                guard let conversationID = original.conversationID,
+                      selected.ownerID == conversationID.uuidString else {
                     throw FloeError.validationFailed("Environment belongs to another conversation")
                 }
-            } else { projectOwner = selected.ownerID }
-            guard projectOwner == workspaceID else {
+            } else if selected.ownerID != workspaceID {
                 throw FloeError.validationFailed("Environment belongs to another workspace")
             }
             record = selected

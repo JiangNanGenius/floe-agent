@@ -27,7 +27,7 @@ final class CloudRecognitionSettingsUITests: XCTestCase {
         XCTAssertTrue(add.waitForExistence(timeout: 10))
         let savedRows = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "voice.cloud.profile."))
         let originalCount = savedRows.count
-        let providers = ["OpenAI", "OpenAI-compatible relay", "Volcengine · Pay as you go",
+        let providers = ["OpenAI", "Volcengine · Pay as you go",
                          "Volcengine Agent Plan", "Alibaba Cloud · Pay as you go", "Alibaba Cloud Token Plan"]
         for (index, title) in providers.enumerated() {
             add.tap()
@@ -38,7 +38,11 @@ final class CloudRecognitionSettingsUITests: XCTestCase {
             provider.tap()
             XCTAssertTrue(app.textFields["Name"].waitForExistence(timeout: 5), title)
             XCTAssertTrue(app.textFields["File transcription URL"].exists, title)
-            if index == 1 || index == 5 { capture("Cloud recognition form " + title, app: app) }
+            if index == 0 {
+                XCTAssertEqual(app.textFields["File transcription URL"].value as? String,
+                               "https://api.openai.com/v1")
+            }
+            if index == 0 || index == 4 { capture("Cloud recognition form " + title, app: app) }
             let cancel = app.buttons["Cancel"].firstMatch
             XCTAssertTrue(cancel.exists)
             cancel.tap()

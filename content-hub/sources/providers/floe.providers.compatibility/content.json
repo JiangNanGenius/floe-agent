@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "id": "floe.providers.compatibility",
-  "version": "1.1.3",
+  "version": "1.1.4",
   "kind": "providers",
   "minimumAppVersion": "1.7.64",
   "sourceRevision": "",
@@ -9,8 +9,8 @@
   "requiredCapabilities": [],
   "dependencies": [],
   "releaseNotes": {
-    "zh-Hans": "提供商兼容性映射与官方 ProviderCatalog：火山引擎 Agent Plan 的图片候选修正为官方套餐支持的 Seedream 5.0 Pro / Flash，移除仅按量付费可用的 Lite；套餐目录只列出已审阅的模型 ID，不声明 /models 列表。目录仍随包分发，经 App 严格校验后由同一签名事务生效。",
-    "en": "Provider compatibility mapping plus the official ProviderCatalog: the Volcengine Agent Plan image offer now lists only the plan-supported Seedream 5.0 Pro/Flash and removes the PAYG-only Lite id. Plan entries list reviewed model identifiers only and claim no /models listing; the catalog ships in-package and activates through the same signed transaction after strict app-side validation."
+    "zh-Hans": "补齐 Ark Code Latest 的 1M 上下文信息。提供商兼容性映射与官方 ProviderCatalog：火山引擎 Agent Plan 的图片候选修正为官方套餐支持的 Seedream 5.0 Pro / Flash，移除仅按量付费可用的 Lite；套餐目录只列出已审阅的模型 ID，不声明 /models 列表。目录仍随包分发，经 App 严格校验后由同一签名事务生效。",
+    "en": "Adds the 1M context capacity for Ark Code Latest. Provider compatibility mapping plus the official ProviderCatalog: the Volcengine Agent Plan image offer now lists only the plan-supported Seedream 5.0 Pro/Flash and removes the PAYG-only Lite id. Plan entries list reviewed model identifiers only and claim no /models listing; the catalog ships in-package and activates through the same signed transaction after strict app-side validation."
   },
   "privacy": {
     "zh-Hans": "本包不包含 API 密钥、令牌或带凭据的地址；凭据只保存在已批准的凭据存储中。",

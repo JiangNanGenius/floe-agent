@@ -47,10 +47,6 @@ struct AutomaticReasoningEffortAuxiliaryClassifier: AutomaticReasoningEffortClas
         // profile's deep-reasoning setting. `.automatic` plus `.disabled`
         // policy deliberately omits provider-specific thinking fields.
         helperModel.reasoningEffort = .automatic
-        helperModel.limits.maxOutputTokens = min(
-            max(helperModel.limits.configuredMaxOutputTokens ?? 128, 64),
-            256
-        )
         let request = ProviderStreamRequest(
             provider: provider,
             model: helperModel,

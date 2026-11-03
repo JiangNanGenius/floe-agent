@@ -297,7 +297,6 @@ final class CloudASRSettingsStore: ObservableObject {
 
     enum ProviderPreset: String, CaseIterable, Sendable {
         case openAI
-        case openAIRelay
         case volcenginePayAsYouGo
         case volcengineAgentPlan
         case alibabaPayAsYouGo
@@ -305,7 +304,7 @@ final class CloudASRSettingsStore: ObservableObject {
 
         var provider: ASRProviderKind {
             switch self {
-            case .openAI, .openAIRelay: return .openaiCompatible
+            case .openAI: return .openaiCompatible
             case .volcenginePayAsYouGo, .volcengineAgentPlan: return .volcengine
             case .alibabaPayAsYouGo, .alibabaTokenPlan: return .alibaba
             }
@@ -313,7 +312,7 @@ final class CloudASRSettingsStore: ObservableObject {
 
         var route: ASRBillingRoute {
             switch self {
-            case .openAI, .openAIRelay, .volcenginePayAsYouGo, .alibabaPayAsYouGo:
+            case .openAI, .volcenginePayAsYouGo, .alibabaPayAsYouGo:
                 return .payAsYouGo
             case .volcengineAgentPlan: return .agentPlan
             case .alibabaTokenPlan: return .tokenPlan
@@ -323,9 +322,8 @@ final class CloudASRSettingsStore: ObservableObject {
         func makeProfile() -> ASRProfile {
             switch self {
             case .openAI:
-                return ASRProfile.openAICompatible(name: "OpenAI")
-            case .openAIRelay:
-                return ASRProfile.openAICompatible(name: "OpenAI-compatible relay")
+                return ASRProfile.openAICompatible(
+                    name: "OpenAI", fileEndpoint: ASRProviderRouting.openAIFileBase)
             case .volcenginePayAsYouGo:
                 return ASRProfile.volcengine(
                     name: "Volcengine", billingRoute: .payAsYouGo)
@@ -346,8 +344,7 @@ final class CloudASRSettingsStore: ObservableObject {
         static func preset(for profile: ASRProfile) -> ProviderPreset? {
             switch (profile.provider, profile.billingRoute) {
             case (.openaiCompatible, .payAsYouGo):
-                return profile.fileEndpoint == nil && profile.liveEndpoint == nil
-                    ? .openAI : .openAIRelay
+                return .openAI
             case (.volcengine, .payAsYouGo): return .volcenginePayAsYouGo
             case (.volcengine, .agentPlan): return .volcengineAgentPlan
             case (.alibaba, .payAsYouGo): return .alibabaPayAsYouGo

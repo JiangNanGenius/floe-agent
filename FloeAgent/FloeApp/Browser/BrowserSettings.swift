@@ -220,6 +220,15 @@ final class BrowserSettingsService: ObservableObject {
         bump()
     }
 
+    func revokeProvider(_ providerID: String) {
+        guard authorizedProviderIDs.remove(providerID) != nil else { return }
+        // Revocation also retires already-captured results, even if the same
+        // provider is authorized again before an old WebKit callback arrives.
+        advancedGeneration &+= 1
+        persistProviders()
+        bump()
+    }
+
     /// Deletes the real persistent WebKit store through public APIs only.
     /// This runs only from the user's explicit website-data Delete action;
     /// it is never coupled to the advanced-AI switch or provider grant.
@@ -261,7 +270,7 @@ struct BrowserProviderIdentity: Codable, Hashable, Identifiable, Sendable {
 }
 
 /// The app wires the current provider identity here when the conversation's
-/// provider changes. Browser data tools require an explicit one-time grant
+/// provider changes. Browser data tools require explicit saved consent
 /// for that exact identity. There is intentionally no per-call prompt and no
 /// anonymous fallback: without a known provider identity the gate fails
 /// closed instead of assuming the provider is trusted.

@@ -165,10 +165,11 @@ final class WebSearchCatalogSettingsTests: XCTestCase {
         XCTAssertEqual(ContentUpdateCenter.searchProviderPackageID, "floe.search.providers")
         XCTAssertEqual(SearchProviderCatalog.packageID, "floe.search.providers")
         XCTAssertEqual(ContentUpdateCenter.searchProviderCatalogPath, "SearchProviderCatalog.json")
-        XCTAssertEqual(ContentUpdateCenter.builtInSearchProvidersVersion, "1.1.0")
+        XCTAssertEqual(ContentUpdateCenter.builtInSearchProvidersVersion, "1.2.0")
         let bundled = try XCTUnwrap(SearchProviderCatalogIndex.loadBundled(bundle: .main))
         XCTAssertEqual(bundled.version, ContentUpdateCenter.builtInSearchProvidersVersion)
-        XCTAssertEqual(bundled.entries.count, 10)
+        XCTAssertEqual(bundled.entries.count, 11)
+        XCTAssertNotNil(bundled.entry(presetID: "moonshot"))
     }
 
     func testDeepSeekCatalogEntryConfiguresAndSavesDisabledOwnedInstance() throws {

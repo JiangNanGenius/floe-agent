@@ -70545,13 +70545,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "The official catalog adds verified capabilities to models you already saved. Nothing changes until you apply."
+            "value": "Review changes to saved models, including capabilities and context length. Nothing changes until you apply."
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "官方目录为已保存的模型补充经过验证的能力信息；在你确认前不会更改。"
+            "value": "查看已保存模型的能力和上下文长度变化，确认后再应用。"
           }
         }
       }
@@ -70596,13 +70596,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Model capability updates"
+            "value": "Model information updates"
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "模型能力更新"
+            "value": "模型信息更新"
           }
         }
       }

@@ -560,7 +560,7 @@ struct VoiceConversationView: View {
             // never re-created (one `Layout`), so typing state, caret, undo
             // and the live IME composition belong to the SAME editing surface
             // before and after the reflow.
-            ComposerResponsiveRow(spacing: 10, isFieldOverflowing: composerOverflows) {
+            ComposerResponsiveRow(spacing: 10) {
                 if !session.temporary {
                     Menu {
                         Button("chat.thread_composer_view.import_attachment", systemImage: "doc") { showsFiles = true }

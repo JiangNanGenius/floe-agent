@@ -115,7 +115,6 @@ struct CloudASRProfilesView: View {
     private func presetKey(_ preset: CloudASRSettingsStore.ProviderPreset) -> String {
         switch preset {
         case .openAI: return "voice.cloud.preset.openai"
-        case .openAIRelay: return "voice.cloud.preset.relay"
         case .volcenginePayAsYouGo: return "voice.cloud.preset.volcengine_payg"
         case .volcengineAgentPlan: return "voice.cloud.preset.volcengine_plan"
         case .alibabaPayAsYouGo: return "voice.cloud.preset.alibaba_payg"
@@ -169,7 +168,8 @@ private struct CloudASRProfileEditor: View {
         _name = State(initialValue: original.name)
         _fileModel = State(initialValue: original.fileModelID)
         _liveModel = State(initialValue: original.liveModelID ?? "")
-        _fileEndpoint = State(initialValue: original.resolvedFileEndpoint ?? "")
+        _fileEndpoint = State(initialValue: original.resolvedFileEndpoint
+            ?? (original.provider == .openaiCompatible ? ASRProviderRouting.openAIFileBase : ""))
         _liveEndpoint = State(initialValue: original.liveEndpoint ?? "")
         _resourceID = State(initialValue: original.resourceID ?? "")
         _languages = State(initialValue: original.languages.joined(separator: ","))

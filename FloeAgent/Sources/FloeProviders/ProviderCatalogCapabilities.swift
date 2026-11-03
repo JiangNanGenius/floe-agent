@@ -134,6 +134,8 @@ public struct ProviderCatalogCapabilityProposal: Sendable, Equatable, Identifiab
     /// additions are ever proposed; a reviewed migration never downgrades a
     /// locally configured model.
     public var addedCapabilities: ModelCapabilities
+    public var currentContextTokens: Int? = nil
+    public var proposedContextTokens: Int? = nil
 
     public var id: String { "\(providerID.uuidString)/\(modelID.uuidString)" }
 
@@ -205,8 +207,13 @@ public enum ProviderCatalogCapabilityMigration {
                 if let explicit = model.explicitCapabilities {
                     added.subtract(explicit)
                 }
-                guard !added.isEmpty else { continue }
-                proposals.append(ProviderCatalogCapabilityProposal(
+                let context = metadata.contextTokens.flatMap { value -> Int? in
+                    guard value > 0, value <= 10_000_000,
+                          value != model.limits.contextTokens else { return nil }
+                    return value
+                }
+                guard !added.isEmpty || context != nil else { continue }
+                var proposal = ProviderCatalogCapabilityProposal(
                     providerID: provider.id,
                     providerName: providerName,
                     presetID: presetID,
@@ -215,7 +222,10 @@ public enum ProviderCatalogCapabilityMigration {
                     displayName: model.displayName,
                     currentCapabilities: model.capabilities,
                     addedCapabilities: added
-                ))
+                )
+                proposal.currentContextTokens = model.limits.contextTokens
+                proposal.proposedContextTokens = context
+                proposals.append(proposal)
             }
         }
         return proposals.sorted { lhs, rhs in
@@ -239,12 +249,13 @@ public enum ProviderCatalogCapabilityMigration {
             && model.providerID == proposal.providerID
             && model.remoteModelID == proposal.remoteModelID
             && model.capabilities == proposal.currentCapabilities
+            && (proposal.currentContextTokens == nil || model.limits.contextTokens == proposal.currentContextTokens)
             && (model.explicitCapabilities ?? []).intersection(proposal.addedCapabilities).isEmpty
     }
 
     /// Applies one confirmed proposal: the added bits are set AND recorded as
     /// explicit user decisions, so a later refresh/sync can never silently
-    /// revert the reviewed state. Identity, limits, surfaces and media flags
+    /// revert the reviewed state. Identity, output choice, surfaces and media flags
     /// are preserved.
     public static func applying(
         _ proposal: ProviderCatalogCapabilityProposal,
@@ -253,7 +264,12 @@ public enum ProviderCatalogCapabilityMigration {
         guard matches(proposal, current: model) else { return model }
         var updated = model
         updated.capabilities.formUnion(proposal.addedCapabilities)
-        updated.explicitCapabilities = (updated.explicitCapabilities ?? []).union(proposal.addedCapabilities)
+        if !proposal.addedCapabilities.isEmpty {
+            updated.explicitCapabilities = (updated.explicitCapabilities ?? []).union(proposal.addedCapabilities)
+        }
+        if let context = proposal.proposedContextTokens {
+            updated.limits.contextTokens = context
+        }
         return updated
     }
 }

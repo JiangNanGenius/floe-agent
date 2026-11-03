@@ -6330,6 +6330,7 @@
       "kind": "custom",
       "modelMetadata": {
         "ark-code-latest": {
+          "contextTokens": 1048576,
           "attachment": true,
           "input": [
             "image",

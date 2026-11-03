@@ -13,8 +13,6 @@ struct BrowserSettingsView: View {
     @ObservedObject private var settings: BrowserSettingsService
     @ObservedObject private var trust: BrowserProviderTrustCoordinator
     private let configuredProviders: [BrowserProviderIdentity]
-    private let onProviderSelected: ((BrowserProviderIdentity) -> Void)?
-    @State private var selectedProviderID: String?
 
     @State private var customUserAgent: String
     @State private var activeAlert: PresentedAlert?
@@ -22,7 +20,6 @@ struct BrowserSettingsView: View {
 
     private enum PresentedAlert: String, Identifiable {
         case advanced
-        case provider
         case clearData
         var id: String { rawValue }
     }
@@ -44,24 +41,14 @@ struct BrowserSettingsView: View {
         self.trust = trust
         _ = browserCenter
         self.configuredProviders = providers
-        self.onProviderSelected = onProviderSelected
         _customUserAgent = State(initialValue: settings.userAgent.customValue)
-        _selectedProviderID = State(
-            initialValue: defaultProviderID
-                ?? trust.currentProvider?.id
-                ?? providers.first?.id
-        )
     }
 
-    private var selectedProvider: BrowserProviderIdentity? {
-        if let selectedProviderID,
-           let configured = configuredProviders.first(where: { $0.id == selectedProviderID }) {
-            return configured
-        }
-        if !configuredProviders.isEmpty {
-            return configuredProviders.first
-        }
-        return trust.currentProvider
+    private var authorizationProviders: [BrowserProviderIdentity] {
+        var seen = Set<String>()
+        let candidates = configuredProviders.isEmpty
+            ? [trust.currentProvider].compactMap { $0 } : configuredProviders
+        return candidates.filter { seen.insert($0.id).inserted }
     }
 
     var body: some View {
@@ -176,68 +163,22 @@ struct BrowserSettingsView: View {
             }
 
             Section {
-                if let provider = selectedProvider {
-                    if configuredProviders.count > 1 {
-                        Picker(
-                            IDELanguageRunText.t("模型提供商", "Model provider"),
-                            selection: Binding(
-                                get: { selectedProviderID ?? provider.id },
-                                set: { newID in
-                                    selectedProviderID = newID
-                                    if let selected = configuredProviders.first(where: { $0.id == newID }) {
-                                        onProviderSelected?(selected)
-                                    }
-                                }
-                            )
-                        ) {
-                            ForEach(configuredProviders) { item in
-                                Text(item.displayName).tag(item.id)
-                            }
-                        }
-                    } else {
-                        HStack {
-                            Text(provider.displayName)
-                            Spacer()
-                        }
-                    }
+                NavigationLink {
+                    BrowserAuthorizedProvidersView(settings: settings, providers: authorizationProviders)
+                } label: {
                     HStack {
-                        Text(settings.isProviderAuthorized(provider.id)
-                            ? IDELanguageRunText.t("已授权", "Authorized")
-                            : IDELanguageRunText.t("未授权", "Not authorized"))
-                            .font(.caption)
-                            .foregroundStyle(settings.isProviderAuthorized(provider.id) ? .green : .orange)
+                        Text(IDELanguageRunText.t("已授权的供应商", "Authorized providers"))
                         Spacer()
+                        Text("\(authorizationProviders.filter { settings.isProviderAuthorized($0.id) }.count)")
+                            .foregroundStyle(.secondary)
                     }
-                    Button {
-                        activeAlert = .provider
-                    } label: {
-                        Label(IDELanguageRunText.t("授权此提供商读取浏览器数据", "Authorize this provider for browser data"),
-                              systemImage: "person.badge.key")
-                    }
-                } else {
-                    Text(IDELanguageRunText.t(
-                        "当前模型提供商尚未标识，浏览器会话数据读取保持关闭。",
-                        "The active model provider is not identified; browser session data reads stay off."
-                    ))
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
                 }
-            } header: {
-                Text(IDELanguageRunText.t("模型接收方", "Model recipient"))
-            } footer: {
-                Text(IDELanguageRunText.t(
-                    "提供商授权会保留。工具操作仍遵循当前任务的审批设置。",
-                    "Provider consent is saved. Tool actions still follow this task’s approval settings."
-                ))
+                .accessibilityIdentifier("browser.settings.authorized-providers")
             }
+
         }
         .navigationTitle(IDELanguageRunText.t("浏览器设置", "Browser settings"))
         .navigationBarTitleDisplayMode(.inline)
-        .onAppear {
-            if trust.currentProvider == nil, let selected = selectedProvider {
-                onProviderSelected?(selected)
-            }
-        }
         .alert(item: $activeAlert) { item in
             switch item {
             case .advanced:
@@ -249,20 +190,6 @@ struct BrowserSettingsView: View {
                         statusMessage = IDELanguageRunText.t(
                             "高级浏览器功能已开启",
                             "Advanced browser features are enabled"
-                        )
-                    },
-                    secondaryButton: .cancel()
-                )
-            case .provider:
-                return Alert(
-                    title: Text(IDELanguageRunText.t("为此提供商授权浏览器数据？", "Authorize this provider for browser data?")),
-                    message: Text(settings.providerWarning),
-                    primaryButton: .destructive(Text(IDELanguageRunText.t("授权", "Authorize"))) {
-                        guard let provider = selectedProvider else { return }
-                        settings.authorizeProvider(provider.id)
-                        statusMessage = IDELanguageRunText.t(
-                            "提供商已获得一次性浏览器数据授权",
-                            "The provider now has a one-time browser-data grant"
                         )
                     },
                     secondaryButton: .cancel()
@@ -377,6 +304,35 @@ struct BrowserSiteDataView: View {
     private func clearAll() async {
         _ = await BrowserWebDataBridge.clearAll(store: .default())
         await reload()
+    }
+}
+private struct BrowserAuthorizedProvidersView: View {
+    @ObservedObject var settings: BrowserSettingsService
+    let providers: [BrowserProviderIdentity]
+
+    var body: some View {
+        Form {
+            Section {
+                ForEach(providers) { provider in
+                    Toggle(provider.displayName, isOn: Binding(
+                        get: { settings.isProviderAuthorized(provider.id) },
+                        set: { authorized in
+                            if authorized { settings.authorizeProvider(provider.id) }
+                            else { settings.revokeProvider(provider.id) }
+                        }
+                    ))
+                    .accessibilityIdentifier("browser.provider.authorization." + provider.id)
+                }
+                if providers.isEmpty {
+                    Text(IDELanguageRunText.t("尚未添加供应商", "No providers added"))
+                        .foregroundStyle(.secondary)
+                }
+            } footer: {
+                Text(settings.providerWarning)
+            }
+        }
+        .navigationTitle(IDELanguageRunText.t("已授权的供应商", "Authorized providers"))
+        .navigationBarTitleDisplayMode(.inline)
     }
 }
 #endif

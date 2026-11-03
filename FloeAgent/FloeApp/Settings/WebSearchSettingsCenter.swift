@@ -1048,7 +1048,10 @@ struct WebSearchSettingsView: View {
             } header: {
                 Text("websearch.providers")
             }
-            let kimiAccounts = ProfessionalSearchAuthority.registeredAccounts().filter { $0.sourceKind == .kimiCode }
+            let kimiAccounts = center.instances.filter { instance in
+                instance.configuration.kind == .moonshot
+                    && (try? MoonshotSearchOptions(options: instance.configuration.options).channel) == .kimiCode
+            }
             if !professionalSearchInstances.isEmpty || !kimiAccounts.isEmpty {
                 Section {
                     ForEach(professionalSearchInstances) { instance in
@@ -1062,8 +1065,11 @@ struct WebSearchSettingsView: View {
                             Label(instance.configuration.displayName, systemImage: "books.vertical")
                         }
                     }
-                    ForEach(kimiAccounts) { account in
-                        Label(account.displayName, systemImage: "books.vertical")
+                    ForEach(kimiAccounts) { instance in
+                        Button { editing = instance } label: {
+                            Label(instance.configuration.displayName, systemImage: "books.vertical")
+                        }
+                        .foregroundStyle(.primary)
                     }
                 } header: {
                     Text("websearch.professional.title")
@@ -1403,8 +1409,15 @@ private struct SearchProviderCatalogPicker: View {
     }
 
     private func row(_ entry: SearchProviderCatalogEntry) -> some View {
-        Text(entry.displayName(localePrimary: WebSearchSettingsCenter.localePrimary))
-            .frame(maxWidth: .infinity, minHeight: FloeTheme.minimumTarget, alignment: .leading)
+        VStack(alignment: .leading, spacing: 3) {
+            Text(entry.displayName(localePrimary: WebSearchSettingsCenter.localePrimary))
+            if entry.supportedAdapter == .moonshot {
+                Text(moonshotText("Pay as you go · Kimi Code", "按量付费 · Kimi Code"))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .frame(maxWidth: .infinity, minHeight: FloeTheme.minimumTarget, alignment: .leading)
     }
 
     private func addDraft(for entry: SearchProviderCatalogEntry) -> WebSearchProviderInstance {

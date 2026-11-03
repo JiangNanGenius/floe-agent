@@ -23,6 +23,44 @@ import FloeTools
 @Suite("FloeApp.BrowserPreviewOwnership", .serialized)
 @MainActor
 struct BrowserPreviewOwnershipTests {
+
+    @Test("Ordinary task browsing reaches local web servers while staged export keeps its ownership gate")
+    func localNetworkNavigationIsNotExportAuthority() throws {
+        let owner = UUID(), other = UUID(), service = UUID()
+        let url = URL(string: "http://127.0.0.1:18080/")!
+        #expect(try BrowserURLPolicy.validate(url.absoluteString, conversationID: owner, allowLocalNetwork: true) == url)
+        #expect(try BrowserURLPolicy.validate("http://localhost:18080/", conversationID: owner, allowLocalNetwork: true).host == "localhost")
+        #expect(try BrowserURLPolicy.validate("http://192.168.1.20:8080/", conversationID: owner, allowLocalNetwork: true).host == "192.168.1.20")
+        #expect(!BrowserURLPolicy.isOwnedLocalEndpoint(url, conversationID: owner))
+        BrowserURLPolicy.authorizeService(url, owner: service, conversationID: other)
+        defer { BrowserURLPolicy.revokeService(owner: service) }
+        #expect(throws: BrowserPolicyError.self) {
+            try BrowserURLPolicy.validate(url.absoluteString, conversationID: owner, allowLocalNetwork: true)
+        }
+        #expect(throws: BrowserPolicyError.self) {
+            try BrowserURLPolicy.validate("http://localhost:18080/", conversationID: owner, allowLocalNetwork: true)
+        }
+    }
+
+    @Test("Provider checklist grants persist and revocation fences old sensitive callbacks")
+    func savedProviderChecklistSurvivesReloadAndRevocation() throws {
+        let suite = "browser-checklist-" + UUID().uuidString
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let settings = BrowserSettingsService(defaults: defaults)
+        settings.authorizeProvider("one")
+        settings.authorizeProvider("two")
+        let restored = BrowserSettingsService(defaults: defaults)
+        #expect(restored.isProviderAuthorized("one"))
+        #expect(restored.isProviderAuthorized("two"))
+        let generation = restored.advancedGeneration
+        restored.revokeProvider("one")
+        restored.authorizeProvider("one")
+        #expect(restored.advancedGeneration != generation)
+        #expect(restored.isProviderAuthorized("two"))
+        restored.revokeProvider("one")
+        #expect(!BrowserSettingsService(defaults: defaults).isProviderAuthorized("one"))
+    }
     // MARK: - Fixtures
 
     private func makeCenter() -> BrowserSessionCenter {

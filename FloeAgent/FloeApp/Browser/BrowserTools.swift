@@ -251,7 +251,7 @@ private final class BrowserToolEnvironment: @unchecked Sendable {
         let resolved = try session(for: context)
         let owner = resolved.owner
         let session = resolved.session
-        let url = try BrowserURLPolicy.validate(urlString, conversationID: owner)
+        let url = try BrowserURLPolicy.validate(urlString, conversationID: owner, allowLocalNetwork: true)
         guard !session.isUserControlling else {
             throw FloeError.validationFailed("Wait for the user to return browser control before downloading")
         }
@@ -609,7 +609,7 @@ private struct BrowserNavigateTool: AgentTool {
     @MainActor func execute(_ args: Arguments, context: ToolContext) async throws -> ToolExecutionOutput {
         try context.cancellation.throwIfCancelled()
         let owner = try environment.owner(for: context)
-        _ = try BrowserURLPolicy.validate(args.url, conversationID: owner)
+        _ = try BrowserURLPolicy.validate(args.url, conversationID: owner, allowLocalNetwork: true)
         return try await environment.run(context: context, action: .navigate(url: args.url), tabID: args.tabID)
     }
 }

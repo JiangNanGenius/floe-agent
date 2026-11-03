@@ -186,7 +186,7 @@ struct ProviderConnectionProbeTests {
         let json = try #require(JSONSerialization.jsonObject(with: body) as? [String: Any])
         #expect(json["model"] as? String == "qwen3.8-flash")
         #expect(json["stream"] as? Bool == false)
-        #expect(json["max_tokens"] as? Int == ProviderConnectionProbe.probeMaxOutputTokens)
+        #expect(json["max_tokens"] == nil)
         #expect(ProviderConnectionProbe.probeMaxOutputTokens > 0)
         #expect(ProviderConnectionProbe.probeMaxOutputTokens <= 64)
         #expect((json["messages"] as? [[String: Any]])?.count == 1)
@@ -322,7 +322,7 @@ struct ProviderConnectionProbeTests {
         if let request,
            let body = ProbeURLProtocol.bodyData(of: request),
            let json = try? JSONSerialization.jsonObject(with: body) as? [String: Any] {
-            #expect(json["max_tokens"] as? Int == ProviderConnectionProbe.probeMaxOutputTokens)
+            #expect(json["max_tokens"] == nil)
         } else {
             Issue.record("Expected a probe request body")
         }

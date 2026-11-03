@@ -82,14 +82,6 @@ struct ApprovalModelBackend: ModelApprovalPolicy.DecisionBackend {
         // provider-specific thinking fields (DeepSeek maps `low` to `high`).
         var reviewModel = model
         reviewModel.reasoningEffort = .automatic
-        // Synced model rows can carry a zero/tiny output override. A thinking
-        // classifier then spends its whole budget before producing a visible
-        // verdict and appears as an empty response. Keep a small floor while
-        // still bounding this inexpensive internal pass.
-        reviewModel.limits.maxOutputTokens = min(
-            max(reviewModel.limits.configuredMaxOutputTokens ?? 256, 96),
-            512
-        )
         let text = try await responseText(
             prompt: prompt,
             model: reviewModel,
@@ -108,8 +100,7 @@ struct ApprovalModelBackend: ModelApprovalPolicy.DecisionBackend {
                 OUTPUT:
                 \(String(text.prefix(1_500)))
                 """
-            var repairModel = reviewModel
-            repairModel.limits.maxOutputTokens = 96
+            let repairModel = reviewModel
             let repaired = try await responseText(
                 prompt: repairPrompt,
                 model: repairModel,

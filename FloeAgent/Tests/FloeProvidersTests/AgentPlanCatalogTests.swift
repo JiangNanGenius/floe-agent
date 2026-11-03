@@ -79,9 +79,9 @@ struct AgentPlanCatalogTests {
             "deepseek-v4.1-flash": (1_048_576, 393_216),
             "deepseek-v4.1-flash-economy": (1_048_576, 393_216),
         ]
-        // The selector is documented as a selector, not a fixed model row:
-        // the official table publishes no independent limits for it.
-        #expect(metadata["ark-code-latest"]?.contextTokens == nil)
+        // Context confirmed by provider support (user report, 2026-11-04).
+        // Output capacity remains unspecified; it is not a request default.
+        #expect(metadata["ark-code-latest"]?.contextTokens == 1_048_576)
         #expect(metadata["ark-code-latest"]?.maxOutputTokens == nil)
         #expect(ProviderCatalogCapabilityResolver.supportsImageInput(metadata["ark-code-latest"]) == true)
 

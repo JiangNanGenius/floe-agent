@@ -141,6 +141,14 @@ final class ComposerOverflowUITests: XCTestCase {
         }
         let expand = app.buttons["composer.expand"]
         XCTAssertTrue(expand.waitForExistence(timeout: 15), "A genuinely overflowing soft-wrapped draft exposes Expand")
+        let settled = input.frame
+        for _ in 0..<8 {
+            RunLoop.current.run(until: Date().addingTimeInterval(0.15))
+            XCTAssertEqual(input.frame.width, settled.width, accuracy: 1, "Idle composer must not oscillate between row layouts")
+            XCTAssertEqual(input.frame.height, settled.height, accuracy: 1)
+        }
+        XCTAssertLessThan(input.frame.height, 115, "Default text must show at most three complete rows")
+
         // Direct editable-width evidence on the real viewport: the field owns
         // the row's usable width and the natural controls sit below it, not in
         // a ~100pt column beside the text.

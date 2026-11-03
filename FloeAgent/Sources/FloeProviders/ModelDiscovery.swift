@@ -229,7 +229,7 @@ enum ModelDiscovery {
             displayName: displayName,
             limits: ModelLimits(
                 contextTokens: context,
-                maxOutputTokens: sanitizedMaxOutputTokens(maxOutputTokens, contextTokens: context)
+                maxOutputTokens: 0
             ),
             capabilities: [.text, .tools]
         )

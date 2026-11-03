@@ -175,8 +175,7 @@ public enum ProviderConnectionProbe {
         let body: [String: Any] = [
             "model": modelRemoteID,
             "messages": [["role": "user", "content": "Connection test. Reply OK."]],
-            "stream": false,
-            "max_tokens": probeMaxOutputTokens
+            "stream": false
         ]
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
         return request

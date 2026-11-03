@@ -21,8 +21,8 @@ struct ModelDiscoveryMappingTests {
             maxOutputTokens: 2_048
         ))
         #expect(model.limits.contextTokens == 64_000)
-        #expect(model.limits.maxOutputTokens == 2_048)
-        #expect(model.limits.configuredMaxOutputTokens == 2_048)
+        #expect(model.limits.maxOutputTokens == 0)
+        #expect(model.limits.configuredMaxOutputTokens == nil)
         #expect(model.capabilities.contains(.text))
         #expect(model.capabilities.contains(.tools))
     }
@@ -61,7 +61,7 @@ struct ModelDiscoveryMappingTests {
             maxOutputTokens: 512
         ))
         #expect(negativeContext.limits.contextTokens == 128_000)
-        #expect(negativeContext.limits.maxOutputTokens == 512)
+        #expect(negativeContext.limits.maxOutputTokens == 0)
     }
 
     @Test("Huge metadata is clamped to the documented ceilings")
@@ -74,9 +74,9 @@ struct ModelDiscoveryMappingTests {
             maxOutputTokens: 500_000_000
         ))
         #expect(model.limits.contextTokens == 10_000_000)
-        #expect(model.limits.maxOutputTokens == 10_000_000)
+        #expect(model.limits.maxOutputTokens == 0)
 
-        // Output can never exceed the resolved context window.
+        // Capacity metadata never opts the user into a provider output limit.
         let bounded = try #require(ModelDiscovery.mapOpenAIItem(
             providerID: UUID(),
             id: "bounded",
@@ -85,7 +85,7 @@ struct ModelDiscoveryMappingTests {
             maxOutputTokens: 65_536
         ))
         #expect(bounded.limits.contextTokens == 4_096)
-        #expect(bounded.limits.maxOutputTokens == 4_096)
+        #expect(bounded.limits.maxOutputTokens == 0)
     }
 
     @Test("Anthropic mapping uses Anthropic's default window and metadata")
@@ -98,7 +98,7 @@ struct ModelDiscoveryMappingTests {
             maxOutputTokens: 32_768
         ))
         #expect(withMetadata.limits.contextTokens == 1_000_000)
-        #expect(withMetadata.limits.maxOutputTokens == 32_768)
+        #expect(withMetadata.limits.maxOutputTokens == 0)
 
         let withoutMetadata = try #require(ModelDiscovery.mapAnthropicItem(
             providerID: UUID(),
@@ -161,7 +161,7 @@ struct ModelDiscoveryMappingTests {
             maxOutputTokens: item.metadataMaxOutputTokens
         ))
         #expect(model.limits.contextTokens == 16_000)
-        #expect(model.limits.maxOutputTokens == 4_096)
+        #expect(model.limits.maxOutputTokens == 0)
     }
 
     @Test("A merge keeps the existing explicit output limit when discovery reports unset")

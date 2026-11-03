@@ -423,6 +423,32 @@ struct ModelCatalogMergerProvenanceTests {
 @Suite("FloeProviders.ProviderCatalogCapabilityMigration")
 struct ProviderCatalogCapabilityMigrationTests {
 
+    @Test("Context updates require confirmation, preserve output choice and reject stale reviews")
+    func contextUpdatesAreReviewed() throws {
+        let vendor = ProviderProfile(kind: .custom, wireProtocol: .openAIChatCompletions,
+            baseURL: URL(string: "https://api.example.com/v1")!, presetID: "vendor")
+        let metadata = ProviderCatalogModelMetadata(input: ["text"], output: ["text"],
+            contextTokens: 1_048_576, maxOutputTokens: 393_216)
+        let index = try validatedIndex(metadataDocument([metadataEntry("vendor", name: "Vendor",
+            models: ["chat"], modelMetadata: ["chat": metadata])]))
+        var model = savedModel("chat", capabilities: [.text, .tools], providerID: vendor.id)
+        model.limits.maxOutputTokens = 0
+        let proposal = try #require(ProviderCatalogCapabilityMigration.proposals(
+            providers: [vendor], modelsByProvider: [vendor.id: [model]], catalog: index).first)
+        #expect(model.limits.contextTokens == 128_000)
+        #expect(proposal.proposedContextTokens == 1_048_576)
+        let updated = ProviderCatalogCapabilityMigration.applying(proposal, to: model)
+        #expect(updated.limits.contextTokens == 1_048_576)
+        #expect(updated.limits.maxOutputTokens == 0)
+        #expect(updated.displayName == model.displayName)
+        #expect(ProviderCatalogCapabilityMigration.proposals(providers: [vendor],
+            modelsByProvider: [vendor.id: [updated]], catalog: index).isEmpty)
+        var concurrent = model
+        concurrent.limits.contextTokens = 64_000
+        #expect(!ProviderCatalogCapabilityMigration.matches(proposal, current: concurrent))
+        #expect(ProviderCatalogCapabilityMigration.applying(proposal, to: concurrent) == concurrent)
+    }
+
     private func catalog() throws -> ProviderCatalogIndex {
         try validatedIndex(metadataDocument([
             metadataEntry(

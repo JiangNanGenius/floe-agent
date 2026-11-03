@@ -707,16 +707,11 @@ final class ProviderEditorViewModel: ObservableObject {
             )
     }
 
-    /// Limits for a manually added or catalog-staged conversation row. The
-    /// verified catalog context/output facts win when present; absent facts
-    /// keep the legacy 128K/8K default. Media rows keep their role defaults.
+    /// Catalog capacity informs context budgeting, not a request output cap.
     private func newModelLimits(forRemoteID remoteID: String) -> ModelLimits {
-        let fallback = ModelLimits(contextTokens: 128_000, maxOutputTokens: 8_192)
-        guard serviceRole == .conversation,
-              let metadata = catalogModelMetadata(for: remoteID) else { return fallback }
-        let context = min(max(metadata.contextTokens ?? fallback.contextTokens, 1), 10_000_000)
-        let output = min(max(metadata.maxOutputTokens ?? fallback.maxOutputTokens, 0), context)
-        return ModelLimits(contextTokens: context, maxOutputTokens: output)
+        let context = serviceRole == .conversation
+            ? catalogModelMetadata(for: remoteID)?.contextTokens ?? 128_000 : 128_000
+        return ModelLimits(contextTokens: min(max(context, 1), 10_000_000), maxOutputTokens: 0)
     }
 
     /// Capability defaults for a NEWLY created model row. Discovery and the

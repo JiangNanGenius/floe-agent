@@ -54,8 +54,19 @@ enum BrowserURLPolicy {
         return url
     }
 
-    static func validate(_ value: String, conversationID: UUID? = nil) throws -> URL {
+    static func validate(_ value: String, conversationID: UUID? = nil, allowLocalNetwork: Bool = false) throws -> URL {
         let url = try parseNavigationURL(value)
+        if allowLocalNetwork, let conversationID {
+            let foreignService = previewLock.withLock {
+                serviceOrigins.values.contains {
+                    $0.origin == url.originString && $0.conversationID != conversationID
+                }
+            }
+            guard !foreignService else {
+                throw BrowserPolicyError.blocked("This local service belongs to another conversation")
+            }
+            return url
+        }
         guard let host = url.host?.lowercased(),
               !isPrivate(host) || isAuthorizedPreview(url, conversationID: conversationID) else {
             throw BrowserPolicyError.blocked("Loopback and private-network navigation is blocked")
@@ -92,6 +103,14 @@ enum BrowserURLPolicy {
         case (192, 168): return true
         default: return false
         }
+    }
+}
+
+private extension URL {
+    var originString: String {
+        guard let scheme = scheme?.lowercased(), let originalHost = host?.lowercased() else { return "" }
+        let host = ["localhost", "::1", "[::1]"].contains(originalHost) ? "127.0.0.1" : originalHost
+        return "\(scheme)://\(host):\(port ?? (scheme == "https" ? 443 : 80))"
     }
 }
 
