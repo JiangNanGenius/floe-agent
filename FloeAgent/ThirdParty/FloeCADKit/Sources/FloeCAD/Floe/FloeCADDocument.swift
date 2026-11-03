@@ -96,6 +96,9 @@ public final class FloeCADDocument {
     public let url: URL
     public private(set) var name: String
     public var revision: Int { session.savedIdentity.revision }
+    /// The last verified commit, without creating another package revision.
+    /// Resource owners use this when releasing an already-clean document.
+    public var savedIdentity: CADSaveOutcome { session.savedIdentity }
     public var contentSHA256: String { session.savedIdentity.contentSHA256 }
     /// Additive canonical model identity of the last verified save/load.
     /// Empty only when the package predates the manifest field or this build

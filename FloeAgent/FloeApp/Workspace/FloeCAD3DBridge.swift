@@ -218,7 +218,14 @@ final class FloeCAD3DBridge {
             services[key] = nil
             return nil
         }
-        let outcome = await document.save()
+        // Explicit save may persist thumbnail/metadata even on a clean model.
+        // Releasing a clean owner must not create an unrelated extra revision.
+        let outcome: CADSaveOutcome
+        if document.hasUnsavedChanges || document.isReadOnly {
+            outcome = await document.save()
+        } else {
+            outcome = document.savedIdentity
+        }
         guard documents[key] === document else {
             // A newer session owns the path now. Never let this stale
             // completion drop it or close it. If the caller's own instance was
@@ -1023,8 +1030,8 @@ final class FloeCAD3DBridge {
         let document = try await document(at: url)
         // Mirror CADProposalService: flush live edits first so the proposal
         // binds the bytes the grant will validate; a flush failure refuses.
-        // `flushIfDirty` is package-internal, so this uses the public
-        // save() which is a no-op identity-refresh on a clean document.
+        // `flushIfDirty` is package-internal. Only call the public save when
+        // dirty: an explicit clean save can still persist metadata/preview.
         if document.hasUnsavedChanges {
             let flushed = await document.save()
             guard flushed.succeeded else {

@@ -94,6 +94,31 @@ final class CADRecoveryBridgeOwnershipTests: XCTestCase {
         XCTAssertTrue(live.isClosed)
     }
 
+    func testCleanReleasePreservesTheExactCommittedIdentityAndPackageBytes() async throws {
+        let url = workDir.appendingPathComponent("CleanRelease.floecad")
+        let created = try await FloeCADDocument.create(at: url, name: "Clean release")
+        created.close()
+        let live = try await FloeCAD3DBridge.shared.openDocument(at: url)
+        let command = live.executeJSON(Data(
+            #"{"op":"sketch.create","args":{"name":"Already committed"}}"#.utf8))
+        XCTAssertTrue(command.isOK, command.message ?? "")
+        let committed = await live.save()
+        XCTAssertNil(committed.error, committed.error ?? "")
+        XCTAssertFalse(live.hasUnsavedChanges)
+        let manifest = try Data(contentsOf: url.appendingPathComponent("manifest.json"))
+        let document = try Data(contentsOf: url.appendingPathComponent("document.json"))
+
+        let released = await FloeCAD3DBridge.shared.releaseDocumentOutcome(at: url, expected: live)
+        XCTAssertEqual(released, committed, "release must return the existing verified commit")
+        XCTAssertTrue(live.isClosed)
+        XCTAssertEqual(try Data(contentsOf: url.appendingPathComponent("manifest.json")), manifest)
+        XCTAssertEqual(try Data(contentsOf: url.appendingPathComponent("document.json")), document)
+        let reopened = try await FloeCADDocument.open(at: url)
+        defer { reopened.close() }
+        XCTAssertEqual(reopened.savedIdentity, committed)
+        XCTAssertEqual(reopened.summary().sketchCount, 1)
+    }
+
     // MARK: - Release racing a late edit or a replaced owner
 
     func testLateEditDuringReleaseKeepsTheDraftAndCanBeRetried() async throws {
