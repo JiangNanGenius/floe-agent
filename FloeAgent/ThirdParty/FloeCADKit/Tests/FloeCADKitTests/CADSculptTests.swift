@@ -222,7 +222,8 @@ import simd
         let args:[String:Any]=["bodyID":id.raw.uuidString,"cageDigest":original.digest,"stroke":try json(CADSculptStroke(brush:.init(),samples:[try sample(original)]))]
         // Dictionary receipt stays on MainActor; only a Sendable scalar leaves.
         let task=Task { @MainActor in let reply=await CADMeshService(document:doc).handleAsync(action:"sculpt.stroke",args:args);return reply["error"] as? String }
-        let reached=await Task.detached { entered.wait(timeout:.now()+10) == .success }.value;XCTAssertTrue(reached)
+        let waitForEntry: @Sendable () -> Bool = { entered.wait(timeout:.now()+10) == .success }
+        let reached=await Task.detached { waitForEntry() }.value;XCTAssertTrue(reached)
         task.cancel();CADPolygonMeshService.testBeforeSculptCompute=nil
         _ = try await run(doc,node,id,"sculpt.subdivide");let current=try definition(doc,node.id)
         release.signal();let error=await task.value;XCTAssertNotNil(error)
