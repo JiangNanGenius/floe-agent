@@ -46,10 +46,8 @@ final class CloudRecognitionSettingsUITests: XCTestCase {
                 let streaming = app.switches["voice.cloud.profile.streaming"].firstMatch
                 XCTAssertTrue(streaming.exists, "Volcengine streaming must be directly configurable")
                 XCTAssertEqual(streaming.value as? String, "1")
-                streaming.tap()
-                XCTAssertEqual(streaming.value as? String, "0")
-                streaming.tap()
-                XCTAssertEqual(streaming.value as? String, "1")
+                setStreaming(streaming, enabled: false)
+                setStreaming(streaming, enabled: true)
             }
             if index == 0 || index == 2 || index == 4 { capture("Cloud recognition form " + title, app: app) }
             let cancel = app.buttons["Cancel"].firstMatch
@@ -70,5 +68,14 @@ final class CloudRecognitionSettingsUITests: XCTestCase {
         attachment.name = name
         attachment.lifetime = .keepAlways
         add(attachment)
+    }
+
+    private func setStreaming(_ element: XCUIElement, enabled: Bool) {
+        // Match the existing native Form switch tests: the AX Switch spans
+        // the labeled row, while the actual UISwitch is at the trailing end.
+        element.coordinate(withNormalizedOffset: CGVector(dx: 0.92, dy: 0.5)).tap()
+        let expected = NSPredicate(format: "value == %@", enabled ? "1" : "0")
+        XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(
+            predicate: expected, object: element)], timeout: 5), .completed)
     }
 }
