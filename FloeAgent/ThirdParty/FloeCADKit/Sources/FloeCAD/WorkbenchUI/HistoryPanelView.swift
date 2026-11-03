@@ -17,7 +17,7 @@ struct HistoryPanelView: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 2) {
-                sectionHeader(FloeCADStrings.text("cad.toolbar.history", "History"))
+                sectionHeader(FloeCADStrings.text("cad.toolbar.history", "Feature Tree"))
                 if !viewModel.historyConstructionPlanes.isEmpty {
                     sectionHeader(FloeCADStrings.text("cad.ui.items.planes", "Planes"))
                     ForEach(viewModel.historyConstructionPlanes, id: \.id) { plane in

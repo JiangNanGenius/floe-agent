@@ -2349,7 +2349,7 @@ struct FloeCADEditorView: View {
                     Button {
                         viewModel.showHistoryPanel.toggle()
                     } label: {
-                        Label(FloeCADStrings.label("cad.toolbar.history", "History"),
+                        Label(FloeCADStrings.label("cad.toolbar.history", "Feature Tree"),
                               systemImage: "clock.arrow.circlepath")
                     }
                     .accessibilityIdentifier("HistoryButton")
@@ -2547,7 +2547,7 @@ struct FloeCADEditorView: View {
             Button {
                 viewModel.showHistoryPanel.toggle()
             } label: {
-                Label(FloeCADStrings.label("cad.toolbar.history", "History"),
+                Label(FloeCADStrings.label("cad.toolbar.history", "Feature Tree"),
                       systemImage: "clock.arrow.circlepath")
             }
             Button {

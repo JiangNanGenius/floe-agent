@@ -19678,13 +19678,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "History"
+            "value": "Feature Tree"
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "历史"
+            "value": "特征树"
           }
         }
       }
