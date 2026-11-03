@@ -55,6 +55,8 @@ private struct CADBasicMachiningView:View {
     @State private var message:String?
     @State private var starting=false
     @State private var showingResult=false
+    @State private var canPreviewMultiAxis=false
+    @State private var showingMultiAxis=false
     private func t(_ zh:String,_ en:String)->String {CADBasicMachiningText.t(zh,en)}
     private var part:CADSelectionContext.Body? {guard let selection,selection.bodies.count==1,selection.bodies[0].analyticBRep else{return nil};return selection.bodies[0]}
     private var running:Bool {starting || study.map{[.preparingEnvironment,.simulating,.cancelling].contains($0.state)} == true}
@@ -66,6 +68,7 @@ private struct CADBasicMachiningView:View {
                     Text(t("以零件包围盒为毛坯，沿固定 Z 的直线使用平底刀具。结果为体素近似网格。","Uses the part's bounding box as stock and one fixed-Z straight flat-end-mill cut. The result is an approximate voxel mesh."))
                         .font(.footnote).foregroundStyle(.secondary)
                 }
+                if canPreviewMultiAxis {Section {Button(t("多轴去料预览","Multi-axis Stock Preview")){showingMultiAxis=true}.accessibilityIdentifier("cad.multiAxis.open")}}
                 Section(t("刀具与毛坯 · mm","Tool and stock · mm")) {
                     Picker(t("体素大小","Voxel size"),selection:$h) {ForEach([0.25,0.5,1.0,2.0],id:\.self){v in Text(v,format:.number).tag(v)}}
                     number(t("刀具半径","Tool radius"),$radius)
@@ -107,6 +110,7 @@ private struct CADBasicMachiningView:View {
                     x0=cx-min(3,(hi[0]-lo[0])/4);x1=cx+min(3,(hi[0]-lo[0])/4);y0=cy;y1=cy;z=hi[2]-min(10,(hi[2]-lo[2])/2)
                 }
                 study=environment.basicMachiningCenter.latest(documentURL:document.url,conversationID:conversationID,root:root)
+                canPreviewMultiAxis=await environment.basicMachiningCenter.multiAxisUIAvailable(conversationID:conversationID,root:root)
             }
             .task(id:study?.id) {
                 guard let id=study?.id else{return}
@@ -117,6 +121,7 @@ private struct CADBasicMachiningView:View {
                     }catch{if !Task.isCancelled{message=error.localizedDescription};return}
                 }
             }
+            .sheet(isPresented:$showingMultiAxis) {CADMultiAxisPreviewView(document:document,selection:selection,workspace:workspace,root:root,workspaceID:workspaceID,conversationID:conversationID)}
             .sheet(isPresented:$showingResult) {
                 if let artifact=study?.artifact,root.standardizedFileURL==workspace.currentRootURL?.standardizedFileURL {
                     NavigationStack {FilePreviewView(relativePath:artifact.workspacePath,center:workspace,conversationID:conversationID,allowsIDEExpansion:false,allowsDesignPage:false)

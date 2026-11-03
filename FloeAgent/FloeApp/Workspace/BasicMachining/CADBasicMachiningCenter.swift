@@ -48,8 +48,12 @@ final class CADBasicMachiningCenter {
               await MacBridgeClient.shared.isConnected() else{return false}
         return (try? CADBasicMachiningResources.validateBundle()) != nil
     }
-    func latest(documentURL:URL,conversationID:UUID,root:URL)->CADBasicMachiningStudy? {
-        try? store().latest(documentURL:documentURL.standardizedFileURL.resolvingSymlinksInPath(),conversationID:conversationID,root:root.standardizedFileURL.resolvingSymlinksInPath())
+    func latest(documentURL:URL,conversationID:UUID,root:URL,preview:Bool=false)->CADBasicMachiningStudy? {
+        try? store().latest(documentURL:documentURL.standardizedFileURL.resolvingSymlinksInPath(),conversationID:conversationID,root:root.standardizedFileURL.resolvingSymlinksInPath(),preview:preview)
+    }
+    func multiAxisUIAvailable(conversationID:UUID?,root:URL?) async->Bool {
+        guard await uiAvailable(conversationID:conversationID,root:root) else{return false}
+        return (try? CADMultiAxisPreviewResources.validateBundle()) != nil
     }
     func isRunning(_ id:UUID)->Bool {workers[id] != nil}
     func study(_ id:UUID)throws->CADBasicMachiningStudy {try store().load(id)}
@@ -60,7 +64,7 @@ final class CADBasicMachiningCenter {
         switch request.action {
         case .availability:
             do {try await requireTarget(context);try CADBasicMachiningResources.validateBundle()
-                return try reply(["ok":true,"available":false,"can_prepare":true,"state":"requires_environment_preparation","requires_environment_preparation":true,"scope":"fixed-Z straight flat-end-mill stock visualization","execution":"jobs.submit -> exec.shell","full_engineering_analysis":false])
+                return try reply(["ok":true,"available":false,"can_prepare":true,"state":"requires_environment_preparation","requires_environment_preparation":true,"scope":"fixed-Z straight flat-end-mill stock visualization","execution":"jobs.submit -> exec.shell","preview_can_prepare":(try? CADMultiAxisPreviewResources.validateBundle()) != nil,"preview_scope":"bounded XYZ/IJK voxel stock preview, optional cylindrical holder/box-fixture three-state checks; no CAM planning or turn-mill","full_engineering_analysis":false])
             } catch {return try reply(["ok":true,"available":false,"reason":error.localizedDescription,"full_engineering_analysis":false])}
         case .prepare:
             if let ceiling=context.allowedToolNames,(!ceiling.contains("exec.shell") || !ceiling.contains("jobs.submit")){throw FloeError.unauthorized}
@@ -84,7 +88,13 @@ final class CADBasicMachiningCenter {
         CadBasicMachiningReply(json:try json(object),artifact:artifact)
     }
     private func statusReply(_ s:CADBasicMachiningStudy)throws->CadBasicMachiningReply {
-        var object:[String:Any]=["ok":s.state != .failed && s.state != .stale && s.state != .interrupted,"operation_id":s.id.uuidString,"state":s.state.rawValue,"source_revision":s.source.revision,"source_model_sha256":s.source.modelSHA256,"environment_id":s.environmentID,"precision":"approximate voxel mesh; not BRep or machine-safety verification"]
+        var object:[String:Any]=["ok":s.state != .failed && s.state != .stale && s.state != .interrupted,"operation_id":s.id.uuidString,"state":s.state.rawValue,"source_revision":s.source.revision,"source_model_sha256":s.source.modelSHA256,"environment_id":s.environmentID,"mode":s.parameters.preview == nil ? "basic-fixed-z":"multi-axis-preview","precision":"approximate voxel mesh; not BRep or machine-safety verification"]
+        if let summary=s.previewSummary {
+            object["mode"]="multi-axis-preview";object["precision"]="sampled voxel nominal mesh with a certified continuous remaining-volume bracket; no CAM planning, turn-mill or complete machine safety"
+            object["continuous_remaining_lower_mm3"]=summary.continuousRemainingLowerMM3;object["continuous_remaining_upper_mm3"]=summary.continuousRemainingUpperMM3
+            object["fixture_checks"]=summary.fixtures.map{["id":$0.id,"state":$0.state]}
+            if s.state == .ready {object["remaining_lower_path"]=s.relativeDirectory+"/output/motion/remaining-lower.stl";object["remaining_upper_path"]=s.relativeDirectory+"/output/motion/remaining-upper.stl"}
+        }
         if let value=s.removedMM3{object["removed_mm3"]=value};if let value=s.remainingMM3{object["remaining_mm3"]=value}
         if let run=s.acceptedJobRunID{object["accepted_run_id"]=run.uuidString}
         if let error=s.error{object["message"]=error};if let j=s.preparationJobID{object["environment_job_id"]=j.uuidString};if let j=s.simulationJobID{object["simulation_job_id"]=j.uuidString}
@@ -94,11 +104,11 @@ final class CADBasicMachiningCenter {
     private func plan(_ s:CADBasicMachiningStudy,phase:CadBasicMachiningRequest.Phase)throws->CadBasicMachiningReply {
         let payload=phase == .environment ? s.preparationPayload:s.simulationPayload
         return try reply(["ok":true,"operation_id":s.id.uuidString,"phase":phase.rawValue,"state":s.state.rawValue,
-            "next_tool":"jobs.submit","next_arguments":["tool":"exec.shell","arguments":String(decoding:payload,as:UTF8.self),"purpose":phase == .environment ? "Prepare the selected Mac environment for basic machining":"Compute the saved part's bounded stock mesh","wait":true],
+            "next_tool":"jobs.submit","next_arguments":["tool":"exec.shell","arguments":String(decoding:payload,as:UTF8.self),"purpose":phase == .environment ? "Prepare the selected Mac environment for basic machining":(s.parameters.preview == nil ? "Compute the saved part's bounded stock mesh":"Preview bounded XYZ/IJK stock removal and continuous-volume brackets"),"wait":true],
             "after_submission":"Call cad.document machining collect with this operation_id, phase and the real returned job_id. A running/cancelling/failed/foreign job never becomes a ready result.","environment_id":s.environmentID])
     }
     private func prepare(documentURL:URL,bodyID:UUID,parameters:CadBasicMachiningParameters,context:ToolContext) async throws->CADBasicMachiningStudy {
-        try parameters.validate();try context.cancellation.throwIfCancelled();try await requireTarget(context)
+        try parameters.validate();if parameters.preview != nil {try CADMultiAxisPreviewResources.validateBundle()};try context.cancellation.throwIfCancelled();try await requireTarget(context)
         guard let root=context.workspaceRootURL?.standardizedFileURL.resolvingSymlinksInPath(),let owner=context.conversationID,let environmentID=context.environmentID else{throw FloeError.unauthorized}
         let url=documentURL.standardizedFileURL.resolvingSymlinksInPath();guard url.path.hasPrefix(root.path+"/") else{throw FloeError.unauthorized}
         let id:UUID
@@ -117,6 +127,7 @@ final class CADBasicMachiningCenter {
         do {
             let source=try await CADBasicMachiningSnapshot.capture(documentURL:url,bodyID:bodyID,destination:directory.appendingPathComponent("input/snapshot"),cancellation:context.cancellation)
             try CADBasicMachiningResources.stage(into:directory.appendingPathComponent("support"))
+            if parameters.preview != nil {try CADMultiAxisPreviewResources.stage(into:directory.appendingPathComponent("support"))}
             let input=try json(["schema":"floe.cad-stock-task.v1","units":"mm",
                 "ownerBinding":["operationID":id.uuidString,"environmentID":environmentID,"conversationID":owner.uuidString,"runID":context.runID.uuidString,"jobID":NSNull(),"studyRevision":1],
                 "source":["snapshotRoot":relative+"/input/snapshot","bodyID":bodyID.uuidString,"documentRevision":source.revision,"modelSHA256":source.modelSHA256,"contentSHA256":source.contentSHA256,
@@ -124,10 +135,12 @@ final class CADBasicMachiningCenter {
                 "stock":["mode":"part-bounding-box-blank","resolutionMM":parameters.resolutionMM],
                 "tool":["kind":"flat-end-mill","radiusMM":parameters.radiusMM,"lengthMM":parameters.lengthMM],
                 "path":["kind":"linear-fixed-z","startTipMM":parameters.startTipMM,"endTipMM":parameters.endTipMM]])
-            let data=Data(input.utf8),hash=FloeDigest.sha256Hex(data);try data.write(to:directory.appendingPathComponent("input/request.json"),options:.atomic)
-            let prep=try CADBasicMachiningResources.payload(phase:.environment,relativeDirectory:relative,inputSHA:hash)
-            let simulation=try CADBasicMachiningResources.payload(phase:.simulation,relativeDirectory:relative,inputSHA:hash)
-            let s=CADBasicMachiningStudy(id:id,conversationID:owner,createdRunID:context.runID,environmentID:environmentID,workspaceRoot:root,source:source,parameters:parameters,relativeDirectory:relative,inputSHA256:hash,preparationPayload:prep,simulationPayload:simulation,state:.prepared,createdAt:Date(),updatedAt:Date())
+            let finalInput=parameters.preview != nil ? try CADMultiAxisPreviewResources.taskRequest(fromBasicJSON:input,parameters:parameters):input
+            let data=Data(finalInput.utf8),hash=FloeDigest.sha256Hex(data);try data.write(to:directory.appendingPathComponent("input/request.json"),options:.atomic)
+            let prep=try CADBasicMachiningResources.payload(phase:.environment,relativeDirectory:relative,inputSHA:hash,preview:parameters.preview != nil)
+            let simulation=try CADBasicMachiningResources.payload(phase:.simulation,relativeDirectory:relative,inputSHA:hash,preview:parameters.preview != nil)
+            var s=CADBasicMachiningStudy(id:id,conversationID:owner,createdRunID:context.runID,environmentID:environmentID,workspaceRoot:root,source:source,parameters:parameters,relativeDirectory:relative,inputSHA256:hash,preparationPayload:prep,simulationPayload:simulation,state:.prepared,createdAt:Date(),updatedAt:Date())
+            if parameters.preview != nil {s.formatVersion=2}
             try save(s);return s
         }catch{try? Data(error.localizedDescription.utf8).write(to:directory.appendingPathComponent("prepare-failure.txt"),options:.atomic);throw error}
     }
@@ -156,7 +169,7 @@ final class CADBasicMachiningCenter {
             let directory=s.workspaceRoot.appendingPathComponent(s.relativeDirectory)
             if phase == .environment {
                 if s.environmentVerified,(s.simulationJobID != nil || s.state == .ready){return s}
-                try CADBasicMachiningResources.verifyPreparation(directory:directory,inputSHA:s.inputSHA256)
+                try CADBasicMachiningResources.verifyPreparation(directory:directory,inputSHA:s.inputSHA256,preview:s.parameters.preview != nil)
                 s.environmentVerified=true;s.state = .environmentReady
             } else {
                 guard s.environmentVerified,s.preparationJobID != nil else{throw FloeError.validationFailed("Environment preparation was not verified")}
@@ -168,7 +181,15 @@ final class CADBasicMachiningCenter {
                 let archive=try store().directory(id),stl=archive.appendingPathComponent("stock.stl"),manifest=archive.appendingPathComponent("manifest.json")
                 if FileManager.default.fileExists(atPath:stl.path){guard try FloeDigest.sha256Hex(ofFileAt:stl)==verified.stlSHA256 else{throw FloeError.validationFailed("Stored result changed")}}
                 else{try verified.stlData.write(to:stl,options:.atomic)}
+                for (relative,data) in verified.supplementalFiles {
+                    let target=archive.appendingPathComponent(relative).standardizedFileURL
+                    guard !relative.hasPrefix("/"),!relative.split(separator:"/").contains(".."),target.path.hasPrefix(archive.standardizedFileURL.path+"/") else{throw FloeError.unauthorized}
+                    try FileManager.default.createDirectory(at:target.deletingLastPathComponent(),withIntermediateDirectories:true)
+                    guard target.standardizedFileURL==target.resolvingSymlinksInPath().standardizedFileURL else{throw FloeError.unauthorized}
+                    try data.write(to:target,options:.atomic)
+                }
                 try verified.manifestData.write(to:manifest,options:.atomic)
+                s.previewSummary=verified.previewSummary
                 s.artifact=CadBasicMachiningArtifact(workspacePath:s.relativeDirectory+"/output/stock.stl",artifactPath:"JobDownloads/BasicMachining/\(id.uuidString)/stock.stl",sha256:verified.stlSHA256,byteCount:verified.stlData.count,manifestSHA256:verified.manifestSHA256)
                 let acceptance:[String:Any]=["schema":"floe.basic-machining-accepted.v1","operationID":id.uuidString,"environmentID":s.environmentID,
                     "conversationID":s.conversationID.uuidString,"jobID":job.id.uuidString,"runID":job.runID.uuidString,"sourceRevision":s.source.revision,
@@ -185,7 +206,9 @@ final class CADBasicMachiningCenter {
     private func verifyResult(_ study:CADBasicMachiningStudy,directory:URL) async throws->CADBasicMachiningVerified {
         if let existing=validationTasks[study.id]{return try await existing.value}
         let token=CancellationToken();validationTokens[study.id]=token
-        let task=Task.detached(priority:.userInitiated){try CADBasicMachiningVerification.verify(directory:directory,study:study,coreSHA:CADBasicMachiningResources.coreSHA256,wrapperSHA:CADBasicMachiningResources.wrapperSHA256,cancellation:token)}
+        let task=Task.detached(priority:.userInitiated){
+            if study.parameters.preview != nil {return try CADMultiAxisPreviewVerification.verify(directory:directory,study:study,cancellation:token)}
+            return try CADBasicMachiningVerification.verify(directory:directory,study:study,coreSHA:CADBasicMachiningResources.coreSHA256,wrapperSHA:CADBasicMachiningResources.wrapperSHA256,cancellation:token)}
         validationTasks[study.id]=task
         defer{validationTasks[study.id]=nil;validationTokens[study.id]=nil}
         return try await task.value

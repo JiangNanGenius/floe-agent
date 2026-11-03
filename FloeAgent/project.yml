@@ -709,6 +709,7 @@ targets:
     sources:
       - path: Tests/FloeAppTests/SkillRuntimeTargetTests.swift
       - path: Tests/FloeAppTests/CADBasicMachiningTests.swift
+      - path: Tests/FloeAppTests/CADMultiAxisPreviewTests.swift
       - path: Tests/FloeAppTests/IOSBridgeIntegrationTests.swift
       - path: Tests/FloeAppTests/TaskEnvironmentOwnershipTests.swift
       - path: Tests/FloeAppTests/TaskRemoteEnvironmentLiveTests.swift

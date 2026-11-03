@@ -11,6 +11,8 @@ struct CADBasicMachiningVerified: Sendable {
     var manifestSHA256: String
     var removedMM3: Double
     var remainingMM3: Double
+    var supplementalFiles: [String:Data] = [:]
+    var previewSummary: CADMultiAxisPreviewSummary? = nil
 }
 /// Independent scalar validation of the deliberately small fixed-Z scope.
 /// No CAD mutations, model-authored success marker or BRep promotion.

@@ -33,6 +33,7 @@ struct CADBasicMachiningStudy: Codable, Sendable, Identifiable {
     var simulationPayload: Data
     var environmentVerified = false
     var cancelRequested = false
+    var previewSummary: CADMultiAxisPreviewSummary?
     var removedMM3: Double?
     var remainingMM3: Double?
     var preparationJobID: UUID?
@@ -61,13 +62,13 @@ final class CADBasicMachiningStudyStore {
     }
     func load(_ id:UUID)throws->CADBasicMachiningStudy {
         let study=try JSONDecoder().decode(CADBasicMachiningStudy.self,from:Data(contentsOf:directory(id).appendingPathComponent("study.json")))
-        guard study.formatVersion==1 else{throw FloeError.validationFailed("A newer basic machining study is preserved; open it with a compatible version")}
+        guard (study.formatVersion==1 && study.parameters.preview==nil) || (study.formatVersion==2 && study.parameters.preview != nil) else{throw FloeError.validationFailed("A newer basic machining study is preserved; open it with a compatible version")}
         return study
     }
-    func latest(documentURL:URL,conversationID:UUID,root:URL)->CADBasicMachiningStudy? {
+    func latest(documentURL:URL,conversationID:UUID,root:URL,preview:Bool=false)->CADBasicMachiningStudy? {
         let dirs=(try? FileManager.default.contentsOfDirectory(at:self.root,includingPropertiesForKeys:nil)) ?? []
         return dirs.compactMap { try? load(UUID(uuidString:$0.lastPathComponent) ?? UUID()) }
-            .filter { $0.source.documentURL==documentURL && $0.conversationID==conversationID && $0.workspaceRoot==root }
+            .filter { $0.source.documentURL==documentURL && $0.conversationID==conversationID && $0.workspaceRoot==root && ($0.parameters.preview != nil)==preview }
             .max { $0.updatedAt<$1.updatedAt }
     }
 }

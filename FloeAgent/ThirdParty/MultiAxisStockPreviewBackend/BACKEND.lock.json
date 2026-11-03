@@ -1,0 +1,37 @@
+{
+  "packageVersion": "0.1.2",
+  "scope": "bounded XYZ/IJK stock preview; full E38 open",
+  "upstream": {
+    "repository": "https://github.com/nyarurato/MillSimSharp",
+    "commit": "3cdd4f54ef94e6b95f2a149dad246b4e73aad4e9",
+    "license": "MIT",
+    "coreSHA256": "3405064ebc312dbe38bacfdfb0eea8015354447ae3f749e4089cb8f584d1351d",
+    "reusedSourceArchiveSHA256": "86a900e14586cd01115f85c9158abe3886edeb64ce05c3c65195f46517c7a11c"
+  },
+  "qualifiedTarget": "arm64 macOS via explicitly bound same-Mac jobs/exec.shell/Mac Bridge",
+  "managedRuntime": "Microsoft.NETCore.App 8.0.33; rollForward Disable; reused basic machining environment preparation",
+  "compiler": "Roslyn 4.12.0, net8.0 reference assemblies 8.0.33",
+  "sourceSHA256": {
+    "MultiAxisStockHost.cs": "ef6dee6b91023b37cfbe7f747dbf515375c5bbd8dd826de5621389e891e0a86f",
+    "CADMultiAxisPreviewHost.cs": "5e764dadce5991fcaa1f5ea1c1e10e2e992ad0f81f43a71feb0486861b55b1df",
+    "FixtureClearanceHost.cs": "874f87aea41ddcce5f2de7aa33c6790d9b110dba7c751daf9324f1f310830d9f"
+  },
+  "package": {
+    "backendManifestSHA256": "6c96354ef1562f979e6cb42836ace876c4058c051abc1bc3a8f6a5abb815038a",
+    "zipSHA256": "037850365248becbe34f97213967f41ca4313758ebed6fd38386c45bbc8fddc3",
+    "zipBytes": 96761,
+    "backend": {
+      "FixtureClearanceHost.dll": "a3d40b2f5737e2c803772366dac7cf3f6128d1638b75f5d970abaa6b75445e60",
+      "CADMultiAxisPreviewHost.dll": "bf762f9f104c15608f617558dbe7db99cf6efb79786bf54254d53ad41d3414b5",
+      "MultiAxisStockHost.dll": "b31cb2f9829dd478d8de4419d763f7a20d1c693f77728b02e6eec9b0955332c8",
+      "MillSimSharp.dll": "3405064ebc312dbe38bacfdfb0eea8015354447ae3f749e4089cb8f584d1351d",
+      "FixtureClearanceHost.runtimeconfig.json": "ecfcd22fe75c7261852d839289d0b9d8ba40be778f227f90db5bfd25aca09c40",
+      "MultiAxisStockHost.runtimeconfig.json": "ecfcd22fe75c7261852d839289d0b9d8ba40be778f227f90db5bfd25aca09c40",
+      "CADMultiAxisPreviewHost.runtimeconfig.json": "ecfcd22fe75c7261852d839289d0b9d8ba40be778f227f90db5bfd25aca09c40",
+      "MillSimSharp-LICENSE.txt": "69dafaf55836c001236ca0872aeab7d2f93cab80e495b960ed452bada7c1909a",
+      "Floe-wrapper-LICENSE.txt": "3f3d9e0024b1921b067d6f7f88deb4a60cbe7a78e76c64e3f1d7fc3b779b9d04",
+      "BACKEND_SHA256SUMS": "6c96354ef1562f979e6cb42836ace876c4058c051abc1bc3a8f6a5abb815038a"
+    }
+  },
+  "sourceOnlyAppChangesNotAppQualified": true
+}

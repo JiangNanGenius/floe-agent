@@ -10,17 +10,20 @@ public protocol CadBasicMachiningHosting: Sendable {
 }
 
 public struct CadBasicMachiningParameters: Codable, Sendable, Equatable {
+    public var preview: CadMultiAxisPreviewParameters?
     public var resolutionMM: Double
     public var radiusMM: Double
     public var lengthMM: Double
     public var startTipMM: [Double]
     public var endTipMM: [Double]
     public init(resolutionMM: Double = 1, radiusMM: Double = 2, lengthMM: Double = 6,
-                startTipMM: [Double], endTipMM: [Double]) {
+                startTipMM: [Double], endTipMM: [Double], preview: CadMultiAxisPreviewParameters? = nil) {
+        self.preview=preview
         self.resolutionMM=resolutionMM; self.radiusMM=radiusMM; self.lengthMM=lengthMM
         self.startTipMM=startTipMM; self.endTipMM=endTipMM
     }
     public func validate() throws {
+        if let preview {try preview.validate(radius:radiusMM,length:lengthMM,resolution:resolutionMM);return}
         guard [0.25,0.5,1,2].contains(resolutionMM), radiusMM.isFinite,
               lengthMM.isFinite, (0.1...100).contains(radiusMM), (0.1...100).contains(lengthMM),
               startTipMM.count==3, endTipMM.count==3,
@@ -54,10 +57,14 @@ public struct CadBasicMachiningRequest: Sendable {
         }
         let parameters: CadBasicMachiningParameters?
         if let value=o["parameters"] {
-            guard let fields=value as? [String:Any],Set(fields.keys)==["resolutionMM","radiusMM","lengthMM","startTipMM","endTipMM"] else {
+            guard let fields=value as? [String:Any] else {throw FloeError.validationFailed("parameters must be an object")}
+            if fields["mode"] as? String=="multi-axis-preview" {parameters=try CadMultiAxisPreviewParameters.decode(fields)}
+            else {
+            guard Set(fields.keys)==["resolutionMM","radiusMM","lengthMM","startTipMM","endTipMM"] else {
                 throw FloeError.validationFailed("Only voxel size, flat tool radius/length and two fixed-Z tips are supported. Rotation, axes, holder and machine simulation are unavailable.")
             }
             parameters=try JSONDecoder().decode(CadBasicMachiningParameters.self,from:JSONSerialization.data(withJSONObject:fields))
+            }
         }
         else { parameters=nil }
         let phase=(o["phase"] as? String).flatMap(Phase.init(rawValue:))

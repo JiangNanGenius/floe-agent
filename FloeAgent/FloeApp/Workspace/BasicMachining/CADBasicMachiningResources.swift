@@ -29,7 +29,8 @@ enum CADBasicMachiningResources {
         try validateBundle();try FileManager.default.createDirectory(at:directory,withIntermediateDirectories:true)
         for name in files.keys {let data=try Data(contentsOf:resource(name));try data.write(to:directory.appendingPathComponent(name),options:.atomic)}
     }
-    static func payload(phase:CadBasicMachiningRequest.Phase,relativeDirectory:String,inputSHA:String)throws->Data {
+    static func payload(phase:CadBasicMachiningRequest.Phase,relativeDirectory:String,inputSHA:String,preview:Bool=false)throws->Data {
+        if preview {return try CADMultiAxisPreviewResources.payload(phase:phase,relativeDirectory:relativeDirectory,inputSHA:inputSHA)}
         let suffix=relativeDirectory.split(separator:"/")
         guard suffix.count==2,suffix[0]=="BasicMachining",UUID(uuidString:String(suffix[1])) != nil,
               inputSHA.count==64,inputSHA.allSatisfy({$0.isHexDigit && !$0.isUppercase}) else {throw FloeError.unauthorized}
@@ -39,7 +40,8 @@ enum CADBasicMachiningResources {
         let script="set -eu\n[ \"$(/usr/bin/shasum -a 256 '\(relativeDirectory)/support/\(file)' | /usr/bin/awk '{print $1}')\" = '\(sha)' ]\n/bin/sh '\(relativeDirectory)/support/\(file)' '\(relativeDirectory)' '\(inputSHA)'"
         return try JSONSerialization.data(withJSONObject:["script":script,"cwd":".","timeoutSeconds":phase == .environment ? 240:60,"timeoutPolicy":"hard","maxOutputBytes":16_000],options:.sortedKeys)
     }
-    static func verifyPreparation(directory:URL,inputSHA:String)throws {
+    static func verifyPreparation(directory:URL,inputSHA:String,preview:Bool=false)throws {
+        if preview {try CADMultiAxisPreviewResources.verifyPreparation(directory:directory,inputSHA:inputSHA);return}
         let file=directory.appendingPathComponent("environment-ready.json")
         guard file.standardizedFileURL==file.resolvingSymlinksInPath().standardizedFileURL else{throw FloeError.unauthorized}
         let data=try Data(contentsOf:file);guard data.count<=4096,let o=try JSONSerialization.jsonObject(with:data) as? [String:Any],
