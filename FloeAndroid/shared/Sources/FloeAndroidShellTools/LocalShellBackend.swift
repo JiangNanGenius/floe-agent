@@ -80,7 +80,7 @@ public struct ShellRunRequest: Sendable {
     public var command: String
     /// Virtual working directory, workspace-relative (`"."` = root).
     public var cwd: String
-    /// Workspace root for relative paths; native commands share the App process.
+    /// Resolved task workspace root; Android commands execute in the separate Linux runtime UID.
     public var rootURL: URL
     /// Additional environment exported for this run only.
     public var environment: [String: String]
@@ -100,6 +100,7 @@ public struct ShellRunRequest: Sendable {
     public var toolEnvironment: ToolEnvironment?
     /// Explicit run target, preserved even without a materialized ToolEnvironment.
     public var environmentID: String?
+    public var environmentTransaction: Bool
     // D2: Android-only additive owner field (see file header).
     /// Runtime-issued conversation identity, carried unchanged from the
     /// trusted `ToolContext`. Model code can never set this: it is threaded
@@ -129,7 +130,8 @@ public struct ShellRunRequest: Sendable {
         conversationID: UUID? = nil,
         trackingHook: LinuxShellCallTrackingHook? = nil,
         toolCallID: String? = nil,
-        environmentID: String? = nil
+        environmentID: String? = nil,
+        environmentTransaction: Bool = false
     ) {
         self.command = command
         self.cwd = cwd
@@ -146,6 +148,7 @@ public struct ShellRunRequest: Sendable {
         self.trackingHook = trackingHook
         self.toolCallID = toolCallID
         self.environmentID = environmentID
+        self.environmentTransaction = environmentTransaction
     }
 }
 

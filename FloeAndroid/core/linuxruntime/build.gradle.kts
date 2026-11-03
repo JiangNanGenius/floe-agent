@@ -37,3 +37,10 @@ dependencies {
     implementation("org.tukaani:xz:1.12")
     testImplementation(libs.junit)
 }
+
+// Keep actual-filesystem JVM fixtures in this checkout's regenerable build output.
+tasks.withType<Test>().configureEach {
+    val fixtureRoot = layout.buildDirectory.dir("tmp/linuxruntime-tests")
+    doFirst { fixtureRoot.get().asFile.mkdirs() }
+    systemProperty("java.io.tmpdir", fixtureRoot.get().asFile.absolutePath)
+}

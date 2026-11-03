@@ -821,6 +821,7 @@ public final class G02InstalledComposition: @unchecked Sendable {
                 stdin: request.stdin,
                 timeout: request.timeout,
                 maxOutputBytes: request.maxOutputBytes,
+                environmentTransaction: request.environmentTransaction,
                 context: request.context
             ))
         }

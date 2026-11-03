@@ -170,6 +170,7 @@ public struct LinuxShellStartRequest: Sendable, Equatable {
     public var hostLeaseRole: LinuxShellLeaseRole?
     /// G07.3A validated same-workspace participation (live owner required).
     public var workspaceReuse: LinuxShellWorkspaceReuse?
+    public var environmentTransaction: Bool
 
     public init(projectID: UUID, runID: UUID, conversationID: UUID?,
                 environmentID: String?, command: String, cwd: String,
@@ -178,7 +179,8 @@ public struct LinuxShellStartRequest: Sendable, Equatable {
                 hostOperationID: String? = nil,
                 stdinDelivery: LinuxShellStdinDelivery? = nil,
                 hostLeaseRole: LinuxShellLeaseRole? = nil,
-                workspaceReuse: LinuxShellWorkspaceReuse? = nil) {
+                workspaceReuse: LinuxShellWorkspaceReuse? = nil,
+                environmentTransaction: Bool = false) {
         self.projectID = projectID
         self.runID = runID
         self.conversationID = conversationID
@@ -194,6 +196,7 @@ public struct LinuxShellStartRequest: Sendable, Equatable {
         self.stdinDelivery = stdinDelivery
         self.hostLeaseRole = hostLeaseRole
         self.workspaceReuse = workspaceReuse
+        self.environmentTransaction = environmentTransaction
     }
 
     /// The engine's own `shell.start` env bounds (authoritative source:
@@ -682,6 +685,26 @@ public struct LinuxShellImportRestore: Sendable, Equatable {
     }
 }
 
+/// Receipt from the runtime's physically settled guest-root transaction.
+/// A malformed or absent supplementary receipt never proves rollback.
+public struct LinuxEnvironmentTransactionReceipt: Sendable, Equatable {
+    public enum Outcome: String, Sendable { case committed; case rolledBack }
+    public let id: String
+    public let outcome: Outcome
+    public let snapshotBytes: Int64
+    public init?(wire: Any?) {
+        guard let value = wire as? [String: Any],
+              Set(value.keys) == Set(["id", "outcome", "snapshotBytes"]),
+              let id = value["id"] as? String,
+              UUID(uuidString: id)?.uuidString.lowercased() == id,
+              let raw = value["outcome"] as? String, let outcome = Outcome(rawValue: raw),
+              let count = value["snapshotBytes"] as? NSNumber,
+              CFGetTypeID(count) != CFBooleanGetTypeID(),
+              let bytes = Int64(count.stringValue), bytes >= 0, bytes <= 4 * 1024 * 1024 * 1024 else { return nil }
+        self.id = id; self.outcome = outcome; self.snapshotBytes = bytes
+    }
+}
+
 public struct LinuxShellPollReply: Sendable, Equatable {
     public var sessionID: String
     /// MERGED PTY output bytes for this cursor window (stdout and stderr
@@ -716,6 +739,7 @@ public struct LinuxShellPollReply: Sendable, Equatable {
     /// by the transport (`nil` when absent, foreign or malformed — a bad
     /// supplementary object NEVER fails the legacy poll contract).
     public var workspaceRecovery: LinuxShellWorkspaceRecovery?
+    public var environmentTransaction: LinuxEnvironmentTransactionReceipt?
 
     public init(sessionID: String, mergedOutput: Data, cursor: UInt64,
                 gapBytes: Int, more: Bool, droppedBytes: Int,
@@ -723,7 +747,8 @@ public struct LinuxShellPollReply: Sendable, Equatable {
                 cancelled: Bool = false, stopReason: String? = nil,
                 exitCode: Int32? = nil, termSig: Int32? = nil, waitErrno: Int32? = nil,
                 workspaceStatus: String? = nil, workspaceRecoveryRef: String? = nil,
-                workspaceRecovery: LinuxShellWorkspaceRecovery? = nil) {
+                workspaceRecovery: LinuxShellWorkspaceRecovery? = nil,
+                environmentTransaction: LinuxEnvironmentTransactionReceipt? = nil) {
         self.sessionID = sessionID
         self.mergedOutput = mergedOutput
         self.cursor = cursor
@@ -740,6 +765,7 @@ public struct LinuxShellPollReply: Sendable, Equatable {
         self.workspaceStatus = workspaceStatus
         self.workspaceRecoveryRef = workspaceRecoveryRef
         self.workspaceRecovery = workspaceRecovery
+        self.environmentTransaction = environmentTransaction
     }
 }
 

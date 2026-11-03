@@ -32,7 +32,7 @@ import java.util.concurrent.atomic.AtomicLong
 
 /** App-owned transient transport. Original Swift services remain job/run authority. */
 class LinuxShellPump(context: Context, private val scope: CoroutineScope) {
-    private class AdmissionRefused : IllegalStateException("Runtime refused admission")
+    private class AdmissionRefused(val code: String = "runtime_not_started") : IllegalStateException("Runtime refused admission")
     private val context = context.applicationContext
     private val foreground = RunForegroundController.forApplication(context)
     private val epoch = AtomicLong()
@@ -753,7 +753,10 @@ class LinuxShellPump(context: Context, private val scope: CoroutineScope) {
             if (!possiblyAdmitted) owned.latency.publish(LinuxTerminalLatency.TERMINAL_FAILED)
             if (!possiblyAdmitted) {
                 if (work.containsKey(owned.controlID)) owned.finish(JSONObject().put("state", "quiescent"))
-                complete(claim, 1, JSONObject().put("code", "runtime_not_started"))
+                val code = (failure as? AdmissionRefused)?.code?.takeIf {
+                    it in setOf("environment_transaction_busy", "environment_transaction_requires_idle")
+                } ?: "runtime_not_started"
+                complete(claim, 1, JSONObject().put("code", code))
             }
         } finally {
             if (!handedToWatcher && work.containsKey(owned.controlID)) {
@@ -1891,6 +1894,9 @@ class LinuxShellPump(context: Context, private val scope: CoroutineScope) {
         // The OPTIONAL merged recovery projection rides the same terminal
         // proof channel (never a second registry); absence is preserved.
         proof.optJSONObject("workspaceRecovery")?.let { target.put("workspaceRecovery", it) }
+        target.remove("environmentTransaction")
+        sanitizeEnvironmentTransactionReceipt(proof.optJSONObject("environmentTransaction"))
+            ?.let { target.put("environmentTransaction", it) }
     }
 
     private fun terminalProof(page: JSONObject): JSONObject = JSONObject().put("state", "released").also { proof ->
@@ -1899,6 +1905,8 @@ class LinuxShellPump(context: Context, private val scope: CoroutineScope) {
                            "workspaceRecoveryRef", "workspaceRecovery")) {
             if (page.has(key)) proof.put(key, page.get(key))
         }
+        sanitizeEnvironmentTransactionReceipt(page.optJSONObject("environmentTransaction"))
+            ?.let { proof.put("environmentTransaction", it) }
     }
 
     private fun matches(runID: String, callID: String?, sessionID: String?, query: JSONObject): Boolean {
@@ -1959,7 +1967,7 @@ class LinuxShellPump(context: Context, private val scope: CoroutineScope) {
         return JSONObject(Charsets.UTF_8.newDecoder().decode(java.nio.ByteBuffer.wrap(bytes)).toString())
     }
     private fun result(envelope: JSONObject): JSONObject {
-        if (!envelope.getBoolean("ok")) throw AdmissionRefused()
+        if (!envelope.getBoolean("ok")) throw AdmissionRefused(envelope.optString("code", "runtime_not_started"))
         return envelope.getJSONObject("result")
     }
 }

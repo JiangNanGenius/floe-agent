@@ -35,10 +35,8 @@ class PipeJobPolicyTest {
     fun `the concurrent pool includes both service slots`() {
         val admission = WorkloadAdmission.concurrent
         assertEquals(5, admission.maxConcurrent)
-        assertEquals(2, WorkloadRole.SERVICE.maximumConcurrent)
-        assertEquals(3, WorkloadRole.entries
-            .filter { it != WorkloadRole.SERVICE }
-            .sumOf { it.maximumConcurrent } - 1) // Agent + Run share one slot
+        // Runtime-only role assertions live in WorkloadRolePolicyTest in
+        // runtimeapp, the actual module that declares that internal enum.
         assertTrue(admission.enforceStraySweep.not())
     }
 

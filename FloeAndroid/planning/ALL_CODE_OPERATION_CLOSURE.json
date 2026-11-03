@@ -6,7 +6,7 @@
     "fixedIOSDonor": "a59b4d4005f616c611df67fab7620e9853c525b9"
   },
   "status": "Live source closure index; original IDs/statuses retained; scope replacement and source/runtime acceptance are separate",
-  "sourceCheckpoint": "a5171c89a872ddb5e2b8f8654b99c45b20ab6eab",
+  "sourceCheckpoint": "1ed2aad14a8fe28f75baf604f861d5b96c60e34d",
   "operationCount": 183,
   "noNewReleaseBeforeClosure": true,
   "operations": [
@@ -1002,13 +1002,14 @@
       "originalOperation": "System package transactions with dependency resolution and rollback",
       "originalStatus": "planned",
       "required": true,
-      "codeReview": "implementation-gap-confirmed; real apt dependency resolution exists, but Android guest package rollback is not connected to the original transaction/lifecycle path",
-      "qualification": "not newly verified this round",
-      "implementationOwner": "job-dcfe69f82e5b4cc1; actual Linux/interface completion pending",
+      "codeReview": "present-source-connected; original exec.shell opt-in transaction uses actual local guest snapshot, journal, crash recovery and physical lease settlement",
+      "qualification": "Current Full/Play App+Runtime Kotlin plus 51 focused tests and 3 actual-source Swift wire tests pass; ARM64 objects before preparation budget follow-up; final native product and APK acceptance pending",
+      "implementationOwner": "coordinator; worker unavailability takeover confirmed",
       "previousCodeReviews": [
-        "pending per-operation UI/service/runtime-storage/failure reconciliation"
+        "pending per-operation UI/service/runtime-storage/failure reconciliation",
+        "implementation-gap-confirmed; real apt dependency resolution exists, but Android guest package rollback is not connected to the original transaction/lifecycle path"
       ],
-      "remainingImplementation": "Bounded owned-environment package rollback with actual guest state, crash recovery and physical settlement; no host/language installer alias. Existing first-materialization recovery is not package rollback evidence."
+      "remainingImplementation": "No missing source path identified in bounded transaction scope; final product and actual guest verification pending"
     },
     {
       "id": "GIT-DIFF-STAGE-COMMIT",
@@ -5745,6 +5746,11 @@
       "sourceOnly": true,
       "fullPlayCompiled": true,
       "calendarRulesTests": 7,
+      "deviceVerified": false
+    },
+    "package-transaction-20261103": {
+      "record": "planning/PACKAGE_TRANSACTION_SOURCE_20261103.json",
+      "sourceOnly": false,
       "deviceVerified": false
     }
   },

@@ -214,6 +214,10 @@ public struct ExecShellJobRunner: Sendable {
             // through to the one-shot LocalShellTool: a server must not be
             // launched as a 600 s command.
             if C01ManagedServiceDeclaration.isServicePayload(argumentsJSON) {
+                if let object = (try? JSONSerialization.jsonObject(with: argumentsJSON)) as? [String: Any],
+                   let value = object["environmentTransaction"], !(value is NSNull), (value as? Bool) != false {
+                    throw FloeError.validationFailed("An environment transaction cannot be a long-running service; nothing was started")
+                }
                 guard let serviceHost else {
                     throw FloeError.invalidConfiguration(
                         "Managed services are not composed in this build; nothing was started and no job was replayed")

@@ -9,6 +9,7 @@ import com.floe.android.runtimeipc.RuntimeExecutionTrace.Stage
 import android.util.Base64
 import com.floe.android.linuxruntime.*
 import com.floe.android.linuxruntime.install.*
+import com.floe.android.linuxruntime.rootfs.LinuxEnvironmentTransaction
 import com.floe.android.linuxruntime.rootfs.LinuxRootfsMaterializer
 import com.floe.android.linuxruntime.supervision.*
 import com.floe.android.runtimeipc.RuntimePackages
@@ -85,6 +86,16 @@ internal class LinuxRuntimeOperations(
         }.apply { allowCoreThreadTimeOut(true) }
     /** Live environment leases keyed by the engine session/lease id. */
     private val heldLeases = java.util.concurrent.ConcurrentHashMap<String, LinuxAuthorityClient.Lease>()
+    private val environmentTransactions by lazy {
+        val kernel = runCatching { android.system.Os.uname().release }.getOrNull()
+        val barrier: ((java.nio.file.Path) -> Unit)? = if (kernel != null && reportsSyncfsWritebackErrors(kernel)) {
+            { path -> PosixBridge.syncfsDirectory(path.toString()) }
+        } else null
+        LinuxEnvironmentTransaction(LinuxRootfsMaterializer(durabilityBarrier = barrier))
+    }
+    // Designed never-started cleanup retries only. The original held lease
+    // remains the positive owner until rollback AND abandon are acknowledged.
+    private val retainedTransactionAbandons = java.util.concurrent.ConcurrentHashMap<String, () -> Unit>()
     /**
      * Live lease id -> the exact `shell.start` request id that acquired it.
      * Removed only with the lease itself, so a preparation/acquire retained
@@ -158,6 +169,7 @@ internal class LinuxRuntimeOperations(
         /** G07.1 terminal04: bounded runtime phase composition for
          *  THIS workload (diagnostic only; no admission effect). */
         val latency: LinuxRuntimePhaseTiming.Run,
+        val environmentTransaction: LinuxEnvironmentTransaction.Handle? = null,
     ) {
         val terminal = AtomicReference<WorkloadTerminal?>()
         val finished = AtomicBoolean()
@@ -166,6 +178,8 @@ internal class LinuxRuntimeOperations(
         @Volatile var nativeReleaseFailed = false
         @Volatile var cleanupDeferred = false
         @Volatile var workspaceResult: JSONObject? = null
+        @Volatile var transactionReceipt: LinuxEnvironmentTransaction.Receipt? = null
+        @Volatile var networkReleased = false
     }
 
     /** A workspace whose owner stopped while participants were still live. */
@@ -207,6 +221,7 @@ internal class LinuxRuntimeOperations(
             System.currentTimeMillis(), 24L * 60 * 60 * 1000)
         installer.sweepStaleWorkspace(maxAgeMs = 0)
         LinuxRootfsMaterializer().restoreMissingLayersBeforeRegistry(File(root, "Environments/Containers"))
+        environmentTransactions.recover(File(root, "Environments/Containers"))
         RuntimeNetworkConfiguration.sweepStaleSocketDirs(context)
         RuntimeNetworkConfiguration.installGuestResolverAssets(context) // fail-closed signed-asset staging
         if (revisionDirectory.exists()) {
@@ -443,7 +458,12 @@ internal class LinuxRuntimeOperations(
         // G07.1 terminal04: the runtime half of this start's composition.
         val latency = LinuxRuntimePhaseTiming.begin()
         fields(payload, setOf("projectID", "runID", "conversationID", "environmentID", "command", "cwd",
-            "env", "rows", "columns", "timeoutSeconds", "stdinDelivery", "leaseRole", "workspaceReuse"))
+            "env", "rows", "columns", "timeoutSeconds", "stdinDelivery", "leaseRole", "workspaceReuse", "environmentTransaction"))
+        if (payload.has("environmentTransaction")) require(payload.opt("environmentTransaction") is Boolean)
+        val transactional = payload.optBoolean("environmentTransaction", false)
+        if (transactional) require(payload.optString("leaseRole", "agent") == "agent" && !hasOwnedWork()) {
+            "environmentTransactionRequiresIdleSessions"
+        }
         // G07.3A: a start may coexist with OTHER admitted workloads. The
         // exclusive lanes (install / first-use preflight) still fence it; the
         // destructive single-workload swap paths do not.
@@ -475,6 +495,7 @@ internal class LinuxRuntimeOperations(
         if (running.isEmpty()) {
             RuntimeExecutionTrace.mark(Stage.OPS_RECOVER)
             recover()
+            if (heldLeases.isEmpty()) environmentTransactions.recover(File(root, "Environments/Containers"))
             latency.mark(LinuxRuntimePhaseTiming.Phase.RECOVER)
         }
         RuntimeExecutionTrace.mark(Stage.OPS_CONFIGURE)
@@ -515,6 +536,8 @@ internal class LinuxRuntimeOperations(
         var child: Running? = null
         var preparedScratch: File? = null
         var preparedWorkspace: RuntimeWorkspaceSession? = null
+        var environmentSnapshot: LinuxEnvironmentTransaction.Handle? = null
+        var retainedAbandon: (() -> Unit)? = null
         var safeToAbandon = true
         var startedOwner = false
         var registeredParticipant = false
@@ -570,6 +593,10 @@ internal class LinuxRuntimeOperations(
             latency.mark(LinuxRuntimePhaseTiming.Phase.MATERIALIZE)
             check(!isCancelled())
             RuntimeExecutionTrace.mark(Stage.OPS_MATERIALIZED)
+            if (transactional) {
+                environmentSnapshot = environmentTransactions.prepare(lease.environmentID, writable) { isCancelled() }
+                check(!isCancelled())
+            }
             val workspace = ownedPath(descriptor.getString("workspaceRoot"))
             // ONE workspace owner per project imports/exports; participant
             // sessions must name a LIVE owner of the SAME project. A hint that
@@ -699,7 +726,7 @@ internal class LinuxRuntimeOperations(
                     val owned = Running(lease, outcome.job, null,
                         executionDeadlineMillis(admittedAtMillis, seconds),
                         scratch, role, projectID, workspace, isOwner, workspaceSession, imported,
-                        request.id, startCancellation, latency)
+                        request.id, startCancellation, latency, environmentSnapshot)
                     owned.startCancelled.set(isCancelled())
                     child = owned
                     if (isOwner) {
@@ -763,7 +790,10 @@ internal class LinuxRuntimeOperations(
                 // registration) so a later foreground-permit loss is not
                 // misread as an already-settled participant. The original
                 // start failure is still the exception rethrown below.
-                val abandonAcknowledged = runCatching { authority.abandonUnstarted(lease) }.isSuccess
+                val abandonAcknowledged = runCatching {
+                    if (transactional) environmentTransactions.recover(File(root, "Environments/Containers"))
+                    authority.abandonUnstarted(lease)
+                }.isSuccess
                 val cleanup = startAbandonCleanup(
                     abandonAcknowledged = abandonAcknowledged,
                     startedOwner = startedOwner,
@@ -775,6 +805,29 @@ internal class LinuxRuntimeOperations(
                 if (cleanup.removeWorkspaceOwner) workspaceOwners.remove(projectID, lease.id)
                 if (cleanup.removeParticipant) workspaceParticipants[projectID]?.remove(lease.id)
                 preparedScratch?.let { cleanupScratch(it, lease.id) }
+                if (!abandonAcknowledged && transactional) {
+                    val retainedOwner = startedOwner
+                    val retainedParticipant = registeredParticipant
+                    retainedAbandon = {
+                        synchronized(lease) {
+                            if (heldLeases[lease.id] === lease && running[lease.id] == null) {
+                                workspaceGate.lock()
+                                try {
+                                    environmentTransactions.recover(File(root, "Environments/Containers"))
+                                    authority.abandonUnstarted(lease)
+                                    val settled = startAbandonCleanup(true, retainedOwner, retainedParticipant)
+                                    if (settled.removeHeldLease) heldLeases.remove(lease.id, lease)
+                                    if (settled.removeLeaseStart) leaseStartIDs.remove(lease.id)
+                                    if (settled.removeLeaseRole) leaseRoles.remove(lease.id)
+                                    if (settled.removeWorkspaceOwner) workspaceOwners.remove(projectID, lease.id)
+                                    if (settled.removeParticipant) workspaceParticipants[projectID]?.remove(lease.id)
+                                    retainedTransactionAbandons.remove(lease.id)
+                                } finally { workspaceGate.unlock() }
+                                runCatching { onOwnedWorkReleased() }
+                            }
+                        }
+                    }
+                }
             } else child?.let { owned ->
                 owned.startCancelled.set(true)
                 val stopped = runCatching { owned.job.requestCancel("start-binding-failed") }.getOrNull()
@@ -785,6 +838,7 @@ internal class LinuxRuntimeOperations(
         } finally {
             cancelledStarts.remove(request.id)
             if (workspaceGate.isHeldByCurrentThread) workspaceGate.unlock()
+            retainedAbandon?.let { if (heldLeases[lease.id] === lease) retainedTransactionAbandons[lease.id] = it }
         }
     }
 
@@ -1291,6 +1345,17 @@ internal class LinuxRuntimeOperations(
                         running.remove(owned.lease.id, owned)
                         val globalProof = supervisor.globalQuiescence("workspace-export")
                         if (globalProof is Quiescence.Proven) {
+                            owned.environmentTransaction?.let { transaction ->
+                                if (!owned.networkReleased) {
+                                    RuntimeNetworkConfiguration.release(owned.scratch)
+                                    owned.networkReleased = true
+                                }
+                                if (owned.transactionReceipt == null) {
+                                    owned.transactionReceipt = environmentTransactions.finish(transaction,
+                                        terminal is WorkloadTerminal.Completed && exit.exitCode == 0 && !exit.signaled &&
+                                            exit.termSig == 0 && exit.waitErrno == 0 && !owned.startCancelled.get())
+                                }
+                            }
                             if (owned.workspaceOwner) {
                                 owned.workspaceResult = exportWorkspace(
                                     projectID = owned.projectID,
@@ -1305,6 +1370,7 @@ internal class LinuxRuntimeOperations(
                             }
                             serviceDeferredExports(owned)
                         } else {
+                            check(owned.environmentTransaction == null) { "Environment transaction still needs actual UID quiescence" }
                             // Never export without the real whole-UID proof.
                             // There is no later workload to retry, so the
                             // obligation is reported unknown and closed, never
@@ -1323,6 +1389,12 @@ internal class LinuxRuntimeOperations(
                 workspaceGate.unlock()
             }
             owned.latency.mark(LinuxRuntimePhaseTiming.Phase.EXPORT)
+            // Release shared resolver/session resources while this original
+            // lease still proves ownership, never after positive work removal.
+            if (!owned.networkReleased) {
+                RuntimeNetworkConfiguration.release(owned.scratch)
+                owned.networkReleased = true
+            }
             try {
                 authority.complete(owned.lease, owned.job.rootBirth, exit, proof)
             } catch (failure: Exception) {
@@ -1338,6 +1410,11 @@ internal class LinuxRuntimeOperations(
             // Native completion is authoritative. A later scratch-cleanup
             // failure must not turn a released lease into a fabricated live one.
             owned.nativeReleaseFailed = false
+            owned.environmentTransaction?.let {
+                // Cleanup cannot undo an acknowledged native release. A
+                // terminal journal is safe to retry before the next admission.
+                if (runCatching { environmentTransactions.release(it) }.isFailure) owned.cleanupDeferred = true
+            }
             owned.finished.set(true)
             completed[owned.lease.id] = owned
             sessionReads.endSettlement(owned.lease.id, owned)
@@ -1357,8 +1434,7 @@ internal class LinuxRuntimeOperations(
             if (participants != null && participants.isEmpty() && !deferredExports.containsKey(owned.projectID)) {
                 workspaceParticipants.remove(owned.projectID)
             }
-            RuntimeNetworkConfiguration.release(owned.scratch) // this session's resolver use ended
-            owned.cleanupDeferred = !cleanupScratch(owned.scratch, owned.lease.id)
+            owned.cleanupDeferred = !cleanupScratch(owned.scratch, owned.lease.id) || owned.cleanupDeferred
             // G03-R3 first-start admission repair: notify the kernel that the
             // REAL owned-work release landed. The fence re-checks ownership,
             // so a sibling still live keeps it raised.
@@ -1609,6 +1685,13 @@ internal class LinuxRuntimeOperations(
             .put("outputBase64", Base64.encodeToString(page.bytes, Base64.NO_WRAP))
             .put("cursor", page.nextCursor).put("gapBytes", page.gapBytes).put("more", page.truncatedMore)
             .put("droppedBytes", page.totalDroppedBytes).put("leaseReleased", owned.finished.get())
+            .also { value ->
+                if (owned.finished.get()) owned.transactionReceipt?.let { receipt ->
+                    value.put("environmentTransaction", JSONObject().put("id", receipt.id)
+                        .put("outcome", if (receipt.outcome == LinuxEnvironmentTransaction.Outcome.COMMITTED) "committed" else "rolledBack")
+                        .put("snapshotBytes", receipt.snapshotBytes))
+                }
+            }
             .put("cancelled", owned.terminal.get() is WorkloadTerminal.Cancelled)
             .put("cleanupDeferred", owned.cleanupDeferred)
             .also { result -> owned.workspaceResult?.let { files ->
@@ -1650,6 +1733,7 @@ internal class LinuxRuntimeOperations(
             return JSONObject().put("sessionID", owned.lease.id).put("acceptedBytes", 0)
                 .put("stdinEof", "rejected").put("reason", "sessionReleased")
                 .put("leaseReleased", owned.finished.get())
+
                 .also { page ->
                     (terminal as? WorkloadTerminal.Completed)?.let { page.put("exitCode", it.exit.exitCode) }
                     (terminal as? WorkloadTerminal.Cancelled)?.let {
@@ -1719,6 +1803,9 @@ internal class LinuxRuntimeOperations(
         return JSONObject().put("resized", owned.job.resize(rows, columns))
     }
 
+    private fun retainedTransactionStartIDs(): Set<String> = retainedTransactionAbandons.keys
+        .mapNotNull { id -> if (heldLeases.containsKey(id)) leaseStartIDs[id] else null }.toSet()
+
     override fun validateCancellation(request: RuntimeWire.Request) {
         if (request.operation == "install.cancel") {
             fields(request.payload, setOf("requestID"))
@@ -1741,7 +1828,7 @@ internal class LinuxRuntimeOperations(
                 sessionID = request.payload.optString("sessionID").takeIf { it.isNotEmpty() },
                 requestID = request.payload.optString("requestID").takeIf { it.isNotEmpty() },
                 heldLeaseIDs = heldLeases.keys.toSet(),
-                pendingStartIDs = pendingShellStartIDs.toSet(),
+                pendingStartIDs = pendingShellStartIDs.toSet() + retainedTransactionStartIDs(),
             )
             require(scope != null) { "Cancellation does not address owned work" }
         }
@@ -1765,7 +1852,7 @@ internal class LinuxRuntimeOperations(
                 installID = installID.get(),
                 preflightID = activePreflightID.get(),
                 heldLeaseIDs = heldLeases.keys,
-                pendingStartIDs = cancelledStarts.keys,
+                pendingStartIDs = cancelledStarts.keys + retainedTransactionStartIDs(),
                 runningStartIDs = running.values.map { it.startID },
             )
         }
@@ -1788,6 +1875,7 @@ internal class LinuxRuntimeOperations(
                     // touch every held lease, and ONLY for a genuine global
                     // stop (null request).
                     heldLeases.values.forEach { runCatching { authority.cancel(it) } }
+                    retainedTransactionAbandons.values.toList().forEach { runCatching { it() } }
                     return
                 }
                 // One failing target must not suppress the other exact
@@ -1804,6 +1892,8 @@ internal class LinuxRuntimeOperations(
                 cancelledStarts[target]?.set(true)
                 running.values.firstOrNull { it.startID == target && !it.finished.get() }
                     ?.let { runCatching { cancelOwned(it) } }
+                retainedTransactionAbandons.entries.firstOrNull { leaseStartIDs[it.key] == target }
+                    ?.value?.let { runCatching { it() } }
             }
             StopTarget.SESSION -> {
                 val target = checkNotNull(resolution.id)
@@ -1813,6 +1903,7 @@ internal class LinuxRuntimeOperations(
                         // only ITS start token, then cancel only THIS lease.
                         leaseStartIDs[target]?.let { cancelledStarts[it]?.set(true) }
                         runCatching { authority.cancel(lease) }
+                        retainedTransactionAbandons[target]?.let { runCatching { it() } }
                     }
             }
         }

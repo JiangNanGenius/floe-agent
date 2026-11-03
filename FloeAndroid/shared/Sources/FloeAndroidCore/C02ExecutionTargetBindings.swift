@@ -1017,6 +1017,9 @@ public final class C02RemoteShellBridge: @unchecked Sendable {
                 return .failed(message: "transport=ssh status=targetNotPinned reason=pinReadFailed")
             }
         case .ssh:
+            guard !request.environmentTransaction else {
+                return .failed(message: "Environment transactions apply only to the resolved local Linux guest. No remote command was started.")
+            }
             guard let toolCallID = request.context.toolCallID,
                   !toolCallID.isEmpty else {
                 return .failed(message: "transport=ssh status=missingToolCallID\nThe remote execution requires a stable tool call identity; nothing was executed.")
@@ -1085,6 +1088,7 @@ public struct C02RemoteShellRequest: Sendable {
     public var stdin: String?
     public var timeout: TimeInterval
     public var maxOutputBytes: Int
+    public var environmentTransaction: Bool
     public var context: ToolContext
 
     public init(
@@ -1094,6 +1098,7 @@ public struct C02RemoteShellRequest: Sendable {
         stdin: String?,
         timeout: TimeInterval,
         maxOutputBytes: Int,
+        environmentTransaction: Bool = false,
         context: ToolContext
     ) {
         self.command = command
@@ -1102,6 +1107,7 @@ public struct C02RemoteShellRequest: Sendable {
         self.stdin = stdin
         self.timeout = timeout
         self.maxOutputBytes = maxOutputBytes
+        self.environmentTransaction = environmentTransaction
         self.context = context
     }
 }

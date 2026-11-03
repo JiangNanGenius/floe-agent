@@ -119,6 +119,7 @@ public actor LocalShellService {
         timeout: TimeInterval?,
         maxOutputBytes: Int?,
         isBackground: Bool,
+        environmentTransaction: Bool = false,
         context: ToolContext
     ) async -> RunResult {
         do {
@@ -194,6 +195,7 @@ public actor LocalShellService {
                 timeout: normalizedTimeout(timeout, isBackground: isBackground),
                 maxOutputBytes: normalizedOutputCap(maxOutputBytes),
                 isBackground: isBackground,
+                environmentTransaction: environmentTransaction,
                 context: context
             )
         ) {
@@ -241,7 +243,8 @@ public actor LocalShellService {
             conversationID: context.conversationID,   // A1 (see file header)
             trackingHook: trackingHook,               // A1b
             toolCallID: context.toolCallID,
-            environmentID: context.environmentID
+            environmentID: context.environmentID,
+            environmentTransaction: environmentTransaction
         )
         // A1b: attach ledger ownership BEFORE the awaited dispatch; the
         // settlement runs only after the REAL backend return + journal

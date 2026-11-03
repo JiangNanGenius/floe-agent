@@ -1,0 +1,25 @@
+{
+  "operation": "PKG-TRANSACTION",
+  "base": "1ed2aad14a8fe28f75baf604f861d5b96c60e34d",
+  "entry": "Existing exec.shell environmentTransaction=true; original jobs.submit wraps the same tool",
+  "chain": "Original task/environment pin -> LinuxShellService -> authenticated runtime lease -> exclusive idle admission -> independent bounded snapshot/journal -> actual guest process -> UID quiescence -> commit/rollback -> workspace settlement -> original native lease release -> validated receipt",
+  "limits": [
+    "Local guest filesystem only; workspace and external effects are outside recovery",
+    "Existing sessions/services must be idle; no wider session limits or sibling termination",
+    "SSH and managed service requests refuse transaction before executing",
+    "Regular files/directories preserve bytes/mode/mtime and in-snapshot hard links; symlink target preserved without following, symlink timestamps excluded",
+    "Interrupted prepared transactions restore before new execution; no command replay"
+  ],
+  "qualification": {
+    "kotlin": "Full/Play App+Runtime release compile passed; 51 tests passed, 0 skipped",
+    "swiftObjects": "Swift6 Android28 ARM64 Core objects passed before a separate transaction preparation budget change",
+    "swiftWire": "3 actual-source host codec tests passed",
+    "pending": [
+      "Current frozen native product including 600s cancellable preparation budget",
+      "APK actual guest success/failure, device and OTA acceptance"
+    ]
+  },
+  "codeReady": true,
+  "appVerified": false,
+  "releasePublished": false
+}

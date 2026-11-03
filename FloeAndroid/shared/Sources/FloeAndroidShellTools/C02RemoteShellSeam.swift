@@ -20,6 +20,7 @@ public struct C02RemoteShellSeamRequest: Sendable {
     public var timeout: TimeInterval
     public var maxOutputBytes: Int
     public var isBackground: Bool
+    public var environmentTransaction: Bool
     public var context: ToolContext
 
     public init(
@@ -30,6 +31,7 @@ public struct C02RemoteShellSeamRequest: Sendable {
         timeout: TimeInterval,
         maxOutputBytes: Int,
         isBackground: Bool,
+        environmentTransaction: Bool = false,
         context: ToolContext
     ) {
         self.command = command
@@ -39,6 +41,7 @@ public struct C02RemoteShellSeamRequest: Sendable {
         self.timeout = timeout
         self.maxOutputBytes = maxOutputBytes
         self.isBackground = isBackground
+        self.environmentTransaction = environmentTransaction
         self.context = context
     }
 }

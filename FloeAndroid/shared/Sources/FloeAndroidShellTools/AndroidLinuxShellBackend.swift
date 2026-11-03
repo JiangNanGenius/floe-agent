@@ -410,7 +410,8 @@ public actor AndroidLinuxShellBackend: LocalShellBackend {
             // below. Interactive `openSession` never sets this.
             stdinDelivery: .pipe,
             hostLeaseRole: .agent,
-            workspaceReuse: reuseHint
+            workspaceReuse: reuseHint,
+            environmentTransaction: request.environmentTransaction
         )
         let reply: LinuxShellStartReply
         do {
@@ -431,6 +432,14 @@ public actor AndroidLinuxShellBackend: LocalShellBackend {
             // proof, so nothing is replayed.
             if cancellation?.isCancelled == true || Task.isCancelled || error is CancellationError {
                 return (.cancelled, phases.render(terminal: .cancelled))
+            }
+            if case LinuxShellTransportError.remoteFailed(let code) = error {
+                if code == "environment_transaction_requires_idle" {
+                    return (.notStarted(reason: "Close the other terminal sessions and managed services before starting an environment transaction; nothing ran."), phases.render(terminal: .notStarted))
+                }
+                if code == "environment_transaction_busy" {
+                    return (.notStarted(reason: "An environment transaction owns the Linux engine. Wait for it to settle; nothing ran."), phases.render(terminal: .notStarted))
+                }
             }
             return (.failed(message: describeTransportError(error)), phases.render(terminal: .failed))
         }
@@ -594,6 +603,16 @@ public actor AndroidLinuxShellBackend: LocalShellBackend {
                 let durationMs = Int(Date().timeIntervalSince(started) * 1000)
                 let mergedText = String(decoding: merged, as: UTF8.self)
                 var metaErr = stdinFailureNote.map { "[metadata] \($0)" } ?? ""
+                if request.environmentTransaction {
+                    guard let receipt = page.environmentTransaction else {
+                        return (.failed(message: "The command ended, but its environment transaction could not be confirmed. Inspect the environment before continuing; do not repeat the command automatically."), closePhases(.failed))
+                    }
+                    let note = "[environment] transaction=\(receipt.outcome.rawValue) receipt=\(receipt.id) snapshotBytes=\(receipt.snapshotBytes); workspace and external effects are excluded"
+                    metaErr = metaErr.isEmpty ? note : metaErr + "\n" + note
+                    if receipt.outcome == .rolledBack, engine.reportedExit == 0, !page.cancelled {
+                        return (.failed(message: "The environment change could not be committed. The saved guest filesystem was restored.\n" + note), closePhases(.failed))
+                    }
+                }
                 // The REAL digest-CAS success case: a normal completed turn
                 // may STILL have preserved diverged prior bytes (the import
                 // swapped them into the owner-marked journal, installed the

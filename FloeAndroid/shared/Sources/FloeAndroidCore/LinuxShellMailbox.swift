@@ -94,6 +94,10 @@ public enum LinuxShellMailboxLimits {
     /// admission (the start reply) and is enforced by the engine from its own
     /// spawn and by the backend's poll loop.
     public static let preparationBudgetMillis = 120_000
+    /// Opt-in recovery copies have a separate cancellable preparation window.
+    /// Old kernels keep per-file durability; they can exceed the normal cold
+    /// start window. Command execution deadlines and slot limits do not change.
+    public static let transactionPreparationBudgetMillis = 600_000
     /// Alias retained for existing call sites and authored tests.
     public static let startBudgetMillis = preparationBudgetMillis
     public static let pollBudgetMillis = 15_000
@@ -869,6 +873,7 @@ extension LinuxShellMailboxRequest: Equatable {
 public struct MailboxLinuxShellTransport: LinuxShellTransport {
     public struct Budgets: Sendable {
         public var startMillis: Int
+        public var transactionStartMillis: Int
         public var pollMillis: Int
         public var inputMillis: Int
         public var resizeMillis: Int
@@ -877,8 +882,10 @@ public struct MailboxLinuxShellTransport: LinuxShellTransport {
                     pollMillis: Int = LinuxShellMailboxLimits.pollBudgetMillis,
                     inputMillis: Int = LinuxShellMailboxLimits.inputBudgetMillis,
                     resizeMillis: Int = LinuxShellMailboxLimits.resizeBudgetMillis,
-                    cancelMillis: Int = LinuxShellMailboxLimits.cancelBudgetMillis) {
+                    cancelMillis: Int = LinuxShellMailboxLimits.cancelBudgetMillis,
+                    transactionStartMillis: Int = LinuxShellMailboxLimits.transactionPreparationBudgetMillis) {
             self.startMillis = startMillis
+            self.transactionStartMillis = transactionStartMillis
             self.pollMillis = pollMillis
             self.inputMillis = inputMillis
             self.resizeMillis = resizeMillis
@@ -940,6 +947,7 @@ public struct MailboxLinuxShellTransport: LinuxShellTransport {
         // rides as the engine's closed-set token. nil OMITS the key (never
         // null); the applied Kotlin defaults an absent key to "pty", so
         // interactive paths are byte-for-byte unchanged.
+        if request.environmentTransaction { payload["environmentTransaction"] = true }
         if let stdinDelivery = request.stdinDelivery {
             payload["stdinDelivery"] = stdinDelivery.rawValue
         }
@@ -955,7 +963,7 @@ public struct MailboxLinuxShellTransport: LinuxShellTransport {
         }
         let reply = try await mailbox.submit(operation: "shell.start",
                                              payload: try Self.jsonData(payload),
-                                             timeoutMillis: budgets.startMillis)
+                                             timeoutMillis: request.environmentTransaction ? budgets.transactionStartMillis : budgets.startMillis)
         let object = try Self.jsonObject(reply)
         guard let sessionID = object["sessionID"] as? String, !sessionID.isEmpty,
               let environmentID = object["environmentID"] as? String, !environmentID.isEmpty else {
@@ -1030,6 +1038,7 @@ public struct MailboxLinuxShellTransport: LinuxShellTransport {
             waitErrno: Self.int32Value(object["waitErrno"]),
             workspaceStatus: leaseReleased ? object["workspaceStatus"] as? String : nil,
             workspaceRecoveryRef: leaseReleased ? object["workspaceRecoveryRef"] as? String : nil)
+        if leaseReleased { poll.environmentTransaction = LinuxEnvironmentTransactionReceipt(wire: object["environmentTransaction"]) }
         if let state = poll.workspaceStatus,
            !["synced", "conflict", "aborted", "error", "unknown", "deferred"].contains(state) {
             throw LinuxShellTransportError.replyMalformed

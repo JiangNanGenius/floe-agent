@@ -192,6 +192,10 @@ class RuntimeWorkSupervisor(
      * other. A start that cannot be admitted is refused without touching the
      * census or the transport.
      */
+    // Preserve the original trailing-lambda API for single-workload callers.
+    fun start(spec: LaunchSpec, lease: LeaseToken, onTerminal: (WorkloadTerminal) -> Unit): StartOutcome =
+        start(spec, lease, onTerminal, WorkloadAdmission.single)
+
     fun start(
         spec: LaunchSpec,
         lease: LeaseToken,
