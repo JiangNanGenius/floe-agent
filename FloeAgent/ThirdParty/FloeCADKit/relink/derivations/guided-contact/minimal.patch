@@ -114,16 +114,32 @@ diff --git a/src/GeomFill/GeomFill_LocationGuide.cxx b/src/GeomFill/GeomFill_Loc
  
  IMPLEMENT_STANDARD_RTTIEXT(GeomFill_LocationGuide,GeomFill_LocationLaw)
  
-@@ -339,6 +438,8 @@
+@@ -289,6 +388,14 @@
+     Ok = myLaw->D0(t, T, N, B);
+     if (!Ok) {
+       myStatus = myLaw->ErrorStatus();
++      if (OS3DContactProbeEnabled())
++      {
++        static std::atomic<unsigned> frameAbortRows{0};
++        if (OS3DContactProbeSlot(frameAbortRows, 64))
++          std::fprintf(stderr,
++            "OS3DContactProbe v=3 stage=table_abort reason=frame law=%p index=%d t=%.17g spine_z=%.17g status=%d\n",
++            static_cast<void*>(this), ii, t, P.Z(), static_cast<int>(myStatus));
++      }
+       return; //Y a rien a faire.
+     }
+     gp_Dir D = T;
+@@ -339,6 +446,9 @@
      Extrema_POnCurv Pc;
      Extrema_POnSurf Ps;
      Standard_Real theU = 0., theV = 0.;
 +    Standard_Real probeResidual = std::numeric_limits<Standard_Real>::quiet_NaN();
 +    bool probeRescue = false;
++    bool hasContact = false;
      
      if (!DistMini.IsDone() || DistMini.NbExt() == 0) {
  #ifdef OCCT_DEBUG
-@@ -366,6 +467,11 @@
+@@ -366,6 +476,11 @@
              SOS = Standard_True;
              math_Vector RR(1,3);
              Result.Root(RR);
@@ -135,7 +151,19 @@ diff --git a/src/GeomFill/GeomFill_LocationGuide.cxx b/src/GeomFill/GeomFill_Loc
              PInt.SetValues(P, RR(2), RR(3), RR(1), IntCurveSurface_Out);
              theU = PInt.U();
              theV = PInt.V();
-@@ -384,26 +490,152 @@
+@@ -376,34 +491,177 @@
+ #endif
+         }
+       }
+-      if (!SOS) {
+-	myStatus = GeomFill_ImpossibleContact;
+-	return;
+-      }
++      // A failed distance/SOS search does not exhaust the genuine contact
++      // roots. Give the existing previous-root continuation the same chance
++      // it already has when Extrema returned a candidate.
++      hasContact = SOS;
+     } 
      else { // on prend le point d'intersection 
        // d'angle le plus proche de P
        
@@ -168,21 +196,22 @@ diff --git a/src/GeomFill/GeomFill_LocationGuide.cxx b/src/GeomFill/GeomFill_Loc
          }
        }
 -      MinDist = Sqrt(MinDist);
-+      if (jref == 0)
-+      {
-+        myStatus = GeomFill_ImpossibleContact;
-+        return;
-+      }
-       DistMini.Points(jref, Pc, Ps);
+-      DistMini.Points(jref, Pc, Ps);
 -      
-+      if (OS3DContactProbeEnabled()) probeResidual = std::sqrt(DistMini.SquareDistance(jref));
-       Ps.Parameter(theU, theV);
+-      Ps.Parameter(theU, theV);
 -      a1 = theU;
 -      
 -      InGoodPeriod (CurAngle, 2*M_PI, a1);
-+      // Store the same unwrapped angle used for branch selection, including
-+      // ii == 1 where PrecAngle belongs to the preceding location law.
-+      InGoodPeriod(CurAngle, 2*M_PI, theU);
++      if (jref != 0)
++      {
++        DistMini.Points(jref, Pc, Ps);
++        if (OS3DContactProbeEnabled()) probeResidual = std::sqrt(DistMini.SquareDistance(jref));
++        Ps.Parameter(theU, theV);
++        // Store the same unwrapped angle used for branch selection, including
++        // ii == 1 where PrecAngle belongs to the preceding location law.
++        InGoodPeriod(CurAngle, 2*M_PI, theU);
++        hasContact = true;
++      }
      }//else
      
 +    // Extrema_FuncExtCS deduplicates by the guide parameter alone. On a
@@ -190,7 +219,8 @@ diff --git a/src/GeomFill/GeomFill_LocationGuide.cxx b/src/GeomFill/GeomFill_Loc
 +    // parameter, so the closest rotation may already have been discarded.
 +    // Add a genuine root continued from the authored initial frame / previous
 +    // station. Do not restrict the angle domain or accept a non-contact fit.
-+    const Standard_Real aExtremaAngle = theU;
++    const bool hadContact = hasContact;
++    const Standard_Real aExtremaAngle = hasContact ? theU : std::numeric_limits<Standard_Real>::quiet_NaN();
 +    Standard_Real aCandidateAngle = std::numeric_limits<Standard_Real>::quiet_NaN();
 +    Standard_Real aCandidateV = aCandidateAngle;
 +    Standard_Real aCandidateResidual = aCandidateAngle;
@@ -212,7 +242,7 @@ diff --git a/src/GeomFill/GeomFill_LocationGuide.cxx b/src/GeomFill/GeomFill_Loc
 +        aSeed(2) = myPoles2d->Value(2, ii - 1).X();
 +        aSeed(3) = myPoles2d->Value(2, ii - 1).Y();
 +      }
-+      else
++      else if (hasContact)
 +      {
 +        // At the first station, the supplied profile may already meet the
 +        // guide at PrecAngle (zero at the first spine). Recover that actual
@@ -264,13 +294,14 @@ diff --git a/src/GeomFill/GeomFill_LocationGuide.cxx b/src/GeomFill/GeomFill_Loc
 +          aCandidateAngle = aCandidate(2);
 +          aCandidateV = aCandidate(3);
 +          InGoodPeriod(CurAngle, 2 * M_PI, aCandidateAngle);
-+          if (Abs(aCandidateAngle - CurAngle) < Abs(theU - CurAngle))
++          if (!hasContact || Abs(aCandidateAngle - CurAngle) < Abs(theU - CurAngle))
 +          {
 +            Pc.SetValues(aCandidate(1), myGuide->Value(aCandidate(1)));
 +            theU = aCandidateAngle;
 +            theV = aCandidateV;
 +            probeResidual = aCandidateResidual;
 +            aContinuationChosen = true;
++            hasContact = true;
 +          }
 +        }
 +      }
@@ -294,10 +325,26 @@ diff --git a/src/GeomFill/GeomFill_LocationGuide.cxx b/src/GeomFill/GeomFill_Loc
 +          aCandidateResidual, aContinuationState, aContinuationChosen ? 1 : 0);
 +    }
 +
++    if (OS3DContactProbeEnabled() && (!hadContact || !hasContact))
++    {
++      static std::atomic<unsigned> completionRows{0};
++      if (OS3DContactProbeSlot(completionRows, 64))
++        std::fprintf(stderr,
++          "OS3DContactProbe v=3 stage=completion law=%p index=%d t=%.17g spine_z=%.17g "
++          "had_contact=%d has_contact=%d state=%d candidate_residual_mm=%.17g guide_first=%.17g guide_last=%.17g\n",
++          static_cast<void*>(this), ii, t, P.Z(), hadContact ? 1 : 0, hasContact ? 1 : 0,
++          aContinuationState, aCandidateResidual, myGuide->FirstParameter(), myGuide->LastParameter());
++    }
++    if (!hasContact)
++    {
++      myStatus = GeomFill_ImpossibleContact;
++      return;
++    }
++
      // Controle de w 
      w = Pc.Parameter();
      
-@@ -456,6 +688,7 @@
+@@ -456,6 +714,7 @@
  #endif
      }
      
@@ -305,7 +352,7 @@ diff --git a/src/GeomFill/GeomFill_LocationGuide.cxx b/src/GeomFill/GeomFill_Loc
      p1.SetCoord(t, w); // on stocke les parametres
      p2.SetCoord(Angle , v);
      CurAngle = Angle;
-@@ -602,6 +835,7 @@
+@@ -602,6 +861,7 @@
      // initialisations germe
      InitX(Param); 
      
@@ -313,7 +360,7 @@ diff --git a/src/GeomFill/GeomFill_LocationGuide.cxx b/src/GeomFill/GeomFill_Loc
      Standard_Integer Iter = 100;
      gp_XYZ t,b,n;
      t = M.Column(3);
-@@ -618,7 +852,10 @@
+@@ -618,7 +878,10 @@
  
      if (Result.IsDone()) {
        // solution
@@ -325,7 +372,7 @@ diff --git a/src/GeomFill/GeomFill_LocationGuide.cxx b/src/GeomFill/GeomFill_Loc
        
        // rotation 
        gp_Mat Rot;
-@@ -629,6 +866,7 @@
+@@ -629,6 +892,7 @@
        M.SetCols(n, b, t);
      }
      else {
@@ -333,7 +380,7 @@ diff --git a/src/GeomFill/GeomFill_LocationGuide.cxx b/src/GeomFill/GeomFill_Loc
  #ifdef OCCT_DEBUG
        std::cout << "LocationGuide::D0 : No Result !"<<std::endl;
        TraceRevol(Param, U, myLaw, mySec, myCurve, Trans);
-@@ -671,6 +909,7 @@
+@@ -671,6 +935,7 @@
    if (rotation) {
      //initialisation du germe
      InitX(Param);    
@@ -341,7 +388,7 @@ diff --git a/src/GeomFill/GeomFill_LocationGuide.cxx b/src/GeomFill/GeomFill_Loc
      Standard_Integer Iter = 100;
      gp_XYZ b, n, t;
      t = M.Column(3);
-@@ -688,7 +927,10 @@
+@@ -688,7 +953,10 @@
  
      if (Result.IsDone()) {
        // solution 
@@ -353,7 +400,7 @@ diff --git a/src/GeomFill/GeomFill_LocationGuide.cxx b/src/GeomFill/GeomFill_Loc
        
        // rotation 
        gp_Mat Rot;
-@@ -701,6 +943,7 @@
+@@ -701,6 +969,7 @@
        M.SetCols(n, b, t);
      }
      else {
@@ -361,7 +408,7 @@ diff --git a/src/GeomFill/GeomFill_LocationGuide.cxx b/src/GeomFill/GeomFill_Loc
  #ifdef OCCT_DEBUG
        Standard_Real U = myFirstS + ratio*(Param-myCurve->FirstParameter());
        std::cout << "LocationGuide::D0 : No Result !"<<std::endl;
-@@ -750,7 +993,8 @@
+@@ -750,7 +1019,8 @@
      DM *= Trans;
    }
  
@@ -371,7 +418,7 @@ diff --git a/src/GeomFill/GeomFill_LocationGuide.cxx b/src/GeomFill/GeomFill_Loc
      return Standard_False;
   /*   
  #ifdef OCCT_DEBUG
-@@ -917,8 +1161,9 @@
+@@ -917,8 +1187,9 @@
      D2M *= Trans;
    }
  

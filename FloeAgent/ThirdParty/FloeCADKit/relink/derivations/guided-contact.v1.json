@@ -4,7 +4,7 @@
   "displayName": "OCCT closed-profile contact branch continuation",
   "status": "required",
   "approach": "single-object-surgical-reconstruction",
-  "purpose": "Preserve true-contact extrema and compare an authored initial/previous-station native Newton continuation root so Extrema guide-parameter deduplication cannot discard the nearest closed-profile rotation. Retain the lifetime repair, SOS guide seed fix, bounded default-off diagnostics and every non-target member.",
+  "purpose": "Preserve true-contact extrema and authored initial/previous-station native Newton roots, including when the native distance/SOS candidate search has no acceptable contact. Do not reject until both existing searches have run; retain every actual-equation residual/final geometry gate, the lifetime repair, SOS guide seed fix, bounded default-off diagnostics and every non-target archive member.",
   "occt": {
     "name": "Open CASCADE Technology",
     "version": "7.8.1",
@@ -18,13 +18,13 @@
     },
     "overlaySource": {
       "path": "relink/derivations/guided-contact/overlay/src/GeomFill/GeomFill_LocationGuide.cxx",
-      "size": 53557,
-      "sha256": "85db58eb61d7d5b0406908326ab4b843873dad0036ac7eb464449045046fe361"
+      "size": 54986,
+      "sha256": "dad4b3a97d84b893867610116809531582ecfb39db1a1e8df14c73cb4f2448ed"
     },
     "patch": {
       "path": "relink/derivations/guided-contact/minimal.patch",
-      "size": 15791,
-      "sha256": "62d16d65a575c21ad9b3893822063be79e27846f1031780fdb8c362286f91d80"
+      "size": 17683,
+      "sha256": "c2fe184ea7acf0ec44ec7aec0e5235483077b0d44227acc357c9276f19e14a2b"
     }
   },
   "member": {
@@ -155,7 +155,8 @@
   "limitations": [
     "One additional object is rebuilt after the existing Standard_Type lifetime derivation, not a full OCCT rebuild.",
     "The manifest retains original upstream archive pins; nested input receipt plus parent expectedResult anchors this second-stage base.",
-    "Root compiled both candidate stage-two objects with Xcode27.1 and retained every other member; original guided geometry, cancellation and persistence qualification remains mandatory. No fixture or tolerance changes."
+    "Root compiled both candidate stage-two objects with Xcode27.1 and retained every other member; original guided geometry, cancellation and persistence qualification remains mandatory. No fixture or tolerance changes.",
+    "The native318 three-section case stops during the second path law table. This completion candidate permits the already-residual-checked continuation after legacy search failure and records frame/contact exits; original six App geometry/workflow tests remain required."
   ],
   "inputDerivation": {
     "id": "occt-standard-type-lifetime-v1",

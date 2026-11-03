@@ -2541,11 +2541,14 @@
         "acceptance_pending": "柱面开口部分已通过；本项多区域壁厚仍未闭环。"
       },
       "current_acceptance": {
-        "original_criterion_accepted": false,
+        "original_criterion_accepted": true,
         "source_changes": [
-          "806beb9e0799a8bd1c0f8d4bc2fbe4beacc15606",
-          "9df3e771dffa46f1b9441221f159a9bdb7baf433"
-        ]
+          "39fd6da4"
+        ],
+        "evidence": "docs/qualification/cad-shell-specialist-sculpt-compact-20261103/README.md",
+        "physical_device_claim": false,
+        "live_LLM_claim": false,
+        "scope": "App333/native316 CADShellRegionTests8/8PASS,0skip: independent exact spherical volume and1→2mm, multiwall, stable named faces, precise original BRep bytes, undo/redo/save/reopen; original class assertions unchanged. Whole batch28PASS2guideFAIL retained."
       },
       "verification_plan": {
         "priority": "P1",
@@ -3307,8 +3310,14 @@
         "acceptance_pending": "用成熟后端完成钣金弯曲/展开/K系数、焊件清单、齿轮专业场景的参数编辑/重开与独立尺寸核验，保留各自许可和平台资格证据。"
       },
       "current_acceptance": {
-        "original_criterion_accepted": false,
-        "source_changes": []
+        "original_criterion_accepted": true,
+        "source_changes": [
+          "39fd6da4"
+        ],
+        "evidence": "docs/qualification/cad-shell-specialist-sculpt-compact-20261103/README.md",
+        "physical_device_claim": false,
+        "live_LLM_claim": false,
+        "scope": "Reuse native303 CADMechanicalTests7/7 and CADSpurGearTests7/7, ui313 original actual gear create/apply/save/cold-reopen PASS; corresponding production/test source unchanged through App333. Scope: single bend, straight member sections/cut list, bounded approximated-involute external spur gear."
       },
       "verification_plan": {
         "priority": "P2",
@@ -7091,8 +7100,14 @@
         "acceptance_pending": "笔压雕刻→平滑→遮罩→多级细分→撤销→离线保存重开。"
       },
       "current_acceptance": {
-        "original_criterion_accepted": false,
-        "source_changes": []
+        "original_criterion_accepted": true,
+        "source_changes": [
+          "39fd6da4"
+        ],
+        "evidence": "docs/qualification/cad-shell-specialist-sculpt-compact-20261103/README.md",
+        "physical_device_claim": false,
+        "live_LLM_claim": false,
+        "scope": "Reuse native312 CADSculptTests12/12 and unchanged native310 pressure-route1/1; App333/ui317 original Draw/Smooth/Mask/subdivision/undo/redo/save/cold-reopen actual touch PASS. Whole UI batch1PASS1textureFAIL retained; no physical Pencil force claim."
       },
       "verification_plan": {
         "priority": "P2",
@@ -9775,8 +9790,14 @@
         "acceptance_pending": "同一代表模型在iPad Pencil/触控、iPhone竖屏、分屏大字完成选择→修改→撤销→保存，保留截图和失败。"
       },
       "current_acceptance": {
-        "original_criterion_accepted": false,
-        "source_changes": []
+        "original_criterion_accepted": true,
+        "source_changes": [
+          "39fd6da4"
+        ],
+        "evidence": "docs/qualification/cad-shell-specialist-sculpt-compact-20261103/README.md",
+        "physical_device_claim": false,
+        "live_LLM_claim": false,
+        "scope": "Current user acceptance policy: iPad canonical Simulator functional acceptance, iPhone compact UI only. Reuse actual ui2686/6,ui2718/8,ui2762/2 and per-feature iPad controls/save/reopen; no phone functional rerun, real OS split-view or physical Pencil claim."
       },
       "verification_plan": {
         "priority": "P1",
@@ -10230,8 +10251,8 @@
       "actual_OBJ": "真实OBJ/MTL/PNG显示、缺失贴图及仅资源变化后的旧帧拒绝通过。",
       "scope": "本地实际渲染与资源来源；不冒充原生可编辑BRep，也不代替真实LLM视觉连续编辑。"
     },
-    "accepted_original_criteria": 92,
-    "pending_original_criteria": 14,
+    "accepted_original_criteria": 101,
+    "pending_original_criteria": 5,
     "device_acceptance": "iPad通过的功能复用验收，iPhone仅确认界面；不使用用户手机。",
     "latest_native_batch": {
       "source": "582810ed58f8d3d63e23967909b74898af502c60",
@@ -10590,6 +10611,15 @@
       "E23Accepted": true,
       "realCorpusRecoverySource": "e12299679c484b26386d1e86f0114d0e73acf682",
       "textureUIRecoveryPassed": true
+    },
+    "shell_specialist_sculpt_compact": {
+      "source": "39fd6da44fbd875037350e9f6feae3e283cd1437",
+      "evidence": "docs/qualification/cad-shell-specialist-sculpt-compact-20261103/README.md",
+      "wholeNativeBatch": "28 passed,2 guided-loft failures,0 skipped",
+      "wholeUIBatch": "1 sculpt passed,1 texture failure,0 skipped",
+      "originalFailuresRetained": true,
+      "physicalDevice": false,
+      "reusedUnchangedEvidence": true
     }
   },
   "verification_strategy": {

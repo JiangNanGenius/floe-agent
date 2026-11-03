@@ -388,6 +388,14 @@ static void InGoodPeriod(const Standard_Real Prec,
     Ok = myLaw->D0(t, T, N, B);
     if (!Ok) {
       myStatus = myLaw->ErrorStatus();
+      if (OS3DContactProbeEnabled())
+      {
+        static std::atomic<unsigned> frameAbortRows{0};
+        if (OS3DContactProbeSlot(frameAbortRows, 64))
+          std::fprintf(stderr,
+            "OS3DContactProbe v=3 stage=table_abort reason=frame law=%p index=%d t=%.17g spine_z=%.17g status=%d\n",
+            static_cast<void*>(this), ii, t, P.Z(), static_cast<int>(myStatus));
+      }
       return; //Y a rien a faire.
     }
     gp_Dir D = T;
@@ -440,6 +448,7 @@ static void InGoodPeriod(const Standard_Real Prec,
     Standard_Real theU = 0., theV = 0.;
     Standard_Real probeResidual = std::numeric_limits<Standard_Real>::quiet_NaN();
     bool probeRescue = false;
+    bool hasContact = false;
     
     if (!DistMini.IsDone() || DistMini.NbExt() == 0) {
 #ifdef OCCT_DEBUG
@@ -482,10 +491,10 @@ static void InGoodPeriod(const Standard_Real Prec,
 #endif
         }
       }
-      if (!SOS) {
-	myStatus = GeomFill_ImpossibleContact;
-	return;
-      }
+      // A failed distance/SOS search does not exhaust the genuine contact
+      // roots. Give the existing previous-root continuation the same chance
+      // it already has when Extrema returned a candidate.
+      hasContact = SOS;
     } 
     else { // on prend le point d'intersection 
       // d'angle le plus proche de P
@@ -514,17 +523,16 @@ static void InGoodPeriod(const Standard_Real Prec,
           jref = j;
         }
       }
-      if (jref == 0)
+      if (jref != 0)
       {
-        myStatus = GeomFill_ImpossibleContact;
-        return;
+        DistMini.Points(jref, Pc, Ps);
+        if (OS3DContactProbeEnabled()) probeResidual = std::sqrt(DistMini.SquareDistance(jref));
+        Ps.Parameter(theU, theV);
+        // Store the same unwrapped angle used for branch selection, including
+        // ii == 1 where PrecAngle belongs to the preceding location law.
+        InGoodPeriod(CurAngle, 2*M_PI, theU);
+        hasContact = true;
       }
-      DistMini.Points(jref, Pc, Ps);
-      if (OS3DContactProbeEnabled()) probeResidual = std::sqrt(DistMini.SquareDistance(jref));
-      Ps.Parameter(theU, theV);
-      // Store the same unwrapped angle used for branch selection, including
-      // ii == 1 where PrecAngle belongs to the preceding location law.
-      InGoodPeriod(CurAngle, 2*M_PI, theU);
     }//else
     
     // Extrema_FuncExtCS deduplicates by the guide parameter alone. On a
@@ -532,7 +540,8 @@ static void InGoodPeriod(const Standard_Real Prec,
     // parameter, so the closest rotation may already have been discarded.
     // Add a genuine root continued from the authored initial frame / previous
     // station. Do not restrict the angle domain or accept a non-contact fit.
-    const Standard_Real aExtremaAngle = theU;
+    const bool hadContact = hasContact;
+    const Standard_Real aExtremaAngle = hasContact ? theU : std::numeric_limits<Standard_Real>::quiet_NaN();
     Standard_Real aCandidateAngle = std::numeric_limits<Standard_Real>::quiet_NaN();
     Standard_Real aCandidateV = aCandidateAngle;
     Standard_Real aCandidateResidual = aCandidateAngle;
@@ -554,7 +563,7 @@ static void InGoodPeriod(const Standard_Real Prec,
         aSeed(2) = myPoles2d->Value(2, ii - 1).X();
         aSeed(3) = myPoles2d->Value(2, ii - 1).Y();
       }
-      else
+      else if (hasContact)
       {
         // At the first station, the supplied profile may already meet the
         // guide at PrecAngle (zero at the first spine). Recover that actual
@@ -606,13 +615,14 @@ static void InGoodPeriod(const Standard_Real Prec,
           aCandidateAngle = aCandidate(2);
           aCandidateV = aCandidate(3);
           InGoodPeriod(CurAngle, 2 * M_PI, aCandidateAngle);
-          if (Abs(aCandidateAngle - CurAngle) < Abs(theU - CurAngle))
+          if (!hasContact || Abs(aCandidateAngle - CurAngle) < Abs(theU - CurAngle))
           {
             Pc.SetValues(aCandidate(1), myGuide->Value(aCandidate(1)));
             theU = aCandidateAngle;
             theV = aCandidateV;
             probeResidual = aCandidateResidual;
             aContinuationChosen = true;
+            hasContact = true;
           }
         }
       }
@@ -634,6 +644,22 @@ static void InGoodPeriod(const Standard_Real Prec,
           static_cast<void*>(this), ii, t, DistMini.IsDone() ? DistMini.NbExt() : 0,
           CurAngle, aExtremaAngle, aCandidateAngle, aCandidateV, aSeedResidual,
           aCandidateResidual, aContinuationState, aContinuationChosen ? 1 : 0);
+    }
+
+    if (OS3DContactProbeEnabled() && (!hadContact || !hasContact))
+    {
+      static std::atomic<unsigned> completionRows{0};
+      if (OS3DContactProbeSlot(completionRows, 64))
+        std::fprintf(stderr,
+          "OS3DContactProbe v=3 stage=completion law=%p index=%d t=%.17g spine_z=%.17g "
+          "had_contact=%d has_contact=%d state=%d candidate_residual_mm=%.17g guide_first=%.17g guide_last=%.17g\n",
+          static_cast<void*>(this), ii, t, P.Z(), hadContact ? 1 : 0, hasContact ? 1 : 0,
+          aContinuationState, aCandidateResidual, myGuide->FirstParameter(), myGuide->LastParameter());
+    }
+    if (!hasContact)
+    {
+      myStatus = GeomFill_ImpossibleContact;
+      return;
     }
 
     // Controle de w 

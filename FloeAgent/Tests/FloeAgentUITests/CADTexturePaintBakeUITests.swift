@@ -5,12 +5,13 @@ import XCTest
 /// occluder. Stored-image SHA readback comes from the applied Body snapshot.
 @MainActor final class CADTexturePaintBakeUITests:XCTestCase {
     private let base=["-AppleLanguages","(en)","-AppleLocale","en_US","-ui-testing","-ui-testing-ipad","--ui-test-cad-fixture","--ui-test-cad-texture-paint"]
+    private let paintRowOrder=["CADTexturePaintCanvas","CADTexturePaintColor","CADTexturePaintRadius","CADTexturePaintDetails","CADTexturePaintStoredDigest","CADTexturePaintImage","CADTextureBakeDistance","CADTextureBakeOtherBodies","CADTextureBakeAO","CADTexturePaintUndo","CADTexturePaintRedo","CADTexturePaintRefresh","CADTexturePaintOpenUV"]
     private var app:XCUIApplication!
     override func tearDownWithError()throws { app?.terminate();app=nil }
     private func any(_ id:String)->XCUIElement { app.descendants(matching:.any).matching(identifier:id).firstMatch }
     private func reveal(_ id:String)->XCUIElement {
         let element=any(id)
-        for _ in 0..<16 {
+        for attempt in 0...16 {
             let paint=any("CADTexturePaintForm"),material=any("CADMaterialInspectorForm")
             let form=paint.exists ? paint : material
             XCTAssertTrue(form.waitForExistence(timeout:10))
@@ -20,15 +21,29 @@ import XCTest
                 let top=max(visible.minY,bar.frame.maxY+4)
                 visible=CGRect(x:visible.minX,y:top,width:visible.width,height:max(0,visible.maxY-top))
             }
-            // Custom Canvas has a real drawing frame but no native AX
-            // activation point. Verify full visibility before querying other
-            // controls; actual stored-pixel assertions prove the canvas drag.
-            let inView=element.exists && element.frame.width>0 && element.frame.height>0 && visible.contains(element.frame)
-            if inView && (id=="CADTexturePaintCanvas" || element.isHittable) { return element }
-            // Form virtualizes offscreen rows. The first canvas disappears
-            // from AX after opening Details below it; its absence must scroll
-            // back up, rather than repeatedly scroll farther down.
-            let above=element.exists ? element.frame.minY<visible.minY : id=="CADTexturePaintCanvas"
+            // The custom Canvas and read-only digest have no native AX
+            // activation point. Require their complete real drawing/reading
+            // frames; tappable controls still require a visible hit target.
+            let frame=element.exists ? element.frame : .zero
+            let hasFrame=frame.width>0 && frame.height>0
+            let contentOnly=id=="CADTexturePaintCanvas" || id=="CADTexturePaintStoredDigest"
+            let inView=hasFrame && (contentOnly ? visible.contains(frame) : visible.contains(CGPoint(x:frame.midX,y:frame.midY)))
+            if inView && (contentOnly || element.isHittable) { return element }
+            guard attempt<16 else { break }
+            // Form virtualizes rows in both directions. Infer a missing row's
+            // position from the nearest visible real row, including when
+            // returning from Undo/Redo or baking to the stored digest above.
+            var above=hasFrame ? frame.minY<visible.minY : id=="CADTexturePaintCanvas"
+            if !hasFrame,paint.exists,let target=paintRowOrder.firstIndex(of:id) {
+                let neighbors=paintRowOrder.indices.filter { $0 != target }.sorted { abs($0-target)<abs($1-target) }
+                for index in neighbors {
+                    let row=any(paintRowOrder[index])
+                    if row.exists,!visible.intersection(row.frame).isEmpty {
+                        above=target<index
+                        break
+                    }
+                }
+            }
             // The centre is the real painting canvas; scroll in the native
             // Form margin and only towards the currently missing row.
             form.coordinate(withNormalizedOffset:CGVector(dx:0.985,dy:above ? 0.6 : 0.9))
@@ -36,7 +51,7 @@ import XCTest
         }
         let diagnostic=XCTAttachment(string:app.debugDescription)
         diagnostic.name="Texture form control not visible: \(id)";diagnostic.lifetime = .keepAlways;add(diagnostic)
-        XCTAssertTrue(element.exists && element.isHittable,"Missing visible real control \(id): \(app.debugDescription)")
+        XCTFail("Missing visible real control \(id): \(app.debugDescription)")
         return element
     }
     private func openPaint() {
@@ -45,13 +60,13 @@ import XCTest
         XCTAssertTrue(material.waitForExistence(timeout:30));XCTAssertTrue(material.isEnabled);material.tap()
         reveal("CADMaterialOpenTexturePaint").tap()
         XCTAssertTrue(any("CADTexturePaintCanvas").waitForExistence(timeout:30))
+        // A fresh sheet starts collapsed. Expand once per sheet; a digest
+        // missing from the virtualized AX tree later is not a collapsed group.
+        reveal("CADTexturePaintDetails").tap()
+        let expanded=XCTAttachment(string:app.debugDescription)
+        expanded.name="Texture stored-detail disclosure expanded";expanded.lifetime = .keepAlways;add(expanded)
     }
     private func digest(_ expected:String?=nil)->String {
-        if !any("CADTexturePaintStoredDigest").exists {
-            reveal("CADTexturePaintDetails").tap()
-            let expanded=XCTAttachment(string:app.debugDescription)
-            expanded.name="Texture stored-detail disclosure expanded";expanded.lifetime = .keepAlways;add(expanded)
-        }
         let field=reveal("CADTexturePaintStoredDigest")
         if let expected {
             let result=XCTWaiter.wait(for:[XCTNSPredicateExpectation(predicate:NSPredicate(format:"value == %@",expected),object:field)],timeout:30)
@@ -60,11 +75,6 @@ import XCTest
         return field.value as? String ?? field.label
     }
     private func awaitNewDigest(_ old:String)->String {
-        if !any("CADTexturePaintStoredDigest").exists {
-            reveal("CADTexturePaintDetails").tap()
-            let expanded=XCTAttachment(string:app.debugDescription)
-            expanded.name="Texture stored-detail disclosure expanded";expanded.lifetime = .keepAlways;add(expanded)
-        }
         let field=reveal("CADTexturePaintStoredDigest")
         let result=XCTWaiter.wait(for:[XCTNSPredicateExpectation(predicate:NSPredicate(format:"value != %@ AND value != %@",old,"none"),object:field)],timeout:60)
         XCTAssertEqual(result,.completed,app.debugDescription)

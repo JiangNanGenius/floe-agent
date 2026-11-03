@@ -44,7 +44,11 @@ public struct MoonshotSearchOptions: Sendable, Equatable {
         let key = "floe.moonshot.deviceID"
         if let value = UserDefaults.standard.string(forKey: key), UUID(uuidString: value) != nil { return value }
         let value = UUID().uuidString
-        UserDefaults.standard.set(value, forKey: key)
+        // Request preparation may run off-main. Defaults changes also notify
+        // SwiftUI settings observers, so persist on main without blocking a
+        // network worker; the static value remains stable in this process.
+        if Thread.isMainThread { UserDefaults.standard.set(value, forKey: key) }
+        else { DispatchQueue.main.async { UserDefaults.standard.set(value, forKey: key) } }
         return value
     }()
 
