@@ -35,10 +35,34 @@ import FloeProviders
 final class G09R2AgentGenerationLifecycleTests: XCTestCase {
     private var roots: [URL] = []
     private var databases: [DatabaseManager] = []
+    private var epochs: [UInt64] = []
     private static let epochLock = NSLock()
     nonisolated(unsafe) private static var epochCounter: UInt64 = 40_000
 
     override func tearDown() async throws {
+        // Drain the workers this test owned BEFORE closing the databases:
+        // a background worker that touches a closed GRDB connection crashes
+        // the whole test process, even when the test body already failed.
+        let ownedEpochs = epochs
+        epochs.removeAll()
+        for epoch in ownedEpochs {
+            _ = G09R2GenerationService.shared.requestRootStop(epoch: epoch)
+        }
+        if !ownedEpochs.isEmpty {
+            let deadline = Date().addingTimeInterval(5)
+            while Date() < deadline,
+                  ownedEpochs.contains(
+                    where: { G09R2GenerationService.shared.hasActiveWorker(epoch: $0) }) {
+                try? await Task.sleep(nanoseconds: 20_000_000)
+            }
+        }
+        guard !ownedEpochs.contains(where: {
+            G09R2GenerationService.shared.hasActiveWorker(epoch: $0)
+        }) else {
+            XCTFail("Owned generation workers did not drain; preserving their database and workspace")
+            try await super.tearDown()
+            return
+        }
         for database in databases { try? await database.close() }
         databases.removeAll()
         for root in roots { try? FileManager.default.removeItem(at: root) }
@@ -131,7 +155,7 @@ final class G09R2AgentGenerationLifecycleTests: XCTestCase {
         private var _cancelCount = 0
         var submission: RemoteVideoSubmission
         var statusHandler: (String) async throws -> RemoteVideoStatus = { _ in
-            Self.makeStatus(state: .failed, error: "syntheticFailure")
+            FakeVideoAdapter.makeStatus(state: .failed, error: "syntheticFailure")
         }
         var cancelError: Error?
 
@@ -196,7 +220,7 @@ final class G09R2AgentGenerationLifecycleTests: XCTestCase {
         // workspace root comes from. Submission pins this exact binding, so
         // the fixture must register a real private-task workspace instead of
         // pointing at an arbitrary directory.
-        let conversationStore = ConversationStore(database: manager)
+        let conversationStore = SQLiteConversationStore(database: manager)
         try await conversationStore.saveConversation(ConversationRecord(
             id: conversationID, title: "Synthetic task",
             createdAt: Date(), updatedAt: Date()))
@@ -225,7 +249,7 @@ final class G09R2AgentGenerationLifecycleTests: XCTestCase {
             remoteModelID: modelRemoteID,
             displayName: "Synthetic model",
             limits: ModelLimits(contextTokens: 4_096, maxOutputTokens: 256),
-            capabilities: video ? [.videoGeneration] : [.imageGeneration],
+            capabilities: video ? [.videoGeneration] : [.imageGeneration, .imageEditing],
             useSurfaces: video ? [.videoGeneration] : [.imageGeneration],
             isEnabled: true)
         try await configuration.saveModel(model)
@@ -244,11 +268,13 @@ final class G09R2AgentGenerationLifecycleTests: XCTestCase {
             })
         let service = G09R2AgentGenerationService(
             platform: platform, environmentProvider: { _ in environment })
+        let epoch = Self.nextEpoch()
+        epochs.append(epoch)
         return Fixture(
             service: service, root: root, rootURL: url, workspaceURL: workspace,
             database: manager, configuration: configuration,
             jobStore: MediaGenerationJobStore(database: manager),
-            epoch: Self.nextEpoch(), conversationID: conversationID, runID: UUID(),
+            epoch: epoch, conversationID: conversationID, runID: UUID(),
             providerID: provider.id, modelID: model.id,
             imageAdapter: imageAdapter, videoAdapter: videoAdapter)
     }
@@ -567,6 +593,10 @@ final class G09R2AgentGenerationLifecycleTests: XCTestCase {
             prompt: "draw a square", selection: nil, legacyModelID: nil,
             count: 1, size: nil, aspectRatio: nil, resolution: nil,
             quality: nil, referenceRelativePath: nil)
+        // The one-shot worker settles asynchronously; read the durable row
+        // only after it reaches a terminal state (ready), never the just
+        // inserted preparing snapshot.
+        _ = try await waitForTerminal(fixture.jobStore, jobID: summary.jobID)
         let fetched = try await fixture.jobStore.ownedJob(id: summary.jobID)
         let owned = try XCTUnwrap(fetched)
         XCTAssertEqual(owned.job.state, .ready)
@@ -603,6 +633,9 @@ final class G09R2AgentGenerationLifecycleTests: XCTestCase {
             prompt: "draw two squares", selection: nil, legacyModelID: nil,
             count: 2, size: nil, aspectRatio: nil, resolution: nil,
             quality: nil, referenceRelativePath: nil)
+        // Same asynchronous settlement as the single-image case: wait for
+        // the terminal row before asserting the delivered artifacts.
+        _ = try await waitForTerminal(fixture.jobStore, jobID: summary.jobID)
         let fetched = try await fixture.jobStore.ownedJob(id: summary.jobID)
         let owned = try XCTUnwrap(fetched)
         XCTAssertEqual(owned.job.state, .ready)

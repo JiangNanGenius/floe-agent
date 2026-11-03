@@ -139,6 +139,7 @@ public actor MediaGenerationJobStore {
                 owner_id=excluded.owner_id,
                 origin_run_id=excluded.origin_run_id,
                 idempotency_key=COALESCE(excluded.idempotency_key, media_generation_jobs.idempotency_key),
+                request_json=excluded.request_json,
                 state=excluded.state,
                 estimated_completion_at=excluded.estimated_completion_at,
                 result_retention_expires_at=excluded.result_retention_expires_at,

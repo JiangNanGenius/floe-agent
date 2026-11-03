@@ -1,0 +1,2100 @@
+{
+  "schemaVersion": 1,
+  "state": "Source reconciliation reviewed; actual cloud generation lifecycle failure blocks current final acceptance and publication",
+  "reviewedSource": "2d83a051bfe2122e8f43185749dd92ac749abd61",
+  "environmentOverlay": "8499e778e2b1bd7f08ee1a8b7e14ff7db6889c5a",
+  "originalOperationCount": 183,
+  "entryCount": 50,
+  "evidenceBoundary": "Source-connected is distinct from compilation, actual App behavior, and publication. No claim of183 device passes.",
+  "entries": [
+    {
+      "id": "PY-INSTALL",
+      "family": "PYN",
+      "originalGoal": "G03",
+      "originalOperation": "Install Python packages inside the environment with recorded versions",
+      "originalStatus": "planned",
+      "required": true,
+      "classification": "source-connected",
+      "chain": {
+        "ui": "Model exec.shell command or signed-skill dependency preparation guidance (floe-python)",
+        "host": "Tool routing -> original resolved Linux runtime lease (LinuxRuntimeOperations) / durable jobs service",
+        "serviceRuntime": "Guest PRoot Debian userland: apt, python3 -m pip, npm with exact recorded versions; bounded output; cancellation retains the real job",
+        "storage": "Resolved task Linux environment + owned workspace; durable BackgroundJob store",
+        "resultFailure": "Missing/unqualified engine fails with preparation/selection guidance, never a host interpreter; legacy managed packages input refused"
+      },
+      "evidence": [
+        {
+          "path": "shared/Sources/FloeAndroidShellTools/LocalShellTool.swift",
+          "line": 92,
+          "note": "exec.shell tool: guest userland package installs via python3 -m pip / npm / apt inside the command",
+          "sha256": "5bd16f8e531e80c31fde18abb5af3b58c3e4053a2499e5b0d83eeaae836dc9d7"
+        },
+        {
+          "path": "shared/Sources/FloeAndroidShellTools/LocalShellTool.swift",
+          "line": 158,
+          "note": "legacy managed 'packages' input refused on Android",
+          "sha256": "5bd16f8e531e80c31fde18abb5af3b58c3e4053a2499e5b0d83eeaae836dc9d7"
+        },
+        {
+          "path": "shared/Sources/FloeSkills/Tools/SkillCreateTool.swift",
+          "line": 37,
+          "note": "skill scripts install deps with python3 -m pip through exec.shell",
+          "sha256": "fa5da824b840c4cea60631b31e60c1d171c1851830203df1189354a9c72e615c"
+        },
+        {
+          "path": "runtimeapp/src/main/java/com/floe/android/runtime/LinuxRuntimeOperations.kt",
+          "line": 51,
+          "note": "original Linux runtime operations (PTY slots + shared exec slot)",
+          "sha256": "c513128c5807e1b3add7181b6ada7f7bfeea7d6a6dccb9278b5412efa9a9dad2"
+        },
+        {
+          "path": "shared/Sources/FloeAndroidJobTools/BackgroundJobService.swift",
+          "line": 15,
+          "note": "jobs.submit durable job origin/authorization",
+          "sha256": "504edc2185d52808c308a2a1b1dedb35944013511d931b267a4235e1134183ae"
+        }
+      ],
+      "residual": [
+        "Generic Python/Node package operations run only in the task Linux environment through exec.shell/jobs; no host interpreter or revived language-specific alias.",
+        "Configured MCP stdio-server behavior and actual package installations are not claimed by this source review."
+      ],
+      "qualificationBoundary": "Source-connected reconciliation only. Compilation, focused tests, APK build and device acceptance remain separate Main-owned gates; nothing here is inferred from source.",
+      "laterSourceCorrection": {
+        "source": "8499e778e2b1bd7f08ee1a8b7e14ff7db6889c5a",
+        "note": "The old C01 handoff pending flags are historical: C01ManagedServiceDomain.startStdioService now implements separated stdin/stdout/stderr, and task workspace import/export is connected. Actual shell file publication and manual PTY file export/readback were observed separately.",
+        "paths": [
+          "shared/Sources/FloeAndroidCore/C01ManagedServiceDomain.swift",
+          "shared/Sources/FloeAndroidCore/C01LinuxStdioBindings.swift",
+          "runtimeapp/src/main/java/com/floe/android/runtime/LinuxRuntimeOperations.kt"
+        ]
+      }
+    },
+    {
+      "id": "PY-JOB-OUTPUT",
+      "family": "PYN",
+      "originalGoal": "G03",
+      "originalOperation": "Run Python code as a job and capture real output",
+      "originalStatus": "planned",
+      "required": true,
+      "classification": "source-connected",
+      "chain": {
+        "ui": "Model jobs.submit targeting exec.shell for long Python work",
+        "host": "BackgroundJobService (durable jobs) on the resolved Linux runtime lease",
+        "serviceRuntime": "Guest process output bounded and retained; jobs.status/jobs.result readback; real exit status and saved outputs",
+        "storage": "Durable BackgroundJob store + owned workspace outputs",
+        "resultFailure": "jobs.submit requires the runtime-issued approval token for the exact call; invalid token refused; removed execution alias refuses with guidance"
+      },
+      "evidence": [
+        {
+          "path": "shared/Sources/FloeAndroidJobTools/BackgroundJobService.swift",
+          "line": 15,
+          "note": "jobs.submit durable job origin/authorization",
+          "sha256": "504edc2185d52808c308a2a1b1dedb35944013511d931b267a4235e1134183ae"
+        },
+        {
+          "path": "shared/Sources/FloeAndroidJobTools/BackgroundJobService.swift",
+          "line": 163,
+          "note": "removed execution tool refusal redirects to exec.shell/jobs.submit",
+          "sha256": "504edc2185d52808c308a2a1b1dedb35944013511d931b267a4235e1134183ae"
+        },
+        {
+          "path": "shared/Sources/FloeAgentRuntime/ToolWorkflowGuidance.swift",
+          "line": 44,
+          "note": "background-job workflow guidance: durable jobID, jobs.status/jobs.result, no duplicate submit",
+          "sha256": "8b5bc7ed59b945ec88aaeab5ae4fefb0e41043909ab53634d17ae1f84ea8f5cd"
+        },
+        {
+          "path": "shared/Sources/FloeAndroidShellTools/LocalShellTool.swift",
+          "line": 92,
+          "note": "exec.shell guest execution, foreground max 120s / jobs max 600s bounded",
+          "sha256": "5bd16f8e531e80c31fde18abb5af3b58c3e4053a2499e5b0d83eeaae836dc9d7"
+        }
+      ],
+      "residual": [
+        "Generic Python/Node package operations run only in the task Linux environment through exec.shell/jobs; no host interpreter or revived language-specific alias.",
+        "Configured MCP stdio-server behavior and actual package installations are not claimed by this source review."
+      ],
+      "qualificationBoundary": "Source-connected reconciliation only. Compilation, focused tests, APK build and device acceptance remain separate Main-owned gates; nothing here is inferred from source.",
+      "laterSourceCorrection": {
+        "source": "8499e778e2b1bd7f08ee1a8b7e14ff7db6889c5a",
+        "note": "The old C01 handoff pending flags are historical: C01ManagedServiceDomain.startStdioService now implements separated stdin/stdout/stderr, and task workspace import/export is connected. Actual shell file publication and manual PTY file export/readback were observed separately.",
+        "paths": [
+          "shared/Sources/FloeAndroidCore/C01ManagedServiceDomain.swift",
+          "shared/Sources/FloeAndroidCore/C01LinuxStdioBindings.swift",
+          "runtimeapp/src/main/java/com/floe/android/runtime/LinuxRuntimeOperations.kt"
+        ]
+      }
+    },
+    {
+      "id": "NODE-ENV",
+      "family": "PYN",
+      "originalGoal": "G03",
+      "originalOperation": "Node package management inside the environment",
+      "originalStatus": "planned",
+      "required": true,
+      "classification": "source-connected",
+      "chain": {
+        "ui": "Model exec.shell command for Node package management inside the environment",
+        "host": "Original resolved Linux runtime lease",
+        "serviceRuntime": "Guest userland npm/pnpm after actual install; command -v / version readback before reliance",
+        "storage": "Resolved task Linux environment",
+        "resultFailure": "Unavailable tooling reports actual guest state; no host Node interpreter"
+      },
+      "evidence": [
+        {
+          "path": "shared/Sources/FloeAndroidShellTools/LocalShellTool.swift",
+          "line": 92,
+          "note": "exec.shell: node available only after actual install; npm/pnpm guidance",
+          "sha256": "5bd16f8e531e80c31fde18abb5af3b58c3e4053a2499e5b0d83eeaae836dc9d7"
+        },
+        {
+          "path": "shared/Sources/FloeAndroidCore/C02SkillDependencyPreparation.swift",
+          "line": 14,
+          "note": "signed skill dependency preparation rides exec.shell (pip/npm/apt)",
+          "sha256": "32601f5394b13e3954339248863f07446c3789fac1a8e2490addd295feefddd6"
+        },
+        {
+          "path": "runtimeapp/src/main/java/com/floe/android/runtime/LinuxRuntimeOperations.kt",
+          "line": 51,
+          "note": "original Linux runtime operations",
+          "sha256": "c513128c5807e1b3add7181b6ada7f7bfeea7d6a6dccb9278b5412efa9a9dad2"
+        }
+      ],
+      "residual": [
+        "Generic Python/Node package operations run only in the task Linux environment through exec.shell/jobs; no host interpreter or revived language-specific alias.",
+        "Configured MCP stdio-server behavior and actual package installations are not claimed by this source review."
+      ],
+      "qualificationBoundary": "Source-connected reconciliation only. Compilation, focused tests, APK build and device acceptance remain separate Main-owned gates; nothing here is inferred from source.",
+      "laterSourceCorrection": {
+        "source": "8499e778e2b1bd7f08ee1a8b7e14ff7db6889c5a",
+        "note": "The old C01 handoff pending flags are historical: C01ManagedServiceDomain.startStdioService now implements separated stdin/stdout/stderr, and task workspace import/export is connected. Actual shell file publication and manual PTY file export/readback were observed separately.",
+        "paths": [
+          "shared/Sources/FloeAndroidCore/C01ManagedServiceDomain.swift",
+          "shared/Sources/FloeAndroidCore/C01LinuxStdioBindings.swift",
+          "runtimeapp/src/main/java/com/floe/android/runtime/LinuxRuntimeOperations.kt"
+        ]
+      }
+    },
+    {
+      "id": "GIT-DIFF-STAGE-COMMIT",
+      "family": "GIT",
+      "originalGoal": "G04",
+      "originalOperation": "diff/stage/commit flows on task repositories",
+      "originalStatus": "planned",
+      "required": true,
+      "classification": "source-connected",
+      "chain": {
+        "ui": "IDE Git actions / original model git.* tools (git.status/git.diff/git.log/git.stage/git.commit/branch/fetch/pull/push)",
+        "host": "Task-owned G04WorkspaceFacade operation lease",
+        "serviceRuntime": "Original FloeGit backend (LocalGitService) with containment and working-tree mutation barrier",
+        "storage": "Task-owned workspace repository",
+        "resultFailure": "Typed git errors retained; barrier refuses escapes"
+      },
+      "evidence": [
+        {
+          "path": "shared/Sources/FloeAndroidCore/G04GitToolBindings.swift",
+          "line": 109,
+          "note": "model git.* tool names bound (status/diff/log/initialize/stage/commit/branch/fetch/pull/push)",
+          "sha256": "9d87e67a215267c3535f8f42b2ce1012d17f89b7dbd8a67849f3da1b4aa5f359"
+        },
+        {
+          "path": "shared/Sources/FloeAndroidCore/G04WorkspaceGit.swift",
+          "line": 143,
+          "note": "workspace diff op (worktree / staged)",
+          "sha256": "c410cd9229abad1cc6b1a3f3982a24d1dd3b465a2366c69d906aa8e8643e312c"
+        },
+        {
+          "path": "shared/Sources/FloeAndroidCore/G04WorkspaceGit.swift",
+          "line": 151,
+          "note": "stage paths / stageAll",
+          "sha256": "c410cd9229abad1cc6b1a3f3982a24d1dd3b465a2366c69d906aa8e8643e312c"
+        },
+        {
+          "path": "shared/Sources/FloeAndroidCore/G04WorkspaceGit.swift",
+          "line": 159,
+          "note": "commit with message and containment",
+          "sha256": "c410cd9229abad1cc6b1a3f3982a24d1dd3b465a2366c69d906aa8e8643e312c"
+        }
+      ],
+      "residual": [],
+      "qualificationBoundary": "Source-connected reconciliation only. Compilation, focused tests, APK build and device acceptance remain separate Main-owned gates; nothing here is inferred from source."
+    },
+    {
+      "id": "GH-ACTIONS-STATUS",
+      "family": "GIT",
+      "originalGoal": "G04",
+      "originalOperation": "Inspect Actions run status and logs",
+      "originalStatus": "planned",
+      "required": true,
+      "classification": "source-connected",
+      "chain": {
+        "ui": "IDE GitHub Actions surface",
+        "host": "G04GitActionsDomain",
+        "serviceRuntime": "Durable per-workspace GitHubActionsJobEngine + real API adapter; cancellation intent persists before remote cancel; terminal readback required",
+        "storage": "Durable per-workspace GitHubActions job store",
+        "resultFailure": "Terminal state readback; unknown never assumed resolved"
+      },
+      "evidence": [
+        {
+          "path": "shared/Sources/FloeAndroidCore/GitHubActionsJobEngine.swift",
+          "line": 209,
+          "note": "durable GitHubActionsJobEngine actor (Android port of app-owned lifecycle)",
+          "sha256": "be265c1656641015c7a8515b732479de80b660410e7fe1f733b7d7abf41d8357"
+        },
+        {
+          "path": "shared/Sources/FloeAndroidCore/G04GitActionsDomain.swift",
+          "line": 14,
+          "note": "original durable Actions engine composition",
+          "sha256": "62a056edb22022b6821e2507234e84139ebf1f49badcf4a92e54568e0c18bce5"
+        }
+      ],
+      "residual": [],
+      "qualificationBoundary": "Source-connected reconciliation only. Compilation, focused tests, APK build and device acceptance remain separate Main-owned gates; nothing here is inferred from source."
+    },
+    {
+      "id": "GH-ARTIFACT-DOWNLOAD",
+      "family": "GIT",
+      "originalGoal": "G04",
+      "originalOperation": "Download workflow artifacts into the task workspace",
+      "originalStatus": "planned",
+      "required": true,
+      "classification": "source-connected",
+      "chain": {
+        "ui": "IDE GitHub Actions artifact flow",
+        "host": "G04GitActionsDomain",
+        "serviceRuntime": "Artifacts stream into the owned workspace; advertised digest verified against actual byte digest, never mark missing digest verified",
+        "storage": "Owned workspace artifact files",
+        "resultFailure": "Digest mismatch/short read retained as failure; bounded streaming"
+      },
+      "evidence": [
+        {
+          "path": "shared/Sources/FloeAndroidCore/GitHubActionsJobEngine.swift",
+          "line": 209,
+          "note": "durable engine drives artifact streaming",
+          "sha256": "be265c1656641015c7a8515b732479de80b660410e7fe1f733b7d7abf41d8357"
+        },
+        {
+          "path": "shared/Sources/FloeAndroidCore/G04GitActionsDomain.swift",
+          "line": 14,
+          "note": "original composition; cancellation intent persists",
+          "sha256": "62a056edb22022b6821e2507234e84139ebf1f49badcf4a92e54568e0c18bce5"
+        }
+      ],
+      "residual": [],
+      "qualificationBoundary": "Source-connected reconciliation only. Compilation, focused tests, APK build and device acceptance remain separate Main-owned gates; nothing here is inferred from source."
+    },
+    {
+      "id": "NOT-COVER-READ",
+      "family": "NOT",
+      "originalGoal": "G06",
+      "originalOperation": "Cover rendering (incl. engineering cover) and paginated reading view",
+      "originalStatus": "planned",
+      "required": true,
+      "classification": "source-connected",
+      "chain": {
+        "ui": "Library cover card plus notebook toolbar Reading/Edit toggle; same paginated document view with authoring controls disabled in reading mode",
+        "host": "NotesDocumentSession.applyCover/cover; NotesWorkspaceController; NotesDocumentSession.toggleReadingMode",
+        "serviceRuntime": "document.coverRead/coverApply with expectedCoverRevision CAS; engineering cover renders the actual pinned offline CAD viewport from authorized bytes (bounded serialized request)",
+        "storage": "Cover resource + coverRevision in the Notes store",
+        "resultFailure": "Typed cover failure; stale cover revision refuses"
+      },
+      "evidence": [
+        {
+          "path": "app/src/main/kotlin/com/floe/android/notesplatform/NotesEngineeringCoverRenderer.kt",
+          "line": 43,
+          "note": "engineering CAD cover renderer captures pinned offline CAD viewport (later batch)",
+          "sha256": "99bba29dd6d3e1391f03d3c1e2c9b92b46debcc810fc9037d0c38662b2aef373"
+        },
+        {
+          "path": "feature/notes/src/main/kotlin/com/floe/android/feature/notes/ui/state/NotesDocumentSession.kt",
+          "line": 777,
+          "note": "applyCover CAS on expectedCoverRevision",
+          "sha256": "5d5657dc0ddb4adc896cfcbeffc9ed3937ce22210d8ed59628a341db22cb2f2d"
+        },
+        {
+          "path": "feature/notes/src/main/kotlin/com/floe/android/feature/notes/ui/ui/NotesChrome.kt",
+          "line": 390,
+          "note": "cover card UI",
+          "sha256": "8be723200557c85c798da68374a5c4e873b66017126da4c4b0dd9c48de7c53fc"
+        },
+        {
+          "path": "feature/notes/src/main/kotlin/com/floe/android/feature/notes/ui/ui/NotesDocumentPane.kt",
+          "line": 169,
+          "note": "Notebook Reading/Edit toolbar toggle and disabled undo/redo while reading",
+          "sha256": "02a24204ea05ed5d0aae4268bc0fd1b40414309e0489dd605da86e0f52cb8392"
+        },
+        {
+          "path": "feature/notes/src/main/kotlin/com/floe/android/feature/notes/ui/state/NotesDocumentSession.kt",
+          "line": 348,
+          "note": "Actual readingMode toggle, selection clearing and authoring-state reset",
+          "sha256": "5d5657dc0ddb4adc896cfcbeffc9ed3937ce22210d8ed59628a341db22cb2f2d"
+        },
+        {
+          "path": "feature/notes/src/main/kotlin/com/floe/android/feature/notes/ui/ui/NotesNotebookEditor.kt",
+          "line": 133,
+          "note": "Reading hides authoring tools and passes readOnly to each page editor",
+          "sha256": "01e22667230b99fd5082c3bd003a1f8e18bd11b8ab80b1ec3a2f80b8b96d09f1"
+        }
+      ],
+      "residual": [
+        "Engineering cover and explicit paginated reading mode are source-connected. Reuse of the existing document surface is intentional; a second screen is not required. Actual Android reading/cover acceptance is still separate."
+      ],
+      "qualificationBoundary": "Source-connected reconciliation only. Compilation, focused tests, APK build and device acceptance remain separate Main-owned gates; nothing here is inferred from source.",
+      "oldPartialSourceReview": {
+        "androidCommit": "4437d379ec34a3d846ea5a634675ec763ec789ae",
+        "state": "partial",
+        "originalGaps": [
+          "No engineering/CAD cover renderer (depends on the C04 read-only CAD source, outside this audit).",
+          "No dedicated paginated reading mode beyond page-by-page editor navigation."
+        ]
+      },
+      "laterSourceCorrection": {
+        "source": "77fe52586a7bf8dee5236be3b05965afc4dabd40",
+        "note": "Main checked current toolbar and session/editor source. Earlier review retained an obsolete reading-mode gap; current explicit mode exists without requiring an independent screen."
+      }
+    },
+    {
+      "id": "NOT-EXPORT",
+      "family": "NOT",
+      "originalGoal": "G06",
+      "originalOperation": "Export selection to PDF/DOCX/Markdown and reopen results",
+      "originalStatus": "planned",
+      "required": true,
+      "classification": "source-connected",
+      "chain": {
+        "ui": "NotesExportSheet: archive, PDF (ordered page subset), page image, print, notebook Markdown outline, plain text; owned URI reopen",
+        "host": "NotesWorkspaceController.exportArchive/exportPdf/exportCurrentPageImage/exportOutline/exportPlainText",
+        "serviceRuntime": "NotesExportEngine rasterized PDF + geometry readback; DOCX package builder with bounded OOXML structure/resource checks; share stream",
+        "storage": "App cache share file / Notes archive",
+        "resultFailure": "Typed failed/cancelled; original untouched; temp aborted"
+      },
+      "evidence": [
+        {
+          "path": "feature/notes/src/main/kotlin/com/floe/android/feature/notes/ui/state/NotesWorkspaceController.kt",
+          "line": 922,
+          "note": "buildPdfStream maps document pages (later batch adds ordered stable subset)",
+          "sha256": "34600823e5ed5025af6ca13d0b2de0f2a18f94f7ea55a7de5f71eba9b3d7198b"
+        },
+        {
+          "path": "feature/notes/src/main/kotlin/com/floe/android/feature/notes/ui/ui/NotesEditorSheets.kt",
+          "line": 856,
+          "note": "export options sheet",
+          "sha256": "6ddf8e5e0d5ab59bce828bf5612eefae80750c27ee6032fc9f5bef8d71c8cba1"
+        },
+        {
+          "path": "core/notesmedia/src/main/java/com/floe/android/core/notesmedia/export/NotesExportEngine.kt",
+          "line": 107,
+          "note": "rasterized PDF export + geometry readback",
+          "sha256": "d798eb1bc387b01917fe3f5c8ac7dabc237e5a8b4a32735153481c1665776611"
+        }
+      ],
+      "residual": [
+        "Original gaps (page subset, notebook Markdown, DOCX package) closed by c08-notes-export-completion; exported files reopen via owned handle; visual conversion limits labelled"
+      ],
+      "qualificationBoundary": "Source-connected reconciliation only. Compilation, focused tests, APK build and device acceptance remain separate Main-owned gates; nothing here is inferred from source.",
+      "oldPartialSourceReview": {
+        "androidCommit": "4437d379ec34a3d846ea5a634675ec763ec789ae",
+        "state": "partial",
+        "originalGaps": [
+          "PDF export is whole-document only; no page/selection subset (iOS donor supports selectedPages/pages).",
+          "Markdown is the mind-map outline; notebooks export plain text, not Markdown. DOCX exists only for Office notes via Save Copy."
+        ]
+      }
+    },
+    {
+      "id": "PDF-SELECT-ANNOTATE",
+      "family": "PDF",
+      "originalGoal": "G06",
+      "originalOperation": "Selection, annotation and journaled PDF operations",
+      "originalStatus": "planned",
+      "required": true,
+      "classification": "source-connected-residual-boundary",
+      "chain": {
+        "ui": "Notes PDF page: real text/region selection with native character-selection sheet; ink/shape/text overlays over the page; export flattens overlays",
+        "host": "NotesDocumentSession searchPdf/annotations; NotesExportEngine export",
+        "serviceRuntime": "Isolated renderer for page pixels/text; native context-menu copy/share revalidates current source and text at action time; note edit batches journal overlay content",
+        "storage": "PDF resource immutable; overlays stored as note elements/ink; exports are new files",
+        "resultFailure": "Search unavailable/needs OCR typed; export failure keeps the original and aborts the temp"
+      },
+      "evidence": [
+        {
+          "path": "feature/notes/src/main/kotlin/com/floe/android/feature/notes/ui/api/NotesHostPorts.kt",
+          "line": 259,
+          "note": "Notes PDF search/selection outcome ports",
+          "sha256": "d928b40bb2b863e2b6fee420c7b77fd2410bad49b5772601fdcce5b5ab7506b3"
+        },
+        {
+          "path": "feature/notes/src/main/kotlin/com/floe/android/feature/notes/ui/state/NotesDocumentSession.kt",
+          "line": 1326,
+          "note": "PDF search highlight / selection state",
+          "sha256": "5d5657dc0ddb4adc896cfcbeffc9ed3937ce22210d8ed59628a341db22cb2f2d"
+        },
+        {
+          "path": "app/src/main/kotlin/com/floe/android/host/HostSecureIngress.kt",
+          "line": 150,
+          "note": "host secure ingress for native actions",
+          "sha256": "3aa33864de332f329c7c4077fd6e5a76154a707b03883d9f2863e89ac46ae357"
+        }
+      ],
+      "residual": [
+        "Approved boundary retained: PDF file-structure annotation/split/merge/redaction stays routed to authorized task Linux exec.shell; no native PDF editor alias invented"
+      ],
+      "qualificationBoundary": "Source-connected reconciliation only. Compilation, focused tests, APK build and device acceptance remain separate Main-owned gates; nothing here is inferred from source.",
+      "oldPartialSourceReview": {
+        "androidCommit": "4437d379ec34a3d846ea5a634675ec763ec789ae",
+        "state": "partial",
+        "originalGaps": [
+          "Arbitrary PDF text selection/copy is absent: selection is limited to search-hit highlighting (NotesPdfSearchOutcome rects).",
+          "No native PDF annotation journal: annotations are note overlays (ink/shape/text), journaled only as ordinary note edit batches; PDF-file annotation/split/merge/redaction is intentionally routed to task Linux exec.shell (C01) and is not implemented in-app."
+        ]
+      }
+    },
+    {
+      "id": "PDF-OCR",
+      "family": "PDF",
+      "originalGoal": "G06",
+      "originalOperation": "Text recognition over pages/images with bounded resources",
+      "originalStatus": "planned",
+      "required": true,
+      "classification": "source-connected-residual-boundary",
+      "chain": {
+        "ui": "Notes page OCR/index action plus Notes -> task input staging",
+        "host": "NotesOcrHost/NotesService.pageOCRState/cachePageOCR; NotesTaskLaunchHost",
+        "serviceRuntime": "Cloud page-image OCR through installed provider composition with bounded staging; C08NotesTaskLaunch/C08NotesResourceStaging produce actual task inputs from immutable Notes bytes; generic PDF OCR runs through authorized task Linux exec.shell tools",
+        "storage": "Notes OCR staging/cache keyed by page revision; staged task workspace receipts",
+        "resultFailure": "notConfigured/unsupported/needsProvider typed; bounded caps; digest verification on staged bytes"
+      },
+      "evidence": [
+        {
+          "path": "shared/Sources/FloeAndroidCore/NotesOCR/NotesOCRComposition.swift",
+          "line": 16,
+          "note": "cloud vision OCR through installed provider composition",
+          "sha256": "4d3b94ab5a8c22ed85d688b6aaa4eddd837ae57475cba6d0629f64c6da6860dd"
+        },
+        {
+          "path": "shared/Sources/FloeAndroidCore/NotesOCR/NotesOCRDomain.swift",
+          "line": 158,
+          "note": "availability/notConfigured/unsupported and bounded NotesOCRPolicy",
+          "sha256": "59f74a198de33893ea352d25deb08786a392e5676b2bc4c650882f4c21c97dc3"
+        },
+        {
+          "path": "shared/Sources/FloeAndroidCore/C08NotesTaskLaunch.swift",
+          "line": 69,
+          "note": "C08 Notes task launch (immutable bytes -> authorized task input)",
+          "sha256": "96df43235ab8a42ab39d7d92a096f6795662d142fb24bdb2efad420f853de6d1"
+        },
+        {
+          "path": "shared/Sources/FloeAndroidCore/C08NotesResourceStaging.swift",
+          "line": 66,
+          "note": "NotesResourceStagingMetadata: staged input receipts",
+          "sha256": "ed697b310b1132d9f70f88e6ba2e7638bb02e8bf3b750f961dfaed285ed98679"
+        },
+        {
+          "path": "app/src/main/kotlin/com/floe/android/notesplatform/NotesTaskLaunchHost.kt",
+          "line": 34,
+          "note": "Android host for Notes task launch",
+          "sha256": "db9e3ab42dcc283738b8836b3f9a7ebba474e26c9a902bab51af91818482a9f5"
+        }
+      ],
+      "residual": [
+        "Approved scope retained: no native PDF OCR alias; required staging->exec.shell->validate->preview route now source-present; actual guest tool installation/output delivery remains final APK acceptance"
+      ],
+      "qualificationBoundary": "Source-connected reconciliation only. Compilation, focused tests, APK build and device acceptance remain separate Main-owned gates; nothing here is inferred from source.",
+      "oldPartialSourceReview": {
+        "androidCommit": "4437d379ec34a3d846ea5a634675ec763ec789ae",
+        "state": "partial",
+        "originalGaps": [
+          "Required PDF staging -> task Linux exec.shell -> generic OCR tools -> validate -> App preview route is not present: no Notes-to-workspace staging producer, and the Linux runtime is the pending C01 port.",
+          "Cloud page-image OCR exists (requires configured vision provider) but is not PDF OCR and does not satisfy the exec.shell workflow."
+        ]
+      }
+    },
+    {
+      "id": "OFC-CELL-FORMULA-RECALC",
+      "family": "OFC",
+      "originalGoal": "G05",
+      "originalOperation": "Edit cells, recalculate formulas, verify computed values",
+      "originalStatus": "planned",
+      "required": true,
+      "classification": "source-connected",
+      "chain": {
+        "ui": "AI document.office.edit setCellContent (literal/number/formula); manual cell editing in the engine",
+        "host": "OfficeAiHostService + OfficePrecisionClient; OfficeAiOoxmlVerifier/CellIntentEvaluator",
+        "serviceRuntime": "Real Calc formula/edit/recalculate commands with result readback in the original Office mount; saved <f> source proof retained; bounded recompute of persisted formula results and transitive dependencies in the same saved XLSX; stale/missing caches rejected; unsupported explicit unverified",
+        "storage": "Verified saved export file / optional CAS original",
+        "resultFailure": "Formula-source mismatch or refusal; UNKNOWN retained"
+      },
+      "evidence": [
+        {
+          "path": "app/src/main/kotlin/com/floe/android/host/officeai/verification/XlsxCells.kt",
+          "line": 158,
+          "note": "assessFormula compares the SAVED <f> source",
+          "sha256": "8c2c81614784c8dfacbd490666a45c7897bf4a6701a247b6b93c3258ac740c0d"
+        },
+        {
+          "path": "core/officeengine/src/main/java/com/floe/android/core/officeengine/OfficeEngineService.kt",
+          "line": 67,
+          "note": "office engine service driving real Calc commands",
+          "sha256": "acfbd5ed50e7365cd0a696bd97128ba0bf1f54247e3e082896436b7e44903cc9"
+        },
+        {
+          "path": "core/officeengine/src/main/java/com/floe/android/core/officeengine/OfficePreviewActivity.kt",
+          "line": 70,
+          "note": "preview/host activity retaining draft/save ownership",
+          "sha256": "dd0a6e76e9c238dee03dea72b7e3be3a23a9f257eed65ebf25eb0e0908d3501e"
+        }
+      ],
+      "residual": [
+        "Original gap 'no persisted formula-RESULT verifier' closed by c08-office-formula bounded recompute; bounded contract explicit, not full Excel"
+      ],
+      "qualificationBoundary": "Source-connected reconciliation only. Compilation, focused tests, APK build and device acceptance remain separate Main-owned gates; nothing here is inferred from source.",
+      "oldPartialSourceReview": {
+        "androidCommit": "4437d379ec34a3d846ea5a634675ec763ec789ae",
+        "state": "partial",
+        "originalGaps": [
+          "No persisted formula-RESULT verifier on Android: the saved <f> source is checked, but computed cached values are not recomputed or semantically validated. Shared formulas without a target-cell source and array/dataTable formulas without source are refused as unverifiable."
+        ]
+      }
+    },
+    {
+      "id": "OFC-REVISION-TRACKING",
+      "family": "OFC",
+      "originalGoal": "G05",
+      "originalOperation": "Track/keep revisions with conflict review; keep-revisions-then-export-PDF is its own case",
+      "originalStatus": "planned",
+      "required": true,
+      "classification": "source-connected",
+      "chain": {
+        "ui": "Observed Writer revision commands; version text preview; conflict review with immutable original comparison",
+        "host": "OfficeRevisionTracker/OfficeRevisionContract via OfficePreviewActivity",
+        "serviceRuntime": "Real pinned UNO TrackChanges/ShowTrackedChanges/accept/reject commands with engine acknowledgements and bounded failures; revision-preserving PDF source proof via original export",
+        "storage": "Working copy retained; recoverable copies on conflicts; persistent working/export backup",
+        "resultFailure": "Typed save conflict; user-visible recovery/review; text-only/truncation scope explicit"
+      },
+      "evidence": [
+        {
+          "path": "core/officeengine/src/main/java/com/floe/android/core/officeengine/revisionreview/OfficeRevisionTracker.kt",
+          "line": 22,
+          "note": "revision tracker with engine acknowledgements",
+          "sha256": "479dab04759a77c257f3a328fbfc0e4333803ae426cf47aff1c737a8e96d16e9"
+        },
+        {
+          "path": "core/officeengine/src/main/java/com/floe/android/core/officeengine/revisionreview/OfficeRevisionContract.kt",
+          "line": 13,
+          "note": "revision command contract (TrackChanges etc.)",
+          "sha256": "712168db09b0789ca357e7dee391e974a6f2248a17cb78512588a3f21b02e6b0"
+        },
+        {
+          "path": "core/officeengine/src/main/java/com/floe/android/core/officeengine/OfficePreviewActivity.kt",
+          "line": 70,
+          "note": "preview activity hosting review workflow",
+          "sha256": "dd0a6e76e9c238dee03dea72b7e3be3a23a9f257eed65ebf25eb0e0908d3501e"
+        }
+      ],
+      "residual": [
+        "Visual tracked markup not yet device-checked; keep-revisions-then-export-PDF route source-present via revision-preserving PDF proof"
+      ],
+      "qualificationBoundary": "Source-connected reconciliation only. Compilation, focused tests, APK build and device acceptance remain separate Main-owned gates; nothing here is inferred from source.",
+      "oldPartialSourceReview": {
+        "androidCommit": "4437d379ec34a3d846ea5a634675ec763ec789ae",
+        "state": "partial",
+        "originalGaps": [
+          "No app-level tracked-change/keep-revisions/conflict-review workflow and no keep-revisions-then-export-PDF route.",
+          "Engine Track Changes UI presence is unknown; only help text ships in the overlay."
+        ]
+      }
+    },
+    {
+      "id": "OFC-CREATE-NEW",
+      "family": "OFC",
+      "originalGoal": "G05",
+      "originalOperation": "AI creates new DOCX/XLSX/PPTX from scratch",
+      "originalStatus": "planned",
+      "required": true,
+      "classification": "source-connected-residual-boundary",
+      "chain": {
+        "ui": "Notes New-document flow creates a blank valid OOXML document; Notes -> task input staging enables generic task-Linux creation",
+        "host": "NotesLibraryController.createOfficeBlank -> NotesOfficeEffects -> NotesOoxmlTemplates; NotesTaskLaunchHost",
+        "serviceRuntime": "Template builder + structural validator (ZIP/parts/XML); C08 staging produces actual ordinary task inputs from immutable Notes bytes; exec.shell guest file mapping/output publish enables generic Office creation/validation",
+        "storage": "Notes resource/store; staged task workspace receipts",
+        "resultFailure": "Validation refusal / typed notes failure"
+      },
+      "evidence": [
+        {
+          "path": "feature/notes/src/main/kotlin/com/floe/android/feature/notes/ui/state/NotesLibraryController.kt",
+          "line": 266,
+          "note": "createOfficeBlank",
+          "sha256": "20817caa989111fc1c3bb3b7cd4b772b703a3465bdcfd6c1d6524799949ac40e"
+        },
+        {
+          "path": "app/src/main/kotlin/com/floe/android/notesplatform/NotesOfficeEffects.kt",
+          "line": 56,
+          "note": "create(kind,title) + validate before commit",
+          "sha256": "ccadbe42b409a129cb0fbd50cebe9c04ed06129b08887224e7dbc93c005ff457"
+        },
+        {
+          "path": "shared/Sources/FloeAndroidCore/C08NotesTaskLaunch.swift",
+          "line": 69,
+          "note": "C08 task launch for model-facing creation route",
+          "sha256": "96df43235ab8a42ab39d7d92a096f6795662d142fb24bdb2efad420f853de6d1"
+        },
+        {
+          "path": "app/src/main/kotlin/com/floe/android/notesplatform/NotesTaskLaunchHost.kt",
+          "line": 34,
+          "note": "host binding",
+          "sha256": "db9e3ab42dcc283738b8836b3f9a7ebba474e26c9a902bab51af91818482a9f5"
+        }
+      ],
+      "residual": [
+        "No native model-facing create/validate/deliver alias invented (approved boundary); generic creation enabled through authorized task Linux after C08 staging; actual tool install/output delivery remains final APK acceptance"
+      ],
+      "qualificationBoundary": "Source-connected reconciliation only. Compilation, focused tests, APK build and device acceptance remain separate Main-owned gates; nothing here is inferred from source.",
+      "oldPartialSourceReview": {
+        "androidCommit": "4437d379ec34a3d846ea5a634675ec763ec789ae",
+        "state": "partial",
+        "originalGaps": [
+          "No native model-facing create/validate/deliver path: document.office.edit requires an existing owned document.",
+          "Generic task-Linux creation is possible only after the pending C01 /workspace runtime-file exchange (and, for model-side workspace file I/O, the pending B0 relink); the publishOutput consumer exists but has no visible producer until then."
+        ]
+      }
+    },
+    {
+      "id": "PHC-OBSERVE",
+      "family": "PHC",
+      "originalGoal": "G08",
+      "originalOperation": "Observe screen state through the AccessibilityService node tree under explicit task authorization",
+      "originalStatus": "planned",
+      "required": true,
+      "classification": "source-connected",
+      "chain": {
+        "ui": "Settings device access under explicit task authorization",
+        "host": "Full DistributionPlatformFeature DeviceAccessHost",
+        "serviceRuntime": "Authenticated epoch/task/run platform mailbox -> actual bound AccessibilityService client; fence/page tickets invalidate stale nodes and actions",
+        "storage": "Ephemeral bounded observation (observationId/fenceGeneration)",
+        "resultFailure": "Locked/revoked service does not pretend available; stale node refs refused"
+      },
+      "evidence": [
+        {
+          "path": "app/src/full/kotlin/com/floe/android/host/deviceaccess/DeviceAccessHost.kt",
+          "line": 110,
+          "note": "DeviceAccessHost with authenticated task/run/epoch claims",
+          "sha256": "7b7a48f2bb8ccc3ffbf3786b39514b35d6163decd0fc43d85fc89d16435c64a2"
+        },
+        {
+          "path": "feature/phonecontrol/src/main/kotlin/com/floe/android/phonecontrol/PhoneControlAccessibilityService.kt",
+          "line": 22,
+          "note": "real bound AccessibilityService",
+          "sha256": "bb9513b3aeb31408f5887957a02482546d2bec692088ad6a1c8a0e5b7b8c6395"
+        },
+        {
+          "path": "feature/phonecontrol/src/main/kotlin/com/floe/android/phonecontrol/PhoneControlSession.kt",
+          "line": 33,
+          "note": "PhoneControlFence: observation/fence tickets",
+          "sha256": "510769c217ec5421caee6475452070917bf8537de22625eedb87bf936c4a423a"
+        }
+      ],
+      "residual": [
+        "Final APK physical exclusion and store-policy qualification recorded separately (see PHC-CHANNEL-EXCLUSION)"
+      ],
+      "qualificationBoundary": "Source-connected reconciliation only. Compilation, focused tests, APK build and device acceptance remain separate Main-owned gates; nothing here is inferred from source."
+    },
+    {
+      "id": "PHC-ACT-STOP",
+      "family": "PHC",
+      "originalGoal": "G08",
+      "originalOperation": "Click/type/scroll/back/switch-app actions with an always-available stop",
+      "originalStatus": "planned",
+      "required": true,
+      "classification": "source-connected",
+      "chain": {
+        "ui": "Click/type/scroll/back/switch-app actions with always-available stop",
+        "host": "DeviceAccessHost -> PhoneControlSession",
+        "serviceRuntime": "dispatchGesture/performGlobalAction on the bound service; rescheduleTimeout with gesture limits; stop applies a global blocker immediately",
+        "storage": "Ephemeral action results",
+        "resultFailure": "GESTURE_* typed failures; stop/takeover cancels owner and requires explicit re-arm"
+      },
+      "evidence": [
+        {
+          "path": "feature/phonecontrol/src/main/kotlin/com/floe/android/phonecontrol/PhoneControlSession.kt",
+          "line": 472,
+          "note": "dispatchGesture with result callback",
+          "sha256": "510769c217ec5421caee6475452070917bf8537de22625eedb87bf936c4a423a"
+        },
+        {
+          "path": "feature/phonecontrol/src/main/kotlin/com/floe/android/phonecontrol/PhoneControlSession.kt",
+          "line": 529,
+          "note": "performGlobalAction back/switch-app actions",
+          "sha256": "510769c217ec5421caee6475452070917bf8537de22625eedb87bf936c4a423a"
+        },
+        {
+          "path": "feature/phonecontrol/src/main/kotlin/com/floe/android/phonecontrol/PhoneControlSession.kt",
+          "line": 908,
+          "note": "fun stop() = applyGlobalBlocker(STOPPED)",
+          "sha256": "510769c217ec5421caee6475452070917bf8537de22625eedb87bf936c4a423a"
+        }
+      ],
+      "residual": [],
+      "qualificationBoundary": "Source-connected reconciliation only. Compilation, focused tests, APK build and device acceptance remain separate Main-owned gates; nothing here is inferred from source."
+    },
+    {
+      "id": "PHC-REOBSERVE-TAKEOVER",
+      "family": "PHC",
+      "originalGoal": "G08",
+      "originalOperation": "Re-observe after each action; human takeover returns control",
+      "originalStatus": "planned",
+      "required": true,
+      "classification": "source-connected",
+      "chain": {
+        "ui": "Re-observe after each action; human takeover returns control",
+        "host": "PhoneControlSession fence/generation",
+        "serviceRuntime": "Every node reference invalidated by a new page/fence; takeover applies TAKEN_OVER blocker; user touch cancels owner; re-arm required",
+        "storage": "New observation bound to new fenceGeneration",
+        "resultFailure": "Fenced observation refused; takeover settles before new claim"
+      },
+      "evidence": [
+        {
+          "path": "feature/phonecontrol/src/main/kotlin/com/floe/android/phonecontrol/PhoneControlSession.kt",
+          "line": 910,
+          "note": "fun takeover() = applyGlobalBlocker(TAKEN_OVER)",
+          "sha256": "510769c217ec5421caee6475452070917bf8537de22625eedb87bf936c4a423a"
+        },
+        {
+          "path": "feature/phonecontrol/src/main/kotlin/com/floe/android/phonecontrol/PhoneControlModels.kt",
+          "line": 171,
+          "note": "observationId/fenceGeneration invalidation",
+          "sha256": "bd1b96fbdaf9c00465ae0926a2abb4a239e218aa0b78c046ea3fa9bd1f3592b0"
+        },
+        {
+          "path": "feature/phonecontrol/src/main/kotlin/com/floe/android/phonecontrol/PhoneControlModels.kt",
+          "line": 362,
+          "note": "connected service can still be fenced (stopped/taken over/locked)",
+          "sha256": "bd1b96fbdaf9c00465ae0926a2abb4a239e218aa0b78c046ea3fa9bd1f3592b0"
+        }
+      ],
+      "residual": [],
+      "qualificationBoundary": "Source-connected reconciliation only. Compilation, focused tests, APK build and device acceptance remain separate Main-owned gates; nothing here is inferred from source."
+    },
+    {
+      "id": "PHC-CHANNEL-EXCLUSION",
+      "family": "PHC",
+      "originalGoal": "G08",
+      "originalOperation": "Play build physically excludes the module; store-policy qualification recorded separately",
+      "originalStatus": "planned",
+      "required": true,
+      "classification": "source-connected-residual-boundary",
+      "chain": {
+        "ui": "Settings device access entry (Full channel only)",
+        "host": "Full DistributionModules / DistributionPlatformFeature; Play returns EmptyRuntimePlatformExtension",
+        "serviceRuntime": "Play flavor excludes phone-control module: empty platform capability sources; instrumented assertion sources.isEmpty()",
+        "storage": "n/a (build channel boundary)",
+        "resultFailure": "Play build physically lacks the module; store-policy qualification separate"
+      },
+      "evidence": [
+        {
+          "path": "app/src/full/kotlin/com/floe/android/DistributionModules.kt",
+          "line": 7,
+          "note": "Full-only DistributionModules",
+          "sha256": "7615c42550f7263203cefeaed509a808f766d5cca887aa28c042ada0a1531bad"
+        },
+        {
+          "path": "app/src/play/kotlin/com/floe/android/host/platform/DistributionPlatformFeature.kt",
+          "line": 15,
+          "note": "Play: EmptyRuntimePlatformExtension",
+          "sha256": "791da890836530a17b704301b8a77ce5e6d3d0f7694148cb41b190667c8edc14"
+        },
+        {
+          "path": "app/src/androidTest/kotlin/com/floe/android/DistributionInstrumentedTest.kt",
+          "line": 23,
+          "note": "instrumented assertion: Play sources/availableTools empty",
+          "sha256": "ad81fc45ed99ea532741b6eaa986880181173cdc502a83be063ce7e4ac614644"
+        }
+      ],
+      "residual": [
+        "Final APK physical class/manifest exclusion remains a separate compile/APK check, never inferred from source"
+      ],
+      "qualificationBoundary": "Source-connected reconciliation only. Compilation, focused tests, APK build and device acceptance remain separate Main-owned gates; nothing here is inferred from source."
+    },
+    {
+      "id": "ROOT-TOGGLE-AUTH",
+      "family": "ROOT",
+      "originalGoal": "G08",
+      "originalOperation": "Default-off Root switch for already-rooted, consenting devices",
+      "originalStatus": "planned",
+      "required": true,
+      "classification": "source-connected",
+      "chain": {
+        "ui": "Settings device access root toggle (default off) for already-rooted, consenting devices",
+        "host": "RootSystemController registerGrant / RootSystemApi",
+        "serviceRuntime": "Actual root/embedded ADB controller -> authenticated Binder helper; explicit setting ceiling and task/run/epoch grant checks re-validated per operation; toggle/revocation fences grants and cancels backend",
+        "storage": "Approved credential store holds grants; module never creates grants itself",
+        "resultFailure": "GrantNotFound/GrantFound-not-owner/revoked typed states; protected package family excluded"
+      },
+      "evidence": [
+        {
+          "path": "feature/rootsystem/src/main/kotlin/com/floe/android/rootsystem/RootSystemApi.kt",
+          "line": 102,
+          "note": "live grant registration + per-call grant/request/epoch checking",
+          "sha256": "8382fad31eeebfb2cda3dedfd7e3e5dc7a0ccee59807f899dc3f60788ece7fb5"
+        },
+        {
+          "path": "feature/rootsystem/src/main/kotlin/com/floe/android/rootsystem/RootSystemApi.kt",
+          "line": 64,
+          "note": "GrantNotFound state",
+          "sha256": "8382fad31eeebfb2cda3dedfd7e3e5dc7a0ccee59807f899dc3f60788ece7fb5"
+        },
+        {
+          "path": "feature/rootsystem/src/main/kotlin/com/floe/android/rootsystem/server/FloeSystemServiceBinder.kt",
+          "line": 1,
+          "note": "authenticated Binder helper service",
+          "sha256": "6fe218448d1edf4293334b63dfe437983fe6cf365f0007b608c73fb8df1f66bd"
+        }
+      ],
+      "residual": [],
+      "qualificationBoundary": "Source-connected reconciliation only. Compilation, focused tests, APK build and device acceptance remain separate Main-owned gates; nothing here is inferred from source."
+    },
+    {
+      "id": "ROOT-DEEP-OPS-REVOKE",
+      "family": "ROOT",
+      "originalGoal": "G08",
+      "originalOperation": "Per-capability deep file/process/network/system operations with task attribution and revocation",
+      "originalStatus": "planned",
+      "required": true,
+      "classification": "source-connected",
+      "chain": {
+        "ui": "Per-capability deep file/process/network/system operations under task attribution",
+        "host": "RootSystemApi -> FloeSystemServer/Binder",
+        "serviceRuntime": "Typed operations only; live task/run/epoch/grant checking before execution; revocation cancels in-flight calls and refuses later ones",
+        "storage": "Approved credential store; typed receipts",
+        "resultFailure": "Revoked state cancels in-flight and refuses later calls; requestId/grantId bounded validation"
+      },
+      "evidence": [
+        {
+          "path": "feature/rootsystem/src/main/kotlin/com/floe/android/rootsystem/RootSystemApi.kt",
+          "line": 54,
+          "note": "Grant revoked: in-flight calls cancelled, later calls refused",
+          "sha256": "8382fad31eeebfb2cda3dedfd7e3e5dc7a0ccee59807f899dc3f60788ece7fb5"
+        },
+        {
+          "path": "feature/rootsystem/src/main/kotlin/com/floe/android/rootsystem/RootSystemApi.kt",
+          "line": 102,
+          "note": "registerGrant + per-operation checking",
+          "sha256": "8382fad31eeebfb2cda3dedfd7e3e5dc7a0ccee59807f899dc3f60788ece7fb5"
+        },
+        {
+          "path": "feature/rootsystem/src/main/kotlin/com/floe/android/rootsystem/server/SystemOperations.kt",
+          "line": 1,
+          "note": "typed deep system operations",
+          "sha256": "72451c7d7e76c4ce9a869d1451036fc711c7774e0aa9c7e4c71685eebb882be5"
+        }
+      ],
+      "residual": [],
+      "qualificationBoundary": "Source-connected reconciliation only. Compilation, focused tests, APK build and device acceptance remain separate Main-owned gates; nothing here is inferred from source."
+    },
+    {
+      "id": "ROOT-PLAY-EXCLUSION",
+      "family": "ROOT",
+      "originalGoal": "G08",
+      "originalOperation": "Root module physically absent from Play artifacts",
+      "originalStatus": "planned",
+      "required": true,
+      "classification": "source-connected-residual-boundary",
+      "chain": {
+        "ui": "Root module absent from Play artifacts",
+        "host": "Full-only Gradle dependencies and Full DistributionModules",
+        "serviceRuntime": "Play returns EmptyRuntimePlatformExtension and empty platform capability sources (same channel boundary as PHC)",
+        "storage": "n/a (build channel boundary)",
+        "resultFailure": "Play build physically lacks root module"
+      },
+      "evidence": [
+        {
+          "path": "app/src/full/kotlin/com/floe/android/DistributionModules.kt",
+          "line": 7,
+          "note": "Full-only module registry",
+          "sha256": "7615c42550f7263203cefeaed509a808f766d5cca887aa28c042ada0a1531bad"
+        },
+        {
+          "path": "app/src/play/kotlin/com/floe/android/host/platform/DistributionPlatformFeature.kt",
+          "line": 15,
+          "note": "Play empty platform extension",
+          "sha256": "791da890836530a17b704301b8a77ce5e6d3d0f7694148cb41b190667c8edc14"
+        },
+        {
+          "path": "app/src/androidTest/kotlin/com/floe/android/DistributionInstrumentedTest.kt",
+          "line": 23,
+          "note": "Play sources empty assertion",
+          "sha256": "ad81fc45ed99ea532741b6eaa986880181173cdc502a83be063ce7e4ac614644"
+        }
+      ],
+      "residual": [
+        "Final APK physical exclusion remains separate compile/APK check"
+      ],
+      "qualificationBoundary": "Source-connected reconciliation only. Compilation, focused tests, APK build and device acceptance remain separate Main-owned gates; nothing here is inferred from source."
+    },
+    {
+      "id": "SKL-DISCOVER-USABLE",
+      "family": "SKL",
+      "originalGoal": "G02",
+      "originalOperation": "Tool discovery reflects enabled + configured + actually usable only",
+      "originalStatus": "planned",
+      "required": true,
+      "classification": "source-connected",
+      "chain": {
+        "ui": "Settings skills/catalog; tool discovery reflects enabled + configured + actually usable only",
+        "host": "Composed SkillsCommandRouter/SkillsDomain",
+        "serviceRuntime": "SQLiteSkillStore over the ONE DB; original signature and platform/version checks; enabled usable state drives discovery; curated dependency receipt distinct from imported content (content cannot mint authority)",
+        "storage": "ONE database skills/skill_permissions tables",
+        "resultFailure": "Unsigned/unusable entries not advertised; no version/check bypass"
+      },
+      "evidence": [
+        {
+          "path": "shared/Sources/FloeAndroidCore/RuntimeFacadeCapabilitiesSkillsMCP.swift",
+          "line": 189,
+          "note": "SkillsCommandRouter actor",
+          "sha256": "85d43ae78a6f2cab58a8b59bd2427c449e86d8fb051438a5c61d22720568289f"
+        },
+        {
+          "path": "shared/Sources/FloeAndroidCore/RuntimeFacadeSkillsService.swift",
+          "line": 24,
+          "note": "SQLiteSkillStore — ONE DB skills tables",
+          "sha256": "5674c41fa19fb24fa62e532a20a01ef34c5b9fa6f09512305878deaebbf33fc8"
+        },
+        {
+          "path": "shared/Sources/FloeAndroidCore/G02DomainServices.swift",
+          "line": 392,
+          "note": "skillsRouter composition with skillsDomain",
+          "sha256": "69ca8917c113138a1dc16d4867df4b40ad1a3db70c1ca77d9d7f67ff2f67f71e"
+        }
+      ],
+      "residual": [
+        "Unsigned Android package supply remains an external dependency; no version/check bypass"
+      ],
+      "qualificationBoundary": "Source-connected reconciliation only. Compilation, focused tests, APK build and device acceptance remain separate Main-owned gates; nothing here is inferred from source."
+    },
+    {
+      "id": "SKL-INSTALL-VERSION",
+      "family": "SKL",
+      "originalGoal": "G02",
+      "originalOperation": "Skill install/upgrade with version and compatibility validation",
+      "originalStatus": "planned",
+      "required": true,
+      "classification": "source-connected",
+      "chain": {
+        "ui": "Skill install/upgrade with version and compatibility validation",
+        "host": "SkillsDomain install/uninstall via SkillsInstallOperation intents",
+        "serviceRuntime": "Staged install/upgrade/rollback with original signature + platform/version checks; review.confirm pending installation flow",
+        "storage": "SQLiteSkillStore staged records",
+        "resultFailure": "Incompatible/refused typed; staged rollback on failure"
+      },
+      "evidence": [
+        {
+          "path": "shared/Sources/FloeAndroidCore/RuntimeFacadeCapabilitiesSkillsMCP.swift",
+          "line": 91,
+          "note": "SkillsInstallOperation: officialInstall / review.confirm pending installation",
+          "sha256": "85d43ae78a6f2cab58a8b59bd2427c449e86d8fb051438a5c61d22720568289f"
+        },
+        {
+          "path": "shared/Sources/FloeAndroidCore/RuntimeFacadeSkillsService.swift",
+          "line": 24,
+          "note": "SQLiteSkillStore staged records",
+          "sha256": "5674c41fa19fb24fa62e532a20a01ef34c5b9fa6f09512305878deaebbf33fc8"
+        },
+        {
+          "path": "shared/Sources/FloeAndroidCore/RuntimeFacadeCapabilitiesSkillsMCP.swift",
+          "line": 189,
+          "note": "SkillsCommandRouter routing install/uninstall",
+          "sha256": "85d43ae78a6f2cab58a8b59bd2427c449e86d8fb051438a5c61d22720568289f"
+        }
+      ],
+      "residual": [],
+      "qualificationBoundary": "Source-connected reconciliation only. Compilation, focused tests, APK build and device acceptance remain separate Main-owned gates; nothing here is inferred from source."
+    },
+    {
+      "id": "SKL-SOURCE-NO-GRANT",
+      "family": "SKL",
+      "originalGoal": "G02",
+      "originalOperation": "Skill/content source signature validation never grants tool permission",
+      "originalStatus": "planned",
+      "required": true,
+      "classification": "source-connected",
+      "chain": {
+        "ui": "Skill/content source validation surfaces",
+        "host": "SkillsDomain signature validation",
+        "serviceRuntime": "Original signature validation; verified curated dependency receipt is distinct from imported content; imported content never grants tool permission",
+        "storage": "Receipt records in the ONE DB",
+        "resultFailure": "Unsigned/altered source refused or sandboxed without authority"
+      },
+      "evidence": [
+        {
+          "path": "shared/Sources/FloeAndroidCore/RuntimeFacadeSkillsService.swift",
+          "line": 24,
+          "note": "signature/store authority comments",
+          "sha256": "5674c41fa19fb24fa62e532a20a01ef34c5b9fa6f09512305878deaebbf33fc8"
+        },
+        {
+          "path": "shared/Sources/FloeAgentRuntime/ConversationRunService.swift",
+          "line": 2131,
+          "note": "discovery routing: guides/tools do not grant permission; never infer permission from a guide",
+          "sha256": "9e27e52ee8c518dd7dcb7ff2b1cbfdd7b531d4a9c5c051221308b9739e5407cd"
+        }
+      ],
+      "residual": [],
+      "qualificationBoundary": "Source-connected reconciliation only. Compilation, focused tests, APK build and device acceptance remain separate Main-owned gates; nothing here is inferred from source."
+    },
+    {
+      "id": "MCP-REMOTE-TOOLS",
+      "family": "SKL",
+      "originalGoal": "G02",
+      "originalOperation": "MCP remote tool sources over configured transports",
+      "originalStatus": "planned",
+      "required": true,
+      "classification": "source-connected",
+      "chain": {
+        "ui": "Settings MCP remote tool sources over configured transports",
+        "host": "Composed MCPCommandRouter/MCPDomain",
+        "serviceRuntime": "Actual remote client discovery/call; configured per-tool enabled mask; generation-fenced connect/cancel/disconnect and credential lifetime; setup uses original owned jobs and pinned task environment",
+        "storage": "Rootless saved MCP definitions (HTTP/stdio)",
+        "resultFailure": "Disabled/unbound config restore typed with fresh IDs; no platform-label authority"
+      },
+      "evidence": [
+        {
+          "path": "shared/Sources/FloeAndroidCore/RuntimeFacadeCapabilitiesSkillsMCP.swift",
+          "line": 603,
+          "note": "MCPCommandRouter actor",
+          "sha256": "85d43ae78a6f2cab58a8b59bd2427c449e86d8fb051438a5c61d22720568289f"
+        },
+        {
+          "path": "shared/Sources/FloeTools/MCPRemoteToolSource.swift",
+          "line": 1360,
+          "note": "remote tool source over configured transports",
+          "sha256": "48967238ec359bed49ca17e8dd891b50a489a758e96f2073ec598fbb7d6948e2"
+        },
+        {
+          "path": "shared/Sources/FloeTransport/IncrementalTransport.swift",
+          "line": 48,
+          "note": "real incremental bounded URLSession transport (SSE) for MCP HTTP path",
+          "sha256": "5f3213dd1ea920553890d6b430cc228ac0e406c8e6ca0310e035672e817b20bc"
+        }
+      ],
+      "residual": [
+        "Real no-PTY MCP three-pipe transport remains a C01 pending item (separate from HTTP path); cancelled child job da50ec3d not reopened"
+      ],
+      "qualificationBoundary": "Source-connected reconciliation only. Compilation, focused tests, APK build and device acceptance remain separate Main-owned gates; nothing here is inferred from source."
+    },
+    {
+      "id": "SKL-CANCEL",
+      "family": "SKL",
+      "originalGoal": "G02",
+      "originalOperation": "Skill-run cancellation is real",
+      "originalStatus": "planned",
+      "required": true,
+      "classification": "source-connected",
+      "chain": {
+        "ui": "Skill-run cancellation from catalog/run surfaces",
+        "host": "SkillsCommandRouter cancel",
+        "serviceRuntime": "Existing owned work/job cancellation retains pending physical execution; cancellation is real (owned execution cancelled, not just UI)",
+        "storage": "Job/work records in the ONE DB",
+        "resultFailure": "Cancel settles owners; no zombie execution"
+      },
+      "evidence": [
+        {
+          "path": "shared/Sources/FloeAndroidCore/RuntimeFacadeCapabilitiesSkillsMCP.swift",
+          "line": 189,
+          "note": "SkillsCommandRouter owning skill-run lifecycle",
+          "sha256": "85d43ae78a6f2cab58a8b59bd2427c449e86d8fb051438a5c61d22720568289f"
+        },
+        {
+          "path": "shared/Sources/FloeAndroidJobTools/BackgroundJobService.swift",
+          "line": 15,
+          "note": "durable job cancellation origin/authorization",
+          "sha256": "504edc2185d52808c308a2a1b1dedb35944013511d931b267a4235e1134183ae"
+        },
+        {
+          "path": "core/runlifecycle/src/main/kotlin/com/floe/android/runlifecycle/RunForegroundService.kt",
+          "line": 38,
+          "note": "stop action cancels live owners only",
+          "sha256": "7b2dbbe36705b52c3ed78986e55b99c1ceffab273420a50a4c7da805847dcc58"
+        }
+      ],
+      "residual": [],
+      "qualificationBoundary": "Source-connected reconciliation only. Compilation, focused tests, APK build and device acceptance remain separate Main-owned gates; nothing here is inferred from source."
+    },
+    {
+      "id": "NTF-PROGRESS",
+      "family": "NTF",
+      "originalGoal": "G03",
+      "originalOperation": "Applicable foreground-service notifications carry real progress on channels",
+      "originalStatus": "planned",
+      "required": true,
+      "classification": "source-connected",
+      "chain": {
+        "ui": "Applicable foreground-service notifications carry real progress on channels",
+        "host": "RunForegroundService/RunForegroundState owned-set coordinator",
+        "serviceRuntime": "Actual owned run/job/install/session set drives foreground notification and generic progress copy; stop PendingIntent carries exact rendered owned-set stamp and cancels live owners only",
+        "storage": "RunForegroundState shared truth + applied stamp",
+        "resultFailure": "Service teardown/dismissal does not release work"
+      },
+      "evidence": [
+        {
+          "path": "core/runlifecycle/src/main/kotlin/com/floe/android/runlifecycle/RunForegroundService.kt",
+          "line": 38,
+          "note": "immutable stop PendingIntent into nonexported receiver",
+          "sha256": "7b2dbbe36705b52c3ed78986e55b99c1ceffab273420a50a4c7da805847dcc58"
+        },
+        {
+          "path": "core/runlifecycle/src/main/kotlin/com/floe/android/runlifecycle/RunForegroundState.kt",
+          "line": 25,
+          "note": "applied stamp of the live notification",
+          "sha256": "566796dc6da2fde6f0500ea49fed7abb7f568029bfe60ee3ddc5b3eb2fa4df16"
+        },
+        {
+          "path": "core/runlifecycle/src/main/kotlin/com/floe/android/runlifecycle/RunForegroundState.kt",
+          "line": 134,
+          "note": "owned set change -> notifyOwnedSetChanged",
+          "sha256": "566796dc6da2fde6f0500ea49fed7abb7f568029bfe60ee3ddc5b3eb2fa4df16"
+        }
+      ],
+      "residual": [
+        "Actual system lockscreen and dismissal behavior pending device acceptance (never inferred from source)"
+      ],
+      "qualificationBoundary": "Source-connected reconciliation only. Compilation, focused tests, APK build and device acceptance remain separate Main-owned gates; nothing here is inferred from source."
+    },
+    {
+      "id": "NTF-LOCK-REDACT",
+      "family": "NTF",
+      "originalGoal": "G03",
+      "originalOperation": "Lock-screen/background presentation stays redacted",
+      "originalStatus": "planned",
+      "required": true,
+      "classification": "source-connected",
+      "chain": {
+        "ui": "Lock-screen/background presentation stays redacted",
+        "host": "RunForegroundService + per-feature notification builders",
+        "serviceRuntime": "Question notifications use private/public generic versions; schedules omit model/command output; generic progress copy only",
+        "storage": "n/a (presentation boundary)",
+        "resultFailure": "Sensitive content never enters notification extras"
+      },
+      "evidence": [
+        {
+          "path": "core/runlifecycle/src/main/kotlin/com/floe/android/runlifecycle/RunForegroundState.kt",
+          "line": 25,
+          "note": "rendered notification stamp carries generic copy",
+          "sha256": "566796dc6da2fde6f0500ea49fed7abb7f568029bfe60ee3ddc5b3eb2fa4df16"
+        },
+        {
+          "path": "app/src/main/kotlin/com/floe/android/schedule/TaskScheduleNotifications.kt",
+          "line": 74,
+          "note": "schedule notification generic title/text (no model/command output)",
+          "sha256": "d958359411e3dcacf67e8afd44fdd1f86dc1048c5272e5f1f0b08c19ab6f102e"
+        }
+      ],
+      "residual": [
+        "Actual system lockscreen redaction behavior pending device acceptance"
+      ],
+      "qualificationBoundary": "Source-connected reconciliation only. Compilation, focused tests, APK build and device acceptance remain separate Main-owned gates; nothing here is inferred from source."
+    },
+    {
+      "id": "NTF-DISMISSED-SEPARATION",
+      "family": "NTF",
+      "originalGoal": "G03",
+      "originalOperation": "Notification removal ≠ task stop; background/inactive/lock preserves current session and route",
+      "originalStatus": "planned",
+      "required": true,
+      "classification": "source-connected",
+      "chain": {
+        "ui": "Notification removal != task stop; background/inactive/lock preserves current session and route",
+        "host": "RunForegroundService stop-when-idle + NotesAssistantRunStream temporary-chat fence",
+        "serviceRuntime": "Service stops promptly only after actual operations settle; stop action cancels live owners with exact stamp; temporary chat fenced/cancelled on navigation while background preserves session",
+        "storage": "RunForegroundState truth; durable job store",
+        "resultFailure": "Dismissal without stop stamp does not cancel work"
+      },
+      "evidence": [
+        {
+          "path": "core/runlifecycle/src/main/kotlin/com/floe/android/runlifecycle/RunForegroundService.kt",
+          "line": 44,
+          "note": "service stops promptly once every actual operation has settled",
+          "sha256": "7b2dbbe36705b52c3ed78986e55b99c1ceffab273420a50a4c7da805847dcc58"
+        },
+        {
+          "path": "core/runlifecycle/src/main/kotlin/com/floe/android/runlifecycle/RunForegroundService.kt",
+          "line": 140,
+          "note": "stop-when-idle re-fence",
+          "sha256": "7b2dbbe36705b52c3ed78986e55b99c1ceffab273420a50a4c7da805847dcc58"
+        },
+        {
+          "path": "app/src/main/kotlin/com/floe/android/host/notesruntime/NotesAssistantRunStream.kt",
+          "line": 52,
+          "note": "temporary-chat fence on navigation",
+          "sha256": "df725e492aa1de19ba8be087cc7e9c94d78f455983ddd3b873eaade2100609f9"
+        }
+      ],
+      "residual": [
+        "Actual stale/changed-root and refused temporary-fence behavior pending device acceptance"
+      ],
+      "qualificationBoundary": "Source-connected reconciliation only. Compilation, focused tests, APK build and device acceptance remain separate Main-owned gates; nothing here is inferred from source."
+    },
+    {
+      "id": "CNV-NODES-EDGES",
+      "family": "CNV",
+      "originalGoal": "G09",
+      "originalOperation": "Edit canvas nodes and connections",
+      "originalStatus": "planned",
+      "required": true,
+      "classification": "source-connected",
+      "chain": {
+        "ui": "Canvas library/full-window editor",
+        "host": "Retained CanvasWorkspaceSession",
+        "serviceRuntime": "Original CanvasCommandService patches -> revision CAS, atomic journaled G09CanvasProjectRepository",
+        "storage": "Journaled canvas project store",
+        "resultFailure": "Corrupt/newer files preserved; CAS conflicts typed"
+      },
+      "evidence": [
+        {
+          "path": "feature/canvas/src/main/kotlin/com/floe/android/feature/canvas/ui/state/CanvasWorkspaceSession.kt",
+          "line": 39,
+          "note": "CanvasWorkspaceSession",
+          "sha256": "3091f426b56903b5cfb45e090e7d46a824ba4735d6b5b75fc1a4953d6c22b2c1"
+        },
+        {
+          "path": "shared/Sources/FloeAndroidCore/G09CanvasProjectRepository.swift",
+          "line": 80,
+          "note": "atomic journaled project repository",
+          "sha256": "224a62ac7eeffc2170e72b7b1b12582514f4521faa935c6da8aeba91f9f024f5"
+        },
+        {
+          "path": "shared/Sources/FloeAndroidCore/G09CanvasProjectRepository.swift",
+          "line": 481,
+          "note": "CanvasCommandService.applying patch with expected revision",
+          "sha256": "224a62ac7eeffc2170e72b7b1b12582514f4521faa935c6da8aeba91f9f024f5"
+        }
+      ],
+      "residual": [],
+      "qualificationBoundary": "Source-connected reconciliation only. Compilation, focused tests, APK build and device acceptance remain separate Main-owned gates; nothing here is inferred from source."
+    },
+    {
+      "id": "CNV-ASSET-OWNERSHIP",
+      "family": "CNV",
+      "originalGoal": "G09",
+      "originalOperation": "Assets carry ownership; dangling references are detected, not crashed",
+      "originalStatus": "planned",
+      "required": true,
+      "classification": "source-connected",
+      "chain": {
+        "ui": "Asset references in canvas nodes",
+        "host": "CanvasWorkspaceSession -> repository",
+        "serviceRuntime": "Asset ingest/ref accounting before publication; dangling references detected, not crashed",
+        "storage": "Asset store with ref accounting",
+        "resultFailure": "Corrupt asset preserved; ref conflicts typed"
+      },
+      "evidence": [
+        {
+          "path": "shared/Sources/FloeAndroidCore/G09CanvasProjectRepository.swift",
+          "line": 80,
+          "note": "repository asset/journal accounting",
+          "sha256": "224a62ac7eeffc2170e72b7b1b12582514f4521faa935c6da8aeba91f9f024f5"
+        },
+        {
+          "path": "feature/canvas/src/main/kotlin/com/floe/android/feature/canvas/ui/state/CanvasWorkspaceSession.kt",
+          "line": 39,
+          "note": "session asset ingest before publication",
+          "sha256": "3091f426b56903b5cfb45e090e7d46a824ba4735d6b5b75fc1a4953d6c22b2c1"
+        }
+      ],
+      "residual": [],
+      "qualificationBoundary": "Source-connected reconciliation only. Compilation, focused tests, APK build and device acceptance remain separate Main-owned gates; nothing here is inferred from source."
+    },
+    {
+      "id": "CNV-SAVE-RESTORE-BACKUP",
+      "family": "CNV",
+      "originalGoal": "G09",
+      "originalOperation": "Canvas save/recovery with a versioned backup package",
+      "originalStatus": "planned",
+      "required": true,
+      "classification": "source-connected",
+      "chain": {
+        "ui": "Canvas save/recovery surfaces",
+        "host": "G09CanvasProjectRepository atomic writes",
+        "serviceRuntime": "Versioned backup package (C07) includes actual owned canvas projects/assets; journaled recovery",
+        "storage": "Versioned backup package + journal",
+        "resultFailure": "Interrupted save recovered from journal; restore validation separate"
+      },
+      "evidence": [
+        {
+          "path": "shared/Sources/FloeAndroidCore/G09CanvasProjectRepository.swift",
+          "line": 80,
+          "note": "atomic journaled repository",
+          "sha256": "224a62ac7eeffc2170e72b7b1b12582514f4521faa935c6da8aeba91f9f024f5"
+        },
+        {
+          "path": "shared/Sources/FloeAndroidCore/G09CanvasProjectRepository.swift",
+          "line": 481,
+          "note": "expected-revision CAS patch application",
+          "sha256": "224a62ac7eeffc2170e72b7b1b12582514f4521faa935c6da8aeba91f9f024f5"
+        }
+      ],
+      "residual": [
+        "Restore validation remains a separate acceptance step"
+      ],
+      "qualificationBoundary": "Source-connected reconciliation only. Compilation, focused tests, APK build and device acceptance remain separate Main-owned gates; nothing here is inferred from source."
+    },
+    {
+      "id": "CNV-VARIANTS",
+      "family": "CNV",
+      "originalGoal": "G09",
+      "originalOperation": "Create variants/forks with revision lineage",
+      "originalStatus": "planned",
+      "required": true,
+      "classification": "source-connected",
+      "chain": {
+        "ui": "Design candidate Adopt as Variant",
+        "host": "G09R2DesignService <-> canvas repository",
+        "serviceRuntime": "Adopt as Variant creates revision lineage via original CAS; compare/branch/reject/restore workflows",
+        "storage": "Canvas project revisions + design candidate records",
+        "resultFailure": "CAS conflicts typed; lineage preserved"
+      },
+      "evidence": [
+        {
+          "path": "shared/Sources/FloeAndroidCore/G09R2/Design/G09R2DesignService.swift",
+          "line": 639,
+          "note": "adopt (variant) creating revision lineage",
+          "sha256": "2a0c72ef08d8a36a10863ee2bf820fb7fbc26629b10dc05478f2d413a4c90137"
+        },
+        {
+          "path": "shared/Sources/FloeAndroidCore/G09R2/Design/G09R2DesignService.swift",
+          "line": 452,
+          "note": "candidate records",
+          "sha256": "2a0c72ef08d8a36a10863ee2bf820fb7fbc26629b10dc05478f2d413a4c90137"
+        },
+        {
+          "path": "shared/Sources/FloeAndroidCore/G09CanvasProjectRepository.swift",
+          "line": 481,
+          "note": "revision CAS",
+          "sha256": "224a62ac7eeffc2170e72b7b1b12582514f4521faa935c6da8aeba91f9f024f5"
+        }
+      ],
+      "residual": [],
+      "qualificationBoundary": "Source-connected reconciliation only. Compilation, focused tests, APK build and device acceptance remain separate Main-owned gates; nothing here is inferred from source."
+    },
+    {
+      "id": "GEN-SUBMIT-QUERY",
+      "family": "GEN",
+      "originalGoal": "G09",
+      "originalOperation": "Submit cloud image/video generation and query status",
+      "originalStatus": "planned",
+      "required": true,
+      "classification": "source-connected",
+      "chain": {
+        "ui": "Model-facing image.generate/video.generate/image.models/video.models/video.status tools (was: registration gap confirmed)",
+        "host": "G09R2AgentGenerationService registered in the central G02 composition",
+        "serviceRuntime": "Rides the ORIGINAL bounded shared G09R2GenerationService worker table; Workbench configured model picker; existing provider adapters",
+        "storage": "Durable MediaGenerationJob store",
+        "resultFailure": "Typed provider errors through ordinary fallback path; no untracked overflow tasks"
+      },
+      "evidence": [
+        {
+          "path": "shared/Sources/FloeAndroidCore/G02DomainServices.swift",
+          "line": 946,
+          "note": "G09R2AgentGenerationRegistration.register into the run registry",
+          "sha256": "69ca8917c113138a1dc16d4867df4b40ad1a3db70c1ca77d9d7f67ff2f67f71e"
+        },
+        {
+          "path": "shared/Sources/FloeAndroidCore/G09R2/G09R2AgentGenerationTools.swift",
+          "line": 148,
+          "note": "image.generate tool",
+          "sha256": "dd184cccf99ed5942243ef7fe0f140e3ceb58144e1c5e2ec313962b277dd06cf"
+        },
+        {
+          "path": "shared/Sources/FloeAndroidCore/G09R2/G09R2AgentGenerationTools.swift",
+          "line": 336,
+          "note": "video.generate tool",
+          "sha256": "dd184cccf99ed5942243ef7fe0f140e3ceb58144e1c5e2ec313962b277dd06cf"
+        },
+        {
+          "path": "shared/Sources/FloeAndroidCore/G09R2/G09R2AgentGenerationService.swift",
+          "line": 209,
+          "note": "agent generation facade service",
+          "sha256": "1c176193dc4b5b42a9f02e40bdc975a9c59e173cbb5234f79d1d7085d6f4f126"
+        }
+      ],
+      "residual": [
+        "Was one of the 4 tracked closure gaps (model bindings absent at 444c9cb); now closed in frozen source; one real image + one PAYG video acceptance remains with Main, never inferred from source"
+      ],
+      "qualificationBoundary": "Source-connected reconciliation only. Compilation, focused tests, APK build and device acceptance remain separate Main-owned gates; nothing here is inferred from source."
+    },
+    {
+      "id": "GEN-UNKNOWN-OUTCOME",
+      "family": "GEN",
+      "originalGoal": "G09",
+      "originalOperation": "Unknown generation outcomes reconciled against evidence, not assumed",
+      "originalStatus": "planned",
+      "required": true,
+      "classification": "source-connected",
+      "chain": {
+        "ui": "Workbench generation status surfaces",
+        "host": "G09R2GenerationService / agent facade",
+        "serviceRuntime": "Actual worker/foreground ownership, remote IDs and unknown outcome retained; outcomeUnknown marker keeps providerTaskID-bearing rows non-terminal; no automatic unknown resubmit",
+        "storage": "Durable MediaGenerationJob store (MediaGenerationJobStore)",
+        "resultFailure": "Unknown reconciled against evidence, not assumed"
+      },
+      "evidence": [
+        {
+          "path": "shared/Sources/FloePersistence/MediaGenerationJobStore.swift",
+          "line": 37,
+          "note": "durable media generation job store",
+          "sha256": "bd83c85000f5845e17f4a0bfc18899b5c08c533a7fffdf1d159c17426933cb64"
+        },
+        {
+          "path": "shared/Sources/FloeAndroidCore/G09R2/G09R2AgentGenerationService.swift",
+          "line": 209,
+          "note": "facade retains accepted/unknown handles",
+          "sha256": "1c176193dc4b5b42a9f02e40bdc975a9c59e173cbb5234f79d1d7085d6f4f126"
+        },
+        {
+          "path": "shared/Sources/FloeAndroidCore/G02DomainServices.swift",
+          "line": 946,
+          "note": "central registration",
+          "sha256": "69ca8917c113138a1dc16d4867df4b40ad1a3db70c1ca77d9d7f67ff2f67f71e"
+        }
+      ],
+      "residual": [],
+      "qualificationBoundary": "Source-connected reconciliation only. Compilation, focused tests, APK build and device acceptance remain separate Main-owned gates; nothing here is inferred from source."
+    },
+    {
+      "id": "GEN-DOWNLOAD-ARCHIVE",
+      "family": "GEN",
+      "originalGoal": "G09",
+      "originalOperation": "Generated media downloaded and archived into the task/asset store",
+      "originalStatus": "planned",
+      "required": true,
+      "classification": "source-connected",
+      "chain": {
+        "ui": "Generated media delivery into task/asset store",
+        "host": "Agent generation facade",
+        "serviceRuntime": "Download bytes bounded and probed (sniffed MIME/format, measured bytes, individual SHA-256) before candidate publication/asset ingest; per-artifact typed receipts for multi-image",
+        "storage": "Owned workspace + asset store with verified digests",
+        "resultFailure": "Advertised digest verified against actual bytes; missing digest never marked verified"
+      },
+      "evidence": [
+        {
+          "path": "shared/Sources/FloeAndroidCore/G09R2/G09R2AgentGenerationService.swift",
+          "line": 65,
+          "note": "sniffed MIME/format + measured byte count + individual SHA-256 per artifact",
+          "sha256": "1c176193dc4b5b42a9f02e40bdc975a9c59e173cbb5234f79d1d7085d6f4f126"
+        },
+        {
+          "path": "shared/Sources/FloeAndroidCore/G09R2/G09R2AgentGenerationService.swift",
+          "line": 1311,
+          "note": "WorkspacePathGuard-rooted bounded reference reads",
+          "sha256": "1c176193dc4b5b42a9f02e40bdc975a9c59e173cbb5234f79d1d7085d6f4f126"
+        }
+      ],
+      "residual": [],
+      "qualificationBoundary": "Source-connected reconciliation only. Compilation, focused tests, APK build and device acceptance remain separate Main-owned gates; nothing here is inferred from source."
+    },
+    {
+      "id": "GEN-CANCEL-SEMANTICS",
+      "family": "GEN",
+      "originalGoal": "G09",
+      "originalOperation": "Cancel semantics preserved even when a provider lacks a true cancel API",
+      "originalStatus": "planned",
+      "required": true,
+      "classification": "source-connected",
+      "chain": {
+        "ui": "video.cancel / image cancel surfaces",
+        "host": "Agent generation facade",
+        "serviceRuntime": "Cancel is truthful (provider-confirmed or local-only, failure throws); cancellation does not imply provider billing stopped; durable handles stay cancellable/queryable",
+        "storage": "MediaGenerationJob store",
+        "resultFailure": "Local-only vs provider-confirmed distinction retained"
+      },
+      "evidence": [
+        {
+          "path": "shared/Sources/FloeAndroidCore/G09R2/G09R2AgentGenerationTools.swift",
+          "line": 529,
+          "note": "video.cancel tool",
+          "sha256": "dd184cccf99ed5942243ef7fe0f140e3ceb58144e1c5e2ec313962b277dd06cf"
+        },
+        {
+          "path": "shared/Sources/FloeAndroidCore/G09R2/G09R2AgentGenerationService.swift",
+          "line": 209,
+          "note": "facade cancel semantics",
+          "sha256": "1c176193dc4b5b42a9f02e40bdc975a9c59e173cbb5234f79d1d7085d6f4f126"
+        }
+      ],
+      "residual": [],
+      "qualificationBoundary": "Source-connected reconciliation only. Compilation, focused tests, APK build and device acceptance remain separate Main-owned gates; nothing here is inferred from source."
+    },
+    {
+      "id": "MED-PROJECT-SESSION",
+      "family": "MED",
+      "originalGoal": "G09",
+      "originalOperation": "Persistent media projects with proposal grants and transactions",
+      "originalStatus": "planned",
+      "required": true,
+      "classification": "source-connected",
+      "chain": {
+        "ui": "Original retained MediaWorkspaceSession/MediaEditorController with task/project context",
+        "host": "Shared proposal grant/CAS media transaction",
+        "serviceRuntime": "Actual Media3 renderer/export lifecycle; timeline drag commits updateClip at drag end",
+        "storage": "Versioned media project store",
+        "resultFailure": "Grant/CAS conflicts typed; project context preserved"
+      },
+      "evidence": [
+        {
+          "path": "feature/workbench/src/main/kotlin/com/floe/android/feature/workbench/ui/state/MediaEditorController.kt",
+          "line": 449,
+          "note": "copySelection as ONE native CAS/undo transaction",
+          "sha256": "b54f5beb5990c6b5af605649d55571a84c29402ff7280ccd485a1a6b27e8252a"
+        },
+        {
+          "path": "feature/workbench/src/main/kotlin/com/floe/android/feature/workbench/ui/state/MediaEditorController.kt",
+          "line": 490,
+          "note": "addAsset + mergeLayers as ONE CAS transaction",
+          "sha256": "b54f5beb5990c6b5af605649d55571a84c29402ff7280ccd485a1a6b27e8252a"
+        },
+        {
+          "path": "core/workbenchmedia/src/main/kotlin/com/floe/android/core/workbenchmedia/Media3WorkbenchMediaPlatform.kt",
+          "line": 123,
+          "note": "Media3 platform probe with project grant binding",
+          "sha256": "d357c7d5c49111b6b29438654577a978f3104bb289f6397537129833d675e995"
+        }
+      ],
+      "residual": [
+        "Source path is not measured full-file playback or every-codec device acceptance"
+      ],
+      "qualificationBoundary": "Source-connected reconciliation only. Compilation, focused tests, APK build and device acceptance remain separate Main-owned gates; nothing here is inferred from source."
+    },
+    {
+      "id": "MED-TIMELINE-TRIM",
+      "family": "MED",
+      "originalGoal": "G09",
+      "originalOperation": "Timeline trimming/cropping including waveform-based and edge trims",
+      "originalStatus": "planned",
+      "required": true,
+      "classification": "source-connected",
+      "chain": {
+        "ui": "Timeline trimming/cropping including waveform-based and edge trims",
+        "host": "MediaEditorController",
+        "serviceRuntime": "updateClip commits at drag end; trim/crop via same CAS transaction model; waveform edges use bounded render pipeline",
+        "storage": "Versioned media project store",
+        "resultFailure": "Invalid trim ranges refused"
+      },
+      "evidence": [
+        {
+          "path": "feature/workbench/src/main/kotlin/com/floe/android/feature/workbench/ui/state/MediaEditorController.kt",
+          "line": 449,
+          "note": "CAS transaction for edit operations",
+          "sha256": "b54f5beb5990c6b5af605649d55571a84c29402ff7280ccd485a1a6b27e8252a"
+        },
+        {
+          "path": "core/workbenchmedia/src/main/kotlin/com/floe/android/core/workbenchmedia/Media3WorkbenchMediaPlatform.kt",
+          "line": 123,
+          "note": "Media3 platform operations",
+          "sha256": "d357c7d5c49111b6b29438654577a978f3104bb289f6397537129833d675e995"
+        },
+        {
+          "path": "feature/workbench/src/main/kotlin/com/floe/android/feature/workbench/ui/MediaLayerOperationsSheet.kt",
+          "line": 31,
+          "note": "layer operations incl. trim/split surfaces",
+          "sha256": "e34a310e28d164bfb76bd6d87c3699f524d2ee589a93624839198adb6963256c"
+        }
+      ],
+      "residual": [],
+      "qualificationBoundary": "Source-connected reconciliation only. Compilation, focused tests, APK build and device acceptance remain separate Main-owned gates; nothing here is inferred from source."
+    },
+    {
+      "id": "MED-SUBTITLES-AUDIO",
+      "family": "MED",
+      "originalGoal": "G09",
+      "originalOperation": "Subtitle tracks and audio track operations",
+      "originalStatus": "planned",
+      "required": true,
+      "classification": "source-connected",
+      "chain": {
+        "ui": "Subtitle tracks and audio track operations",
+        "host": "MediaEditorController",
+        "serviceRuntime": "Subtitle/music/trim operations use the same proposal grant/CAS model",
+        "storage": "Versioned media project store",
+        "resultFailure": "Track conflicts typed"
+      },
+      "evidence": [
+        {
+          "path": "feature/workbench/src/main/kotlin/com/floe/android/feature/workbench/ui/state/MediaEditorController.kt",
+          "line": 449,
+          "note": "same CAS model for subtitle/audio operations",
+          "sha256": "b54f5beb5990c6b5af605649d55571a84c29402ff7280ccd485a1a6b27e8252a"
+        },
+        {
+          "path": "core/workbenchmedia/src/main/kotlin/com/floe/android/core/workbenchmedia/Media3WorkbenchMediaPlatform.kt",
+          "line": 123,
+          "note": "Media3 platform probe/operations",
+          "sha256": "d357c7d5c49111b6b29438654577a978f3104bb289f6397537129833d675e995"
+        }
+      ],
+      "residual": [],
+      "qualificationBoundary": "Source-connected reconciliation only. Compilation, focused tests, APK build and device acceptance remain separate Main-owned gates; nothing here is inferred from source."
+    },
+    {
+      "id": "MED-EXPORT-VERIFY",
+      "family": "MED",
+      "originalGoal": "G09",
+      "originalOperation": "Export followed by real playback verification",
+      "originalStatus": "planned",
+      "required": true,
+      "classification": "source-connected",
+      "chain": {
+        "ui": "Export flow with real verification",
+        "host": "Media3VideoExporter / MediaExportService",
+        "serviceRuntime": "Export verifier hashes exact bytes, checks dimensions/duration/audio/HDR and decodes a frame before receipt; VERIFYING state surfaced",
+        "storage": "Exported media + verification receipts",
+        "resultFailure": "Verification failure keeps original; typed export states"
+      },
+      "evidence": [
+        {
+          "path": "core/workbenchmedia/src/main/kotlin/com/floe/android/core/workbenchmedia/video/Media3VideoExporter.kt",
+          "line": 7,
+          "note": "Media3 transformer exporter",
+          "sha256": "a73882bac1716171368e7cd7f073246e2032e0323b1da4525d2e7e95c666ae7e"
+        },
+        {
+          "path": "core/workbenchmedia/src/main/kotlin/com/floe/android/core/workbenchmedia/service/MediaExportService.kt",
+          "line": 255,
+          "note": "VERIFYING export state",
+          "sha256": "46bbbd98b6c7e249ddaa8d26395f88a6752b2a07057b03f56150e9f9f3e8d075"
+        },
+        {
+          "path": "core/workbenchmedia/src/main/kotlin/com/floe/android/core/workbenchmedia/Media3WorkbenchMediaPlatform.kt",
+          "line": 67,
+          "note": "HEIC/HEVC encoder capability probe",
+          "sha256": "d357c7d5c49111b6b29438654577a978f3104bb289f6397537129833d675e995"
+        }
+      ],
+      "residual": [
+        "Real playback verification of every export remains device acceptance"
+      ],
+      "qualificationBoundary": "Source-connected reconciliation only. Compilation, focused tests, APK build and device acceptance remain separate Main-owned gates; nothing here is inferred from source."
+    },
+    {
+      "id": "MED-PLAYBACK-CODECS",
+      "family": "MED",
+      "originalGoal": "G09",
+      "originalOperation": "Playback via Media3/system codecs with on-demand tool fallback",
+      "originalStatus": "planned",
+      "required": true,
+      "classification": "source-connected",
+      "chain": {
+        "ui": "Playback surfaces",
+        "host": "Media3 playback handle",
+        "serviceRuntime": "Playback via Media3/system codecs with on-demand tool fallback; immutable revision binding; real listener position; capability probe uses actual platform codecs",
+        "storage": "Media asset revisions",
+        "resultFailure": "Unsupported codec typed with capability probe facts"
+      },
+      "evidence": [
+        {
+          "path": "core/workbenchmedia/src/main/kotlin/com/floe/android/core/workbenchmedia/Media3WorkbenchMediaPlatform.kt",
+          "line": 123,
+          "note": "probeInternal with platform codec facts",
+          "sha256": "d357c7d5c49111b6b29438654577a978f3104bb289f6397537129833d675e995"
+        },
+        {
+          "path": "core/workbenchmedia/src/main/kotlin/com/floe/android/core/workbenchmedia/Media3WorkbenchMediaPlatform.kt",
+          "line": 64,
+          "note": "codec-only probe boundary",
+          "sha256": "d357c7d5c49111b6b29438654577a978f3104bb289f6397537129833d675e995"
+        },
+        {
+          "path": "core/workbenchmedia/src/main/kotlin/com/floe/android/core/workbenchmedia/video/Media3VideoExporter.kt",
+          "line": 7,
+          "note": "Media3 codec stack",
+          "sha256": "a73882bac1716171368e7cd7f073246e2032e0323b1da4525d2e7e95c666ae7e"
+        }
+      ],
+      "residual": [
+        "On-demand fallback path retained; every-codec device acceptance separate"
+      ],
+      "qualificationBoundary": "Source-connected reconciliation only. Compilation, focused tests, APK build and device acceptance remain separate Main-owned gates; nothing here is inferred from source."
+    },
+    {
+      "id": "ENH-IN-OUT-CONTRACT",
+      "family": "ENH",
+      "originalGoal": "G09",
+      "originalOperation": "Enhancement capability exposes an explicit input/output contract",
+      "originalStatus": "planned",
+      "required": true,
+      "classification": "source-connected",
+      "chain": {
+        "ui": "Settings -> Providers -> Media enhancement card + media editor Configure shortcut (ONE retained flow)",
+        "host": "WorkbenchEnhancementConfigurationController + MediaEnhancementConfigurationHost",
+        "serviceRuntime": "G09R2MediaEnhancementService over G09R2SuperResolutionBackendTransport: explicit input/output contract, measured guest-ffprobe source facts, hard limits, HDR/bit-depth rules, video-only SR boundary, typed refusals before invocation",
+        "storage": "G09R2EnhancerBackendConfigurationStore settings row; AndroidKeystore credential bytes via host secure ingress; original vault CredentialRecord ownership",
+        "resultFailure": "Typed refusals before any invocation; configured/unconfigured/pending states truthful"
+      },
+      "evidence": [
+        {
+          "path": "shared/Sources/FloeAndroidCore/G09R2/MediaEnhancement/G09R2MediaEnhancementContract.swift",
+          "line": 3,
+          "note": "explicit input/output contract, limits, guards",
+          "sha256": "b0caddaa946d00e26e8873e30103d89a6423d84c7a29a058aaa66fd677309021"
+        },
+        {
+          "path": "shared/Sources/FloeAndroidCore/G09R2/MediaEnhancement/G09R2MediaEnhancementService.swift",
+          "line": 67,
+          "note": "service with backend transport",
+          "sha256": "615e8d5657c1ffa4264ce3cae6779760ad308e7f41805c2608a61848f40ae7a1"
+        },
+        {
+          "path": "shared/Sources/FloeAndroidCore/G09R2/MediaEnhancement/G09R2SuperResolutionBackend.swift",
+          "line": 110,
+          "note": "backend transport protocol + Fal backend",
+          "sha256": "827677df4c576d40eaa4684611d0e5424b152d832aac8b8cbcf69950050eaa6c"
+        },
+        {
+          "path": "app/src/main/kotlin/com/floe/android/MediaEnhancementSettings.kt",
+          "line": 36,
+          "note": "settings entry card",
+          "sha256": "616b75a0cd6b70fc8ef8179326d72f28b26d177ee6546cf2daaeae536fe070b6"
+        }
+      ],
+      "residual": [
+        "Was a confirmed implementation gap (no executable chain at 444c9cb); now closed in frozen source; credential architecture review items remain tracked separately by Main"
+      ],
+      "qualificationBoundary": "Source-connected reconciliation only. Compilation, focused tests, APK build and device acceptance remain separate Main-owned gates; nothing here is inferred from source."
+    },
+    {
+      "id": "ENH-PROGRESS-ABORT",
+      "family": "ENH",
+      "originalGoal": "G09",
+      "originalOperation": "Real progress and abort for enhancement jobs",
+      "originalStatus": "planned",
+      "required": true,
+      "classification": "source-connected",
+      "chain": {
+        "ui": "Enhancement job progress and abort surfaces",
+        "host": "G09R2MediaEnhancementService",
+        "serviceRuntime": "Interpolation runs as ONE original durable exec.shell BackgroundJob (ffmpeg minterpolate); -progress file parsed into genuine byte progress; cooperative cancel never touches the original; staged .part -> verified atomic commit with SHA-256",
+        "storage": "Durable enhancement job records; staged media files",
+        "resultFailure": "Abort is truthful; original untouched"
+      },
+      "evidence": [
+        {
+          "path": "shared/Sources/FloeAndroidCore/G09R2/MediaEnhancement/G09R2MediaEnhancementService.swift",
+          "line": 14,
+          "note": "real byte progress from ffmpeg -progress; cooperative cancellation; staged atomic commit",
+          "sha256": "615e8d5657c1ffa4264ce3cae6779760ad308e7f41805c2608a61848f40ae7a1"
+        },
+        {
+          "path": "shared/Sources/FloeAndroidCore/G09R2/MediaEnhancement/G09R2MediaEnhancementService.swift",
+          "line": 404,
+          "note": "durable enhancement jobID; progress/cancel/delivery via status/cancel",
+          "sha256": "615e8d5657c1ffa4264ce3cae6779760ad308e7f41805c2608a61848f40ae7a1"
+        },
+        {
+          "path": "shared/Sources/FloeAndroidJobTools/BackgroundJobService.swift",
+          "line": 15,
+          "note": "original durable BackgroundJob service reused",
+          "sha256": "504edc2185d52808c308a2a1b1dedb35944013511d931b267a4235e1134183ae"
+        }
+      ],
+      "residual": [],
+      "qualificationBoundary": "Source-connected reconciliation only. Compilation, focused tests, APK build and device acceptance remain separate Main-owned gates; nothing here is inferred from source."
+    },
+    {
+      "id": "ENH-NO-FAKE-UPSCALE",
+      "family": "ENH",
+      "originalGoal": "G09",
+      "originalOperation": "Plain scaling is never presented as super-resolution",
+      "originalStatus": "planned",
+      "required": true,
+      "classification": "source-connected",
+      "chain": {
+        "ui": "Enhancement results presented honestly",
+        "host": "G09R2MediaEnhancementService",
+        "serviceRuntime": "Plain scaling never presented as super-resolution; real documented fal.ai fal-ai/bytedance-upscaler/upscale/video transport; no invented Floe endpoint; backend must never enter the provider profile list",
+        "storage": "Verified output receipts",
+        "resultFailure": "Unsupported/unavailable typed; honest degradation"
+      },
+      "evidence": [
+        {
+          "path": "shared/Sources/FloeAndroidCore/G09R2/MediaEnhancement/G09R2MediaEnhancementService.swift",
+          "line": 16,
+          "note": "original never touched; staged copy in, staged .part out, verified atomic commit",
+          "sha256": "615e8d5657c1ffa4264ce3cae6779760ad308e7f41805c2608a61848f40ae7a1"
+        },
+        {
+          "path": "shared/Sources/FloeAndroidCore/G09R2/MediaEnhancement/G09R2SuperResolutionBackend.swift",
+          "line": 191,
+          "note": "real Fal super-resolution backend",
+          "sha256": "827677df4c576d40eaa4684611d0e5424b152d832aac8b8cbcf69950050eaa6c"
+        },
+        {
+          "path": "shared/Sources/FloeAndroidCore/G09R2/MediaEnhancement/G09R2MediaEnhancementService.swift",
+          "line": 194,
+          "note": "enhancer backend never appears as a ProviderProfile",
+          "sha256": "615e8d5657c1ffa4264ce3cae6779760ad308e7f41805c2608a61848f40ae7a1"
+        }
+      ],
+      "residual": [],
+      "qualificationBoundary": "Source-connected reconciliation only. Compilation, focused tests, APK build and device acceptance remain separate Main-owned gates; nothing here is inferred from source."
+    },
+    {
+      "id": "DSN-FREEZE-CANDIDATE",
+      "family": "DSN",
+      "originalGoal": "G09",
+      "originalOperation": "Freeze a design, generate candidates, adopt or roll back",
+      "originalStatus": "planned",
+      "required": true,
+      "classification": "source-connected",
+      "chain": {
+        "ui": "Freeze action on a design entry",
+        "host": "G09R2DesignService (trusted authority)",
+        "serviceRuntime": "Freezes exact owner revision and intent -> immutable candidates/feedback anchors; exact artifact digest/format verifier and target CAS precede publication/export",
+        "storage": "Immutable candidate records + frozen owner revision",
+        "resultFailure": "Unknown conflict or actual receipt; CAS conflicts typed"
+      },
+      "evidence": [
+        {
+          "path": "shared/Sources/FloeAndroidCore/G09R2/Design/G09R2DesignService.swift",
+          "line": 18,
+          "note": "G09R2DesignService actor",
+          "sha256": "2a0c72ef08d8a36a10863ee2bf820fb7fbc26629b10dc05478f2d413a4c90137"
+        },
+        {
+          "path": "shared/Sources/FloeAndroidCore/G09R2/Design/G09R2DesignService.swift",
+          "line": 601,
+          "note": "public func freeze(...) receipt",
+          "sha256": "2a0c72ef08d8a36a10863ee2bf820fb7fbc26629b10dc05478f2d413a4c90137"
+        },
+        {
+          "path": "shared/Sources/FloeAndroidCore/G09R2/Design/G09R2DesignTrustedAuthority.swift",
+          "line": 557,
+          "note": "trusted authority binding",
+          "sha256": "3750d124978d289aac1258ad8ea6cf96ddb4d938f1f73f758e868c72e9bf84fe"
+        }
+      ],
+      "residual": [],
+      "qualificationBoundary": "Source-connected reconciliation only. Compilation, focused tests, APK build and device acceptance remain separate Main-owned gates; nothing here is inferred from source."
+    },
+    {
+      "id": "DSN-ENTRY-ANCHORS",
+      "family": "DSN",
+      "originalGoal": "G09",
+      "originalOperation": "Design entries from file/attachment/canvas with feedback anchors",
+      "originalStatus": "planned",
+      "required": true,
+      "classification": "source-connected",
+      "chain": {
+        "ui": "Design entries from file/attachment/canvas with feedback anchors",
+        "host": "G09R2DesignService entry resolution",
+        "serviceRuntime": "Entry resolves native target and trusted approval; feedback anchored to immutable candidate records",
+        "storage": "Entry + anchor records",
+        "resultFailure": "Untrusted target refused"
+      },
+      "evidence": [
+        {
+          "path": "shared/Sources/FloeAndroidCore/G09R2/Design/G09R2DesignService.swift",
+          "line": 452,
+          "note": "candidate/anchor records",
+          "sha256": "2a0c72ef08d8a36a10863ee2bf820fb7fbc26629b10dc05478f2d413a4c90137"
+        },
+        {
+          "path": "shared/Sources/FloeAndroidCore/G09R2/Design/G09R2DesignService.swift",
+          "line": 601,
+          "note": "freeze receipt binding entry to owner revision",
+          "sha256": "2a0c72ef08d8a36a10863ee2bf820fb7fbc26629b10dc05478f2d413a4c90137"
+        },
+        {
+          "path": "shared/Sources/FloeAndroidCore/G09R2/Design/G09R2DesignService.swift",
+          "line": 838,
+          "note": "canvas freeze/propose path",
+          "sha256": "2a0c72ef08d8a36a10863ee2bf820fb7fbc26629b10dc05478f2d413a4c90137"
+        }
+      ],
+      "residual": [],
+      "qualificationBoundary": "Source-connected reconciliation only. Compilation, focused tests, APK build and device acceptance remain separate Main-owned gates; nothing here is inferred from source."
+    },
+    {
+      "id": "DSN-COMPARE-BRANCH",
+      "family": "DSN",
+      "originalGoal": "G09",
+      "originalOperation": "Compare candidates side-by-side; branch the workflow",
+      "originalStatus": "planned",
+      "required": true,
+      "classification": "source-connected",
+      "chain": {
+        "ui": "Compare candidates side-by-side; branch the workflow",
+        "host": "G09R2DesignService compare/adopt/reject/restore",
+        "serviceRuntime": "Compare candidates side-by-side; adopt original or variant creates revision lineage; branch/reject/restore with CAS",
+        "storage": "Candidate revisions + lineage",
+        "resultFailure": "Restore returns exact prior revision"
+      },
+      "evidence": [
+        {
+          "path": "shared/Sources/FloeAndroidCore/G09R2/Design/G09R2DesignService.swift",
+          "line": 639,
+          "note": "adopt as variant (branch)",
+          "sha256": "2a0c72ef08d8a36a10863ee2bf820fb7fbc26629b10dc05478f2d413a4c90137"
+        },
+        {
+          "path": "shared/Sources/FloeAndroidCore/G09R2/Design/G09R2DesignService.swift",
+          "line": 452,
+          "note": "candidate comparison records",
+          "sha256": "2a0c72ef08d8a36a10863ee2bf820fb7fbc26629b10dc05478f2d413a4c90137"
+        }
+      ],
+      "residual": [],
+      "qualificationBoundary": "Source-connected reconciliation only. Compilation, focused tests, APK build and device acceptance remain separate Main-owned gates; nothing here is inferred from source."
+    },
+    {
+      "id": "DSN-RESULT-VERIFY",
+      "family": "DSN",
+      "originalGoal": "G09",
+      "originalOperation": "Outcome verified against goal evidence before publication",
+      "originalStatus": "planned",
+      "required": true,
+      "classification": "source-connected",
+      "chain": {
+        "ui": "Outcome verification before publication",
+        "host": "G09R2DesignService",
+        "serviceRuntime": "Outcome verified against goal evidence (exact artifact digest/format verifier + target CAS) before publication/export; actual receipt or unknown conflict",
+        "storage": "Verified receipts",
+        "resultFailure": "Digest/format mismatch refused"
+      },
+      "evidence": [
+        {
+          "path": "shared/Sources/FloeAndroidCore/G09R2/Design/G09R2DesignService.swift",
+          "line": 601,
+          "note": "freeze receipt with digest verification",
+          "sha256": "2a0c72ef08d8a36a10863ee2bf820fb7fbc26629b10dc05478f2d413a4c90137"
+        },
+        {
+          "path": "shared/Sources/FloeAndroidCore/G09R2/Design/G09R2DesignTrustedAuthority.swift",
+          "line": 557,
+          "note": "trusted authority verification",
+          "sha256": "3750d124978d289aac1258ad8ea6cf96ddb4d938f1f73f758e868c72e9bf84fe"
+        }
+      ],
+      "residual": [],
+      "qualificationBoundary": "Source-connected reconciliation only. Compilation, focused tests, APK build and device acceptance remain separate Main-owned gates; nothing here is inferred from source."
+    },
+    {
+      "id": "MIG-UPGRADE-PRESERVE",
+      "family": "BAK",
+      "originalGoal": "G11",
+      "originalOperation": "Schema/data migration on app upgrade preserves user data",
+      "originalStatus": "planned",
+      "required": true,
+      "classification": "source-connected",
+      "chain": {
+        "ui": "App upgrade flow",
+        "host": "DatabaseManager migrator",
+        "serviceRuntime": "Original v1-v51 then single additive V52AndroidCodeClosure migration; existing G09R2 selected_at repair preserved; media recovery preserves unknown operations/newer schema warnings",
+        "storage": "ONE SQLite database (user data preserved across upgrade)",
+        "resultFailure": "Migration failure retains prior schema; unknown ops preserved"
+      },
+      "evidence": [
+        {
+          "path": "shared/Sources/FloePersistence/DatabaseManager.swift",
+          "line": 96,
+          "note": "V52AndroidCodeClosure.register into migrator",
+          "sha256": "d924ad9620b3d75472603216f2ca7e794299406c46778458dd666ac142df3839"
+        },
+        {
+          "path": "shared/Sources/FloePersistence/Migrations/V52AndroidCodeClosure.swift",
+          "line": 6,
+          "note": "single additive migration setting user_version=52",
+          "sha256": "8b3cc29080e2b689859c9eebe1f1b42083cd596abea6cc96369c40bdbc2c0375"
+        },
+        {
+          "path": "shared/Sources/FloeAndroidCore/C02TaskContinuityDomain.swift",
+          "line": 986,
+          "note": "existing v1-v51 and G09R2 selected_at preserved",
+          "sha256": "df76365f9f56e228073601e2a20a4767d2817e55cf22827479440187b68e86da"
+        }
+      ],
+      "residual": [
+        "Final actual APK upgrade/data retention remains pending device acceptance"
+      ],
+      "qualificationBoundary": "Source-connected reconciliation only. Compilation, focused tests, APK build and device acceptance remain separate Main-owned gates; nothing here is inferred from source."
+    },
+    {
+      "id": "SET-CAPABILITY-STATUS",
+      "family": "SET",
+      "originalGoal": "G11",
+      "originalOperation": "Settings report actual capability availability and actionable unavailable states (incl. channel-excluded modules)",
+      "originalStatus": "planned",
+      "required": true,
+      "classification": "source-connected",
+      "chain": {
+        "ui": "Settings capabilities screen reporting actual availability and actionable unavailable states (incl. channel-excluded modules)",
+        "host": "Composed CapabilitiesCommandRouter",
+        "serviceRuntime": "CapabilitiesDomain reads actual filtered ToolRunnerRegistry and configured skill/MCP state, original availability/prerequisite values; no capability from platform label alone",
+        "storage": "Runtime registry + configuration stores",
+        "resultFailure": "Unavailable states actionable with real prerequisite facts"
+      },
+      "evidence": [
+        {
+          "path": "shared/Sources/FloeAndroidCore/RuntimeFacadeCapabilities.swift",
+          "line": 158,
+          "note": "CapabilitiesDomain actor",
+          "sha256": "a8268e1fefb13bd2a18a66e8d03c8ee8eca148c284e7f495432c0b30ddb03873"
+        },
+        {
+          "path": "shared/Sources/FloeAndroidCore/G02DomainServices.swift",
+          "line": 386,
+          "note": "capabilitiesDomain composition with real services",
+          "sha256": "69ca8917c113138a1dc16d4867df4b40ad1a3db70c1ca77d9d7f67ff2f67f71e"
+        },
+        {
+          "path": "shared/Sources/FloeTools/MCPRemoteToolSource.swift",
+          "line": 1365,
+          "note": "ToolRunnerRegistry filtered registration",
+          "sha256": "48967238ec359bed49ca17e8dd891b50a489a758e96f2073ec598fbb7d6948e2"
+        },
+        {
+          "path": "app/src/play/kotlin/com/floe/android/host/platform/DistributionPlatformFeature.kt",
+          "line": 15,
+          "note": "channel-excluded modules show empty capability sources on Play",
+          "sha256": "791da890836530a17b704301b8a77ce5e6d3d0f7694148cb41b190667c8edc14"
+        }
+      ],
+      "residual": [
+        "Provider configuration remains usable without developer-account smoke test (user direction 2026-10-31)"
+      ],
+      "qualificationBoundary": "Source-connected reconciliation only. Compilation, focused tests, APK build and device acceptance remain separate Main-owned gates; nothing here is inferred from source."
+    }
+  ],
+  "newObservedDefects": [
+    {
+      "id": "PROVIDER-PURPOSE-ROUNDTRIP",
+      "status": "Code repair active; image/video submissions remain0",
+      "observed": "Image provider saved then reopened with Conversation purpose; original chat configuration preserved; new QA provider disabled pending fix."
+    }
+  ],
+  "knownPresentationFollowups": [
+    "Dedicated Notes reading screen parity; current paginated editor remains readable",
+    "Further iOS visual/material polish and hardware-specific feedback"
+  ],
+  "currentSource": "e386206a9ac15806fa56cab5812572e2631f30b3",
+  "currentAcceptance": {
+    "providerRoleRoundtrip": "Actual image/video readback passed in code29; same native code retained30",
+    "providerRefresh": "Post-save old-provider-set cache race corrected code30;20focusedJVMpassed; actual original failure retained",
+    "imageGeneration": "Actual one image.generate job expired/outcomeUnknown, noartifact; stop paidcalls, localrepairactive",
+    "videoGeneration": "No video.generate submitted after image failure",
+    "publication": "Not published"
+  },
+  "latestGenerationRegression": {
+    "scope": "Mac component, real service/store/migrations and worker registry; injected provider transport, unexercised Android native defaults",
+    "passed": 30,
+    "failed": 0,
+    "skipped": 0,
+    "originalFailuresRetained": true,
+    "resolved": [
+      "fresh job prematurely expired",
+      "cancelled worker loses accepted provider handle",
+      "durable ready state without saved output receipt",
+      "backward poll retry transition",
+      "test database closed under live worker"
+    ],
+    "nativeApkQualified": false,
+    "realCloudOutcomeVerified": false,
+    "publicReleasePublished": false
+  }
+}

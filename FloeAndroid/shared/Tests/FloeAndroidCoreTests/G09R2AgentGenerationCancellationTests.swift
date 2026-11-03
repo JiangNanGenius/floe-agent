@@ -25,16 +25,45 @@ import XCTest
 import Foundation
 @testable import FloeAndroidCore
 import FloeCore
+import FloeModels
 import FloePersistence
 import FloeProviders
 
 final class G09R2AgentGenerationCancellationTests: XCTestCase {
     private var roots: [URL] = []
     private var databases: [DatabaseManager] = []
+    private var epochs: [UInt64] = []
+    private var gates: [Gate] = []
     private static let epochLock = NSLock()
     nonisolated(unsafe) private static var epochCounter: UInt64 = 50_000
 
     override func tearDown() async throws {
+        // Drain the workers this test owned BEFORE closing the databases:
+        // a background worker that touches a closed GRDB connection crashes
+        // the whole test process (sqlite3_get_autocommit on a freed handle),
+        // even when the test body already failed.
+        for gate in gates { gate.open() }
+        gates.removeAll()
+        let ownedEpochs = epochs
+        epochs.removeAll()
+        for epoch in ownedEpochs {
+            _ = G09R2GenerationService.shared.requestRootStop(epoch: epoch)
+        }
+        if !ownedEpochs.isEmpty {
+            let deadline = Date().addingTimeInterval(5)
+            while Date() < deadline,
+                  ownedEpochs.contains(
+                    where: { G09R2GenerationService.shared.hasActiveWorker(epoch: $0) }) {
+                try? await Task.sleep(nanoseconds: 20_000_000)
+            }
+        }
+        guard !ownedEpochs.contains(where: {
+            G09R2GenerationService.shared.hasActiveWorker(epoch: $0)
+        }) else {
+            XCTFail("Owned generation workers did not drain; preserving their database and workspace")
+            try await super.tearDown()
+            return
+        }
         for database in databases { try? await database.close() }
         databases.removeAll()
         for root in roots { try? FileManager.default.removeItem(at: root) }
@@ -218,7 +247,7 @@ final class G09R2AgentGenerationCancellationTests: XCTestCase {
         let conversationID = UUID()
         // The ORIGINAL durable conversation→workspace ownership the run's
         // workspace root comes from; submission pins this exact binding.
-        let conversationStore = ConversationStore(database: manager)
+        let conversationStore = SQLiteConversationStore(database: manager)
         try await conversationStore.saveConversation(ConversationRecord(
             id: conversationID, title: "Synthetic task",
             createdAt: Date(), updatedAt: Date()))
@@ -265,11 +294,13 @@ final class G09R2AgentGenerationCancellationTests: XCTestCase {
             })
         let service = G09R2AgentGenerationService(
             platform: platform, environmentProvider: { _ in environment })
+        let epoch = Self.nextEpoch()
+        epochs.append(epoch)
         return Fixture(
             service: service, root: root, rootURL: url, workspaceURL: workspace,
             database: manager, workspaceStore: workspaceStore,
             jobStore: MediaGenerationJobStore(database: manager),
-            epoch: Self.nextEpoch(), conversationID: conversationID, runID: UUID(),
+            epoch: epoch, conversationID: conversationID, runID: UUID(),
             modelID: model.id, videoAdapter: videoAdapter)
     }
 
@@ -316,6 +347,7 @@ final class G09R2AgentGenerationCancellationTests: XCTestCase {
         let fixture = try await makeFixture()
         let statusEntered = expectation(description: "poll entered provider status")
         let release = Gate()
+        gates.append(release)
         fixture.videoAdapter.statusHandler = { _ in
             statusEntered.fulfill()
             await release.enterAndWait()
@@ -346,7 +378,7 @@ final class G09R2AgentGenerationCancellationTests: XCTestCase {
         } catch {
             // expected
         }
-        let settledSnapshot1 = await currentState(fixture, jobID: summary.jobID)
+        let settledSnapshot1 = try await currentState(fixture, jobID: summary.jobID)
         var owned = try XCTUnwrap(settledSnapshot1)
         XCTAssertFalse(owned.job.state.isTerminal,
                        "a failed provider cancel must NOT settle the accepted job terminal")
@@ -356,7 +388,7 @@ final class G09R2AgentGenerationCancellationTests: XCTestCase {
         // job queryable, never resubmit, never a false terminal.
         release.open()
         try await waitForWorkerSettled(fixture, jobID: summary.jobID)
-        let settledSnapshot2 = await currentState(fixture, jobID: summary.jobID)
+        let settledSnapshot2 = try await currentState(fixture, jobID: summary.jobID)
         owned = try XCTUnwrap(settledSnapshot2)
         XCTAssertFalse(owned.job.state.isTerminal,
                        "local worker stop must retain the accepted job, not expire it")
@@ -377,6 +409,7 @@ final class G09R2AgentGenerationCancellationTests: XCTestCase {
         let fixture = try await makeFixture()
         let statusEntered = expectation(description: "poll entered provider status")
         let release = Gate()
+        gates.append(release)
         fixture.videoAdapter.statusHandler = { _ in
             statusEntered.fulfill()
             await release.enterAndWait()
@@ -404,7 +437,7 @@ final class G09R2AgentGenerationCancellationTests: XCTestCase {
         // The racing poll worker must not resurrect or republish anything.
         release.open()
         try await waitForWorkerSettled(fixture, jobID: summary.jobID)
-        let settledSnapshot3 = await currentState(fixture, jobID: summary.jobID)
+        let settledSnapshot3 = try await currentState(fixture, jobID: summary.jobID)
         let owned = try XCTUnwrap(settledSnapshot3)
         XCTAssertEqual(owned.job.state, .cancelled)
         XCTAssertEqual(fixture.videoAdapter.submitCount, 1)
@@ -416,6 +449,7 @@ final class G09R2AgentGenerationCancellationTests: XCTestCase {
         let fixture = try await makeFixture()
         let downloadEntered = expectation(description: "download entered")
         let release = Gate()
+        gates.append(release)
         fixture.videoAdapter.statusHandler = { _ in
             GatedVideoAdapter.makeStatus(
                 state: .ready,
@@ -428,6 +462,12 @@ final class G09R2AgentGenerationCancellationTests: XCTestCase {
             download: { _, destination, _ in
                 downloadEntered.fulfill()
                 await release.enterAndWait()
+                // The real seam (G09R2GenerationDownload.stream) creates the
+                // destination directory; the synthetic one must do the same
+                // or the staged write fails before any fence can run.
+                try FileManager.default.createDirectory(
+                    at: destination.deletingLastPathComponent(),
+                    withIntermediateDirectories: true)
                 try Self.mp4Bytes.write(to: destination)
                 return G09R2DownloadReceipt(
                     fileURL: destination,
@@ -465,7 +505,7 @@ final class G09R2AgentGenerationCancellationTests: XCTestCase {
         // fence must keep every byte out of the workspace.
         release.open()
         try await waitForWorkerSettled(fixture, jobID: summary.jobID)
-        let settledSnapshot4 = await currentState(fixture, jobID: summary.jobID)
+        let settledSnapshot4 = try await currentState(fixture, jobID: summary.jobID)
         let owned = try XCTUnwrap(settledSnapshot4)
         XCTAssertEqual(owned.job.state, .cancelled)
         assertNoGeneratedMedia(fixture.workspaceURL,
@@ -478,6 +518,7 @@ final class G09R2AgentGenerationCancellationTests: XCTestCase {
         let fixture = try await makeFixture()
         let downloadEntered = expectation(description: "download entered")
         let release = Gate()
+        gates.append(release)
         fixture.videoAdapter.statusHandler = { _ in
             GatedVideoAdapter.makeStatus(
                 state: .ready,
@@ -490,6 +531,12 @@ final class G09R2AgentGenerationCancellationTests: XCTestCase {
             download: { _, destination, _ in
                 downloadEntered.fulfill()
                 await release.enterAndWait()
+                // The real seam (G09R2GenerationDownload.stream) creates the
+                // destination directory; the synthetic one must do the same
+                // or the staged write fails before the target fence can run.
+                try FileManager.default.createDirectory(
+                    at: destination.deletingLastPathComponent(),
+                    withIntermediateDirectories: true)
                 try Self.mp4Bytes.write(to: destination)
                 return G09R2DownloadReceipt(
                     fileURL: destination,
@@ -540,7 +587,7 @@ final class G09R2AgentGenerationCancellationTests: XCTestCase {
             else { return false }
             return owned.job.state == .failed && owned.job.lastError == "targetChanged"
         }
-        let settledSnapshot5 = await currentState(fixture, jobID: summary.jobID)
+        let settledSnapshot5 = try await currentState(fixture, jobID: summary.jobID)
         let owned = try XCTUnwrap(settledSnapshot5)
         XCTAssertEqual(owned.job.state, .failed)
         XCTAssertEqual(owned.job.lastError, "targetChanged")
@@ -558,6 +605,7 @@ final class G09R2AgentGenerationCancellationTests: XCTestCase {
         let fixture = try await makeFixture()
         let entered = expectation(description: "provider is accepting the request")
         let release = Gate()
+        gates.append(release)
         let accepted = fixture.videoAdapter.submission
         fixture.videoAdapter.submitHandler = {
             entered.fulfill()
@@ -613,7 +661,7 @@ final class G09R2AgentGenerationCancellationTests: XCTestCase {
             return owned.job.state == .expired
                 && owned.job.lastError == "outcomeUnknown"
         }
-        let settledSnapshot6 = await currentState(fixture, jobID: summary.jobID)
+        let settledSnapshot6 = try await currentState(fixture, jobID: summary.jobID)
         let owned = try XCTUnwrap(settledSnapshot6)
         XCTAssertEqual(owned.job.state, .expired)
         XCTAssertEqual(owned.job.lastError, "outcomeUnknown")
@@ -643,7 +691,7 @@ final class G09R2AgentGenerationCancellationTests: XCTestCase {
             return owned.job.state == .failed
                 && owned.job.lastError == "providerRejected"
         }
-        let settledSnapshot7 = await currentState(fixture, jobID: summary.jobID)
+        let settledSnapshot7 = try await currentState(fixture, jobID: summary.jobID)
         let owned = try XCTUnwrap(settledSnapshot7)
         XCTAssertEqual(owned.job.state, .failed)
         XCTAssertEqual(owned.job.lastError, "providerRejected")
@@ -656,6 +704,25 @@ final class G09R2AgentGenerationCancellationTests: XCTestCase {
             throw FloeError.validationFailed("connectionLost")
         }
         let configuration = ModelConfigurationStore(database: fixture.database)
+        // Route fixture: submitImage resolves an image route from the
+        // configuration, and the shared cancellation fixture registers only
+        // a video-capable model. Register an image-only route exactly like
+        // the outcome-repair fixture so the post-dispatch ambiguity path is
+        // what this case exercises.
+        let imageProvider = ProviderProfile(
+            kind: .openAI,
+            wireProtocol: .openAIChatCompletions,
+            baseURL: URL(string: "https://synthetic.example/v1")!,
+            displayName: "Synthetic Image Provider", isEnabled: true)
+        try await configuration.saveProvider(imageProvider)
+        try await configuration.saveModel(ModelProfile(
+            providerID: imageProvider.id,
+            remoteModelID: "synthetic-image-1",
+            displayName: "Synthetic image model",
+            limits: ModelLimits(contextTokens: 4_096, maxOutputTokens: 256),
+            capabilities: [.imageGeneration],
+            useSurfaces: [.imageGeneration],
+            isEnabled: true))
         let root = try XCTUnwrap(
             RuntimeStorageRoot(validatingAbsoluteDirectory: fixture.rootURL.path))
         let platform = G09R2GenerationPlatform(
@@ -688,7 +755,7 @@ final class G09R2AgentGenerationCancellationTests: XCTestCase {
             return owned.job.state == .expired
                 && owned.job.lastError == "outcomeUnknown"
         }
-        let settledSnapshot8 = await currentState(fixture, jobID: summary.jobID)
+        let settledSnapshot8 = try await currentState(fixture, jobID: summary.jobID)
         let owned = try XCTUnwrap(settledSnapshot8)
         XCTAssertEqual(owned.job.state, .expired,
                        "a post-dispatch image failure must be ambiguous, not definite")
@@ -702,6 +769,7 @@ final class G09R2AgentGenerationCancellationTests: XCTestCase {
         let fixture = try await makeFixture()
         let statusEntered = expectation(description: "poll entered provider status")
         let release = Gate()
+        gates.append(release)
         fixture.videoAdapter.statusHandler = { _ in
             statusEntered.fulfill()
             await release.enterAndWait()
@@ -732,7 +800,7 @@ final class G09R2AgentGenerationCancellationTests: XCTestCase {
         }
         release.open()
         try await waitForWorkerSettled(fixture, jobID: summary.jobID)
-        let settledSnapshot9 = await currentState(fixture, jobID: summary.jobID)
+        let settledSnapshot9 = try await currentState(fixture, jobID: summary.jobID)
         var owned = try XCTUnwrap(settledSnapshot9)
         XCTAssertFalse(owned.job.state.isTerminal)
         XCTAssertEqual(owned.job.providerTaskID, "synthetic-task-1")
@@ -759,7 +827,7 @@ final class G09R2AgentGenerationCancellationTests: XCTestCase {
             jobID: summary.jobID)
         XCTAssertEqual(cancelled.state, .cancelled)
         try await waitForWorkerSettled(fixture, jobID: summary.jobID)
-        let settledSnapshot10 = await currentState(fixture, jobID: summary.jobID)
+        let settledSnapshot10 = try await currentState(fixture, jobID: summary.jobID)
         owned = try XCTUnwrap(settledSnapshot10)
         XCTAssertEqual(owned.job.state, .cancelled)
         XCTAssertEqual(fixture.videoAdapter.submitCount, 1)

@@ -36,6 +36,20 @@
 //    delivery (definite `targetChanged`) instead of publishing into a new
 //    owner. The current workspace is never chosen, never reconstructed.
 //
+// Outcome-repair authority (preparing→expired device failure):
+//  * The run-launch recovery pump (`resumeStaleJobs`) applies the SAME
+//    `stalePreparingSeconds` freshness gate as `status(refresh:)`: a
+//    handle-less preparing/submitted row younger than the bound is owned by
+//    a starting worker and is never classified unknown. The pump is
+//    fire-and-forget and can interleave between a submission's durable row
+//    insert and its worker registration; without the gate it expired
+//    brand-new jobs as `outcomeUnknown` before any dispatch.
+//  * One-shot image delivery commits the artifact receipt with the poll
+//    worker's CAS discipline: once verified bytes are durable in the pinned
+//    workspace, a late local stop cannot strand them behind an
+//    `outcomeUnknown` row; a cancel that raced the commit keeps its real
+//    terminal state.
+//
 // Contract fidelity to the immutable iOS donors
 // (36f63bf400dfaa3a127259eac006b38d72516390:
 //  FloeApp/Files/RemoteImageTools.swift, FloeApp/Conversations/RemoteVideoTools.swift):
@@ -214,6 +228,7 @@ public final class G09R2AgentGenerationService: @unchecked Sendable {
     static let maximumResultBytes: Int64 = 512 * 1024 * 1024
 
     internal let platform: G09R2GenerationPlatform
+    private let afterImageBytesWritten: (@Sendable () async -> Void)?
     internal let environmentProvider: @Sendable (UInt64) async -> G09R2GenerationEnvironment?
 
     public convenience init() {
@@ -230,9 +245,11 @@ public final class G09R2AgentGenerationService: @unchecked Sendable {
     }
 
     init(platform: G09R2GenerationPlatform,
-         environmentProvider: @escaping @Sendable (UInt64) async -> G09R2GenerationEnvironment?) {
+         environmentProvider: @escaping @Sendable (UInt64) async -> G09R2GenerationEnvironment?,
+         afterImageBytesWritten: (@Sendable () async -> Void)? = nil) {
         self.platform = platform
         self.environmentProvider = environmentProvider
+        self.afterImageBytesWritten = afterImageBytesWritten
     }
 
     // MARK: - Operation identity
@@ -475,24 +492,44 @@ public final class G09R2AgentGenerationService: @unchecked Sendable {
             try throwIfCancelled(token: token)
             let artifacts = try writeGeneratedImages(
                 result.images, workspaceRootURL: deliveryRoot)
-            try throwIfCancelled(token: token)
-            try await store.transition(id: jobID, to: .ready) {
-                var updated = payload
-                updated.artifacts = artifacts
-                // The legacy scalar view is honest: populated exactly for a
-                // single-artifact result, nil for a multi-image batch.
-                if artifacts.count == 1, let first = artifacts.first {
-                    updated.workspaceRelativePath = first.relativePath
-                    updated.deliveredByteCount = first.byteCount
-                    updated.deliveredSHA256 = first.sha256
-                } else {
-                    updated.workspaceRelativePath = nil
-                    updated.deliveredByteCount = nil
-                    updated.deliveredSHA256 = nil
+            // Internal fixture seam after durable bytes, before the receipt CAS.
+            // Production initialization leaves it nil.
+            await afterImageBytesWritten?()
+            // The verified bytes are already durable in the pinned workspace;
+            // the receipt commit is the publish boundary. A local stop that
+            // arrived after the write must NOT strand real delivered bytes
+            // behind an `outcomeUnknown` row with no artifact (the poll
+            // worker's ready commit uses the same CAS discipline): commit the
+            // receipt even when the local stop already cancelled this worker
+            // task (see `finalizeDespiteCancellation`), and let a cancel that
+            // raced the commit keep its real terminal state via the store's
+            // transition guard.
+            do {
+                try await finalizeDespiteCancellation { [store, payload, artifacts] in
+                    try await store.transition(id: jobID, to: .ready) {
+                        var updated = payload
+                        updated.artifacts = artifacts
+                        // The legacy scalar view is honest: populated exactly for a
+                        // single-artifact result, nil for a multi-image batch.
+                        if artifacts.count == 1, let first = artifacts.first {
+                            updated.workspaceRelativePath = first.relativePath
+                            updated.deliveredByteCount = first.byteCount
+                            updated.deliveredSHA256 = first.sha256
+                        } else {
+                            updated.workspaceRelativePath = nil
+                            updated.deliveredByteCount = nil
+                            updated.deliveredSHA256 = nil
+                        }
+                        $0.requestJSON = (try? self.encoder().encode(updated)) ?? $0.requestJSON
+                        $0.lastError = nil
+                        $0.nextPollAt = nil
+                    }
                 }
-                $0.requestJSON = (try? self.encoder().encode(updated)) ?? $0.requestJSON
-                $0.lastError = nil
-                $0.nextPollAt = nil
+            } catch MediaGenerationJobStoreError.invalidStateTransition {
+                // A cancel raced the receipt commit and already settled the
+                // real terminal state; keep it (ready-vs-cancel truth) and
+                // leave the delivered bytes at their pinned paths.
+                return
             }
         } catch is CancellationError {
             // A one-shot image carries no provider handle: before dispatch a
@@ -694,7 +731,17 @@ public final class G09R2AgentGenerationService: @unchecked Sendable {
                 // handle, keep the durable row non-terminal, and let the
                 // poll/resume path (or an explicit provider-confirmed cancel)
                 // settle the real outcome — exactly the shared UI flow.
-                _ = try? await store.transition(id: jobID, to: .submitted) {
+                await persistAcceptedVideoHandle(
+                    store: store, jobID: jobID, submission: submission)
+                return
+            }
+            // The accepted provider task identity is persisted BEFORE any
+            // poll await so a crash after acceptance never loses the
+            // handle and never triggers a duplicate paid submission. The
+            // write must survive a cancel that races it (the accepted
+            // handle is must-persist; see `finalizeDespiteCancellation`).
+            try await finalizeDespiteCancellation { [store, submission] in
+                try await store.transition(id: jobID, to: .submitted) {
                     $0.providerTaskID = submission.providerTaskID
                     $0.estimatedCompletionAt = submission.estimatedCompletionAt
                     $0.resultRetentionExpiresAt = submission.resultRetentionExpiresAt
@@ -702,18 +749,8 @@ public final class G09R2AgentGenerationService: @unchecked Sendable {
                     $0.resultURLExpiresAt = submission.resultURLExpiresAt
                     $0.nextPollAt = Date().addingTimeInterval(Self.videoPollIntervalSeconds)
                     $0.lastPolledAt = Date()
+                    $0.lastError = nil
                 }
-                return
-            }
-            try await store.transition(id: jobID, to: .submitted) {
-                $0.providerTaskID = submission.providerTaskID
-                $0.estimatedCompletionAt = submission.estimatedCompletionAt
-                $0.resultRetentionExpiresAt = submission.resultRetentionExpiresAt
-                $0.resultURL = submission.resultURL
-                $0.resultURLExpiresAt = submission.resultURLExpiresAt
-                $0.nextPollAt = Date().addingTimeInterval(Self.videoPollIntervalSeconds)
-                $0.lastPolledAt = Date()
-                $0.lastError = nil
             }
             // Hand off to the poll worker (same bounded table). A full table
             // leaves the durable submitted row for resumeStaleJobs or the
@@ -762,6 +799,45 @@ public final class G09R2AgentGenerationService: @unchecked Sendable {
                             code: dispatched ? "outcomeUnknown"
                                 : Self.boundedCode(error),
                             definite: !dispatched)
+        }
+    }
+
+    /// Runs one bounded, awaited durable-write operation outside the current
+    /// task's cancellation. Local worker cancellation must never silently
+    /// drop a must-persist settlement — an accepted provider handle, the
+    /// verified delivered bytes' receipt, or an honest terminal state: GRDB
+    /// refuses writes from a cancelled task (`SerializedDatabase.execute`
+    /// checks task cancellation before the block). The hop is awaited before
+    /// returning, so no untracked work survives the caller, and the store's
+    /// write transaction keeps its exact CAS/owner semantics.
+    private func finalizeDespiteCancellation<T: Sendable>(
+        _ operation: @escaping @Sendable () async throws -> T
+    ) async throws -> T {
+        try await Task.detached(priority: .userInitiated) {
+            try await operation()
+        }.value
+    }
+
+    /// Persists an accepted provider handle on behalf of a worker task that
+    /// already received a local cancellation request (see
+    /// `finalizeDespiteCancellation`): the provider accepted the paid request
+    /// before the local stop, so the durable row keeps the handle and stays
+    /// non-terminal — exactly the shared UI flow's contract.
+    private func persistAcceptedVideoHandle(
+        store: MediaGenerationJobStore,
+        jobID: UUID,
+        submission: RemoteVideoSubmission
+    ) async {
+        _ = try? await finalizeDespiteCancellation {
+            try await store.transition(id: jobID, to: .submitted) {
+                $0.providerTaskID = submission.providerTaskID
+                $0.estimatedCompletionAt = submission.estimatedCompletionAt
+                $0.resultRetentionExpiresAt = submission.resultRetentionExpiresAt
+                $0.resultURL = submission.resultURL
+                $0.resultURLExpiresAt = submission.resultURLExpiresAt
+                $0.nextPollAt = Date().addingTimeInterval(Self.videoPollIntervalSeconds)
+                $0.lastPolledAt = Date()
+            }
         }
     }
 
@@ -877,15 +953,28 @@ public final class G09R2AgentGenerationService: @unchecked Sendable {
             } catch {
                 // A poll failure keeps the durable job alive with bounded
                 // backoff; the retained provider task ID is never replayed
-                // as a new submission.
+                // as a new submission. The retry marker must survive on ANY
+                // non-terminal state: `.downloading -> .running` is rejected
+                // by the durable state machine (backward rank), so persist it
+                // as a self-transition on the CURRENT state. The store
+                // re-reads and re-validates inside one write transaction, so
+                // a terminal settlement that races this retry can never be
+                // overwritten. A cancelled worker task persists the marker
+                // through the same non-cancelled hop as every finalization.
                 if let env = try? await requireEnvironment(epoch: epoch) {
-                    try? await MediaGenerationJobStore(database: env.database)
-                        .transition(id: jobID, to: .running) {
-                            $0.lastPolledAt = Date()
-                            $0.nextPollAt = Date().addingTimeInterval(Self.videoPollIntervalSeconds)
-                            $0.lastError = "pollRetry"
-                            $0.retryCount += 1
+                    let retryStore = MediaGenerationJobStore(database: env.database)
+                    if let current = try? await retryStore.ownedJob(id: jobID),
+                       !current.job.state.isTerminal {
+                        let retryState = current.job.state
+                        _ = try? await finalizeDespiteCancellation {
+                            try await retryStore.transition(id: jobID, to: retryState) {
+                                $0.lastPolledAt = Date()
+                                $0.nextPollAt = Date().addingTimeInterval(Self.videoPollIntervalSeconds)
+                                $0.lastError = "pollRetry"
+                                $0.retryCount += 1
+                            }
                         }
+                    }
                 }
             }
             try? await Task.sleep(nanoseconds: UInt64(Self.videoPollIntervalSeconds * 1_000_000_000))
@@ -1011,6 +1100,14 @@ public final class G09R2AgentGenerationService: @unchecked Sendable {
     /// a task to the runtime), so retained video jobs keep polling after a
     /// process restart. Image jobs are single-shot: a preparing/submitted row
     /// without a live worker is classified unknown, never resubmitted.
+    ///
+    /// Freshness gate (device repair): the launch pump is a fire-and-forget
+    /// task that can be scheduled while a brand-new submission is between its
+    /// durable row insert and its worker registration. A handle-less
+    /// preparing/submitted row younger than `stalePreparingSeconds` is NOT
+    /// stale — its worker may be starting right now — so this pump must apply
+    /// the exact same age gate `status(refresh:)` uses; only rows older than
+    /// the bound (e.g. the submitter process really died) classify unknown.
     public func resumeStaleJobs(epoch: UInt64, conversationID: UUID) async {
         guard !G09R2GenerationService.shared.isRootStopping(epoch: epoch),
               let env = try? await requireEnvironment(epoch: epoch) else { return }
@@ -1019,6 +1116,7 @@ public final class G09R2AgentGenerationService: @unchecked Sendable {
             return
         }
         let engine = G09R2GenerationService.shared
+        let now = Date()
         for job in jobs where !job.state.isTerminal {
             let key = job.id.uuidString.lowercased()
             guard !engine.hasActiveWorker(jobID: key) else { continue }
@@ -1030,7 +1128,9 @@ public final class G09R2AgentGenerationService: @unchecked Sendable {
                     await self.runVideoPoll(token: token, epoch: epoch, jobID: job.id)
                 }
             } else if job.providerTaskID == nil,
-                      job.state == .preparing || job.state == .submitted {
+                      job.state == .preparing || job.state == .submitted,
+                      now.timeIntervalSince(job.createdAt)
+                          > G09R2GenerationService.stalePreparingSeconds {
                 try? await store.transition(id: job.id, to: .expired) {
                     $0.lastError = "outcomeUnknown"
                     $0.nextPollAt = nil
@@ -1282,21 +1382,32 @@ public final class G09R2AgentGenerationService: @unchecked Sendable {
     /// relaunch resume. Only a handle-less row falls back to the durable
     /// unknown terminal state.
     private func retainAcceptedJob(epoch: UInt64, jobID: UUID) async {
-        guard let env = try? await requireEnvironment(epoch: epoch) else { return }
-        let store = MediaGenerationJobStore(database: env.database)
-        guard let owned = try? await store.ownedJob(id: jobID),
-              !owned.job.state.isTerminal else { return }
-        guard owned.job.providerTaskID != nil else {
-            await finishJob(epoch: epoch, jobID: jobID,
-                            code: "outcomeUnknown", definite: false)
-            return
-        }
-        // Keep the exact durable state (self-transition) with an explicit
-        // unknown marker and no scheduled poll: the retained handle is
-        // re-queried only by an explicit refresh/resume — never resubmitted.
-        _ = try? await store.transition(id: jobID, to: owned.job.state) {
-            $0.lastError = "outcomeUnknown"
-            $0.nextPollAt = nil
+        // The whole read+write runs in the non-cancelled hop: this is called
+        // from worker tasks that already received a local stop, and a
+        // cancelled writer would silently drop the retention marker. Root
+        // drain is still honored — a stopping root skips the write exactly
+        // as before.
+        _ = try? await finalizeDespiteCancellation { [self] in
+            guard let env = try? await self.requireEnvironment(epoch: epoch) else { return }
+            let store = MediaGenerationJobStore(database: env.database)
+            guard let owned = try? await store.ownedJob(id: jobID),
+                  !owned.job.state.isTerminal else { return }
+            guard owned.job.providerTaskID != nil else {
+                // A handle-less row falls back to the durable unknown
+                // terminal state (same fields `finishJob` would write).
+                _ = try await store.transition(id: jobID, to: .expired) {
+                    $0.lastError = "outcomeUnknown"
+                    $0.nextPollAt = nil
+                }
+                return
+            }
+            // Keep the exact durable state (self-transition) with an explicit
+            // unknown marker and no scheduled poll: the retained handle is
+            // re-queried only by an explicit refresh/resume — never resubmitted.
+            _ = try await store.transition(id: jobID, to: owned.job.state) {
+                $0.lastError = "outcomeUnknown"
+                $0.nextPollAt = nil
+            }
         }
     }
 
@@ -1356,16 +1467,23 @@ public final class G09R2AgentGenerationService: @unchecked Sendable {
     }
 
     private func finishJob(epoch: UInt64, jobID: UUID, code: String, definite: Bool) async {
-        guard let env = try? await requireEnvironment(epoch: epoch) else { return }
-        let store = MediaGenerationJobStore(database: env.database)
-        guard let owned = try? await store.ownedJob(id: jobID),
-              !owned.job.state.isTerminal else { return }
-        let state: MediaGenerationJobState = definite
-            ? (code == "cancelled" ? .cancelled : .failed)
-            : .expired
-        try? await store.transition(id: jobID, to: state) {
-            $0.lastError = code
-            $0.nextPollAt = nil
+        // Runs in the non-cancelled hop: this is the honest terminal
+        // settlement for transport/stop failures and is frequently reached
+        // from a worker task that already received a local stop — a
+        // cancelled writer must not silently drop it. Root drain is still
+        // honored exactly as before.
+        _ = try? await finalizeDespiteCancellation { [self] in
+            guard let env = try? await self.requireEnvironment(epoch: epoch) else { return }
+            let store = MediaGenerationJobStore(database: env.database)
+            guard let owned = try? await store.ownedJob(id: jobID),
+                  !owned.job.state.isTerminal else { return }
+            let state: MediaGenerationJobState = definite
+                ? (code == "cancelled" ? .cancelled : .failed)
+                : .expired
+            _ = try await store.transition(id: jobID, to: state) {
+                $0.lastError = code
+                $0.nextPollAt = nil
+            }
         }
     }
 

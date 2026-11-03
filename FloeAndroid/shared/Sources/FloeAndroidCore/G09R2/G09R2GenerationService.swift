@@ -358,6 +358,14 @@ public final class G09R2GenerationService: @unchecked Sendable {
         return workers.values.contains { $0.jobID == jobID }
     }
 
+    /// Whether any live worker belongs to one epoch. Test hosts drain their
+    /// owned epochs before closing the database so no background worker can
+    /// touch a closed GRDB connection.
+    internal func hasActiveWorker(epoch: UInt64) -> Bool {
+        lock.lock(); defer { lock.unlock() }
+        return workers.values.contains { $0.epoch == epoch }
+    }
+
     /// Phase-1 root stop: refuse new workers for this generation, request
     /// cancellation of the exact owned tasks, and report TRUE only after every
     /// worker actually settled. A cancel flag alone is never drain proof.
