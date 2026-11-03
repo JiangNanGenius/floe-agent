@@ -152,16 +152,20 @@ final class CADTextureImportUITests: XCTestCase {
         let deadline = Date().addingTimeInterval(5)
         while Date() < deadline, stable < 2 {
             let current = option.frame
-            stable = option.isHittable && current == previous ? stable + 1 : 0
+            stable = !current.isEmpty && app.frame.contains(current) && current == previous ? stable + 1 : 0
             previous = current
             RunLoop.current.run(until: Date().addingTimeInterval(0.1))
         }
         XCTAssertEqual(stable, 2, "The native menu row must finish positioning")
-        option.tap()
+        // iOS 27 can omit activation points for a real visible menu row.
+        // Use its settled on-screen centre, then require the actual value.
+        let frame = option.frame
+        app.coordinate(withNormalizedOffset: .zero).withOffset(
+            CGVector(dx: frame.midX - app.frame.minX, dy: frame.midY - app.frame.minY)).tap()
         let selected = NSPredicate { _, _ in
-            // iOS may retain a dismissed menu's AX objects. Its row must no
-            // longer accept taps; existence alone is not menu visibility.
-            picker.exists && picker.label.contains(label) && !option.isHittable
+            // A dismissed native menu can retain stale AX rows. Verify that
+            // the real picker is reachable again and shows the chosen value.
+            picker.exists && picker.label.contains(label) && picker.isHittable
         }
         XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: selected, object: picker)], timeout: 8),
                        .completed, "The actual picker must show \(label) after selection, got \(picker.label)")

@@ -4924,15 +4924,26 @@
       "package": "engineering",
       "implementation": {
         "stage": "E",
-        "status": "planned",
-        "source_changes": [],
-        "verification": [],
+        "status": "accepted_original_criterion",
+        "source_changes": [
+          "83429fc78ff94f31ee07008a6b19bc95e1f693e7"
+        ],
+        "verification": [
+          {
+            "kind": "actual_App_WebKit_and_visible_editor",
+            "source": "83429fc78ff94f31ee07008a6b19bc95e1f693e7",
+            "drawing_native_passed": 7,
+            "unrelated_texture_ui_failed": 1,
+            "originalFailuresPreserved": true,
+            "evidence": "docs/qualification/cad-drawing-edit-recovery-20261103/README.md"
+          }
+        ],
         "limitations": []
       },
       "alignment_review": {
-        "disposition": "planned",
+        "disposition": "accepted_original_criterion",
         "existing": "基线已有：DWG/DXF保留原生文档，同格式保存；可编辑Line/Circle/Arc/LwPolyline/Text，创建Leader和五类Dimension。",
-        "remaining": "扩2D可编辑Spline/块内/纸空间/Hatch/MTEXT等范围，未支持Xref/代理/3D实体须原样保留并明确只读。",
+        "remaining": "No pending clause for this original criterion; documented supported editing scope retained.",
         "evidence": [
           {
             "path": "docs/FLOE_CAD_3D_IMPLEMENTATION_PROGRESS.json",
@@ -4956,13 +4967,15 @@
           }
         ],
         "notes": [],
-        "evidence_level": "baseline_plus_verified_delta",
+        "evidence_level": "actual_App_WebKit_and_visible_renderer",
         "verified_delta": "本轮没有该原始缺口的新运行通过声明；现有功能仍按基线保留。",
-        "acceptance_pending": "打开含块/Xref/样条/填充图纸，支持范围内编辑并保存，其余实体保持且UI清楚标记只读。"
+        "acceptance_pending": null
       },
       "current_acceptance": {
-        "original_criterion_accepted": false,
-        "source_changes": []
+        "original_criterion_accepted": true,
+        "evidence": "docs/qualification/cad-drawing-edit-recovery-20261103/README.md",
+        "original_criterion_text_unchanged": true,
+        "whole106_complete": false
       },
       "verification_plan": {
         "priority": "P1",
@@ -5090,15 +5103,26 @@
       "package": "engineering",
       "implementation": {
         "stage": "E",
-        "status": "planned",
-        "source_changes": [],
-        "verification": [],
+        "status": "accepted_original_criterion",
+        "source_changes": [
+          "83429fc78ff94f31ee07008a6b19bc95e1f693e7"
+        ],
+        "verification": [
+          {
+            "kind": "actual_App_WebKit_and_visible_editor",
+            "source": "83429fc78ff94f31ee07008a6b19bc95e1f693e7",
+            "drawing_native_passed": 7,
+            "unrelated_texture_ui_failed": 1,
+            "originalFailuresPreserved": true,
+            "evidence": "docs/qualification/cad-drawing-edit-recovery-20261103/README.md"
+          }
+        ],
         "limitations": []
       },
       "alignment_review": {
-        "disposition": "planned",
+        "disposition": "accepted_original_criterion",
         "existing": "基线已有：可创建linear/aligned/angular/radius/diameter尺寸与无annotationText引线。",
-        "remaining": "为已有Dimension/Leader补保持句柄的文字、位置和几何关联更新接口，验证持续编辑。",
+        "remaining": "No pending clause for this original criterion; documented supported editing scope retained.",
         "evidence": [
           {
             "path": "docs/FLOE_CAD_3D_IMPLEMENTATION_PROGRESS.json",
@@ -5122,13 +5146,15 @@
           }
         ],
         "notes": [],
-        "evidence_level": "baseline_plus_verified_delta",
+        "evidence_level": "actual_App_WebKit_and_visible_renderer",
         "verified_delta": "本轮没有该原始缺口的新运行通过声明；现有功能仍按基线保留。",
-        "acceptance_pending": "更新已有尺寸文字/位置并修改关联几何，保留句柄与标注关系，保存后同格式可继续编辑。"
+        "acceptance_pending": null
       },
       "current_acceptance": {
-        "original_criterion_accepted": false,
-        "source_changes": []
+        "original_criterion_accepted": true,
+        "evidence": "docs/qualification/cad-drawing-edit-recovery-20261103/README.md",
+        "original_criterion_text_unchanged": true,
+        "whole106_complete": false
       },
       "verification_plan": {
         "priority": "P1",
@@ -10285,6 +10311,16 @@
       "sourceBoundMultiRun": true,
       "originalSelectorFailureRetained": true,
       "physicalDevice": false
+    },
+    "drawing_edits_and_recovery": {
+      "source": "83429fc78ff94f31ee07008a6b19bc95e1f693e7",
+      "evidence": "docs/qualification/cad-drawing-edit-recovery-20261103/README.md",
+      "actualAppCompile": true,
+      "drawingNativePassed": 7,
+      "unrelatedTextureUIFailed": 1,
+      "E20_E22Accepted": true,
+      "E23RealCorpusAppPending": true,
+      "originalFailuresRetained": true
     }
   },
   "verification_strategy": {
@@ -10471,6 +10507,34 @@
         "E14",
         "E20",
         "E22",
+        "E23",
+        "E38",
+        "X01",
+        "X02",
+        "X03",
+        "X04",
+        "X10",
+        "X11",
+        "X18",
+        "X19",
+        "X26",
+        "X27",
+        "X34",
+        "X37"
+      ],
+      "original33AllocationPreserved": true
+    },
+    "remaining_after_drawing_edit_batch": {
+      "heavy": 16,
+      "light_or_reuse": 5,
+      "pending_ids": [
+        "M16",
+        "M17",
+        "M22",
+        "M29",
+        "M30",
+        "E12",
+        "E14",
         "E23",
         "E38",
         "X01",

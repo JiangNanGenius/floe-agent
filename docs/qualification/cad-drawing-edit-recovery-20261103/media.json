@@ -1,0 +1,18 @@
+[
+  {
+    "name": "dimension-reopened.png",
+    "sourceAttachment": "BBE0472C-F78B-4570-B12F-8944F9698F11.png",
+    "sha256": "6e005434ce58e5b0953e3839e59cb7f6ce67287d971103f7692641af22300170",
+    "unaltered": true,
+    "syntheticFixture": true,
+    "primaryVisuallyReviewed": true
+  },
+  {
+    "name": "readonly-editor.png",
+    "sourceAttachment": "4E3E50D1-E869-49D7-AC10-0DD57DB8C42D.png",
+    "sha256": "766220d1dca7a7915ac5e4a38b33c5482ef3cfd5563f55e0f3f4ca69f5993aab",
+    "unaltered": true,
+    "syntheticFixture": true,
+    "primaryVisuallyReviewed": true
+  }
+]

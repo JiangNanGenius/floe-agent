@@ -37,11 +37,12 @@ export function installCadEditor({engine,initial,render,viewer,zh,dark=false,onD
  const fields=document.createElement('div');fields.className='cadFields';
  const entities=document.createElement('select');entities.id='cadEntities';entities.setAttribute('aria-label',say('选择图元','Select entity'));
  const selectionInfo=document.createElement('p');selectionInfo.className='cadMessage';
+ const scopeInfo=document.createElement('p');scopeInfo.className='cadMessage';scopeInfo.hidden=true;
  const tools=document.createElement('div');tools.className='cadActions';
  const title=document.createElement('strong');title.textContent=say('图纸助手 · 二维编辑','Drawing Assistant · 2D editor');
  const close=document.createElement('button');close.textContent=say('收起','Close');
  const properties=document.createElement('div');properties.className='cadSection';
- properties.append(entities,selectionInfo,fields,tools);
+ properties.append(entities,scopeInfo,selectionInfo,fields,tools);
  panel.append(title,close,message,controls,properties);document.body.append(panel);
  let layersLoaded=false;
  const toggle=document.createElement('button');toggle.id='cadEdit';toggle.textContent=say('编辑','Edit');toggle.onclick=()=>{panel.hidden=!panel.hidden;if(!panel.hidden){const layersEl=document.getElementById('layers');if(layersEl)layersEl.hidden=true;if(!layersLoaded){layersLoaded=true;void refreshLayers();}}};
@@ -408,7 +409,8 @@ export function installCadEditor({engine,initial,render,viewer,zh,dark=false,onD
   if(selected&&!info.entities.some(row=>row.handle===selected)){selected='';selection.delete(previous);}
   entities.value=selected;undo.disabled=busy||(!info.canUndo&&!externalUndo);redo.disabled=busy||!info.canRedo;save.disabled=busy||!dirty;
   selectionInfo.textContent=selection.size?say(`已选 ${selection.size} 个图元`,`${selection.size} selected`):'';
-  if(info.entities.length<info.entityCount)note(say('显示前 500 个图元，其他内容保留在原图纸中。','Showing the first 500 entities; other content remains in the drawing.'));
+  scopeInfo.hidden=info.entities.length>=info.entityCount;
+  scopeInfo.textContent=scopeInfo.hidden?'':say('显示前 500 个图元，其他内容保留在原图纸中。','Showing the first 500 entities; other content remains in the drawing.');
   updateInk();
  }
  function toggleSelection(handle){
