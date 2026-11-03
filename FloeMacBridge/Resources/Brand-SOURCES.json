@@ -1,14 +1,13 @@
 {
   "schemaVersion": 1,
-  "assets": [
-    {
-      "source": "FloeAgent/FloeApp/Resources/Assets.xcassets/AppIcon.appiconset/AppIcon-1024.png",
-      "sha256": "19547864334816dbcf0b423bd755d18daeace86cd93ed897b8806a25509d25e2"
-    },
-    {
-      "source": "FloeAgent/FloeApp/Resources/Assets.xcassets/VoiceMark.imageset/VoiceMark.png",
-      "sha256": "e490ab13f0ee796b0d746b93a25b53cdcef61917b8778acb1257d1c5ea86675d"
-    }
-  ],
-  "usage": "Unmodified existing Floe brand assets. ICNS uses iconutil/sips size representations."
+  "base": "FloeIOSBridge/Design/AppIcon-master.png",
+  "baseSourceCommit": "444c9cb247d3ec2cd5f2b562f6253c067b11e40b",
+  "baseSHA256": "daa268807c59e32e15bf0135c7cfcce1a932e55d35bb59b3033a5c715566f4fd",
+  "master": "FloeMacBridge/Design/AppIcon-master.png",
+  "masterSHA256": "1ad6cb875b21fcd4d3854e7e541e5eab8c37d80c81b47d319f92411a159a9534",
+  "usage": "Existing iOS Bridge icon with a Mac badge. ICNS and settings icon use iconutil/sips size representations. The menu-bar template keeps the transparent Floe brand mark.",
+  "menuTemplate": {
+    "source": "FloeAgent/FloeApp/Resources/Assets.xcassets/VoiceMark.imageset/VoiceMark.png",
+    "sha256": "e490ab13f0ee796b0d746b93a25b53cdcef61917b8778acb1257d1c5ea86675d"
+  }
 }
