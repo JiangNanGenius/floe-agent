@@ -1153,6 +1153,7 @@ targets:
       - path: Tests/FloePersistenceTests/ChildRunPayloadTests.swift
       - path: Tests/FloePersistenceTests/ChildRunStoreTests.swift
       - path: Tests/FloeProvidersTests/ProviderCapabilityMetadataTests.swift
+      - path: Tests/FloeProvidersTests/ModelDiscoveryMappingTests.swift
       - path: Tests/FloeSyncTests/DeferredConfigSyncTests.swift
       - path: Tests/FloeAppTests/NativeCADDrawingAssemblyClosureTests.swift
       # D: isolated Runtime policy fixture hosted in the App bundle through

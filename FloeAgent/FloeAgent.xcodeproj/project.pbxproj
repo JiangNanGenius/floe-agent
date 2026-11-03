@@ -303,6 +303,7 @@
 		351BA25F6D6162CA719C7484 /* TaskEnvironmentUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5E9666CF3151717995C3677E /* TaskEnvironmentUITests.swift */; };
 		355AA35003F049409539C002 /* JobDownloadCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = F88A71725F1461BFF49E6BFC /* JobDownloadCoordinator.swift */; };
 		3579C243C8D17340786C7E1D /* WorkspacePickerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B5E373AD5E7E721591E5441B /* WorkspacePickerView.swift */; };
+		3595E76444D57D5E3B2E8918 /* ModelDiscoveryMappingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 02EEBEAB9641030BD974E2D1 /* ModelDiscoveryMappingTests.swift */; };
 		35987D30CAF740449556D200 /* WorkbenchAIDrawer.swift in Sources */ = {isa = PBXBuildFile; fileRef = B5614234219ABD592DF539DC /* WorkbenchAIDrawer.swift */; };
 		35CBCF0CD0506451D99DA2CA /* TaskWorkspaceMirrorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8F831805FDE9CA69779F7123 /* TaskWorkspaceMirrorTests.swift */; };
 		37549F7A71D4E4661ABE3B49 /* CADScriptAndMeshTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6999557AEDDECF37EB11F95A /* CADScriptAndMeshTests.swift */; };
@@ -1458,6 +1459,7 @@
 		02C1479A9699BD7D3A189E7E /* CadDocumentObserveContractTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CadDocumentObserveContractTests.swift; sourceTree = "<group>"; };
 		02D251245A1790D84521F016 /* WhisperSettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WhisperSettingsView.swift; sourceTree = "<group>"; };
 		02DEE2FEE9044F7BE5635809 /* NotesAIActualOutputUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotesAIActualOutputUITests.swift; sourceTree = "<group>"; };
+		02EEBEAB9641030BD974E2D1 /* ModelDiscoveryMappingTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ModelDiscoveryMappingTests.swift; sourceTree = "<group>"; };
 		03482FFDDB47C3482FD2326D /* DomainSkillLibrary.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DomainSkillLibrary.swift; sourceTree = "<group>"; };
 		03667B0F672BB8254A12AAD8 /* OfficeEditEntryAckTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OfficeEditEntryAckTests.swift; sourceTree = "<group>"; };
 		036B56AC987CE799669752B9 /* PDFOperationJournal.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PDFOperationJournal.swift; sourceTree = "<group>"; };
@@ -4264,6 +4266,7 @@
 				5760B26C331DFD8D3F977EEC /* KimiImageAdapterTests.swift */,
 				AD960B82A1A158F5A290D89F /* KimiImageProviderPresetTests.swift */,
 				92171DF4BE19E003A0CED04E /* LocalModelToolPolicyTests.swift */,
+				02EEBEAB9641030BD974E2D1 /* ModelDiscoveryMappingTests.swift */,
 				7276765427334452125B8D64 /* OpenAIFileTranscriptionTests.swift */,
 				69880290D99C046B4A662F90 /* OpenAIRealtimeTranscriptionTests.swift */,
 				EF46DB0450F986F1229B466F /* ProviderCapabilityMetadataTests.swift */,
@@ -6400,6 +6403,7 @@
 				516D2F4B12EEA4388DD9D453 /* MediaProposalToolTests.swift in Sources */,
 				7770D9896AEA0BF64CF25598 /* MemoryCancellationTests.swift in Sources */,
 				9DEA3173120A7F55B7B7063B /* ModelContextSummarizerTests.swift in Sources */,
+				3595E76444D57D5E3B2E8918 /* ModelDiscoveryMappingTests.swift in Sources */,
 				48CD1A6CBB5182F57E2C2B9B /* ModelUserInputProjectionTests.swift in Sources */,
 				0D68E38C3CFFD8E2141CAD11 /* MoonshotDatasourceTests.swift in Sources */,
 				EE467EF10F2595C2E88C01B9 /* NDEFReadToolsTests.swift in Sources */,
