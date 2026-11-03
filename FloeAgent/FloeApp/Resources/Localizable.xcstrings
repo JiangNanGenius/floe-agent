@@ -20003,7 +20003,7 @@
         }
       }
     },
-    "cad.selection.askAssistant" : {
+    "cad.selection.askAssistant": {
       "extractionState": "manual",
       "localizations": {
         "en": {
@@ -20020,7 +20020,7 @@
         }
       }
     },
-    "cad.selection.changed" : {
+    "cad.selection.changed": {
       "extractionState": "manual",
       "localizations": {
         "en": {
@@ -20037,7 +20037,7 @@
         }
       }
     },
-    "cad.selection.attachment" : {
+    "cad.selection.attachment": {
       "extractionState": "manual",
       "localizations": {
         "en": {
@@ -20054,7 +20054,7 @@
         }
       }
     },
-    "cad.selection.attachFailed" : {
+    "cad.selection.attachFailed": {
       "extractionState": "manual",
       "localizations": {
         "en": {
@@ -132856,84 +132856,324 @@
       }
     },
     "cad.sketch.curve.kind.line": {
-      "en": "Line",
-      "zh-Hans": "直线"
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Line"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "直线"
+          }
+        }
+      }
     },
     "cad.sketch.curve.kind.circle": {
-      "en": "Circle",
-      "zh-Hans": "圆"
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Circle"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "圆"
+          }
+        }
+      }
     },
     "cad.sketch.curve.kind.arc": {
-      "en": "Arc",
-      "zh-Hans": "圆弧"
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Arc"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "圆弧"
+          }
+        }
+      }
     },
     "cad.sketch.curve.kind.ellipse": {
-      "en": "Ellipse",
-      "zh-Hans": "椭圆"
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Ellipse"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "椭圆"
+          }
+        }
+      }
     },
     "cad.sketch.curve.kind.spline": {
-      "en": "Spline",
-      "zh-Hans": "样条"
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Spline"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "样条"
+          }
+        }
+      }
     },
     "cad.sketch.curve.operation": {
-      "en": "Operation",
-      "zh-Hans": "操作"
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Operation"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "操作"
+          }
+        }
+      }
     },
     "cad.sketch.curve.trim": {
-      "en": "Trim",
-      "zh-Hans": "修剪"
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Trim"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "修剪"
+          }
+        }
+      }
     },
     "cad.sketch.curve.extend": {
-      "en": "Extend",
-      "zh-Hans": "延伸"
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Extend"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "延伸"
+          }
+        }
+      }
     },
     "cad.sketch.curve.boundary": {
-      "en": "Boundary",
-      "zh-Hans": "边界"
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Boundary"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "边界"
+          }
+        }
+      }
     },
     "cad.sketch.curve.chooseBoundary": {
-      "en": "Choose the boundary first.",
-      "zh-Hans": "请先选择边界。"
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Choose the boundary first."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "请先选择边界。"
+          }
+        }
+      }
     },
     "cad.sketch.curve.pickTarget": {
-      "en": "Tap the part to remove or the endpoint to extend",
-      "zh-Hans": "点选要移除的部分或要延伸的端点"
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Tap the part to remove or the endpoint to extend"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "点选要移除的部分或要延伸的端点"
+          }
+        }
+      }
     },
     "cad.sketch.curve.done": {
-      "en": "Done",
-      "zh-Hans": "完成"
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Done"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "完成"
+          }
+        }
+      }
     },
     "cad.sketch.curve.linkedOffset": {
-      "en": "Linked offset",
-      "zh-Hans": "关联偏移"
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Linked offset"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "关联偏移"
+          }
+        }
+      }
     },
     "cad.sketch.curve.makeIndependent": {
-      "en": "Make independent",
-      "zh-Hans": "解除关联"
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Make independent"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "解除关联"
+          }
+        }
+      }
     },
     "cad.sketch.curve.exactRangeRequired": {
-      "en": "This curve cannot be edited exactly yet. The original is unchanged.",
-      "zh-Hans": "暂不支持精确编辑此曲线，原曲线已保留。"
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This curve cannot be edited exactly yet. The original is unchanged."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "暂不支持精确编辑此曲线，原曲线已保留。"
+          }
+        }
+      }
     },
     "cad.sketch.curve.references": {
-      "en": "Release the curve's constraints or links first. Nothing was removed.",
-      "zh-Hans": "请先解除曲线的约束或关联，原有内容均已保留。"
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Release the curve's constraints or links first. Nothing was removed."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "请先解除曲线的约束或关联，原有内容均已保留。"
+          }
+        }
+      }
     },
     "cad.sketch.curve.collapse": {
-      "en": "The offset collapses the curve. Reduce the inward distance.",
-      "zh-Hans": "偏移后曲线会塌缩，请减小内偏移距离。"
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The offset collapses the curve. Reduce the inward distance."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "偏移后曲线会塌缩，请减小内偏移距离。"
+          }
+        }
+      }
     },
     "cad.sketch.curve.changed": {
-      "en": "The sketch changed. Select the curve again.",
-      "zh-Hans": "草图已变化，请重新选择曲线。"
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The sketch changed. Select the curve again."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "草图已变化，请重新选择曲线。"
+          }
+        }
+      }
     },
     "cad.sketch.curve.noIntersection": {
-      "en": "There is no unambiguous intersection with that boundary.",
-      "zh-Hans": "与此边界没有明确交点。"
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "There is no unambiguous intersection with that boundary."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "与此边界没有明确交点。"
+          }
+        }
+      }
     },
     "cad.sketch.curve.refused": {
-      "en": "The curve could not be edited. The original is unchanged.",
-      "zh-Hans": "无法完成曲线编辑，原曲线已保留。"
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The curve could not be edited. The original is unchanged."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "无法完成曲线编辑，原曲线已保留。"
+          }
+        }
+      }
     },
     "cad.ui.common.more": {
       "localizations": {
