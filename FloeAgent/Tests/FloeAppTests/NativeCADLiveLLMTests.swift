@@ -3837,6 +3837,9 @@ private enum NativeCADLiveEvidence {
             "The visual turn proposed an unexpected operation: \(proposedOps)"
         )
         let allowedActions: Set<String> = [
+            // Offered, read-only discovery is not an additional geometry edit.
+            // Keep the separate edit/op/identity/receipt assertions above.
+            "capabilities", "help",
             "query", "read", "locate", "three_d_snapshot", "three_d_measure", "measure",
             "propose", "three_d_propose", "apply", "three_d_apply", "save", "capture",
             "parameters",

@@ -633,6 +633,154 @@ struct LocalMalformedOrderedToolBatchTests {
     }
 }
 
+@Suite("Local explicit tool envelopes require a name")
+struct LocalMissingToolNameTests {
+    // Captured from the real pinned MLX Round3 response. This is not an
+    // executed call: the original envelope omitted its name.
+    private var missing: String {
+        #"{"tool_call":{"arguments":{"action":"parameters","path":"x34-supplied-mlx-CC4020AF.floecad","payload":"{\"action\":\"undo\"}"}}}"#
+    }
+
+    private func batch(_ lines: [String], format: Int) -> String {
+        switch format {
+        case 1: return "[" + lines.joined(separator: ",") + "]"
+        case 2: return "{\"tool_calls\":[" + lines.joined(separator: ",") + "]}"
+        default: return lines.joined(separator: "\n")
+        }
+    }
+
+    @Test("An explicit nameless edit cannot disappear before a valid measure",
+          arguments: [0, 1, 2], [true, false])
+    @available(macOS 15.4, iOS 26.0, *)
+    func missingNameRejectsWholeBatch(format: Int, badFirst: Bool) throws {
+        let lines = badFirst ? [missing, validCADMeasureLine] : [validCADMeasureLine, missing]
+        do {
+            _ = try LocalProviderAdapter.toolCalls(
+                from: batch(lines, format: format), offeredToolNames: ["cad.document"])
+            Issue.record("A partial batch with a missing tool name was admitted")
+        } catch let error as LocalProviderAdapter.ToolBatchParseError {
+            guard case .missingToolName(let arguments) = error else {
+                Issue.record("Unexpected parser failure: \(error)")
+                return
+            }
+            let object = try #require(JSONSerialization.jsonObject(with: arguments) as? [String: Any])
+            #expect(object["path"] as? String == "x34-supplied-mlx-CC4020AF.floecad")
+            #expect(object["payload"] as? String == #"{"action":"undo"}"#)
+        }
+    }
+
+    @Test("The execution cap cannot hide a later nameless envelope", arguments: [0, 1, 2])
+    @available(macOS 15.4, iOS 26.0, *)
+    func missingNameBeyondCapRejectsBatch(format: Int) throws {
+        let lines = Array(repeating: validCADMeasureLine,
+                          count: LocalProviderAdapter.maximumSequentialToolCalls) + [missing]
+        do {
+            _ = try LocalProviderAdapter.toolCalls(
+                from: batch(lines, format: format), offeredToolNames: ["cad.document"])
+            Issue.record("A capped batch bypassed name validation")
+        } catch let error as LocalProviderAdapter.ToolBatchParseError {
+            guard case .missingToolName = error else {
+                Issue.record("Unexpected parser failure: \(error)")
+                return
+            }
+        }
+    }
+
+    @Test("Unknown names still skip and prose examples remain inert")
+    @available(macOS 15.4, iOS 26.0, *)
+    func unknownNamesAndQuotedExamplesKeepTheirBoundary() throws {
+        let unknown = #"{"tool_call":{"name":"not.offered","arguments":{}}}"#
+        let calls = try LocalProviderAdapter.toolCalls(
+            from: batch([unknown, validCADMeasureLine], format: 1), offeredToolNames: ["cad.document"])
+        #expect(calls.count == 1)
+        #expect(calls.first?.toolName == "cad.document")
+        let sample = "Example only:\n```json\n" + missing + "\n```\nDo not execute."
+        #expect(try LocalProviderAdapter.toolCalls(from: sample, offeredToolNames: ["cad.document"]).isEmpty)
+    }
+
+    @Test("A name-repair example preserves the complete arguments and never invents a candidate")
+    @available(macOS 15.4, iOS 26.0, *)
+    func repairExamplePreservesArguments() throws {
+        let root = try #require(JSONSerialization.jsonObject(with: Data(missing.utf8)) as? [String: Any])
+        let body = try #require(root["tool_call"] as? [String: Any])
+        let arguments = try #require(body["arguments"] as? [String: Any])
+        let data = try JSONSerialization.data(withJSONObject: arguments, options: [.sortedKeys])
+        #expect(LocalProviderAdapter.missingToolNameRepairExample(argumentsJSON: data, tool: nil) == nil)
+        #expect(LocalProviderAdapter.missingToolNameRepairExample(
+            argumentsJSON: Data("[]".utf8), tool: malformedBatchCADSchema) == nil)
+        let example = try #require(LocalProviderAdapter.missingToolNameRepairExample(
+            argumentsJSON: data, tool: malformedBatchCADSchema))
+        #expect(example.hasPrefix(#"{"tool_call":{"name":"cad.document","arguments":"#))
+        let call = try #require(try LocalProviderAdapter.toolCalls(
+            from: example, offeredToolNames: ["cad.document"]).first)
+        #expect(call.argumentsJSON == data)
+    }
+
+    @Test("A single repair preserves the original request and ordered batch")
+    @available(macOS 15.4, iOS 26.0, *)
+    func missingNameRepairRetainsArgumentsAndWholeBatch() async throws {
+        let first = batch([missing, validCADMeasureLine], format: 0)
+        let fixed = missing.replacingOccurrences(
+            of: #"{"tool_call":{"arguments":"#,
+            with: #"{"tool_call":{"name":"cad.document","arguments":"#)
+        let engine = RecordingEngine(behavior: { engine in
+            try RecordingEngine.text(engine.generationCount == 1
+                ? first : [fixed, validCADMeasureLine].joined(separator: "\n"))(engine)
+        })
+        let harness = try LocalRuntimeHarness(engine: engine)
+        defer { harness.cleanUp() }
+        let objective = "Use cad.document to undo the last radius edit, then measure the same body."
+        let request = ProviderStreamRequest(
+            provider: LocalProviderAdapter.providerProfile,
+            model: localModel(remoteModelID: "qwen3.5-4b-mlx4", contextTokens: 32_768, maxOutputTokens: 1536),
+            messages: [(role: "system", content: "Keep ownership and revision checks."),
+                       (role: "user", content: objective)],
+            toolSchemas: [malformedBatchCADSchema], allToolNames: ["cad.document"])
+        var calls: [ToolCall] = []
+        for try await event in harness.adapter().stream(request: request, credentials: ProviderCredentials()) {
+            if case .toolRequest(let call) = event { calls.append(call) }
+        }
+        #expect(engine.generationCount == 2)
+        #expect(engine.receivedMaxTokensHistory == [1536, 1536])
+        let prompts = engine.receivedPrompts
+        #expect(prompts.count == 2)
+        #expect(prompts.allSatisfy { $0.contains(objective) })
+        let original = try #require(prompts.first)
+        let repair = try #require(prompts.last)
+        #expect(repair.hasPrefix(original))
+        #expect(repair.contains("omitted its tool name"))
+        #expect(repair.contains(#""payload":"{\"action\":\"undo\"}""#))
+        #expect(engine.receivedInstructionsHistory.first == engine.receivedInstructionsHistory.last)
+        let actions = try calls.map {
+            (try #require(JSONSerialization.jsonObject(with: $0.argumentsJSON) as? [String: Any]))["action"] as? String
+        }
+        #expect(actions == ["parameters", "measure"])
+    }
+
+    @Test("An unsuccessful name repair emits zero calls and never retries again")
+    @available(macOS 15.4, iOS 26.0, *)
+    func repeatedMissingNameFailsClosed() async throws {
+        let engine = RecordingEngine(behavior: RecordingEngine.text(missing))
+        let harness = try LocalRuntimeHarness(engine: engine)
+        defer { harness.cleanUp() }
+        let request = ProviderStreamRequest(
+            provider: LocalProviderAdapter.providerProfile,
+            model: localModel(remoteModelID: "qwen3.5-4b-mlx4"),
+            messages: [(role: "user", content: "Use cad.document to undo the last edit.")],
+            toolSchemas: [malformedBatchCADSchema], allToolNames: ["cad.document"])
+        var emitted = 0
+        var failed = false
+        do {
+            for try await event in harness.adapter().stream(request: request, credentials: ProviderCredentials()) {
+                if case .toolRequest = event { emitted += 1 }
+            }
+        } catch { failed = true }
+        #expect(failed)
+        #expect(emitted == 0)
+        #expect(engine.generationCount == 2)
+    }
+}
+
 // MARK: - Three-turn history preservation (Build 228 second-turn regression)
 
 /// The Build 228 device report was "a second message in the same conversation

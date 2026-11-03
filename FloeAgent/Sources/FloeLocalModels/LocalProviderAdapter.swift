@@ -1906,6 +1906,7 @@ public struct LocalProviderAdapter: ProviderAdapter {
                     }
                     var channels = Self.splitReasoning(from: completion.text)
                     var hasMalformedToolBatch = false
+                    var missingToolNameArguments: Data?
                     var parsedToolCalls: [ToolCall]
                     do {
                         parsedToolCalls = try Self.fallbackToolCalls(
@@ -1913,10 +1914,13 @@ public struct LocalProviderAdapter: ProviderAdapter {
                             modelRemoteID: request.model.remoteModelID,
                             selectedTools: promptBuild.fallbackTools
                         )
-                    } catch is ToolBatchParseError {
+                    } catch let issue as ToolBatchParseError {
                         // Parse the whole response before yielding any request:
                         // a broken batch cannot execute a surviving prefix/suffix.
                         hasMalformedToolBatch = true
+                        if case .missingToolName(let arguments) = issue {
+                            missingToolNameArguments = arguments
+                        }
                         parsedToolCalls = []
                     }
                     // Device evidence is only that the repair parsed 0 — not
@@ -1984,7 +1988,7 @@ public struct LocalProviderAdapter: ProviderAdapter {
                             }
                         }
                         if hasMalformedToolBatch {
-                            repairReason = "malformedBatch"
+                            repairReason = missingToolNameArguments == nil ? "malformedBatch" : "missingToolName"
                             correctiveName = nil
                         }
                         FloeLogger(category: .providers).warning(
@@ -2005,6 +2009,12 @@ public struct LocalProviderAdapter: ProviderAdapter {
                             promptBuild.fallbackTools.first { $0.name == canonical }
                         } ?? promptBuild.primaryRepairTool
                         let repairDirective: String = {
+                            if let arguments = missingToolNameArguments,
+                               let hint = Self.missingToolNameRepairExample(
+                                argumentsJSON: arguments, tool: repairTool
+                               ) {
+                                return "The previous explicit tool_call omitted its tool name. No calls from that response were executed. The offered repair candidate with the previous complete arguments is:\n\(hint)\nCheck this candidate against the current USER request and offered schema. Re-emit the COMPLETE requested ordered batch, including the exact offered name and arguments for every call; do not omit earlier actions, reorder actions, invent values, add prose, or claim execution. This example is not a tool result."
+                            }
                             if hasMalformedToolBatch {
                                 return "No calls from the previous malformed JSON batch were executed. Re-emit the COMPLETE ordered batch requested in the current USER message, using only the offered tool definitions and original authorized parameters. Do not omit an earlier action, reorder actions, invent arguments, or claim execution. Emit at most \(Self.maximumSequentialToolCalls) calls in the documented form; no prose."
                             }
@@ -4328,10 +4338,27 @@ public struct LocalProviderAdapter: ProviderAdapter {
         try toolCalls(from: output, offeredToolNames: offeredToolNames).first
     }
 
-    /// Syntax failure in an explicit raw tool_call line. Carries no model text.
+    /// Admission failures for explicit tool control envelopes. Argument bytes
+    /// stay in the local repair prompt; ordinary logs record only the kind.
     /// The complete response is parsed before any request can be emitted.
     enum ToolBatchParseError: Error, Equatable, Sendable {
         case malformedLine(Int)
+        case missingToolName(argumentsJSON: Data)
+    }
+
+    /// A syntax-repair example, never an executable invocation. The candidate
+    /// comes from the already admitted tool directory; argument values remain
+    /// the model's original JSON, including JSON-encoded payload strings.
+    static func missingToolNameRepairExample(
+        argumentsJSON: Data, tool: ToolSchemaDescriptor?
+    ) -> String? {
+        guard let tool,
+              !tool.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              let arguments = try? JSONSerialization.jsonObject(with: argumentsJSON) as? [String: Any],
+              let encodedArguments = try? JSONSerialization.data(withJSONObject: arguments, options: [.sortedKeys]),
+              let encodedName = try? JSONSerialization.data(withJSONObject: [tool.name]) else { return nil }
+        let quotedName = String(String(decoding: encodedName, as: UTF8.self).dropFirst().dropLast())
+        return "{\"tool_call\":{\"name\":\(quotedName),\"arguments\":\(String(decoding: encodedArguments, as: UTF8.self))}}"
     }
 
     /// Build 222: one turn may carry several sequential calls. The bounded
@@ -4344,8 +4371,9 @@ public struct LocalProviderAdapter: ProviderAdapter {
     ///
     /// Every element still passes the same name normalization and argument
     /// validation as a single call. Valid unknown names are still skipped.
-    /// A syntax-broken explicit raw tool_call line rejects the entire line
-    /// batch, so an earlier action cannot silently disappear. The result is capped at `maximumSequentialToolCalls` in document order so
+    /// A broken explicit tool_call line or a nameless explicit envelope
+    /// rejects the whole batch, so an earlier action cannot silently disappear.
+    /// The result is capped at `maximumSequentialToolCalls` in document order so
     /// the harness can execute them sequentially.
     static func toolCalls(
         from output: String,
@@ -4419,8 +4447,7 @@ public struct LocalProviderAdapter: ProviderAdapter {
         var calls: [ToolCall] = []
         for object in objects {
             guard let call = try decodeToolCall(object, offered: offered) else { continue }
-            calls.append(call)
-            if calls.count >= maximumSequentialToolCalls { break }
+            if calls.count < maximumSequentialToolCalls { calls.append(call) }
         }
         return calls
     }
@@ -4432,6 +4459,19 @@ public struct LocalProviderAdapter: ProviderAdapter {
         _ object: Any,
         offered: Set<String>
     ) throws -> ToolCall? {
+        // A recognizable explicit control envelope with arguments but no name
+        // must invalidate the whole batch, rather than letting a later measure
+        // execute after an omitted edit. Unknown, nonempty names retain their
+        // legacy skip behavior; prose and embedded examples never reach here.
+        if let object = object as? [String: Any],
+           let explicit = object["tool_call"] as? [String: Any] {
+            let body = (explicit["function"] as? [String: Any]) ?? explicit
+            if (body["name"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty != false,
+               let arguments = body["arguments"] as? [String: Any] {
+                throw ToolBatchParseError.missingToolName(
+                    argumentsJSON: try JSONSerialization.data(withJSONObject: arguments, options: [.sortedKeys]))
+            }
+        }
         guard let body = toolCallBody(in: object),
               let rawName = body["name"] as? String else { return nil }
         let emittedName = rawName.trimmingCharacters(in: .whitespacesAndNewlines)

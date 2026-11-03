@@ -573,14 +573,16 @@ final class LocalMLXRealCADQualificationTests: XCTestCase {
         var baseline: ReachabilityState?
         var previousInstance: ObjectIdentifier?
         for turn in 0..<4 {
-            let examples = try calls[turn].map { try wireJSON($0) }.joined(separator: "\n")
+            let examples = try calls[turn].map {
+                try wireJSON(["tool_call": ["name": CadDocumentTool.name, "arguments": $0]])
+            }.joined(separator: "\n")
             let goal = """
             Text-only tool reachability check. This is an existing TEST-CREATED fixture, NOT geometry you generated. Use only cad.document in the current task workspace. No images or visual inference.
             Source path=\(path), bodyID=\(source.bodyID), hole sketchID=\(source.circle.sketchID), circle entityID=\(source.circle.entityID), FeatureIDs=\(source.featureIDs.joined(separator: ",")).
             Round \(turn + 1)/4: \(instructions[turn])
-            Make exactly these real tool calls, in order, then stop. Report only returned results:
+            Emit exactly these complete JSON tool_call objects, one per line, in order. No prose, Markdown fences or bare arguments objects. After real tool results return, stop and report only returned results:
             \(examples)
-            Wire contract: args and payload are JSON STRING fields, never nested objects. Example of STRING encoding ONLY, not an extra call: \(try wireJSON(["payload": undoPayload])). Omit args and payload when absent from the exact calls above. Do not create, propose, apply, import or replace geometry. Do not claim execution without a real tool result.
+            Wire contract: tool_call.name is "cad.document"; tool_call.arguments is an OBJECT. Inside that arguments object, args and payload, when present, are JSON STRING fields, never nested objects. Omit args and payload when absent from the exact calls above. Do not create, propose, apply, import or replace geometry. Do not claim execution without a real tool result.
             """
             attach("x34-\(label)-round-\(turn + 1)-goal.txt", goal)
             try assertCanonicalSchemaIsAdmitted(for: goal)
