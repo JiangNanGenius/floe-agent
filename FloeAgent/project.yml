@@ -708,6 +708,7 @@ targets:
       Release: Vendor/Office/native-host.xcconfig
     sources:
       - path: Tests/FloeAppTests/SkillRuntimeTargetTests.swift
+      - path: Tests/FloeAppTests/CADBasicMachiningTests.swift
       - path: Tests/FloeAppTests/IOSBridgeIntegrationTests.swift
       - path: Tests/FloeAppTests/TaskEnvironmentOwnershipTests.swift
       - path: Tests/FloeAppTests/TaskRemoteEnvironmentLiveTests.swift
@@ -1199,6 +1200,7 @@ targets:
       - path: Tests/FloeAgentUITests/OfficeBridgeStateTests.swift
       - path: Tests/FloeAgentUITests/ShellCoreUtilityTests.swift
       - path: Tests/FloeProvidersTests/VideoProviderAdapterTests.swift
+      - path: Tests/FloeProvidersTests/VideoModelRouteResolutionTests.swift
       - path: Tests/FloeCoreTests/CreativeMediaModelsTests.swift
       - path: Tests/FloeAgentUITests/RARFixtures.generated.swift
       # 283 shared App intake (source delivery 2026-10-21): explicit
@@ -1460,6 +1462,7 @@ targets:
       - path: Tests/FloeAgentRuntimeTests/UserQuestionTests.swift
       - path: Tests/FloeExecutionTests/DeepSeekSearchTests.swift
       - path: Tests/FloeExecutionTests/SearchProviderCatalogTests.swift
+      - path: Tests/FloeExecutionTests/MoonshotDatasourceTests.swift
       - path: Tests/FloeWorkbenchTests/CadDocumentSupportTests.swift
     dependencies:
       - package: FloeAgentPackages

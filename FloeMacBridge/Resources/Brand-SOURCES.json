@@ -1,0 +1,14 @@
+{
+  "schemaVersion": 1,
+  "assets": [
+    {
+      "source": "FloeAgent/FloeApp/Resources/Assets.xcassets/AppIcon.appiconset/AppIcon-1024.png",
+      "sha256": "19547864334816dbcf0b423bd755d18daeace86cd93ed897b8806a25509d25e2"
+    },
+    {
+      "source": "FloeAgent/FloeApp/Resources/Assets.xcassets/VoiceMark.imageset/VoiceMark.png",
+      "sha256": "e490ab13f0ee796b0d746b93a25b53cdcef61917b8778acb1257d1c5ea86675d"
+    }
+  ],
+  "usage": "Unmodified existing Floe brand assets. ICNS uses iconutil/sips size representations."
+}

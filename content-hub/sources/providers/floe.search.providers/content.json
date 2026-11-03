@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "id": "floe.search.providers",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "kind": "providers",
   "minimumAppVersion": "1.7.65",
   "sourceRevision": "",
@@ -9,8 +9,8 @@
   "requiredCapabilities": [],
   "dependencies": [],
   "releaseNotes": {
-    "zh-Hans": "搜索服务目录：新增 DeepSeek 官方网页搜索（长摘要与可选网页正文），其余条目与已保存配置不变。",
-    "en": "Search provider catalog: adds DeepSeek's official web search with long summaries and optional page content; existing entries and saved configurations are unchanged."
+    "en": "Adds Moonshot AI with separate Pay as you go and Kimi Code search accounts.",
+    "zh-Hans": "新增月之暗面，支持独立的按量付费与 Kimi Code 搜索账号。"
   },
   "privacy": {
     "zh-Hans": "本包仅包含声明式目录数据，不含密钥、令牌或可执行代码。",

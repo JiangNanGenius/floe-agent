@@ -4,7 +4,7 @@
   "displayName": "OCCT closed-profile contact branch continuation",
   "status": "required",
   "approach": "single-object-surgical-reconstruction",
-  "purpose": "Select only true-contact extrema within existing Precision::Confusion and continue the nearest preceding unwrapped rotation angle; preserve Standard_Type repair and every non-target archive member. Repair the undefined SOS guide parameter and collect bounded contact residuals only when an explicit diagnostic environment flag is set.",
+  "purpose": "Preserve true-contact extrema and compare an authored initial/previous-station native Newton continuation root so Extrema guide-parameter deduplication cannot discard the nearest closed-profile rotation. Retain the lifetime repair, SOS guide seed fix, bounded default-off diagnostics and every non-target member.",
   "occt": {
     "name": "Open CASCADE Technology",
     "version": "7.8.1",
@@ -18,13 +18,13 @@
     },
     "overlaySource": {
       "path": "relink/derivations/guided-contact/overlay/src/GeomFill/GeomFill_LocationGuide.cxx",
-      "size": 48559,
-      "sha256": "89fd29cfc0f66ce6e2b8ad35998b3e2bd469ee88e0b87d4b1b2db27aea6fddfd"
+      "size": 53557,
+      "sha256": "85db58eb61d7d5b0406908326ab4b843873dad0036ac7eb464449045046fe361"
     },
     "patch": {
       "path": "relink/derivations/guided-contact/minimal.patch",
-      "size": 10306,
-      "sha256": "75ee15f7bd7b0e0b390dbc49d2ef4588576511bcd0bf3f9f7e0079d9d5fcb6da"
+      "size": 15791,
+      "sha256": "62d16d65a575c21ad9b3893822063be79e27846f1031780fdb8c362286f91d80"
     }
   },
   "member": {
@@ -155,7 +155,7 @@
   "limitations": [
     "One additional object is rebuilt after the existing Standard_Type lifetime derivation, not a full OCCT rebuild.",
     "The manifest retains original upstream archive pins; nested input receipt plus parent expectedResult anchors this second-stage base.",
-    "Both actual Xcode27.1 one-object artifacts preserve all other members; SOS seed repair and default-off diagnostics are under original guided workflow qualification. No tolerance/fixture is changed."
+    "Root compiled both candidate stage-two objects with Xcode27.1 and retained every other member; original guided geometry, cancellation and persistence qualification remains mandatory. No fixture or tolerance changes."
   ],
   "inputDerivation": {
     "id": "occt-standard-type-lifetime-v1",

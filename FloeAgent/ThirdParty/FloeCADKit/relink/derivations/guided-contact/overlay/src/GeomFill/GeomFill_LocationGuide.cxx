@@ -26,6 +26,7 @@
 #include <Geom_TrimmedCurve.hxx>
 #include <GeomAdaptor_Surface.hxx>
 #include <GeomFill_FunctionGuide.hxx>
+#include <GeomAPI_ProjectPointOnCurve.hxx>
 #include <GeomFill_LocationLaw.hxx>
 #include <GeomFill_SectionPlacement.hxx>
 #include <GeomFill_TrihedronWithGuide.hxx>
@@ -526,6 +527,115 @@ static void InGoodPeriod(const Standard_Real Prec,
       InGoodPeriod(CurAngle, 2*M_PI, theU);
     }//else
     
+    // Extrema_FuncExtCS deduplicates by the guide parameter alone. On a
+    // closed section, different exact (angle, section-v) roots share that
+    // parameter, so the closest rotation may already have been discarded.
+    // Add a genuine root continued from the authored initial frame / previous
+    // station. Do not restrict the angle domain or accept a non-contact fit.
+    const Standard_Real aExtremaAngle = theU;
+    Standard_Real aCandidateAngle = std::numeric_limits<Standard_Real>::quiet_NaN();
+    Standard_Real aCandidateV = aCandidateAngle;
+    Standard_Real aCandidateResidual = aCandidateAngle;
+    Standard_Real aSeedResidual = aCandidateAngle;
+    Standard_Integer aContinuationState = 0;
+    bool aContinuationChosen = false;
+    try
+    {
+      gp_Mat aFrame(N.XYZ(), B.XYZ(), T.XYZ());
+      if (WithTrans) aFrame *= Trans;
+      GeomFill_FunctionGuide aEquation(mySec, myGuide, U);
+      // Match the actual D0 equation, including its transformed frame.
+      aEquation.SetParam(t, P, aFrame.Column(3), aFrame.Column(1));
+      math_Vector aSeed(1, 3);
+      bool hasSeed = ii > 1;
+      if (hasSeed)
+      {
+        aSeed(1) = myPoles2d->Value(1, ii - 1).Y();
+        aSeed(2) = myPoles2d->Value(2, ii - 1).X();
+        aSeed(3) = myPoles2d->Value(2, ii - 1).Y();
+      }
+      else
+      {
+        // At the first station, the supplied profile may already meet the
+        // guide at PrecAngle (zero at the first spine). Recover that actual
+        // section parameter instead of inheriting Extrema's arbitrary side.
+        Handle(Geom_Curve) aSection = new Geom_TrimmedCurve(
+          Handle(Geom_Curve)::DownCast(mySection->Copy()), Uf, Ul);
+        gp_Ax3 aAxes(P, gp_Dir(aFrame.Column(3)), gp_Dir(aFrame.Column(1)));
+        gp_Trsf aPlacement;
+        aPlacement.SetTransformation(aAxes, Rep);
+        aSection->Transform(aPlacement);
+        aSection->Rotate(gp_Ax1(P, gp_Dir(aFrame.Column(3))), CurAngle);
+        GeomAPI_ProjectPointOnCurve aProjection(myGuide->Value(Pc.Parameter()), aSection, Uf, Ul);
+        if (aProjection.NbPoints() > 0)
+        {
+          aSeed(1) = Pc.Parameter();
+          aSeed(2) = CurAngle;
+          aSeed(3) = aProjection.LowerDistanceParameter();
+          hasSeed = true;
+        }
+      }
+      if (hasSeed)
+      {
+        // Period representatives only, identical to InitX. The existing
+        // native Newton bounds and TolRes remain unchanged.
+        if (myGuide->IsPeriodic())
+          aSeed(1) = ElCLib::InPeriod(aSeed(1), myGuide->FirstParameter(), myGuide->LastParameter());
+        aSeed(2) = ElCLib::InPeriod(aSeed(2), 0, 2 * M_PI);
+        if (uperiodic) aSeed(3) = ElCLib::InPeriod(aSeed(3), Uf, Ul);
+        math_Vector aCandidate(1, 3);
+        aCandidate = aSeed;
+        aSeedResidual = OS3DContactEquationResidual(aEquation, aSeed);
+        aCandidateResidual = aSeedResidual;
+        aContinuationState = 1;
+        if (!std::isfinite(aCandidateResidual) || aCandidateResidual > Precision::Confusion())
+        {
+          math_FunctionSetRoot aSolver(aEquation, TolRes, 100);
+          aSolver.Perform(aEquation, aSeed, Inf, Sup);
+          aContinuationState = -1;
+          if (aSolver.IsDone())
+          {
+            aSolver.Root(aCandidate);
+            aCandidateResidual = OS3DContactEquationResidual(aEquation, aCandidate);
+            aContinuationState = 2;
+          }
+        }
+        if (aContinuationState > 0 && std::isfinite(aCandidateResidual)
+            && aCandidateResidual <= Precision::Confusion())
+        {
+          aCandidateAngle = aCandidate(2);
+          aCandidateV = aCandidate(3);
+          InGoodPeriod(CurAngle, 2 * M_PI, aCandidateAngle);
+          if (Abs(aCandidateAngle - CurAngle) < Abs(theU - CurAngle))
+          {
+            Pc.SetValues(aCandidate(1), myGuide->Value(aCandidate(1)));
+            theU = aCandidateAngle;
+            theV = aCandidateV;
+            probeResidual = aCandidateResidual;
+            aContinuationChosen = true;
+          }
+        }
+      }
+    }
+    catch (const Standard_Failure&)
+    {
+      // This additional candidate is optional; preserve the existing native
+      // solution and its unchanged final approximation/geometry rejection.
+      aContinuationState = -2;
+    }
+    if (OS3DContactProbeEnabled())
+    {
+      static std::atomic<unsigned> selectionRows{0};
+      if (OS3DContactProbeSlot(selectionRows, 512))
+        std::fprintf(stderr,
+          "OS3DContactProbe v=2 stage=continuation law=%p index=%d t=%.17g "
+          "extrema_count=%d previous_angle=%.17g extrema_angle=%.17g candidate_angle=%.17g "
+          "candidate_v=%.17g seed_residual_mm=%.17g candidate_residual_mm=%.17g state=%d chosen=%d\n",
+          static_cast<void*>(this), ii, t, DistMini.IsDone() ? DistMini.NbExt() : 0,
+          CurAngle, aExtremaAngle, aCandidateAngle, aCandidateV, aSeedResidual,
+          aCandidateResidual, aContinuationState, aContinuationChosen ? 1 : 0);
+    }
+
     // Controle de w 
     w = Pc.Parameter();
     

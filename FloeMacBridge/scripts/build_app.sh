@@ -36,6 +36,7 @@ app="$output_root/Floe Bridge.app"
 if [[ -e "$app" ]]; then echo 'Refusing to overwrite an existing app artifact.' >&2; exit 2; fi
 mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources/ThirdParty" "$app/Contents/Frameworks"
 cp "$bin_dir/FloeMacBridge" "$app/Contents/MacOS/FloeMacBridge"
+[[ -f "$bridge_root/Resources/FloeBridge.icns" && -f "$bridge_root/Resources/FloeBrand.png" ]] || { echo 'Floe brand resources are missing.' >&2; exit 2; }
 cp "$bridge_root/Info.plist" "$app/Contents/Info.plist"
 ditto "$bridge_root/Resources" "$app/Contents/Resources"
 # ditto preserves Sparkle's versioned symlinks, permissions and nested helpers.

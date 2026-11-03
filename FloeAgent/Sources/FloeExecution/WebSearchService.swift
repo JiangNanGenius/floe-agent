@@ -97,6 +97,12 @@ public actor WebSearchService {
             let count = query.mode == .deep ? min(3, available.count) : 1
             selected = Array(available.prefix(count))
         }
+        let moonshotChannels = Set(selected.filter { $0.0.kind == .moonshot }.compactMap {
+            try? MoonshotSearchOptions(options: $0.0.options).channel
+        })
+        guard moonshotChannels.count <= 1 else {
+            throw WebRetrievalError.invalidResponse("Select one Moonshot account by name or UUID; billing channels are never combined or used as fallback.")
+        }
         FloeLogger(category: .tools).info(
             "webSearchStarted trace=\(traceID) mode=\(query.mode.rawValue) configured=\(available.count) selected=\(selected.map { $0.0.kind.rawValue }.joined(separator: ",")) maxResults=\(resultLimit) recencyDays=\(query.recencyDays ?? 0) domainFilters=\(query.domains.count) excludedDomains=\(query.excludedDomains.count)"
         )
@@ -129,7 +135,13 @@ public actor WebSearchService {
             // provider-generated answer without URL citations is real output,
             // not an empty result, so it stops the failover and travels to
             // the tool unchanged.
-            let failoverCandidates = query.requestedProvider == nil ? available : selected
+            let candidates = query.requestedProvider == nil ? available : selected
+            let firstMoonshotChannel = candidates.first(where: { $0.0.kind == .moonshot })
+                .flatMap { try? MoonshotSearchOptions(options: $0.0.options).channel }
+            let failoverCandidates = candidates.filter { item in
+                item.0.kind != .moonshot
+                    || (try? MoonshotSearchOptions(options: item.0.options).channel) == firstMoonshotChannel
+            }
             for item in failoverCandidates {
                 let outcome = await run(item.0, credential: item.1, query: query, traceID: traceID, limit: resultLimit)
                 var succeeded = false
@@ -207,6 +219,9 @@ public actor WebSearchService {
     /// no fake-IP tunnel relaxation. Other kinds keep their single entry.
     static func canonicalEndpoint(for configuration: WebSearchProviderConfiguration) -> URL? {
         guard configuration.endpoint == nil else { return nil }
+        if configuration.kind == .moonshot {
+            return try? MoonshotSearchOptions(options: configuration.options).endpoint
+        }
         guard configuration.kind == .volcengine else {
             return canonicalEndpoints[configuration.kind]
         }
@@ -305,11 +320,18 @@ public actor WebSearchService {
                 }
                 return .failure("\(configuration.kind.rawValue): HTTP \(status)")
             }
-            let output = try Self.parseOutput(
+            var output = try Self.parseOutput(
                 data,
                 provider: configuration.kind,
                 limit: limit
             )
+            if configuration.kind == .moonshot {
+                let channel = try MoonshotSearchOptions(options: configuration.options).channel.rawValue
+                for index in output.results.indices {
+                    output.results[index].providerInstanceID = configuration.id
+                    output.results[index].billingChannel = channel
+                }
+            }
             FloeLogger(category: .tools).info(
                 "webSearchProviderFinished trace=\(traceID) provider=\(configuration.kind.rawValue) status=\(http.statusCode) responseBytes=\(data.count) results=\(output.results.count) answerChars=\(output.generatedAnswer?.text.count ?? 0) durationMs=\(Int(Date().timeIntervalSince(startedAt) * 1_000))"
             )
@@ -319,6 +341,12 @@ public actor WebSearchService {
             FloeLogger(category: .tools).warning(
                 "webSearchProviderError trace=\(traceID) provider=\(configuration.kind.rawValue) domain=\(nsError.domain) code=\(nsError.code) durationMs=\(Int(Date().timeIntervalSince(startedAt) * 1_000))"
             )
+            if configuration.kind == .moonshot {
+                let secret = credential["apiKey"] ?? ""
+                let message = secret.isEmpty ? error.localizedDescription
+                    : error.localizedDescription.replacingOccurrences(of: secret, with: "<redacted>")
+                return .failure("moonshot: " + String(message.prefix(1_024)))
+            }
             return .failure("\(configuration.kind.rawValue): \(error.localizedDescription)")
         }
     }
@@ -426,6 +454,26 @@ public actor WebSearchService {
                 now: now
             )
 
+        case .moonshot:
+            guard !apiKey.isEmpty else { throw WebRetrievalError.missingCredential("apiKey") }
+            let options = try MoonshotSearchOptions(options: configuration.options)
+            try options.validate(configuration)
+            guard credential["moonshotChannel"] == options.channel.rawValue else {
+                throw WebRetrievalError.missingCredential("API key for the selected Moonshot channel")
+            }
+            guard query.domains.isEmpty, query.excludedDomains.isEmpty, query.recencyDays == nil else {
+                throw WebRetrievalError.invalidResponse("This Moonshot search interface accepts the exact query without site or time filters.")
+            }
+            var body: [String: Any] = ["text_query": query.text]
+            if options.channel == .payg {
+                body["limit"] = min(count, 20)
+                body["timeout_seconds"] = 60
+                body["include_content"] = options.includeContent
+            }
+            request = try post(options.endpoint, json: body)
+            request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+            MoonshotSearchOptions.addClientIdentity(to: &request)
+
         case .deepseek:
             guard !apiKey.isEmpty else { throw WebRetrievalError.missingCredential("apiKey") }
             let options = try DeepSeekSearchOptions(options: configuration.options)
@@ -446,7 +494,7 @@ public actor WebSearchService {
             request = try post(endpoint, json: ["query": query.text, "count": count])
             request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
         }
-        request.timeoutInterval = 30
+        request.timeoutInterval = configuration.kind == .moonshot ? 120 : 30
         request.setValue("application/json", forHTTPHeaderField: "Accept")
         return request
     }
@@ -909,13 +957,14 @@ public actor WebSearchService {
             throw WebRetrievalError.invalidResponse("response is not valid JSON")
         }
         guard let object = root as? [String: Any] else {
-            if provider == .volcengine || provider == .deepseek {
+            if provider == .volcengine || provider == .deepseek || provider == .moonshot {
                 throw WebRetrievalError.invalidResponse("response root is not a JSON object")
             }
             // Preserve the existing tolerant behavior for providers whose
             // parser historically treated a non-object root as no results.
             return WebSearchProviderOutput(results: [], generatedAnswer: nil)
         }
+        if provider == .moonshot { return try parseMoonshotResponse(object, limit: limit) }
         if provider == .deepseek {
             return try parseDeepSeekResponse(object, limit: limit)
         }
@@ -941,6 +990,34 @@ public actor WebSearchService {
             results: parseGenericResults(object, provider: provider, limit: limit),
             generatedAnswer: nil
         )
+    }
+
+    /// Both Moonshot REST channels return search_results. Provider text is
+    /// retained separately and never promoted to a locally fetched page.
+    private static func parseMoonshotResponse(_ object: [String: Any], limit: Int) throws -> WebSearchProviderOutput {
+        if let error = object["error"], !(error is NSNull) {
+            throw WebRetrievalError.invalidResponse(providerErrorMessage(error))
+        }
+        guard let rows = object["search_results"] as? [[String: Any]] else {
+            throw WebRetrievalError.invalidResponse("Moonshot response is missing search_results.")
+        }
+        var results: [WebSearchResult] = []
+        for row in rows {
+            guard results.count < max(1, limit) else { break }
+            guard let title = row["title"] as? String, !title.isEmpty,
+                  let rawURL = row["url"] as? String, let url = URL(string: rawURL),
+                  ["https", "http"].contains(url.scheme?.lowercased() ?? ""),
+                  url.user == nil, url.password == nil else { continue }
+            let content = (row["content"] as? String) ?? (row["text"] as? String)
+            let seed = "moonshot|" + url.absoluteString
+            results.append(WebSearchResult(title: title, url: url,
+                snippet: String(((row["snippet"] as? String) ?? "").prefix(4_000)),
+                sourceName: row["site_name"] as? String, publishedAt: row["date"] as? String,
+                provider: .moonshot, citationID: String(sha256Hex(Data(seed.utf8)).prefix(12)),
+                faviconURL: row["icon"] as? String, contentState: .searchMetadataOnly,
+                content: content, authorityLabel: row["authority"] as? String))
+        }
+        return WebSearchProviderOutput(results: results, generatedAnswer: nil)
     }
 
     /// Official DeepSeek Search envelope `{ "results": [ … ] }`. The array is
@@ -1412,6 +1489,23 @@ public protocol WebSearchProfessionalExecuting: Sendable {
         query: String,
         context: ToolContext
     ) async throws -> ToolExecutionOutput
+
+    func execute(
+        instance: WebSearchProfessionalInstance,
+        query: String,
+        dataset: ProfessionalDatasetRequest?,
+        context: ToolContext
+    ) async throws -> ToolExecutionOutput
+}
+
+public extension WebSearchProfessionalExecuting {
+    func execute(instance: WebSearchProfessionalInstance, query: String,
+                 dataset: ProfessionalDatasetRequest?, context: ToolContext) async throws -> ToolExecutionOutput {
+        guard dataset == nil else {
+            throw FloeError.validationFailed("This professional account does not support dataset actions.")
+        }
+        return try await execute(instance: instance, query: query, context: context)
+    }
 }
 
 /// Default executor over the SAME injected registry as MCP registration. The
@@ -1436,15 +1530,17 @@ public struct MCPRegistryProfessionalSearchExecutor: WebSearchProfessionalExecut
         query: String,
         context: ToolContext
     ) async throws -> ToolExecutionOutput {
+        return try await execute(instance: instance, query: query, dataset: nil, context: context)
+    }
+
+    public func execute(instance: WebSearchProfessionalInstance, query: String,
+                        dataset: ProfessionalDatasetRequest?, context: ToolContext) async throws -> ToolExecutionOutput {
         guard let authority = context.professionalSearchAuthority else {
             throw WebSearchProfessionalError.authorityUnavailable
         }
         return try await ProfessionalSearchAuthority.execute(
-            registry: registry,
-            authority: authority,
-            account: instance,
-            query: query,
-            context: context
+            registry: registry, authority: authority, account: instance,
+            query: query, dataset: dataset, context: context
         )
     }
 }

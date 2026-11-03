@@ -124,14 +124,15 @@ struct SearchProviderCatalogTests {
     func bundledCatalogMatchesCompiledAdapters() throws {
         let index = try Self.bundledIndex()
         #expect(index.document.id == "floe.search.providers")
-        #expect(index.document.version == "1.1.0")
-        #expect(index.entries.count == 10)
+        #expect(index.document.version == "1.2.0")
+        #expect(index.entries.count == 11)
         let mapping = Dictionary(uniqueKeysWithValues: index.entries.map { ($0.presetID, $0.adapterKind) })
         #expect(mapping == [
             "bocha": "bochaWeb",
             "tencent-wsa": "tencentWSA",
             "volcengine": "volcengine",
             "deepseek": "deepseek",
+            "moonshot": "moonshot",
             "brave": "brave",
             "tavily": "tavily",
             "exa": "exa",
@@ -243,7 +244,7 @@ struct SearchProviderCatalogTests {
         let filtered = try SearchProviderCatalogDocument.validated(
             from: JSONSerialization.data(withJSONObject: object)
         )
-        #expect(filtered.entries.count == 10)
+        #expect(filtered.entries.count == 11)
         #expect(!filtered.entries.contains { $0.presetID == "quantum-search" })
 
         object["entries"] = [future]
@@ -265,7 +266,7 @@ struct SearchProviderCatalogTests {
         )
         #expect(envelope["id"] as? String == "floe.search.providers")
         #expect(envelope["kind"] as? String == "providers")
-        #expect(envelope["version"] as? String == "1.1.0")
+        #expect(envelope["version"] as? String == "1.2.0")
         // A search catalog must never activate on an older app that does not
         // understand the payload/flow. 1.7.65 is the first build that compiles
         // the DeepSeek adapter kind, so 1.7.64 would fail closed and drop it.

@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "id": "floe.search.providers",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "entries": [
     {
       "presetID": "bocha",
@@ -145,6 +145,58 @@
       "authNote": {
         "en": "Bearer API key",
         "zh-Hans": "Bearer 密钥"
+      }
+    },
+    {
+      "presetID": "moonshot",
+      "adapterKind": "moonshot",
+      "name": {
+        "en": "Moonshot AI",
+        "zh-Hans": "月之暗面"
+      },
+      "blurb": {
+        "en": "Web search with separate Pay as you go and Kimi Code accounts.",
+        "zh-Hans": "选择按量付费或 Kimi Code，分别配置与计费。"
+      },
+      "defaultEndpoint": null,
+      "endpointRequired": false,
+      "credentialFields": [
+        {
+          "key": "apiKey",
+          "required": true,
+          "label": {
+            "en": "Channel API Key",
+            "zh-Hans": "当前渠道 API 密钥"
+          }
+        }
+      ],
+      "optionFields": [
+        {
+          "key": "interface",
+          "kind": "option",
+          "defaultValue": "payg",
+          "allowedValues": [
+            "payg",
+            "kimiCode"
+          ],
+          "label": {
+            "en": "Account type",
+            "zh-Hans": "账号类型"
+          }
+        },
+        {
+          "key": "includeContent",
+          "kind": "bool",
+          "defaultValue": "false",
+          "label": {
+            "en": "Include page content",
+            "zh-Hans": "附带网页正文"
+          }
+        }
+      ],
+      "authNote": {
+        "en": "Use a separate key for each account type. Professional datasets are available through Kimi Code only.",
+        "zh-Hans": "两个渠道使用独立密钥。专业数据库仅限 Kimi Code。"
       }
     },
     {

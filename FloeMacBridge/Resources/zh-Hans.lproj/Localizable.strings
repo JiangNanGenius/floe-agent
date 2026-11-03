@@ -46,3 +46,7 @@
 "The update could not finish. You can try again later." = "未能完成更新，请稍后重试。";
 "Floe Bridge is finishing work. Try again when it is idle." = "Floe Bridge 正在完成任务，请在空闲后重试。";
 "Floe Bridge is installing an update. Reconnect shortly." = "Floe Bridge 正在安装更新，请稍后重新连接。";
+"General" = "通用";
+"Remove Pairing" = "取消配对";
+"Open" = "打开";
+"Allow…" = "允许…";

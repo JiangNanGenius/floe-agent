@@ -10,6 +10,7 @@ public enum WebSearchProviderKind: String, Codable, CaseIterable, Identifiable, 
     case tencentWSA
     case volcengine
     case deepseek
+    case moonshot
     case brave
     case tavily
     case exa
@@ -60,7 +61,7 @@ public enum WebSearchProfessionalError: Error, LocalizedError, Sendable {
     public var errorDescription: String? {
         switch self {
         case .notConfigured:
-            return "No professional dataset account was authorized when this run started. Configure Volcengine DataPro and start a new run, or search without source=professional."
+            return "No professional dataset account was authorized when this run started. Configure DataPro or an independent Kimi Code API key and start a new run, or search without source=professional."
         case .authorityUnavailable:
             return "Professional search requires the run's frozen account authority; start a new ordinary agent run."
         case .providerNotFound(let value):
@@ -530,6 +531,9 @@ public struct WebSearchResult: Codable, Hashable, Sendable {
     public var content: String?
     /// Provider-reported authority score (DeepSeek: 0...4, `-1` unknown).
     public var authority: Int?
+    public var authorityLabel: String?
+    public var providerInstanceID: UUID?
+    public var billingChannel: String?
 
     public var effectiveContentState: WebSearchContentState {
         contentState ?? .searchMetadataOnly
@@ -555,7 +559,10 @@ public struct WebSearchResult: Codable, Hashable, Sendable {
         contentState: WebSearchContentState? = nil,
         summary: String? = nil,
         content: String? = nil,
-        authority: Int? = nil
+        authority: Int? = nil,
+        authorityLabel: String? = nil,
+        providerInstanceID: UUID? = nil,
+        billingChannel: String? = nil
     ) {
         self.title = title
         self.url = url
@@ -577,6 +584,9 @@ public struct WebSearchResult: Codable, Hashable, Sendable {
         self.summary = summary
         self.content = content
         self.authority = authority
+        self.authorityLabel = authorityLabel
+        self.providerInstanceID = providerInstanceID
+        self.billingChannel = billingChannel
     }
 }
 

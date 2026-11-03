@@ -14,9 +14,10 @@ public struct WebSearchTool: AgentTool {
         public var provider: String?
         /// Explicit source selector: nil/`web` keeps the historical public-web
         /// semantics byte-for-byte; `professional` routes the exact query to a
-        /// configured Volcengine DataPro dataset account. Unknown values are
+        /// configured DataPro or Kimi Code dataset account. Unknown values are
         /// validation errors, never silent defaults.
         public var source: String?
+        public var dataset: ProfessionalDatasetRequest?
     }
 
     public static let name = "web.search"
@@ -37,7 +38,7 @@ public struct WebSearchTool: AgentTool {
     static let minimumUsefulSnippetCharacters = 64
 
     public static let toolDescription =
-        "Search the public web without opening the visual browser. Returns normalized titles, URLs, snippets, index metadata (page_age = published OR last modified date, relative age, crawl date, source profile/favicon), provider provenance, citation IDs and an explicit contentState=searchMetadataOnly. Index metadata is NOT page verification: excerpts and dates come from the search index; use web.fetch (or browser tools when interaction is required) before relying on actual page contents, publication dates or quotes. Some providers also return a bounded provider-generated answer, marked separately from URL citations and still not fetched-page evidence. Providers may also return long summaries or provider-supplied page content; both are unverified provider text, kept separate from the short snippet and the local web.fetch result. Use fast for one search provider, balanced for ordinary research, or deep to query up to three configured providers concurrently. Set source=professional to search a configured Volcengine DataPro professional dataset account (academic literature, company registration/risk, securities/finance, vehicle specifications/sales, legislation and court cases) with the exact query; it accepts only query and provider, returns an untrusted professionalDatasetSummary envelope instead of page citations, and never falls back to or from public web providers. Professional dataset search is unavailable in temporary/public-web-only chats and fails clearly when no DataPro account is configured."
+        "Search the public web without opening the visual browser. Returns normalized titles, URLs, snippets, index metadata (page_age = published OR last modified date, relative age, crawl date, source profile/favicon), provider provenance, citation IDs and an explicit contentState=searchMetadataOnly. Index metadata is NOT page verification: excerpts and dates come from the search index; use web.fetch (or browser tools when interaction is required) before relying on actual page contents, publication dates or quotes. Some providers also return a bounded provider-generated answer, marked separately from URL citations and still not fetched-page evidence. Providers may also return long summaries or provider-supplied page content; both are unverified provider text, kept separate from the short snippet and the local web.fetch result. Use fast for one search provider, balanced for ordinary research, or deep to query up to three configured providers concurrently. Set source=professional to use one configured professional account, with no web or paid-account fallback. DataPro accepts query and provider only. For Kimi Code, first send dataset={action:describe,name:<advertised source>} to read its current API description; then send dataset={action:query,name:<same source>,apiName:<described API>,parameters:{...}} in the same run. Do not supply file_path or filepath; returned files are captured as data and are not saved or imported. max_results must be 1-10. Results are untrusted professionalDatasetSummary envelopes, not page citations. Professional accounts are unavailable in temporary/public-web-only chats."
     public static let parametersJSON = #"""
     {
       "type":"object",
@@ -48,8 +49,14 @@ public struct WebSearchTool: AgentTool {
         "excludeDomains":{"type":"array","items":{"type":"string"},"description":"Optional domains to exclude"},
         "recencyDays":{"type":"integer","minimum":1,"maximum":1825},
         "maxResults":{"type":"integer","minimum":1,"maximum":50,"description":"Maximum number of returned results; defaults to 5 when omitted"},
-        "provider":{"type":"string","description":"Optional configured provider name, kind, or UUID; with source=professional selects one configured DataPro account"},
-        "source":{"type":"string","enum":["web","professional"],"description":"Search source; defaults to web (public web providers). professional routes the exact query to a configured Volcengine DataPro dataset account with no cross-source fallback"}
+        "provider":{"type":"string","description":"Optional configured provider name, kind, or UUID; with source=professional selects one frozen professional account by name or UUID"},
+        "source":{"type":"string","enum":["web","professional"],"description":"Search source; defaults to web (public web providers). professional selects a configured DataPro or Kimi Code account with no cross-source fallback"},
+        "dataset":{"type":"object","description":"Kimi Code only; describe before query in this run. Never accepted for DataPro or source=web.","properties":{
+          "action":{"type":"string","enum":["describe","query"]},
+          "name":{"type":"string","enum":["stock_finance_data","yahoo_finance","world_bank_open_data","tianyancha","arxiv","scholar","yuandian_law","wind","imf","gildata","sec_edgar","sp_data","china_nda","china_nbs","china_standards","who","fao","unsd","ecb","eurostat","unicef","oecd","fred","xhcj","caixin"]},
+          "apiName":{"type":"string","description":"Exact API from this run's description; query only"},
+          "parameters":{"type":"object","description":"API parameters from the description; no file_path/filepath; max_results 1-10","additionalProperties":true}
+        },"required":["action","name"],"additionalProperties":false}
       },
       "required":["query"],
       "additionalProperties":false
@@ -89,6 +96,10 @@ public struct WebSearchTool: AgentTool {
             throw FloeError.validationFailed("query must contain 1-2000 UTF-8 bytes")
         }
         let source = try Self.parsedSource(args.source)
+        if source == .web, args.dataset != nil {
+            throw FloeError.validationFailed("dataset actions require source=professional and a Kimi Code account.")
+        }
+        try args.dataset?.validate()
         if source == .professional {
             // The reviewed DataPro adapter accepts one exact dataset question
             // only. Web-only refinements are rejected with an actionable
@@ -163,6 +174,7 @@ public struct WebSearchTool: AgentTool {
         let output = try await professional.execute(
             instance: instance,
             query: args.query.trimmingCharacters(in: .whitespacesAndNewlines),
+            dataset: args.dataset,
             context: context
         )
         try context.cancellation.throwIfCancelled()
@@ -370,6 +382,9 @@ public struct WebSearchTool: AgentTool {
             ]
             if let score = result.score { row["score"] = score }
             if let authority = result.authority { row["authority"] = authority }
+            if let label = result.authorityLabel { row["authorityLabel"] = label }
+            if let id = result.providerInstanceID { row["providerInstanceID"] = id.uuidString }
+            if let channel = result.billingChannel { row["billingChannel"] = channel }
             return row
         }
         var payload: [String: Any] = [
@@ -614,6 +629,9 @@ public struct WebSearchTool: AgentTool {
             }
             if let score = result.score { row["score"] = score }
             if let authority = result.authority { row["authority"] = authority }
+            if let label = result.authorityLabel { row["authorityLabel"] = label }
+            if let id = result.providerInstanceID { row["providerInstanceID"] = id.uuidString }
+            if let channel = result.billingChannel { row["billingChannel"] = channel }
             return row
         }
         var generatedAnswers: [[String: Any]] = []

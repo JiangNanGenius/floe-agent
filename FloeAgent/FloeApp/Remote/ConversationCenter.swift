@@ -11,6 +11,7 @@
 
 #if canImport(SwiftUI) && canImport(UIKit)
 import Foundation
+import UIKit
 import CryptoKit
 import FloeCore
 import FloeEnvironments
@@ -1385,6 +1386,8 @@ final class ConversationCenter: ObservableObject {
             let allProviders = try await loadedProviders
             let allModels = try await loadedModels
             configuredProviders = allProviders
+            reconcileKimiDatasetProviders(allProviders)
+            environment.webSearchSettingsCenter.refreshKimiDatasetAccounts()
             configuredModelsByProvider = Dictionary(grouping: allModels, by: \.providerID)
             providers = allProviders.filter(\.isEnabled)
             let enabledProviderIDs = Set(providers.map(\.id))
@@ -1401,6 +1404,54 @@ final class ConversationCenter: ObservableObject {
         // runs after preferences are published but never touches a running
         // request: every live run holds its own provider/model pair.
         await reconcileDefaultAgentModelIfNeeded()
+    }
+
+    private var kimiDatasetProviders: [UUID: ProviderProfile] = [:]
+
+    private func reconcileKimiDatasetProviders(_ profiles: [ProviderProfile]) {
+        let eligible = profiles.filter {
+            $0.isEnabled && $0.kind == .custom && $0.secretRef != nil
+                && KimiCodeEndpointIdentity.apiRoot(for: $0) != nil
+        }
+        let byID = Dictionary(uniqueKeysWithValues: eligible.map { ($0.id, $0) })
+        for (id, old) in kimiDatasetProviders where byID[id] != old {
+            ProfessionalSearchAuthority.unregisterKimiCode(providerID: id)
+            kimiDatasetProviders.removeValue(forKey: id)
+        }
+        for profile in eligible where kimiDatasetProviders[profile.id] == nil {
+            let identity = KimiDatasourceClient.Identity(version: MoonshotSearchOptions.clientVersion,
+                deviceName: UIDevice.current.model, deviceModel: UIDevice.current.model,
+                osVersion: UIDevice.current.systemName + " " + UIDevice.current.systemVersion,
+                deviceID: MoonshotSearchOptions.deviceID)
+            guard let client = try? KimiDatasourceClient(providerID: profile.id, baseURL: profile.baseURL,
+                identity: identity, keyResolver: { [weak self] in
+                    guard let self else { throw FloeError.cancelled }
+                    return try await self.kimiDatasetKey(for: profile)
+                }) else { continue }
+            ProfessionalSearchAuthority.registerKimiCode(providerID: profile.id,
+                displayName: (profile.displayName ?? "Kimi Code") + " · Kimi Datasource") { [weak self] operation, context in
+                    let output = try await client.execute(operation, context: context)
+                    guard let self, try await self.kimiDatasetProviderIsCurrent(profile) else {
+                        throw FloeError.validationFailed("Kimi Code account changed during this request. Start a new run.")
+                    }
+                    return output
+                }
+            kimiDatasetProviders[profile.id] = profile
+        }
+    }
+
+    private func kimiDatasetProviderIsCurrent(_ profile: ProviderProfile) async throws -> Bool {
+        let current = try await environment.configurationStore.provider(id: profile.id)
+        return current == profile && profile.isEnabled && profile.kind == .custom
+            && KimiCodeEndpointIdentity.apiRoot(for: profile) != nil
+    }
+
+    private func kimiDatasetKey(for profile: ProviderProfile) async throws -> String {
+        guard try await kimiDatasetProviderIsCurrent(profile),
+              let key = resolveCredentials(for: profile).apiKey, !key.isEmpty else {
+            throw FloeError.validationFailed("This Kimi Code account's API key is unavailable or changed.")
+        }
+        return key
     }
 
     /// Re-entry latch for the reload -> saveModelPreferences -> reload cycle.

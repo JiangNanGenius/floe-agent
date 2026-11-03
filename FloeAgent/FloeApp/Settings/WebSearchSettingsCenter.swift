@@ -109,14 +109,18 @@ final class WebSearchSettingsCenter: ObservableObject {
     private let cloud: WebSearchCloudStoring
     private let credentialStore: WebSearchCredentialStore
     private let dataProManager: VolcengineDataProManaging?
+    private let professionalRegistry: ToolRunnerRegistry
+    private var kimiDatasetConfigurations: [UUID: WebSearchProviderConfiguration] = [:]
 
     init(
         defaults: UserDefaults = .standard,
         cloud: WebSearchCloudStoring? = nil,
         credentialStore: WebSearchCredentialStore? = nil,
-        dataProManager: VolcengineDataProManaging? = nil
+        dataProManager: VolcengineDataProManaging? = nil,
+        professionalRegistry: ToolRunnerRegistry = .shared
     ) {
         self.defaults = defaults
+        self.professionalRegistry = professionalRegistry
         self.cloud = cloud ?? UbiquitousWebSearchCloudStore(store: .default)
         self.credentialStore = credentialStore ?? .keychain(service: Self.keychainService)
         #if canImport(UIKit)
@@ -156,6 +160,7 @@ final class WebSearchSettingsCenter: ObservableObject {
         if let data = cloudV2 ?? localV2,
            let decoded = try? JSONDecoder().decode([WebSearchProviderInstance].self, from: data) {
             instances = Self.sorted(decoded)
+            refreshKimiDatasetAccounts()
             if cloudV2 != nil, let encoded = try? JSONEncoder().encode(instances),
                encoded != localV2 {
                 // Runtime resolution reads local defaults; mirror cloud
@@ -226,6 +231,7 @@ final class WebSearchSettingsCenter: ObservableObject {
     }
 
     private func persist() {
+        refreshKimiDatasetAccounts()
         guard let data = try? JSONEncoder().encode(instances) else { return }
         defaults.set(data, forKey: Self.instancesKey)
         cloud.set(data, forKey: Self.instancesKey)
@@ -262,10 +268,22 @@ final class WebSearchSettingsCenter: ObservableObject {
         provenance: SearchProviderCatalogProvenance? = nil,
         nameOwnership: SearchProviderNameOwnership? = nil
     ) throws {
+        var configuration = configuration
+        var credential = credential
+        if configuration.kind == .moonshot {
+            let selected = try MoonshotSearchOptions(options: configuration.options)
+            configuration.credentialAccount = selected.credentialAccount(providerID: configuration.id)
+            try selected.validate(configuration)
+            if credential != nil { credential?.values["moonshotChannel"] = selected.channel.rawValue }
+        }
         try validateCredentialRequirement(for: configuration, supplied: credential)
         if let credential {
             let data = try JSONEncoder().encode(credential)
             try credentialStore.write(configuration.credentialAccount, data)
+            if configuration.kind == .moonshot {
+                ProfessionalSearchAuthority.unregisterKimiCode(providerID: configuration.id, registry: professionalRegistry)
+                kimiDatasetConfigurations.removeValue(forKey: configuration.id)
+            }
         }
         if let index = instances.firstIndex(where: { $0.configuration.id == configuration.id }) {
             var instance = instances[index]
@@ -327,12 +345,23 @@ final class WebSearchSettingsCenter: ObservableObject {
         _ instance: WebSearchProviderInstance,
         credential: WebSearchCredential?
     ) throws {
+        var instance = instance
+        var credential = credential
+        if instance.configuration.kind == .moonshot {
+            let selected = try MoonshotSearchOptions(options: instance.configuration.options)
+            instance.configuration.credentialAccount = selected.credentialAccount(providerID: instance.configuration.id)
+            try selected.validate(instance.configuration)
+            if credential != nil { credential?.values["moonshotChannel"] = selected.channel.rawValue }
+        }
         try validateCredentialRequirement(for: instance.configuration, supplied: credential)
         if let credential {
             let data = try JSONEncoder().encode(credential)
             try credentialStore.write(instance.configuration.credentialAccount, data)
+            if instance.configuration.kind == .moonshot {
+                ProfessionalSearchAuthority.unregisterKimiCode(providerID: instance.configuration.id, registry: professionalRegistry)
+                kimiDatasetConfigurations.removeValue(forKey: instance.configuration.id)
+            }
         }
-        var instance = instance
         // An unready configuration (a required credential is missing and none
         // is stored) or an untested new instance is saved DISABLED: saving is
         // always allowed, enablement only ever follows an explicit user
@@ -367,6 +396,10 @@ final class WebSearchSettingsCenter: ObservableObject {
         let hasSuppliedCredential = supplied?.values.values.contains {
             !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         } ?? false
+        if configuration.kind == .moonshot, configuration.enabled,
+           !hasSuppliedCredential, !hasCredential(account: configuration.credentialAccount) {
+            throw WebSearchSettingsError.missingRequiredCredential
+        }
         if configuration.kind == .volcengine,
            configuration.enabled,
            !hasSuppliedCredential,
@@ -475,6 +508,60 @@ final class WebSearchSettingsCenter: ObservableObject {
             try? credentialStore.delete(instance.configuration.credentialAccount)
         }
         persist()
+    }
+
+    /// Owns the same independent Code key as this saved search instance.
+    /// PAYG accounts never enter the professional registry.
+    func refreshKimiDatasetAccounts() {
+        let eligible = instances.map(\.configuration).filter { configuration in
+            guard configuration.kind == .moonshot, configuration.enabled,
+                  let selected = try? MoonshotSearchOptions(options: configuration.options),
+                  selected.channel == .kimiCode,
+                  (try? selected.validate(configuration)) != nil else { return false }
+            return hasCredential(account: configuration.credentialAccount)
+        }
+        let byID = Dictionary(uniqueKeysWithValues: eligible.map { ($0.id, $0) })
+        for (id, old) in kimiDatasetConfigurations where byID[id] != old {
+            ProfessionalSearchAuthority.unregisterKimiCode(providerID: id, registry: professionalRegistry)
+            kimiDatasetConfigurations.removeValue(forKey: id)
+        }
+        for configuration in eligible where kimiDatasetConfigurations[configuration.id] == nil {
+            let identity = KimiDatasourceClient.Identity(version: MoonshotSearchOptions.clientVersion,
+                deviceName: ProcessInfo.processInfo.hostName, deviceModel: "Apple device",
+                osVersion: ProcessInfo.processInfo.operatingSystemVersionString,
+                deviceID: MoonshotSearchOptions.deviceID)
+            guard let client = try? KimiDatasourceClient(providerID: configuration.id,
+                baseURL: URL(string: "https://api.kimi.com/coding/v1")!, identity: identity,
+                keyResolver: { [weak self] in
+                    guard let self else { throw FloeError.cancelled }
+                    return try await self.kimiDatasetKey(for: configuration)
+                }) else { continue }
+            ProfessionalSearchAuthority.registerKimiCode(providerID: configuration.id,
+                displayName: configuration.displayName + " · Kimi Datasource", registry: professionalRegistry) { [weak self] operation, context in
+                    let output = try await client.execute(operation, context: context)
+                    guard let self, await self.kimiDatasetIsCurrent(configuration) else {
+                        throw FloeError.validationFailed("Kimi Code search account changed during this request. Start a new run.")
+                    }
+                    return output
+                }
+            kimiDatasetConfigurations[configuration.id] = configuration
+        }
+    }
+
+    private func kimiDatasetIsCurrent(_ configuration: WebSearchProviderConfiguration) -> Bool {
+        instances.contains { $0.configuration == configuration && $0.configuration.enabled }
+    }
+
+    private func kimiDatasetKey(for configuration: WebSearchProviderConfiguration) throws -> String {
+        guard kimiDatasetIsCurrent(configuration),
+              let selected = try? MoonshotSearchOptions(options: configuration.options),
+              selected.channel == .kimiCode,
+              let credential = credential(for: configuration),
+              credential["moonshotChannel"] == selected.channel.rawValue,
+              let key = credential["apiKey"], !key.isEmpty else {
+            throw WebSearchSettingsError.missingRequiredCredential
+        }
+        return key
     }
 
     // MARK: - Credentials
@@ -745,7 +832,7 @@ final class WebSearchSettingsCenter: ObservableObject {
     ) -> Bool {
         if name == WebSearchTool.name {
             return publicWebToolIsAvailable(name, defaults: defaults, cloudData: cloudData)
-                || !VolcengineProfessionalSearch.registeredInstances(
+                || !ProfessionalSearchAuthority.registeredAccounts(
                     registry: professionalRegistry
                 ).isEmpty
         }
@@ -872,13 +959,17 @@ final class WebSearchSettingsCenter: ObservableObject {
         // A run passes its actual frozen list (including an empty restricted
         // list); never re-read a replacement/new account into that run's note.
         let professional = frozenProfessionalAccounts
-            ?? VolcengineProfessionalSearch.registeredInstances(registry: professionalRegistry)
+            ?? ProfessionalSearchAuthority.registeredAccounts(registry: professionalRegistry)
         guard !ready.isEmpty || !professional.isEmpty else { return nil }
         var sentences: [String] = []
         if !ready.isEmpty {
             sentences.append(
                 "Available web search providers (web.search, default source): "
-                    + ready.map { "\($0.displayName) [\($0.kind.rawValue)]" }.joined(separator: ", ")
+                    + ready.map { configuration in
+                        configuration.kind == .moonshot
+                            ? "\(configuration.displayName) [moonshot, \(configuration.options["interface"] ?? "payg"), \(configuration.id.uuidString)]"
+                            : "\(configuration.displayName) [\(configuration.kind.rawValue)]"
+                    }.joined(separator: ", ")
                     + ". The optional web.search provider argument must use one of these names or kinds."
             )
         }
@@ -886,7 +977,9 @@ final class WebSearchSettingsCenter: ObservableObject {
             sentences.append(
                 "Professional dataset accounts (web.search with source=professional): "
                     + professional.map { "\($0.displayName) [\($0.serverID.uuidString)]" }.joined(separator: ", ")
-                    + ". Send one exact dataset question per call; with several accounts, select one with the provider argument. The web and professional sources never fall back to each other."
+                    + ". Select one with provider. DataPro accepts the exact query only. Kimi Code requires dataset={action:describe,name:<source>} then dataset={action:query,name:<same source>,apiName:<API>,parameters:{...}} in this run; omit all output paths. Kimi sources: "
+                    + ProfessionalDatasetRequest.sourceNames.sorted().joined(separator: ", ")
+                    + ". Web, Code, PAYG and professional sources never fall back across billing channels."
             )
         }
         if ready.isEmpty {
@@ -955,7 +1048,8 @@ struct WebSearchSettingsView: View {
             } header: {
                 Text("websearch.providers")
             }
-            if !professionalSearchInstances.isEmpty {
+            let kimiAccounts = ProfessionalSearchAuthority.registeredAccounts().filter { $0.sourceKind == .kimiCode }
+            if !professionalSearchInstances.isEmpty || !kimiAccounts.isEmpty {
                 Section {
                     ForEach(professionalSearchInstances) { instance in
                         NavigationLink {
@@ -967,6 +1061,9 @@ struct WebSearchSettingsView: View {
                         } label: {
                             Label(instance.configuration.displayName, systemImage: "books.vertical")
                         }
+                    }
+                    ForEach(kimiAccounts) { account in
+                        Label(account.displayName, systemImage: "books.vertical")
                     }
                 } header: {
                     Text("websearch.professional.title")
@@ -1066,6 +1163,11 @@ struct WebSearchSettingsView: View {
                         Text(brandName)
                             .font(.caption)
                             .foregroundStyle(.secondary)
+                    }
+                    if instance.configuration.kind == .moonshot {
+                        Text(instance.configuration.options["interface"] == "kimiCode"
+                            ? "Kimi Code" : (WebSearchSettingsCenter.localePrimary == "zh-Hans" ? "按量付费" : "Pay as you go"))
+                            .font(.caption).foregroundStyle(.secondary)
                     }
                     if hasUpdate {
                         Text("websearch.update_available")
@@ -1401,7 +1503,36 @@ struct WebSearchProviderEditor: View {
     }
 
     private var optionFields: [SearchProviderCatalogEntry.OptionField] {
-        entry?.optionFields ?? []
+        let fields = entry?.optionFields ?? []
+        guard configuration.kind == .moonshot else { return fields }
+        return fields.filter {
+            $0.key != "interface" && (moonshotChannel == "payg" || $0.key != "includeContent")
+        }
+    }
+
+    private var moonshotChannel: String { optionValues["interface"] ?? configuration.options["interface"] ?? "payg" }
+    private func moonshotText(_ en: String, _ zh: String) -> String {
+        WebSearchSettingsCenter.localePrimary == "zh-Hans" ? zh : en
+    }
+
+    private var moonshotChannelSection: some View {
+        Section {
+            Picker(moonshotText("Account type", "账号类型"), selection: Binding(
+                get: { moonshotChannel },
+                set: { next in
+                    optionValues["interface"] = next
+                    credentialValues = [:]
+                    revealsSecrets = false
+                    endpointText = ""
+                })) {
+                Text(moonshotText("Pay as you go", "按量付费")).tag("payg")
+                Text("Kimi Code").tag("kimiCode")
+            }
+            Text(moonshotChannel == "kimiCode"
+                ? moonshotText("Uses this Kimi Code key for web search and professional datasets.", "使用当前 Kimi Code 密钥进行网页搜索与专业数据库查询。")
+                : moonshotText("Uses a separate Moonshot API key and pay-as-you-go billing.", "使用独立的月之暗面 API 密钥，按量计费。"))
+                .font(.caption).foregroundStyle(.secondary)
+        }
     }
 
     private var endpointRequired: Bool {
@@ -1430,6 +1561,7 @@ struct WebSearchProviderEditor: View {
 
                 Section {
                     TextField("websearch.display_name", text: $displayName)
+                    if configuration.kind != .moonshot {
                     TextField(
                         endpointRequired ? "websearch.endpoint_required" : "websearch.endpoint",
                         text: $endpointText
@@ -1437,6 +1569,7 @@ struct WebSearchProviderEditor: View {
                     .textInputAutocapitalization(.never)
                     .keyboardType(.URL)
                     .autocorrectionDisabled()
+                    }
                     if let authNote = entry?.localizedAuthNote(localePrimary: WebSearchSettingsCenter.localePrimary) {
                         Text(authNote)
                             .font(.caption)
@@ -1444,6 +1577,7 @@ struct WebSearchProviderEditor: View {
                     }
                 }
 
+                if configuration.kind == .moonshot { moonshotChannelSection }
                 if !credentialFields.isEmpty {
                     Section {
                         ForEach(credentialFields) { field in
@@ -1677,7 +1811,8 @@ struct WebSearchProviderEditor: View {
     }
 
     private func loadCredential() {
-        guard let values = center.credential(forAccount: configuration.credentialAccount)?.values else { return }
+        let account = currentDraft()?.credentialAccount ?? configuration.credentialAccount
+        guard let values = center.credential(forAccount: account)?.values else { return }
         var state: [String: String] = [:]
         for field in credentialFields {
             state[field.key] = values[field.key] ?? ""
@@ -1712,15 +1847,26 @@ struct WebSearchProviderEditor: View {
                 options.removeValue(forKey: field.key)
             }
         }
+        if draft.kind == .moonshot {
+            options["interface"] = moonshotChannel
+            guard let selected = try? MoonshotSearchOptions(options: options) else { return nil }
+            draft.endpoint = nil
+            draft.credentialAccount = selected.credentialAccount(providerID: draft.id)
+        }
         draft.options = options
         return draft
     }
 
     private func currentDraftCredential() -> WebSearchCredential? {
-        var merged = center.credential(forAccount: configuration.credentialAccount)?.values ?? [:]
+        let account = currentDraft()?.credentialAccount ?? configuration.credentialAccount
+        var merged = center.credential(forAccount: account)?.values ?? [:]
         for field in credentialFields {
             let value = credentialValues[field.key]?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
             if !value.isEmpty { merged[field.key] = value }
+        }
+        if configuration.kind == .moonshot {
+            guard let key = merged["apiKey"], !key.isEmpty else { return nil }
+            merged["moonshotChannel"] = moonshotChannel
         }
         return merged.isEmpty ? nil : WebSearchCredential(values: merged)
     }
@@ -1733,11 +1879,7 @@ struct WebSearchProviderEditor: View {
             guard let draft = currentDraft() else {
                 throw WebSearchSettingsError.invalidEndpoint
             }
-            var credential = center.credential(forAccount: configuration.credentialAccount)?.values ?? [:]
-            for field in credentialFields {
-                let value = credentialValues[field.key]?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-                if !value.isEmpty { credential[field.key] = value }
-            }
+            let credential = currentDraftCredential()?.values ?? [:]
             var updated = instance
             updated.configuration = draft
             if isNew {

@@ -14,7 +14,7 @@ struct FloeMacBridgeApp: App {
             BridgeStatusLabel(model: model)
         }
         Settings {
-            BridgeSettingsView(model: model).frame(width: 560, height: 660)
+            BridgeSettingsView(model: model).frame(width: 520, height: 560)
         }
         .commands {
             CommandGroup(replacing: .appTermination) {
@@ -28,7 +28,9 @@ private struct BridgeStatusLabel: View {
     @Environment(\.openSettings) private var openSettings
     @ObservedObject var model: BridgeAppModel
     var body: some View {
-        Label("Floe Bridge", systemImage: "terminal")
+        BridgeBrandMark(template: true)
+            .frame(width: 18, height: 18)
+            .accessibilityLabel("Floe Bridge")
             .onAppear { consumeWindowRequest() }
             .onChange(of: model.settingsRequest) { _, _ in consumeWindowRequest() }
     }
@@ -165,65 +167,38 @@ final class BridgeAppModel: ObservableObject {
     }
 }
 
+private struct BridgeBrandMark: View {
+    var template = false
+    var body: some View {
+        if let url = Bundle.main.url(forResource: "FloeBrand", withExtension: "png"),
+           let image = NSImage(contentsOf: url) {
+            Image(nsImage: image).renderingMode(template ? .template : .original)
+                .resizable().scaledToFit()
+        } else { Image(systemName: "terminal") }
+    }
+}
+
 private struct BridgeSettingsView: View {
     @ObservedObject var model: BridgeAppModel
     @State private var managesStorage = false
     @State private var kimiInstalled = false
     @State private var openingKimiDownload = false
     var body: some View {
-        Form {
-            Section("Connection") {
-                LabeledContent("Floe Bridge", value: model.connectionStatus)
-            }
-            Section("Paired Apps") {
-                if model.clients.isEmpty { Text("No paired apps").foregroundStyle(.secondary) }
-                ForEach(model.clients, id: \.0) { client in
-                    HStack { Text(client.1); Spacer(); Button("Disconnect") { Task { await model.revoke(client.0) } } }
+        VStack(spacing: 8) {
+            HStack(spacing: 10) {
+                BridgeBrandMark().frame(width: 36, height: 36).accessibilityHidden(true)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Floe Bridge").font(.headline)
+                    Text(model.connectionStatus).font(.caption).foregroundStyle(.secondary)
                 }
+                Spacer()
+            }.padding(.horizontal, 20).padding(.top, 14)
+            TabView {
+                general.tabItem { Label("General", systemImage: "gearshape") }
+                storage.tabItem { Label("Storage", systemImage: "internaldrive") }
+                permissions.tabItem { Label("Permissions", systemImage: "hand.raised") }
             }
-            Section("Mac Control") {
-                Text("Mac control uses Floe Bridge together with Kimi CU.")
-                LabeledContent("Kimi CU", value: kimiInstalled ? String(localized: "Installed") : String(localized: "Not installed"))
-                Button("Download Kimi CU") {
-                    openingKimiDownload = true
-                    Task {
-                        let url = (try? await BridgeConfiguration.latestKimiCUDownloadURL()) ?? BridgeConfiguration.kimiCUDocumentationURL
-                        NSWorkspace.shared.open(url)
-                        openingKimiDownload = false
-                    }
-                }.disabled(openingKimiDownload)
-            }
-            BridgeUpdateSettingsView(updates: model.updates)
-            Section("Storage") {
-                ForEach(["Workspaces", "Tasks", "Skills", "Environments", "Caches", "Logs"], id: \.self) { category in
-                    HStack {
-                        Text(LocalizedStringKey(category)); Spacer()
-                        Text(ByteCountFormatter.string(fromByteCount: model.storage[category] ?? 0, countStyle: .file)).foregroundStyle(.secondary)
-                        Button("Show in Finder") { model.open(category) }
-                        if category == "Caches" || category == "Logs" {
-                            Button("Move to Trash") { Task { await model.clean(category) } }
-                        }
-                    }
-                }
-            }
-            if !model.cleanupItems.isEmpty {
-                Section {
-                    Button("Manage Unused Items…") { managesStorage = true }
-                }
-            }
-            Section("Permissions") {
-                LabeledContent("Screen Recording", value: model.permissions["screenCapture"] == true ? String(localized: "Allowed") : String(localized: "Not allowed"))
-                LabeledContent("Accessibility", value: model.permissions["accessibility"] == true ? String(localized: "Allowed") : String(localized: "Not allowed"))
-                if model.permissions["screenCapture"] != true {
-                    Button("Allow Screen Recording…") { Task { await model.requestPermission("screenCapture") } }
-                }
-                if model.permissions["accessibility"] != true {
-                    Button("Allow Accessibility…") { Task { await model.requestPermission("accessibility") } }
-                }
-            }
-            if let error = model.listenerError ?? model.error { Text(error).foregroundStyle(.red) }
         }
-        .formStyle(.grouped)
         .task {
             kimiInstalled = NSWorkspace.shared.urlForApplication(withBundleIdentifier: "ai.kimi.cu") != nil
             await model.refresh()
@@ -244,6 +219,72 @@ private struct BridgeSettingsView: View {
                 }
             }.frame(minWidth: 520, minHeight: 320)
         }
+    }
+    private var general: some View {
+        Form {
+            Section("Paired Apps") {
+                if model.clients.isEmpty { Text("No paired apps").foregroundStyle(.secondary) }
+                ForEach(model.clients, id: \.0) { client in
+                    HStack {
+                        Text(client.1).lineLimit(1); Spacer()
+                        Button("Remove Pairing") { Task { await model.revoke(client.0) } }
+                    }
+                }
+            }
+            Section("Mac Control") {
+                HStack {
+                    Text("Kimi CU"); Spacer()
+                    Text(kimiInstalled ? String(localized: "Installed") : String(localized: "Not installed")).foregroundStyle(.secondary)
+                    if kimiInstalled {
+                        Button("Open") {
+                            if let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: "ai.kimi.cu") { NSWorkspace.shared.open(url) }
+                        }
+                    }
+                    Button("Download Kimi CU") {
+                        openingKimiDownload = true
+                        Task {
+                            let url = (try? await BridgeConfiguration.latestKimiCUDownloadURL()) ?? BridgeConfiguration.kimiCUDocumentationURL
+                            NSWorkspace.shared.open(url); openingKimiDownload = false
+                        }
+                    }.disabled(openingKimiDownload)
+                }
+            }
+            BridgeUpdateSettingsView(updates: model.updates)
+            if let error = model.listenerError ?? model.error { Text(error).foregroundStyle(.red) }
+        }.formStyle(.grouped).controlSize(.small)
+    }
+    private var storage: some View {
+        Form {
+            Section {
+                ForEach(["Workspaces", "Tasks", "Skills", "Environments", "Caches", "Logs"], id: \.self) { category in
+                    HStack {
+                        Text(LocalizedStringKey(category)); Spacer()
+                        Text(ByteCountFormatter.string(fromByteCount: model.storage[category] ?? 0, countStyle: .file)).foregroundStyle(.secondary)
+                        Button { model.open(category) } label: { Image(systemName: "folder") }.help("Show in Finder").accessibilityLabel("Show in Finder")
+                        if category == "Caches" || category == "Logs" {
+                            Button("Move to Trash") { Task { await model.clean(category) } }
+                        }
+                    }
+                }
+                if !model.cleanupItems.isEmpty { Button("Manage Unused Items…") { managesStorage = true } }
+            }
+        }.formStyle(.grouped).controlSize(.small)
+    }
+    private var permissions: some View {
+        Form {
+            Section {
+                HStack {
+                    Text("Screen Recording"); Spacer()
+                    Text(model.permissions["screenCapture"] == true ? String(localized: "Allowed") : String(localized: "Not allowed")).foregroundStyle(.secondary)
+                    if model.permissions["screenCapture"] != true { Button("Allow…") { Task { await model.requestPermission("screenCapture") } } }
+                }
+                HStack {
+                    Text("Accessibility"); Spacer()
+                    Text(model.permissions["accessibility"] == true ? String(localized: "Allowed") : String(localized: "Not allowed")).foregroundStyle(.secondary)
+                    if model.permissions["accessibility"] != true { Button("Allow…") { Task { await model.requestPermission("accessibility") } } }
+                }
+            }
+        }.formStyle(.grouped).controlSize(.small)
     }
 }
 #endif

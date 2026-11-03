@@ -1024,7 +1024,7 @@ public enum VolcengineProfessionalSearch {
     public static func registeredInstances(
         registry: ToolRunnerRegistry = .shared
     ) -> [RegisteredInstance] {
-        ProfessionalSearchAuthority.registeredAccounts(registry: registry)
+        ProfessionalSearchAuthority.registeredAccounts(registry: registry).filter { $0.sourceKind == .dataPro }
     }
 
     public static func matchesOwnedServer(_ server: MCPServerConfiguration) -> Bool {

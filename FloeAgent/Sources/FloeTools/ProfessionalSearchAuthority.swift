@@ -1,31 +1,35 @@
 // FloeTools — frozen authority for the native professional web.search source.
-//
-// This is deliberately a feature-specific account registry, not a general
-// permission framework. Only MCPRemoteToolSource's exact owned DataPro adapter
-// registers runners here. The runner is private (never a catalog/registry tool)
-// and accepts only the canonical {"query": ...} payload constructed below.
+// Owned DataPro adapters accept one exact query; owned Kimi Code adapters
+// accept the bounded description/query type. Neither exposes a second tool
+// name or a model-supplied HTTP configuration.
 
 import Foundation
+import FloeCore
 
 public enum ProfessionalSearchAuthority {
     public static let unifiedToolName = "web.search"
 
     /// One exact account registration. A replacement of the same server ID gets
     /// a new generation, so a run frozen before replacement cannot inherit it.
+    public enum SourceKind: String, Sendable, Hashable { case dataPro, kimiCode }
+
     public struct Account: Sendable, Hashable, Identifiable {
         public var id: UUID { serverID }
         public let serverID: UUID
         public let displayName: String
         public let registrationGeneration: UInt64
+        public let sourceKind: SourceKind
 
         public init(
             serverID: UUID,
             displayName: String,
-            registrationGeneration: UInt64 = 1
+            registrationGeneration: UInt64 = 1,
+            sourceKind: SourceKind = .dataPro
         ) {
             self.serverID = serverID
             self.displayName = displayName
             self.registrationGeneration = registrationGeneration
+            self.sourceKind = sourceKind
         }
     }
 
@@ -131,7 +135,8 @@ public enum ProfessionalSearchAuthority {
             serverID: UUID,
             displayName: String,
             registry: ToolRunnerRegistry,
-            runner: @escaping Runner
+            runner: @escaping Runner,
+            sourceKind: SourceKind = .dataPro
         ) -> Account {
             lock.lock()
             defer { lock.unlock() }
@@ -142,7 +147,8 @@ public enum ProfessionalSearchAuthority {
             let account = Account(
                 serverID: serverID,
                 displayName: displayName,
-                registrationGeneration: state.nextGeneration
+                registrationGeneration: state.nextGeneration,
+                sourceKind: sourceKind
             )
             state.entries[serverID] = Entry(account: account, runner: runner)
             states[ObjectIdentifier(registry)] = state
@@ -225,6 +231,29 @@ public enum ProfessionalSearchAuthority {
         )
     }
 
+    /// Called only by Floe's owned Kimi Code provider path. No remote tool
+    /// annotation can register a dataset account or select its transport.
+    @discardableResult
+    public static func registerKimiCode(
+        providerID: UUID,
+        displayName: String,
+        registry: ToolRunnerRegistry = .shared,
+        runner: @escaping @Sendable (ProfessionalDatasetRequest, ToolContext) async throws -> ToolExecutionOutput
+    ) -> Account {
+        store.register(serverID: providerID, displayName: displayName, registry: registry, runner: { data, context in
+            let invocation = try JSONDecoder().decode(ProfessionalDatasetInvocation.self, from: data)
+            try invocation.dataset.validate()
+            return try await runner(invocation.dataset, context)
+        }, sourceKind: .kimiCode)
+    }
+
+    public static func unregisterKimiCode(providerID: UUID, registry: ToolRunnerRegistry = .shared) {
+        guard registeredAccounts(registry: registry).contains(where: {
+            $0.serverID == providerID && $0.sourceKind == .kimiCode
+        }) else { return }
+        store.unregister(serverID: providerID, registry: registry)
+    }
+
     static func unregister(serverID: UUID, registry: ToolRunnerRegistry) {
         store.unregister(serverID: serverID, registry: registry)
     }
@@ -266,6 +295,7 @@ public enum ProfessionalSearchAuthority {
         authority: Frozen,
         account: Account,
         query: String,
+        dataset: ProfessionalDatasetRequest? = nil,
         context: ToolContext
     ) async throws -> ToolExecutionOutput {
         guard authority.isBound(to: registry),
@@ -295,12 +325,24 @@ public enum ProfessionalSearchAuthority {
         ), entry.account == account else {
             throw ProfessionalSearchAuthorityError.registrationChanged(account.displayName)
         }
-        // Whitelist the remote payload here, independently of model decoding:
-        // exactly one validated query, no method, schema or arbitrary fields.
-        let arguments = try JSONSerialization.data(
-            withJSONObject: ["query": normalized],
-            options: [.sortedKeys]
-        )
+        // Construct the adapter-specific payload after frozen authority checks.
+        // DataPro stays query-only. Kimi gets only its validated fixed action.
+        let arguments: Data
+        switch account.sourceKind {
+        case .dataPro:
+            guard dataset == nil else {
+                throw FloeError.validationFailed("DataPro accepts only query and provider, without dataset actions.")
+            }
+            arguments = try JSONSerialization.data(withJSONObject: ["query": normalized], options: [.sortedKeys])
+        case .kimiCode:
+            guard let dataset else {
+                throw FloeError.validationFailed("Kimi Code requires dataset.action describe or query and dataset.name; read the description before querying.")
+            }
+            try dataset.validate()
+            let encoder = JSONEncoder()
+            encoder.outputFormatting = [.sortedKeys]
+            arguments = try encoder.encode(ProfessionalDatasetInvocation(query: normalized, dataset: dataset))
+        }
         let output = try await entry.runner(arguments, context)
         // Unregister/replace invalidates a late result even though web.search's
         // outer descriptor/authorization identity stayed unchanged.

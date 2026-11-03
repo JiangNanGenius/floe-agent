@@ -5113,7 +5113,15 @@ static OCCTShape *OS3DPlanarSupportShell(const TopoDS_Shape &source,
         auto configure = [](auto &maker, const TopoDS_Shape &argument, const TopoDS_Shape &tool) {
             TopTools_ListOfShape args, tools; args.Append(argument); tools.Append(tool);
             maker.SetArguments(args); maker.SetTools(tools);
-            maker.SetNonDestructive(Standard_True); maker.SetRunParallel(Standard_False);
+            // These operands are exclusively owned: source uses copyGeom=true
+            // above and every support prism is newly built. OCCT 7.8.1 safe
+            // input mode clones an unchanged pole vertex in UpdateVertex,
+            // forcing ProcessDE to clone its degenerate edge; container image
+            // orientation then rejects that edge (it has no 3D tangent).
+            // Use the default in-place mode on OUR copies to preserve the pole
+            // identity. Caller geometry stays untouched; all warning, volume,
+            // tolerance, closure and ancestry checks below remain mandatory.
+            maker.SetNonDestructive(Standard_False); maker.SetRunParallel(Standard_False);
             maker.SetFuzzyValue(0.0); maker.SetToFillHistory(Standard_True);
         };
         // Bound each supporting halfspace outside the entire source box.
@@ -5225,7 +5233,10 @@ static OCCTShape *OS3DPlanarSupportShell(const TopoDS_Shape &source,
                 if (deadline->Fired() || maker.GetReport().IsNull()) { out << ";skipped=deadline-or-report"; }
                 else {
                     Handle(IntTools_Context) context;
-                    if (maker.DSFiller()!=nullptr) context=maker.DSFiller()->Context();
+                    if (maker.DSFiller()!=nullptr) {
+                        context=maker.DSFiller()->Context();
+                        out << ";fillerNonDestructive=" << maker.DSFiller()->NonDestructive();
+                    }
                     const Message_ListOfAlert &alerts=maker.GetReport()->GetAlerts(Message_Warning);
                     size_t pairs=0;
                     for (Message_ListOfAlert::Iterator it(alerts); it.More() && pairs<2; it.Next()) {

@@ -1,6 +1,15 @@
+diff --git a/src/GeomFill/GeomFill_LocationGuide.cxx b/src/GeomFill/GeomFill_LocationGuide.cxx
 --- a/src/GeomFill/GeomFill_LocationGuide.cxx
 +++ b/src/GeomFill/GeomFill_LocationGuide.cxx
-@@ -52,6 +52,104 @@
+@@ -26,6 +26,7 @@
+ #include <Geom_TrimmedCurve.hxx>
+ #include <GeomAdaptor_Surface.hxx>
+ #include <GeomFill_FunctionGuide.hxx>
++#include <GeomAPI_ProjectPointOnCurve.hxx>
+ #include <GeomFill_LocationLaw.hxx>
+ #include <GeomFill_SectionPlacement.hxx>
+ #include <GeomFill_TrihedronWithGuide.hxx>
+@@ -52,6 +53,104 @@
  #include <TColgp_HArray1OfPnt.hxx>
  #include <TColStd_HArray1OfInteger.hxx>
  #include <TColStd_HArray1OfReal.hxx>
@@ -105,7 +114,7 @@
  
  IMPLEMENT_STANDARD_RTTIEXT(GeomFill_LocationGuide,GeomFill_LocationLaw)
  
-@@ -339,6 +437,8 @@
+@@ -339,6 +438,8 @@
      Extrema_POnCurv Pc;
      Extrema_POnSurf Ps;
      Standard_Real theU = 0., theV = 0.;
@@ -114,7 +123,7 @@
      
      if (!DistMini.IsDone() || DistMini.NbExt() == 0) {
  #ifdef OCCT_DEBUG
-@@ -366,6 +466,11 @@
+@@ -366,6 +467,11 @@
              SOS = Standard_True;
              math_Vector RR(1,3);
              Result.Root(RR);
@@ -126,7 +135,7 @@
              PInt.SetValues(P, RR(2), RR(3), RR(1), IntCurveSurface_Out);
              theU = PInt.U();
              theV = PInt.V();
-@@ -384,24 +489,41 @@
+@@ -384,26 +490,152 @@
      else { // on prend le point d'intersection 
        // d'angle le plus proche de P
        
@@ -176,8 +185,119 @@
 +      InGoodPeriod(CurAngle, 2*M_PI, theU);
      }//else
      
++    // Extrema_FuncExtCS deduplicates by the guide parameter alone. On a
++    // closed section, different exact (angle, section-v) roots share that
++    // parameter, so the closest rotation may already have been discarded.
++    // Add a genuine root continued from the authored initial frame / previous
++    // station. Do not restrict the angle domain or accept a non-contact fit.
++    const Standard_Real aExtremaAngle = theU;
++    Standard_Real aCandidateAngle = std::numeric_limits<Standard_Real>::quiet_NaN();
++    Standard_Real aCandidateV = aCandidateAngle;
++    Standard_Real aCandidateResidual = aCandidateAngle;
++    Standard_Real aSeedResidual = aCandidateAngle;
++    Standard_Integer aContinuationState = 0;
++    bool aContinuationChosen = false;
++    try
++    {
++      gp_Mat aFrame(N.XYZ(), B.XYZ(), T.XYZ());
++      if (WithTrans) aFrame *= Trans;
++      GeomFill_FunctionGuide aEquation(mySec, myGuide, U);
++      // Match the actual D0 equation, including its transformed frame.
++      aEquation.SetParam(t, P, aFrame.Column(3), aFrame.Column(1));
++      math_Vector aSeed(1, 3);
++      bool hasSeed = ii > 1;
++      if (hasSeed)
++      {
++        aSeed(1) = myPoles2d->Value(1, ii - 1).Y();
++        aSeed(2) = myPoles2d->Value(2, ii - 1).X();
++        aSeed(3) = myPoles2d->Value(2, ii - 1).Y();
++      }
++      else
++      {
++        // At the first station, the supplied profile may already meet the
++        // guide at PrecAngle (zero at the first spine). Recover that actual
++        // section parameter instead of inheriting Extrema's arbitrary side.
++        Handle(Geom_Curve) aSection = new Geom_TrimmedCurve(
++          Handle(Geom_Curve)::DownCast(mySection->Copy()), Uf, Ul);
++        gp_Ax3 aAxes(P, gp_Dir(aFrame.Column(3)), gp_Dir(aFrame.Column(1)));
++        gp_Trsf aPlacement;
++        aPlacement.SetTransformation(aAxes, Rep);
++        aSection->Transform(aPlacement);
++        aSection->Rotate(gp_Ax1(P, gp_Dir(aFrame.Column(3))), CurAngle);
++        GeomAPI_ProjectPointOnCurve aProjection(myGuide->Value(Pc.Parameter()), aSection, Uf, Ul);
++        if (aProjection.NbPoints() > 0)
++        {
++          aSeed(1) = Pc.Parameter();
++          aSeed(2) = CurAngle;
++          aSeed(3) = aProjection.LowerDistanceParameter();
++          hasSeed = true;
++        }
++      }
++      if (hasSeed)
++      {
++        // Period representatives only, identical to InitX. The existing
++        // native Newton bounds and TolRes remain unchanged.
++        if (myGuide->IsPeriodic())
++          aSeed(1) = ElCLib::InPeriod(aSeed(1), myGuide->FirstParameter(), myGuide->LastParameter());
++        aSeed(2) = ElCLib::InPeriod(aSeed(2), 0, 2 * M_PI);
++        if (uperiodic) aSeed(3) = ElCLib::InPeriod(aSeed(3), Uf, Ul);
++        math_Vector aCandidate(1, 3);
++        aCandidate = aSeed;
++        aSeedResidual = OS3DContactEquationResidual(aEquation, aSeed);
++        aCandidateResidual = aSeedResidual;
++        aContinuationState = 1;
++        if (!std::isfinite(aCandidateResidual) || aCandidateResidual > Precision::Confusion())
++        {
++          math_FunctionSetRoot aSolver(aEquation, TolRes, 100);
++          aSolver.Perform(aEquation, aSeed, Inf, Sup);
++          aContinuationState = -1;
++          if (aSolver.IsDone())
++          {
++            aSolver.Root(aCandidate);
++            aCandidateResidual = OS3DContactEquationResidual(aEquation, aCandidate);
++            aContinuationState = 2;
++          }
++        }
++        if (aContinuationState > 0 && std::isfinite(aCandidateResidual)
++            && aCandidateResidual <= Precision::Confusion())
++        {
++          aCandidateAngle = aCandidate(2);
++          aCandidateV = aCandidate(3);
++          InGoodPeriod(CurAngle, 2 * M_PI, aCandidateAngle);
++          if (Abs(aCandidateAngle - CurAngle) < Abs(theU - CurAngle))
++          {
++            Pc.SetValues(aCandidate(1), myGuide->Value(aCandidate(1)));
++            theU = aCandidateAngle;
++            theV = aCandidateV;
++            probeResidual = aCandidateResidual;
++            aContinuationChosen = true;
++          }
++        }
++      }
++    }
++    catch (const Standard_Failure&)
++    {
++      // This additional candidate is optional; preserve the existing native
++      // solution and its unchanged final approximation/geometry rejection.
++      aContinuationState = -2;
++    }
++    if (OS3DContactProbeEnabled())
++    {
++      static std::atomic<unsigned> selectionRows{0};
++      if (OS3DContactProbeSlot(selectionRows, 512))
++        std::fprintf(stderr,
++          "OS3DContactProbe v=2 stage=continuation law=%p index=%d t=%.17g "
++          "extrema_count=%d previous_angle=%.17g extrema_angle=%.17g candidate_angle=%.17g "
++          "candidate_v=%.17g seed_residual_mm=%.17g candidate_residual_mm=%.17g state=%d chosen=%d\n",
++          static_cast<void*>(this), ii, t, DistMini.IsDone() ? DistMini.NbExt() : 0,
++          CurAngle, aExtremaAngle, aCandidateAngle, aCandidateV, aSeedResidual,
++          aCandidateResidual, aContinuationState, aContinuationChosen ? 1 : 0);
++    }
++
      // Controle de w 
-@@ -456,6 +578,7 @@
+     w = Pc.Parameter();
+     
+@@ -456,6 +688,7 @@
  #endif
      }
      
@@ -185,7 +305,7 @@
      p1.SetCoord(t, w); // on stocke les parametres
      p2.SetCoord(Angle , v);
      CurAngle = Angle;
-@@ -602,6 +725,7 @@
+@@ -602,6 +835,7 @@
      // initialisations germe
      InitX(Param); 
      
@@ -193,7 +313,7 @@
      Standard_Integer Iter = 100;
      gp_XYZ t,b,n;
      t = M.Column(3);
-@@ -618,7 +742,10 @@
+@@ -618,7 +852,10 @@
  
      if (Result.IsDone()) {
        // solution
@@ -205,7 +325,7 @@
        
        // rotation 
        gp_Mat Rot;
-@@ -629,6 +756,7 @@
+@@ -629,6 +866,7 @@
        M.SetCols(n, b, t);
      }
      else {
@@ -213,7 +333,7 @@
  #ifdef OCCT_DEBUG
        std::cout << "LocationGuide::D0 : No Result !"<<std::endl;
        TraceRevol(Param, U, myLaw, mySec, myCurve, Trans);
-@@ -671,6 +799,7 @@
+@@ -671,6 +909,7 @@
    if (rotation) {
      //initialisation du germe
      InitX(Param);    
@@ -221,7 +341,7 @@
      Standard_Integer Iter = 100;
      gp_XYZ b, n, t;
      t = M.Column(3);
-@@ -688,7 +817,10 @@
+@@ -688,7 +927,10 @@
  
      if (Result.IsDone()) {
        // solution 
@@ -233,7 +353,7 @@
        
        // rotation 
        gp_Mat Rot;
-@@ -701,6 +833,7 @@
+@@ -701,6 +943,7 @@
        M.SetCols(n, b, t);
      }
      else {
@@ -241,7 +361,7 @@
  #ifdef OCCT_DEBUG
        Standard_Real U = myFirstS + ratio*(Param-myCurve->FirstParameter());
        std::cout << "LocationGuide::D0 : No Result !"<<std::endl;
-@@ -750,7 +883,8 @@
+@@ -750,7 +993,8 @@
      DM *= Trans;
    }
  
@@ -251,7 +371,7 @@
      return Standard_False;
   /*   
  #ifdef OCCT_DEBUG
-@@ -917,8 +1051,9 @@
+@@ -917,8 +1161,9 @@
      D2M *= Trans;
    }
  

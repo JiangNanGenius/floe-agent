@@ -22,11 +22,11 @@
       "derivation": {
         "id": "occt-guided-contact-continuation-v1",
         "recipe": "relink/derivations/guided-contact.v1.json",
-        "recipeSha256": "f93f49f3b4bd3325e9dcfc5ccc140a7b97bee6a5b625d58774dc09d605e14e28",
+        "recipeSha256": "e09797edf569bb7c015f1d4d234f1ec147276a45e4d07753a244164b9b826ba7",
         "receiptPath": "Vendor/OCCT.xcframework/ios-arm64/libOCCT-OS64.a.derivation.json",
         "expectedResult": {
-          "size": 149067256,
-          "sha256": "e40899560791aca769fd311ebf8028c273157d45706b9262f307fa0b7168672f"
+          "size": 149084136,
+          "sha256": "ca699ec8eadb24a34a0c7664bf3128b3be41e217cdadd5be68543e1d6465bde2"
         },
         "parent": {
           "id": "occt-standard-type-lifetime-v1",
@@ -56,11 +56,11 @@
       "derivation": {
         "id": "occt-guided-contact-continuation-v1",
         "recipe": "relink/derivations/guided-contact.v1.json",
-        "recipeSha256": "f93f49f3b4bd3325e9dcfc5ccc140a7b97bee6a5b625d58774dc09d605e14e28",
+        "recipeSha256": "e09797edf569bb7c015f1d4d234f1ec147276a45e4d07753a244164b9b826ba7",
         "receiptPath": "Vendor/OCCT.xcframework/ios-arm64-simulator/libOCCT-SIMULATORARM64.a.derivation.json",
         "expectedResult": {
-          "size": 147217808,
-          "sha256": "579ca834e46925b3914b86dfe86032015d6a68a706d58ea19b5be30e18d52cb3"
+          "size": 147234584,
+          "sha256": "c5250b0bae87e0bdc78788f0c8d7709caa3c8bc589aff7a535880453f2483a0a"
         },
         "parent": {
           "id": "occt-standard-type-lifetime-v1",

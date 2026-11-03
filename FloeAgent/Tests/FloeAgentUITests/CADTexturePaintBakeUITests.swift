@@ -20,7 +20,11 @@ import XCTest
                 let top=max(visible.minY,bar.frame.maxY+4)
                 visible=CGRect(x:visible.minX,y:top,width:visible.width,height:max(0,visible.maxY-top))
             }
-            if element.exists && element.isHittable && visible.contains(element.frame) { return element }
+            // Custom Canvas has a real drawing frame but no native AX
+            // activation point. Verify full visibility before querying other
+            // controls; actual stored-pixel assertions prove the canvas drag.
+            let inView=element.exists && element.frame.width>0 && element.frame.height>0 && visible.contains(element.frame)
+            if inView && (id=="CADTexturePaintCanvas" || element.isHittable) { return element }
             // Form virtualizes offscreen rows. The first canvas disappears
             // from AX after opening Details below it; its absence must scroll
             // back up, rather than repeatedly scroll farther down.

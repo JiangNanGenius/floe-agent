@@ -82,7 +82,8 @@ struct CADSculptHUD:View {
                 HStack {
                     Picker(t("level","Level"),selection:Binding(get:{ state.activeLevel },set:{ if $0 != state.activeLevel { run("sculpt.level",["level":$0]) } })) {
                         ForEach(state.levels.indices,id:\.self) { index in Text("\(index)").tag(index) }
-                    }.accessibilityIdentifier("CADSculptLevel")
+                    }.accessibilityValue(Text("\(state.activeLevel)"))
+                        .accessibilityIdentifier("CADSculptLevel")
                     Button(t("subdivide","Subdivide")) { run("sculpt.subdivide") }
                         .disabled(state.levels.count>=4 || state.activeLevel != state.levels.count-1).accessibilityIdentifier("CADSculptSubdivide")
                     Button(t("clearMask","Clear mask")) { run("sculpt.mask.clear") }.accessibilityIdentifier("CADSculptClearMask")

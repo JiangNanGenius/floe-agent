@@ -473,6 +473,7 @@ public enum SearchProviderPresets {
     public static let tencentWSA = "tencent-wsa"
     public static let volcengine = "volcengine"
     public static let deepseek = "deepseek"
+    public static let moonshot = "moonshot"
     public static let brave = "brave"
     public static let tavily = "tavily"
     public static let exa = "exa"
@@ -486,6 +487,7 @@ public enum SearchProviderPresets {
         case .tencentWSA: tencentWSA
         case .volcengine: volcengine
         case .deepseek: deepseek
+        case .moonshot: moonshot
         case .brave: brave
         case .tavily: tavily
         case .exa: exa
@@ -503,6 +505,7 @@ public enum SearchProviderPresets {
         case .tencentWSA: "Tencent Cloud WSA"
         case .volcengine: "Volcengine Web Search"
         case .deepseek: "DeepSeek Search"
+        case .moonshot: "Moonshot AI"
         case .brave: "Brave Search"
         case .tavily: "Tavily"
         case .exa: "Exa"
@@ -518,6 +521,7 @@ public enum SearchProviderPresets {
         .tencentWSA: "web-search.tencentWSA",
         .volcengine: "web-search.volcengine",
         .deepseek: "web-search.deepseek",
+        .moonshot: "web-search.moonshot",
         .brave: "web-search.brave",
         .tavily: "web-search.tavily",
         .exa: "web-search.exa",
@@ -555,6 +559,10 @@ public enum SearchProviderDraftFactory {
         let endpoint: URL?
         let credentialAccount: String
         switch kind {
+        case .moonshot:
+            endpoint = nil
+            guard let selected = try? MoonshotSearchOptions(options: options) else { return nil }
+            credentialAccount = selected.credentialAccount(providerID: id)
         case .volcengine:
             // New Volcengine instances start on the Agent Plan interface with
             // a provider-UUID-owned account, mirroring the historical preset;
