@@ -1595,7 +1595,7 @@ final class FloeCAD3DBridge {
     func renderStill(at url: URL, requestJSON: String, expectedRevision: Int?) async throws -> CadViewportCapture {
         let document = try await document(at: url)
         if let expectedRevision, document.revision != expectedRevision {
-            throw FloeError.validationFailed("revision_mismatch: Re-read the document before rendering.")
+            throw CADDocumentError(code: "revision_mismatch", message: "Re-read the document before rendering.")
         }
         let options = try JSONDecoder().decode(CADStillRenderSettings.self, from: Data(requestJSON.utf8))
         let output = try await CADStillRenderService.shared.render(document: document, settings: options)
