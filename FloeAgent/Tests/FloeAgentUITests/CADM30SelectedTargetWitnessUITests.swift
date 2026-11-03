@@ -23,14 +23,24 @@ import XCTest
         let identifier = app.staticTexts["M30TargetRow"].label
         XCTAssertFalse(identifier.isEmpty)
         history.tap()
-        let row = app.descendants(matching: .any).matching(identifier: identifier).firstMatch
+        // matching(identifier:) also matches labels. M30TargetRow's readback
+        // label is deliberately the same string, so firstMatch may resolve
+        // that StaticText instead of a native History control. Pin both the
+        // actual panel and row by their accessibility identifier properties.
+        let panel = app.descendants(matching: .any)
+            .matching(NSPredicate(format: "identifier == %@", "HistoryPanel")).firstMatch
+        XCTAssertTrue(panel.waitForExistence(timeout: 30), app.debugDescription)
+        let row = panel.descendants(matching: .any)
+            .matching(NSPredicate(format: "identifier == %@", identifier)).firstMatch
         XCTAssertTrue(row.waitForExistence(timeout: 30), app.debugDescription)
-        for _ in 0..<4 where !row.isHittable { app.descendants(matching: .any)["HistoryPanel"].swipeUp() }
+        XCTAssertEqual(row.identifier, identifier, "Resolve the real History row, never its fixture readback label")
+        for _ in 0..<4 where !row.isHittable { panel.swipeUp() }
         XCTAssertTrue(row.isHittable, app.debugDescription)
         if target == "datum" {
             row.tap() // The actual native datum row is a Button.
         } else {
-            let select = row.buttons["HistorySelect-" + targetID]
+            let select = row.buttons
+                .matching(NSPredicate(format: "identifier == %@", "HistorySelect-" + targetID)).firstMatch
             XCTAssertTrue(select.isHittable, "Use the real History selection button, preserving inline rename/parameter fields")
             select.tap()
         } // Sole selection producer; no setSelection/proxy.
