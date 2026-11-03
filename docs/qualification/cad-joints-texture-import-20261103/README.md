@@ -31,4 +31,8 @@ The Files/Photos provider picker itself was not automated by this one workflow: 
 
 ![Actual texture pixels after fresh-process reopen](textures-reopened.png)
 
-The same batch includes drawing annotation/recovery code and real bundled WebKit checks, but E20/E22/E23 remain separate until their new annotation/display and recovery boundary checks finish. The whole 106-item and Mac/distribution gates remain open.
+The small product-copy/layout follow-up is now qualified at `e1229967`: native menus select their actual values, encoded previews and the material transaction/undo/save/fresh-process reopen pass. Internal memory breakdowns sit behind Details. Original intermediate UI failures are retained; the iOS 27 menu activation-point issue uses the settled visible row and requires actual selection readback. Unchanged geometry, conversion/cache checks and the original joint workflow were reused.
+
+![Current qualified texture review](texture-review-current.png)
+
+Drawing E20/E22/E23 have since closed separately; see [their exact evidence](../cad-drawing-edit-recovery-20261103/README.md). The whole 106-item and Mac/distribution gates remain open.

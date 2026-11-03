@@ -5192,15 +5192,26 @@
       "package": "engineering",
       "implementation": {
         "stage": "E",
-        "status": "planned",
-        "source_changes": [],
-        "verification": [],
+        "status": "accepted_original_criterion",
+        "source_changes": [
+          "e12299679c484b26386d1e86f0114d0e73acf682"
+        ],
+        "verification": [
+          {
+            "kind": "Actual_App_real_Xref_and_native_recovery",
+            "source": "e12299679c484b26386d1e86f0114d0e73acf682",
+            "passed": 1,
+            "failed": 0,
+            "skipped": 0,
+            "evidence": "docs/qualification/cad-drawing-edit-recovery-20261103/README.md"
+          }
+        ],
         "limitations": []
       },
       "alignment_review": {
-        "disposition": "planned",
+        "disposition": "accepted_original_criterion",
         "existing": "基线已有：保存会重新解析并比较实体/辅助数据，保真不符时拒绝替换；存在已知字体/布局字段不能roundtrip的窄边界。",
-        "remaining": "维护真实第三方DWG/DXF保真矩阵与独立CAD复读；拒写必须保留原件并提供可恢复草稿交付。",
+        "remaining": "Original corpus success/refusal/recovery clauses met; no universal writer compatibility claim.",
         "evidence": [
           {
             "path": "docs/FLOE_CAD_3D_IMPLEMENTATION_PROGRESS.json",
@@ -5226,11 +5237,13 @@
         "notes": [],
         "evidence_level": "baseline_plus_verified_delta",
         "verified_delta": "本轮没有该原始缺口的新运行通过声明；现有功能仍按基线保留。",
-        "acceptance_pending": "覆盖真实含字体、布局、对象、Xref样例，成功者由独立CAD复读；失败者原件不变且草稿可导出恢复。"
+        "acceptance_pending": null
       },
       "current_acceptance": {
-        "original_criterion_accepted": false,
-        "source_changes": []
+        "original_criterion_accepted": true,
+        "evidence": "docs/qualification/cad-drawing-edit-recovery-20261103/README.md",
+        "original_criterion_text_unchanged": true,
+        "whole106_complete": false
       },
       "verification_plan": {
         "priority": "P1",
@@ -10169,7 +10182,7 @@
       },
       "actual_component_protocol_checks": 55,
       "actual_RISCV_environment_checks": 65,
-      "component_download_delivery_verified": false,
+      "component_download_delivery_verified": true,
       "full_environment_template_migration_verified": false,
       "original_criteria_count_unchanged": true,
       "evidence": "docs/qualification/linux-runner-2.1-20261102/README.md",
@@ -10183,7 +10196,11 @@
       },
       "actual_component_SMP_protocol_checks": 57,
       "component_archive_and_local_install_verified": true,
-      "original_base_delta_and_template_pin_retention_verified": true
+      "original_base_delta_and_template_pin_retention_verified": true,
+      "catalog_source_sha": "d697f7dcba1a5c8b92671603bb7e1110544df14b",
+      "catalog_App_object_build_passed": true,
+      "public_catalog_App_network_readback_passed": true,
+      "published_component_evidence": "docs/qualification/linux-runner-2.1-20261102/published-component.json"
     },
     "sweep_association_M15_20261102": {
       "accepted_original_criterion": true,
@@ -10319,8 +10336,11 @@
       "drawingNativePassed": 7,
       "unrelatedTextureUIFailed": 1,
       "E20_E22Accepted": true,
-      "E23RealCorpusAppPending": true,
-      "originalFailuresRetained": true
+      "E23RealCorpusAppPending": false,
+      "originalFailuresRetained": true,
+      "E23Accepted": true,
+      "realCorpusRecoverySource": "e12299679c484b26386d1e86f0114d0e73acf682",
+      "textureUIRecoveryPassed": true
     }
   },
   "verification_strategy": {
@@ -10536,6 +10556,33 @@
         "E12",
         "E14",
         "E23",
+        "E38",
+        "X01",
+        "X02",
+        "X03",
+        "X04",
+        "X10",
+        "X11",
+        "X18",
+        "X19",
+        "X26",
+        "X27",
+        "X34",
+        "X37"
+      ],
+      "original33AllocationPreserved": true
+    },
+    "remaining_after_real_drawing_recovery": {
+      "heavy": 15,
+      "light_or_reuse": 5,
+      "pending_ids": [
+        "M16",
+        "M17",
+        "M22",
+        "M29",
+        "M30",
+        "E12",
+        "E14",
         "E38",
         "X01",
         "X02",

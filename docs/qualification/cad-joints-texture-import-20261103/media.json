@@ -14,5 +14,13 @@
     "unaltered": true,
     "rootVisuallyReviewed": true,
     "scope": "Actual synthetic fixture, canonical iPad Simulator"
+  },
+  {
+    "name": "texture-review-current.png",
+    "sha256": "e59c8b0a28490af190fb0c366d4936c792e9648d167061451fa984a826446174",
+    "source": "mixed296",
+    "unaltered": true,
+    "syntheticFixture": true,
+    "primaryVisuallyReviewed": true
   }
 ]
