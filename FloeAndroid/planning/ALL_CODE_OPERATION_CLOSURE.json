@@ -6,7 +6,7 @@
     "fixedIOSDonor": "a59b4d4005f616c611df67fab7620e9853c525b9"
   },
   "status": "Live source closure index; original IDs/statuses retained; scope replacement and source/runtime acceptance are separate",
-  "sourceCheckpoint": "057eca9ba9e935eb5856adfd44f28d23ba6f5e7f",
+  "sourceCheckpoint": "a5171c89a872ddb5e2b8f8654b99c45b20ab6eab",
   "operationCount": 183,
   "noNewReleaseBeforeClosure": true,
   "operations": [
@@ -1002,9 +1002,13 @@
       "originalOperation": "System package transactions with dependency resolution and rollback",
       "originalStatus": "planned",
       "required": true,
-      "codeReview": "pending per-operation UI/service/runtime-storage/failure reconciliation",
+      "codeReview": "implementation-gap-confirmed; real apt dependency resolution exists, but Android guest package rollback is not connected to the original transaction/lifecycle path",
       "qualification": "not newly verified this round",
-      "implementationOwner": "job-dcfe69f82e5b4cc1; actual Linux/interface completion pending"
+      "implementationOwner": "job-dcfe69f82e5b4cc1; actual Linux/interface completion pending",
+      "previousCodeReviews": [
+        "pending per-operation UI/service/runtime-storage/failure reconciliation"
+      ],
+      "remainingImplementation": "Bounded owned-environment package rollback with actual guest state, crash recovery and physical settlement; no host/language installer alias. Existing first-materialization recovery is not package rollback evidence."
     },
     {
       "id": "GIT-DIFF-STAGE-COMMIT",
@@ -2498,8 +2502,11 @@
       "originalOperation": "Host authentication with explicit host-key trust decisions",
       "originalStatus": "planned",
       "required": true,
-      "codeReview": "pending per-operation UI/service/runtime-storage/failure reconciliation",
-      "qualification": "not newly verified this round"
+      "codeReview": "present-source-connected at a5171c89a872ddb5e2b8f8654b99c45b20ab6eab; Settings host profiles -> existing DB/vault -> real Citadel connection; explicit first-use/changed-key challenge, post-await epoch check",
+      "qualification": "Current Core ARM64 interfaces/objects and Full/Play Kotlin compile evidence reused at matching boundary. No configured remote/mail/hardware/provider/device pass.",
+      "previousCodeReviews": [
+        "pending per-operation UI/service/runtime-storage/failure reconciliation"
+      ]
     },
     {
       "id": "SSH-EXEC-LONG",
@@ -2508,8 +2515,11 @@
       "originalOperation": "Long-running commands and disconnect state visible through reconnect",
       "originalStatus": "planned",
       "required": true,
-      "codeReview": "pending per-operation UI/service/runtime-storage/failure reconciliation",
-      "qualification": "not newly verified this round"
+      "codeReview": "present-source-connected at a5171c89a872ddb5e2b8f8654b99c45b20ab6eab; Actual independent SSH exec/PTY, bounded streams and explicit close/disconnect state",
+      "qualification": "Current Core ARM64 interfaces/objects and Full/Play Kotlin compile evidence reused at matching boundary. No configured remote/mail/hardware/provider/device pass.",
+      "previousCodeReviews": [
+        "pending per-operation UI/service/runtime-storage/failure reconciliation"
+      ]
     },
     {
       "id": "SSH-DIRECTORY",
@@ -2518,9 +2528,12 @@
       "originalOperation": "Remote directory browsing and file copy through the unified host contract",
       "originalStatus": "planned",
       "required": true,
-      "codeReview": "pending per-operation UI/service/runtime-storage/failure reconciliation",
-      "qualification": "not newly verified this round",
-      "implementationOwner": "job-51e41b60f71a433d"
+      "codeReview": "present-source-connected at a5171c89a872ddb5e2b8f8654b99c45b20ab6eab; SFTP UI -> owner/epoch-fenced channel and actual list/stat/read/transfer -> original workspace scope",
+      "qualification": "Current Core ARM64 interfaces/objects and Full/Play Kotlin compile evidence reused at matching boundary. No configured remote/mail/hardware/provider/device pass.",
+      "implementationOwner": "job-51e41b60f71a433d",
+      "previousCodeReviews": [
+        "pending per-operation UI/service/runtime-storage/failure reconciliation"
+      ]
     },
     {
       "id": "REMOTE-AGENT-TASK",
@@ -2529,9 +2542,12 @@
       "originalOperation": "Remote agent task execution on configured hosts",
       "originalStatus": "planned",
       "required": true,
-      "codeReview": "pending per-operation UI/service/runtime-storage/failure reconciliation",
-      "qualification": "not newly verified this round",
-      "implementationOwner": "C02 source integrated, real Linux seam pending job-dcfe69f82e5b4cc1"
+      "codeReview": "present-source-connected at a5171c89a872ddb5e2b8f8654b99c45b20ab6eab; Original exec.shell -> durable C02 run pin and explicit target -> SSH adapter with real pre-dispatch/terminal/unknown receipts",
+      "qualification": "Current Core ARM64 interfaces/objects and Full/Play Kotlin compile evidence reused at matching boundary. No configured remote/mail/hardware/provider/device pass.",
+      "implementationOwner": "C02 source integrated, real Linux seam pending job-dcfe69f82e5b4cc1",
+      "previousCodeReviews": [
+        "pending per-operation UI/service/runtime-storage/failure reconciliation"
+      ]
     },
     {
       "id": "VNC-DISPLAY-INPUT",
@@ -2540,9 +2556,12 @@
       "originalOperation": "VNC session with Android display/input mapping",
       "originalStatus": "planned",
       "required": true,
-      "codeReview": "pending per-operation UI/service/runtime-storage/failure reconciliation",
-      "qualification": "not newly verified this round",
-      "implementationOwner": "job-ed2243f494104990 (model adapter only; UI foundation already public)"
+      "codeReview": "present-source-connected at a5171c89a872ddb5e2b8f8654b99c45b20ab6eab; Actual RFB core -> bounded real frame ABI -> viewport and owned input lane; release on detach",
+      "qualification": "Current Core ARM64 interfaces/objects and Full/Play Kotlin compile evidence reused at matching boundary. No configured remote/mail/hardware/provider/device pass.",
+      "implementationOwner": "job-ed2243f494104990 (model adapter only; UI foundation already public)",
+      "previousCodeReviews": [
+        "pending per-operation UI/service/runtime-storage/failure reconciliation"
+      ]
     },
     {
       "id": "RDP-CONNECT",
@@ -2551,9 +2570,12 @@
       "originalOperation": "RDP with certificate trust decisions",
       "originalStatus": "planned",
       "required": true,
-      "codeReview": "pending per-operation UI/service/runtime-storage/failure reconciliation",
-      "qualification": "not newly verified this round",
-      "implementationOwner": "job-ed2243f494104990"
+      "codeReview": "present-source-connected at a5171c89a872ddb5e2b8f8654b99c45b20ab6eab; Actual FreeRDP backend, explicit certificate trust, real bounded frame/input/close; same ordinary remote tools",
+      "qualification": "Current Core ARM64 interfaces/objects and Full/Play Kotlin compile evidence reused at matching boundary. No configured remote/mail/hardware/provider/device pass.",
+      "implementationOwner": "job-ed2243f494104990",
+      "previousCodeReviews": [
+        "pending per-operation UI/service/runtime-storage/failure reconciliation"
+      ]
     },
     {
       "id": "TELNET-TCP",
@@ -2562,8 +2584,11 @@
       "originalOperation": "Telnet/TCP raw connections with observable streams",
       "originalStatus": "planned",
       "required": true,
-      "codeReview": "pending per-operation UI/service/runtime-storage/failure reconciliation",
-      "qualification": "not newly verified this round"
+      "codeReview": "present-source-connected at a5171c89a872ddb5e2b8f8654b99c45b20ab6eab; Devices -> actual Socket/Telnet codec, bounded stream and awaited close",
+      "qualification": "Current Core ARM64 interfaces/objects and Full/Play Kotlin compile evidence reused at matching boundary. No configured remote/mail/hardware/provider/device pass.",
+      "previousCodeReviews": [
+        "pending per-operation UI/service/runtime-storage/failure reconciliation"
+      ]
     },
     {
       "id": "BLE-USB",
@@ -2572,8 +2597,11 @@
       "originalOperation": "BLE GATT / serial device connections",
       "originalStatus": "planned",
       "required": true,
-      "codeReview": "pending per-operation UI/service/runtime-storage/failure reconciliation",
-      "qualification": "not newly verified this round"
+      "codeReview": "present-source-connected at a5171c89a872ddb5e2b8f8654b99c45b20ab6eab; Android GATT or granted USB serial; bounded queues, generation fences and real detach/Root-stop drain",
+      "qualification": "Current Core ARM64 interfaces/objects and Full/Play Kotlin compile evidence reused at matching boundary. No configured remote/mail/hardware/provider/device pass.",
+      "previousCodeReviews": [
+        "pending per-operation UI/service/runtime-storage/failure reconciliation"
+      ]
     },
     {
       "id": "PORT-FORWARD",
@@ -2582,8 +2610,11 @@
       "originalOperation": "SSH tunnels/loopback forwarding for remote web access",
       "originalStatus": "planned",
       "required": true,
-      "codeReview": "pending per-operation UI/service/runtime-storage/failure reconciliation",
-      "qualification": "not newly verified this round"
+      "codeReview": "present-source-connected at a5171c89a872ddb5e2b8f8654b99c45b20ab6eab; Actual loopback NIO listener/direct-tcpip, explicit owned tunnel lifecycle",
+      "qualification": "Current Core ARM64 interfaces/objects and Full/Play Kotlin compile evidence reused at matching boundary. No configured remote/mail/hardware/provider/device pass.",
+      "previousCodeReviews": [
+        "pending per-operation UI/service/runtime-storage/failure reconciliation"
+      ]
     },
     {
       "id": "NET-WIFI-INFO",
@@ -2777,8 +2808,11 @@
       "originalOperation": "Paged mailbox listing/search",
       "originalStatus": "planned",
       "required": true,
-      "codeReview": "pending per-operation UI/service/runtime-storage/failure reconciliation",
-      "qualification": "not newly verified this round"
+      "codeReview": "present-source-connected at a5171c89a872ddb5e2b8f8654b99c45b20ab6eab; Mail UI -> actual IMAP/POP3, UIDVALIDITY/search and bounded pages over Android verified TLS",
+      "qualification": "Current Core ARM64 interfaces/objects and Full/Play Kotlin compile evidence reused at matching boundary. No configured remote/mail/hardware/provider/device pass.",
+      "previousCodeReviews": [
+        "pending per-operation UI/service/runtime-storage/failure reconciliation"
+      ]
     },
     {
       "id": "MAIL-ATTACH-MOVE",
@@ -2787,8 +2821,11 @@
       "originalOperation": "Attachments and message moves journaled with failure reconciliation",
       "originalStatus": "planned",
       "required": true,
-      "codeReview": "pending per-operation UI/service/runtime-storage/failure reconciliation",
-      "qualification": "not newly verified this round"
+      "codeReview": "present-source-connected at a5171c89a872ddb5e2b8f8654b99c45b20ab6eab; Scoped attachments, bounded streaming, durable mutation identity and read-only unknown reconciliation",
+      "qualification": "Current Core ARM64 interfaces/objects and Full/Play Kotlin compile evidence reused at matching boundary. No configured remote/mail/hardware/provider/device pass.",
+      "previousCodeReviews": [
+        "pending per-operation UI/service/runtime-storage/failure reconciliation"
+      ]
     },
     {
       "id": "MAIL-SEND-AUTH",
@@ -2797,8 +2834,11 @@
       "originalOperation": "Sending requires task authorization and records the real server outcome",
       "originalStatus": "planned",
       "required": true,
-      "codeReview": "pending per-operation UI/service/runtime-storage/failure reconciliation",
-      "qualification": "not newly verified this round"
+      "codeReview": "present-source-connected at a5171c89a872ddb5e2b8f8654b99c45b20ab6eab; approvalGrantID and workspace scope before SMTP; reserve before send, acceptedByServer/unknown receipt, no automatic resend",
+      "qualification": "Current Core ARM64 interfaces/objects and Full/Play Kotlin compile evidence reused at matching boundary. No configured remote/mail/hardware/provider/device pass.",
+      "previousCodeReviews": [
+        "pending per-operation UI/service/runtime-storage/failure reconciliation"
+      ]
     },
     {
       "id": "CAL-READ-WRITE",
@@ -2807,8 +2847,11 @@
       "originalOperation": "Calendar read/write through system accounts with revocation handling",
       "originalStatus": "planned",
       "required": true,
-      "codeReview": "pending per-operation UI/service/runtime-storage/failure reconciliation",
-      "qualification": "not newly verified this round"
+      "codeReview": "present-source-connected at a5171c89a872ddb5e2b8f8654b99c45b20ab6eab; Actual CalendarContract permissions/queries/writes/readback; failed exception update retains pre-existing row, unverified atomic split retains both series",
+      "qualification": "Current Core ARM64 interfaces/objects and Full/Play Kotlin compile evidence reused at matching boundary. No configured remote/mail/hardware/provider/device pass.",
+      "previousCodeReviews": [
+        "pending per-operation UI/service/runtime-storage/failure reconciliation"
+      ]
     },
     {
       "id": "CAL-TODO-DATA",
@@ -2817,8 +2860,11 @@
       "originalOperation": "Reminders via authorized service or independent todo data",
       "originalStatus": "planned",
       "required": true,
-      "codeReview": "pending per-operation UI/service/runtime-storage/failure reconciliation",
-      "qualification": "not newly verified this round"
+      "codeReview": "present-source-connected at a5171c89a872ddb5e2b8f8654b99c45b20ab6eab; Original independent revision-CAS SQLite todo store -> actual reminder host, revision checked return",
+      "qualification": "Current Core ARM64 interfaces/objects and Full/Play Kotlin compile evidence reused at matching boundary. No configured remote/mail/hardware/provider/device pass.",
+      "previousCodeReviews": [
+        "pending per-operation UI/service/runtime-storage/failure reconciliation"
+      ]
     },
     {
       "id": "NTF-PROGRESS",
@@ -5692,6 +5738,13 @@
       "proof": "planning/NOTIFICATION_RETURN_SOURCE_20261103.json",
       "compiled": true,
       "hostTests": 33,
+      "deviceVerified": false
+    },
+    "remoteMailCalendar20261103": {
+      "proof": "planning/REMOTE_MAIL_CALENDAR_SOURCE_REVIEW_20261103.json",
+      "sourceOnly": true,
+      "fullPlayCompiled": true,
+      "calendarRulesTests": 7,
       "deviceVerified": false
     }
   },

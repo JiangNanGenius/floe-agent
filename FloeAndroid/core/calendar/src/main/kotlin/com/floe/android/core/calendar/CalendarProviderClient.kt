@@ -791,8 +791,9 @@ class AndroidCalendarProvider(
                         actual = actual,
                     )
                     if (verified == null) {
-                        // cleanup the detached row we just created
-                        runCatching { deleteRow(exceptionID) }
+                        // Never delete a pre-existing exception when provider
+                        // readback fails after an update. Keep it for review.
+                        if (existing == null) runCatching { deleteRow(exceptionID) }
                         throw CalendarProviderFailure(
                             CalendarProviderFailureCode.READBACK_MISMATCH,
                             "calendar did not return the detached occurrence fields",
@@ -807,7 +808,7 @@ class AndroidCalendarProvider(
                 }
             }
         if (fields == null) {
-            runCatching { deleteRow(exceptionID) }
+            if (existing == null) runCatching { deleteRow(exceptionID) }
             throw CalendarProviderFailure(
                 CalendarProviderFailureCode.READBACK_MISMATCH,
                 "calendar did not create the exception row",
@@ -925,10 +926,12 @@ class AndroidCalendarProvider(
             )
         }
         if (fields == null || oldActual == null || (oldActual.recurrence ?: "") != oldRecurrence) {
-            runCatching { deleteRow(newID) }
+            // The provider already committed BOTH rows atomically. Deleting
+            // the future row alone would lose the remaining occurrences while
+            // leaving the original series truncated. Preserve both for review.
             throw CalendarProviderFailure(
                 CalendarProviderFailureCode.READBACK_MISMATCH,
-                "calendar did not return the split series fields",
+                "calendar changes were kept but could not be verified; review the series before retrying",
             )
         }
         verifyOccurrence(newID, occurrenceStart, mustExist = true)

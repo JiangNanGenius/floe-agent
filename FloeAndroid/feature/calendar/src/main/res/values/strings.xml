@@ -56,7 +56,7 @@
     <string name="calendar_deleted">Event deleted and verified.</string>
     <string name="calendar_error_permission">Calendar read permission is not granted. Nothing was changed.</string>
     <string name="calendar_error_write_permission">Calendar write permission is not granted. Nothing was changed.</string>
-    <string name="calendar_error_readback">The system calendar did not return the written row. Nothing is claimed as saved.</string>
+    <string name="calendar_error_readback">Calendar changes could not be confirmed. Refresh and check the events before retrying.</string>
     <string name="calendar_error_stale">The selected occurrence changed. Refresh and choose it again.</string>
     <string name="calendar_error_calendar">The selected calendar is missing or read-only. Choose a writable calendar.</string>
     <string name="calendar_error_provider">The system calendar rejected the operation. Nothing was changed.</string>

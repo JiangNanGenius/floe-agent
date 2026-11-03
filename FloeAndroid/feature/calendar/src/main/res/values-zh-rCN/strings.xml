@@ -56,7 +56,7 @@
     <string name="calendar_deleted">事件已删除并验证。</string>
     <string name="calendar_error_permission">未授予日历读取权限。未做任何更改。</string>
     <string name="calendar_error_write_permission">未授予日历写入权限。未做任何更改。</string>
-    <string name="calendar_error_readback">系统日历没有返回写入的行，因此不会声称已保存。</string>
+    <string name="calendar_error_readback">无法确认日历的更改。请先刷新并检查事件，再决定是否重试。</string>
     <string name="calendar_error_stale">所选单次事件已变化。请刷新后重新选择。</string>
     <string name="calendar_error_calendar">所选日历不存在或为只读。请选择可写日历。</string>
     <string name="calendar_error_provider">系统日历拒绝了此操作。未做任何更改。</string>
