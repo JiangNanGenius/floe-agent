@@ -8,8 +8,14 @@ struct CADSpherePhysicsPanel: View {
     @State private var candidates: [[String: Any]] = []
     @State private var selected = Set<String>()
     @State private var radii: [String: String] = [:]
-    @State private var duration = "2", gravity = "-9810", floor = "0", bounce = "0.7", mass = "1"
-    @State private var vx = "0", vy = "0", vz = "0"
+    @State private var duration = "2"
+    @State private var gravity = "-9810"
+    @State private var floor = "0"
+    @State private var bounce = "0.7"
+    @State private var mass = "1"
+    @State private var vx = "0"
+    @State private var vy = "0"
+    @State private var vz = "0"
     @State private var state = "empty"
     @State private var remoteRunID: String?
     @State private var loadedDefinitionID: String?
@@ -62,7 +68,7 @@ struct CADSpherePhysicsPanel: View {
             }.buttonStyle(.bordered).frame(minHeight: 44)
             if let message { Text(message).font(.callout).foregroundStyle(.red) }
             if state == "ready" {
-                Text(FloeCADStrings.text("cad.physics.ready", "Cache ready. Replay, frame capture and video export use the existing Present timeline."))
+                Text(FloeCADStrings.text("cad.physics.ready", "Ready to play or export in Present."))
             }
             if state == "stale" { Text(FloeCADStrings.text("cad.physics.stale", "The source changed. Configure and simulate the proxies again.")) }
             Button(FloeCADStrings.text("cad.physics.clear", "Clear simulation")) { run("physics.clear", [:]) }.disabled(busy || document.isReadOnly || state == "empty")

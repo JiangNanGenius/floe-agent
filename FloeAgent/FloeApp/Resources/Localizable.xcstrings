@@ -137462,13 +137462,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Cache ready. Replay, frame capture and video export use the existing Present timeline."
+            "value": "Ready to play or export in Present."
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "缓存已就绪。请在展示时间轴回放、截帧或导出视频。"
+            "value": "已生成，可在展示中播放或导出。"
           }
         }
       }
