@@ -13,6 +13,7 @@ import FloeCore
     let request = ASRLiveSessionRequest(profile: .volcengine(billingRoute: .agentPlan),
                                         inputSampleRate: 16_000)
     let session = try await adapter.startLiveSession(request, credential: "synthetic-plan-key")
+    try await session.feed(Data(repeating: 0x5a, count: 6_400))
     for (index, text) in ["This is.", "This is a.", "This is a streaming."].enumerated() {
         connection.inbox.push(.data(try volcServerFrame(
             ["result": ["text": text]], isFinal: false, sequence: index + 1)))

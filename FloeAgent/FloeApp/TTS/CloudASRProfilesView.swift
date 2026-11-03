@@ -298,6 +298,10 @@ private struct CloudASRProfileEditor: View {
 
     private func save() {
         errorKey = nil
+        guard !streamingEnabled || normalized(liveModel) != nil else {
+            errorKey = "voice.cloud.error.invalid"
+            return
+        }
         var next = original
         next.name = name
         next.fileModelID = fileModel
