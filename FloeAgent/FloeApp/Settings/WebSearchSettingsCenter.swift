@@ -1412,7 +1412,7 @@ private struct SearchProviderCatalogPicker: View {
         VStack(alignment: .leading, spacing: 3) {
             Text(entry.displayName(localePrimary: WebSearchSettingsCenter.localePrimary))
             if entry.supportedAdapter == .moonshot {
-                Text(moonshotText("Pay as you go · Kimi Code", "按量付费 · Kimi Code"))
+                Text(IDELanguageRunText.t("按量付费 · Kimi Code", "Pay as you go · Kimi Code"))
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
