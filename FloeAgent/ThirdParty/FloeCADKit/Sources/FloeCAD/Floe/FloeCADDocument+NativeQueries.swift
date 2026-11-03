@@ -897,7 +897,7 @@ public extension FloeCADDocument {
     /// Async drawing front door; every OCCT projection is prepared off-main.
     /// Other writer formats keep their existing exchange/coverage contract.
     func nativeExportDataAsync(format rawFormat: String, pageID: UUID? = nil)
-        async -> Result<(Data, String), CADDocumentError> {
+        async -> Result<(data: Data, note: String), CADDocumentError> {
         let format = rawFormat.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         guard ["pdf", "svg", "dxf", "png", "csv"].contains(format) else {
             return nativeExportData(format: rawFormat, pageID: pageID)
