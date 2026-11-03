@@ -7,15 +7,30 @@ import simd
 @MainActor struct CADRiggingPanel: View {
     let document:FloeCADDocument
     @State private var candidates:[[String:Any]]=[]
-    @State private var bodyID="",jointID="",vertexID="",jointName="Joint",duration="2"
-    @State private var x="0",y="0",z="0",angle="0",keyTime="0",dx="0",dy="0",dz="0"
-    @State private var jointWeights:[UUID:String]=[:],morphWeights:[UUID:String]=[:]
-    @State private var record:CADRigRecord?,vertices:[String]=[]
-    @State private var message:String?,busy=false
-    @State private var export:GLBFileDocument?,showExport=false
+    @State private var bodyID = ""
+    @State private var jointID = ""
+    @State private var vertexID = ""
+    @State private var jointName = "Joint"
+    @State private var duration = "2"
+    @State private var x = "0"
+    @State private var y = "0"
+    @State private var z = "0"
+    @State private var angle = "0"
+    @State private var keyTime = "0"
+    @State private var dx = "0"
+    @State private var dy = "0"
+    @State private var dz = "0"
+    @State private var jointWeights: [UUID: String] = [:]
+    @State private var morphWeights: [UUID: String] = [:]
+    @State private var record: CADRigRecord?
+    @State private var vertices: [String] = []
+    @State private var message: String?
+    @State private var busy = false
+    @State private var export: GLBFileDocument?
+    @State private var showExport = false
     var body:some View {
         VStack(alignment:.leading,spacing:12) {
-            Text(FloeCADStrings.text("cad.rig.scope","Bind one polygon cage without enabled modifiers. CAD solids, IK and FBX authoring are outside this scope.")).font(.callout).foregroundStyle(.secondary)
+            Text(FloeCADStrings.text("cad.rig.scope","Choose an editable polygon mesh.")).font(.callout).foregroundStyle(.secondary)
             Picker(FloeCADStrings.text("cad.rig.mesh","Polygon mesh"),selection:$bodyID) {
                 Text("—").tag("")
                 ForEach(candidates.compactMap { $0["body_id"] as? String },id:\.self) { id in Text(candidates.first { $0["body_id"] as? String==id }?["name"] as? String ?? id).tag(id) }

@@ -137878,13 +137878,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Bind one polygon cage without enabled modifiers. CAD solids, IK and FBX authoring are outside this scope."
+            "value": "Choose an editable polygon mesh."
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "可绑定未启用修改器的单个多边形控制网格。本轮不支持 CAD 实体、IK 或 FBX 创作。"
+            "value": "选择可编辑的多边形网格。"
           }
         }
       }
