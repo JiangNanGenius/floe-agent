@@ -169,9 +169,18 @@ final class BridgeAppModel: ObservableObject {
 
 private struct BridgeBrandMark: View {
     var template = false
+    @MainActor private var brandImage: NSImage? {
+        guard let url = Bundle.main.url(forResource: "FloeBrand", withExtension: "png"),
+              let image = NSImage(contentsOf: url) else { return nil }
+        // MenuBarExtra consumes the NSImage representation directly. Its
+        // intrinsic dimensions must be points, not the source PNG pixels.
+        let side: CGFloat = template ? 18 : 36
+        image.size = NSSize(width: side, height: side)
+        image.isTemplate = template
+        return image
+    }
     var body: some View {
-        if let url = Bundle.main.url(forResource: "FloeBrand", withExtension: "png"),
-           let image = NSImage(contentsOf: url) {
+        if let image = brandImage {
             Image(nsImage: image).renderingMode(template ? .template : .original)
                 .resizable().scaledToFit()
         } else { Image(systemName: "terminal") }

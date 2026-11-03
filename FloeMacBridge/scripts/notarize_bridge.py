@@ -11,8 +11,8 @@ Safety properties:
   * The artifact must be a regular file and within a fixed size bound.
   * A zip must contain exactly one top-level ``Floe Bridge.app`` with a
     ``Contents/Resources/source-commit.txt`` beginning with the exact 40-hex
-    source commit. Absolute paths, traversal, symlinks and oversized archives
-    are rejected before extraction.
+    source commit. Absolute paths, traversal and oversized archives are
+    rejected. Only the pinned Sparkle framework's versioned links are allowed.
   * The app must have bundle ID ``org.floeagent.macbridge``, the expected
     executable, a Developer ID Application authority for the expected Team ID,
     the hardened-runtime flag and an arm64 executable.
@@ -50,6 +50,13 @@ MAX_ARTIFACT_BYTES = 500 * 1024 * 1024
 MAX_ZIP_ENTRIES = 5000
 MAX_ZIP_UNCOMPRESSED = 1024 * 1024 * 1024
 MAX_LOG_ISSUES = 5
+SPARKLE_PREFIX = "Floe Bridge.app/Contents/Frameworks/Sparkle.framework/"
+SPARKLE_LINKS = {
+    **{SPARKLE_PREFIX + name: "Versions/Current/" + name for name in (
+        "PrivateHeaders", "Resources", "Autoupdate", "Updater.app", "Headers",
+        "XPCServices", "Modules", "Sparkle")},
+    SPARKLE_PREFIX + "Versions/Current": "B",
+}
 TERMINAL_STATUSES = {"Accepted", "Invalid", "Rejected"}
 PENDING_STATUSES = {"In Progress", "Submitted", "Pending", "Unknown"}
 UUID_SEARCH = re.compile(r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}")
@@ -225,6 +232,8 @@ def validate_zip(zip_path: Path) -> None:
             if len(infos) > MAX_ZIP_ENTRIES:
                 raise HelperError("Artifact zip has too many entries")
             total = 0
+            names: set[str] = set()
+            links: set[str] = set()
             for info in infos:
                 name = info.filename
                 if not name or "\x00" in name or name.startswith("/") or "\\" in name:
@@ -232,12 +241,24 @@ def validate_zip(zip_path: Path) -> None:
                 parts = Path(name).parts
                 if any(part in ("", ".", "..") for part in parts):
                     raise HelperError("Artifact zip contains a traversal path")
+                canonical = "/".join(parts)
+                if canonical in names:
+                    raise HelperError("Artifact zip contains a duplicate path")
+                names.add(canonical)
                 mode = (info.external_attr >> 16) & 0o170000
                 if stat.S_ISLNK(mode):
-                    raise HelperError("Artifact zip contains a symbolic link")
+                    expected = SPARKLE_LINKS.get(canonical)
+                    if expected is None or info.file_size > 128 or archive.read(info) != expected.encode("utf-8"):
+                        raise HelperError("Artifact zip contains an unapproved symbolic link")
+                    links.add(canonical)
+                elif mode not in (0, stat.S_IFREG, stat.S_IFDIR):
+                    raise HelperError("Artifact zip contains a special file")
                 total += info.file_size
                 if total > MAX_ZIP_UNCOMPRESSED:
                     raise HelperError("Artifact zip exceeds the uncompressed size bound")
+            for name in names:
+                if any(parent.as_posix() in links for parent in Path(name).parents):
+                    raise HelperError("Artifact zip contains a member below a symbolic link")
     except zipfile.BadZipFile as error:
         raise HelperError("Artifact is not a valid zip archive") from error
 
@@ -246,8 +267,12 @@ def extract_zip(zip_path: Path, destination: Path) -> None:
     validate_zip(zip_path)
     destination.mkdir(parents=True, exist_ok=True)
     with zipfile.ZipFile(zip_path) as archive:
+        links = []
         for info in archive.infolist():
             target = destination / info.filename
+            if stat.S_ISLNK((info.external_attr >> 16) & 0o170000):
+                links.append((target, archive.read(info).decode("utf-8")))
+                continue
             if info.is_dir():
                 target.mkdir(parents=True, exist_ok=True)
                 continue
@@ -257,6 +282,11 @@ def extract_zip(zip_path: Path, destination: Path) -> None:
             mode = (info.external_attr >> 16) & 0o777
             if mode:
                 target.chmod(mode)
+        # Create links after all ordinary files; no archive entry can write
+        # through a link. validate_zip permits only the exact pinned links.
+        for target, link in links:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.symlink_to(link)
 
 
 def find_single_app(root: Path) -> Path:
