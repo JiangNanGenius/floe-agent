@@ -129,7 +129,8 @@ struct NativeCADCapabilityDiscoveryTests {
         #expect(full.contains("BVH"));#expect(full.contains("flattened"));#expect(full.contains("source_sha256"))
         var page=0,joined=""
         while true {
-            let row=try #require(CadDocumentHelp.page(.init(topic:"texture-paint",page:page,pageSize:1000)))
+            let availablePage=try CadDocumentHelp.page(.init(topic:"texture-paint",page:page,pageSize:1000))
+            let row=try #require(availablePage)
             joined += row.text;guard let next=row.nextPage else { break };page=next
         }
         #expect(joined==full);#expect(page>0)
@@ -137,7 +138,8 @@ struct NativeCADCapabilityDiscoveryTests {
         let outer=try JSONSerialization.data(withJSONObject:["action":"material","path":"example.floecad","payload":payload])
         let decoded=try JSONDecoder().decode(CadDocumentArguments.self,from:outer)
         #expect(decoded.action == .material);#expect(decoded.payload==payload)
-        let object=try #require(JSONSerialization.jsonObject(with:Data(payload.utf8)) as? [String:Any])
+        let decodedObject=try JSONSerialization.jsonObject(with:Data(payload.utf8))
+        let object=try #require(decodedObject as? [String:Any])
         let hits=try JSONDecoder().decode([CADTexturePaintHit].self,from:JSONSerialization.data(withJSONObject:try #require(object["hits"])))
         #expect(hits.count==1);#expect(hits[0].triangle==0);#expect(hits[0].barycentric.x==0.25)
     }
