@@ -112,22 +112,28 @@ import simd
         let (doc,id)=try await fixture(),report=try await read(doc,id),before=doc.session.document.body(with:id)?.material,depth=doc.session.undoStack.undoCommands.count
         let entered=XCTestExpectation(description:"Value worker entered"),release=DispatchSemaphore(value:0)
         CADTexturePaintService.testBeforeCompute={entered.fulfill();_ = release.wait(timeout:.now()+30)}
-        let args=strokeArgs(id,report),task=Task { @MainActor in await CADMaterialService(document:doc).handleAsync(action:"paint.stroke",args:args) }
+        let args=strokeArgs(id,report),task=Task<String?,Never> { @MainActor in
+            let reply=await CADMaterialService(document:doc).handleAsync(action:"paint.stroke",args:args)
+            return reply["error"] as? String
+        }
         await fulfillment(of:[entered],timeout:10)
         task.cancel();release.signal();let reply=await task.value
         CADTexturePaintService.testBeforeCompute=nil
-        XCTAssertEqual(reply["error"] as? String,"cancelled");XCTAssertEqual(doc.session.undoStack.undoCommands.count,depth)
+        XCTAssertEqual(reply,"cancelled");XCTAssertEqual(doc.session.undoStack.undoCommands.count,depth)
         XCTAssertEqual(doc.session.document.body(with:id)?.material,before)
     }
     func testLateResultAfterRealDocumentChangeKeepsUserEdit()async throws {
         let (doc,id)=try await fixture(),report=try await read(doc,id),before=doc.session.document.body(with:id)?.material,depth=doc.session.undoStack.undoCommands.count
         let entered=XCTestExpectation(description:"Pixels computed"),release=DispatchSemaphore(value:0)
         CADTexturePaintService.testBeforeCommit={entered.fulfill();_ = release.wait(timeout:.now()+30)}
-        let args=strokeArgs(id,report),task=Task { @MainActor in await CADMaterialService(document:doc).handleAsync(action:"paint.stroke",args:args) }
+        let args=strokeArgs(id,report),task=Task<String?,Never> { @MainActor in
+            let reply=await CADMaterialService(document:doc).handleAsync(action:"paint.stroke",args:args)
+            return reply["error"] as? String
+        }
         await fulfillment(of:[entered],timeout:10)
         doc.session.perform(AddSketchCommand(sketch:Sketch(name:"Concurrent user edit",plane:.ground,entities:[])))
         release.signal();let reply=await task.value;CADTexturePaintService.testBeforeCommit=nil
-        XCTAssertEqual(reply["error"] as? String,"document_changed")
+        XCTAssertEqual(reply,"document_changed")
         XCTAssertEqual(doc.session.undoStack.undoCommands.count,depth+1)
         XCTAssertTrue(doc.session.document.sketches.contains{$0.name=="Concurrent user edit"})
         XCTAssertEqual(doc.session.document.body(with:id)?.material,before)
